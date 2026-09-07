@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .config import LiteLLMProviderConfig
-from .litellm_backend import LiteLLMBackendSingleAgentProvider
+from .litellm_backend import LiteLLMBackendProvider
 from .litellm_config import litellm_provider_config
 from .protocol import TurnProvider
 
@@ -17,4 +17,4 @@ class LiteLLMModelProvider:
         return litellm_provider_config(self.config)
 
     def turn_provider(self) -> TurnProvider:
-        return LiteLLMBackendSingleAgentProvider(name=self.name, config=self.config)
+        return LiteLLMBackendProvider(name=self.name, config=self.config)

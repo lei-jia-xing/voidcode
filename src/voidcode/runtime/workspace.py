@@ -49,7 +49,7 @@ class WorkspaceCandidate:
         )
 
 
-class SingleWorkspaceRuntimeCoordinator:
+class WorkspaceRuntimeCoordinator:
     def __init__(
         self,
         *,

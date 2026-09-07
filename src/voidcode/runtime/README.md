@@ -1,6 +1,6 @@
 # `voidcode.runtime`
 
-这里是 VoidCode 的运行时控制面，也是当前产品级执行边界。
+这里是 VoidCode 的运行时控制面，拥有执行治理、权限、持久化、恢复与生命周期的最终控制权，也是当前产品级执行边界。
 
 ## 定位
 
@@ -12,7 +12,7 @@
 - 会话持久化、恢复与本地状态真相
 - 运行时配置解析与优先级收口
 - 权限决策、审批与 hooks 执行
-- capability lifecycle 与 runtime-facing integration
+- capability 生命周期与 runtime 集成
 - 事件发射与客户端共享的执行观测面
 
 ## 不负责什么
@@ -30,4 +30,4 @@
 
 ## 当前状态
 
-这是当前最成熟、最稳定的系统边界。后续 provider、skills、LSP、ACP、MCP 等能力演进，都应优先服从 runtime control-plane 的 ownership。
+这是当前最成熟、最稳定的系统边界。后续 provider、skills、LSP、ACP、MCP 等能力演进，都应优先服从 runtime 控制面的所有权。

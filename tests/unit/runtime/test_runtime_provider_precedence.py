@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.provider.config import SimplifiedProviderConfig
+from voidcode.provider.config import OpenAICompatibleProviderConfig
 from voidcode.runtime.config import load_runtime_config
 
 
@@ -40,7 +40,7 @@ def test_runtime_config_providers_prefer_environment_over_global_user_config(
     )
 
     assert config.providers is not None
-    assert config.providers.opencode_go == SimplifiedProviderConfig(
+    assert config.providers.opencode_go == OpenAICompatibleProviderConfig(
         api_key="env-key",
         base_url="https://global.example/v1",
         model_map={"fast": "kimi-k2.6"},

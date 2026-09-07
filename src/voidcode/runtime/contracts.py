@@ -201,11 +201,10 @@ DELEGATION_METADATA_KEYS = frozenset(
 
 
 class PersistedDelegationMetadata(RuntimeSubagentRoutingMetadata, total=False):
-    """Persisted 形态的 delegation：与请求侧同形。
+    """Persisted delegation shape; request-side and persisted keys align.
 
-    ``depth``/``remaining_spawn_budget`` 由 ``_metadata_with_delegation_governance``
-    在请求入 session 前解析（service.py:5004-5009），``selected_preset``/
-    ``selected_execution_engine`` 由路由解析填充（service.py:5849-5850）。
+    Governance fields are resolved before request persistence; selected route
+    fields are filled by routing.
     """
 
 

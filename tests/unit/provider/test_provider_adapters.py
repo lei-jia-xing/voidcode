@@ -14,7 +14,7 @@ from voidcode.provider.config import (
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
     LiteLLMProviderConfig,
-    SimplifiedProviderConfig,
+    OpenAICompatibleProviderConfig,
 )
 from voidcode.provider.copilot import CopilotModelProvider
 from voidcode.provider.errors import (
@@ -25,7 +25,7 @@ from voidcode.provider.fireworks import FireworksModelProvider
 from voidcode.provider.google import GoogleModelProvider
 from voidcode.provider.groq import GroqModelProvider
 from voidcode.provider.litellm import LiteLLMModelProvider
-from voidcode.provider.litellm_backend import LiteLLMBackendSingleAgentProvider
+from voidcode.provider.litellm_backend import LiteLLMBackendProvider
 from voidcode.provider.mistral import MistralModelProvider
 from voidcode.provider.model_catalog import ProviderModelMetadata
 from voidcode.provider.openai import OpenAIModelProvider
@@ -1725,7 +1725,7 @@ def test_opencode_go_deepseek_reinjects_reasoning_content_for_tool_history(
 def test_provider_adapter_synthetic_tool_feedback_policy_is_provider_agnostic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(
+    provider = LiteLLMBackendProvider(
         name="custom",
         config=None,
     )
@@ -1806,7 +1806,7 @@ def test_opencode_zen_provider_sends_raw_model_id(monkeypatch: pytest.MonkeyPatc
 def test_provider_adapter_synthetic_feedback_strips_argument_sentinels(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(
+    provider = LiteLLMBackendProvider(
         name="custom",
         config=None,
     )
@@ -1869,7 +1869,7 @@ def test_provider_adapter_synthetic_feedback_strips_argument_sentinels(
 def test_provider_adapter_sanitizes_provider_tool_schema_and_decodes_runtime_tool_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    provider = LiteLLMBackendProvider(name="deepseek", config=None)
     request = _build_turn_request(model_name="deepseek")
     request = ProviderTurnRequest(
         assembled_context=_assembled_context(
@@ -1928,7 +1928,7 @@ def test_provider_adapter_sanitizes_provider_tool_schema_and_decodes_runtime_too
 def test_provider_adapter_preserves_multiple_provider_tool_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    provider = LiteLLMBackendProvider(name="deepseek", config=None)
     request = _build_turn_request(model_name="deepseek")
     _patch_litellm_completion(
         monkeypatch,
@@ -1964,7 +1964,7 @@ def test_provider_adapter_preserves_multiple_provider_tool_calls(
 def test_provider_adapter_generates_unique_fallback_ids_for_batched_tool_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    provider = LiteLLMBackendProvider(name="deepseek", config=None)
     request = _build_turn_request(model_name="deepseek")
     _patch_litellm_completion(
         monkeypatch,
@@ -1994,7 +1994,7 @@ def test_provider_adapter_generates_unique_fallback_ids_for_batched_tool_calls(
 def test_provider_adapter_caps_long_sanitized_tool_names_to_provider_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    provider = LiteLLMBackendProvider(name="deepseek", config=None)
     long_tool_name = "mcp/" + "very-long-server-name-" * 3 + "tool/" + "search-github-results-" * 2
     request = _build_turn_request(model_name="deepseek")
     request = ProviderTurnRequest(
@@ -2057,7 +2057,7 @@ def test_provider_adapter_caps_long_sanitized_tool_names_to_provider_limit(
 def test_deepseek_provider_reinjects_reasoning_content_for_tool_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    provider = LiteLLMBackendProvider(name="deepseek", config=None)
     tool_results = (
         ToolResult(
             tool_name="glob",
@@ -2110,7 +2110,7 @@ def test_deepseek_provider_reinjects_reasoning_content_for_tool_history(
 def test_deepseek_provider_falls_back_to_blank_reasoning_content_for_tool_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    provider = LiteLLMBackendProvider(name="deepseek", config=None)
     tool_results = (
         ToolResult(
             tool_name="glob",
@@ -2214,7 +2214,7 @@ def test_provider_adapter_infers_tool_feedback_from_mapped_model_alias(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenCodeGoModelProvider(
-        config=SimplifiedProviderConfig(
+        config=OpenAICompatibleProviderConfig(
             api_key="opencode-go-key",
             model_map={"my-minimax": "minimax-m2.7"},
         )
@@ -2623,7 +2623,7 @@ def test_named_provider_maps_reasoning_effort_to_binary_thinking_extra_body(
     provider_type: type[ZAIModelProvider] | type[ZhipuAIModelProvider],
     provider_name: str,
 ) -> None:
-    provider = provider_type(config=SimplifiedProviderConfig(api_key="provider-key")).turn_provider()
+    provider = provider_type(config=OpenAICompatibleProviderConfig(api_key="provider-key")).turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -2700,7 +2700,7 @@ def test_named_provider_rejects_invalid_reasoning_effort(
     provider_type: type[ZAIModelProvider] | type[ZhipuAIModelProvider],
     provider_name: str,
 ) -> None:
-    provider = provider_type(config=SimplifiedProviderConfig(api_key="provider-key")).turn_provider()
+    provider = provider_type(config=OpenAICompatibleProviderConfig(api_key="provider-key")).turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -2729,9 +2729,9 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
     model_name: str,
     custom_provider: str,
 ) -> None:
-    from voidcode.provider.config import SimplifiedProviderConfig
+    from voidcode.provider.config import OpenAICompatibleProviderConfig
 
-    provider = OpenCodeGoModelProvider(config=SimplifiedProviderConfig(api_key="opencode-go-key"))
+    provider = OpenCodeGoModelProvider(config=OpenAICompatibleProviderConfig(api_key="opencode-go-key"))
     provider = provider.turn_provider()
 
     _patch_litellm_completion(
@@ -2790,9 +2790,9 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
 def test_opencode_go_glm_stream_turn_does_not_send_rejected_tool_stream_param(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from voidcode.provider.config import SimplifiedProviderConfig
+    from voidcode.provider.config import OpenAICompatibleProviderConfig
 
-    provider = OpenCodeGoModelProvider(config=SimplifiedProviderConfig(api_key="opencode-go-key"))
+    provider = OpenCodeGoModelProvider(config=OpenAICompatibleProviderConfig(api_key="opencode-go-key"))
     turn_provider = provider.turn_provider()
     assert isinstance(turn_provider, StreamableTurnProvider)
 
@@ -2867,7 +2867,7 @@ def test_named_provider_does_not_append_v1_to_base_url(
     provider_name: str,
     expected_base_url: str,
 ) -> None:
-    provider = provider_type(config=SimplifiedProviderConfig(api_key="provider-key")).turn_provider()
+    provider = provider_type(config=OpenAICompatibleProviderConfig(api_key="provider-key")).turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -2884,7 +2884,7 @@ def test_named_provider_does_not_append_v1_to_base_url(
 
 
 def test_litellm_backend_propose_turn_forwards_ssl_verify(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(
+    provider = LiteLLMBackendProvider(
         name="litellm",
         config=LiteLLMProviderConfig(
             api_key="litellm-key",
@@ -2909,7 +2909,7 @@ def test_litellm_backend_propose_turn_forwards_ssl_verify(monkeypatch: pytest.Mo
 
 
 def test_litellm_backend_propose_turn_extracts_reasoning_content(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="custom", config=None)
+    provider = LiteLLMBackendProvider(name="custom", config=None)
     request = _build_turn_request(model_name="custom")
     _patch_litellm_completion(
         monkeypatch,
@@ -2925,7 +2925,7 @@ def test_litellm_backend_propose_turn_extracts_reasoning_content(monkeypatch: py
 
 
 def test_litellm_backend_propose_turn_extracts_thinking_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="custom", config=None)
+    provider = LiteLLMBackendProvider(name="custom", config=None)
     request = _build_turn_request(model_name="custom")
     _patch_litellm_completion(
         monkeypatch,
@@ -2946,7 +2946,7 @@ def test_litellm_backend_propose_turn_extracts_thinking_blocks(monkeypatch: pyte
 
 
 def test_litellm_backend_propose_turn_carries_reasoning_on_tool_call_turns(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="custom", config=None)
+    provider = LiteLLMBackendProvider(name="custom", config=None)
     request = _build_turn_request(model_name="custom")
     tool_calls = [
         {
@@ -2969,7 +2969,7 @@ def test_litellm_backend_propose_turn_carries_reasoning_on_tool_call_turns(monke
 
 
 def test_litellm_backend_propose_turn_omits_reasoning_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="custom", config=None)
+    provider = LiteLLMBackendProvider(name="custom", config=None)
     request = _build_turn_request(model_name="custom")
     _patch_litellm_completion(monkeypatch, mode="completion", completion_content="answer")
 
@@ -2982,7 +2982,7 @@ def test_litellm_backend_propose_turn_omits_reasoning_when_absent(monkeypatch: p
 def test_litellm_backend_omits_ssl_verify_when_not_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(
+    provider = LiteLLMBackendProvider(
         name="custom-gateway",
         config=LiteLLMProviderConfig(
             api_key="gateway-key",
@@ -3021,7 +3021,7 @@ def test_litellm_backend_ssl_verify_is_request_scoped_under_concurrency(
 ) -> None:
     import voidcode.provider.litellm_backend as backend_module
 
-    explicit_provider = LiteLLMBackendSingleAgentProvider(
+    explicit_provider = LiteLLMBackendProvider(
         name="explicit-gateway",
         config=LiteLLMProviderConfig(
             api_key="explicit-key",
@@ -3029,7 +3029,7 @@ def test_litellm_backend_ssl_verify_is_request_scoped_under_concurrency(
             ssl_verify=False,
         ),
     )
-    default_provider = LiteLLMBackendSingleAgentProvider(
+    default_provider = LiteLLMBackendProvider(
         name="default-gateway",
         config=LiteLLMProviderConfig(
             api_key="default-key",
@@ -3125,7 +3125,7 @@ def test_litellm_backend_ssl_verify_is_request_scoped_under_concurrency(
 
 
 def test_litellm_backend_stream_turn_forwards_ssl_verify(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(
+    provider = LiteLLMBackendProvider(
         name="litellm",
         config=LiteLLMProviderConfig(
             api_key="litellm-key",
@@ -3503,12 +3503,12 @@ def test_litellm_backend_skips_debug_without_explicit_opt_in(
     monkeypatch.setattr(backend_module, "_LITELLM_DEBUG_ENABLED", False)
     monkeypatch.delenv("VOIDCODE_LITELLM_DEBUG", raising=False)
     monkeypatch.setattr(
-        backend_module.LiteLLMBackendSingleAgentProvider,
+        backend_module.LiteLLMBackendProvider,
         "_redirect_litellm_debug_logs",
         lambda: redirects.append("redirect"),
     )
 
-    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    provider = LiteLLMBackendProvider(name="deepseek", config=None)
     request = _build_turn_request(model_name="deepseek-v4-pro")
 
     first = provider.propose_turn(request)
@@ -3540,12 +3540,12 @@ def test_litellm_backend_enables_debug_once_with_explicit_opt_in(
     monkeypatch.setattr(backend_module, "_LITELLM_DEBUG_ENABLED", False)
     monkeypatch.setenv("VOIDCODE_LITELLM_DEBUG", "1")
     monkeypatch.setattr(
-        backend_module.LiteLLMBackendSingleAgentProvider,
+        backend_module.LiteLLMBackendProvider,
         "_redirect_litellm_debug_logs",
         lambda: redirects.append("redirect"),
     )
 
-    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    provider = LiteLLMBackendProvider(name="deepseek", config=None)
     request = _build_turn_request(model_name="deepseek-v4-pro")
 
     first = provider.propose_turn(request)
@@ -3573,12 +3573,12 @@ def test_litellm_backend_marks_debug_enabled_without_private_hook(
     monkeypatch.setattr(backend_module, "_LITELLM_DEBUG_ENABLED", False)
     monkeypatch.setenv("VOIDCODE_LITELLM_DEBUG", "1")
     monkeypatch.setattr(
-        backend_module.LiteLLMBackendSingleAgentProvider,
+        backend_module.LiteLLMBackendProvider,
         "_redirect_litellm_debug_logs",
         lambda: redirects.append("redirect"),
     )
 
-    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    provider = LiteLLMBackendProvider(name="deepseek", config=None)
     request = _build_turn_request(model_name="deepseek-v4-pro")
 
     first = provider.propose_turn(request)
@@ -3623,10 +3623,10 @@ def test_provider_adapters_call_litellm_directly_without_internal_bridge(
 @pytest.mark.parametrize(
     ("provider_name", "provider", "expected_base"),
     [
-        ("groq", GroqModelProvider(config=SimplifiedProviderConfig(api_key="key")), "https://api.groq.com/openai/v1"),
-        ("together", TogetherModelProvider(config=SimplifiedProviderConfig(api_key="key")), "https://api.together.ai/v1"),
-        ("fireworks", FireworksModelProvider(config=SimplifiedProviderConfig(api_key="key")), "https://api.fireworks.ai/inference/v1"),
-        ("mistral", MistralModelProvider(config=SimplifiedProviderConfig(api_key="key")), "https://api.mistral.ai/v1"),
+        ("groq", GroqModelProvider(config=OpenAICompatibleProviderConfig(api_key="key")), "https://api.groq.com/openai/v1"),
+        ("together", TogetherModelProvider(config=OpenAICompatibleProviderConfig(api_key="key")), "https://api.together.ai/v1"),
+        ("fireworks", FireworksModelProvider(config=OpenAICompatibleProviderConfig(api_key="key")), "https://api.fireworks.ai/inference/v1"),
+        ("mistral", MistralModelProvider(config=OpenAICompatibleProviderConfig(api_key="key")), "https://api.mistral.ai/v1"),
     ],
 )
 def test_new_provider_adapters_use_openai_compatible_transport(
@@ -3648,18 +3648,18 @@ def test_new_provider_adapters_use_openai_compatible_transport(
 @pytest.mark.parametrize(
     ("provider", "model_name", "expected_model"),
     [
-        (GroqModelProvider(config=SimplifiedProviderConfig(api_key="key")), "openai/gpt-oss-120b", "groq/openai/gpt-oss-120b"),
+        (GroqModelProvider(config=OpenAICompatibleProviderConfig(api_key="key")), "openai/gpt-oss-120b", "groq/openai/gpt-oss-120b"),
         (
-            TogetherModelProvider(config=SimplifiedProviderConfig(api_key="key")),
+            TogetherModelProvider(config=OpenAICompatibleProviderConfig(api_key="key")),
             "llama-3.3-70b",
             "together_ai/meta-llama/Llama-3.3-70B-Instruct-Turbo",
         ),
         (
-            FireworksModelProvider(config=SimplifiedProviderConfig(api_key="key")),
+            FireworksModelProvider(config=OpenAICompatibleProviderConfig(api_key="key")),
             "llama-3.1-70b",
             "fireworks_ai/accounts/fireworks/models/llama-v3p1-70b-instruct",
         ),
-        (MistralModelProvider(config=SimplifiedProviderConfig(api_key="key")), "mistral-large", "mistral/mistral-large-latest"),
+        (MistralModelProvider(config=OpenAICompatibleProviderConfig(api_key="key")), "mistral-large", "mistral/mistral-large-latest"),
     ],
 )
 def test_gateway_provider_model_maps_preserve_litellm_provider_routing(
@@ -3788,7 +3788,7 @@ def test_provider_adapter_preserves_assistant_text_and_object_tool_arguments(
 
 
 def test_wire_prefix_descriptor_is_final_materialization_seam() -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="openai", config=None)
+    provider = LiteLLMBackendProvider(name="openai", config=None)
     request = _build_turn_request_with_skill(model_name="openai")
 
     first_wire = provider._build_messages(request)
@@ -3801,7 +3801,7 @@ def test_wire_prefix_descriptor_is_final_materialization_seam() -> None:
 
 
 def test_non_anthropic_cache_retention_is_explicitly_unsupported() -> None:
-    provider = LiteLLMBackendSingleAgentProvider(
+    provider = LiteLLMBackendProvider(
         name="openai",
         config=LiteLLMProviderConfig(cache_retention="short"),
     )
@@ -3875,7 +3875,7 @@ def test_anthropic_long_cache_retention_marks_system_when_tools_are_absent() -> 
 
 
 def test_litellm_stream_emits_explicit_tool_call_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="openai", config=None)
+    provider = LiteLLMBackendProvider(name="openai", config=None)
     _patch_litellm_completion(
         monkeypatch,
         mode="stream",
@@ -3891,7 +3891,7 @@ def test_litellm_stream_emits_explicit_tool_call_lifecycle(monkeypatch: pytest.M
 
 
 def test_litellm_stream_keeps_parallel_tool_call_fragments_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="openai", config=None)
+    provider = LiteLLMBackendProvider(name="openai", config=None)
     _patch_litellm_completion(
         monkeypatch,
         mode="stream",
@@ -3918,7 +3918,7 @@ def test_litellm_stream_keeps_parallel_tool_call_fragments_isolated(monkeypatch:
 
 
 def test_litellm_stream_does_not_end_incomplete_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = LiteLLMBackendSingleAgentProvider(name="openai", config=None)
+    provider = LiteLLMBackendProvider(name="openai", config=None)
     _patch_litellm_completion(
         monkeypatch,
         mode="stream",
@@ -3933,7 +3933,7 @@ def test_litellm_stream_abort_does_not_emit_tool_call(monkeypatch: pytest.Monkey
     class _AbortSignal:
         cancelled = True
 
-    provider = LiteLLMBackendSingleAgentProvider(name="openai", config=None)
+    provider = LiteLLMBackendProvider(name="openai", config=None)
     _patch_litellm_completion(
         monkeypatch,
         mode="stream",

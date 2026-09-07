@@ -2536,7 +2536,7 @@ def test_provider_runtime_retries_transient_error_on_same_target(tmp_path: Path)
                 execution_engine="provider",
                 model="opencode-go/glm-5.1",
                 providers=config_module.RuntimeProvidersConfig(
-                    opencode_go=provider_config_module.SimplifiedProviderConfig(
+                    opencode_go=provider_config_module.OpenAICompatibleProviderConfig(
                         transient_retry=provider_config_module.ProviderTransientRetryConfig(
                             max_retries=2,
                             base_delay_ms=0,
@@ -2621,7 +2621,7 @@ def test_provider_runtime_falls_back_after_same_target_retry_budget(
                     fallback_models=("custom/demo",),
                 ),
                 providers=config_module.RuntimeProvidersConfig(
-                    opencode_go=provider_config_module.SimplifiedProviderConfig(
+                    opencode_go=provider_config_module.OpenAICompatibleProviderConfig(
                         transient_retry=provider_config_module.ProviderTransientRetryConfig(
                             max_retries=1,
                             base_delay_ms=0,

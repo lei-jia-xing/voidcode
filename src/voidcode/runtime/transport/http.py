@@ -69,7 +69,7 @@ from ..serialization import serialize_revert_marker, serialize_session_debug_sna
 from ..service import VoidCodeRuntime
 from ..session import SessionRef, SessionState, StoredSessionSummary
 from ..storage.shared import SessionSealedError
-from ..workspace import SingleWorkspaceRuntimeCoordinator, WorkspaceOpenError
+from ..workspace import WorkspaceOpenError, WorkspaceRuntimeCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -409,13 +409,13 @@ def _format_http_validation_error(error: dict[str, object]) -> str:
 @final
 class RuntimeTransportApp:
     _runtime_factory: Callable[[], RuntimeTransport]
-    _workspace_coordinator: SingleWorkspaceRuntimeCoordinator | None
+    _workspace_coordinator: WorkspaceRuntimeCoordinator | None
 
     def __init__(
         self,
         *,
         runtime_factory: Callable[[], RuntimeTransport],
-        workspace_coordinator: SingleWorkspaceRuntimeCoordinator | None = None,
+        workspace_coordinator: WorkspaceRuntimeCoordinator | None = None,
         frontend_dist: Path | None = None,
     ) -> None:
         self._runtime_factory = runtime_factory
@@ -426,7 +426,7 @@ class RuntimeTransportApp:
     def _close_runtime(
         runtime: RuntimeTransport,
         *,
-        workspace_coordinator: SingleWorkspaceRuntimeCoordinator | None = None,
+        workspace_coordinator: WorkspaceRuntimeCoordinator | None = None,
     ) -> None:
         if workspace_coordinator is not None and workspace_coordinator.owns_runtime(runtime):
             return
@@ -2923,7 +2923,7 @@ def create_runtime_app(
             frontend_dist=frontend_dist,
         )
 
-    coordinator = SingleWorkspaceRuntimeCoordinator(
+    coordinator = WorkspaceRuntimeCoordinator(
         initial_workspace=resolved_workspace,
         runtime_factory=lambda workspace: _default_runtime_class()(
             workspace=workspace,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .config import GoogleProviderConfig, LiteLLMProviderConfig
-from .litellm_backend import LiteLLMBackendSingleAgentProvider
+from .litellm_backend import LiteLLMBackendProvider
 from .litellm_config import google_provider_config
 from .protocol import TurnProvider
 
@@ -39,7 +39,7 @@ class GoogleModelProvider:
             auth_scheme=auth_scheme,
             timeout_seconds=None if self.config is None else self.config.timeout_seconds,
         )
-        return LiteLLMBackendSingleAgentProvider(
+        return LiteLLMBackendProvider(
             name=self.name,
             config=adapted_config,
             completion_kwargs=completion_kwargs or None,

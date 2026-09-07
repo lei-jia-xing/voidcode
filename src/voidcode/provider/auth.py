@@ -9,8 +9,8 @@ from .config import (
     CopilotProviderConfig,
     GoogleProviderConfig,
     LiteLLMProviderConfig,
+    OpenAICompatibleProviderConfig,
     ProviderConfigs,
-    SimplifiedProviderConfig,
 )
 
 type ProviderAuthProvider = str
@@ -109,7 +109,7 @@ _LITELLM_METHODS: tuple[ProviderAuthMethod, ...] = (
     ProviderAuthMethod(id="api_key", label="API Key"),
     ProviderAuthMethod(id="none", label="No Auth"),
 )
-_SIMPLIFIED_METHODS: tuple[ProviderAuthMethod, ...] = (ProviderAuthMethod(id="api_key", label="API Key"),)
+_OPENAI_COMPATIBLE_AUTH_METHODS: tuple[ProviderAuthMethod, ...] = (ProviderAuthMethod(id="api_key", label="API Key"),)
 
 
 class ProviderAuthResolver:
@@ -126,7 +126,7 @@ class ProviderAuthResolver:
     def _custom_provider_config(self, provider: str) -> LiteLLMProviderConfig | None:
         return self._providers.custom.get(provider)
 
-    def _simplified_provider_config(self, provider: str) -> SimplifiedProviderConfig | None:
+    def _openai_compatible_provider_config(self, provider: str) -> OpenAICompatibleProviderConfig | None:
         provider_map = {
             "deepseek": self._providers.deepseek,
             "zai": self._providers.zai,
@@ -186,14 +186,14 @@ class ProviderAuthResolver:
                 methods=_LITELLM_METHODS,
                 default_method=default_method,
             )
-        simplified_config = self._simplified_provider_config(provider)
-        if simplified_config is not None:
+        compatible_config = self._openai_compatible_provider_config(provider)
+        if compatible_config is not None:
             default_method = "api_key"
-            if simplified_config.api_key is not None:
+            if compatible_config.api_key is not None:
                 default_method = "api_key"
             return ProviderAuthMethodsResponse(
                 provider=provider,
-                methods=_SIMPLIFIED_METHODS,
+                methods=_OPENAI_COMPATIBLE_AUTH_METHODS,
                 default_method=default_method,
             )
         custom_config = self._custom_provider_config(provider)
@@ -230,11 +230,11 @@ class ProviderAuthResolver:
                 provider_name=request.provider,
                 provider_config=getattr(self._providers, request.provider),
             )
-        simplified_config = self._simplified_provider_config(request.provider)
-        if simplified_config is not None:
-            return self._authorize_simplified_provider(
+        compatible_config = self._openai_compatible_provider_config(request.provider)
+        if compatible_config is not None:
+            return self._authorize_openai_compatible_provider(
                 request=request,
-                provider_config=simplified_config,
+                provider_config=compatible_config,
             )
         custom_config = self._custom_provider_config(request.provider)
         if custom_config is not None:
@@ -309,11 +309,11 @@ class ProviderAuthResolver:
             material=self._bearer_material(provider_name, method, token),
         )
 
-    def _authorize_simplified_provider(
+    def _authorize_openai_compatible_provider(
         self,
         *,
         request: ProviderAuthAuthorizeRequest,
-        provider_config: SimplifiedProviderConfig,
+        provider_config: OpenAICompatibleProviderConfig,
     ) -> ProviderAuthAuthorizeResult:
         method = self._resolve_method(request, default_method="api_key", allowed_methods={"api_key"})
         payload = {} if request.payload is None else dict(request.payload)

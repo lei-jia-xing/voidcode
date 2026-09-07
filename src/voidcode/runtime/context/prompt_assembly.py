@@ -301,8 +301,7 @@ def _state_value(state: object, key: str) -> object | None:
     value = metadata.get(key)
     if value is not None:
         return value
-    # 延迟导入：session_metadata_helpers → context_window → prompt_assembly
-    # 构成导入环，模块级反向导入不可行。读取统一走 helpers accessor（唯一入口）。
+    # Resolve through the metadata helper lazily to keep the module graph acyclic.
     from ..session_metadata_helpers import runtime_state_value
 
     return runtime_state_value(metadata, key)

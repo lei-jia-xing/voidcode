@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import override
 
 from .config import LiteLLMProviderConfig
-from .litellm_backend import LiteLLMBackendSingleAgentProvider
+from .litellm_backend import LiteLLMBackendProvider
 from .protocol import ProviderTurnRequest, TurnProvider
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -13,12 +13,12 @@ _OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
 
 
 @dataclass(frozen=True, slots=True)
-class OpenRouterSingleAgentProvider(LiteLLMBackendSingleAgentProvider):
+class OpenRouterProvider(LiteLLMBackendProvider):
     """OpenRouter's OpenAI-compatible chat-completions gateway."""
 
     @override
     def _completion_kwargs_for_request(self, request: ProviderTurnRequest) -> dict[str, object]:
-        kwargs = LiteLLMBackendSingleAgentProvider._completion_kwargs_for_request(self, request)
+        kwargs = LiteLLMBackendProvider._completion_kwargs_for_request(self, request)
         kwargs["custom_llm_provider"] = "openai"
         return kwargs
 
@@ -54,7 +54,7 @@ class OpenRouterModelProvider:
         )
 
     def turn_provider(self) -> TurnProvider:
-        return OpenRouterSingleAgentProvider(
+        return OpenRouterProvider(
             name=self.name,
             config=self.provider_config(),
         )

@@ -6,9 +6,9 @@ from voidcode.provider.config import (
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
     LiteLLMProviderConfig,
+    OpenAICompatibleProviderConfig,
     OpenAIProviderConfig,
     ProviderConfigs,
-    SimplifiedProviderConfig,
 )
 from voidcode.provider.copilot import CopilotModelProvider
 from voidcode.provider.deepseek import DeepSeekModelProvider
@@ -98,10 +98,10 @@ def test_registry_litellm_provider_config_preserves_ssl_verify() -> None:
     assert config.ssl_verify is False
 
 
-def test_registry_simplified_provider_config_preserves_ssl_verify() -> None:
+def test_registry_openai_compatible_provider_config_preserves_ssl_verify() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            opencode_go=SimplifiedProviderConfig(
+            opencode_go=OpenAICompatibleProviderConfig(
                 api_key="opencode-go-key",
                 ssl_verify=False,
             )
@@ -344,7 +344,7 @@ def test_registry_litellm_provider_config_sets_default_discovery_base_url() -> N
 
 
 def test_registry_registers_zai_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(zai=SimplifiedProviderConfig(api_key="zai-key")))
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(zai=OpenAICompatibleProviderConfig(api_key="zai-key")))
 
     resolved = registry.resolve("zai")
 
@@ -359,7 +359,7 @@ def test_registry_registers_zai_provider() -> None:
 
 
 def test_registry_registers_zhipuai_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(zhipuai=SimplifiedProviderConfig(api_key="zhipu-key")))
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(zhipuai=OpenAICompatibleProviderConfig(api_key="zhipu-key")))
 
     resolved = registry.resolve("zhipuai")
 
@@ -374,7 +374,7 @@ def test_registry_registers_zhipuai_provider() -> None:
 
 
 def test_registry_registers_deepseek_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(deepseek=SimplifiedProviderConfig(api_key="deepseek-key")))
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(deepseek=OpenAICompatibleProviderConfig(api_key="deepseek-key")))
 
     resolved = registry.resolve("deepseek")
 
@@ -391,7 +391,7 @@ def test_registry_registers_deepseek_provider() -> None:
 def test_registry_deepseek_custom_base_url_uses_configured_base_url_discovery() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            deepseek=SimplifiedProviderConfig(
+            deepseek=OpenAICompatibleProviderConfig(
                 api_key="deepseek-key",
                 base_url="https://deepseek-proxy.example.test/v1",
             )
@@ -406,7 +406,7 @@ def test_registry_deepseek_custom_base_url_uses_configured_base_url_discovery() 
 
 
 def test_registry_registers_grok_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(grok=SimplifiedProviderConfig(api_key="grok-key")))
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(grok=OpenAICompatibleProviderConfig(api_key="grok-key")))
 
     resolved = registry.resolve("grok")
 
@@ -421,7 +421,7 @@ def test_registry_registers_grok_provider() -> None:
 
 
 def test_registry_registers_minimax_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(minimax=SimplifiedProviderConfig(api_key="minimax-key")))
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(minimax=OpenAICompatibleProviderConfig(api_key="minimax-key")))
 
     resolved = registry.resolve("minimax")
 
@@ -436,7 +436,7 @@ def test_registry_registers_minimax_provider() -> None:
 
 
 def test_registry_registers_kimi_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(kimi=SimplifiedProviderConfig(api_key="kimi-key")))
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(kimi=OpenAICompatibleProviderConfig(api_key="kimi-key")))
 
     resolved = registry.resolve("kimi")
 
@@ -451,7 +451,9 @@ def test_registry_registers_kimi_provider() -> None:
 
 
 def test_registry_registers_opencode_go_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(opencode_go=SimplifiedProviderConfig(api_key="opencode-go-key")))
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(opencode_go=OpenAICompatibleProviderConfig(api_key="opencode-go-key"))
+    )
 
     resolved = registry.resolve("opencode-go")
 
@@ -476,7 +478,7 @@ def test_registry_registers_opencode_go_provider() -> None:
 def test_registry_opencode_go_custom_base_url_keeps_discovery_disabled() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            opencode_go=SimplifiedProviderConfig(
+            opencode_go=OpenAICompatibleProviderConfig(
                 api_key="opencode-go-key",
                 base_url="https://opencode-go-proxy.example.test/zen/go",
             )
@@ -491,7 +493,7 @@ def test_registry_opencode_go_custom_base_url_keeps_discovery_disabled() -> None
 
 
 def test_registry_registers_qwen_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(qwen=SimplifiedProviderConfig(api_key="qwen-key")))
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(qwen=OpenAICompatibleProviderConfig(api_key="qwen-key")))
 
     resolved = registry.resolve("qwen")
 
@@ -508,7 +510,7 @@ def test_registry_registers_qwen_provider() -> None:
 def test_registry_zhipuai_provider_config_with_base_url_and_model_map() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            zhipuai=SimplifiedProviderConfig(
+            zhipuai=OpenAICompatibleProviderConfig(
                 api_key="zhipu-key",
                 base_url="https://custom.zhipu.example",
                 model_map={"glm4": "glm-4-flash"},
@@ -526,17 +528,17 @@ def test_registry_zhipuai_provider_config_with_base_url_and_model_map() -> None:
     )
 
 
-def test_registry_simplified_provider_uses_default_base_url_when_not_set() -> None:
+def test_registry_openai_compatible_provider_uses_default_base_url_when_not_set() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            deepseek=SimplifiedProviderConfig(api_key="deepseek-key"),
-            zai=SimplifiedProviderConfig(api_key="zai-key"),
-            zhipuai=SimplifiedProviderConfig(api_key="zhipu-key"),
-            grok=SimplifiedProviderConfig(api_key="grok-key"),
-            minimax=SimplifiedProviderConfig(api_key="minimax-key"),
-            kimi=SimplifiedProviderConfig(api_key="kimi-key"),
-            opencode_go=SimplifiedProviderConfig(api_key="opencode-go-key"),
-            qwen=SimplifiedProviderConfig(api_key="qwen-key"),
+            deepseek=OpenAICompatibleProviderConfig(api_key="deepseek-key"),
+            zai=OpenAICompatibleProviderConfig(api_key="zai-key"),
+            zhipuai=OpenAICompatibleProviderConfig(api_key="zhipu-key"),
+            grok=OpenAICompatibleProviderConfig(api_key="grok-key"),
+            minimax=OpenAICompatibleProviderConfig(api_key="minimax-key"),
+            kimi=OpenAICompatibleProviderConfig(api_key="kimi-key"),
+            opencode_go=OpenAICompatibleProviderConfig(api_key="opencode-go-key"),
+            qwen=OpenAICompatibleProviderConfig(api_key="qwen-key"),
         )
     )
 
@@ -593,10 +595,10 @@ def test_registry_simplified_provider_uses_default_base_url_when_not_set() -> No
     assert qwen_config.model_map.get("qwen-plus") == "qwen-plus"
 
 
-def test_registry_simplified_provider_user_model_map_overrides_default() -> None:
+def test_registry_openai_compatible_provider_user_model_map_overrides_default() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            zai=SimplifiedProviderConfig(
+            zai=OpenAICompatibleProviderConfig(
                 api_key="zai-key",
                 model_map={"custom": "custom-model"},
             )
@@ -609,10 +611,10 @@ def test_registry_simplified_provider_user_model_map_overrides_default() -> None
     assert "glm-4-flash" not in config.model_map
 
 
-def test_registry_simplified_provider_user_base_url_overrides_default() -> None:
+def test_registry_openai_compatible_provider_user_base_url_overrides_default() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            zai=SimplifiedProviderConfig(
+            zai=OpenAICompatibleProviderConfig(
                 api_key="zai-key",
                 base_url="https://my-proxy.com/v1",
             )
@@ -627,14 +629,14 @@ def test_registry_simplified_provider_user_base_url_overrides_default() -> None:
 def test_registry_all_chinese_providers_resolve_correctly() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            deepseek=SimplifiedProviderConfig(api_key="deepseek-key"),
-            zai=SimplifiedProviderConfig(api_key="zai-key"),
-            zhipuai=SimplifiedProviderConfig(api_key="zhipu-key"),
-            grok=SimplifiedProviderConfig(api_key="grok-key"),
-            minimax=SimplifiedProviderConfig(api_key="minimax-key"),
-            kimi=SimplifiedProviderConfig(api_key="kimi-key"),
-            opencode_go=SimplifiedProviderConfig(api_key="opencode-go-key"),
-            qwen=SimplifiedProviderConfig(api_key="qwen-key"),
+            deepseek=OpenAICompatibleProviderConfig(api_key="deepseek-key"),
+            zai=OpenAICompatibleProviderConfig(api_key="zai-key"),
+            zhipuai=OpenAICompatibleProviderConfig(api_key="zhipu-key"),
+            grok=OpenAICompatibleProviderConfig(api_key="grok-key"),
+            minimax=OpenAICompatibleProviderConfig(api_key="minimax-key"),
+            kimi=OpenAICompatibleProviderConfig(api_key="kimi-key"),
+            opencode_go=OpenAICompatibleProviderConfig(api_key="opencode-go-key"),
+            qwen=OpenAICompatibleProviderConfig(api_key="qwen-key"),
         )
     )
 
@@ -650,10 +652,10 @@ def test_registry_all_chinese_providers_resolve_correctly() -> None:
 def test_registry_registers_groq_together_fireworks_and_mistral() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            groq=SimplifiedProviderConfig(api_key="groq-key"),
-            together=SimplifiedProviderConfig(api_key="together-key"),
-            fireworks=SimplifiedProviderConfig(api_key="fireworks-key"),
-            mistral=SimplifiedProviderConfig(api_key="mistral-key"),
+            groq=OpenAICompatibleProviderConfig(api_key="groq-key"),
+            together=OpenAICompatibleProviderConfig(api_key="together-key"),
+            fireworks=OpenAICompatibleProviderConfig(api_key="fireworks-key"),
+            mistral=OpenAICompatibleProviderConfig(api_key="mistral-key"),
         )
     )
 

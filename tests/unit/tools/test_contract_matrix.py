@@ -10,7 +10,7 @@ from typing import cast
 import jsonschema
 import pytest
 
-from voidcode.provider.litellm_backend import LiteLLMBackendSingleAgentProvider
+from voidcode.provider.litellm_backend import LiteLLMBackendProvider
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.tool_registry import ToolRegistry
 from voidcode.tools.contracts import ToolDefinition
@@ -23,7 +23,7 @@ def _static_definitions(registry: ToolRegistry) -> tuple[ToolDefinition, ...]:
 
 
 def _provider_function_schema(definition: ToolDefinition) -> dict[str, object]:
-    payload = LiteLLMBackendSingleAgentProvider._to_tool_schema(
+    payload = LiteLLMBackendProvider._to_tool_schema(
         definition,
         original_to_provider={definition.name: definition.name},
     )

@@ -222,7 +222,7 @@ OpenCode Zen 与 OpenCode Go 是不同 provider：Zen 使用 `opencode/<model-id
   3. `model_map` 的映射目标值（便于调试真实路由）
 - 对于 OpenAI 默认支持 endpoint 探测；自定义 provider 若配置了 `base_url` 也会走同样的 OpenAI-compatible `/v1/models` 探测路径。
 
-## 流式传输 (Streaming)
+## 流式传输
 
 VoidCode 的 Provider 抽象层输出标准化的流式事件包。
 
@@ -239,10 +239,10 @@ VoidCode 的 Provider 抽象层输出标准化的流式事件包。
 
 ### 取消与超时行为
 
-- **显式取消**: 通过 `SingleAgentAbortSignal` 触发。一旦取消，流将立即产生 `error_kind: cancelled` 事件并终止。
+- **显式取消**: 通过 `ProviderAbortSignal` 触发。一旦取消，流将立即产生 `error_kind: cancelled` 事件并终止。
 - **分片超时**: 如果两个流分片（chunk）之间的时间间隔超过配置的超时阈值，将抛出 `transient_failure` 错误。
 
-## 故障排除 (Troubleshooting)
+## 故障排除
 
 | 错误种类 (`error_kind`) | 常见原因 | 建议对策 |
 | :--- | :--- | :--- |
@@ -261,7 +261,7 @@ VoidCode 的 Provider 抽象层输出标准化的流式事件包。
 - `resolution.py`: 负责将原始请求解析为具体的 Provider 配置。
 - `snapshot.py`: 提供安全的快照导出逻辑，确保不泄露机密。
 
-## 模块内约束（production hardening）
+## 模块内约束
 
 - `ResolvedProviderModel` 会显式记录 provider resolution 来源：
   - `builtin`：内置 provider adapter

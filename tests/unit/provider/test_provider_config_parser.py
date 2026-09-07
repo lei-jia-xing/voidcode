@@ -9,11 +9,11 @@ from voidcode.provider.config import (
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
     LiteLLMProviderConfig,
+    OpenAICompatibleProviderConfig,
     OpenAIProviderConfig,
     ProviderConfigs,
     ProviderFallbackConfig,
     ProviderTransientRetryConfig,
-    SimplifiedProviderConfig,
     merge_provider_configs,
     parse_provider_configs_payload,
     parse_provider_fallback_payload,
@@ -122,7 +122,7 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
     )
 
 
-def test_parse_provider_configs_payload_parses_transient_retry_for_simplified_provider() -> None:
+def test_parse_provider_configs_payload_parses_transient_retry_for_openai_compatible_provider() -> None:
     parsed = parse_provider_configs_payload(
         {
             "opencode-go": {
@@ -139,7 +139,7 @@ def test_parse_provider_configs_payload_parses_transient_retry_for_simplified_pr
     )
 
     assert parsed == ProviderConfigs(
-        opencode_go=SimplifiedProviderConfig(
+        opencode_go=OpenAICompatibleProviderConfig(
             api_key_env_var="OPENCODE_API_KEY",
             transient_retry=ProviderTransientRetryConfig(
                 max_retries=4,
@@ -175,7 +175,7 @@ def test_parse_provider_configs_payload_defaults_transient_retry_max_retries_to_
     )
 
 
-def test_parse_provider_configs_payload_parses_ssl_verify_for_simplified_provider() -> None:
+def test_parse_provider_configs_payload_parses_ssl_verify_for_openai_compatible_provider() -> None:
     parsed = parse_provider_configs_payload(
         {
             "opencode-go": {
@@ -186,7 +186,7 @@ def test_parse_provider_configs_payload_parses_ssl_verify_for_simplified_provide
         source="runtime config field 'providers'",
     )
 
-    assert parsed == ProviderConfigs(opencode_go=SimplifiedProviderConfig(api_key="opencode-key", ssl_verify=False))
+    assert parsed == ProviderConfigs(opencode_go=OpenAICompatibleProviderConfig(api_key="opencode-key", ssl_verify=False))
 
 
 def test_parse_provider_configs_payload_parses_ssl_verify_for_custom_provider() -> None:
@@ -292,14 +292,14 @@ def test_merge_provider_configs_preserves_primary_custom_ssl_verify_false() -> N
     assert merged.custom["team-gateway"] == LiteLLMProviderConfig(ssl_verify=False)
 
 
-def test_merge_provider_configs_preserves_primary_simplified_ssl_verify_false() -> None:
-    primary = ProviderConfigs(opencode_go=SimplifiedProviderConfig(ssl_verify=False))
-    fallback = ProviderConfigs(opencode_go=SimplifiedProviderConfig(ssl_verify=True))
+def test_merge_provider_configs_preserves_primary_openai_compatible_ssl_verify_false() -> None:
+    primary = ProviderConfigs(opencode_go=OpenAICompatibleProviderConfig(ssl_verify=False))
+    fallback = ProviderConfigs(opencode_go=OpenAICompatibleProviderConfig(ssl_verify=True))
 
     merged = merge_provider_configs(primary, fallback)
 
     assert merged is not None
-    assert merged.opencode_go == SimplifiedProviderConfig(ssl_verify=False)
+    assert merged.opencode_go == OpenAICompatibleProviderConfig(ssl_verify=False)
 
 
 def test_merge_provider_configs_allows_empty_anthropic_beta_headers_override() -> None:
@@ -353,8 +353,8 @@ def test_serialize_provider_configs_includes_custom_ssl_verify() -> None:
     assert payload == {"custom": {"team-gateway": {"auth_scheme": "bearer", "ssl_verify": False}}}
 
 
-def test_serialize_provider_configs_includes_simplified_ssl_verify() -> None:
-    payload = serialize_provider_configs(ProviderConfigs(opencode_go=SimplifiedProviderConfig(ssl_verify=False)))
+def test_serialize_provider_configs_includes_openai_compatible_ssl_verify() -> None:
+    payload = serialize_provider_configs(ProviderConfigs(opencode_go=OpenAICompatibleProviderConfig(ssl_verify=False)))
 
     assert payload == {"opencode-go": {"ssl_verify": False}}
 
@@ -488,7 +488,7 @@ def test_parse_provider_fallback_payload_rejects_duplicate_chain_models() -> Non
 
 
 # =============================================================================
-# Simplified Provider Config Tests
+# OpenAI-compatible Provider Config Tests
 # =============================================================================
 
 
@@ -500,7 +500,7 @@ def test_parse_deepseek_provider_config_from_env() -> None:
     )
 
     assert parsed is not None
-    assert parsed.deepseek == SimplifiedProviderConfig(api_key="deepseek-env-key")
+    assert parsed.deepseek == OpenAICompatibleProviderConfig(api_key="deepseek-env-key")
 
 
 def test_parse_zai_provider_config_from_env() -> None:
@@ -511,7 +511,7 @@ def test_parse_zai_provider_config_from_env() -> None:
     )
 
     assert parsed is not None
-    assert parsed.zai == SimplifiedProviderConfig(api_key="zai-env-key")
+    assert parsed.zai == OpenAICompatibleProviderConfig(api_key="zai-env-key")
 
 
 def test_parse_zhipuai_provider_config_prefers_zhipu_api_key() -> None:
@@ -522,7 +522,7 @@ def test_parse_zhipuai_provider_config_prefers_zhipu_api_key() -> None:
     )
 
     assert parsed is not None
-    assert parsed.zhipuai == SimplifiedProviderConfig(api_key="zhipu-env-key")
+    assert parsed.zhipuai == OpenAICompatibleProviderConfig(api_key="zhipu-env-key")
 
 
 def test_parse_zhipuai_provider_config_falls_back_to_zai_api_key() -> None:
@@ -533,7 +533,7 @@ def test_parse_zhipuai_provider_config_falls_back_to_zai_api_key() -> None:
     )
 
     assert parsed is not None
-    assert parsed.zhipuai == SimplifiedProviderConfig(api_key="zai-env-key")
+    assert parsed.zhipuai == OpenAICompatibleProviderConfig(api_key="zai-env-key")
 
 
 def test_parse_zai_provider_config_with_base_url_and_model_map() -> None:
@@ -549,7 +549,7 @@ def test_parse_zai_provider_config_with_base_url_and_model_map() -> None:
     )
 
     assert parsed is not None
-    assert parsed.zai == SimplifiedProviderConfig(
+    assert parsed.zai == OpenAICompatibleProviderConfig(
         api_key="zai-key",
         base_url="https://custom.z.ai",
         model_map={"glm4": "glm-4-flash", "glm4-plus": "glm-4-plus"},
@@ -564,7 +564,7 @@ def test_parse_grok_provider_config_from_env() -> None:
     )
 
     assert parsed is not None
-    assert parsed.grok == SimplifiedProviderConfig(api_key="xai-env-key")
+    assert parsed.grok == OpenAICompatibleProviderConfig(api_key="xai-env-key")
 
 
 def test_parse_grok_provider_config_ignores_removed_grok_api_key() -> None:
@@ -575,7 +575,7 @@ def test_parse_grok_provider_config_ignores_removed_grok_api_key() -> None:
     )
 
     assert parsed is not None
-    assert parsed.grok == SimplifiedProviderConfig()
+    assert parsed.grok == OpenAICompatibleProviderConfig()
 
 
 def test_parse_minimax_provider_config_from_env() -> None:
@@ -586,7 +586,7 @@ def test_parse_minimax_provider_config_from_env() -> None:
     )
 
     assert parsed is not None
-    assert parsed.minimax == SimplifiedProviderConfig(api_key="minimax-env-key")
+    assert parsed.minimax == OpenAICompatibleProviderConfig(api_key="minimax-env-key")
 
 
 def test_parse_minimax_provider_config_with_timeout() -> None:
@@ -601,7 +601,7 @@ def test_parse_minimax_provider_config_with_timeout() -> None:
     )
 
     assert parsed is not None
-    assert parsed.minimax == SimplifiedProviderConfig(
+    assert parsed.minimax == OpenAICompatibleProviderConfig(
         api_key="minimax-key",
         timeout_seconds=60.0,
     )
@@ -615,7 +615,7 @@ def test_parse_kimi_provider_config_from_env() -> None:
     )
 
     assert parsed is not None
-    assert parsed.kimi == SimplifiedProviderConfig(api_key="kimi-env-key")
+    assert parsed.kimi == OpenAICompatibleProviderConfig(api_key="kimi-env-key")
 
 
 def test_parse_kimi_provider_config_with_base_url() -> None:
@@ -630,13 +630,13 @@ def test_parse_kimi_provider_config_with_base_url() -> None:
     )
 
     assert parsed is not None
-    assert parsed.kimi == SimplifiedProviderConfig(
+    assert parsed.kimi == OpenAICompatibleProviderConfig(
         api_key="kimi-key",
         base_url="https://api.moonshot.cn/v1",
     )
 
 
-def test_parse_simplified_provider_config_with_discovery_base_url() -> None:
+def test_parse_openai_compatible_provider_config_with_discovery_base_url() -> None:
     parsed = parse_provider_configs_payload(
         {
             "kimi": {
@@ -649,7 +649,7 @@ def test_parse_simplified_provider_config_with_discovery_base_url() -> None:
     )
 
     assert parsed is not None
-    assert parsed.kimi == SimplifiedProviderConfig(
+    assert parsed.kimi == OpenAICompatibleProviderConfig(
         api_key="kimi-key",
         base_url="https://api.moonshot.ai",
         discovery_base_url="https://api.moonshot.ai/v1",
@@ -664,7 +664,7 @@ def test_parse_opencode_go_provider_config_from_env() -> None:
     )
 
     assert parsed is not None
-    assert parsed.opencode_go == SimplifiedProviderConfig(api_key="opencode-go-env-key")
+    assert parsed.opencode_go == OpenAICompatibleProviderConfig(api_key="opencode-go-env-key")
 
 
 def test_parse_opencode_go_provider_config_with_model_map() -> None:
@@ -679,7 +679,7 @@ def test_parse_opencode_go_provider_config_with_model_map() -> None:
     )
 
     assert parsed is not None
-    assert parsed.opencode_go == SimplifiedProviderConfig(
+    assert parsed.opencode_go == OpenAICompatibleProviderConfig(
         api_key="opencode-go-key",
         model_map={"gpt-4o": "opencode/gpt-4o", "claude": "opencode/claude-3-5-sonnet"},
     )
@@ -693,7 +693,7 @@ def test_parse_qwen_provider_config_from_env() -> None:
     )
 
     assert parsed is not None
-    assert parsed.qwen == SimplifiedProviderConfig(api_key="qwen-env-key")
+    assert parsed.qwen == OpenAICompatibleProviderConfig(api_key="qwen-env-key")
 
 
 def test_parse_qwen_provider_config_with_base_url() -> None:
@@ -708,13 +708,13 @@ def test_parse_qwen_provider_config_with_base_url() -> None:
     )
 
     assert parsed is not None
-    assert parsed.qwen == SimplifiedProviderConfig(
+    assert parsed.qwen == OpenAICompatibleProviderConfig(
         api_key="qwen-key",
         base_url="https://dashscope.aliyuncs.com",
     )
 
 
-def test_parse_multiple_simplified_providers_together() -> None:
+def test_parse_multiple_openai_compatible_providers_together() -> None:
     parsed = parse_provider_configs_payload(
         {
             "deepseek": {"api_key": "deepseek-key"},
@@ -730,17 +730,17 @@ def test_parse_multiple_simplified_providers_together() -> None:
     )
 
     assert parsed is not None
-    assert parsed.deepseek == SimplifiedProviderConfig(api_key="deepseek-key")
-    assert parsed.zai == SimplifiedProviderConfig(api_key="zai-key")
-    assert parsed.zhipuai == SimplifiedProviderConfig(api_key="zhipuai-key")
-    assert parsed.grok == SimplifiedProviderConfig(api_key="grok-key")
-    assert parsed.minimax == SimplifiedProviderConfig(api_key="minimax-key")
-    assert parsed.kimi == SimplifiedProviderConfig(api_key="kimi-key")
-    assert parsed.opencode_go == SimplifiedProviderConfig(api_key="opencode-go-key")
-    assert parsed.qwen == SimplifiedProviderConfig(api_key="qwen-key")
+    assert parsed.deepseek == OpenAICompatibleProviderConfig(api_key="deepseek-key")
+    assert parsed.zai == OpenAICompatibleProviderConfig(api_key="zai-key")
+    assert parsed.zhipuai == OpenAICompatibleProviderConfig(api_key="zhipuai-key")
+    assert parsed.grok == OpenAICompatibleProviderConfig(api_key="grok-key")
+    assert parsed.minimax == OpenAICompatibleProviderConfig(api_key="minimax-key")
+    assert parsed.kimi == OpenAICompatibleProviderConfig(api_key="kimi-key")
+    assert parsed.opencode_go == OpenAICompatibleProviderConfig(api_key="opencode-go-key")
+    assert parsed.qwen == OpenAICompatibleProviderConfig(api_key="qwen-key")
 
 
-def test_parse_simplified_provider_with_api_key_env_var_override() -> None:
+def test_parse_openai_compatible_provider_with_api_key_env_var_override() -> None:
     parsed = parse_provider_configs_payload(
         {
             "zhipuai": {
@@ -753,13 +753,13 @@ def test_parse_simplified_provider_with_api_key_env_var_override() -> None:
     )
 
     assert parsed is not None
-    assert parsed.zhipuai == SimplifiedProviderConfig(
+    assert parsed.zhipuai == OpenAICompatibleProviderConfig(
         api_key="direct-key",
         api_key_env_var="MY_CUSTOM_ZHIPUAI_KEY",
     )
 
 
-def test_reject_unknown_simplified_provider() -> None:
+def test_reject_unknown_openai_compatible_provider() -> None:
     with pytest.raises(ValueError, match="runtime config field 'providers.unknown_cn' is not supported"):
         _ = parse_provider_configs_payload(
             {"unknown_cn": {"api_key": "key"}},
@@ -771,7 +771,7 @@ def test_reject_unknown_simplified_provider() -> None:
     "provider_name",
     ["deepseek", "zai", "zhipuai", "grok", "minimax", "kimi", "opencode-go", "qwen"],
 )
-def test_simplified_provider_not_allowed_in_custom_block(provider_name: str) -> None:
+def test_openai_compatible_provider_not_allowed_in_custom_block(provider_name: str) -> None:
     with pytest.raises(
         ValueError,
         match=rf"runtime config field 'providers.custom\.{provider_name}'",
@@ -790,45 +790,45 @@ def test_provider_configs_from_env_builds_opencode_go_without_repo_provider_bloc
     parsed = provider_configs_from_env({"OPENCODE_API_KEY": "opencode-go-env-key"})
 
     assert parsed is not None
-    assert parsed.opencode_go == SimplifiedProviderConfig(api_key="opencode-go-env-key")
+    assert parsed.opencode_go == OpenAICompatibleProviderConfig(api_key="opencode-go-env-key")
 
 
 def test_provider_configs_from_env_builds_deepseek_without_repo_provider_block() -> None:
     parsed = provider_configs_from_env({"DEEPSEEK_API_KEY": "deepseek-env-key"})
 
     assert parsed is not None
-    assert parsed.deepseek == SimplifiedProviderConfig(api_key="deepseek-env-key")
+    assert parsed.deepseek == OpenAICompatibleProviderConfig(api_key="deepseek-env-key")
 
 
 def test_provider_configs_from_env_builds_grok_with_xai_api_key() -> None:
     parsed = provider_configs_from_env({"XAI_API_KEY": "xai-env-key"})
 
     assert parsed is not None
-    assert parsed.grok == SimplifiedProviderConfig(api_key="xai-env-key")
+    assert parsed.grok == OpenAICompatibleProviderConfig(api_key="xai-env-key")
 
 
 def test_provider_configs_from_env_builds_zai_with_zai_api_key() -> None:
     parsed = provider_configs_from_env({"ZAI_API_KEY": "zai-env-key"})
 
     assert parsed is not None
-    assert parsed.zai == SimplifiedProviderConfig(api_key="zai-env-key")
+    assert parsed.zai == OpenAICompatibleProviderConfig(api_key="zai-env-key")
 
 
 def test_provider_configs_from_env_builds_zhipuai_with_zhipu_api_key() -> None:
     parsed = provider_configs_from_env({"ZHIPU_API_KEY": "zhipu-env-key"})
 
     assert parsed is not None
-    assert parsed.zhipuai == SimplifiedProviderConfig(api_key="zhipu-env-key")
+    assert parsed.zhipuai == OpenAICompatibleProviderConfig(api_key="zhipu-env-key")
 
 
 def test_merge_provider_configs_keeps_repo_provider_over_environment_fallback() -> None:
     merged = merge_provider_configs(
-        ProviderConfigs(opencode_go=SimplifiedProviderConfig(api_key="repo-key")),
-        ProviderConfigs(opencode_go=SimplifiedProviderConfig(api_key="env-key")),
+        ProviderConfigs(opencode_go=OpenAICompatibleProviderConfig(api_key="repo-key")),
+        ProviderConfigs(opencode_go=OpenAICompatibleProviderConfig(api_key="env-key")),
     )
 
     assert merged is not None
-    assert merged.opencode_go == SimplifiedProviderConfig(api_key="repo-key")
+    assert merged.opencode_go == OpenAICompatibleProviderConfig(api_key="repo-key")
 
 
 def test_merge_provider_configs_preserves_empty_base_url_override() -> None:
@@ -836,7 +836,7 @@ def test_merge_provider_configs_preserves_empty_base_url_override() -> None:
         ProviderConfigs(
             openai=OpenAIProviderConfig(base_url="", discovery_base_url=""),
             litellm=LiteLLMProviderConfig(base_url="", discovery_base_url=""),
-            opencode_go=SimplifiedProviderConfig(base_url="", discovery_base_url=""),
+            opencode_go=OpenAICompatibleProviderConfig(base_url="", discovery_base_url=""),
         ),
         ProviderConfigs(
             openai=OpenAIProviderConfig(
@@ -847,7 +847,7 @@ def test_merge_provider_configs_preserves_empty_base_url_override() -> None:
                 base_url="https://fallback.litellm.example",
                 discovery_base_url="https://fallback.litellm.example/v1",
             ),
-            opencode_go=SimplifiedProviderConfig(
+            opencode_go=OpenAICompatibleProviderConfig(
                 base_url="https://fallback.opencode.example",
                 discovery_base_url="https://fallback.opencode.example/v1",
             ),
@@ -878,20 +878,20 @@ def test_merge_provider_configs_preserves_empty_base_url_override() -> None:
 def test_new_provider_configs_use_standard_environment_keys(provider: str, env_var: str, api_key: str) -> None:
     parsed = parse_provider_configs_payload({provider: {}}, source="providers", env={env_var: api_key})
     assert parsed is not None
-    assert getattr(parsed, provider) == SimplifiedProviderConfig(api_key=api_key)
+    assert getattr(parsed, provider) == OpenAICompatibleProviderConfig(api_key=api_key)
 
     from_env = provider_configs_from_env({env_var: api_key})
     assert from_env is not None
-    assert getattr(from_env, provider) == SimplifiedProviderConfig(api_key=api_key)
+    assert getattr(from_env, provider) == OpenAICompatibleProviderConfig(api_key=api_key)
 
 
 def test_new_provider_configs_serialize_without_secrets() -> None:
     payload = serialize_provider_configs(
         ProviderConfigs(
-            groq=SimplifiedProviderConfig(api_key="groq-secret"),
-            together=SimplifiedProviderConfig(api_key="together-secret"),
-            fireworks=SimplifiedProviderConfig(api_key="fireworks-secret"),
-            mistral=SimplifiedProviderConfig(api_key="mistral-secret"),
+            groq=OpenAICompatibleProviderConfig(api_key="groq-secret"),
+            together=OpenAICompatibleProviderConfig(api_key="together-secret"),
+            fireworks=OpenAICompatibleProviderConfig(api_key="fireworks-secret"),
+            mistral=OpenAICompatibleProviderConfig(api_key="mistral-secret"),
         )
     )
     assert payload == {

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import override
 
 from .config import LiteLLMProviderConfig
-from .litellm_backend import LiteLLMBackendSingleAgentProvider
+from .litellm_backend import LiteLLMBackendProvider
 from .protocol import ProviderTurnRequest, TurnProvider
 
 _OPENCODE_ZEN_BASE_URL = "https://opencode.ai/zen/v1"
@@ -13,10 +13,10 @@ _OPENCODE_API_KEY_ENV_VAR = "OPENCODE_API_KEY"
 
 
 @dataclass(frozen=True, slots=True)
-class OpenCodeZenSingleAgentProvider(LiteLLMBackendSingleAgentProvider):
+class OpenCodeZenProvider(LiteLLMBackendProvider):
     @override
     def _completion_kwargs_for_request(self, request: ProviderTurnRequest) -> dict[str, object]:
-        kwargs = LiteLLMBackendSingleAgentProvider._completion_kwargs_for_request(self, request)
+        kwargs = LiteLLMBackendProvider._completion_kwargs_for_request(self, request)
         kwargs["custom_llm_provider"] = "openai"
         return kwargs
 
@@ -53,7 +53,7 @@ class OpenCodeModelProvider:
         )
 
     def turn_provider(self) -> TurnProvider:
-        return OpenCodeZenSingleAgentProvider(
+        return OpenCodeZenProvider(
             name=self.name,
             config=self.provider_config(),
             use_raw_model_name=True,

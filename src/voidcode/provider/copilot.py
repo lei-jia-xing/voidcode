@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .config import CopilotProviderConfig, LiteLLMProviderConfig
-from .litellm_backend import LiteLLMBackendSingleAgentProvider
+from .litellm_backend import LiteLLMBackendProvider
 from .litellm_config import copilot_provider_config
 from .protocol import TurnProvider
 
@@ -29,4 +29,4 @@ class CopilotModelProvider:
             base_url=None if self.config is None else self.config.base_url,
             timeout_seconds=None if self.config is None else self.config.timeout_seconds,
         )
-        return LiteLLMBackendSingleAgentProvider(name=self.name, config=adapted_config)
+        return LiteLLMBackendProvider(name=self.name, config=adapted_config)

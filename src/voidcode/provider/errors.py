@@ -384,11 +384,11 @@ def provider_execution_error_from_stream_payload(
     )
 
 
-class SingleAgentProviderError(ValueError):
+class ProviderError(ValueError):
     """Base runtime-classified provider error."""
 
 
-class SingleAgentContextLimitError(SingleAgentProviderError):
+class ProviderContextLimitError(ProviderError):
     """Provider failure caused by context window exhaustion."""
 
 
@@ -413,7 +413,7 @@ def format_provider_retry_exhausted_error(
     )
 
 
-def classify_provider_error(exc: Exception) -> SingleAgentProviderError | None:
+def classify_provider_error(exc: Exception) -> ProviderError | None:
     message = str(exc).lower()
     context_limit_markers = (
         "context window",
@@ -423,5 +423,5 @@ def classify_provider_error(exc: Exception) -> SingleAgentProviderError | None:
         "token limit",
     )
     if any(marker in message for marker in context_limit_markers):
-        return SingleAgentContextLimitError(str(exc))
+        return ProviderContextLimitError(str(exc))
     return None

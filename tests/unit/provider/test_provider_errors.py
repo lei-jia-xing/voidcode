@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from voidcode.provider.errors import (
-    SingleAgentContextLimitError,
+    ProviderContextLimitError,
     classify_provider_error,
     format_fallback_exhausted_error,
     format_invalid_provider_config_error,
@@ -15,7 +15,7 @@ from voidcode.provider.errors import (
 def test_classify_provider_error_returns_context_limit_error_for_limit_messages() -> None:
     classified = classify_provider_error(ValueError("context window exceeded for provider"))
 
-    assert isinstance(classified, SingleAgentContextLimitError)
+    assert isinstance(classified, ProviderContextLimitError)
     assert str(classified) == "context window exceeded for provider"
 
 

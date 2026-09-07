@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from voidcode.provider.config import LiteLLMProviderConfig
 from voidcode.provider.openrouter import (
     OpenRouterModelProvider,
-    OpenRouterSingleAgentProvider,
+    OpenRouterProvider,
 )
 
 
@@ -18,7 +18,7 @@ def test_openrouter_defaults_to_openai_compatible_gateway() -> None:
     assert config.base_url == "https://openrouter.ai/api/v1"
     assert config.discovery_base_url == "https://openrouter.ai/api/v1/models"
     assert config.model_map == {}
-    assert isinstance(provider.turn_provider(), OpenRouterSingleAgentProvider)
+    assert isinstance(provider.turn_provider(), OpenRouterProvider)
 
 
 def test_openrouter_preserves_explicit_endpoint_and_credentials() -> None:
@@ -40,7 +40,7 @@ def test_openrouter_preserves_explicit_endpoint_and_credentials() -> None:
 
 
 def test_openrouter_completion_forces_openai_litellm_adapter() -> None:
-    provider = OpenRouterSingleAgentProvider(name="openrouter", config=LiteLLMProviderConfig())
+    provider = OpenRouterProvider(name="openrouter", config=LiteLLMProviderConfig())
 
     # The request is only used by this hook to calculate optional reasoning
     # kwargs; a request without reasoning leaves the base kwargs unchanged.

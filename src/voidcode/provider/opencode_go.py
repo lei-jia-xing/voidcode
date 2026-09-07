@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .config import SimplifiedProviderConfig, simplified_config_to_litellm
-from .litellm_backend import LiteLLMBackendSingleAgentProvider
+from .config import OpenAICompatibleProviderConfig, openai_compatible_config_to_litellm
+from .litellm_backend import LiteLLMBackendProvider
 from .model_catalog import ToolFeedbackMode
 from .protocol import ProviderTurnRequest, TurnProvider
 
@@ -22,7 +22,7 @@ _TOOL_FEEDBACK_OVERRIDES: dict[str, ToolFeedbackMode] = {
 
 
 @dataclass(frozen=True, slots=True)
-class OpenCodeGoSingleAgentProvider(LiteLLMBackendSingleAgentProvider):
+class OpenCodeGoProvider(LiteLLMBackendProvider):
     """LiteLLM adapter for OpenCode Go's gateway.
 
     All models except minimax-m2.5 are routed to the OpenAI-compatible
@@ -30,7 +30,7 @@ class OpenCodeGoSingleAgentProvider(LiteLLMBackendSingleAgentProvider):
     """
 
     def _completion_kwargs_for_request(self, request: ProviderTurnRequest) -> dict[str, object]:
-        kwargs = LiteLLMBackendSingleAgentProvider._completion_kwargs_for_request(self, request)
+        kwargs = LiteLLMBackendProvider._completion_kwargs_for_request(self, request)
         model_name = self._mapped_model_name_for_request(request)
         if model_name in _ANTHROPIC_COMPATIBLE_MODELS:
             kwargs["custom_llm_provider"] = "anthropic"
@@ -75,14 +75,14 @@ class OpenCodeGoModelProvider:
     """
 
     name: str = "opencode-go"
-    config: SimplifiedProviderConfig | None = None
+    config: OpenAICompatibleProviderConfig | None = None
 
     def provider_config(self):
-        return simplified_config_to_litellm(self.name, self.config)
+        return openai_compatible_config_to_litellm(self.name, self.config)
 
     def turn_provider(self) -> TurnProvider:
-        adapted_config = simplified_config_to_litellm(self.name, self.config)
-        return OpenCodeGoSingleAgentProvider(
+        adapted_config = openai_compatible_config_to_litellm(self.name, self.config)
+        return OpenCodeGoProvider(
             name=self.name,
             config=adapted_config,
             use_raw_model_name=True,

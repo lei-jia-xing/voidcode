@@ -577,8 +577,7 @@ def continuity_state_from_metadata_payload(
 def _previous_continuity_state(
     session_metadata: Mapping[str, object],
 ) -> ContextProjection | None:
-    # 延迟导入：session_metadata_helpers 在模块级导入本模块（context_window），
-    # 模块级反向导入会构成环。解析统一走 helpers parse/accessor（唯一入口）。
+    # Resolve through metadata helpers lazily to keep the module graph acyclic.
     from ..session_metadata_helpers import (
         parse_runtime_state_metadata,
         runtime_state_context_projection,
@@ -1232,8 +1231,7 @@ def _artifact_reference_segments(
 
 
 def _pending_state_segment(session_metadata: Mapping[str, object]) -> RuntimeContextSegment | None:
-    # 延迟导入：session_metadata_helpers 在模块级导入本模块（context_window），
-    # 模块级反向导入会构成环。解析统一走 helpers parse（唯一入口）。
+    # Resolve through the metadata helper lazily to keep the module graph acyclic.
     from ..session_metadata_helpers import parse_plan_state_metadata
 
     raw_plan_state = session_metadata.get("plan_state")

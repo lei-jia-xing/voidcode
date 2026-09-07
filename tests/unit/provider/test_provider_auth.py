@@ -15,9 +15,9 @@ from voidcode.provider.config import (
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
     LiteLLMProviderConfig,
+    OpenAICompatibleProviderConfig,
     OpenAIProviderConfig,
     ProviderConfigs,
-    SimplifiedProviderConfig,
 )
 
 
@@ -340,8 +340,8 @@ def test_provider_auth_authorize_litellm_defaults_to_none_when_auth_scheme_is_no
 
 
 @pytest.mark.parametrize("provider", ["groq", "together", "fireworks", "mistral"])
-def test_provider_auth_supports_new_simplified_providers(provider: str) -> None:
-    resolver = ProviderAuthResolver(providers=ProviderConfigs(**{provider: SimplifiedProviderConfig(api_key=f"{provider}-secret")}))
+def test_provider_auth_supports_openai_compatible_providers(provider: str) -> None:
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(**{provider: OpenAICompatibleProviderConfig(api_key=f"{provider}-secret")}))
 
     methods = resolver.methods(provider)
     result = resolver.authorize(ProviderAuthAuthorizeRequest(provider=provider))

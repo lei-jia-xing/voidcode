@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .config import AnthropicProviderConfig, LiteLLMProviderConfig
-from .litellm_backend import LiteLLMBackendSingleAgentProvider
+from .litellm_backend import LiteLLMBackendProvider
 from .litellm_config import anthropic_provider_config
 from .protocol import TurnProvider
 
@@ -17,7 +17,7 @@ class AnthropicModelProvider:
         return anthropic_provider_config(self.config)
 
     def turn_provider(self) -> TurnProvider:
-        return LiteLLMBackendSingleAgentProvider(
+        return LiteLLMBackendProvider(
             name=self.name,
             config=self.provider_config(),
         )

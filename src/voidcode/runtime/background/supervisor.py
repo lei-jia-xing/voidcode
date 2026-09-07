@@ -2338,7 +2338,7 @@ class RuntimeBackgroundTaskSupervisor:
         reminder_state = task.delegated_reminder
         if reminder_state is not None:
             if reminder_state.idle_episode_id == idle_episode_id:
-                if not reminder_state.eligible:
+                if not reminder_state.can_send_reminder:
                     return
             elif reminder_state.reminder_sent_at_unix_ms is not None:
                 cooldown_ms = self._config.background_task.delegated_reminder_cooldown_seconds * 1000
@@ -2352,7 +2352,7 @@ class RuntimeBackgroundTaskSupervisor:
             idle_detected_at_unix_ms=now_unix_ms,
         )
         reminder_state = eligible_task.delegated_reminder
-        if reminder_state is None or not reminder_state.eligible:
+        if reminder_state is None or not reminder_state.can_send_reminder:
             return
         appended = self._append_background_task_idle_reminder_event(
             task=eligible_task,

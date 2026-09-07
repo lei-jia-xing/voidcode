@@ -256,7 +256,7 @@ class _StreamedToolCallAccumulator:
 
 
 @dataclass(frozen=True, slots=True)
-class LiteLLMBackendSingleAgentProvider:
+class LiteLLMBackendProvider:
     name: str
     config: LiteLLMProviderConfig | None
     completion_kwargs: dict[str, object] | None = None
@@ -331,7 +331,7 @@ class LiteLLMBackendSingleAgentProvider:
         return {
             "type": "function",
             "function": {
-                "name": LiteLLMBackendSingleAgentProvider._provider_tool_name(
+                "name": LiteLLMBackendProvider._provider_tool_name(
                     tool.name,
                     original_to_provider=original_to_provider,
                 ),
@@ -795,7 +795,7 @@ class LiteLLMBackendSingleAgentProvider:
             return prefix + fragment
         if not isinstance(fragment, dict):
             return previous
-        merged = LiteLLMBackendSingleAgentProvider._parse_tool_arguments(previous) if isinstance(previous, str) else dict(previous)
+        merged = LiteLLMBackendProvider._parse_tool_arguments(previous) if isinstance(previous, str) else dict(previous)
         merged.update(cast(dict[str, object], fragment))
         return merged
 
@@ -834,11 +834,11 @@ class LiteLLMBackendSingleAgentProvider:
             tool_name_obj = function.get("name")
             if not isinstance(tool_name_obj, str) or not tool_name_obj:
                 continue
-            runtime_tool_name = LiteLLMBackendSingleAgentProvider._runtime_tool_name(
+            runtime_tool_name = LiteLLMBackendProvider._runtime_tool_name(
                 tool_name_obj,
                 provider_to_original=provider_to_original or {},
             )
-            parsed_arguments = LiteLLMBackendSingleAgentProvider._parse_tool_arguments(function.get("arguments"))
+            parsed_arguments = LiteLLMBackendProvider._parse_tool_arguments(function.get("arguments"))
             tool_call_id_obj = raw_call.get("id")
             explicit_tool_call_id = tool_call_id_obj if isinstance(tool_call_id_obj, str) else None
             fallback_tool_call_id = (
@@ -863,7 +863,7 @@ class LiteLLMBackendSingleAgentProvider:
         *,
         provider_to_original: Mapping[str, str] | None = None,
     ) -> ToolCall | None:
-        tool_calls = LiteLLMBackendSingleAgentProvider._extract_tool_calls(
+        tool_calls = LiteLLMBackendProvider._extract_tool_calls(
             message,
             provider_to_original=provider_to_original,
         )
@@ -908,7 +908,7 @@ class LiteLLMBackendSingleAgentProvider:
                 message="litellm dependency is not installed",
             )
         module_any = cast(Any, litellm_module)
-        LiteLLMBackendSingleAgentProvider._enable_litellm_debug(module_any)
+        LiteLLMBackendProvider._enable_litellm_debug(module_any)
         return module_any.completion(**payload)
 
     @staticmethod
@@ -918,7 +918,7 @@ class LiteLLMBackendSingleAgentProvider:
             return
         if os.environ.get("VOIDCODE_LITELLM_DEBUG") not in {"1", "true", "TRUE", "yes", "on"}:
             return
-        _LITELLM_DEBUG_HANDLER = LiteLLMBackendSingleAgentProvider._redirect_litellm_debug_logs()
+        _LITELLM_DEBUG_HANDLER = LiteLLMBackendProvider._redirect_litellm_debug_logs()
         turn_on_debug = getattr(module_any, "_turn_on_debug", None)
         if callable(turn_on_debug):
             turn_on_debug()

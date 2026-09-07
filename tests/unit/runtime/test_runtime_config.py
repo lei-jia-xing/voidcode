@@ -17,8 +17,8 @@ from voidcode.provider.config import (
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
     LiteLLMProviderConfig,
+    OpenAICompatibleProviderConfig,
     OpenAIProviderConfig,
-    SimplifiedProviderConfig,
 )
 from voidcode.runtime import config as runtime_config
 from voidcode.runtime.config import (
@@ -2764,7 +2764,7 @@ def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(tm
 
 
 @pytest.mark.parametrize("provider", ["deepseek", "grok"])
-def test_save_global_web_settings_writes_simplified_builtin_provider_api_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
+def test_save_global_web_settings_writes_openai_compatible_provider_api_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
     global_config_dir = tmp_path / "global-config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
 
@@ -2785,7 +2785,7 @@ def test_save_global_web_settings_writes_simplified_builtin_provider_api_keys(tm
         ("grok", {"XAI_API_KEY": "xai-env-key"}),
     ],
 )
-def test_load_global_web_settings_detects_simplified_builtin_provider_env_keys(tmp_path: Path, provider: str, env: dict[str, str]) -> None:
+def test_load_global_web_settings_detects_openai_compatible_provider_env_keys(tmp_path: Path, provider: str, env: dict[str, str]) -> None:
     settings = load_global_web_settings(env={"XDG_CONFIG_HOME": str(tmp_path / "global-config"), **env})
 
     assert settings == RuntimeWebSettings(provider=provider, provider_api_key_present=True)
@@ -2936,7 +2936,7 @@ def test_runtime_config_uses_opencode_go_environment_credentials_without_provide
     assert config.model == "opencode-go/glm-5"
     assert config.execution_engine == "provider"
     assert config.providers is not None
-    assert config.providers.opencode_go == SimplifiedProviderConfig(api_key="opencode-go-env-key")
+    assert config.providers.opencode_go == OpenAICompatibleProviderConfig(api_key="opencode-go-env-key")
 
 
 def test_runtime_config_repo_provider_overrides_environment_provider_credentials(
@@ -2954,7 +2954,7 @@ def test_runtime_config_repo_provider_overrides_environment_provider_credentials
     )
 
     assert config.providers is not None
-    assert config.providers.opencode_go == SimplifiedProviderConfig(api_key="repo-key")
+    assert config.providers.opencode_go == OpenAICompatibleProviderConfig(api_key="repo-key")
 
 
 def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defaults(

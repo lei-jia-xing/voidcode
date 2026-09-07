@@ -9,7 +9,7 @@ from ...provider.errors import ProviderExecutionError
 from ..config import RuntimeProvidersConfig
 
 PROVIDER_TRANSIENT_RETRYABLE_KINDS = frozenset({"rate_limit", "transient_failure"})
-PROVIDER_FALLBACK_ELIGIBLE_KINDS = frozenset(
+PROVIDER_FALLBACK_ALLOWED_KINDS = frozenset(
     {
         "missing_auth",
         "rate_limit",
@@ -139,7 +139,7 @@ def decide_provider_error_policy(
             ),
             provider_error_details=error.details,
         )
-    if error.kind in PROVIDER_FALLBACK_ELIGIBLE_KINDS and fallback_target_provider is not None and fallback_target_model is not None:
+    if error.kind in PROVIDER_FALLBACK_ALLOWED_KINDS and fallback_target_provider is not None and fallback_target_model is not None:
         return ProviderFallbackDecision(
             reason=error.kind,
             from_provider=error.provider_name,
@@ -149,7 +149,7 @@ def decide_provider_error_policy(
             attempt=current_provider_attempt + 1,
             provider_error_details=error.details,
         )
-    if error.kind in PROVIDER_FALLBACK_ELIGIBLE_KINDS:
+    if error.kind in PROVIDER_FALLBACK_ALLOWED_KINDS:
         return ProviderTerminalDecision(
             kind="fallback_exhausted",
             payload={
@@ -180,7 +180,7 @@ def decide_provider_error_policy(
 
 
 __all__ = [
-    "PROVIDER_FALLBACK_ELIGIBLE_KINDS",
+    "PROVIDER_FALLBACK_ALLOWED_KINDS",
     "PROVIDER_TRANSIENT_RETRYABLE_KINDS",
     "ProviderFallbackDecision",
     "ProviderFallbackPolicyDecision",

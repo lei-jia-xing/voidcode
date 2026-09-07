@@ -15,9 +15,9 @@ from .auth import (
 )
 from .config import (
     LiteLLMProviderConfig,
+    OpenAICompatibleProviderConfig,
     ProviderConfigs,
     ProviderFallbackConfig,
-    SimplifiedProviderConfig,
     parse_provider_configs_payload,
     parse_provider_fallback_payload,
     serialize_provider_configs,
@@ -26,8 +26,8 @@ from .config import (
 from .copilot import CopilotModelProvider
 from .deepseek import DeepSeekModelProvider
 from .errors import (
-    SingleAgentContextLimitError,
-    SingleAgentProviderError,
+    ProviderContextLimitError,
+    ProviderError,
     classify_provider_error,
     format_fallback_exhausted_error,
     format_invalid_provider_config_error,
@@ -118,10 +118,10 @@ __all__ = [
     "TurnProvider",
     "ProviderTurnRequest",
     "ProviderTurnResult",
-    "SingleAgentContextLimitError",
-    "SingleAgentProviderError",
+    "ProviderContextLimitError",
+    "ProviderError",
     "LiteLLMProviderConfig",
-    "SimplifiedProviderConfig",
+    "OpenAICompatibleProviderConfig",
     "StaticModelProvider",
     "StubTurnProvider",
     "ZAIModelProvider",

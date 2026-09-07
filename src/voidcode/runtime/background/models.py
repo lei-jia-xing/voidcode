@@ -156,7 +156,7 @@ class DelegatedReminderState:
     stop_condition: DelegatedReminderStopCondition | None = None
 
     @property
-    def eligible(self) -> bool:
+    def can_send_reminder(self) -> bool:
         return self.idle_episode_id is not None and self.stop_condition is None and self.reminder_sent_at_unix_ms is None
 
     @property

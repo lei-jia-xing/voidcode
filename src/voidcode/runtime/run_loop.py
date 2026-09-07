@@ -22,8 +22,8 @@ from ..hook.typed import (
     validate_tool_input_schema,
 )
 from ..provider.errors import (
+    ProviderContextLimitError,
     ProviderExecutionError,
-    SingleAgentContextLimitError,
     classify_provider_error,
 )
 from ..provider.protocol import (
@@ -2485,11 +2485,11 @@ class RuntimeRunLoopCoordinator:
                 session=session,
                 sequence=sequence + 1,
                 error=str(exc),
-                payload=({"kind": "provider_context_limit"} if isinstance(classified_error, SingleAgentContextLimitError) else None),
+                payload=({"kind": "provider_context_limit"} if isinstance(classified_error, ProviderContextLimitError) else None),
             )
         )
         yield failed_chunk
-        if isinstance(classified_error, SingleAgentContextLimitError):
+        if isinstance(classified_error, ProviderContextLimitError):
             return {"action": "exit"}
         return {"action": "reraise", "exc": exc}
 

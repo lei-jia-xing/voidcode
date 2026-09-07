@@ -1570,9 +1570,9 @@ def test_transport_debug_endpoint_does_not_shut_down_shared_runtime_background_t
     runtime_request, runtime_class = _load_runtime_types()
 
     RuntimeTransportApp = runtime_http.RuntimeTransportApp
-    SingleWorkspaceRuntimeCoordinator = workspace_module.SingleWorkspaceRuntimeCoordinator
+    WorkspaceRuntimeCoordinator = workspace_module.WorkspaceRuntimeCoordinator
 
-    coordinator = SingleWorkspaceRuntimeCoordinator(
+    coordinator = WorkspaceRuntimeCoordinator(
         initial_workspace=tmp_path,
         runtime_factory=cast(Any, lambda workspace: runtime_class(workspace=workspace)),
     )
@@ -3983,7 +3983,7 @@ def test_transport_marks_review_request_active_for_workspace_switch_conflict(
     GitStatusSnapshot = runtime_contracts.GitStatusSnapshot
     WorkspaceReviewSnapshot = runtime_contracts.WorkspaceReviewSnapshot
     RuntimeTransportApp = runtime_http.RuntimeTransportApp
-    SingleWorkspaceRuntimeCoordinator = workspace_module.SingleWorkspaceRuntimeCoordinator
+    WorkspaceRuntimeCoordinator = workspace_module.WorkspaceRuntimeCoordinator
 
     class BlockingReviewRuntime:
         def review_snapshot(self) -> object:
@@ -4005,7 +4005,7 @@ def test_transport_marks_review_request_active_for_workspace_switch_conflict(
         _ = workspace
         return BlockingReviewRuntime()
 
-    coordinator = SingleWorkspaceRuntimeCoordinator(
+    coordinator = WorkspaceRuntimeCoordinator(
         initial_workspace=tmp_path,
         runtime_factory=cast(Any, _runtime_factory),
     )

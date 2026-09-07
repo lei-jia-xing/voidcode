@@ -169,7 +169,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
     def _delegated_reminder_state_payload(state: DelegatedReminderState) -> dict[str, object]:
         payload: dict[str, object] = {
             "task_id": state.task_id,
-            "eligible": state.eligible,
+            "eligible": state.can_send_reminder,
             "already_sent_for_idle_episode": state.already_sent_for_idle_episode,
         }
         optional_fields: tuple[tuple[str, object | None], ...] = (

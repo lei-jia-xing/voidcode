@@ -1520,7 +1520,7 @@ class RuntimeResumeCoordinator:
             session_id=session_id,
         )
         if pending is None:
-            raise ValueError("no pending approval; approval request is already being resolved or was resolved")
+            raise ValueError(f"no pending approval for session: {session_id}")
         self._load_pending_approval_context(
             session_id=session_id,
             approval_request_id=approval_request_id,
