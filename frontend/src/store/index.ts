@@ -1497,6 +1497,7 @@ export const useAppStore = create<AppState>()(
           currentSessionEvents,
           replayStatus,
           approvalStatus,
+          replayRequestId,
         } = get();
 
         if (
@@ -1507,11 +1508,33 @@ export const useAppStore = create<AppState>()(
           return;
         }
 
-        // An approval request pauses the runtime, but the local stream can
-        // still report "running" until it closes after delivering the request
-        // event. The pending approval event is authoritative for this input
-        // path, so do not let that stale run lock silently swallow a decision.
-        const requestId = getPendingApprovalRequestId(currentSessionEvents);
+        // The follow stream can lag the durable session row. Refresh once
+        // before resolving so a card rendered from an older event cannot
+        // submit an obsolete request id. Keep the local event tail as a
+        // fallback while a run is still persisting its waiting snapshot.
+        let requestId = getPendingApprovalRequestId(currentSessionEvents);
+        try {
+          const latest = await RuntimeClient.getSessionReplay(currentSessionId);
+          if (
+            get().currentSessionId === currentSessionId &&
+            get().replayRequestId === replayRequestId
+          ) {
+            requestId = getPendingApprovalRequestId(latest.events) ?? requestId;
+          }
+        } catch {
+          // The local waiting event remains the best available snapshot when
+          // the read races the initial run persistence or the transport fails.
+        }
+        // Do not carry a request id across a session switch or newer replay.
+        // The local fallback is valid only for the snapshot that started this
+        // submission; otherwise the current approval card must take over.
+        if (
+          get().currentSessionId !== currentSessionId ||
+          get().replayRequestId !== replayRequestId
+        ) {
+          return;
+        }
+
         if (!requestId) {
           set({
             approvalStatus: "error",
@@ -1528,6 +1551,12 @@ export const useAppStore = create<AppState>()(
             requestId,
             decision,
           );
+          if (
+            get().currentSessionId !== currentSessionId ||
+            get().replayRequestId !== replayRequestId
+          ) {
+            return;
+          }
           set({
             currentSessionId: response.session.session.id,
             currentSessionState: response.session,
@@ -1547,17 +1576,32 @@ export const useAppStore = create<AppState>()(
           });
           set({ approvalStatus: "idle" });
         } catch (err) {
+          if (
+            get().currentSessionId !== currentSessionId ||
+            get().replayRequestId !== replayRequestId
+          ) {
+            return;
+          }
+          const message = errorMessage(err);
+          const isApprovalConflict =
+            typeof err === "object" &&
+            err !== null &&
+            "status" in err &&
+            err.status === 409;
           set({
             approvalStatus: "error",
-            approvalError: errorMessage(err),
-            runStatus: "idle",
+            approvalError: message,
           });
-          // Reload session from backend so the UI can pick up any
-          // re-emitted approval state and the composer is usable again.
+          // A 409 means the local card was stale or another resolver won the
+          // CAS claim. Reload the authoritative session so the current
+          // pending approval is rendered instead of leaving a dead card.
           try {
             const replay =
               await RuntimeClient.getSessionReplay(currentSessionId);
             if (get().currentSessionId === currentSessionId) {
+              const hasPendingApproval =
+                replay.session.status === "waiting" &&
+                getPendingApprovalRequestId(replay.events) !== null;
               set({
                 currentSessionState: replay.session,
                 currentSessionEvents: replay.events,
@@ -1565,10 +1609,14 @@ export const useAppStore = create<AppState>()(
                 replayStatus: "success",
                 replayError: null,
                 runStatus: runStatusForReplay(replay.session),
+                approvalStatus:
+                  isApprovalConflict && hasPendingApproval ? "idle" : "error",
+                approvalError:
+                  isApprovalConflict && hasPendingApproval ? null : message,
               });
             }
           } catch {
-            // Preserve the last runtime-owned snapshot when replay is unavailable.
+            // Preserve the runtime error and last known state if replay fails.
           }
           await get().refreshAfterMutation({ sessions: true });
         }

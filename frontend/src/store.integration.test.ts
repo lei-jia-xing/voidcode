@@ -3783,4 +3783,94 @@ describe("useAppStore integration flow", () => {
     expect(state.replayStatus).toBe("success");
     expect(state.replayError).toBeNull();
   });
+  it("refreshes the authoritative pending approval after a stale resolution conflict", async () => {
+    const sessionId = "approval-stale-request";
+    const oldRequestId = "approval-old";
+    const currentRequestId = "approval-current";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "write current.txt hello" },
+      "runtime",
+      sessionId,
+    );
+    const oldApprovalRequested = makeEvent(
+      2,
+      "runtime.approval_requested",
+      {
+        request_id: oldRequestId,
+        tool: "write",
+        target_summary: "old.txt",
+        decision: "ask",
+      },
+      "runtime",
+      sessionId,
+    );
+    const oldApprovalResolved = makeEvent(
+      3,
+      "runtime.approval_resolved",
+      { request_id: oldRequestId, decision: "allow" },
+      "runtime",
+      sessionId,
+    );
+    const currentApprovalRequested = makeEvent(
+      4,
+      "runtime.approval_requested",
+      {
+        request_id: currentRequestId,
+        tool: "write",
+        target_summary: "current.txt",
+        decision: "ask",
+      },
+      "runtime",
+      sessionId,
+    );
+    const authoritativeWaiting = makeRuntimeResponse(
+      sessionId,
+      "waiting",
+      [
+        requestReceived,
+        oldApprovalRequested,
+        oldApprovalResolved,
+        currentApprovalRequested,
+      ],
+      null,
+    );
+
+    useAppStore.setState({
+      currentSessionId: sessionId,
+      currentSessionState: makeSessionState(sessionId, "waiting"),
+      currentSessionEvents: [requestReceived, oldApprovalRequested],
+      currentSessionOutput: null,
+      replayStatus: "success",
+      replayRequestId: 0,
+      runStatus: "success",
+      approvalStatus: "idle",
+      approvalError: null,
+    });
+    runtimeClientMocks.getSessionReplayMock
+      .mockResolvedValueOnce(authoritativeWaiting)
+      .mockResolvedValueOnce(authoritativeWaiting);
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "waiting", "write current.txt hello"),
+    ]);
+    runtimeClientMocks.resolveApprovalMock.mockRejectedValue({
+      status: 409,
+      message: "no pending approval for session",
+    });
+
+    await useAppStore.getState().resolveApproval("allow");
+
+    expect(runtimeClientMocks.resolveApprovalMock).toHaveBeenCalledWith(
+      sessionId,
+      currentRequestId,
+      "allow",
+    );
+    const state = useAppStore.getState();
+    expect(state.currentSessionState?.status).toBe("waiting");
+    expect(state.currentSessionEvents).toEqual(authoritativeWaiting.events);
+    expect(state.runStatus).toBe("idle");
+    expect(state.approvalStatus).toBe("idle");
+    expect(state.approvalError).toBeNull();
+  });
 });
