@@ -31,17 +31,16 @@ def test_yield_guidance_describes_terminal_child_handoff() -> None:
     assert "peer message bus" in guidance
 
 
-def test_background_task_guidance_describes_operations_and_lifecycle_rules() -> None:
-    filename = guidance_filename_for_tool("background_task")
-    assert filename == "delegation/background_task.txt"
-    guidance = guidance_for_tool("background_task")
+def test_task_guidance_describes_operations_and_lifecycle_rules() -> None:
+    filename = guidance_filename_for_tool("task")
+    assert filename == "delegation/task.txt"
+    guidance = guidance_for_tool("task")
     for operation in ("output", "cancel", "ps", "steer"):
         assert f'operation="{operation}"' in guidance
     for selector in ("task_id", "task_ids", "parallel_group_id"):
         assert selector in guidance
-    assert "block=false" in guidance
     assert "block=true" in guidance
-    assert "milliseconds" in guidance
+    assert "timeout" in guidance
     assert "full_session=true" in guidance
 
 

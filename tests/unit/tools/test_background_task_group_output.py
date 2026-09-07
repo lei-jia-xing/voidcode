@@ -7,7 +7,7 @@ import pytest
 
 from voidcode.runtime.contracts import BackgroundTaskGroupResult, BackgroundTaskResult
 from voidcode.tools.contracts import ToolCall
-from voidcode.tools.delegation.background_output import BackgroundOutputTool
+from voidcode.tools.delegation.task_output import TaskOutputTool
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
@@ -42,7 +42,7 @@ class _GroupRuntime:
 
 
 def _invoke(runtime: _GroupRuntime, arguments: dict[str, object], *, session_id: str = "leader"):
-    tool = BackgroundOutputTool(runtime=runtime)
+    tool = TaskOutputTool(runtime=runtime)
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id=session_id)):
         return tool.invoke(ToolCall(tool_name="background_output", arguments=arguments), workspace=Path("."))
 
@@ -111,7 +111,7 @@ def test_group_result_structured_output_and_summary_are_bounded() -> None:
 def test_group_read_requires_runtime_parent_context() -> None:
     group = BackgroundTaskGroupResult(parallel_group_id="group-1", expected_task_count=1, results=(_result("a", "completed"),))
     runtime = _GroupRuntime(group)
-    tool = BackgroundOutputTool(runtime=runtime)
+    tool = TaskOutputTool(runtime=runtime)
 
     with pytest.raises(RuntimeError, match="active runtime tool invocation context"):
         tool.invoke(ToolCall(tool_name="background_output", arguments={"parallel_group_id": "group-1"}), workspace=Path("."))

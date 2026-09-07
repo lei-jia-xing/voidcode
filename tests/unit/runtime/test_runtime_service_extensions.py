@@ -4249,7 +4249,7 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                     "Retry failed, cancelled, or interrupted delegated background tasks only when "
                     "it is the next explicit recovery step. Re-dispatch through the task tool, "
                     "reusing the child session_id where applicable, instead of manually reconstructing child "
-                    "requests; inspect the new task id with background_task(operation=output), and escalate repeated "
+                    "requests; inspect the new task id with task(operation=\"output\"), and escalate repeated "
                     "failures rather than looping."
                 ),
             },

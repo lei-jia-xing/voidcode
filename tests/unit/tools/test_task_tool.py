@@ -69,7 +69,7 @@ def test_task_tool_exposes_agent_friendly_json_schema_contract() -> None:
 
     assert schema["type"] == "object"
     assert schema["additionalProperties"] is False
-    assert schema["required"] == ["prompt", "run_in_background", "load_skills", "subagent_type"]
+    assert schema["required"] == []
 
     properties = cast(dict[str, object], schema["properties"])
     run_in_background = cast(dict[str, object], properties["run_in_background"])
@@ -84,6 +84,11 @@ def test_task_tool_exposes_agent_friendly_json_schema_contract() -> None:
     assert "Required." in cast(str, subagent_type["description"])
 
     assert "oneOf" not in schema
+    alternatives = cast(list[dict[str, object]], schema["anyOf"])
+    assert alternatives == [
+        {"required": ["prompt", "run_in_background", "load_skills", "subagent_type"]},
+        {"required": ["operation"]},
+    ]
     examples = cast(list[object], schema["examples"])
     assert cast(dict[str, object], examples[0])["run_in_background"] is True
     assert cast(dict[str, object], examples[1])["run_in_background"] is False
@@ -115,9 +120,8 @@ def test_task_tool_starts_background_task_with_parent_context(tmp_path: Path) ->
     assert result.data["status"] == "queued"
     assert result.data["result_available"] is False
     assert result.content is not None
-    assert "do not call background_task(operation=output) immediately" in result.content
-    assert "background_task(operation=output, block=true)" in result.content
-    assert "continue other work now" in result.content
+    assert "Continue other work; use task(operation=output) only when a status check is needed." in result.content
+    assert "Wait for a completion reminder or use task(operation=output, block=true) intentionally." in result.content
     assert result.data["delegation"] == {"mode": "background", "subagent_type": "worker"}
     assert runtime.requests[0].parent_session_id == "leader-session"
     assert runtime.requests[0].metadata == {
@@ -197,8 +201,12 @@ def test_task_tool_guidance_frontloads_required_arguments() -> None:
     assert "Always include `prompt`, `run_in_background`, `load_skills`, and `subagent_type`" in guidance
     assert "`subagent_type` is required" in guidance
     assert "Prefer `run_in_background=true`" in guidance
-    assert 'Do not call `background_task(operation="output")` immediately' in guidance
-    assert 'background_task(operation="output", block=true)' in guidance
+    assert "After starting a background task, continue independent work and wait for a completion reminder." in guidance
+    assert (
+        "Do not sleep, poll in a loop, repeatedly relaunch equivalent work, guess results, or read a "
+        "running child transcript just to peek."
+        in guidance
+    )
 
 
 def test_task_tool_runs_sync_child_session(tmp_path: Path) -> None:

@@ -21,7 +21,7 @@ from voidcode.runtime.background.models import (
     BackgroundTaskState,
 )
 from voidcode.tools.contracts import ToolCall
-from voidcode.tools.delegation.background_task import BackgroundTaskTool
+from voidcode.tools.delegation.task import TaskTool
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
@@ -322,13 +322,13 @@ def _steerable_task(*, parent_session_id: str) -> BackgroundTaskState:
 def test_background_task_steer_rejects_non_parent_session() -> None:
     """Only the task's parent session may steer it via the background_task facade."""
     runtime = _StubSteerRuntime(task=_steerable_task(parent_session_id="parent-1"))
-    tool = BackgroundTaskTool(runtime=runtime)
+    tool = TaskTool(runtime=runtime)
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="other-session")):
         with pytest.raises(ValueError, match="only its parent"):
             tool.invoke(
                 ToolCall(
-                    tool_name="background_task",
+                    tool_name="task",
                     arguments={"operation": "steer", "task_id": "task-keep-alive-1", "prompt": "continue"},
                 ),
                 workspace=Path("."),
@@ -341,12 +341,12 @@ def test_background_task_steer_rejects_non_parent_session() -> None:
 def test_background_task_steer_parent_dispatches_steer() -> None:
     """The task's parent session can steer it; the facade surfaces the dispatch."""
     runtime = _StubSteerRuntime(task=_steerable_task(parent_session_id="parent-1"))
-    tool = BackgroundTaskTool(runtime=runtime)
+    tool = TaskTool(runtime=runtime)
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="parent-1")):
         result = tool.invoke(
             ToolCall(
-                tool_name="background_task",
+                tool_name="task",
                 arguments={"operation": "steer", "task_id": "task-keep-alive-1", "prompt": "continue"},
             ),
             workspace=Path("."),

@@ -8,7 +8,7 @@ from voidcode.runtime.background.models import BackgroundTaskRef, BackgroundTask
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.tools.contracts import ToolCall
-from voidcode.tools.delegation.background_ps import BackgroundPsTool
+from voidcode.tools.delegation.task_ps import TaskPsTool
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
@@ -23,7 +23,7 @@ class _RosterRuntime:
 
 
 def test_background_ps_requires_parent_runtime_context(tmp_path: Path) -> None:
-    tool = BackgroundPsTool(runtime=_RosterRuntime({"tasks": []}))
+    tool = TaskPsTool(runtime=_RosterRuntime({"tasks": []}))
     with pytest.raises(RuntimeError, match="active runtime"):
         tool.invoke(ToolCall(tool_name="background_ps"), workspace=tmp_path)
 
@@ -37,7 +37,7 @@ def test_background_ps_uses_active_parent_and_returns_bounded_projection(tmp_pat
                 "status": "running",
                 "child_session_id": "child",
                 "result_available": False,
-                "next_steps": {"background_output": 'background_output(task_id="task-running")'},
+                "next_steps": {"task": 'task(operation="output", task_id="task-running")'},
             },
             {"task_id": "task-done", "status": "completed", "terminal": True, "result_available": True},
         ],
@@ -45,7 +45,7 @@ def test_background_ps_uses_active_parent_and_returns_bounded_projection(tmp_pat
         "truncated": False,
     }
     runtime = _RosterRuntime(payload)
-    tool = BackgroundPsTool(runtime=runtime)
+    tool = TaskPsTool(runtime=runtime)
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="parent")):
         result = tool.invoke(ToolCall(tool_name="background_ps"), workspace=tmp_path)
     assert runtime.parents == ["parent"]
@@ -118,7 +118,7 @@ def test_runtime_background_ps_scopes_and_omits_prompt(tmp_path: Path, monkeypat
 
 def test_background_ps_empty_roster(tmp_path: Path) -> None:
     runtime = _RosterRuntime({"parent_session_id": "parent", "tasks": [], "task_count": 0, "truncated": False})
-    tool = BackgroundPsTool(runtime=runtime)
+    tool = TaskPsTool(runtime=runtime)
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="parent")):
         result = tool.invoke(ToolCall(tool_name="background_ps"), workspace=tmp_path)
     assert result.content == "Background task roster: 0 task(s)"
@@ -126,7 +126,7 @@ def test_background_ps_empty_roster(tmp_path: Path) -> None:
 
 
 def test_background_ps_rejects_arguments(tmp_path: Path) -> None:
-    tool = BackgroundPsTool(runtime=_RosterRuntime({"tasks": []}))
+    tool = TaskPsTool(runtime=_RosterRuntime({"tasks": []}))
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="parent")):
         with pytest.raises(ValueError, match="accepts no arguments"):
             tool.invoke(ToolCall(tool_name="background_ps", arguments={"task_id": "x"}), workspace=tmp_path)

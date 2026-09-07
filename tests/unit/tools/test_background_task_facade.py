@@ -10,7 +10,7 @@ from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeSessionResul
 from voidcode.runtime.permission import PermissionPolicy, resolve_permission
 from voidcode.runtime.permission_context import operation_class_for_tool
 from voidcode.runtime.session import SessionRef, SessionState
-from voidcode.tools import BackgroundTaskTool, ToolCall
+from voidcode.tools import TaskControlTool, ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
@@ -90,19 +90,19 @@ class _Runtime:
 
 def _invoke(runtime: _Runtime, arguments: dict[str, object], *, session_id: str = "parent"):
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id=session_id)):
-        return BackgroundTaskTool(runtime=runtime).invoke(ToolCall(tool_name="background_task", arguments=arguments), workspace=Path("."))
+        return TaskControlTool(runtime=runtime).invoke(ToolCall(tool_name="task", arguments=arguments), workspace=Path("."))
 
 
 def test_background_task_schema_is_strictly_discriminated() -> None:
-    schema = BackgroundTaskTool.definition.input_schema
+    schema = TaskControlTool.definition.input_schema
     assert schema["additionalProperties"] is False
     assert len(schema["oneOf"]) == 4  # type: ignore[arg-type]
     runtime = _Runtime()
-    with pytest.raises(ValueError, match="background_task Validation error"):
+    with pytest.raises(ValueError, match="task Validation error"):
         _invoke(runtime, {"operation": "output", "task_id": "a", "task_ids": ["b"]})
-    with pytest.raises(ValueError, match="background_task Validation error"):
+    with pytest.raises(ValueError, match="task Validation error"):
         _invoke(runtime, {"operation": "unknown", "task_id": "a"})
-    with pytest.raises(ValueError, match="background_task Validation error"):
+    with pytest.raises(ValueError, match="task Validation error"):
         _invoke(runtime, {"operation": "ps", "task_id": "a"})
 
     output_variant = schema["oneOf"][0]  # type: ignore[index]
@@ -110,12 +110,12 @@ def test_background_task_schema_is_strictly_discriminated() -> None:
     result = _invoke(runtime, {"operation": "output", "task_id": "task-1", "full_session": True})
     assert result.data["session"]["session_id"] == "child"  # type: ignore[index]
     assert result.data["session"]["message_limit"] == 20  # type: ignore[index]
-    with pytest.raises(ValueError, match="background_task Validation error"):
+    with pytest.raises(ValueError, match="task Validation error"):
         _invoke(runtime, {"operation": "output", "task_ids": ["task-1"], "full_session": True})
 
 
 def test_full_session_schema_matches_model_validation() -> None:
-    schema = BackgroundTaskTool.definition.input_schema
+    schema = TaskControlTool.definition.input_schema
     validator = jsonschema.Draft202012Validator(schema)
     valid = {"operation": "output", "task_id": "task-1", "full_session": True, "timeout": 1000}
     invalid = {"operation": "output", "task_ids": ["task-1"], "full_session": True}
@@ -129,21 +129,21 @@ def test_full_session_schema_matches_model_validation() -> None:
 
 def test_background_task_output_uses_unified_model_name_and_operation_guidance() -> None:
     result = _invoke(_Runtime(), {"operation": "output", "task_id": "task-1"})
-    assert result.tool_name == "background_task"
-    assert result.data["retrieval_instruction"] == 'background_task(operation="output", task_id="task-1")'
+    assert result.tool_name == "task"
+    assert result.data["retrieval_instruction"] == 'task(operation="output", task_id="task-1")'
 
 
 def test_background_task_controls_require_operation_specific_permissions() -> None:
     runtime = _Runtime()
-    tool = BackgroundTaskTool(runtime=runtime)
+    tool = TaskControlTool(runtime=runtime)
     for operation, expected in (("output", "read"), ("ps", "read"), ("cancel", "execute"), ("steer", "write")):
         call_args: dict[str, object] = {"operation": operation}
         if operation in {"output", "cancel", "steer"}:
             call_args["task_id"] = "task-1"
         if operation == "steer":
             call_args["prompt"] = "continue"
-        call = ToolCall(tool_name="background_task", arguments=call_args)
-        assert operation_class_for_tool("background_task", tool.definition.read_only, tool_instance=tool, arguments=call.arguments) == expected
+        call = ToolCall(tool_name="task", arguments=call_args)
+        assert operation_class_for_tool("task", tool.definition.read_only, tool_instance=tool, arguments=call.arguments) == expected
         outcome = resolve_permission(
             tool.definition,
             call,
@@ -160,5 +160,5 @@ def test_background_task_controls_require_operation_specific_permissions() -> No
 def test_background_task_steer_uses_parent_context() -> None:
     runtime = _Runtime()
     result = _invoke(runtime, {"operation": "steer", "task_id": "task-1", "prompt": "continue"})
-    assert result.tool_name == "background_task"
+    assert result.tool_name == "task"
     assert runtime.steers == [("task-1", "continue")]

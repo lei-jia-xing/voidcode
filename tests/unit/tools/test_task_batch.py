@@ -57,7 +57,7 @@ def test_task_batch_dispatches_one_owned_group_with_bounded_metadata(tmp_path: P
     assert isinstance(group_id, str) and group_id.startswith("batch-")
     assert result.data["parallel_group_size"] == 2
     assert result.data["task_ids"] == ["task-0", "task-1"]
-    assert f'background_task(operation="output", parallel_group_id="{group_id}")' in str(result.data["retrieval_instruction"])
+    assert f'task(operation="output", parallel_group_id="{group_id}")' in str(result.data["retrieval_instruction"])
     assert all(request.parent_session_id == "leader-session" for request in runtime.requests)
     delegations = [request.metadata["delegation"] for request in runtime.requests]
     assert all(isinstance(metadata, dict) for metadata in delegations)

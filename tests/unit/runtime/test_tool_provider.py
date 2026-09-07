@@ -46,7 +46,6 @@ from voidcode.runtime.tool_provider import (
 )
 from voidcode.tools import (
     AstGrepTool,
-    BackgroundTaskTool,
     EditTool,
     GlobTool,
     GrepTool,
@@ -654,7 +653,6 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
     runtime_tool_names = {
         "apply_patch",
         "ast_grep",
-        "background_task",
         "edit",
         "glob",
         "grep",
@@ -679,17 +677,20 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
 
 
 def test_background_related_guidance_includes_no_poll_and_no_peek_contracts() -> None:
-    assert "Do not sleep, poll in a loop" in guidance_for_tool("task")
-    assert "Do not guess or fabricate a background task's result" in guidance_for_tool("task")
-    assert "Do not repeatedly poll this tool in a tight loop" in guidance_for_tool("background_task")
-    assert "Do not read a running child transcript just to peek" in guidance_for_tool("background_task")
+    guidance = guidance_for_tool("task")
+    assert (
+        "Do not sleep, poll in a loop, repeatedly relaunch equivalent work, guess results, or read a "
+        "running child transcript just to peek."
+        in guidance
+    )
+    assert "The runtime preserves parent/child lineage, requested skills, and task correlation." in guidance
 
 
-def test_background_task_guidance_preserves_runtime_scoping_and_bounded_output() -> None:
-    guidance = guidance_for_tool("background_task")
-    assert guidance_filename_for_tool("background_task") == "delegation/background_task.txt"
-    assert "active parent session" in guidance
-    assert "Prompts, transcripts" in guidance
+def test_task_guidance_preserves_runtime_scoping_and_bounded_output() -> None:
+    guidance = guidance_for_tool("task")
+    assert guidance_filename_for_tool("task") == "delegation/task.txt"
+    assert "Aggregate reads are bounded and never include prompts, transcripts, or raw child output." in guidance
+    assert "parent/child lineage" in guidance
 
 
 def test_dynamic_mcp_tool_definitions_keep_server_description_without_sidecar() -> None:
@@ -1532,8 +1533,7 @@ def test_runtime_default_registry_includes_runtime_backed_agent_tools(tmp_path: 
     assert isinstance(base_registry.resolve("skill"), SkillTool)
     assert isinstance(base_registry.resolve("task"), TaskTool)
     assert isinstance(base_registry.resolve("question"), QuestionTool)
-    assert isinstance(base_registry.resolve("background_task"), BackgroundTaskTool)
-    for old_name in ("background_output", "background_cancel", "background_ps", "steer_task"):
+    for old_name in ("background_task", "background_output", "background_cancel", "background_ps", "steer_task"):
         with pytest.raises(ValueError, match="unknown tool"):
             base_registry.resolve(old_name)
 

@@ -22,8 +22,8 @@ from voidcode.runtime.contracts import (
 )
 from voidcode.skills.models import SkillMetadata
 from voidcode.tools import QuestionTool, SkillTool, TaskTool, ToolCall
-from voidcode.tools.delegation.background_cancel import BackgroundCancelTool
-from voidcode.tools.delegation.background_output import BackgroundOutputTool
+from voidcode.tools.delegation.task_cancel import TaskCancelTool
+from voidcode.tools.delegation.task_output import TaskOutputTool
 
 CI_SETTINGS = settings(derandomize=True, database=None, deadline=None, max_examples=200)
 
@@ -205,7 +205,7 @@ def test_question_tool_parse_prompts_rejects_malformed_questions_payload(
 @given(task_id=_non_blank_text)
 def test_background_output_tool_trims_task_id_before_runtime_lookup(task_id: str) -> None:
     runtime = _RecordingBackgroundOutputRuntime()
-    tool = BackgroundOutputTool(runtime=runtime)
+    tool = TaskOutputTool(runtime=runtime)
 
     with TemporaryDirectory() as temp_dir:
         result = tool.invoke(
@@ -221,7 +221,7 @@ def test_background_output_tool_trims_task_id_before_runtime_lookup(task_id: str
 @CI_SETTINGS
 @given(task_id=_invalid_text_value)
 def test_background_output_tool_rejects_invalid_task_id_values(task_id: object) -> None:
-    tool = BackgroundOutputTool(runtime=_RecordingBackgroundOutputRuntime())
+    tool = TaskOutputTool(runtime=_RecordingBackgroundOutputRuntime())
 
     with TemporaryDirectory() as temp_dir:
         with pytest.raises(
@@ -240,7 +240,7 @@ def test_background_output_tool_rejects_invalid_task_id_values(task_id: object) 
 @CI_SETTINGS
 @given(task_id=_non_blank_text)
 def test_background_output_full_session_tolerates_missing_child_session(task_id: str) -> None:
-    tool = BackgroundOutputTool(runtime=_MissingSessionBackgroundOutputRuntime())
+    tool = TaskOutputTool(runtime=_MissingSessionBackgroundOutputRuntime())
 
     with TemporaryDirectory() as temp_dir:
         result = tool.invoke(
@@ -262,7 +262,7 @@ def test_background_output_full_session_tolerates_missing_child_session(task_id:
 @given(task_id=_non_blank_text)
 def test_background_cancel_tool_trims_task_id_before_cancelling(task_id: str) -> None:
     runtime = _RecordingBackgroundCancelRuntime()
-    tool = BackgroundCancelTool(runtime=runtime)
+    tool = TaskCancelTool(runtime=runtime)
 
     with TemporaryDirectory() as temp_dir:
         result = tool.invoke(
@@ -278,7 +278,7 @@ def test_background_cancel_tool_trims_task_id_before_cancelling(task_id: str) ->
 @CI_SETTINGS
 @given(task_id=_invalid_text_value)
 def test_background_cancel_tool_rejects_invalid_task_id_values(task_id: object) -> None:
-    tool = BackgroundCancelTool(runtime=_RecordingBackgroundCancelRuntime())
+    tool = TaskCancelTool(runtime=_RecordingBackgroundCancelRuntime())
 
     with TemporaryDirectory() as temp_dir:
         with pytest.raises(ValueError):

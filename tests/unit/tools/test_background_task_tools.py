@@ -19,8 +19,8 @@ from voidcode.runtime.contracts import (
 from voidcode.runtime.events import RUNTIME_TOOL_COMPLETED, EventEnvelope
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.tools import ToolCall
-from voidcode.tools.delegation.background_cancel import BackgroundCancelTool
-from voidcode.tools.delegation.background_output import BackgroundOutputTool
+from voidcode.tools.delegation.task_cancel import TaskCancelTool
+from voidcode.tools.delegation.task_output import TaskOutputTool
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
@@ -447,7 +447,7 @@ class _UnexpectedCancelRuntime(_StubBackgroundRuntime):
 
 
 def test_background_output_tool_returns_task_summary(tmp_path: Path) -> None:
-    tool = BackgroundOutputTool(runtime=_StubBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_StubBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(tool_name="background_output", arguments={"task_id": "task-1", "full_session": True}),
@@ -528,7 +528,7 @@ class _RepeatedToolCompletionBackgroundRuntime(_StubBackgroundRuntime):
 def test_background_output_reports_repeated_tool_completed_events_in_tool_call_count(
     tmp_path: Path,
 ) -> None:
-    tool = BackgroundOutputTool(runtime=_RepeatedToolCompletionBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_RepeatedToolCompletionBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(
@@ -543,7 +543,7 @@ def test_background_output_reports_repeated_tool_completed_events_in_tool_call_c
 
 
 def test_background_output_default_returns_safe_summary_reference(tmp_path: Path) -> None:
-    tool = BackgroundOutputTool(runtime=_RawPreviewBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_RawPreviewBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(tool_name="background_output", arguments={"task_id": "task-1"}),
@@ -560,7 +560,7 @@ def test_background_output_default_returns_safe_summary_reference(tmp_path: Path
 
 
 def test_background_output_full_session_preserves_approval_summary(tmp_path: Path) -> None:
-    tool = BackgroundOutputTool(runtime=_ApprovalBlockedBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_ApprovalBlockedBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(
@@ -580,7 +580,7 @@ def test_background_output_full_session_preserves_approval_summary(tmp_path: Pat
 
 
 def test_background_output_tool_bounds_full_session_transcript(tmp_path: Path) -> None:
-    tool = BackgroundOutputTool(runtime=_ManyEventBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_ManyEventBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(
@@ -602,7 +602,7 @@ def test_background_output_tool_bounds_full_session_transcript(tmp_path: Path) -
 
 def test_background_output_block_timeout_returns_current_state(tmp_path: Path) -> None:
     runtime = _BlockingUnavailableBackgroundRuntime()
-    tool = BackgroundOutputTool(runtime=runtime)
+    tool = TaskOutputTool(runtime=runtime)
 
     result = tool.invoke(
         ToolCall(
@@ -622,7 +622,7 @@ def test_background_output_block_timeout_returns_current_state(tmp_path: Path) -
 
 def test_background_output_rejects_subsecond_timeout_to_avoid_polling(tmp_path: Path) -> None:
     """Blocking timeout is integer milliseconds with a one-second minimum."""
-    tool = BackgroundOutputTool(runtime=_BlockingUnavailableBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_BlockingUnavailableBackgroundRuntime())
 
     with pytest.raises(ValueError, match="at least 1000 milliseconds"):
         tool.invoke(
@@ -645,7 +645,7 @@ def test_background_output_rejects_subsecond_timeout_to_avoid_polling(tmp_path: 
 
 def test_background_output_requires_runtime_wait_contract(tmp_path: Path) -> None:
     """A blocking read fails explicitly when the shipped wait API is absent."""
-    tool = BackgroundOutputTool(runtime=_UnavailableBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_UnavailableBackgroundRuntime())
 
     with pytest.raises(AttributeError, match="wait_for_background_task"):
         tool.invoke(
@@ -658,7 +658,7 @@ def test_background_output_requires_runtime_wait_contract(tmp_path: Path) -> Non
 
 
 def test_background_output_accepts_one_second_block_timeout(tmp_path: Path) -> None:
-    tool = BackgroundOutputTool(runtime=_BlockingUnavailableBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_BlockingUnavailableBackgroundRuntime())
     result = tool.invoke(
         ToolCall(
             tool_name="background_output",
@@ -672,7 +672,7 @@ def test_background_output_accepts_one_second_block_timeout(tmp_path: Path) -> N
 def test_background_output_block_omits_timeout_guidance_when_final_read_is_terminal(
     tmp_path: Path,
 ) -> None:
-    tool = BackgroundOutputTool(runtime=_TerminalAfterTimeoutBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_TerminalAfterTimeoutBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(
@@ -689,7 +689,7 @@ def test_background_output_block_omits_timeout_guidance_when_final_read_is_termi
 
 
 def test_background_output_tool_guides_failed_child_without_retrying(tmp_path: Path) -> None:
-    tool = BackgroundOutputTool(runtime=_FailedBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_FailedBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(tool_name="background_output", arguments={"task_id": "task-1"}),
@@ -705,7 +705,7 @@ def test_background_output_tool_guides_failed_child_without_retrying(tmp_path: P
 
 
 def test_background_output_tool_handles_interrupted_terminal_state(tmp_path: Path) -> None:
-    tool = BackgroundOutputTool(runtime=_InterruptedBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_InterruptedBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(tool_name="background_output", arguments={"task_id": "task-1"}),
@@ -715,7 +715,7 @@ def test_background_output_tool_handles_interrupted_terminal_state(tmp_path: Pat
     assert result.status == "ok"
     assert result.data["status"] == "interrupted"
     assert result.data["result_available"] is True
-    assert result.data["retrieval_instruction"] == 'background_output(task_id="task-1")'
+    assert result.data["retrieval_instruction"] == 'task(operation="output", task_id="task-1")'
     handoff = cast(dict[str, object], result.data["handoff_summary"])
     assert handoff["blocked_reason"] == "background task interrupted before completion"
     assert "interrupted before completion" in str(result.data["guidance"])
@@ -724,7 +724,7 @@ def test_background_output_tool_handles_interrupted_terminal_state(tmp_path: Pat
 def test_background_output_full_session_surfaces_provider_failure_details_for_interrupted_child(
     tmp_path: Path,
 ) -> None:
-    tool = BackgroundOutputTool(runtime=_InterruptedBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_InterruptedBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(
@@ -745,7 +745,7 @@ def test_background_output_full_session_surfaces_provider_failure_details_for_in
 def test_background_output_full_session_scans_older_failed_events_for_provider_details(
     tmp_path: Path,
 ) -> None:
-    tool = BackgroundOutputTool(runtime=_InterruptedBackgroundRuntimeWithTrailingGenericFailure())
+    tool = TaskOutputTool(runtime=_InterruptedBackgroundRuntimeWithTrailingGenericFailure())
 
     result = tool.invoke(
         ToolCall(
@@ -763,7 +763,7 @@ def test_background_output_full_session_scans_older_failed_events_for_provider_d
 
 
 def test_background_output_tool_guides_unavailable_result_without_looping(tmp_path: Path) -> None:
-    tool = BackgroundOutputTool(runtime=_UnavailableBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_UnavailableBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(tool_name="background_output", arguments={"task_id": "task-1"}),
@@ -780,7 +780,7 @@ def test_background_output_tool_guides_unavailable_result_without_looping(tmp_pa
 
 
 def test_background_output_tool_guides_empty_child_output(tmp_path: Path) -> None:
-    tool = BackgroundOutputTool(runtime=_EmptyOutputBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_EmptyOutputBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(
@@ -800,7 +800,7 @@ def test_background_output_tool_guides_empty_child_output(tmp_path: Path) -> Non
 def test_background_output_default_skips_full_session_fetch_when_full_session_false(
     tmp_path: Path,
 ) -> None:
-    tool = BackgroundOutputTool(runtime=_SummaryPresentEmptyOutputNoSessionReadRuntime())
+    tool = TaskOutputTool(runtime=_SummaryPresentEmptyOutputNoSessionReadRuntime())
 
     result = tool.invoke(
         ToolCall(tool_name="background_output", arguments={"task_id": "task-1"}),
@@ -815,7 +815,7 @@ def test_background_output_default_skips_full_session_fetch_when_full_session_fa
 def test_background_output_full_session_falls_back_when_child_session_unavailable(
     tmp_path: Path,
 ) -> None:
-    tool = BackgroundOutputTool(runtime=_MissingChildSessionBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_MissingChildSessionBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(
@@ -834,7 +834,7 @@ def test_background_output_full_session_falls_back_when_child_session_unavailabl
 
 
 def test_background_cancel_tool_cancels_single_task(tmp_path: Path) -> None:
-    tool = BackgroundCancelTool(runtime=_StubBackgroundRuntime())
+    tool = TaskCancelTool(runtime=_StubBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(tool_name="background_cancel", arguments={"taskId": "task-1"}),
@@ -849,7 +849,7 @@ def test_background_cancel_tool_cancels_single_task(tmp_path: Path) -> None:
 
 
 def test_background_cancel_tool_reports_running_cancel_request(tmp_path: Path) -> None:
-    tool = BackgroundCancelTool(runtime=_RunningCancelRuntime())
+    tool = TaskCancelTool(runtime=_RunningCancelRuntime())
 
     result = tool.invoke(
         ToolCall(tool_name="background_cancel", arguments={"taskId": "task-1"}),
@@ -866,7 +866,7 @@ def test_background_cancel_tool_reports_running_cancel_request(tmp_path: Path) -
 def test_background_cancel_tool_reports_completed_task_without_corrupting_result(
     tmp_path: Path,
 ) -> None:
-    tool = BackgroundCancelTool(runtime=_CompletedCancelRuntime())
+    tool = TaskCancelTool(runtime=_CompletedCancelRuntime())
 
     result = tool.invoke(
         ToolCall(tool_name="background_cancel", arguments={"taskId": "task-1"}),
@@ -881,7 +881,7 @@ def test_background_cancel_tool_reports_completed_task_without_corrupting_result
 
 
 def test_background_cancel_tool_does_not_classify_generic_value_error_as_unknown(tmp_path: Path) -> None:
-    tool = BackgroundCancelTool(runtime=_UnexpectedCancelRuntime())
+    tool = TaskCancelTool(runtime=_UnexpectedCancelRuntime())
 
     with pytest.raises(ValueError, match="backend lookup failed"):
         tool.invoke(
@@ -891,7 +891,7 @@ def test_background_cancel_tool_does_not_classify_generic_value_error_as_unknown
 
 
 def test_background_cancel_tool_reports_unknown_task_deterministically(tmp_path: Path) -> None:
-    tool = BackgroundCancelTool(runtime=_UnknownCancelRuntime())
+    tool = TaskCancelTool(runtime=_UnknownCancelRuntime())
 
     result = tool.invoke(
         ToolCall(tool_name="background_cancel", arguments={"taskId": "missing-task"}),
@@ -912,7 +912,7 @@ def test_background_cancel_tool_reports_unknown_task_deterministically(tmp_path:
 
 
 def test_background_cancel_unknown_task_stays_stable_in_runtime_context(tmp_path: Path) -> None:
-    tool = BackgroundCancelTool(runtime=_UnknownAuthorizedCancelRuntime())
+    tool = TaskCancelTool(runtime=_UnknownAuthorizedCancelRuntime())
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
         result = tool.invoke(
             ToolCall(tool_name="background_cancel", arguments={"taskId": "missing-task"}),
@@ -926,9 +926,9 @@ def test_background_cancel_unknown_task_stays_stable_in_runtime_context(tmp_path
 
 
 def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path) -> None:
-    tool = BackgroundCancelTool(runtime=_StubBackgroundRuntime())
+    tool = TaskCancelTool(runtime=_StubBackgroundRuntime())
     task_id_type_error = (
-        r"background_cancel Validation error: taskId: "
+        r"task_cancel Validation error: taskId: "
         r"Input should be a valid string \(received int\)"
         r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
@@ -940,7 +940,7 @@ def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path
         )
 
     task_id_empty_error = (
-        r"background_cancel Validation error: taskId: Value error, "
+        r"task_cancel Validation error: taskId: Value error, "
         r"taskId must be a non-empty string \(received str\)"
         r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
@@ -950,7 +950,7 @@ def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path
             workspace=tmp_path,
         )
 
-    missing_task_id_error = r"background_cancel Validation error: taskId: Field required"
+    missing_task_id_error = r"task_cancel Validation error: taskId: Field required"
     with pytest.raises(ValueError, match=missing_task_id_error):
         tool.invoke(
             ToolCall(tool_name="background_cancel", arguments={}),
@@ -977,7 +977,7 @@ class _UnauthorizedBackgroundRuntime(_StubBackgroundRuntime):
 
 
 def test_background_output_rejects_foreign_parent_before_loading_result(tmp_path: Path) -> None:
-    tool = BackgroundOutputTool(runtime=_UnauthorizedBackgroundRuntime())
+    tool = TaskOutputTool(runtime=_UnauthorizedBackgroundRuntime())
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="foreign-session")):
         with pytest.raises(ValueError, match="only its parent"):
             tool.invoke(
@@ -987,7 +987,7 @@ def test_background_output_rejects_foreign_parent_before_loading_result(tmp_path
 
 
 def test_background_cancel_rejects_foreign_parent_before_cancellation(tmp_path: Path) -> None:
-    tool = BackgroundCancelTool(runtime=_UnauthorizedBackgroundRuntime())
+    tool = TaskCancelTool(runtime=_UnauthorizedBackgroundRuntime())
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="foreign-session")):
         with pytest.raises(ValueError, match="only its parent"):
             tool.invoke(
