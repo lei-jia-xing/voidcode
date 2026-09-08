@@ -33,7 +33,6 @@ _TOOL_POLICY_SUMMARY = "Tools: visible list is advisory. Runtime allowlists and 
 _PROMPT_ACTIVATION_PREVIEW_CHARS = 160
 
 
-
 @dataclass(frozen=True, slots=True)
 class PromptActivationDecision:
     section: PromptAssemblySection | None
@@ -150,8 +149,6 @@ def _activation_records(value: object) -> list[dict[str, object]]:
             if isinstance(record.get("key"), str):
                 records.append(record)
     return records
-
-
 
 
 @dataclass(frozen=True, slots=True)

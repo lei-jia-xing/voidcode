@@ -204,8 +204,7 @@ def test_task_tool_guidance_frontloads_required_arguments() -> None:
     assert "After starting a background task, continue independent work and wait for a completion reminder." in guidance
     assert (
         "Do not sleep, poll in a loop, repeatedly relaunch equivalent work, guess results, or read a "
-        "running child transcript just to peek."
-        in guidance
+        "running child transcript just to peek." in guidance
     )
 
 

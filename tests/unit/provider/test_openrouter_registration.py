@@ -42,6 +42,7 @@ def test_registry_resolves_openrouter_free_router_without_rewriting() -> None:
     assert resolved.selection.provider == "openrouter"
     assert resolved.selection.model == "free"
 
+
 def test_openrouter_config_reads_env_and_round_trips_without_secret() -> None:
     parsed = parse_provider_configs_payload(
         {"openrouter": {}},

@@ -42,7 +42,7 @@ _PROMPT_BOUNDARY_PHRASES = {
         "Deliver complete working behavior",
         "Verify child results yourself",
         "narrowest specialist that fits",
-        "Collect outstanding child results with task(operation=\"output\")",
+        'Collect outstanding child results with task(operation="output")',
     ),
     "worker": (
         "focused delegated executor",
@@ -114,7 +114,7 @@ def test_leader_prompt_guides_runtime_owned_background_retry() -> None:
     assert prompt is not None
     assert "background_retry" not in prompt
     assert "Delegate only through the runtime's task tool" in prompt
-    assert "Collect outstanding child results with task(operation=\"output\")" in prompt
+    assert 'Collect outstanding child results with task(operation="output")' in prompt
     assert "track the full set until every member is terminal" in prompt
 
 

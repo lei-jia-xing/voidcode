@@ -209,15 +209,11 @@ def test_provider_prompt_omits_environment_card_for_real_runtime_metadata() -> N
 
     system_contents = [segment.content or "" for segment in assembled.segments if segment.role == "system"]
     assert not any(
-        any(label in content for label in ("Platform:", "Workspace:", "Model:", "Date:", "Branch:", "Git:"))
-        for content in system_contents
+        any(label in content for label in ("Platform:", "Workspace:", "Model:", "Date:", "Branch:", "Git:")) for content in system_contents
     )
     prompt_stack = assembled.metadata["prompt_stack"]
     assert isinstance(prompt_stack, dict)
-    assert not any(
-        fragment["source"] in {"runtime_environment_stable", "runtime_environment_dynamic"}
-        for fragment in prompt_stack["fragments"]
-    )
+    assert not any(fragment["source"] in {"runtime_environment_stable", "runtime_environment_dynamic"} for fragment in prompt_stack["fragments"])
 
 
 def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix() -> None:
@@ -532,8 +528,6 @@ def test_transform_injections_live_in_dynamic_region_and_prefix_is_stable() -> N
     second_prefix = "\n".join(section.content for section in second.sections[: second_boundary + 1])
     assert first_prefix == second_prefix
     assert first_prefix.count(boundary_marker) == 1
-
-
 
 
 def test_assemble_provider_context_replayed_history_ends_with_current_user_prompt() -> None:

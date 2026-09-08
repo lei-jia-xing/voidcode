@@ -680,8 +680,7 @@ def test_background_related_guidance_includes_no_poll_and_no_peek_contracts() ->
     guidance = guidance_for_tool("task")
     assert (
         "Do not sleep, poll in a loop, repeatedly relaunch equivalent work, guess results, or read a "
-        "running child transcript just to peek."
-        in guidance
+        "running child transcript just to peek." in guidance
     )
     assert "The runtime preserves parent/child lineage, requested skills, and task correlation." in guidance
 
