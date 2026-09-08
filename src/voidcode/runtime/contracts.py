@@ -66,7 +66,6 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     delegation: RuntimeSubagentRoutingMetadata
     mode: runtime_mode.RuntimeMode
     read_only: bool
-    max_steps: int
     provider_stream: bool
     reasoning_effort: str
     show_thinking: bool
@@ -240,7 +239,6 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "delegation",
         "mode",
         "read_only",
-        "max_steps",
         "provider_stream",
         "reasoning_effort",
         "show_thinking",
@@ -574,14 +572,6 @@ def validate_runtime_request_metadata(
         if not isinstance(read_only, bool):
             raise RuntimeRequestError("request metadata 'read_only' must be a boolean")
         normalized["read_only"] = read_only
-
-    if "max_steps" in metadata:
-        max_steps = metadata["max_steps"]
-        if not isinstance(max_steps, int) or isinstance(max_steps, bool):
-            raise RuntimeRequestError("request metadata 'max_steps' must be an integer greater than or equal to 1")
-        if max_steps < 1:
-            raise RuntimeRequestError("request metadata 'max_steps' must be at least 1")
-        normalized["max_steps"] = max_steps
 
     if "provider_stream" in metadata:
         provider_stream = metadata["provider_stream"]

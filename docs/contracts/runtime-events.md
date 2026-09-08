@@ -247,7 +247,6 @@ Runtime hook surface 与其事件名称的内部对应关系由
 - 当前稳定的 payload 字段：
   - `step: int`
   - `phase: str`（当前为 `plan` 或 `finalize`）
-  - `max_steps: int`
 
 ### `graph.model_turn`
 - source: `graph`

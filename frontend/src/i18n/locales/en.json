@@ -3,7 +3,6 @@
   "config.agentPreset": "Agent Preset",
   "config.leaderMode": "Leader Mode",
   "config.providerModel": "Model",
-  "config.maxSteps": "Max Steps",
   "composer.agent": "Agent",
   "composer.model": "Model",
   "composer.selectModel": "Select model",

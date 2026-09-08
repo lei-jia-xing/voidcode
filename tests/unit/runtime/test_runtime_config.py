@@ -23,10 +23,7 @@ from voidcode.provider.config import (
 from voidcode.runtime import config as runtime_config
 from voidcode.runtime.config import (
     APPROVAL_MODE_ENV_VAR,
-    DEFAULT_MAX_STEPS,
     EXECUTION_ENGINE_ENV_VAR,
-    MAX_STEPS_ENV_VAR,
-    MAX_STEPS_UNLIMITED_SENTINEL,
     MODEL_ENV_VAR,
     REASONING_EFFORT_ENV_VAR,
     RUNTIME_CONFIG_FILE_NAME,
@@ -93,7 +90,6 @@ def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> N
     assert config.approval_mode == "ask"
     assert config.model is None
     assert config.execution_engine == "provider"
-    assert config.max_steps == DEFAULT_MAX_STEPS
     assert config.background_task == RuntimeBackgroundTaskConfig()
     assert config.hooks is None
     assert config.permission.read.rules == (("*", "allow"),)
@@ -387,12 +383,6 @@ def test_runtime_config_uses_execution_engine_environment_when_repo_file_missing
     assert config.execution_engine == "provider"
 
 
-def test_runtime_config_uses_max_steps_environment_when_repo_file_missing(tmp_path: Path) -> None:
-    config = load_runtime_config(tmp_path, env={MAX_STEPS_ENV_VAR: "7"})
-
-    assert config.max_steps == 7
-
-
 def test_runtime_config_uses_tool_timeout_environment_when_repo_file_missing(
     tmp_path: Path,
 ) -> None:
@@ -596,19 +586,12 @@ def test_runtime_config_prefers_repo_file_model_over_environment(tmp_path: Path)
     assert config.model == "repo/model"
 
 
-def test_runtime_config_rejects_repo_file_execution_engine(tmp_path: Path) -> None:
+def test_runtime_config_loads_repo_file_execution_engine(tmp_path: Path) -> None:
     _write_runtime_config(tmp_path, {"execution_engine": "deterministic"})
 
-    with pytest.raises(ValueError, match="runtime config field 'execution_engine' is not supported"):
-        _ = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "provider"})
+    config = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "provider"})
 
-
-def test_runtime_config_prefers_repo_file_max_steps_over_environment(tmp_path: Path) -> None:
-    _write_runtime_config(tmp_path, {"max_steps": 4})
-
-    config = load_runtime_config(tmp_path, env={MAX_STEPS_ENV_VAR: "7"})
-
-    assert config.max_steps == 4
+    assert config.execution_engine == "deterministic"
 
 
 def test_runtime_config_prefers_repo_file_tool_timeout_over_environment(tmp_path: Path) -> None:
@@ -641,20 +624,6 @@ def test_runtime_config_explicit_execution_engine_still_overrides_environment(
     assert config.execution_engine == "provider"
 
 
-def test_runtime_config_prefers_explicit_max_steps_over_repo_file_and_environment(
-    tmp_path: Path,
-) -> None:
-    _write_runtime_config(tmp_path, {"max_steps": 4})
-
-    config = load_runtime_config(
-        tmp_path,
-        max_steps=9,
-        env={MAX_STEPS_ENV_VAR: "7"},
-    )
-
-    assert config.max_steps == 9
-
-
 def test_runtime_config_prefers_explicit_tool_timeout_over_repo_file_and_environment(
     tmp_path: Path,
 ) -> None:
@@ -673,7 +642,6 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
     _write_runtime_config(
         tmp_path,
         {
-            "max_steps": 6,
             "tools": {
                 "builtin": {"enabled": True},
                 "local": {"enabled": True, "path": ".voidcode/tools"},
@@ -743,7 +711,6 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
     config = load_runtime_config(tmp_path, env={})
 
     assert config.execution_engine == "provider"
-    assert config.max_steps == 6
     assert config.tools == RuntimeToolsConfig(
         builtin=RuntimeToolsBuiltinConfig(enabled=True),
         local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
@@ -1647,14 +1614,6 @@ def test_runtime_config_rejects_removed_categories_field(tmp_path: Path) -> None
         _ = load_runtime_config(tmp_path, env={})
 
 
-def test_runtime_config_parses_repo_local_max_steps(tmp_path: Path) -> None:
-    _write_runtime_config(tmp_path, {"max_steps": 7})
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.max_steps == 7
-
-
 def test_runtime_config_parses_minimal_hook_commands(tmp_path: Path) -> None:
     _write_runtime_config(
         tmp_path,
@@ -1996,17 +1955,6 @@ def test_runtime_config_rejects_invalid_environment_execution_engine(tmp_path: P
         _ = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "agent"})
 
 
-@pytest.mark.parametrize("raw_value", ["-1", "four"])
-def test_runtime_config_rejects_invalid_environment_max_steps(tmp_path: Path, raw_value: str) -> None:
-    with pytest.raises(ValueError, match=MAX_STEPS_ENV_VAR):
-        _ = load_runtime_config(tmp_path, env={MAX_STEPS_ENV_VAR: raw_value})
-
-
-def test_runtime_config_environment_max_steps_zero_means_unlimited(tmp_path: Path) -> None:
-    config = load_runtime_config(tmp_path, env={MAX_STEPS_ENV_VAR: "0"})
-    assert config.max_steps == MAX_STEPS_UNLIMITED_SENTINEL
-
-
 @pytest.mark.parametrize("raw_value", ["0", "-1", "four"])
 def test_runtime_config_rejects_invalid_environment_tool_timeout(tmp_path: Path, raw_value: str) -> None:
     with pytest.raises(ValueError, match=TOOL_TIMEOUT_ENV_VAR):
@@ -2048,8 +1996,6 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
 @pytest.mark.parametrize(
     ("payload", "match"),
     [
-        pytest.param({"max_steps": -1}, "runtime config field 'max_steps'", id="max-steps-negative"),
-        pytest.param({"max_steps": "four"}, "runtime config field 'max_steps'", id="max-steps-type"),
         pytest.param(
             {"tool_timeout_seconds": 0},
             "runtime config field 'tool_timeout_seconds'",
@@ -2092,22 +2038,11 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
         ),
     ],
 )
-def test_runtime_config_rejects_invalid_max_steps(tmp_path: Path, payload: dict[str, object], match: str) -> None:
+def test_runtime_config_rejects_invalid_payload(tmp_path: Path, payload: dict[str, object], match: str) -> None:
     _write_runtime_config(tmp_path, payload)
 
     with pytest.raises(ValueError, match=match):
         _ = load_runtime_config(tmp_path, env={})
-
-
-def test_runtime_config_repo_local_max_steps_zero_means_unlimited(tmp_path: Path) -> None:
-    _write_runtime_config(tmp_path, {"max_steps": 0})
-    config = load_runtime_config(tmp_path, env={})
-    assert config.max_steps == MAX_STEPS_UNLIMITED_SENTINEL
-
-
-def test_runtime_config_explicit_max_steps_zero_means_unlimited(tmp_path: Path) -> None:
-    config = load_runtime_config(tmp_path, max_steps=0, env={})
-    assert config.max_steps == MAX_STEPS_UNLIMITED_SENTINEL
 
 
 @pytest.mark.parametrize(
@@ -2969,7 +2904,6 @@ def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defau
             approval_mode="allow",
             model="session/model",
             execution_engine="deterministic",
-            max_steps=7,
         ),
     )
     _ = initial_runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="resume-config-precedence"))
@@ -2980,7 +2914,6 @@ def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defau
             approval_mode="deny",
             model="fresh/model",
             execution_engine="deterministic",
-            max_steps=3,
         ),
     )
     effective = resumed_runtime.effective_runtime_config(session_id="resume-config-precedence")
@@ -2988,7 +2921,6 @@ def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defau
     assert effective.approval_mode == "allow"
     assert effective.model == "session/model"
     assert effective.execution_engine == "deterministic"
-    assert effective.max_steps == 7
 
 
 def test_runtime_config_parses_policy_config_contract(tmp_path: Path) -> None:

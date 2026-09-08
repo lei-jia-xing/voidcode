@@ -1201,14 +1201,13 @@ def test_http_approval_resolution_preserves_stale_terminal_task_status_across_ru
     assert output_payload["output"] == "Wrote file successfully: child.txt"
 
 
-def test_http_run_stream_accepts_metadata_for_skills_and_max_steps() -> None:
+def test_http_run_stream_accepts_metadata_for_skills() -> None:
     create_runtime_app = _load_transport_app_factory()
     runtime_stream_chunk, session_ref, session_state = _load_stream_types()
 
     class StubRuntime:
         def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
             assert request.metadata.get("skills") == ["demo"]
-            assert request.metadata.get("max_steps") == 10
             yield runtime_stream_chunk(
                 kind="output",
                 session=session_state(
@@ -1234,7 +1233,6 @@ def test_http_run_stream_accepts_metadata_for_skills_and_max_steps() -> None:
         body=json.dumps(
             {
                 "prompt": "run with meta",
-                "metadata": {"skills": ["demo"], "max_steps": 10},
             }
         ).encode("utf-8"),
     )

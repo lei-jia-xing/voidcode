@@ -52,6 +52,11 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         "description": "Default approval policy for tool execution.",
     }
     assert properties["permission"] == {"$ref": "#/$defs/permissionConfig"}
+    assert properties["execution_engine"] == {
+        "type": "string",
+        "enum": ["deterministic", "provider"],
+        "description": "Execution engine used when no request or environment override is set.",
+    }
     assert properties["agent"] == {"$ref": "#/$defs/agentConfig"}
     agents = cast(dict[str, object], properties["agents"])
     agent_map_properties = cast(dict[str, object], agents["properties"])
@@ -206,7 +211,6 @@ def test_generate_starter_runtime_config_excludes_secrets() -> None:
     payload = generate_starter_runtime_config(
         approval_mode="deny",
         model="opencode-go/glm-5",
-        max_steps=7,
         include_examples=True,
     )
 
@@ -214,7 +218,6 @@ def test_generate_starter_runtime_config_excludes_secrets() -> None:
         "$schema": RUNTIME_CONFIG_SCHEMA_ID,
         "approval_mode": "deny",
         "model": "opencode-go/glm-5",
-        "max_steps": 7,
         "formatter": {"enabled": True},
         "lsp": {"enabled": True},
         "mcp": {"enabled": True},
@@ -235,8 +238,6 @@ def test_generate_starter_runtime_config_validates_inputs() -> None:
         generate_starter_runtime_config(model="provider/")
     with pytest.raises(ValueError, match="provider/model"):
         generate_starter_runtime_config(model="/gpt-5")
-    with pytest.raises(ValueError, match="max_steps"):
-        generate_starter_runtime_config(max_steps=-1)
 
 
 def test_format_starter_runtime_config_json_preserves_order() -> None:
@@ -275,6 +276,17 @@ def test_runtime_config_rejects_repo_local_workflow_mode_default(tmp_path: Path)
         match="runtime config field 'workflow_mode' is not supported",
     ):
         _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_loads_repo_local_execution_engine(tmp_path: Path) -> None:
+    (tmp_path / ".voidcode.json").write_text(
+        json.dumps({"execution_engine": "provider"}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.execution_engine == "provider"
 
 
 def test_runtime_config_json_schema_exposes_policy_config_contract() -> None:
@@ -428,14 +440,13 @@ def test_runtime_config_schema_file_matches_generated_schema() -> None:
     ("ref", "dataclass_cls", "rename", "schema_only", "runtime_only"),
     [
         # Top-level keys map to RuntimeConfig fields. `fallback_models` is the config-file
-        # key for the dataclass field `provider_fallback`; `$schema` is an editor reference;
-        # `acp`/`execution_engine` are runtime-derived, not config keys.
+        # key for the dataclass field `provider_fallback`; `$schema` is an editor reference.
         (
             "",
             RuntimeConfig,
             {"fallback_models": "provider_fallback"},
             {"$schema"},
-            {"acp", "execution_engine"},
+            {"acp"},
         ),
         (
             "$defs.runtimeToolsConfig",
@@ -460,8 +471,7 @@ def test_runtime_config_schema_file_matches_generated_schema() -> None:
             set(),
             set(),
         ),
-        # agent.fallback_models maps to RuntimeAgentConfig.provider_fallback; the
-        # dataclass-only `execution_engine` is resolved from the environment, not the config file.
+        # agent.fallback_models maps to RuntimeAgentConfig.provider_fallback.
         (
             "$defs.agentConfig",
             RuntimeAgentConfig,

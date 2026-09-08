@@ -394,6 +394,7 @@ class RuntimeResumeCoordinator:
                     ),
                 },
                 abort_signal=abort_signal,
+                run_step=1,
             ),
             session,
         )
@@ -707,6 +708,7 @@ class RuntimeResumeCoordinator:
                     ),
                 },
                 abort_signal=abort_signal,
+                run_step=1,
             ),
             session,
         )
@@ -1317,6 +1319,7 @@ class RuntimeResumeCoordinator:
                     ),
                 },
                 abort_signal=abort_signal,
+                run_step=1,
             ),
             session,
         )

@@ -13,7 +13,6 @@
 - `approval_mode`
 - `model`
 - `execution_engine`
-- `max_steps`
 - `tool_timeout_seconds`
 - `reasoning_effort`
 - `hooks`
@@ -31,7 +30,7 @@
 目前 hooks/config 的 MVP 收敛目标已经锁定：
 
 - hooks 继续保持 runtime-owned，但当前已不再只限 `pre_tool` / `post_tool`，而是同时包含 `session_start`、`session_end`、`session_idle`、`background_task_registered`、`background_task_started`、`background_task_progress`、`background_task_completed`、`background_task_failed`、`background_task_cancelled`、`background_task_notification_enqueued`、`background_task_result_read`、`delegated_result_available`、`turn_progress` 与 `stuck_detected` 等已解析的 lifecycle hook phases
-- 显式 / 仓库本地 / 环境 / 默认值这条完整优先级链当前适用于 `approval_mode`、`model`、`execution_engine`、`max_steps` 和 `reasoning_effort`
+- 显式 / 仓库本地 / 环境 / 默认值这条完整优先级链当前适用于 `approval_mode`、`model`、`execution_engine` 和 `reasoning_effort`
 - 单一可见检查面为 CLI：`voidcode config show --workspace <path> [--session <id>]`
 - 当前 schema-backed 配置 UX 包含 `voidcode config schema` 与 `voidcode config init`
 - 恢复会话的配置覆盖仍存放在 `SessionState.metadata["runtime_config"]`，并继续覆盖新的 runtime 默认值
@@ -59,7 +58,6 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
   "model": "opencode/gpt-5.4",
   "approval_mode": "ask",
   "execution_engine": "provider",
-  "max_steps": 4,
   "hooks": {
     "enabled": true,
     "pre_tool": [["python", "scripts/pre_tool.py"]],
@@ -110,7 +108,6 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `model`：OpenCode `provider/model` 格式的供应商/模型标识符
 - `approval_mode`：由运行时治理的工具所使用的最小执行策略模式
 - `execution_engine`：当前接受 `deterministic` 或 `provider`。`provider` 是产品默认主路径；`deterministic` 保留为显式 test/dev/no-key harness（参考/debug）。
-- `max_steps`：execution engine 的最大 step budget，作用于 deterministic 与 provider-backed engine
 - `hooks`：运行时拥有的最小钩子配置对象，覆盖 pre/post tool 与当前已解析的 lifecycle hook phases
 - `tools`：内置工具启用、仓库本地自定义 tool manifest 发现，以及 provider 可见工具收窄的最小配置；所有 tool 都通过 runtime registry / allowlist / permission 路径治理
 - `skills`：技能发现启用的最小配置，以及额外的技能搜索路径
@@ -142,7 +139,6 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `permission.external_directory_write`：对象，key 为路径 pattern（支持 absolute / `~` / glob），value 为 `allow|deny|ask`
 - `permission.rules`：有序数组，每条规则可包含 `tool`、`path`、`command` 与必填 `decision`，用于 runtime-owned 的工具/路径/命令 pattern 权限匹配
 - `model`：字符串
-- `max_steps`：大于等于 1 的整数
 - `reasoning_effort`：字符串枚举，仅接受 `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；`"none"` 不被接受（实现见 `src/voidcode/provider/reasoning_effort.py`）
 - `hooks.enabled`：布尔值；默认 `true`
 - `hooks.pre_tool`：命令数组的数组，每个命令在 workspace cwd 中执行
@@ -472,7 +468,7 @@ workspace 本地覆盖路径保持为：
 2. 随后在该工作区内发现仓库本地配置
 3. 普通运行时配置优先级适用于非引导字段，如 `model`、`approval_mode` 和 `hooks`
 
-对于 harness/runtime 这条配置链，`approval_mode`、`model`、`execution_engine`、`max_steps` 和 `reasoning_effort` 的固定优先级与运行时 policy 一致，按下列顺序解释：
+对于 harness/runtime 这条配置链，`approval_mode`、`model`、`execution_engine` 和 `reasoning_effort` 的固定优先级与运行时 policy 一致，按下列顺序解释：
 
 1. Hardcoded safety denylist and workspace/session invariants.
 2. Runtime request mode and `read_only` policy.
@@ -486,7 +482,7 @@ workspace 本地覆盖路径保持为：
 
 其余领域仍保持浅层仓库本地配置语义，不在此轨道中获得这条完整优先级引擎。
 
-对于 fresh run，`RuntimeRequest.metadata["max_steps"]` 与 `RuntimeRequest.metadata["reasoning_effort"]` 可以作为窄范围的请求级覆盖；一旦会话开始，这些值会被持久化到 `SessionState.metadata["runtime_config"]`，并在后续 resume 时优先于新的 runtime 默认值。`execution_engine` 同样会进入显式 / 仓库本地 / 环境 / 默认值解析，并在会话恢复时优先采用持久化的会话配置。
+对于 fresh run，`RuntimeRequest.metadata["reasoning_effort"]` 可以作为窄范围的请求级覆盖；`execution_engine` 同样会进入显式 / 仓库本地 / 环境 / 默认值解析，并在会话恢复时优先采用持久化的会话配置。未知 metadata 会因 request schema 拒绝，不能静默忽略。
 
 `reasoning_effort` 的 capability-aware 校验由 runtime 在请求处理早期完成：当解析后的 `provider/model` 的 `ProviderModelMetadata.supports_reasoning_effort` 显式为 `False` 时，runtime 抛出 `RuntimeRequestError`；未知能力按 best-effort 透传。
 
@@ -508,7 +504,7 @@ workspace 本地覆盖路径保持为：
 
 对于恢复的会话，持久化在 `SessionState.metadata["runtime_config"]` 中的 `approval_mode` / `model` 就是会话覆盖，并且优先级高于新的 CLI / 客户端覆盖。
 
-持久化 runtime config 使用单一当前 shape。`approval_mode`、`permission`、`execution_engine`、`max_steps`、`tool_timeout_seconds` 和 `fallback_models` 均为必填字段；缺失字段、无效类型或未知字段直接失败。resume/replay 不从当前进程默认值补齐缺失字段，也不从其他 snapshot 反推缺失配置。
+持久化 runtime config 使用单一当前 shape。`approval_mode`、`permission`、`execution_engine`、`tool_timeout_seconds` 和 `fallback_models` 均为必填字段；缺失字段、无效类型或未知字段直接失败。resume/replay 不迁移、不丢弃未知字段，也不从当前进程默认值补齐。
 
 
 ## 计划的会话覆盖形状
@@ -521,13 +517,12 @@ workspace 本地覆盖路径保持为：
     "model": "opencode/gpt-5.4-pro",
     "approval_mode": "ask",
     "execution_engine": "provider",
-    "max_steps": 6,
     "reasoning_effort": "high"
   }
 }
 ```
 
-这有意设计得很窄：在 MVP 中，`approval_mode`、`model`、`execution_engine`、`max_steps` 与 `reasoning_effort` 是恢复关键字段；其中 `max_steps` 与 `reasoning_effort` 支持窄范围的请求级覆盖，并在会话启动后转化为持久化会话配置。
+这有意设计得很窄：在 MVP 中，`approval_mode`、`model`、`execution_engine` 与 `reasoning_effort` 是恢复关键字段，并在会话启动后转化为持久化会话配置。
 
 ## 会话持久化设置
 
@@ -565,7 +560,6 @@ voidcode config init --workspace <path> [--force] [--print] [--with-examples]
 - `execution_engine`
 - `model`
 - `fallback_models`（provider fallback 链；未配置时为空数组）
-- `max_steps`
 - `reasoning_effort`（仅当配置或会话覆盖该字段时出现）
 - `agent`
 - `agents`
@@ -600,8 +594,8 @@ https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.c
 
 - hooks 在此轨道中已包含 `pre_tool` / `post_tool` 以及 `session_start`、`session_end`、`session_idle`、`background_task_completed`、`background_task_failed`、`background_task_cancelled`、`delegated_result_available`、`turn_progress`、`stuck_detected` 这些 lifecycle hook phases；但仍不包含 render/message-transform 一类更宽的展示层阶段
 - hooks 不得改变工具参数或结果，只能观察与失败中止
-- 除 `approval_mode` / `model` / `execution_engine` / `max_steps` / `reasoning_effort` 外，其余扩展领域继续保持浅层仓库本地配置
-- 仅 `approval_mode` / `model` / `execution_engine` / `max_steps` / `reasoning_effort` 在此轨道中具备恢复关键的优先级行为
+- 除 `approval_mode` / `model` / `execution_engine` / `reasoning_effort` 外，其余扩展领域继续保持浅层仓库本地配置
+- 仅 `approval_mode` / `model` / `execution_engine` / `reasoning_effort` 在此轨道中具备恢复关键的优先级行为
 - 当前 request metadata 已是受限的 runtime schema：顶层字段必须属于稳定 allowlist（内部字段仅由 runtime 使用），`command` / `delegation` 等嵌套对象也会拒绝未知字段或无效类型；入口统一 fail-fast，详见 `src/voidcode/runtime/contracts.py::validate_runtime_request_metadata`。
 
 ## 非目标

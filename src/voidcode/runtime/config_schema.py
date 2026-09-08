@@ -9,8 +9,6 @@ from typing import cast
 
 from .config import (
     APPROVAL_MODE_ENV_VAR,
-    EXECUTION_ENGINE_ENV_VAR,
-    MAX_STEPS_ENV_VAR,
     MODEL_ENV_VAR,
     REASONING_EFFORT_ENV_VAR,
     RUNTIME_CONFIG_FILE_NAME,
@@ -45,7 +43,6 @@ def runtime_config_json_schema() -> dict[str, object]:
             f"`{RUNTIME_CONFIG_FILE_NAME}` in the workspace root. "
             "Resolves alongside environment variables "
             f"({APPROVAL_MODE_ENV_VAR}, {MODEL_ENV_VAR}, "
-            f"{EXECUTION_ENGINE_ENV_VAR}, {MAX_STEPS_ENV_VAR}, "
             f"{TOOL_TIMEOUT_ENV_VAR}, {REASONING_EFFORT_ENV_VAR}) and the user-level "
             "`~/.config/voidcode/config.json`."
         ),
@@ -68,19 +65,15 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "minLength": 1,
                 "description": "Provider/model identifier in `provider/model` form.",
             },
+            "execution_engine": {
+                "type": "string",
+                "enum": ["deterministic", "provider"],
+                "description": "Execution engine used when no request or environment override is set.",
+            },
             "fallback_models": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
                 "description": "Ordered fallback models tried after the primary model.",
-            },
-            "max_steps": {
-                "type": "integer",
-                "minimum": 0,
-                "description": (
-                    "Maximum graph step budget for a single run. Defaults to 100 "
-                    "when omitted. Set to 0 to disable the cap (the run then "
-                    "relies on context overflow and model self-termination)."
-                ),
             },
             "tool_timeout_seconds": {
                 "type": "integer",
@@ -665,14 +658,11 @@ def generate_starter_runtime_config(
     *,
     approval_mode: str = "ask",
     model: str | None = None,
-    max_steps: int | None = None,
     include_examples: bool = False,
     include_schema_reference: bool = True,
 ) -> dict[str, object]:
     if approval_mode not in {"allow", "deny", "ask"}:
         raise ValueError(f"approval_mode must be one of: allow, deny, ask; received {approval_mode!r}")
-    if max_steps is not None and max_steps < 0:
-        raise ValueError("max_steps must be a non-negative integer (0 = unlimited, relies on context overflow)")
     if model is not None:
         _validate_model_reference(model)
 
@@ -682,8 +672,6 @@ def generate_starter_runtime_config(
     payload["approval_mode"] = approval_mode
     if model is not None:
         payload["model"] = model
-    if max_steps is not None:
-        payload["max_steps"] = max_steps
     if include_examples:
         payload["formatter"] = {"enabled": True}
         payload["lsp"] = {"enabled": True}

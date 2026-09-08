@@ -80,7 +80,6 @@ def test_background_task_storage_preserves_stable_request_metadata_round_trip(
             metadata={
                 "abort_requested": False,
                 "agent": {"preset": "leader", "model": "opencode/gpt-5.4"},
-                "max_steps": 2,
                 "provider_stream": True,
                 "skills": ["alpha", "beta"],
             },
@@ -94,7 +93,6 @@ def test_background_task_storage_preserves_stable_request_metadata_round_trip(
     assert loaded.request.metadata == {
         "abort_requested": False,
         "agent": {"preset": "leader", "model": "opencode/gpt-5.4"},
-        "max_steps": 2,
         "provider_stream": True,
         "skills": ["alpha", "beta"],
     }

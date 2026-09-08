@@ -156,7 +156,6 @@ def skill_binding_snapshot_from_agent_capability_snapshot(
         runtime_payload = cast(dict[str, object], runtime)
         for key in (
             "approval_mode",
-            "max_steps",
             "tool_timeout_seconds",
             "permission",
         ):

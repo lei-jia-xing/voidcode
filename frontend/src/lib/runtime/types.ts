@@ -261,7 +261,6 @@ export interface RuntimeRequest {
     agent?: Record<string, unknown>;
     mode?: "normal" | "analyze" | "plan";
     read_only?: boolean;
-    max_steps?: number;
     skills?: string[];
     force_load_skills?: string[];
     context_transform_refs?: string[];

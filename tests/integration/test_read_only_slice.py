@@ -2244,9 +2244,7 @@ def test_provider_background_task_full_session_is_tool_result_not_hidden_context
     background_task_result = after_background_context.tool_results[1]
     background_task_data = background_task_result.data
     background_task_session = cast(dict[str, object], background_task_data["session"])
-    background_tool_segments = [
-        segment for segment in after_background_context.segments if segment.role == "tool" and segment.tool_name == "task"
-    ]
+    background_tool_segments = [segment for segment in after_background_context.segments if segment.role == "tool" and segment.tool_name == "task"]
     assert response.session.status == "completed"
     assert response.output == "parent collected transcript"
     assert "child transcript sentinel" not in _request_text(after_task_request)
@@ -4187,7 +4185,6 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "approval_mode": "allow",
         "execution_engine": "provider",
         "fallback_models": [],
-        "max_steps": 100,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "mcp": {
             "configured_enabled": True,
@@ -5191,7 +5188,6 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "approval_mode": "allow",
         "execution_engine": "deterministic",
         "fallback_models": [],
-        "max_steps": 100,
         "tool_timeout_seconds": None,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "mcp": {

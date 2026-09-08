@@ -10,8 +10,6 @@ from ...graph.provider_graph import ProviderGraph
 from ...provider.errors import ProviderExecutionError
 from ...provider.models import ResolvedProviderChain, ResolvedProviderModel
 from ..config import (
-    DEFAULT_MAX_STEPS,
-    MAX_STEPS_UNLIMITED_SENTINEL,
     ExecutionEngineName,
     serialize_runtime_agent_config,
 )
@@ -44,24 +42,6 @@ def provider_model_required_message() -> str:
     )
 
 
-def resolve_provider_graph_max_steps(max_steps: int | None) -> int | None:
-    """Translate effective config max_steps into the value passed to ProviderGraph.
-
-    Semantics:
-    - ``None``: caller did not configure max_steps; apply the safe default
-      (:data:`DEFAULT_MAX_STEPS`) so a runaway model loop cannot run forever.
-    - ``MAX_STEPS_UNLIMITED_SENTINEL`` (0): caller explicitly opted out of the
-      step cap; return ``None`` so ProviderGraph runs without a hard step
-      limit (relies on context overflow / model self-termination).
-    - Positive integer: pass through unchanged.
-    """
-    if max_steps is None:
-        return DEFAULT_MAX_STEPS
-    if max_steps == MAX_STEPS_UNLIMITED_SENTINEL:
-        return None
-    return max_steps
-
-
 def resolve_runtime_session_routing(request: RuntimeRequest) -> RuntimeSessionRouting:
     requested_session_id = request.session_id
     if requested_session_id is not None:
@@ -90,23 +70,20 @@ def build_runtime_graph(
     *,
     engine_name: ExecutionEngineName,
     provider_model: ResolvedProviderModel,
-    max_steps: int | None,
 ) -> RuntimeGraph:
     if engine_name == "deterministic":
-        return DeterministicGraph(max_steps=max_steps or 4)
+        return DeterministicGraph()
     if provider_model.provider is None:
         raise ValueError(provider_model_required_message())
     return ProviderGraph(
         provider=provider_model.provider.turn_provider(),
         provider_model=provider_model,
-        max_steps=resolve_provider_graph_max_steps(max_steps),
     )
 
 
 def cache_key_for_effective_config(
     config: EffectiveRuntimeConfig,
 ) -> tuple[ExecutionEngineName, str]:
-    model_str = config.model if config.model is not None else ""
     agent_payload = serialize_runtime_agent_config(config.agent)
     agent_key = "" if agent_payload is None else str(sorted(agent_payload.items()))
     provider_fallback_key = (
@@ -119,10 +96,7 @@ def cache_key_for_effective_config(
             )
         )
     )
-    return (
-        config.execution_engine,
-        f"{model_str}::{provider_fallback_key}::{config.max_steps}::{agent_key}",
-    )
+    return (config.execution_engine, f"{provider_fallback_key}::{agent_key}")
 
 
 def select_graph_for_effective_config(
@@ -138,7 +112,6 @@ def select_graph_for_effective_config(
         graph=build_runtime_graph(
             engine_name=config.execution_engine,
             provider_model=provider_target,
-            max_steps=config.max_steps,
         ),
         provider_attempt=provider_attempt,
         provider_target=provider_target,
@@ -169,7 +142,6 @@ def fallback_graph_for_provider_error(
         graph=build_runtime_graph(
             engine_name=config.execution_engine,
             provider_model=next_target,
-            max_steps=config.max_steps,
         ),
         provider_attempt=next_attempt,
         provider_target=next_target,

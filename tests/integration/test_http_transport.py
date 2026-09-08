@@ -3000,7 +3000,7 @@ def test_transport_session_events_stops_cleanly_when_send_raises_during_replay()
     assert len(data_parts) == 2  # snapshot + first chunk only
 
 
-def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_steps() -> None:
+def test_transport_run_stream_accepts_metadata_passthrough_for_skills() -> None:
     create_runtime_app = _load_transport_app_factory()
     runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
     session = session_state(
@@ -3016,7 +3016,6 @@ def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_st
             assert request.session_id == "stream-meta-session"
             assert request.metadata == {
                 "provider_stream": True,
-                "max_steps": 6,
                 "skills": ["demo"],
                 "mode": "plan",
             }
@@ -3056,7 +3055,6 @@ def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_st
                 "session_id": "stream-meta-session",
                 "metadata": {
                     "provider_stream": True,
-                    "max_steps": 6,
                     "skills": ["demo"],
                     "mode": "plan",
                 },

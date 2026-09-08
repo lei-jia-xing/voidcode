@@ -39,7 +39,6 @@ PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
         "permission",
         "policy",
         "execution_engine",
-        "max_steps",
         "tool_timeout_seconds",
         "reasoning_effort",
         "model",
@@ -63,7 +62,6 @@ class EffectiveRuntimeConfig:
     permission: ExternalDirectoryPermissionConfig
     model: str | None
     execution_engine: ExecutionEngineName
-    max_steps: int | None
     tool_timeout_seconds: int | None = None
     reasoning_effort: str | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
@@ -82,7 +80,6 @@ class PersistedRuntimeConfigMaterialization:
     policy: RuntimePolicyConfig | None
     model: str | None
     execution_engine: ExecutionEngineName
-    max_steps: int | None
     tool_timeout_seconds: int | None
     reasoning_effort: str | None
     providers: RuntimeProvidersConfig | None
@@ -99,7 +96,6 @@ def serialize_runtime_config_core(config: EffectiveRuntimeConfig) -> dict[str, o
         "approval_mode": config.approval_mode,
         "permission": serialize_external_permission_config(config.permission),
         "execution_engine": config.execution_engine,
-        "max_steps": config.max_steps,
         "tool_timeout_seconds": config.tool_timeout_seconds,
         "fallback_models": (
             list(config.provider_fallback.fallback_models) if config.provider_fallback is not None and config.model is not None else []
@@ -138,7 +134,6 @@ def parse_persisted_runtime_config(
         "approval_mode",
         "permission",
         "execution_engine",
-        "max_steps",
         "tool_timeout_seconds",
         "fallback_models",
     }
@@ -165,16 +160,6 @@ def parse_persisted_runtime_config(
         model = persisted_model
     else:
         raise ValueError("persisted runtime_config model must be a string or null")
-
-    persisted_max_steps = runtime_config["max_steps"]
-    if persisted_max_steps is None:
-        max_steps = None
-    elif isinstance(persisted_max_steps, int) and not isinstance(persisted_max_steps, bool):
-        if persisted_max_steps < 0:
-            raise ValueError("persisted runtime_config max_steps must be a non-negative integer (0 = unlimited)")
-        max_steps = persisted_max_steps
-    else:
-        raise ValueError("persisted runtime_config max_steps must be an integer or null")
 
     persisted_tool_timeout = runtime_config["tool_timeout_seconds"]
     if persisted_tool_timeout is None:
@@ -240,7 +225,6 @@ def parse_persisted_runtime_config(
         policy=policy,
         model=model,
         execution_engine=execution_engine,
-        max_steps=max_steps,
         tool_timeout_seconds=tool_timeout_seconds,
         reasoning_effort=reasoning_effort,
         providers=providers,
@@ -285,34 +269,15 @@ def parse_persisted_provider_fallback(
 def apply_request_runtime_config_overrides(
     resolved: EffectiveRuntimeConfig,
     *,
-    max_steps: int | None,
     reasoning_effort: object,
     context_transform_refs: tuple[str, ...] | None,
 ) -> EffectiveRuntimeConfig:
-    if max_steps is not None:
-        resolved = EffectiveRuntimeConfig(
-            approval_mode=resolved.approval_mode,
-            permission=resolved.permission,
-            model=resolved.model,
-            execution_engine=resolved.execution_engine,
-            max_steps=max_steps,
-            tool_timeout_seconds=resolved.tool_timeout_seconds,
-            reasoning_effort=resolved.reasoning_effort,
-            provider_fallback=resolved.provider_fallback,
-            providers=resolved.providers,
-            resolved_provider=resolved.resolved_provider,
-            agent=resolved.agent,
-            context_window=resolved.context_window,
-            tools=resolved.tools,
-            policy=resolved.policy,
-        )
     if isinstance(reasoning_effort, str) and reasoning_effort:
         resolved = EffectiveRuntimeConfig(
             approval_mode=resolved.approval_mode,
             permission=resolved.permission,
             model=resolved.model,
             execution_engine=resolved.execution_engine,
-            max_steps=resolved.max_steps,
             tool_timeout_seconds=resolved.tool_timeout_seconds,
             reasoning_effort=reasoning_effort,
             provider_fallback=resolved.provider_fallback,
@@ -329,7 +294,6 @@ def apply_request_runtime_config_overrides(
             permission=resolved.permission,
             model=resolved.model,
             execution_engine=resolved.execution_engine,
-            max_steps=resolved.max_steps,
             tool_timeout_seconds=resolved.tool_timeout_seconds,
             reasoning_effort=resolved.reasoning_effort,
             provider_fallback=resolved.provider_fallback,

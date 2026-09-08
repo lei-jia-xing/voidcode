@@ -318,6 +318,7 @@ def _graph_request_without_provider_attempt(
             metadata=_metadata_without_provider_attempt(request.metadata),
             abort_signal=request.abort_signal,
             tool_call_preview=request.tool_call_preview,
+            run_step=request.run_step,
         ),
         session,
     )
@@ -1226,6 +1227,9 @@ class RuntimeRunLoopCoordinator:
         replayed_result_count = (
             len(tool_results) if graph_request.metadata.get("runtime_resume") is True or graph_request.metadata.get("resume") is True else 0
         )
+        # Run-local watermark propagated to graph events, hooks, and diagnostics.
+        run_step = graph_request.run_step
+
         while True:
             if pending_provider_attempt_reset is not None:
                 provider_attempt = pending_provider_attempt_reset.provider_attempt
@@ -1266,7 +1270,7 @@ class RuntimeRunLoopCoordinator:
             current_available_tools: tuple[ToolDefinition, ...] = cast(tuple[ToolDefinition, ...], current_graph_request.available_tools)
             current_metadata: dict[str, object] = current_graph_request.metadata
             current_abort_signal: ProviderAbortSignal | None = current_graph_request.abort_signal
-            turn_index = len(tool_results) + 1
+            turn_index = run_step
             sequence, terminated, stuck_detected_emitted = yield from self._run_turn_hooks(
                 session=session,
                 sequence=sequence,
@@ -1309,9 +1313,11 @@ class RuntimeRunLoopCoordinator:
                     metadata=current_metadata,
                     abort_signal=current_abort_signal,
                     tool_call_preview=self._tool_call_preview,
+                    run_step=run_step,
                 ),
                 session,
             )
+
             effective_runtime_config = runtime.effective_runtime_config_from_metadata(session.metadata)
             session, sequence, terminated = yield from self._emit_turn_context_events(
                 session=session,
@@ -1558,6 +1564,7 @@ class RuntimeRunLoopCoordinator:
                     },
                 )
             )
+            run_step += 1
             if provider_attempt != 0:
                 pending_provider_attempt_reset = _provider_attempt_reset_after_tool_result(
                     provider_attempt=provider_attempt,
@@ -1565,7 +1572,7 @@ class RuntimeRunLoopCoordinator:
                         config=effective_runtime_config,
                         provider_attempt=0,
                     ),
-                    graph_request=active_graph_request,
+                    graph_request=replace(active_graph_request, run_step=run_step),
                     session=session,
                 )
 
@@ -2376,6 +2383,7 @@ class RuntimeRunLoopCoordinator:
                         metadata=retry_metadata,
                         abort_signal=current_abort_signal,
                         tool_call_preview=self._tool_call_preview,
+                        run_step=active_graph_request.run_step,
                     ),
                     session,
                 )
@@ -2441,6 +2449,7 @@ class RuntimeRunLoopCoordinator:
                         metadata=fallback_metadata,
                         abort_signal=fallback_abort_signal,
                         tool_call_preview=self._tool_call_preview,
+                        run_step=active_graph_request.run_step,
                     ),
                     session,
                 )

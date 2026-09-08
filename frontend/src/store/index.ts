@@ -1307,19 +1307,9 @@ export const useAppStore = create<AppState>()(
           rawMetadata.agent && typeof rawMetadata.agent === "object"
             ? (rawMetadata.agent as Record<string, unknown>)
             : {};
-        const requestedMaxSteps = rawMetadata.max_steps;
-        const maxStepsOverride =
-          typeof requestedMaxSteps === "number" &&
-          Number.isInteger(requestedMaxSteps) &&
-          requestedMaxSteps > 0
-            ? requestedMaxSteps
-            : undefined;
         const forwardMetadata = Object.fromEntries(
           Object.entries(rawMetadata).filter(
-            ([key]) =>
-              key !== "agent" &&
-              key !== "max_steps" &&
-              key !== "reasoning_effort",
+            ([key]) => key !== "agent" && key !== "reasoning_effort",
           ),
         );
         const forwardAgentMetadata = Object.fromEntries(
@@ -1342,9 +1332,6 @@ export const useAppStore = create<AppState>()(
               "";
         const metadata = {
           ...forwardMetadata,
-          ...(maxStepsOverride !== undefined
-            ? { max_steps: maxStepsOverride }
-            : {}),
           ...(modelMetadata?.supports_reasoning_effort === true &&
           requestedReasoningEffort
             ? { reasoning_effort: requestedReasoningEffort }
@@ -1508,32 +1495,11 @@ export const useAppStore = create<AppState>()(
           return;
         }
 
-        // The follow stream can lag the durable session row. Refresh once
-        // before resolving so a card rendered from an older event cannot
-        // submit an obsolete request id. Keep the local event tail as a
-        // fallback while a run is still persisting its waiting snapshot.
-        let requestId = getPendingApprovalRequestId(currentSessionEvents);
-        try {
-          const latest = await RuntimeClient.getSessionReplay(currentSessionId);
-          if (
-            get().currentSessionId === currentSessionId &&
-            get().replayRequestId === replayRequestId
-          ) {
-            requestId = getPendingApprovalRequestId(latest.events) ?? requestId;
-          }
-        } catch {
-          // The local waiting event remains the best available snapshot when
-          // the read races the initial run persistence or the transport fails.
-        }
-        // Do not carry a request id across a session switch or newer replay.
-        // The local fallback is valid only for the snapshot that started this
-        // submission; otherwise the current approval card must take over.
-        if (
-          get().currentSessionId !== currentSessionId ||
-          get().replayRequestId !== replayRequestId
-        ) {
-          return;
-        }
+        // Claim the approval card before any network call. Use the pending
+        // request shown by the current event projection for this POST; an
+        // authoritative replay here would make the click wait on a slow GET.
+        const requestId = getPendingApprovalRequestId(currentSessionEvents);
+        set({ approvalStatus: "submitting", approvalError: null });
 
         if (!requestId) {
           set({
@@ -1543,7 +1509,9 @@ export const useAppStore = create<AppState>()(
           return;
         }
 
-        set({ approvalStatus: "submitting", approvalError: null });
+        // A concurrent replay may advance the generation while the POST is
+        // in flight. The response and failure paths below keep that newer
+        // session view authoritative and clear submitting on stale exits.
 
         try {
           const response = await RuntimeClient.resolveApproval(
@@ -1555,6 +1523,9 @@ export const useAppStore = create<AppState>()(
             get().currentSessionId !== currentSessionId ||
             get().replayRequestId !== replayRequestId
           ) {
+            if (get().currentSessionId === currentSessionId) {
+              set({ approvalStatus: "idle", approvalError: null });
+            }
             return;
           }
           set({
@@ -1580,6 +1551,9 @@ export const useAppStore = create<AppState>()(
             get().currentSessionId !== currentSessionId ||
             get().replayRequestId !== replayRequestId
           ) {
+            if (get().currentSessionId === currentSessionId) {
+              set({ approvalStatus: "idle", approvalError: null });
+            }
             return;
           }
           const message = errorMessage(err);
@@ -1598,7 +1572,10 @@ export const useAppStore = create<AppState>()(
           try {
             const replay =
               await RuntimeClient.getSessionReplay(currentSessionId);
-            if (get().currentSessionId === currentSessionId) {
+            if (
+              get().currentSessionId === currentSessionId &&
+              get().replayRequestId === replayRequestId
+            ) {
               const hasPendingApproval =
                 replay.session.status === "waiting" &&
                 getPendingApprovalRequestId(replay.events) !== null;

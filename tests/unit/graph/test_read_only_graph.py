@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import pytest
+from dataclasses import replace
 
 from voidcode.graph import GraphRunRequest
 from voidcode.graph.contracts import GraphSessionSnapshot
@@ -45,13 +45,20 @@ def test_graph_direct_import_and_step_work_without_runtime_cycle() -> None:
     ]
 
 
-def test_graph_max_step_guard_is_verifiable_via_step() -> None:
-    graph = DeterministicGraph(max_steps=1)
-    request = _request("read sample.txt")
+def test_graph_run_step_is_a_watermark_not_a_budget() -> None:
+    graph = DeterministicGraph()
+    request = replace(_request("read sample.txt"), run_step=100)
 
-    with pytest.raises(ValueError, match="graph exceeded max steps: 1"):
-        _ = graph.step(
-            request,
-            (ToolResult(tool_name="read", status="ok", content="hello", data={}),),
-            session=request.session,
-        )
+    step = graph.step(request, (), session=request.session)
+
+    assert step.tool_call is not None
+    assert step.events[0].payload == {"step": 100, "phase": "plan"}
+
+    finished = graph.step(
+        replace(request, run_step=101),
+        (ToolResult(tool_name="read", status="ok", content="hello", data={}),),
+        session=request.session,
+    )
+    assert finished.is_finished is True
+    assert finished.output == "hello"
+    assert finished.events[-2].payload == {"step": 102, "phase": "finalize"}

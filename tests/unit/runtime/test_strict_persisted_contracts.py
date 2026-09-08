@@ -29,7 +29,6 @@ def _current_runtime_config_payload() -> dict[str, object]:
             permission=defaults.permission,
             model=defaults.model,
             execution_engine=defaults.execution_engine,
-            max_steps=defaults.max_steps,
             tool_timeout_seconds=defaults.tool_timeout_seconds,
         )
     )
@@ -41,7 +40,6 @@ def _current_runtime_config_payload() -> dict[str, object]:
         "approval_mode",
         "permission",
         "execution_engine",
-        "max_steps",
         "tool_timeout_seconds",
         "fallback_models",
     ),
@@ -94,7 +92,6 @@ _EXPECTED_PERSISTED_RUNTIME_CONFIG_KEYS = {
     "permission",
     "policy",
     "execution_engine",
-    "max_steps",
     "tool_timeout_seconds",
     "reasoning_effort",
     "model",
@@ -124,7 +121,6 @@ def _accepted_persisted_runtime_config_values() -> dict[str, object]:
             "prompt_activation": {"enabled": True},
         },
         "execution_engine": "deterministic",
-        "max_steps": 0,
         "tool_timeout_seconds": None,
         "reasoning_effort": "medium",
         "model": "provider/model",
@@ -181,8 +177,6 @@ def test_persisted_runtime_config_accepts_representative_value_for_each_key(fiel
         assert materialized.policy.version == "v1"
     elif field == "execution_engine":
         assert materialized.execution_engine == "deterministic"
-    elif field == "max_steps":
-        assert materialized.max_steps == 0
     elif field == "tool_timeout_seconds":
         assert materialized.tool_timeout_seconds is None
     elif field == "reasoning_effort":
@@ -217,7 +211,6 @@ def test_persisted_runtime_config_accepts_representative_value_for_each_key(fiel
         ),
         ("policy", [], "persisted runtime_config.policy must be an object when provided"),
         ("execution_engine", "invalid", "persisted runtime_config execution_engine is invalid"),
-        ("max_steps", -1, "persisted runtime_config max_steps must be a non-negative integer"),
         ("tool_timeout_seconds", 0, "persisted runtime_config tool_timeout_seconds must be at least 1"),
         ("reasoning_effort", "invalid", "reasoning_effort must be one of:"),
         ("model", 7, "persisted runtime_config model must be a string or null"),

@@ -3,7 +3,6 @@
   "config.agentPreset": "代理预设",
   "config.leaderMode": "领导者模式",
   "config.providerModel": "模型",
-  "config.maxSteps": "最大步骤",
   "composer.agent": "代理",
   "composer.model": "模型",
   "composer.selectModel": "选择模型",

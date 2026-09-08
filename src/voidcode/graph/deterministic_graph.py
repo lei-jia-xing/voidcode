@@ -62,11 +62,6 @@ class DeterministicReadOnlyStep:
 
 
 class DeterministicGraph:
-    def __init__(self, *, max_steps: int = 4) -> None:
-        if max_steps < 1:
-            raise ValueError("max_steps must be at least 1")
-        self._max_steps = max_steps
-
     def step(
         self,
         request: GraphRunRequest,
@@ -125,7 +120,7 @@ class DeterministicGraph:
         state: GraphLoopState = {
             "prompt": request.prompt,
             "metadata": request.metadata,
-            "current_turn": len(tool_results) + 1,
+            "current_turn": request.run_step,
             "tool_calls": [],
             "tool_results": list(tool_results),
             "available_tools": request.available_tools,
@@ -136,10 +131,17 @@ class DeterministicGraph:
         }
         return state
 
+    @staticmethod
+    def _current_run_tool_result_count(state: GraphLoopState) -> int:
+        tool_results = state["tool_results"]
+        if state["metadata"].get("runtime_resume") is True or state["metadata"].get("resume") is True:
+            return len(tool_results)
+        return sum(result.source != "replayed_conversation" for result in tool_results)
+
     def _plan_turn_node(self, state: GraphLoopState) -> dict[str, object]:
         current_turn = state["current_turn"]
-        if current_turn > self._max_steps:
-            return {"error": f"graph exceeded max steps: {self._max_steps}"}
+        if current_turn < 1:
+            raise ValueError("run_step must be a positive integer")
 
         planning_events = [
             self._graph_event(
@@ -147,7 +149,6 @@ class DeterministicGraph:
                 {
                     "step": current_turn,
                     "phase": "plan",
-                    "max_steps": self._max_steps,
                 },
             ),
             self._graph_event(
@@ -174,7 +175,11 @@ class DeterministicGraph:
             }
 
         try:
-            tool_call = self._select_tool_call(state["prompt"], state["available_tools"], state["tool_results"])
+            tool_call = self._select_tool_call(
+                state["prompt"],
+                state["available_tools"],
+                current_run_tool_result_count=self._current_run_tool_result_count(state),
+            )
         except ValueError as exc:
             return {
                 "events": planning_events,
@@ -202,7 +207,6 @@ class DeterministicGraph:
                     {
                         "step": current_turn,
                         "phase": "finalize",
-                        "max_steps": self._max_steps,
                     },
                 ),
                 self._graph_event(
@@ -217,16 +221,15 @@ class DeterministicGraph:
         self,
         prompt: str,
         available_tools: tuple[ToolDefinition, ...],
-        tool_results: list[ToolResult],
+        *,
+        current_run_tool_result_count: int,
     ) -> ToolCall | None:
         commands = [line.strip() for line in prompt.splitlines() if line.strip()]
         if not commands:
             raise ValueError("request must not be empty")
-
-        step_index = len(tool_results)
+        step_index = current_run_tool_result_count
         if step_index >= len(commands):
             return None
-
         resolution = resolve_tool_instruction(
             commands[step_index],
             available_tools,

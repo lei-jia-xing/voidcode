@@ -255,8 +255,6 @@ def _handle_run_command(args: RunArgs) -> int:
             metadata["mode"] = args.runtime_mode
         if args.read_only:
             metadata["read_only"] = True
-        if args.max_steps is not None:
-            metadata["max_steps"] = args.max_steps
         if cli_reasoning_effort is not None:
             metadata["reasoning_effort"] = cli_reasoning_effort
         provider_stream = args.provider_stream
@@ -1878,7 +1876,6 @@ def _handle_config_show_command(args: ConfigArgs) -> int:
             "execution_engine": effective_config.execution_engine,
             "model": effective_config.model,
             "fallback_models": (list(effective_config.provider_fallback.fallback_models) if effective_config.provider_fallback is not None else []),
-            "max_steps": effective_config.max_steps,
             "reasoning_effort": getattr(effective_config, "reasoning_effort", None),
             "agent": serialize_runtime_agent_config(getattr(effective_config, "agent", None)),
             "agents": agents,
@@ -2095,7 +2092,6 @@ def _handle_config_init_command(args: ConfigArgs) -> int:
         payload = generate_starter_runtime_config(
             approval_mode=args.approval_mode,
             model=args.model,
-            max_steps=args.max_steps,
             include_examples=args.with_examples,
         )
     except ValueError as exc:
@@ -2487,7 +2483,6 @@ def tui(workspace: Path, approval_mode: str | None) -> int:
 )
 @click.option("--model", help="Override the provider/model for this run.")
 @click.option("--skills", multiple=True, help="Optional skill names applied for this run.")
-@click.option("--max-steps", type=int, help="Optional max graph steps override for this run.")
 @click.option(
     "--reasoning-effort",
     help="Reasoning-effort level: off, minimal, low, medium, high, xhigh, max.",
@@ -2512,7 +2507,6 @@ def run(
     agent: str | None,
     model: str | None,
     skills: tuple[str, ...],
-    max_steps: int | None,
     reasoning_effort: str | None,
     show_thinking: bool,
     json_output: bool,
@@ -2530,7 +2524,6 @@ def run(
             agent=agent,
             model=model,
             skills=skills,
-            max_steps=max_steps,
             reasoning_effort=reasoning_effort,
             show_thinking=show_thinking,
             json=json_output,
@@ -3042,7 +3035,6 @@ def config_schema() -> int:
 @_workspace_option("Workspace root where .voidcode.json should be generated.")
 @click.option("--approval-mode", type=click.Choice(_APPROVAL_MODES), default="ask")
 @click.option("--model")
-@click.option("--max-steps", type=int)
 @click.option("--with-examples", is_flag=True)
 @click.option("--print", "print_config", is_flag=True)
 @click.option("--force", is_flag=True)
@@ -3050,7 +3042,6 @@ def config_init(
     workspace: Path,
     approval_mode: str,
     model: str | None,
-    max_steps: int | None,
     with_examples: bool,
     print_config: bool,
     force: bool,
@@ -3060,7 +3051,6 @@ def config_init(
             workspace=workspace,
             approval_mode=approval_mode,
             model=model,
-            max_steps=max_steps,
             with_examples=with_examples,
             print=print_config,
             force=force,

@@ -29,4 +29,5 @@ def graph_request_for_session(request: GraphRunRequest, session: SessionState) -
         abort_signal=request.abort_signal,
         stream_event_sink=request.stream_event_sink,
         tool_call_preview=request.tool_call_preview,
+        run_step=request.run_step,
     )

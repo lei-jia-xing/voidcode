@@ -430,7 +430,7 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
     assert step.output is None
     assert step.is_finished is False
     assert [event.event_type for event in step.events] == ["graph.loop_step", "graph.model_turn"]
-    assert step.events[0].payload == {"step": 1, "phase": "plan", "max_steps": None}
+    assert step.events[0].payload == {"step": 1, "phase": "plan"}
     assert step.events[1].payload == {
         "turn": 1,
         "mode": "provider",
@@ -729,6 +729,7 @@ def test_provider_provider_graph_finalizes_after_tool_result() -> None:
             available_tools=_tool_definitions(),
             context_window=request_context,
             assembled_context=_assembled_from_context_window(request_context),
+            run_step=2,
         ),
         tool_results=(
             ToolResult(
@@ -750,7 +751,7 @@ def test_provider_provider_graph_finalizes_after_tool_result() -> None:
         "graph.loop_step",
         "graph.response_ready",
     ]
-    assert step.events[0].payload == {"step": 2, "phase": "plan", "max_steps": None}
+    assert step.events[0].payload == {"step": 2, "phase": "plan"}
     assert step.events[1].payload == {
         "turn": 2,
         "mode": "provider",
@@ -760,7 +761,7 @@ def test_provider_provider_graph_finalizes_after_tool_result() -> None:
         "streaming": False,
         "prompt": "read sample.txt",
     }
-    assert step.events[2].payload == {"step": 3, "phase": "finalize", "max_steps": None}
+    assert step.events[2].payload == {"step": 3, "phase": "finalize"}
     assert step.events[3].payload == {"output_preview": "alpha\n"}
 
 
@@ -1216,38 +1217,6 @@ def test_provider_graph_forwards_mcp_tool_feedback_to_provider() -> None:
 
     assert provider.requests[0].assembled_context is not None
     assert provider.requests[0].assembled_context.tool_results == (mcp_result,)
-
-
-def test_provider_provider_graph_enforces_configured_max_steps() -> None:
-    provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    graph = ProviderGraph(
-        provider=StubTurnProvider(name="opencode"),
-        provider_model=provider_model,
-        max_steps=1,
-    )
-
-    with pytest.raises(ValueError, match="graph exceeded max steps: 1"):
-        _ = graph.step(
-            request=GraphRunRequest(
-                session=_session(),
-                prompt="read sample.txt",
-                available_tools=_tool_definitions(),
-                context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
-            ),
-            tool_results=(
-                ToolResult(
-                    tool_name="read",
-                    content="alpha\n",
-                    status="ok",
-                    data={"path": "sample.txt", "content": "alpha\n"},
-                ),
-            ),
-            session=_session(),
-        )
 
 
 def test_provider_provider_graph_streams_ordered_events_and_deterministic_output() -> None:

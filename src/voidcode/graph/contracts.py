@@ -74,6 +74,9 @@ class GraphRunRequest:
     abort_signal: ProviderAbortSignal | None = None
     stream_event_sink: Callable[[GraphEvent], None] | None = None
     tool_call_preview: ToolCallPreviewBuilder | None = None
+    # One-based watermark owned by the runtime for this execution run. It is
+    # intentionally independent from the historical tool-results projection.
+    run_step: int = 1
 
 
 @runtime_checkable

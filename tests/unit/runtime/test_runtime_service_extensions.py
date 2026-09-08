@@ -4249,7 +4249,7 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                     "Retry failed, cancelled, or interrupted delegated background tasks only when "
                     "it is the next explicit recovery step. Re-dispatch through the task tool, "
                     "reusing the child session_id where applicable, instead of manually reconstructing child "
-                    "requests; inspect the new task id with task(operation=\"output\"), and escalate repeated "
+                    'requests; inspect the new task id with task(operation="output"), and escalate repeated '
                     "failures rather than looping."
                 ),
             },
@@ -11887,7 +11887,6 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
             policy=RuntimePolicyConfig(tool_policy=RuntimePolicyToolPolicyConfig(default="deny", allowed=("read",))),
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            max_steps=7,
             tool_timeout_seconds=11,
             reasoning_effort="high",
             provider_fallback=RuntimeProviderFallbackConfig(
@@ -11932,7 +11931,6 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
         "permission",
         "policy",
         "execution_engine",
-        "max_steps",
         "tool_timeout_seconds",
         "reasoning_effort",
         "model",
@@ -11954,7 +11952,6 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
     assert effective.policy == RuntimePolicyConfig(tool_policy=RuntimePolicyToolPolicyConfig(default="deny", allowed=("read",)))
     assert effective.execution_engine == "provider"
     assert effective.model == "opencode/gpt-5.4"
-    assert effective.max_steps == 7
     assert effective.tool_timeout_seconds == 11
     assert effective.reasoning_effort == "high"
     assert effective.provider_fallback == RuntimeProviderFallbackConfig(
@@ -11993,7 +11990,6 @@ def test_runtime_config_request_metadata_overrides_supported_fields(
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/original",
-            max_steps=12,
             reasoning_effort="low",
             agent=RuntimeAgentConfig(
                 preset="leader",
@@ -12008,7 +12004,6 @@ def test_runtime_config_request_metadata_overrides_supported_fields(
             metadata=validate_runtime_request_metadata(
                 {
                     "agent": {"preset": "leader", "model": "opencode/gpt-5.4"},
-                    "max_steps": 3,
                     "reasoning_effort": "medium",
                     "context_transform_refs": ["runtime_file_rules"],
                 }
@@ -12017,7 +12012,6 @@ def test_runtime_config_request_metadata_overrides_supported_fields(
     )
 
     assert resolved.model == "opencode/gpt-5.4"
-    assert resolved.max_steps == 3
     assert resolved.reasoning_effort == "medium"
     assert resolved.agent == RuntimeAgentConfig(
         preset="leader",
@@ -12074,7 +12068,6 @@ def test_runtime_config_rejects_removed_top_level_metadata_without_runtime_confi
         _ = runtime.effective_runtime_config_from_metadata(
             {
                 "agent": {"preset": "leader"},
-                "max_steps": 3,
                 "reasoning_effort": "medium",
                 "context_transform_refs": ["runtime_file_rules"],
             }
@@ -12992,7 +12985,6 @@ def test_runtime_effective_runtime_config_prefers_persisted_session_values(tmp_p
             approval_mode="deny",
             execution_engine="deterministic",
             model="fresh/model",
-            max_steps=9,
         ),
     )
     effective = resumed_runtime.effective_runtime_config(session_id="config-session")
@@ -13000,68 +12992,6 @@ def test_runtime_effective_runtime_config_prefers_persisted_session_values(tmp_p
     assert effective.approval_mode == "allow"
     assert effective.model == "session/model"
     assert effective.execution_engine == "deterministic"
-
-
-def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path: Path) -> None:
-    sample_file = tmp_path / "sample.txt"
-    sample_file.write_text("config session\n", encoding="utf-8")
-
-    initial_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            approval_mode="allow",
-            execution_engine="deterministic",
-            model="session/model",
-            max_steps=7,
-        ),
-    )
-    response = initial_runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="max-steps-session"))
-
-    assert response.session.metadata["runtime_config"] == {
-        "approval_mode": "allow",
-        "execution_engine": "deterministic",
-        "max_steps": 7,
-        "tool_timeout_seconds": None,
-        "model": "session/model",
-        "permission": _DEFAULT_PERMISSION_METADATA,
-        "fallback_models": [],
-        "resolved_provider": {
-            "active_target": {
-                "raw_model": "session/model",
-                "provider": "session",
-                "model": "model",
-            },
-            "targets": [
-                {
-                    "raw_model": "session/model",
-                    "provider": "session",
-                    "model": "model",
-                }
-            ],
-        },
-        "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
-        "mcp": {
-            "mode": "managed",
-            "configured_enabled": True,
-            "servers": [],
-        },
-    }
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            approval_mode="deny",
-            execution_engine="deterministic",
-            model="fresh/model",
-            max_steps=3,
-        ),
-    )
-    effective = resumed_runtime.effective_runtime_config(session_id="max-steps-session")
-
-    assert effective.approval_mode == "allow"
-    assert effective.model == "session/model"
-    assert effective.execution_engine == "deterministic"
-    assert effective.max_steps == 7
 
 
 def test_runtime_effective_runtime_config_rejects_missing_persisted_external_write(
@@ -13217,48 +13147,6 @@ def test_runtime_effective_runtime_config_rejects_invalid_persisted_tool_timeout
         _ = resumed_runtime.effective_runtime_config(session_id="invalid-tool-timeout")
 
 
-def test_runtime_effective_runtime_config_rejects_invalid_persisted_max_steps(
-    tmp_path: Path,
-) -> None:
-    sample_file = tmp_path / "sample.txt"
-    sample_file.write_text("config session\n", encoding="utf-8")
-
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(approval_mode="allow", model="session/model", max_steps=7),
-    )
-    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="invalid-max-steps"))
-
-    database_path = sessions_db_path()
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT metadata_json FROM sessions WHERE session_id = ?",
-            ("invalid-max-steps",),
-        ).fetchone()
-        assert row is not None
-        metadata = json.loads(str(row[0]))
-        assert isinstance(metadata, dict)
-        metadata_dict = cast(dict[str, object], metadata)
-        runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
-        runtime_config["max_steps"] = -1
-        _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata_dict, sort_keys=True), "invalid-max-steps"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig(max_steps=3))
-
-    with pytest.raises(
-        ValueError,
-        match="persisted runtime_config max_steps must be a non-negative integer",
-    ):
-        _ = resumed_runtime.effective_runtime_config(session_id="invalid-max-steps")
-
-
 def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_invalid(
     tmp_path: Path,
 ) -> None:
@@ -13370,7 +13258,6 @@ def test_runtime_graph_selection_avoids_reusing_initial_provider_graph(
                 "approval_mode": "ask",
                 "permission": _DEFAULT_PERMISSION_METADATA,
                 "execution_engine": "deterministic",
-                "max_steps": None,
                 "tool_timeout_seconds": None,
                 "fallback_models": [],
                 "resolved_provider": None,
@@ -13704,7 +13591,6 @@ def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: P
             "approval_mode": "ask",
             "permission": _DEFAULT_PERMISSION_METADATA,
             "execution_engine": "provider",
-            "max_steps": None,
             "tool_timeout_seconds": None,
             "model": "primary/model-a",
             "fallback_models": ["fallback/model-b"],
@@ -13749,80 +13635,6 @@ def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: P
     assert created_providers[-1].name == "fallback"
 
 
-def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_new_runs(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(execution_engine="deterministic", max_steps=6),
-    )
-
-    response = runtime.run(RuntimeRequest(prompt="hello", metadata={"max_steps": 2}))
-
-    assert response.session.status == "completed"
-    assert set(response.session.metadata) == {
-        "workspace",
-        "runtime_config",
-        "runtime_policy",
-        "agent_capability_snapshot",
-        "runtime_state",
-        "rulebook_snapshot",
-        "context_window",
-        "max_steps",
-        "resolved_hook_plan",
-        "selected_skill_names",
-        "applied_skills",
-        "skill_snapshot",
-    }
-    assert response.session.metadata["runtime_config"] == {
-        "approval_mode": "ask",
-        "execution_engine": "deterministic",
-        "max_steps": 2,
-        "tool_timeout_seconds": None,
-        "permission": _DEFAULT_PERMISSION_METADATA,
-        "fallback_models": [],
-        "resolved_provider": None,
-        "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
-        "mcp": {
-            "mode": "managed",
-            "configured_enabled": True,
-            "servers": [],
-        },
-    }
-    runtime_policy = cast(dict[str, object], response.session.metadata["runtime_policy"])
-    assert runtime_policy["schema_version"] == 1
-    assert runtime_policy["agent_preset"] == "leader"
-    assert runtime_policy["agent_manifest_id"] == "leader"
-    request_event = next(event for event in response.events if event.event_type == "runtime.request_received")
-    assert request_event.event_type == "runtime.request_received"
-    policy_observability = cast(dict[str, object], request_event.payload["runtime_policy"])
-    assert policy_observability["bounded"] is True
-    assert policy_observability["redacted"] is True
-    assert policy_observability["schema_version"] == 1
-    assert "hello" not in json.dumps(policy_observability)
-    assert policy_observability["materialization"] == {
-        "kind": "runtime_policy_materialized",
-        "source": "runtime_control_plane",
-        "snapshot_present": True,
-    }
-    runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
-    assert set(runtime_state) == {"acp", "run_id"}
-    assert runtime_state["acp"] == {
-        "mode": "disabled",
-        "configured_enabled": False,
-        "status": "disconnected",
-        "available": False,
-        "last_delegation": None,
-        "last_error": None,
-        "last_event_type": None,
-        "last_request_id": None,
-        "last_request_type": None,
-    }
-    assert isinstance(runtime_state.get("run_id"), str)
-    assert cast(str, runtime_state["run_id"])
-
-
 def test_runtime_effective_runtime_config_restores_persisted_config_without_plan(
     tmp_path: Path,
 ) -> None:
@@ -13847,26 +13659,6 @@ def test_runtime_effective_runtime_config_restores_persisted_config_without_plan
 
     assert effective.execution_engine == "deterministic"
     assert effective.model == "session/model"
-
-
-@pytest.mark.parametrize(
-    "invalid_max_steps",
-    [0, -1, "4", 1.5, [], {}],
-)
-def test_runtime_run_rejects_invalid_request_metadata_max_steps(tmp_path: Path, invalid_max_steps: object) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(max_steps=6),
-    )
-
-    with pytest.raises(ValueError, match="request metadata 'max_steps'"):
-        _ = runtime.run(
-            RuntimeRequest(
-                prompt="hello",
-                metadata=cast(RuntimeRequestMetadataPayload, {"max_steps": invalid_max_steps}),
-            )
-        )
 
 
 def test_runtime_prefers_explicit_graph_over_config_selected_execution_engine(
@@ -14716,6 +14508,7 @@ def test_runtime_stuck_detected_hook_fires_once_for_repeated_tool_loop(
             model="opencode/gpt-5.4",
             hooks=RuntimeHooksConfig(
                 enabled=True,
+                on_turn_progress=((sys.executable, "-c", "pass"),),
                 on_stuck_detected=((sys.executable, "-c", "pass"),),
             ),
         ),
@@ -14724,7 +14517,9 @@ def test_runtime_stuck_detected_hook_fires_once_for_repeated_tool_loop(
 
     response = runtime.run(RuntimeRequest(prompt="repeat reads"))
 
+    progress_events = [event for event in response.events if event.event_type == RUNTIME_TURN_PROGRESS]
     stuck_events = [event for event in response.events if event.event_type == RUNTIME_STUCK_DETECTED]
+    assert [event.payload["turn"] for event in progress_events] == [1, 2, 3]
     assert response.session.status == "completed"
     assert len(stuck_events) == 1
     assert stuck_events[0].payload["reason"] == "repeated_tool_loop"
@@ -16366,7 +16161,6 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
     runtime_config = cast(dict[str, object], waiting.session.metadata["runtime_config"])
     assert runtime_config["approval_mode"] == "ask"
     assert runtime_config["execution_engine"] == "provider"
-    assert runtime_config["max_steps"] == 100
     assert runtime_config["tool_timeout_seconds"] is None
     assert runtime_config["model"] == "opencode/gpt-5.4"
     assert runtime_config["agent"] == {
@@ -18139,7 +17933,6 @@ def test_runtime_provider_retry_uses_persisted_session_provider_config(
             "approval_mode": "ask",
             "permission": _DEFAULT_PERMISSION_METADATA,
             "execution_engine": "provider",
-            "max_steps": None,
             "tool_timeout_seconds": None,
             "model": "opencode/gpt-5.4",
             "fallback_models": ["custom/demo"],
@@ -18245,7 +18038,7 @@ def test_runtime_provider_stream_json_error_payload_maps_to_context_limit_withou
                 name="custom",
                 outcomes=(ProviderTurnResult(output="fallback complete"),),
             ),
-        }
+        },
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,

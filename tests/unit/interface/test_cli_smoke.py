@@ -1005,7 +1005,7 @@ def test_run_command_ctrl_c_cancels_active_runtime_session(capsys: Any) -> None:
     assert "Interrupted current run." in capsys.readouterr().err
 
 
-def test_run_command_accepts_agent_skills_model_max_steps_and_provider_stream_flags() -> None:
+def test_run_command_accepts_agent_skills_model_and_provider_stream_flags() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
@@ -1035,8 +1035,6 @@ def test_run_command_accepts_agent_skills_model_max_steps_and_provider_stream_fl
                     "demo",
                     "--skills",
                     "review",
-                    "--max-steps",
-                    "7",
                     "--provider-stream",
                 ]
             )
@@ -1053,7 +1051,6 @@ def test_run_command_accepts_agent_skills_model_max_steps_and_provider_stream_fl
     assert request.prompt == "read README.md"
     assert request.metadata["agent"] == {"preset": "product"}
     assert request.metadata["skills"] == ["demo", "review"]
-    assert request.metadata["max_steps"] == 7
     assert request.metadata["provider_stream"] is True
 
 
@@ -2598,7 +2595,6 @@ def test_config_show_outputs_workspace_effective_config() -> None:
         "execution_engine": "deterministic",
         "model": "repo/model",
         "fallback_models": [],
-        "max_steps": 100,
         "reasoning_effort": "medium",
         "agent": None,
         "agents": _expected_agent_models("repo/model"),
@@ -2829,7 +2825,6 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
         "execution_engine": "deterministic",
         "model": "repo/model",
         "fallback_models": ["repo/session-fallback"],
-        "max_steps": 100,
         "reasoning_effort": "high",
         "agent": None,
         "agents": {
@@ -2901,7 +2896,6 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
         approval_mode="allow",
         execution_engine="provider",
         model="runtime/model",
-        max_steps=9,
         reasoning_effort="high",
         provider_fallback=None,
         resolved_provider={
@@ -2962,7 +2956,6 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
         "execution_engine": "provider",
         "model": "runtime/model",
         "fallback_models": [],
-        "max_steps": 9,
         "reasoning_effort": "high",
         "agent": None,
         "agents": {},
@@ -3220,8 +3213,6 @@ def test_config_init_prints_starter_config_without_writing() -> None:
             "deny",
             "--model",
             "opencode-go/glm-5",
-            "--max-steps",
-            "8",
             "--with-examples",
             "--print",
         )
@@ -3234,7 +3225,6 @@ def test_config_init_prints_starter_config_without_writing() -> None:
         "$schema": "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json",
         "approval_mode": "deny",
         "model": "opencode-go/glm-5",
-        "max_steps": 8,
         "formatter": {"enabled": True},
         "lsp": {"enabled": True},
         "mcp": {"enabled": True},
@@ -3371,24 +3361,6 @@ def test_config_init_rejects_malformed_model_without_writing() -> None:
     assert result.returncode != 0
     assert result.stdout == ""
     assert "provider/model" in result.stderr
-    assert "Traceback" not in result.stderr
-
-
-def test_config_init_invalid_max_steps_returns_error_without_traceback() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        workspace = Path(tmp)
-        result = _run_module_cli(
-            "config",
-            "init",
-            "--workspace",
-            str(workspace),
-            "--max-steps",
-            "-1",
-        )
-
-    assert result.returncode != 0
-    assert result.stdout == ""
-    assert "error: max_steps must be a non-negative integer" in result.stderr
     assert "Traceback" not in result.stderr
 
 

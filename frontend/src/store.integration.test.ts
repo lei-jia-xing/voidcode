@@ -591,6 +591,82 @@ describe("useAppStore integration flow", () => {
     expect(state.currentSessionOutput).toBe("hello");
     expect(state.currentSessionEvents).toEqual(completedResponse.events);
   });
+  it("posts approval without waiting for a delayed authoritative replay", async () => {
+    const sessionId = "approval-delayed-replay";
+    const requestId = "approval-delayed-replay-1";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "write delayed.txt hello" },
+      "runtime",
+      sessionId,
+    );
+    const approvalRequested = makeEvent(
+      2,
+      "runtime.approval_requested",
+      {
+        request_id: requestId,
+        tool: "write",
+        target_summary: "delayed.txt",
+        decision: "ask",
+      },
+      "runtime",
+      sessionId,
+    );
+    const completedResponse = makeRuntimeResponse(
+      sessionId,
+      "completed",
+      [
+        requestReceived,
+        approvalRequested,
+        makeEvent(
+          3,
+          "runtime.approval_resolved",
+          { request_id: requestId, decision: "allow" },
+          "runtime",
+          sessionId,
+        ),
+      ],
+      "done",
+    );
+    const delayedReplay = createDeferred<RuntimeResponse>();
+    const delayedApproval = createDeferred<RuntimeResponse>();
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      yield makeStreamChunk(sessionId, "waiting", approvalRequested);
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.getSessionReplayMock.mockReturnValue(
+      delayedReplay.promise,
+    );
+    runtimeClientMocks.resolveApprovalMock.mockReturnValue(
+      delayedApproval.promise,
+    );
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "waiting", "write delayed.txt hello"),
+    ]);
+
+    await useAppStore.getState().runTask("write delayed.txt hello");
+
+    const approvalPromise = useAppStore.getState().resolveApproval("allow");
+    await Promise.resolve();
+
+    expect(runtimeClientMocks.getSessionReplayMock).not.toHaveBeenCalled();
+    expect(runtimeClientMocks.resolveApprovalMock).toHaveBeenCalledWith(
+      sessionId,
+      requestId,
+      "allow",
+    );
+    expect(useAppStore.getState().approvalStatus).toBe("submitting");
+
+    delayedApproval.resolve(completedResponse);
+    await approvalPromise;
+
+    expect(useAppStore.getState().approvalStatus).toBe("idle");
+    runtimeClientMocks.getSessionReplayMock.mockReset();
+  });
   it("submits approval while the request stream is still reporting running", async () => {
     const sessionId = "approval-open-stream";
     const requestId = "approval-open-stream-1";
@@ -2680,7 +2756,6 @@ describe("useAppStore integration flow", () => {
     await useAppStore.getState().runTask("analyze repo", {
       metadata: {
         skills: ["demo"],
-        max_steps: 5,
         provider_stream: true,
         agent: {
           custom_flag: "kept",
@@ -2693,7 +2768,6 @@ describe("useAppStore integration flow", () => {
       session_id: null,
       metadata: {
         skills: ["demo"],
-        max_steps: 5,
         provider_stream: true,
         agent: {
           preset: "leader",
@@ -2704,40 +2778,6 @@ describe("useAppStore integration flow", () => {
     });
     expect(runtimeClientMocks.getStatusMock).toHaveBeenCalled();
     expect(runtimeClientMocks.getReviewMock).toHaveBeenCalled();
-  });
-
-  it("omits max_steps for web agent runs when no override is provided", async () => {
-    const sessionId = "session-default-steps";
-    const requestReceived = makeEvent(
-      1,
-      "runtime.request_received",
-      { prompt: "write hello.c" },
-      "runtime",
-      sessionId,
-    );
-
-    async function* stream() {
-      yield makeStreamChunk(sessionId, "completed", requestReceived);
-      yield makeStreamChunk(sessionId, "completed", null, "ok");
-    }
-
-    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([
-      makeStoredSessionSummary(sessionId, "completed", "write hello.c"),
-    ]);
-
-    await useAppStore.getState().runTask("write hello.c");
-
-    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
-      prompt: "write hello.c",
-      session_id: null,
-      metadata: {
-        agent: {
-          preset: "leader",
-          model: "deepseek/deepseek-v4-pro",
-        },
-      },
-    });
   });
 
   it("sends reasoning_effort only when the selected model supports it", async () => {
@@ -3848,9 +3888,9 @@ describe("useAppStore integration flow", () => {
       approvalStatus: "idle",
       approvalError: null,
     });
-    runtimeClientMocks.getSessionReplayMock
-      .mockResolvedValueOnce(authoritativeWaiting)
-      .mockResolvedValueOnce(authoritativeWaiting);
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValueOnce(
+      authoritativeWaiting,
+    );
     runtimeClientMocks.listSessionsMock.mockResolvedValue([
       makeStoredSessionSummary(sessionId, "waiting", "write current.txt hello"),
     ]);
@@ -3863,7 +3903,7 @@ describe("useAppStore integration flow", () => {
 
     expect(runtimeClientMocks.resolveApprovalMock).toHaveBeenCalledWith(
       sessionId,
-      currentRequestId,
+      oldRequestId,
       "allow",
     );
     const state = useAppStore.getState();

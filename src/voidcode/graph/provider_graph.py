@@ -105,13 +105,9 @@ class ProviderGraph:
         *,
         provider: TurnProvider,
         provider_model: ResolvedProviderModel,
-        max_steps: int | None = None,
     ) -> None:
-        if max_steps is not None and max_steps < 1:
-            raise ValueError("max_steps must be at least 1")
         self._provider = provider
         self._provider_model = provider_model
-        self._max_steps = max_steps
         self._abort_signal = _GraphAbortSignal(_cancelled=False)
         self._pending_tool_calls: list[ToolCall] = []
         self._pending_tool_calls_session_id: str | None = None
@@ -164,9 +160,9 @@ class ProviderGraph:
         session: GraphSession,
     ) -> ProviderStep:
         _ = session
-        current_turn = len(tool_results) + 1
-        if self._max_steps is not None and current_turn > self._max_steps:
-            raise ValueError(f"graph exceeded max steps: {self._max_steps}")
+        current_turn = request.run_step
+        if current_turn < 1:
+            raise ValueError("run_step must be a positive integer")
 
         session_id = request.session.session_id
         run_id = _run_id_from_graph_metadata(request.metadata, session.metadata)
@@ -196,7 +192,7 @@ class ProviderGraph:
         planning_events = (
             self._graph_event(
                 GRAPH_LOOP_STEP,
-                {"step": current_turn, "phase": "plan", "max_steps": self._max_steps},
+                {"step": current_turn, "phase": "plan"},
             ),
             self._graph_event(
                 GRAPH_MODEL_TURN,
@@ -269,7 +265,7 @@ class ProviderGraph:
             finalize_events = planning_events + (
                 self._graph_event(
                     GRAPH_LOOP_STEP,
-                    {"step": current_turn + 1, "phase": "finalize", "max_steps": self._max_steps},
+                    {"step": current_turn + 1, "phase": "finalize"},
                 ),
                 self._graph_event(GRAPH_RESPONSE_READY, {"output_preview": turn_result.output}),
             )
@@ -586,7 +582,6 @@ class ProviderGraph:
                     {
                         "step": current_turn + 1,
                         "phase": "finalize",
-                        "max_steps": self._max_steps,
                     },
                 ),
                 self._graph_event(GRAPH_RESPONSE_READY, {"output_preview": output}),

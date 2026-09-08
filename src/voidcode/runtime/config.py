@@ -61,11 +61,8 @@ def _running_on_windows() -> bool:
 APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
 MODEL_ENV_VAR = "VOIDCODE_MODEL"
 EXECUTION_ENGINE_ENV_VAR = "VOIDCODE_EXECUTION_ENGINE"
-MAX_STEPS_ENV_VAR = "VOIDCODE_MAX_STEPS"
 TOOL_TIMEOUT_ENV_VAR = "VOIDCODE_TOOL_TIMEOUT_SECONDS"
 REASONING_EFFORT_ENV_VAR = "VOIDCODE_REASONING_EFFORT"
-DEFAULT_MAX_STEPS: int = 100
-MAX_STEPS_UNLIMITED_SENTINEL: int = 0
 _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
 _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
 type ExecutionEngineName = Literal["deterministic", "provider"]
@@ -80,7 +77,6 @@ _TOP_LEVEL_ENV_VARS = (
     APPROVAL_MODE_ENV_VAR,
     MODEL_ENV_VAR,
     EXECUTION_ENGINE_ENV_VAR,
-    MAX_STEPS_ENV_VAR,
     TOOL_TIMEOUT_ENV_VAR,
     REASONING_EFFORT_ENV_VAR,
 )
@@ -92,8 +88,8 @@ _REPO_CONFIG_KEYS = frozenset(
         "permission",
         "policy",
         "model",
+        "execution_engine",
         "fallback_models",
-        "max_steps",
         "tool_timeout_seconds",
         "reasoning_effort",
         "hooks",
@@ -214,7 +210,6 @@ class _EnvironmentRuntimeSettings(BaseSettings):
         default=None,
         validation_alias=EXECUTION_ENGINE_ENV_VAR,
     )
-    max_steps: int | None = Field(default=None, validation_alias=MAX_STEPS_ENV_VAR)
     tool_timeout_seconds: int | None = Field(
         default=None,
         validation_alias=TOOL_TIMEOUT_ENV_VAR,
@@ -250,11 +245,6 @@ class _EnvironmentRuntimeSettings(BaseSettings):
             source=f"environment variable {EXECUTION_ENGINE_ENV_VAR}",
             allow_none=True,
         )
-
-    @field_validator("max_steps", mode="before")
-    @classmethod
-    def _validate_max_steps(cls, value: object) -> int | None:
-        return _parse_environment_max_steps(value)
 
     @field_validator("tool_timeout_seconds", mode="before")
     @classmethod
@@ -476,7 +466,6 @@ class RuntimeConfig:
     policy: RuntimePolicyConfig | None = None
     model: str | None = None
     execution_engine: ExecutionEngineName = DEFAULT_EXECUTION_ENGINE
-    max_steps: int | None = DEFAULT_MAX_STEPS
     tool_timeout_seconds: int | None = None
     reasoning_effort: str | None = None
     hooks: RuntimeHooksConfig | None = None
@@ -502,7 +491,6 @@ class RuntimeConfigOverrides:
     policy: RuntimePolicyConfig | None = None
     model: str | None = None
     execution_engine: ExecutionEngineName | None = None
-    max_steps: int | None = None
     tool_timeout_seconds: int | None = None
     tool_timeout_seconds_configured: bool = False
     reasoning_effort: str | None = None
@@ -600,7 +588,6 @@ def load_runtime_config(
     approval_mode: PermissionDecision | None = None,
     model: str | None = None,
     execution_engine: ExecutionEngineName | None = None,
-    max_steps: int | None = None,
     tool_timeout_seconds: int | None = None,
     reasoning_effort: str | None = None,
     env: Mapping[str, str] | None = None,
@@ -643,11 +630,6 @@ def load_runtime_config(
             explicit=execution_engine,
             repo_local=repo_local.execution_engine,
             environment=env_overrides.execution_engine,
-        ),
-        max_steps=_resolve_max_steps(
-            explicit=max_steps,
-            repo_local=repo_local.max_steps,
-            environment=env_overrides.max_steps,
         ),
         tool_timeout_seconds=_resolve_tool_timeout_seconds(
             explicit=tool_timeout_seconds,
@@ -711,14 +693,13 @@ def _load_repo_local_config(
     )
 
     raw_model = payload.get("model")
-    if raw_model is not None and not isinstance(raw_model, str):
-        raise ValueError("runtime config field 'model' must be a string when provided")
-
-    parsed_max_steps = _parse_max_steps(
-        payload.get("max_steps"),
-        source=f"runtime config field 'max_steps' in {config_path}",
+    parsed_execution_engine = _parse_execution_engine(
+        payload.get("execution_engine"),
+        source=f"runtime config field 'execution_engine' in {config_path}",
         allow_none=True,
     )
+    if raw_model is not None and not isinstance(raw_model, str):
+        raise ValueError("runtime config field 'model' must be a string when provided")
 
     tool_timeout_seconds_configured = "tool_timeout_seconds" in payload
     parsed_tool_timeout_seconds = _parse_tool_timeout_seconds(
@@ -784,7 +765,7 @@ def _load_repo_local_config(
         permission=parsed_permission,
         policy=policy,
         model=raw_model,
-        max_steps=parsed_max_steps,
+        execution_engine=parsed_execution_engine,
         tool_timeout_seconds=parsed_tool_timeout_seconds,
         tool_timeout_seconds_configured=tool_timeout_seconds_configured,
         reasoning_effort=parsed_reasoning_effort,
@@ -3205,7 +3186,6 @@ def _load_environment_runtime_config(env: Mapping[str, str] | None) -> RuntimeCo
         approval_mode=settings.approval_mode,
         model=settings.model,
         execution_engine=settings.execution_engine,
-        max_steps=settings.max_steps,
         tool_timeout_seconds=settings.tool_timeout_seconds,
         reasoning_effort=settings.reasoning_effort,
     )
@@ -3306,16 +3286,6 @@ def _resolve_execution_engine(
     return DEFAULT_EXECUTION_ENGINE
 
 
-def _resolve_max_steps(*, explicit: int | None, repo_local: int | None, environment: int | None) -> int | None:
-    if explicit is not None:
-        return explicit
-    if repo_local is not None:
-        return repo_local
-    if environment is not None:
-        return environment
-    return RuntimeConfig().max_steps
-
-
 def _parse_approval_mode(
     raw_value: object,
     *,
@@ -3336,38 +3306,6 @@ def _parse_execution_engine(
     if raw_value is None and allow_none:
         return None
     return _parse_execution_engine_name(raw_value, source=source)
-
-
-def _parse_max_steps(raw_value: object, *, source: str, allow_none: bool) -> int | None:
-    if raw_value is None and allow_none:
-        return None
-    if not isinstance(raw_value, int) or isinstance(raw_value, bool) or raw_value < 0:
-        raise ValueError(
-            f"{source} must be a non-negative integer "
-            f"({MAX_STEPS_UNLIMITED_SENTINEL} = unlimited, relies on context "
-            "overflow / model self-termination)"
-        )
-    return raw_value
-
-
-def _parse_environment_max_steps(raw_value: object) -> int | None:
-    if raw_value is None:
-        return None
-    parsed_value = raw_value
-    if isinstance(raw_value, str):
-        try:
-            parsed_value = int(raw_value)
-        except ValueError as exc:
-            raise ValueError(
-                "environment variable "
-                f"{MAX_STEPS_ENV_VAR} must be a non-negative integer "
-                f"({MAX_STEPS_UNLIMITED_SENTINEL} = unlimited, relies on context overflow)"
-            ) from exc
-    return _parse_max_steps(
-        parsed_value,
-        source=f"environment variable {MAX_STEPS_ENV_VAR}",
-        allow_none=True,
-    )
 
 
 def _parse_tool_timeout_seconds(raw_value: object, *, source: str, allow_none: bool) -> int | None:

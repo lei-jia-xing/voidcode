@@ -24,7 +24,6 @@ class RunArgs:
     agent: str | None = None
     model: str | None = None
     skills: tuple[str, ...] = ()
-    max_steps: int | None = None
     reasoning_effort: str | None = None
     show_thinking: bool = False
     json: bool = False
@@ -109,7 +108,6 @@ class ConfigArgs:
     json: bool = False
     approval_mode: str = "ask"
     model: str | None = None
-    max_steps: int | None = None
     with_examples: bool = False
     print: bool = False
     force: bool = False

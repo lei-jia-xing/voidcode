@@ -407,7 +407,6 @@ _ACP_CONNECTIVITY_ERRORS = frozenset(
 _SKILL_BINDING_SCOPE_KEYS = (
     "approval_mode",
     "execution_engine",
-    "max_steps",
     "tool_timeout_seconds",
     "reasoning_effort",
     "model",
@@ -565,7 +564,6 @@ class VoidCodeRuntime(RuntimeSurface):
             permission=self._config.permission,
             model=initial_model,
             execution_engine=initial_execution_engine,
-            max_steps=self._config.max_steps,
             tool_timeout_seconds=self._config.tool_timeout_seconds,
             provider_fallback=initial_provider_fallback,
             providers=self._config.providers,
@@ -847,7 +845,6 @@ class VoidCodeRuntime(RuntimeSurface):
             )
         resolved = apply_request_runtime_config_overrides(
             resolved,
-            max_steps=request.metadata.get("max_steps"),
             reasoning_effort=request.metadata.get("reasoning_effort"),
             context_transform_refs=context_transform_refs,
         )
@@ -2180,6 +2177,7 @@ class VoidCodeRuntime(RuntimeSurface):
                     ),
                 },
                 abort_signal=abort_signal,
+                run_step=1,
             ),
             session,
         )
@@ -3284,7 +3282,6 @@ class VoidCodeRuntime(RuntimeSurface):
             "approval_mode": effective_config.approval_mode,
             "model": effective_config.model,
             "fallback_models": (list(effective_config.provider_fallback.fallback_models) if effective_config.provider_fallback is not None else []),
-            "max_steps": effective_config.max_steps,
             "reasoning_effort": effective_config.reasoning_effort,
             "agent": serialize_runtime_agent_config(effective_config.agent),
             "resolved_provider": resolved_provider_snapshot(effective_config.resolved_provider),
@@ -4276,7 +4273,6 @@ class VoidCodeRuntime(RuntimeSurface):
             "abort_requested",
             "agent",
             "delegation",
-            "max_steps",
             "provider_stream",
             "reasoning_effort",
             "skills",
@@ -5441,7 +5437,6 @@ class VoidCodeRuntime(RuntimeSurface):
             "delegation": delegation_snapshot,
             "runtime": {
                 "approval_mode": effective_config.approval_mode,
-                "max_steps": effective_config.max_steps,
                 "tool_timeout_seconds": effective_config.tool_timeout_seconds,
                 "permission": runtime_config_payload.get("permission"),
             },
@@ -5703,7 +5698,6 @@ class VoidCodeRuntime(RuntimeSurface):
             permission=resolved.permission,
             model=model,
             execution_engine=execution_engine,
-            max_steps=resolved.max_steps,
             tool_timeout_seconds=resolved.tool_timeout_seconds,
             reasoning_effort=resolved.reasoning_effort,
             provider_fallback=provider_fallback,
@@ -5896,7 +5890,6 @@ class VoidCodeRuntime(RuntimeSurface):
         approval_mode: PermissionDecision = self._config.approval_mode
         model = self._config.model
         execution_engine = self._config.execution_engine
-        max_steps = self._config.max_steps
         reasoning_effort = self._config.reasoning_effort
         providers = self._config.providers
         provider_fallback = self._config.provider_fallback
@@ -5957,7 +5950,6 @@ class VoidCodeRuntime(RuntimeSurface):
                 permission=self._config.permission,
                 model=model,
                 execution_engine=execution_engine,
-                max_steps=max_steps,
                 tool_timeout_seconds=self._config.tool_timeout_seconds,
                 reasoning_effort=reasoning_effort,
                 provider_fallback=provider_fallback,
@@ -5980,7 +5972,6 @@ class VoidCodeRuntime(RuntimeSurface):
         policy = materialized.policy
         model = materialized.model
         execution_engine = materialized.execution_engine
-        max_steps = materialized.max_steps
         tool_timeout_seconds = materialized.tool_timeout_seconds
         reasoning_effort = materialized.reasoning_effort
         providers = materialized.providers
@@ -6022,7 +6013,6 @@ class VoidCodeRuntime(RuntimeSurface):
             permission=permission,
             model=model,
             execution_engine=execution_engine,
-            max_steps=max_steps,
             tool_timeout_seconds=tool_timeout_seconds,
             reasoning_effort=reasoning_effort,
             provider_fallback=provider_fallback,
@@ -6046,7 +6036,6 @@ class VoidCodeRuntime(RuntimeSurface):
         if (
             effective_config.execution_engine == self._initial_effective_config.execution_engine
             and effective_config.model == self._initial_effective_config.model
-            and effective_config.max_steps == self._initial_effective_config.max_steps
             and effective_config.reasoning_effort == self._initial_effective_config.reasoning_effort
             and effective_config.provider_fallback == self._initial_effective_config.provider_fallback
             and effective_config.providers == self._initial_effective_config.providers
