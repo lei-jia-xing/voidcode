@@ -12,7 +12,8 @@ def hook_preset_refs_for_agent(agent: RuntimeAgentConfig | None) -> tuple[str, .
         return ()
     if agent.hook_refs:
         return agent.hook_refs
-    return agent.manifest_hook_refs
+    internal = agent.runtime_internal
+    return internal.manifest_hook_refs if internal is not None else ()
 
 
 def resolved_hook_preset_snapshot_from_session_metadata(

@@ -94,9 +94,13 @@ class RuntimeToolScopeResolver:
         base_registry: ToolRegistry,
         tool_name: str,
     ) -> str | None:
-        if not delegated_child or agent is None or not agent.manifest_tool_allowlist:
+        if not delegated_child or agent is None:
             return None
-        if any(fnmatchcase(tool_name, pattern) for pattern in agent.manifest_tool_allowlist if pattern):
+        internal = agent.runtime_internal
+        manifest_allowlist = internal.manifest_tool_allowlist if internal is not None else ()
+        if not manifest_allowlist:
+            return None
+        if any(fnmatchcase(tool_name, pattern) for pattern in manifest_allowlist if pattern):
             return None
         if tool_name not in base_registry.tools:
             return None

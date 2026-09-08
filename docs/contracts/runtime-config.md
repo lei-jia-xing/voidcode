@@ -195,8 +195,8 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 只有在需要自定义 server 名、复用内置 preset 或声明完全自定义 server 时，才需要提供 `command` 或显式 `preset` 字段。
 - `mcp.enabled`：布尔值；默认 `true`（未声明即开启，显式 `false` 关闭）
 - `mcp.servers`：对象；未声明时（默认开启状态下）自动装载内置远程 MCP descriptors：`context7`、`websearch`、`grep_app`（均为 remote-http，不 spawn 本地进程；skill-scoped 的 `playwright` 不参与默认装载）
-- `provider_fallback`：对象
-- `providers`：对象
+- `fallback_models`：顶层配置中的 provider fallback 入口；它以当前顶层 `model` 作为 preferred model，并指定有序 fallback chain
+- `provider_fallback`：runtime 内部解析后的 fallback chain 对象，不是 `.voidcode.json` 的独立公共字段
 - provider 凭据环境变量可用于 first-run discovery：设置 `VOIDCODE_MODEL=opencode-go/<model>` 与 `OPENCODE_API_KEY` 时，即使 `.voidcode.json` 没有 `providers.opencode-go` block，runtime 也会构造最小 OpenCode Go provider 配置。该 discovery 也覆盖现有标准变量：`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GOOGLE_API_KEY`、`GITHUB_COPILOT_TOKEN`、`LITELLM_API_KEY` / `LITELLM_PROXY_API_KEY`、`ZAI_API_KEY`、`ZHIPU_API_KEY`、`MINIMAX_API_KEY`、`KIMI_API_KEY` 与 `DASHSCOPE_API_KEY`。这些值只进入运行时配置对象；`config show` 与 persisted runtime metadata 不会输出 secret。
 - `agent.preset`：agent preset id。可解析 builtin `leader`、`worker`、`advisor`、`explore`、`researcher`、`product`，以及本地发现的 markdown manifest id（见下方“本地 markdown agent manifest”）。
 - `agent.prompt_profile`：字符串；省略时从内置 manifest 回填
@@ -206,8 +206,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `agent.tools.allowlist`：字符串数组；与 manifest allowlist 一起收窄 active agent 可见/可调用工具集合
 - `agent.tools.default`：字符串数组；在 allowlist 允许范围内进一步收窄默认暴露工具
 - `agent.skills`：与顶层 `skills` 相同的配置 shape；对 active agent 覆盖本次运行使用的 runtime-managed skill discovery / application policy
-- `agent.provider_fallback`：与顶层 `provider_fallback` 相同的配置 shape；对 active agent 覆盖顶层 provider fallback
-- `agent.fallback_models`：agent-scoped shorthand；必须同时配置 `agent.model`，runtime 会把 `agent.model` 作为 `provider_fallback.preferred_model`，并把该数组作为 fallback chain。不能与同一 agent 的 `provider_fallback` 同时出现。
+- `agent.fallback_models`：agent-scoped shorthand；必须同时配置 `agent.model`，runtime 会把 `agent.model` 作为内部 `provider_fallback.preferred_model`，并把该数组作为 fallback chain；这是 agent 配置中唯一的 fallback 配置入口
 - `agents.<preset>`：按 preset 配置 delegated child / primary agent defaults；builtin key 与已发现本地 manifest key 可省略 `preset`，alias key 必须显式声明 `preset`。
 - `agents.<preset>.fallback_models`：与 `agent.fallback_models` 相同的 shorthand；delegation path 会把选中 preset 的 fallback chain 持久化到 child session metadata。
 - `tui.leader_key`：字符串
@@ -378,9 +377,9 @@ You are a focused reviewer. Stay within the runtime-provided tools and report ri
 
 发现优先级：同一 custom id 下 project scope 覆盖 user scope；同一 scope 内重复 id 会 fail-fast；custom manifest 不允许使用 builtin id（例如 `leader` 或 `worker`）替换 builtin preset。错误会包含具体文件路径，便于修复。
 
-本地 manifest 只声明 prompt 和默认 capability intent。它不会绕过 runtime tool allowlist、approval、MCP lifecycle、hook execution、skill loading 或 delegated child session contract。正文 prompt 与可选 `prompt_append` 会在 runtime config / `agent_capability_snapshot` 中以 `prompt_materialization.source = "custom_markdown"` 持久化，因此 resume / replay 不会因 manifest 文件后续变更而静默改变历史 session。
+本地 manifest 只声明 prompt 和默认 capability intent。它不会绕过 runtime tool allowlist、approval、MCP lifecycle、hook execution、skill loading 或 delegated child session contract。正文 prompt 与可选 `prompt_append` 仅作为 runtime-owned 的 `runtime_internal` persisted structure 写入 session metadata（不属于 public runtime config 或 provider-visible contract），用于 resume / replay 固定历史 session 的解释上下文；manifest 文件后续变更不会静默改变历史 session。
 
-`.voidcode.json` 的 `agent` / `agents.<key>` 也可声明 `prompt` 与 `prompt_append`：`prompt` 明确替换/定义 profile text，`prompt_append` 在 resolved base prompt 后追加本地 guidance。runtime snapshot 会把 resolved base prompt 与 append 分开持久化，渲染时只追加一次。
+`.voidcode.json` 的 `agent` / `agents.<key>` 也可声明 `prompt` 与 `prompt_append`：`prompt` 明确替换/定义 profile text，`prompt_append` 在 resolved base prompt 后追加本地 guidance。resolved prompt materialization 只保存在 runtime_internal persisted structure 中，渲染时只追加一次。
 
 `voidcode run --agent <id>` 不再使用 argparse 静态 choices；它会在加载 runtime config 与本地 manifest 后验证 `<id>` 是否为可顶层执行的 builtin/custom primary agent。
 
@@ -394,10 +393,10 @@ You are a focused reviewer. Stay within the runtime-provided tools and report ri
 - `execution_engine`：`leader` 与 `product` 默认进入 runtime-managed `provider` 路径
 - `tools`：收窄 provider 可见工具与实际 tool lookup / invocation 边界；manifest allowlist、`agent.tools.allowlist`、`agent.tools.default` 按交集生效，`agent.tools.builtin.enabled=false` 只移除内置工具名集合，仍保留已通过 allowlist 的 runtime-managed MCP / 注入工具
 - `skills`：覆盖本次运行的 skill registry discovery 与 applied skill payload / prompt context；active manifest 的 `skill_refs` 会作为默认 skill selection 进入 application，并与 request metadata `skills` 去重合并
-- `provider_fallback`：覆盖本次运行的 fallback model chain
-- `fallback_models`：`provider_fallback` 的简写形式；仅在同一 agent 配置了 `model` 时有效
+- `provider_fallback`：runtime 内部解析后的 fallback model chain
+- `fallback_models`：配置与 session metadata 中的 fallback chain 字段；仅在同一 agent 配置了 `model` 时作为 shorthand 生效
 
-这些字段会影响当前 runtime-managed provider 主路径，并持久化到 `SessionState.metadata["runtime_config"]["agent"]`，以保证 resume / replay 不被新的 runtime 默认值污染。
+这些字段影响当前 runtime-managed provider 主路径；其中 resolved prompt materialization 仅作为 runtime_internal persisted structure 持久化，不是 public runtime config 或 provider-visible metadata，以保证 resume / replay 不被新的 runtime 默认值污染。
 
 以下字段当前仍只作为声明层 metadata 保留，不代表 runtime 已经实现相应能力语义：
 

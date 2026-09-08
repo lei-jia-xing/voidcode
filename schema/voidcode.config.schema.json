@@ -329,8 +329,76 @@
     },
     "providers": {
       "type": "object",
-      "additionalProperties": true,
-      "description": "Provider-level configuration. Credential fields are sensitive; prefer environment variables for secrets."
+      "additionalProperties": false,
+      "description": "Provider-level configuration. Credential fields are sensitive; prefer environment variables for secrets.",
+      "properties": {
+        "openai": {
+          "$ref": "#/$defs/openaiProviderConfig"
+        },
+        "anthropic": {
+          "$ref": "#/$defs/anthropicProviderConfig"
+        },
+        "google": {
+          "$ref": "#/$defs/googleProviderConfig"
+        },
+        "copilot": {
+          "$ref": "#/$defs/copilotProviderConfig"
+        },
+        "litellm": {
+          "$ref": "#/$defs/litellmProviderConfig"
+        },
+        "opencode": {
+          "$ref": "#/$defs/litellmProviderConfig"
+        },
+        "openrouter": {
+          "$ref": "#/$defs/litellmProviderConfig"
+        },
+        "deepseek": {
+          "$ref": "#/$defs/openAICompatibleProviderConfig"
+        },
+        "zai": {
+          "$ref": "#/$defs/openAICompatibleProviderConfig"
+        },
+        "zhipuai": {
+          "$ref": "#/$defs/openAICompatibleProviderConfig"
+        },
+        "grok": {
+          "$ref": "#/$defs/openAICompatibleProviderConfig"
+        },
+        "minimax": {
+          "$ref": "#/$defs/openAICompatibleProviderConfig"
+        },
+        "kimi": {
+          "$ref": "#/$defs/openAICompatibleProviderConfig"
+        },
+        "opencode-go": {
+          "$ref": "#/$defs/openAICompatibleProviderConfig"
+        },
+        "qwen": {
+          "$ref": "#/$defs/openAICompatibleProviderConfig"
+        },
+        "groq": {
+          "$ref": "#/$defs/openAICompatibleProviderConfig"
+        },
+        "together": {
+          "$ref": "#/$defs/openAICompatibleProviderConfig"
+        },
+        "fireworks": {
+          "$ref": "#/$defs/openAICompatibleProviderConfig"
+        },
+        "mistral": {
+          "$ref": "#/$defs/openAICompatibleProviderConfig"
+        },
+        "custom": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/litellmProviderConfig"
+          },
+          "propertyNames": {
+            "pattern": "^(?!(?:openai|anthropic|google|copilot|litellm|opencode|openrouter|deepseek|zai|zhipuai|grok|minimax|kimi|opencode-go|qwen|groq|together|fireworks|mistral)$)(?!\\s)(?!.*\\s$)(?!.*[/]).+$"
+          }
+        }
+      }
     },
     "background_task": {
       "type": "object",
@@ -643,6 +711,423 @@
         }
       }
     },
+    "providerTransientRetryConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "base_delay_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_delay_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "jitter": {
+          "type": "boolean"
+        }
+      }
+    },
+    "openaiProviderConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "discovery_base_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "organization": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "timeout_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "transient_retry": {
+          "$ref": "#/$defs/providerTransientRetryConfig"
+        }
+      }
+    },
+    "anthropicProviderConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "discovery_base_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "beta_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cache_retention": {
+          "type": "string",
+          "enum": [
+            "none",
+            "short",
+            "long"
+          ]
+        },
+        "timeout_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "transient_retry": {
+          "$ref": "#/$defs/providerTransientRetryConfig"
+        }
+      }
+    },
+    "googleProviderAuthConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method"
+      ],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "api_key",
+            "oauth",
+            "service_account"
+          ]
+        },
+        "api_key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "access_token": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "service_account_json_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "googleProviderConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "auth": {
+          "$ref": "#/$defs/googleProviderAuthConfig"
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "discovery_base_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "timeout_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "transient_retry": {
+          "$ref": "#/$defs/providerTransientRetryConfig"
+        }
+      }
+    },
+    "copilotProviderAuthConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method"
+      ],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "token",
+            "oauth"
+          ]
+        },
+        "token": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "token_env_var": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "refresh_token": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "refresh_leeway_seconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "copilotProviderConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "auth": {
+          "$ref": "#/$defs/copilotProviderAuthConfig"
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "timeout_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "transient_retry": {
+          "$ref": "#/$defs/providerTransientRetryConfig"
+        }
+      }
+    },
+    "litellmProviderConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "api_key_env_var": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "discovery_base_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "auth_header": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "auth_scheme": {
+          "type": "string",
+          "enum": [
+            "bearer",
+            "token",
+            "none"
+          ]
+        },
+        "ssl_verify": {
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "model_map": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "propertyNames": {
+            "pattern": ".+"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "transient_retry": {
+          "$ref": "#/$defs/providerTransientRetryConfig"
+        }
+      }
+    },
+    "openAICompatibleProviderConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "api_key_env_var": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "discovery_base_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "ssl_verify": {
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "model_map": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "propertyNames": {
+            "pattern": ".+"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "transient_retry": {
+          "$ref": "#/$defs/providerTransientRetryConfig"
+        }
+      }
+    },
     "agentConfig": {
       "type": "object",
       "additionalProperties": false,
@@ -664,53 +1149,6 @@
           "type": "string",
           "minLength": 1,
           "description": "Additional local guidance appended to the resolved base prompt."
-        },
-        "prompt_materialization": {
-          "type": "object"
-        },
-        "prompt_ref": {
-          "type": "string",
-          "minLength": 1
-        },
-        "prompt_source": {
-          "type": "string",
-          "enum": [
-            "builtin",
-            "custom_markdown"
-          ]
-        },
-        "manifest_source_scope": {
-          "type": "string",
-          "enum": [
-            "builtin",
-            "project",
-            "user"
-          ]
-        },
-        "manifest_source_path": {
-          "type": "string",
-          "minLength": 1
-        },
-        "manifest_tool_allowlist": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "manifest_skill_refs": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "manifest_hook_refs": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
         },
         "hook_refs": {
           "type": "array",

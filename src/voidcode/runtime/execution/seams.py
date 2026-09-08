@@ -84,7 +84,7 @@ def build_runtime_graph(
 def cache_key_for_effective_config(
     config: EffectiveRuntimeConfig,
 ) -> tuple[ExecutionEngineName, str]:
-    agent_payload = serialize_runtime_agent_config(config.agent)
+    agent_payload = serialize_runtime_agent_config(config.agent, include_runtime_internal=True)
     agent_key = "" if agent_payload is None else str(sorted(agent_payload.items()))
     provider_fallback_key = (
         ""

@@ -514,10 +514,11 @@ class VoidCodeRuntime(RuntimeSurface):
             initial_agent = RuntimeAgentConfig(preset="leader")
         if initial_agent is not None:
             initial_agent = parse_runtime_agent_payload(
-                serialize_runtime_agent_config(initial_agent),
+                serialize_runtime_agent_config(initial_agent, include_runtime_internal=True),
                 source="runtime config agent",
                 hooks=self._config.hooks,
                 agent_registry=self._agent_registry,
+                allow_runtime_internal=True,
             )
             assert initial_agent is not None
             self._validate_runtime_agent_for_execution(
@@ -3379,6 +3380,7 @@ class VoidCodeRuntime(RuntimeSurface):
             source="persisted runtime_config.agents",
             hooks=self._config.hooks,
             agent_registry=self._agent_registry,
+            allow_runtime_internal=True,
         )
         return agents or {}, base_model, base_provider_fallback
 
@@ -5381,14 +5383,15 @@ class VoidCodeRuntime(RuntimeSurface):
             agent,
             tool_materialization.generation,
         )
+        internal = agent.runtime_internal if agent is not None else None
         skill_snapshot = {
-            "manifest_refs": list(agent.manifest_skill_refs) if agent is not None else [],
+            "manifest_refs": list(internal.manifest_skill_refs) if internal is not None else [],
             "selected_names": list(selected_skills or ()),
             "force_loaded_names": list(dict.fromkeys(force_load_skills or ()).keys() if force_load_skills is not None else ()),
             "scope": "target_session",
         }
         hook_snapshot = {
-            "manifest_refs": list(agent.manifest_hook_refs) if agent is not None else [],
+            "manifest_refs": list(internal.manifest_hook_refs) if internal is not None else [],
             "resolved_refs": list(resolved_hook_presets.refs),
             "snapshot": resolved_hook_presets.to_payload(),
             "materialization": "guidance_only",
@@ -5596,7 +5599,7 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         if resolved_hook_presets.presets:
             runtime_config_metadata["resolved_hook_presets"] = resolved_hook_presets.to_payload()
-        serialized_agents = serialize_runtime_agents_config(self._config.agents)
+        serialized_agents = serialize_runtime_agents_config(self._config.agents, include_runtime_internal=True)
         if serialized_agents is not None:
             runtime_config_metadata["agents"] = serialized_agents
         lsp_state = self._lsp_manager.current_state()
@@ -5620,15 +5623,6 @@ class VoidCodeRuntime(RuntimeSurface):
         *,
         allow_subagent_presets: bool = False,
     ) -> EffectiveRuntimeConfig:
-        raw_agent_payload = raw_agent if isinstance(raw_agent, dict) else {}
-        explicit_prompt_materialization = "prompt_materialization" in raw_agent_payload
-        preserved_custom_prompt_materialization = (
-            resolved.agent.prompt_materialization
-            if resolved.agent is not None
-            and isinstance(resolved.agent.prompt_materialization, Mapping)
-            and resolved.agent.prompt_materialization.get("source") == "custom_markdown"
-            else None
-        )
         agent = parse_runtime_agent_payload(
             raw_agent,
             source="request metadata 'agent'",
@@ -5655,24 +5649,13 @@ class VoidCodeRuntime(RuntimeSurface):
             prompt_append=(
                 agent.prompt_append if agent.prompt_append is not None else resolved.agent.prompt_append if resolved.agent is not None else None
             ),
-            prompt_ref=(agent.prompt_ref if agent.prompt_ref is not None else resolved.agent.prompt_ref if resolved.agent is not None else None),
-            prompt_source=(
-                agent.prompt_source if agent.prompt_source is not None else resolved.agent.prompt_source if resolved.agent is not None else None
-            ),
-            prompt_materialization=(
-                agent.prompt_materialization
-                if explicit_prompt_materialization and agent.prompt_materialization is not None
-                else preserved_custom_prompt_materialization
-                if preserved_custom_prompt_materialization is not None
-                else agent.prompt_materialization
-                if agent.prompt_materialization is not None
+            runtime_internal=(
+                agent.runtime_internal
+                if agent.runtime_internal is not None
+                else resolved.agent.runtime_internal
+                if resolved.agent is not None
                 else None
             ),
-            manifest_source_scope=agent.manifest_source_scope,
-            manifest_source_path=agent.manifest_source_path,
-            manifest_tool_allowlist=agent.manifest_tool_allowlist,
-            manifest_skill_refs=agent.manifest_skill_refs,
-            manifest_hook_refs=agent.manifest_hook_refs,
             hook_refs=(agent.hook_refs if agent.hook_refs else resolved.agent.hook_refs if resolved.agent is not None else ()),
             context_transform_refs=(
                 agent.context_transform_refs
@@ -5908,10 +5891,11 @@ class VoidCodeRuntime(RuntimeSurface):
             )
         if agent is not None:
             agent = parse_runtime_agent_payload(
-                serialize_runtime_agent_config(agent),
+                serialize_runtime_agent_config(agent, include_runtime_internal=True),
                 source="runtime config agent",
                 hooks=self._config.hooks,
                 agent_registry=self._agent_registry,
+                allow_runtime_internal=True,
             )
             assert agent is not None
             self._validate_runtime_agent_for_execution(
@@ -5920,10 +5904,11 @@ class VoidCodeRuntime(RuntimeSurface):
             )
         elif execution_engine == "provider":
             agent = parse_runtime_agent_payload(
-                serialize_runtime_agent_config(RuntimeAgentConfig(preset="leader")),
+                serialize_runtime_agent_config(RuntimeAgentConfig(preset="leader"), include_runtime_internal=True),
                 source="runtime config agent",
                 hooks=self._config.hooks,
                 agent_registry=self._agent_registry,
+                allow_runtime_internal=True,
             )
             assert agent is not None
             self._validate_runtime_agent_for_execution(
@@ -5984,6 +5969,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 source="persisted runtime_config.agent",
                 hooks=self._config.hooks,
                 agent_registry=self._agent_registry,
+                allow_runtime_internal=True,
             )
             if agent is not None:
                 self._validate_runtime_agent_for_execution(

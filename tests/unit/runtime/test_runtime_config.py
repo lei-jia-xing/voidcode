@@ -29,6 +29,7 @@ from voidcode.runtime.config import (
     RUNTIME_CONFIG_FILE_NAME,
     TOOL_TIMEOUT_ENV_VAR,
     RuntimeAgentConfig,
+    RuntimeAgentInternalState,
     RuntimeBackgroundTaskConfig,
     RuntimeConfig,
     RuntimeContextWindowConfig,
@@ -1108,8 +1109,10 @@ def test_runtime_config_resolves_custom_primary_manifest(tmp_path: Path) -> None
 
     assert config.agent is not None
     assert config.agent.preset == "local-planner"
-    assert config.agent.prompt_source == "custom_markdown"
-    assert config.agent.prompt_materialization == {
+    assert config.agent.runtime_internal is not None
+    internal = config.agent.runtime_internal
+    assert internal.prompt_source == "custom_markdown"
+    assert internal.prompt_materialization == {
         "profile": "local-planner",
         "version": 1,
         "source": "custom_markdown",
@@ -1118,19 +1121,19 @@ def test_runtime_config_resolves_custom_primary_manifest(tmp_path: Path) -> None
         "source_scope": "project",
         "source_path": str(manifest_path),
     }
-    assert config.agent.manifest_source_scope == "project"
-    assert config.agent.manifest_source_path == str(manifest_path)
-    assert config.agent.manifest_tool_allowlist == ("read", "grep")
-    assert config.agent.manifest_skill_refs == ("planning",)
-    assert config.agent.manifest_hook_refs == ("role_reminder",)
+    assert internal.manifest_source_scope == "project"
+    assert internal.manifest_source_path == str(manifest_path)
+    assert internal.manifest_tool_allowlist == ("read", "grep")
+    assert internal.manifest_skill_refs == ("planning",)
+    assert internal.manifest_hook_refs == ("role_reminder",)
     assert config.agent.model == "opencode/planner"
     assert config.agent.provider_fallback == RuntimeProviderFallbackConfig(
         preferred_model="opencode/planner",
         fallback_models=("opencode/fallback",),
     )
-    serialized_agent = serialize_runtime_agent_config(config.agent)
+    serialized_agent = serialize_runtime_agent_config(config.agent, include_runtime_internal=True)
     assert serialized_agent is not None
-    assert serialized_agent["prompt_materialization"] == config.agent.prompt_materialization
+    assert serialized_agent["runtime_internal"]["prompt_materialization"] == internal.prompt_materialization
 
 
 def test_runtime_config_allows_agents_key_for_discovered_custom_manifest(tmp_path: Path) -> None:
@@ -1156,12 +1159,14 @@ def test_runtime_config_allows_agents_key_for_discovered_custom_manifest(tmp_pat
     assert config.agents is not None
     agent = config.agents["local-reviewer"]
     assert agent.preset == "local-reviewer"
-    assert agent.prompt_source == "custom_markdown"
-    assert agent.prompt_materialization is not None
-    assert agent.prompt_materialization["body"] == "Review from markdown."
-    assert agent.manifest_tool_allowlist == ("read", "grep")
-    assert agent.manifest_skill_refs == ("review",)
-    assert agent.manifest_hook_refs == ("role_reminder",)
+    assert agent.runtime_internal is not None
+    internal = agent.runtime_internal
+    assert internal.prompt_source == "custom_markdown"
+    assert internal.prompt_materialization is not None
+    assert internal.prompt_materialization["body"] == "Review from markdown."
+    assert internal.manifest_tool_allowlist == ("read", "grep")
+    assert internal.manifest_skill_refs == ("review",)
+    assert internal.manifest_hook_refs == ("role_reminder",)
     assert agent.model == "opencode/reviewer"
 
 
@@ -1209,10 +1214,10 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
     )
 
     assert agent is not None
-    assert serialize_runtime_agent_config(agent) == {
+    assert serialize_runtime_agent_config(agent, include_runtime_internal=True) == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
         "model": "opencode/gpt-5.4",
         "tools": {
             "builtin": {"enabled": True},
@@ -1239,19 +1244,20 @@ def test_runtime_agent_serialization_materialization_preserves_prompt_profile_ov
     agent = parse_runtime_agent_payload(
         {
             "preset": "leader",
+            "runtime_internal": {"prompt_ref": "researcher", "prompt_source": "builtin"},
+        },
+        source="test payload",
+        allow_runtime_internal=True,
+    )
+    assert agent is not None
+    assert serialize_runtime_agent_config(agent, include_runtime_internal=True) == {
+        "preset": "leader",
+        "prompt_profile": "researcher",
+        "runtime_internal": {
+            "prompt_materialization": _prompt_materialization_payload("researcher"),
             "prompt_ref": "researcher",
             "prompt_source": "builtin",
         },
-        source="test payload",
-    )
-
-    assert agent is not None
-    assert serialize_runtime_agent_config(agent) == {
-        "preset": "leader",
-        "prompt_profile": "researcher",
-        "prompt_materialization": _prompt_materialization_payload("researcher"),
-        "prompt_ref": "researcher",
-        "prompt_source": "builtin",
     }
 
 
@@ -1273,10 +1279,10 @@ def test_runtime_agent_payload_round_trips_explicit_empty_tool_boundaries() -> N
         execution_engine="provider",
         tools=RuntimeToolsConfig(allowlist=(), default=()),
     )
-    assert serialize_runtime_agent_config(agent) == {
+    assert serialize_runtime_agent_config(agent, include_runtime_internal=True) == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
         "tools": {"allowlist": [], "default": []},
     }
 
@@ -1290,9 +1296,9 @@ def test_runtime_agent_serialization_excludes_unsupported_local_tools() -> None:
         ),
     )
 
-    assert serialize_runtime_agent_config(agent) == {
+    assert serialize_runtime_agent_config(agent, include_runtime_internal=True) == {
         "preset": "leader",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
         "tools": {"allowlist": ["read"]},
     }
 
@@ -1336,18 +1342,23 @@ def test_runtime_agent_payload_parses_prompt_and_hook_references() -> None:
     agent = parse_runtime_agent_payload(
         {
             "preset": "leader",
-            "prompt_ref": "advisor",
-            "prompt_source": "builtin",
+            "runtime_internal": {
+                "prompt_ref": "advisor",
+                "prompt_source": "builtin",
+            },
             "hook_refs": ["role_reminder", "delegation_guard"],
         },
         source="test payload",
+        allow_runtime_internal=True,
     )
 
     assert agent == RuntimeAgentConfig(
         preset="leader",
         prompt_profile="advisor",
-        prompt_ref="advisor",
-        prompt_source="builtin",
+        runtime_internal=RuntimeAgentInternalState(
+            prompt_ref="advisor",
+            prompt_source="builtin",
+        ),
         hook_refs=("role_reminder", "delegation_guard"),
         execution_engine="provider",
     )
@@ -1386,10 +1397,11 @@ def test_runtime_agent_payload_applies_explicit_prompt_override() -> None:
     assert agent is not None
     assert agent.prompt == "You are a local reviewer."
     assert agent.prompt_append == "Always include file paths."
-    assert agent.prompt_source == "custom_markdown"
-    assert agent.prompt_materialization is not None
-    assert agent.prompt_materialization["body"] == "You are a local reviewer."
-    assert agent.prompt_materialization["prompt_append"] == "Always include file paths."
+    assert agent.runtime_internal is not None
+    assert agent.runtime_internal.prompt_source == "custom_markdown"
+    assert agent.runtime_internal.prompt_materialization is not None
+    assert agent.runtime_internal.prompt_materialization["body"] == "You are a local reviewer."
+    assert agent.runtime_internal.prompt_materialization["prompt_append"] == "Always include file paths."
 
 
 def test_runtime_agent_payload_appends_to_builtin_prompt() -> None:
@@ -1400,18 +1412,14 @@ def test_runtime_agent_payload_appends_to_builtin_prompt() -> None:
 
     assert agent is not None
     assert agent.prompt_append == "Prefer concise findings."
-    assert agent.prompt_materialization is not None
-    body = agent.prompt_materialization["body"]
+    assert agent.runtime_internal is not None
+    assert agent.runtime_internal.prompt_materialization is not None
+    body = agent.runtime_internal.prompt_materialization["body"]
     assert isinstance(body, str)
     assert "Prefer concise findings." not in body
-    assert agent.prompt_materialization["prompt_append"] == "Prefer concise findings."
+    assert agent.runtime_internal.prompt_materialization["prompt_append"] == "Prefer concise findings."
 
-
-def test_runtime_agent_payload_rejects_unknown_prompt_reference() -> None:
-    with pytest.raises(
-        ValueError,
-        match=r"runtime config field 'agent.prompt_ref' references unknown prompt profile",
-    ):
+    with pytest.raises(ValueError, match=r"runtime config field 'agent.prompt_ref' is not supported"):
         _ = parse_runtime_agent_payload(
             {"preset": "leader", "prompt_ref": "unknown"},
             source="test payload",
@@ -1428,12 +1436,7 @@ def test_runtime_agent_payload_rejects_unknown_hook_reference() -> None:
             source="test payload",
         )
 
-
-def test_runtime_agent_payload_rejects_persisted_invalid_manifest_hook_reference() -> None:
-    with pytest.raises(
-        ValueError,
-        match=r"runtime config field 'agent.manifest_hook_refs' references unknown hook preset",
-    ):
+    with pytest.raises(ValueError, match=r"runtime config field 'agent.manifest_hook_refs' is not supported"):
         _ = parse_runtime_agent_payload(
             {"preset": "leader", "manifest_hook_refs": ["unknown"]},
             source="test payload",
@@ -1503,10 +1506,10 @@ def test_runtime_config_parses_agents_fallback_models_shorthand(tmp_path: Path) 
         preferred_model="opencode/gpt-5.4",
         fallback_models=("opencode/gpt-5.3", "custom/demo"),
     )
-    assert serialize_runtime_agent_config(config.agents["worker"]) == {
+    assert serialize_runtime_agent_config(config.agents["worker"], include_runtime_internal=True) == {
         "preset": "worker",
         "prompt_profile": "worker",
-        "prompt_materialization": _prompt_materialization_payload("worker"),
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("worker")},
         "model": "opencode/gpt-5.4",
         "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
     }
@@ -1552,9 +1555,7 @@ def test_runtime_config_parses_agents_map_with_custom_keys(tmp_path: Path) -> No
     )
 
 
-def test_runtime_config_parses_agent_references_against_hook_preset_catalog(
-    tmp_path: Path,
-) -> None:
+def test_runtime_config_rejects_internal_agent_references_in_repo_config(tmp_path: Path) -> None:
     _write_runtime_config(
         tmp_path,
         {
@@ -1566,17 +1567,8 @@ def test_runtime_config_parses_agent_references_against_hook_preset_catalog(
             },
         },
     )
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.agent == RuntimeAgentConfig(
-        preset="leader",
-        prompt_profile="researcher",
-        prompt_ref="researcher",
-        prompt_source="builtin",
-        hook_refs=("role_reminder",),
-        execution_engine="provider",
-    )
+    with pytest.raises(ValueError, match=r"runtime config field 'agent.prompt_ref' is not supported"):
+        load_runtime_config(tmp_path, env={})
 
 
 def test_runtime_config_parses_agent_context_transform_refs(tmp_path: Path) -> None:

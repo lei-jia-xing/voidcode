@@ -58,8 +58,9 @@ def agent_required_tool_patterns(agent: RuntimeAgentConfig | None) -> tuple[str,
     if agent is None:
         return ()
     patterns: list[str] = []
-    if agent.manifest_tool_allowlist:
-        patterns.extend(agent.manifest_tool_allowlist)
+    internal = agent.runtime_internal if agent is not None else None
+    if internal is not None:
+        patterns.extend(internal.manifest_tool_allowlist)
     if agent.tools is not None:
         if agent.tools.allowlist is not None:
             patterns.extend(agent.tools.allowlist)

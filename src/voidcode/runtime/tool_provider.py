@@ -78,8 +78,9 @@ def scoped_tool_registry_for_agent[ToolRegistryT: ScopedToolRegistry](
         return registry
 
     scoped_registry = registry
-    if agent.manifest_tool_allowlist:
-        scoped_registry = scoped_registry.filtered(agent.manifest_tool_allowlist)
+    internal = agent.runtime_internal if agent is not None else None
+    if internal is not None and internal.manifest_tool_allowlist:
+        scoped_registry = scoped_registry.filtered(internal.manifest_tool_allowlist)
 
     if agent.tools is not None:
         if agent.tools.builtin is not None and agent.tools.builtin.enabled is False:

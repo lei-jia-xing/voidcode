@@ -5,9 +5,11 @@ from dataclasses import fields
 from pathlib import Path
 from typing import cast
 
+import jsonschema
 import pytest
 
 from voidcode.hook.config import RuntimeHooksConfig
+from voidcode.provider.config import parse_provider_configs_payload
 from voidcode.runtime.config import (
     RuntimeAgentConfig,
     RuntimeBackgroundTaskConfig,
@@ -42,6 +44,26 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     properties = cast(dict[str, object], schema["properties"])
     assert isinstance(properties, dict)
     assert schema["additionalProperties"] is False
+    providers = cast(dict[str, object], properties["providers"])
+    assert providers["additionalProperties"] is False
+    provider_properties = cast(dict[str, object], providers["properties"])
+    payload = {
+        "providers": {
+            "openai": {"timeout_seconds": 10.0},
+            "opencode-go": {"ssl_verify": False, "transient_retry": {"max_retries": 2}},
+            "custom": {"local": {"model_map": {"alias": "local/model"}}},
+        }
+    }
+    assert parse_provider_configs_payload(payload["providers"], source="runtime config field 'providers'") is not None
+    assert "openai" in provider_properties
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"providers": {"unknown": {}}}, schema)
+    with pytest.raises(ValueError):
+        parse_provider_configs_payload({"unknown": {}}, source="runtime config field 'providers'")
+    with pytest.raises(ValueError):
+        parse_provider_configs_payload({"openai": {"unknown": True}}, source="runtime config field 'providers'")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"providers": {"openai": {"unknown": True}}}, schema)
     assert "plan" not in properties
     assert "workflow_mode" not in properties
     assert "agents" in properties
@@ -471,13 +493,12 @@ def test_runtime_config_schema_file_matches_generated_schema() -> None:
             set(),
             set(),
         ),
-        # agent.fallback_models maps to RuntimeAgentConfig.provider_fallback.
         (
             "$defs.agentConfig",
             RuntimeAgentConfig,
             {"fallback_models": "provider_fallback"},
             set(),
-            {"execution_engine"},
+            {"execution_engine", "runtime_internal"},
         ),
         (
             "$defs.skillsConfig",
@@ -555,3 +576,49 @@ def test_runtime_config_schema_section_maps_to_config_fields(
         schema_only=schema_only,
         runtime_only=runtime_only,
     )
+
+
+def test_provider_schema_and_parser_reject_same_invalid_values() -> None:
+    schema = runtime_config_json_schema()
+    invalid_payloads = (
+        {"providers": {"custom": {"openai": {}}}},
+        {"providers": {"openai": {"timeout_seconds": 0}}},
+        {"providers": {"litellm": {"auth_scheme": "invalid"}}},
+        {"providers": {"google": {"auth": {"method": "invalid"}}}},
+        {"providers": {"copilot": {"auth": {"method": "invalid"}}}},
+        {"providers": {"litellm": {"model_map": {"alias": ""}}}},
+        {"providers": {"custom": {" custom ": {}}}},
+    )
+    for payload in invalid_payloads:
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(payload, schema)
+        with pytest.raises(ValueError):
+            parse_provider_configs_payload(payload["providers"], source="runtime config field 'providers'")
+
+
+def test_provider_schema_and_parser_accept_valid_dynamic_provider_shapes() -> None:
+    schema = runtime_config_json_schema()
+    providers = {
+        "providers": {
+            "openrouter": {"auth_scheme": "bearer", "model_map": {"alias": "provider/model"}},
+            "custom": {"team-gateway": {"base_url": "https://gateway.example"}},
+        }
+    }
+    jsonschema.validate(providers, schema)
+    assert parse_provider_configs_payload(providers["providers"], source="runtime config field 'providers'") is not None
+
+
+def test_provider_schema_and_parser_accept_explicit_null_as_unset() -> None:
+    schema = runtime_config_json_schema()
+    providers = {
+        "providers": {
+            "openai": {
+                "api_key": None,
+                "base_url": None,
+                "timeout_seconds": None,
+            },
+            "litellm": {"model_map": None, "timeout_seconds": None},
+        }
+    }
+    jsonschema.validate(providers, schema)
+    assert parse_provider_configs_payload(providers["providers"], source="runtime config field 'providers'") is not None

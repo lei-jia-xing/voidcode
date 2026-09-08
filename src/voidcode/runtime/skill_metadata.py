@@ -58,8 +58,9 @@ def selected_skill_names_for_agent(
     if persisted_selected_skill_names is not None:
         manifest_skill_refs = persisted_selected_skill_names
     if agent is not None:
-        if not persisted_selected_explicit and not manifest_skill_refs:
-            manifest_skill_refs = agent.manifest_skill_refs
+        internal = agent.runtime_internal
+        if not persisted_selected_explicit and not manifest_skill_refs and internal is not None:
+            manifest_skill_refs = internal.manifest_skill_refs
 
     if request_skill_names is None:
         if persisted_selected_explicit:

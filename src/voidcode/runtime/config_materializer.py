@@ -118,7 +118,7 @@ def serialize_runtime_config_core(config: EffectiveRuntimeConfig) -> dict[str, o
     serialized_tools = serialize_runtime_tools_config(config.tools)
     if serialized_tools is not None:
         runtime_config_metadata["tools"] = serialized_tools
-    serialized_agent = serialize_runtime_agent_config(config.agent)
+    serialized_agent = serialize_runtime_agent_config(config.agent, include_runtime_internal=True)
     if serialized_agent is not None:
         runtime_config_metadata["agent"] = serialized_agent
     return runtime_config_metadata
@@ -305,14 +305,7 @@ def apply_request_runtime_config_overrides(
                     prompt_profile=resolved.agent.prompt_profile,
                     prompt=resolved.agent.prompt,
                     prompt_append=resolved.agent.prompt_append,
-                    prompt_ref=resolved.agent.prompt_ref,
-                    prompt_source=resolved.agent.prompt_source,
-                    prompt_materialization=resolved.agent.prompt_materialization,
-                    manifest_source_scope=resolved.agent.manifest_source_scope,
-                    manifest_source_path=resolved.agent.manifest_source_path,
-                    manifest_tool_allowlist=resolved.agent.manifest_tool_allowlist,
-                    manifest_skill_refs=resolved.agent.manifest_skill_refs,
-                    manifest_hook_refs=resolved.agent.manifest_hook_refs,
+                    runtime_internal=resolved.agent.runtime_internal,
                     hook_refs=resolved.agent.hook_refs,
                     context_transform_refs=context_transform_refs,
                     model=resolved.agent.model,
