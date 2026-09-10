@@ -39,6 +39,7 @@ from ..doctor import (
     CapabilityCheckResult,
     CapabilityCheckStatus,
     CapabilityDoctor,
+    CapabilityReport,
     DoctorCheckType,
     create_doctor_for_config,
     create_report,
@@ -227,6 +228,125 @@ def _emit_output(
     return EXIT_SUCCESS
 
 
+def _readiness_check_result(
+    readiness: ProviderReadinessResult,
+) -> CapabilityCheckResult:
+    """Adapt runtime-owned readiness to the doctor report contract."""
+    details: dict[str, object] = {
+        "provider": readiness.provider,
+        "model": readiness.model,
+        "configured": readiness.configured,
+        "auth_present": readiness.auth_present,
+        "streaming_configured": readiness.streaming_configured,
+        "streaming_supported": readiness.streaming_supported,
+        "context_window": readiness.context_window,
+        "max_output_tokens": readiness.max_output_tokens,
+        "fallback_chain": list(readiness.fallback_chain),
+        "status": readiness.status,
+    }
+    return CapabilityCheckResult(
+        status=CapabilityCheckStatus.READY if readiness.ok else CapabilityCheckStatus.ERROR,
+        name="provider.readiness",
+        check_type=DoctorCheckType.PROVIDER_READINESS.value,
+        details=details,
+        error_message=None if readiness.ok else readiness.guidance,
+    )
+
+
+def _run_readiness_actions(
+    readiness: object,
+    *,
+    workspace: Path,
+) -> list[dict[str, str]]:
+    """Return safe, copyable recovery commands for a first-task block."""
+    readiness_details = getattr(readiness, "details", {})
+    workspace_arg = f"--workspace {shlex.quote(str(workspace))}"
+    actions: list[dict[str, str]] = []
+    provider_status = readiness_details.get("provider_status") if isinstance(readiness_details, dict) else None
+    if provider_status == "missing_model":
+        actions.append(
+            {
+                "kind": "config_init",
+                "command": f"voidcode config init --model provider/model {workspace_arg}",
+            }
+        )
+    elif provider_status == "invalid_model":
+        provider = readiness_details.get("provider") if isinstance(readiness_details, dict) else None
+        if isinstance(provider, str) and provider:
+            actions.append(
+                {
+                    "kind": "provider_models",
+                    "command": f"voidcode provider models {shlex.quote(provider)} {workspace_arg}",
+                }
+            )
+    actions.append(
+        {
+            "kind": "doctor",
+            "command": f"voidcode doctor {workspace_arg}",
+        }
+    )
+    return actions
+
+
+def _readiness_failure_payload(
+    report: CapabilityReport,
+    *,
+    workspace: Path,
+) -> dict[str, object]:
+    """Build the stable machine-facing first-task readiness failure shape."""
+    readiness = report.first_task_readiness
+    if readiness is None:
+        raise ValueError("doctor report did not include first-task readiness")
+    return {
+        "status": readiness.status,
+        "error": readiness.blockers[0] if readiness.blockers else readiness.summary,
+        "actions": _run_readiness_actions(readiness, workspace=workspace),
+        "first_task_readiness": readiness.to_dict(),
+    }
+
+
+def _print_readiness_failure(payload: dict[str, object]) -> None:
+    """Print a concise, secret-free, copyable first-task recovery message."""
+    print(f"status: {payload['status']}", file=sys.stderr)
+    print(f"error: {payload['error']}", file=sys.stderr)
+    print("actions:", file=sys.stderr)
+    actions = payload.get("actions")
+    if isinstance(actions, list):
+        for action in actions:
+            if isinstance(action, dict) and isinstance(action.get("command"), str):
+                print(f"  {action['command']}", file=sys.stderr)
+
+
+def _run_readiness_preflight(
+    *,
+    readiness: ProviderReadinessResult,
+    workspace: Path,
+    json_output: bool,
+) -> int | None:
+    """Stop provider runs early with doctor-derived guidance when not ready."""
+    if readiness.ok:
+        return None
+    report = create_report([_readiness_check_result(readiness)], workspace=workspace)
+    payload = _readiness_failure_payload(report, workspace=workspace)
+    if json_output:
+        print_json(payload)
+    else:
+        _print_readiness_failure(payload)
+    return EXIT_PROVIDER_ERROR
+
+
+def _config_error_readiness_payload(message: str, *, workspace: Path) -> dict[str, object]:
+    """Build the same doctor-derived shape for an invalid workspace config."""
+    result = CapabilityCheckResult(
+        status=CapabilityCheckStatus.ERROR,
+        name="runtime.config",
+        check_type=DoctorCheckType.RUNTIME_CONFIG.value,
+        error_message=message,
+    )
+    report = create_report([result], workspace=workspace)
+    return _readiness_failure_payload(report, workspace=workspace)
+
+
 def _handle_run_command(args: RunArgs) -> int:
     workspace = args.workspace
     request_text = args.request
@@ -244,8 +364,31 @@ def _handle_run_command(args: RunArgs) -> int:
     }
     if cli_model is not None:
         config_kwargs["model"] = cli_model
-    config = _load_runtime_config_for_cli(workspace, **config_kwargs)
+    try:
+        config = _load_runtime_config_for_cli(workspace, **config_kwargs)
+    except CliError as exc:
+        payload = _config_error_readiness_payload(exc.message, workspace=workspace)
+        if json_output:
+            print_json(payload)
+        else:
+            _print_readiness_failure(payload)
+        return exc.code
     with _runtime_session(workspace, config) as runtime:
+        if config.execution_engine == "provider":
+            try:
+                readiness = runtime.provider_readiness()
+            except ValueError:
+                # Preserve the existing runtime error path for invalid effective
+                # session/config state; the gate only handles typed readiness.
+                readiness = None
+            if readiness is not None:
+                preflight_exit = _run_readiness_preflight(
+                    readiness=readiness,
+                    workspace=workspace,
+                    json_output=json_output,
+                )
+                if preflight_exit is not None:
+                    return preflight_exit
         metadata: dict[str, object] = {}
         if args.agent is not None:
             metadata["agent"] = {"preset": args.agent}

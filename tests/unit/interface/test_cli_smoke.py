@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.events import runtime_reasoning_part_payload
 from voidcode.runtime.paths import sessions_db_path
 
@@ -418,7 +419,7 @@ def test_storage_reset_removes_global_database_files() -> None:
 def test_web_command_forwards_runtime_config_and_server_entry() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/web-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
 
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config) as config_mock:
         with patch.object(cli, "web", autospec=True) as web_mock:
@@ -448,7 +449,7 @@ def test_web_command_forwards_runtime_config_and_server_entry() -> None:
 def test_web_command_defaults_to_auto_assigned_port() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/web-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
 
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config) as config_mock:
         with patch.object(cli, "web", autospec=True) as web_mock:
@@ -468,7 +469,7 @@ def test_web_command_defaults_to_auto_assigned_port() -> None:
 def test_web_command_forwards_no_open_flag() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/web-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
 
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config) as config_mock:
         with patch.object(cli, "web", autospec=True) as web_mock:
@@ -499,7 +500,7 @@ def test_web_command_forwards_no_open_flag() -> None:
 def test_serve_command_forwards_runtime_config_and_server_entry() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/serve-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
 
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config) as config_mock:
         with patch.object(cli, "serve", autospec=True) as serve_mock:
@@ -895,7 +896,7 @@ def test_tui_command_forwards_workspace_and_approval_mode() -> None:
 def test_serve_command_forwards_host_port_and_workspace() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="deny")
+    config = RuntimeConfig(approval_mode="deny", execution_engine="deterministic")
 
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config) as load_mock:
         with patch.object(cli, "serve", autospec=True) as serve_mock:
@@ -926,7 +927,7 @@ def test_serve_command_forwards_host_port_and_workspace() -> None:
 def test_run_command_loads_config_and_forwards_it_to_runtime() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="demo-session",
@@ -980,7 +981,7 @@ def test_run_command_executes_plan_slash_command_through_runtime_surface() -> No
 def test_run_command_ctrl_c_cancels_active_runtime_session(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
 
     def _interrupted_stream() -> Iterable[_StubChunk]:
         yield _make_chunk(
@@ -1008,7 +1009,7 @@ def test_run_command_ctrl_c_cancels_active_runtime_session(capsys: Any) -> None:
 def test_run_command_accepts_agent_skills_model_and_provider_stream_flags() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="demo-session",
@@ -1057,7 +1058,7 @@ def test_run_command_accepts_agent_skills_model_and_provider_stream_flags() -> N
 def test_run_command_forwards_runtime_mode_metadata_without_policy_enforcement() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (_make_chunk(session_id="demo-session", status="completed", output="done\n"),)
 
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
@@ -1074,7 +1075,7 @@ def test_run_command_forwards_runtime_mode_metadata_without_policy_enforcement()
 def test_run_command_read_only_flag_forwards_runtime_metadata() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (_make_chunk(session_id="demo-session", status="completed", output="done\n"),)
 
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
@@ -1101,7 +1102,7 @@ def test_run_command_read_only_flag_forwards_runtime_metadata() -> None:
 def test_run_command_accepts_runtime_discovered_custom_agent_id() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (_make_chunk(session_id="demo-session", status="completed", output="done\n"),)
 
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
@@ -1126,7 +1127,7 @@ def test_run_command_accepts_runtime_discovered_custom_agent_id() -> None:
 def test_run_command_prints_provider_failure_footer(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="provider-failed-session",
@@ -1187,7 +1188,7 @@ def test_run_command_prints_provider_failure_footer(capsys: Any) -> None:
 def test_run_json_reports_failed_status_and_returns_runtime_error(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="json-failed-session",
@@ -1222,7 +1223,7 @@ def test_run_json_reports_failed_status_and_returns_runtime_error(capsys: Any) -
 def test_run_trace_streams_model_text_todos_and_tool_output(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="trace-session",
@@ -1346,7 +1347,7 @@ def test_run_trace_streams_model_text_todos_and_tool_output(capsys: Any) -> None
 def test_run_trace_reports_incomplete_runtime_stream_as_failure(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="trace-session",
@@ -1387,7 +1388,7 @@ def test_run_trace_reports_incomplete_runtime_stream_as_failure(capsys: Any) -> 
 def test_run_trace_hides_reasoning_without_show_thinking(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="trace-session",
@@ -1428,7 +1429,7 @@ def test_run_trace_hides_reasoning_without_show_thinking(capsys: Any) -> None:
 def test_run_trace_shows_reasoning_with_show_thinking(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="trace-session",
@@ -1479,7 +1480,7 @@ def test_run_trace_shows_reasoning_with_show_thinking(capsys: Any) -> None:
 def test_run_trace_respects_explicit_no_provider_stream() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (_make_chunk(session_id="trace-session", status="completed", output="done\n"),)
 
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
@@ -1505,7 +1506,7 @@ def test_run_trace_respects_explicit_no_provider_stream() -> None:
 def test_run_trace_fails_incomplete_stream_even_with_partial_output(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="partial-stream-session",
@@ -1551,7 +1552,7 @@ def test_run_trace_conflicts_with_json(capsys: Any) -> None:
 def test_run_json_strips_runtime_failed_prefix_from_error_summary(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="json-summary-session",
@@ -1578,7 +1579,7 @@ def test_run_json_strips_runtime_failed_prefix_from_error_summary(capsys: Any) -
 def test_run_json_prefers_runtime_error_summary_field(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="json-summary-field-session",
@@ -1606,7 +1607,7 @@ def test_run_json_prefers_runtime_error_summary_field(capsys: Any) -> None:
 def test_run_command_forwards_reasoning_effort_flag_to_metadata_and_config() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="demo-session",
@@ -1640,7 +1641,7 @@ def test_run_command_forwards_reasoning_effort_flag_to_metadata_and_config() -> 
 def test_run_command_show_thinking_flag_does_not_persist_request_metadata() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="demo-session",
@@ -1671,7 +1672,7 @@ def test_run_command_show_thinking_flag_does_not_persist_request_metadata() -> N
 def test_run_json_redacts_reasoning_by_default_and_shows_with_flag(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
 
     def _chunks(*, show_thinking: bool = False) -> tuple[_StubChunk, ...]:
         reasoning_payload = runtime_reasoning_part_payload(text="private chain")
@@ -1723,7 +1724,7 @@ def test_run_json_redacts_reasoning_by_default_and_shows_with_flag(capsys: Any) 
 def test_run_command_omits_reasoning_effort_metadata_when_flag_absent() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="demo-session",
@@ -1753,7 +1754,7 @@ def test_run_command_omits_reasoning_effort_metadata_when_flag_absent() -> None:
 def test_run_command_prints_request_observability_event(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="deterministic")
     chunks = (
         _make_chunk(
             session_id="demo-session",
@@ -1834,7 +1835,7 @@ def test_run_command_missing_config_named_file_is_runtime_error() -> None:
 
 def test_run_command_interactively_allows_inline_approval(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
-    config = SimpleNamespace(approval_mode="ask")
+    config = RuntimeConfig(approval_mode="ask", execution_engine="deterministic")
     first_stream = (
         _make_chunk(
             session_id="demo-session",
@@ -1904,7 +1905,7 @@ def test_run_command_interactively_allows_inline_approval(capsys: Any) -> None:
 
 def test_run_command_interactively_streams_initial_events_incrementally() -> None:
     cli = importlib.import_module("voidcode.cli.app")
-    config = SimpleNamespace(approval_mode="ask")
+    config = RuntimeConfig(approval_mode="ask", execution_engine="deterministic")
     stdout = _StubStdout()
     stderr = _StubTtyStderr()
     request_received = _runtime_event("runtime.request_received", prompt="write sample.txt hi")
@@ -1964,7 +1965,7 @@ def test_run_command_interactively_streams_initial_events_incrementally() -> Non
 
 def test_run_command_interactively_streams_resumed_events_incrementally() -> None:
     cli = importlib.import_module("voidcode.cli.app")
-    config = SimpleNamespace(approval_mode="ask")
+    config = RuntimeConfig(approval_mode="ask", execution_engine="deterministic")
     stdout = _StubStdout()
     stderr = _StubTtyStderr()
     request_received = _runtime_event("runtime.request_received", prompt="write sample.txt hi")
@@ -2038,7 +2039,7 @@ def test_run_command_interactively_streams_resumed_events_incrementally() -> Non
 
 def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
-    config = SimpleNamespace(approval_mode="ask")
+    config = RuntimeConfig(approval_mode="ask", execution_engine="deterministic")
     first_stream = (
         _make_chunk(
             session_id="demo-session",
@@ -2108,7 +2109,7 @@ def test_run_command_keeps_new_approval_tail_after_denied_tool_feedback(
     capsys: Any,
 ) -> None:
     cli = importlib.import_module("voidcode.cli.app")
-    config = SimpleNamespace(approval_mode="ask")
+    config = RuntimeConfig(approval_mode="ask", execution_engine="deterministic")
     first_stream = (
         _make_chunk(
             session_id="demo-session",
@@ -2208,7 +2209,7 @@ def test_run_command_keeps_new_approval_tail_after_denied_tool_feedback(
 
 def test_run_command_interactively_handles_repeated_approval_requests(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
-    config = SimpleNamespace(approval_mode="ask")
+    config = RuntimeConfig(approval_mode="ask", execution_engine="deterministic")
     first_stream = (
         _make_chunk(
             session_id="demo-session",
@@ -2332,7 +2333,7 @@ def test_run_command_interactively_handles_repeated_approval_requests(capsys: An
 def test_run_command_does_not_prompt_or_resume_when_not_interactive(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="ask")
+    config = RuntimeConfig(approval_mode="ask", execution_engine="deterministic")
     first_stream = (
         _make_chunk(
             session_id="demo-session",
@@ -2375,7 +2376,7 @@ def test_run_command_does_not_prompt_or_resume_when_not_interactive(capsys: Any)
 def test_run_command_json_reports_non_interactive_approval_block(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="ask")
+    config = RuntimeConfig(approval_mode="ask", execution_engine="deterministic")
     first_stream = (
         _make_chunk(
             session_id="demo-session",
@@ -2426,7 +2427,7 @@ def test_run_command_json_reports_non_interactive_approval_block(capsys: Any) ->
 def test_run_command_non_interactive_question_block_returns_failure(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="ask")
+    config = RuntimeConfig(approval_mode="ask", execution_engine="deterministic")
     questions: list[dict[str, object]] = [
         {
             "header": "Confirm",
@@ -2482,7 +2483,7 @@ def test_run_command_non_interactive_question_block_returns_failure(capsys: Any)
 def test_run_command_json_reports_non_interactive_question_block(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="ask")
+    config = RuntimeConfig(approval_mode="ask", execution_engine="deterministic")
     questions: list[dict[str, object]] = [
         {
             "header": "Confirm",
@@ -3341,6 +3342,73 @@ def test_doctor_human_reports_first_task_readiness_without_leaking_auth() -> Non
     assert "First task readiness:" in result.stdout
     assert "doctor-secret" not in result.stdout
     assert "doctor-secret" not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_run_json_reports_provider_readiness_actions_without_secrets() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        env = with_src_pythonpath(os.environ.copy())
+        env["VOIDCODE_EXECUTION_ENGINE"] = "provider"
+        env.pop("VOIDCODE_MODEL", None)
+        env["XDG_CONFIG_HOME"] = str(workspace / "config")
+        env["XDG_STATE_HOME"] = str(workspace / "state")
+        env["XDG_CACHE_HOME"] = str(workspace / "cache")
+        for key in (
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GOOGLE_API_KEY",
+            "OPENCODE_API_KEY",
+            "OPENCODE_GO_API_KEY",
+            "OPENROUTER_API_KEY",
+            "DEEPSEEK_API_KEY",
+        ):
+            env.pop(key, None)
+
+        result = _run_module_cli(
+            "run",
+            "read README.md",
+            "--workspace",
+            str(workspace),
+            "--json",
+            env=env,
+        )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 11
+    assert payload["status"] == "not_ready"
+    assert "provider/model" in payload["error"]
+    assert payload["first_task_readiness"]["status"] == "not_ready"
+    commands = [action["command"] for action in payload["actions"]]
+    assert any("config init --model provider/model" in command for command in commands)
+    assert any("voidcode doctor" in command for command in commands)
+    assert "api_key" not in result.stdout
+    assert "Traceback" not in result.stderr
+
+
+def test_run_reports_invalid_config_with_copyable_doctor_action() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        (workspace / ".voidcode.json").write_text("{", encoding="utf-8")
+        env = with_src_pythonpath(os.environ.copy())
+        env["VOIDCODE_EXECUTION_ENGINE"] = "provider"
+        env["XDG_CONFIG_HOME"] = str(workspace / "config")
+        env["XDG_STATE_HOME"] = str(workspace / "state")
+        env["XDG_CACHE_HOME"] = str(workspace / "cache")
+
+        result = _run_module_cli(
+            "run",
+            "read README.md",
+            "--workspace",
+            str(workspace),
+            env=env,
+        )
+
+    assert result.returncode == 10
+    assert "status: not_ready" in result.stderr
+    assert "voidcode doctor" in result.stderr
+    assert "invalid runtime config" in result.stderr
+    assert result.stdout == ""
     assert "Traceback" not in result.stderr
 
 

@@ -57,6 +57,33 @@ uv run voidcode run "write hello.txt hello world" --workspace . --approval-mode 
 uv run voidcode sessions list --workspace .
 ```
 
+### First-run readiness
+
+Provider-backed runs fail closed when the workspace has no valid provider/model or
+configuration. Before starting a provider run, the CLI uses the same readiness
+contract as `doctor` and prints copyable next steps without exposing credentials:
+
+```bash
+# Inspect provider/model, local tools, and first-task readiness
+uv run voidcode doctor --workspace .
+
+# Machine-readable readiness and recovery actions
+uv run voidcode run "read README.md" --workspace . --json
+```
+
+When readiness is blocked, `run` exits with the existing config/provider exit
+code and suggests `voidcode doctor` or `voidcode config init --model
+provider/model`. It never silently switches a provider run to the deterministic
+engine. Select deterministic explicitly for the offline harness:
+
+```bash
+VOIDCODE_EXECUTION_ENGINE=deterministic uv run voidcode run "read README.md" --workspace .
+```
+
+The JSON preflight payload has stable `status`, `error`, `actions`, and
+`first_task_readiness` fields. Credentials and secret-like configuration values
+are not included.
+
 ## Configuration
 
 Workspace-local runtime config lives in `.voidcode.json` at the workspace root (not `.voidcode/config.json`). To enable IDE auto-completion and validation, point `$schema` at the published JSON Schema:
