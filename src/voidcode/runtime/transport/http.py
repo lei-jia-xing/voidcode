@@ -1990,6 +1990,27 @@ class RuntimeTransportApp:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=result)
 
+    def _resume_session(
+        self,
+        session_id: str,
+        *,
+        approval_request_id: str | None = None,
+        approval_decision: PermissionResolution | None = None,
+    ) -> RuntimeResponse:
+        # Keep runtime ownership in the worker even if the HTTP request disconnects.
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                if approval_request_id is None and approval_decision is None:
+                    return runtime.resume(session_id)
+                return runtime.resume(
+                    session_id,
+                    approval_request_id=approval_request_id,
+                    approval_decision=approval_decision,
+                )
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+
     async def _handle_resume(
         self,
         *,
@@ -1997,15 +2018,11 @@ class RuntimeTransportApp:
         send: Send,
         show_thinking: bool = False,
     ) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                response = runtime.resume(session_id)
-            except ValueError as exc:
-                await self._json_response(send, status=404, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        try:
+            response = await asyncio.to_thread(self._resume_session, session_id)
+        except ValueError as exc:
+            await self._json_response(send, status=404, payload={"error": str(exc)})
+            return
         await self._json_response(
             send,
             status=200,
@@ -2190,19 +2207,16 @@ class RuntimeTransportApp:
             await self._json_response(send, status=400, payload={"error": str(exc)})
             return
 
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                response = runtime.resume(
-                    session_id,
-                    approval_request_id=approval_request_id,
-                    approval_decision=approval_decision,
-                )
-            except ValueError as exc:
-                await self._json_response(send, status=409, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        try:
+            response = await asyncio.to_thread(
+                self._resume_session,
+                session_id,
+                approval_request_id=approval_request_id,
+                approval_decision=approval_decision,
+            )
+        except ValueError as exc:
+            await self._json_response(send, status=409, payload={"error": str(exc)})
+            return
         await self._json_response(
             send,
             status=200,

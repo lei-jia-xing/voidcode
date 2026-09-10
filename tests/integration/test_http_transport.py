@@ -1650,6 +1650,101 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
 
 
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        (
+            "/api/sessions/approval-liveness/approval",
+            b'{"request_id":"approval-request","decision":"allow"}',
+        ),
+        ("/api/sessions/resume-liveness/resume", b""),
+    ],
+)
+def test_transport_resume_routes_do_not_block_concurrent_requests(
+    path: str,
+    body: bytes,
+) -> None:
+    """Blocking continuation work must not starve another ASGI request."""
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
+    gate = threading.Event()
+    started = threading.Event()
+    concurrent_completed = threading.Event()
+    completed_before_release: list[bool] = []
+
+    class BlockingResumeRuntime:
+        def resume(self, _session_id: str, **_: object) -> object:
+            started.set()
+            assert gate.wait(timeout=10)
+            return SimpleNamespace(
+                session=SimpleNamespace(
+                    session=SimpleNamespace(id="resumed-session", parent_id=None),
+                    status="completed",
+                    turn=1,
+                    metadata={},
+                ),
+                events=(),
+                output="resumed",
+            )
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    app = runtime_http.RuntimeTransportApp(runtime_factory=cast(Any, BlockingResumeRuntime))
+
+    async def invoke(request_method: str, request_path: str, request_body: bytes = b"") -> _TransportResponse:
+        messages: list[dict[str, object]] = [{"type": "http.request", "body": request_body, "more_body": False}]
+        sent: list[dict[str, object]] = []
+
+        async def receive() -> dict[str, object]:
+            if messages:
+                return messages.pop(0)
+            await asyncio.Event().wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: dict[str, object]) -> None:
+            sent.append(message)
+
+        await app(
+            {
+                "type": "http",
+                "method": request_method,
+                "path": request_path,
+                "query_string": b"",
+            },
+            receive,
+            send,
+        )
+        start_message = next(message for message in sent if message["type"] == "http.response.start")
+        return _TransportResponse(
+            status=cast(int, start_message["status"]),
+            headers={},
+            body_parts=[cast(bytes, message.get("body", b"")) for message in sent if message["type"] == "http.response.body"],
+        )
+
+    def release_after_start() -> None:
+        assert started.wait(timeout=10)
+        completed_before_release.append(concurrent_completed.wait(timeout=5))
+        gate.set()
+
+    async def scenario() -> tuple[_TransportResponse, _TransportResponse]:
+        continuation = asyncio.create_task(invoke("POST", path, body))
+        assert await asyncio.to_thread(started.wait, 10)
+        concurrent_response = await invoke("GET", "/api/not-a-real-route")
+        concurrent_completed.set()
+        continuation_response = await continuation
+        return continuation_response, concurrent_response
+
+    release_thread = threading.Thread(target=release_after_start, daemon=True)
+    release_thread.start()
+    continuation_response, concurrent_response = asyncio.run(scenario())
+    release_thread.join(timeout=10)
+
+    assert concurrent_response.status == 404
+    assert continuation_response.status == 200
+    assert continuation_response.json()["output"] == "resumed"
+    assert completed_before_release == [True]
+
+
 def test_transport_lists_and_acknowledges_notifications(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()

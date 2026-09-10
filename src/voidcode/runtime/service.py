@@ -4459,13 +4459,29 @@ class VoidCodeRuntime(RuntimeSurface):
                 session_id=session_id,
                 approval_request_id=approval_request_id,
             )
-            _, response = self._resume_coordinator.resume_pending_approval_response(
-                session_id=session_id,
-                approval_request_id=approval_request_id,
-                approval_decision=approval_decision,
+            run_id = os.urandom(8).hex()
+            abort_signal = self._register_active_session_id(
+                session_id,
+                run_id=run_id,
+                metadata={
+                    "resume": True,
+                    "resume_kind": "approval",
+                    "approval_request_id": approval_request_id,
+                    "run_id": run_id,
+                },
             )
-            self._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
-            return response
+            try:
+                _, response = self._resume_coordinator.resume_pending_approval_response(
+                    session_id=session_id,
+                    approval_request_id=approval_request_id,
+                    approval_decision=approval_decision,
+                    run_id=run_id,
+                    abort_signal=abort_signal,
+                )
+                self._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
+                return response
+            finally:
+                self._unregister_active_session_id(session_id, run_id=run_id)
 
     def resume_stream(
         self,

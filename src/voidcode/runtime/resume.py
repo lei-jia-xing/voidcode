@@ -160,6 +160,8 @@ class RuntimeResumeCoordinator:
         session_id: str,
         approval_request_id: str,
         approval_decision: PermissionResolution,
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> tuple[tuple[EventEnvelope, ...], RuntimeResponse]:
         stored_response, pending, checkpoint = self._load_pending_approval_context(
             session_id=session_id,
@@ -173,6 +175,8 @@ class RuntimeResumeCoordinator:
             pending=pending,
             approval_decision=approval_decision,
             checkpoint=checkpoint,
+            run_id=run_id,
+            abort_signal=abort_signal,
         ):
             final_session = chunk.session
             if chunk.event is not None:
