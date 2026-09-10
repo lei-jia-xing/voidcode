@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from ..security.shell_policy import extract_shell_path_candidates
 from ..tools.contracts import Tool, ToolCall, ToolDefinition
 from ..tools.local_custom import LocalCustomTool
 from .permission import OperationClass, PathScope
@@ -94,10 +93,6 @@ class RuntimePermissionContextResolver:
             patch_text = arguments.get("patch")
             if isinstance(patch_text, str) and patch_text:
                 candidates.extend(patch_path_extractor(patch_text))
-        if tool_call.tool_name == "shell_exec":
-            command = arguments.get("command")
-            if isinstance(command, str):
-                candidates.extend(extract_shell_path_candidates(command))
         return tuple(candidates)
 
     def canonicalize_candidate_path(self, raw_path: str) -> Path | None:
@@ -133,7 +128,7 @@ def operation_class_for_tool(
     if tool_name == "background_process":
         operation = arguments.get("op") if arguments is not None else None
         return "read" if operation in ("ps", "logs") else "execute"
-    if tool_name == "shell_exec" or isinstance(tool_instance, LocalCustomTool):
+    if tool_name in {"shell_exec", "background_process_start"} or isinstance(tool_instance, LocalCustomTool):
         return "execute"
     if tool_name == "ast_grep" and arguments is not None:
         return "write" if arguments.get("mode") == "replace" else "read"

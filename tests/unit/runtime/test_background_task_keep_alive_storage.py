@@ -15,7 +15,7 @@ from voidcode.runtime.background.models import (
     is_background_task_transition_allowed,
 )
 from voidcode.runtime.paths import sessions_db_path
-from voidcode.runtime.storage import SCHEMA_VERSION, SqliteSessionStore
+from voidcode.runtime.storage import SqliteSessionStore
 
 
 def _task(
@@ -288,54 +288,3 @@ def test_background_task_storage_summary_carries_keep_alive_and_steer_prompt(tmp
     assert listed[0].keep_alive is True
     assert listed[0].steer_prompt == "next instruction"
     assert listed[0].status == "running"
-
-
-def test_background_task_storage_migrates_v10_database_with_keep_alive_columns(tmp_path: Path) -> None:
-    database_path = tmp_path / "v10.sqlite3"
-    store = SqliteSessionStore(database_path=database_path)
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-legacy"))
-    store.create_background_task(
-        workspace=tmp_path,
-        task=_task(task_id="task-keep-alive", keep_alive=True),
-    )
-
-    # Rewind the freshly-bootstrapped (v14) database to the previous released
-    # schema (v10): drop every post-v10 column and stamp user_version = 10.
-    with closing(sqlite3.connect(database_path)) as connection:
-        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN keep_alive")
-        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN steer_prompt")
-        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN output_schema_json")
-        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN schema_mode")
-        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN structured_output_json")
-        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN schema_validation_json")
-        _ = connection.execute("PRAGMA user_version = 10")
-        connection.commit()
-
-    store = SqliteSessionStore(database_path=database_path)
-    legacy = store.load_background_task(workspace=tmp_path, task_id="task-legacy")
-    keep_alive = store.load_background_task(workspace=tmp_path, task_id="task-keep-alive")
-    listed = store.list_background_tasks(workspace=tmp_path)
-
-    with closing(sqlite3.connect(database_path)) as connection:
-        columns = [row[1] for row in connection.execute("PRAGMA table_info(background_tasks)").fetchall()]
-        schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
-        rows = connection.execute("SELECT task_id, keep_alive, steer_prompt FROM background_tasks ORDER BY task_id ASC").fetchall()
-
-    assert schema_version == SCHEMA_VERSION
-    assert "keep_alive" in columns
-    assert "steer_prompt" in columns
-    assert "output_schema_json" in columns
-    assert "schema_mode" in columns
-    # Pre-existing v10 rows are preserved and default to keep_alive = 0.
-    assert rows == [
-        ("task-keep-alive", 0, None),
-        ("task-legacy", 0, None),
-    ]
-    assert legacy.status == "queued"
-    assert legacy.keep_alive is False
-    assert legacy.steer_prompt is None
-    assert keep_alive.status == "queued"
-    assert keep_alive.keep_alive is False
-    assert keep_alive.steer_prompt is None
-    assert len(listed) == 2
-    assert all(item.keep_alive is False for item in listed)

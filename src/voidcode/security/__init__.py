@@ -3,10 +3,8 @@ from .shell_policy import (
     DEFAULT_TIMEOUT_SECONDS,
     MAX_TIMEOUT_SECONDS,
     ShellExecutionPolicy,
-    extract_shell_path_candidates,
     non_interactive_shell_env,
     resolve_shell_execution_policy,
-    shell_command_requires_approval,
 )
 from .url_policy import UrlValidationResult, validate_redirect_target, validate_url
 
@@ -16,9 +14,7 @@ __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     "MAX_TIMEOUT_SECONDS",
     "ShellExecutionPolicy",
-    "extract_shell_path_candidates",
     "non_interactive_shell_env",
-    "shell_command_requires_approval",
     "resolve_shell_execution_policy",
     "UrlValidationResult",
     "validate_redirect_target",

@@ -178,6 +178,7 @@
   "chat.responding": "正在响应...",
   "chat.waiting": "等待输入",
   "chat.interrupted": "已中断",
+  "chat.cancelIdentityUnavailable": "无法确定活跃运行，不能安全取消。请重新加载会话后重试。",
   "chat.thinking": "思考中...",
   "chat.placeholder": "让 VoidCode 做点什么...",
   "chat.send": "发送消息",

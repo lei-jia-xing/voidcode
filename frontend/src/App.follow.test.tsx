@@ -430,25 +430,7 @@ describe("App follow stream with delegated child sessions", () => {
     );
   });
 
-  it("shows an interrupted child session once and closes the follow stream instead of leaving it open", async () => {
-    let childStreamClosed = false;
-    runtimeClientMocks.sessionEventsMock.mockImplementation(async function* (
-      sessionId: string,
-    ) {
-      // The backend now closes follow streams on interrupted too, but the
-      // frontend must still stop following on its own if the stream stays
-      // open (older backend, or any future terminal status). Simulate a
-      // stream that yields the interrupted snapshot and never ends.
-      if (sessionId === "child-session") {
-        try {
-          yield makeSnapshotChunk(sessionId, "interrupted");
-          await new Promise(() => {});
-        } finally {
-          childStreamClosed = true;
-        }
-      }
-      yield makeSnapshotChunk(sessionId, "completed");
-    });
+  it("shows an interrupted child once without opening a redundant follow stream", async () => {
     render(<App />);
     await browseParentSession();
 
@@ -481,22 +463,18 @@ describe("App follow stream with delegated child sessions", () => {
       expect(useAppStore.getState().runStatus).toBe("idle");
     });
 
-    // The frontend must stop following the interrupted session on its own
-    // (the backend stream would otherwise stay open forever).
-    expect(childStreamClosed).toBe(true);
+    // Loading the terminal child already supplies its complete transcript.
 
     // Give any loop a chance to fire: the child must not be re-selected or
     // re-followed.
     await flushAsync();
     expect(childContextCalls()).toBe(1);
-    expect(childStreamCalls()).toBe(1);
+    expect(childStreamCalls()).toBe(0);
     expect(useAppStore.getState().currentSessionId).toBe("child-session");
     expect(useAppStore.getState().backgroundTaskOutputStatus).toBe("success");
   });
 
-  it("does not re-select a child whose context fetch is still in flight when the follow stream ends", async () => {
-    // Parent and child streams both close immediately after the snapshot
-    // (completed sessions are terminal on the backend too).
+  it("does not follow or re-select a child while its context fetch is in flight", async () => {
     runtimeClientMocks.sessionEventsMock.mockImplementation(async function* (
       sessionId: string,
     ) {
@@ -519,14 +497,11 @@ describe("App follow stream with delegated child sessions", () => {
     let selectPromise!: Promise<void>;
     await act(async () => {
       selectPromise = useAppStore.getState().selectSession("child-session");
-      // Let the follow stream receive the terminal snapshot and reach its
-      // post-loop while the child context fetch is still unresolved.
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await Promise.resolve();
     });
 
-    // The stream ended before the context fetch resolved; the post-loop must
-    // NOT re-select the child (that would clear the view and discard the
-    // in-flight fetch).
+    // A pending context fetch owns the view until it completes.
+    expect(childStreamCalls()).toBe(0);
     expect(childContextCalls()).toBe(1);
 
     await act(async () => {
@@ -541,7 +516,7 @@ describe("App follow stream with delegated child sessions", () => {
     });
     await flushAsync();
     expect(childContextCalls()).toBe(1);
-    expect(childStreamCalls()).toBe(1);
+    expect(childStreamCalls()).toBe(0);
     expect(useAppStore.getState().backgroundTaskOutput?.output).toBe(
       "child output",
     );
@@ -779,5 +754,56 @@ describe("App follow stream with delegated child sessions", () => {
     await waitFor(() => {
       expect(screen.getByText("Queued (2)")).toBeInTheDocument();
     });
+  });
+  it("consumes replay after a terminal snapshot before refreshing an external run", async () => {
+    let replayConsumed = false;
+    runtimeClientMocks.getChildSessionContextMock.mockRejectedValue({
+      status: 404,
+      message: "not a delegated child",
+    });
+    const event = makeEvent(
+      2,
+      "graph.response_ready",
+      { output: "completed externally" },
+      "graph",
+      "external-session",
+    );
+    runtimeClientMocks.sessionEventsMock.mockImplementation(async function* () {
+      yield makeSnapshotChunk("external-session", "completed");
+      replayConsumed = true;
+      yield {
+        kind: "event",
+        session: makeSessionState("external-session", "completed"),
+        event,
+        output: null,
+      };
+    });
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValue(
+      makeRuntimeResponse(
+        "external-session",
+        "completed",
+        [event],
+        "completed externally",
+      ),
+    );
+    render(<App />);
+    await flushAsync();
+    useAppStore.setState({
+      currentSessionId: "external-session",
+      currentSessionState: makeSessionState("external-session", "running"),
+      currentSessionEvents: [],
+      runStatus: "running",
+      runOrigin: "external",
+      replayStatus: "success",
+    });
+    await waitFor(() =>
+      expect(useAppStore.getState().currentSessionState?.status).toBe(
+        "completed",
+      ),
+    );
+    expect(replayConsumed).toBe(true);
+    expect(useAppStore.getState().currentSessionOutput).toBe(
+      "completed externally",
+    );
   });
 });

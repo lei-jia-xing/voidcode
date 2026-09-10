@@ -17,6 +17,7 @@ from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.mcp import McpToolSafety
 from voidcode.runtime.config import (
     RuntimeAgentConfig,
+    RuntimeAgentInternalState,
     RuntimeConfig,
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
@@ -375,13 +376,7 @@ def test_scoped_tool_registry_applies_manifest_allowlist() -> None:
         registry,
         agent=RuntimeAgentConfig(
             preset="explore",
-            manifest_tool_allowlist=(
-                "read",
-                "glob",
-                "grep",
-                "ast_grep",
-                "lsp",
-            ),
+            runtime_internal=RuntimeAgentInternalState(manifest_tool_allowlist=("read", "glob", "grep", "ast_grep", "lsp")),
         ),
     )
 

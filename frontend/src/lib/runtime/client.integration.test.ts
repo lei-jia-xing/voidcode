@@ -7,6 +7,24 @@ describe("RuntimeClient integration contract", () => {
     vi.restoreAllMocks();
   });
 
+  it("qualifies cancellation with the original run identity", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ status: "stale" })));
+    await RuntimeClient.cancelSession("same-session", "old-run");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/same-session/cancel",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reason: "web user interrupt",
+          run_id: "old-run",
+        }),
+      },
+    );
+  });
+
   it("loads runtime-owned status snapshots from /api/status", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: true,

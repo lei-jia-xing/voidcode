@@ -152,7 +152,10 @@ function makeStreamChunk(
 ): RuntimeStreamChunk {
   return {
     kind: output === null ? "event" : "output",
-    session: makeSessionState(sessionId, status),
+    session: {
+      ...makeSessionState(sessionId, status),
+      metadata: { runtime_state: { run_id: `run-${sessionId}` } },
+    },
     event,
     output,
   };
@@ -2364,6 +2367,7 @@ describe("useAppStore integration flow", () => {
 
     expect(runtimeClientMocks.cancelSessionMock).toHaveBeenCalledWith(
       sessionId,
+      `run-${sessionId}`,
     );
     expect(useAppStore.getState().runStatus).toBe("cancelling");
 
@@ -2389,8 +2393,8 @@ describe("useAppStore integration flow", () => {
     );
 
     async function* stream() {
-      yield makeStreamChunk(pendingSessionId, "running", requestReceived);
       await gate.promise;
+      yield makeStreamChunk(pendingSessionId, "running", requestReceived);
     }
 
     runtimeClientMocks.runStreamMock.mockReturnValue(stream());
@@ -2448,6 +2452,7 @@ describe("useAppStore integration flow", () => {
 
     expect(runtimeClientMocks.cancelSessionMock).toHaveBeenCalledWith(
       sessionId,
+      `run-${sessionId}`,
     );
     expect(useAppStore.getState().runStatus).toBe("cancelling");
 
@@ -2594,6 +2599,7 @@ describe("useAppStore integration flow", () => {
 
     expect(runtimeClientMocks.cancelSessionMock).toHaveBeenCalledWith(
       sessionId,
+      `run-${sessionId}`,
     );
     // The failed cancel POST must not flip the run back to "running"; the
     // abort tears the stream down and the run settles to idle.
@@ -3912,5 +3918,94 @@ describe("useAppStore integration flow", () => {
     expect(state.runStatus).toBe("idle");
     expect(state.approvalStatus).toBe("idle");
     expect(state.approvalError).toBeNull();
+  });
+  it.each(["resolve", "reject"])(
+    "ignores a stale question %s after changing sessions",
+    async (outcome) => {
+      const gate = createDeferred<RuntimeResponse>();
+      runtimeClientMocks.answerQuestionMock.mockReturnValue(gate.promise);
+      useAppStore.setState({
+        currentSessionId: "old",
+        replayStatus: "success",
+        questionStatus: "idle",
+        currentSessionEvents: [
+          makeEvent(
+            1,
+            "runtime.question_requested",
+            { request_id: "q-old" },
+            "runtime",
+            "old",
+          ),
+        ],
+      });
+      const pending = useAppStore
+        .getState()
+        .answerQuestion([{ header: "Path", answers: ["A"] }]);
+      useAppStore.setState({
+        currentSessionId: "new",
+        replayRequestId: useAppStore.getState().replayRequestId + 1,
+        currentSessionOutput: "new output",
+        questionStatus: "idle",
+      });
+      if (outcome === "resolve")
+        gate.resolve({
+          session: makeSessionState("old", "completed"),
+          events: [],
+          output: "old output",
+        });
+      else gate.reject(new Error("old failure"));
+      await pending;
+      expect(useAppStore.getState().currentSessionId).toBe("new");
+      expect(useAppStore.getState().currentSessionOutput).toBe("new output");
+      expect(useAppStore.getState().questionStatus).toBe("idle");
+      expect(runtimeClientMocks.getSessionReplayMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps a delayed cancellation bound to the old run while the next run starts", async () => {
+    const cancelGate = createDeferred<unknown>();
+    const firstStarted = createDeferred<void>();
+    const secondStarted = createDeferred<void>();
+    const secondEnd = createDeferred<void>();
+    let runNumber = 0;
+    runtimeClientMocks.cancelSessionMock.mockReturnValue(cancelGate.promise);
+    runtimeClientMocks.runStreamMock.mockImplementation(
+      async function* (_request, signal) {
+        const number = ++runNumber;
+        const chunk = makeStreamChunk("same-session", "running", null);
+        chunk.session!.metadata = {
+          runtime_state: { run_id: `run-${number}` },
+        };
+        yield chunk;
+        if (number === 1) {
+          await new Promise<void>((_resolve, reject) => {
+            signal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("aborted", "AbortError")),
+              { once: true },
+            );
+            firstStarted.resolve();
+          });
+        } else {
+          secondStarted.resolve();
+          await secondEnd.promise;
+        }
+      },
+    );
+    const first = useAppStore.getState().runTask("first");
+    await firstStarted.promise;
+    const cancel = useAppStore.getState().cancelCurrentRun();
+    await first;
+    const second = useAppStore.getState().runTask("second");
+    await secondStarted.promise;
+    expect(runtimeClientMocks.cancelSessionMock).toHaveBeenCalledWith(
+      "same-session",
+      "run-1",
+    );
+    cancelGate.resolve({ status: "stale" });
+    await cancel;
+    expect(useAppStore.getState().runStatus).toBe("running");
+    secondEnd.resolve();
+    await second;
   });
 });

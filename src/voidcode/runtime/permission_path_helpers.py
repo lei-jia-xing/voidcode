@@ -1,15 +1,5 @@
 from __future__ import annotations
 
-from ..security.shell_policy import extract_shell_path_candidates
-from ..tools.contracts import ToolCall
-
-
-def shell_command_for_tool_call(tool_call: ToolCall) -> str | None:
-    if tool_call.tool_name != "shell_exec":
-        return None
-    command = tool_call.arguments.get("command")
-    return command if isinstance(command, str) else None
-
 
 def extract_paths_from_patch(patch_text: str) -> tuple[str, ...]:
     paths: list[str] = []
@@ -23,7 +13,3 @@ def extract_paths_from_patch(patch_text: str) -> tuple[str, ...]:
         elif line.startswith("*** Move to: "):
             paths.append(line.removeprefix("*** Move to: ").strip())
     return tuple(path for path in paths if path)
-
-
-def shell_path_candidates(command: str) -> tuple[str, ...]:
-    return extract_shell_path_candidates(command)

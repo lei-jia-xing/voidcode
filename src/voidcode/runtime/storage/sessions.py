@@ -362,10 +362,11 @@ class _SessionStorageMixin(_MixinBase):
                 inserted_delivery = connection.execute(
                     """
                     INSERT OR IGNORE INTO session_event_deliveries (
-                        workspace_id, session_id, dedupe_key, delivered_at
-                    ) VALUES (?, ?, ?, ?)
+                        workspace_id, session_id, dedupe_key, delivered_at, event_sequence
+                    ) SELECT ?, ?, ?, ?, last_event_sequence + 1 FROM sessions
+                    WHERE workspace_id = ? AND session_id = ?
                     """,
-                    (str(workspace), session_id, dedupe_key, delivered_at),
+                    (str(workspace), session_id, dedupe_key, delivered_at, str(workspace), session_id),
                 )
                 if inserted_delivery.rowcount == 0:
                     connection.commit()
@@ -459,10 +460,11 @@ class _SessionStorageMixin(_MixinBase):
                     inserted_delivery = connection.execute(
                         """
                         INSERT OR IGNORE INTO session_event_deliveries (
-                            workspace_id, session_id, dedupe_key, delivered_at
-                        ) VALUES (?, ?, ?, ?)
+                            workspace_id, session_id, dedupe_key, delivered_at, event_sequence
+                        ) SELECT ?, ?, ?, ?, last_event_sequence + 1 FROM sessions
+                        WHERE workspace_id = ? AND session_id = ?
                         """,
-                        (str(workspace), session_id, dedupe_key, delivered_at),
+                        (str(workspace), session_id, dedupe_key, delivered_at, str(workspace), session_id),
                     )
                     if inserted_delivery.rowcount == 0:
                         continue
@@ -653,18 +655,17 @@ class _SessionStorageMixin(_MixinBase):
             connection.commit()
 
     def truncate_session_events_after(self, *, workspace: Path, session_id: str, sequence: int) -> None:
-        """Delete orphaned-tail ``session_events`` rows past a sequence for resume.
-
-        Scoped to a single (workspace, session) pair in one transaction. Rows with
-        ``sequence > sequence`` are removed so a resumed run can re-append a clean
-        tail after the checkpoint without leaving stale trailing events. Rows at
-        or below ``sequence`` are untouched. The session's ``last_event_sequence``
-        watermark is reset to the surviving max so subsequent appends continue
-        contiguously instead of skipping the freed sequence range.
-        """
+        """Delete an orphaned event tail and its owned delivery claims."""
         with self._write_connect(workspace) as connection:
             _ = connection.execute(
                 "DELETE FROM session_events WHERE workspace_id = ? AND session_id = ? AND sequence > ?",
+                (str(workspace), session_id, sequence),
+            )
+            _ = connection.execute(
+                """
+                DELETE FROM session_event_deliveries
+                WHERE workspace_id = ? AND session_id = ? AND event_sequence > ?
+                """,
                 (str(workspace), session_id, sequence),
             )
             _ = connection.execute(

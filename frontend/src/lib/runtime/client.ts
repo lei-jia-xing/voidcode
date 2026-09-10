@@ -298,6 +298,7 @@ export class RuntimeClient {
 
   static async cancelSession(
     sessionId: string,
+    runId: string,
     reason = "web user interrupt",
   ): Promise<RuntimeInterruptResult> {
     const res = await fetch(
@@ -305,7 +306,7 @@ export class RuntimeClient {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason }),
+        body: JSON.stringify({ reason, run_id: runId }),
       },
     );
     await expectOk(res, "Failed to interrupt session");

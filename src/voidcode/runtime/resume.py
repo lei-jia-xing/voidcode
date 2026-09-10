@@ -238,6 +238,8 @@ class RuntimeResumeCoordinator:
         session_id: str,
         question_request_id: str,
         responses: tuple[QuestionResponse, ...],
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
     ) -> tuple[tuple[EventEnvelope, ...], RuntimeResponse]:
         stored_response, pending, checkpoint, normalized_responses = self._load_pending_question_context(
             session_id=session_id,
@@ -252,6 +254,8 @@ class RuntimeResumeCoordinator:
             pending=pending,
             responses=normalized_responses,
             checkpoint=checkpoint,
+            run_id=run_id,
+            abort_signal=abort_signal,
         ):
             final_session = chunk.session
             if chunk.event is not None:

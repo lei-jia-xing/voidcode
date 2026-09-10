@@ -175,6 +175,7 @@
   "chat.responding": "Responding...",
   "chat.waiting": "Waiting for input",
   "chat.interrupted": "Interrupted",
+  "chat.cancelIdentityUnavailable": "Cannot cancel without the active run identity. Reload the session and try again.",
   "chat.thinking": "Thinking...",
   "chat.placeholder": "Ask VoidCode to do something...",
   "chat.send": "Send message",

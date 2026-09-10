@@ -416,6 +416,7 @@ function App() {
     // full reload right after every completed run.
     if (
       !currentSessionId ||
+      replayStatus === "loading" ||
       (runStatus === "running" && runOrigin !== "external") ||
       runStatus === "cancelling" ||
       (currentSessionState?.status != null &&
@@ -425,11 +426,8 @@ function App() {
     }
     const controller = new AbortController();
     const afterSequence = sessionEventCursorRef.current;
-    // Tracks whether the follow actually observed new events. Re-selecting the
-    // session is only needed when the transcript changed while following; if
-    // the session was already terminal when the stream opened (and the run
-    // path already holds that terminal data), re-selecting would be a
-    // redundant full reload.
+    // A terminal snapshot may be newer than the selected running session.
+    // Consume its replay before refreshing the authoritative transcript.
     let sawNewData = false;
     void (async () => {
       try {
@@ -438,17 +436,14 @@ function App() {
           afterSequence,
           controller.signal,
         )) {
-          // The first chunk is the session snapshot. Once the session is
-          // terminal-for-display the transcript is static, so stop following
-          // instead of leaving a dangling stream open (the backend closes the
-          // stream for {completed, failed, interrupted}, but breaking here is
-          // also correct for older backends that keep interrupted polling).
+          if (controller.signal.aborted) return;
+          // Snapshots precede replay events, even for an already finished run.
           if (
             chunk.kind === "session" &&
             chunk.session &&
             TERMINAL_DISPLAY_SESSION_STATUSES[chunk.session.status] === true
           ) {
-            break;
+            sawNewData = true;
           }
           if (chunk.event) {
             sawNewData = true;
@@ -461,6 +456,11 @@ function App() {
             }
           }
         }
+        if (
+          controller.signal.aborted ||
+          useAppStore.getState().currentSessionId !== currentSessionId
+        )
+          return;
         const outputId = selectedBackgroundTaskOutputIdRef.current;
         if (outputId) {
           // The user is browsing a delegated child session: refresh its output
@@ -488,6 +488,7 @@ function App() {
     currentSessionState,
     runOrigin,
     runStatus,
+    replayStatus,
     loadBackgroundTaskOutput,
     loadBackgroundTasks,
     selectSession,

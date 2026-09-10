@@ -2011,6 +2011,24 @@ class RuntimeTransportApp:
             finally:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
 
+    def _answer_question(
+        self,
+        session_id: str,
+        *,
+        question_request_id: str,
+        responses: tuple[QuestionResponse, ...],
+    ) -> RuntimeResponse:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                return runtime.answer_question(
+                    session_id,
+                    question_request_id=question_request_id,
+                    responses=responses,
+                )
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+
     async def _handle_resume(
         self,
         *,
@@ -2238,19 +2256,16 @@ class RuntimeTransportApp:
             await self._json_response(send, status=400, payload={"error": str(exc)})
             return
 
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                response = runtime.answer_question(
-                    session_id,
-                    question_request_id=question_request_id,
-                    responses=responses,
-                )
-            except (ValueError, NoPendingQuestionError) as exc:
-                await self._json_response(send, status=404, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        try:
+            response = await asyncio.to_thread(
+                self._answer_question,
+                session_id,
+                question_request_id=question_request_id,
+                responses=responses,
+            )
+        except (ValueError, NoPendingQuestionError) as exc:
+            await self._json_response(send, status=404, payload={"error": str(exc)})
+            return
         await self._json_response(
             send,
             status=200,

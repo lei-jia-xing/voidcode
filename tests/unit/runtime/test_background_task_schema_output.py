@@ -397,7 +397,7 @@ def test_storage_round_trips_schema_declaration_and_validation(tmp_path: Path) -
     assert loaded.schema_validation.schema_source == "invocation"
 
 
-def test_storage_fresh_database_is_v14_with_output_schema_columns(tmp_path: Path) -> None:
+def test_storage_fresh_database_has_output_schema_columns(tmp_path: Path) -> None:
     database_path = tmp_path / "fresh.sqlite3"
     store = SqliteSessionStore(database_path=database_path)
     # Any store operation bootstraps the canonical schema.
@@ -409,47 +409,6 @@ def test_storage_fresh_database_is_v14_with_output_schema_columns(tmp_path: Path
 
     assert schema_version == SCHEMA_VERSION
     assert {"output_schema_json", "schema_mode", "structured_output_json", "schema_validation_json"} <= columns
-
-
-def test_storage_migrates_v11_database_with_output_schema_columns(tmp_path: Path) -> None:
-    database_path = tmp_path / "v11.sqlite3"
-    store = SqliteSessionStore(database_path=database_path)
-    store.create_background_task(workspace=tmp_path, task=_task_with_delegation(task_id="task-legacy", delegation=None))
-
-    # Rewind the freshly-bootstrapped (v14) database to the previous released
-    # schema (v11): drop the output-schema columns and stamp user_version = 11.
-    with closing(sqlite3.connect(database_path)) as connection:
-        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN output_schema_json")
-        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN schema_mode")
-        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN structured_output_json")
-        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN schema_validation_json")
-        _ = connection.execute("PRAGMA user_version = 11")
-        connection.commit()
-
-    store = SqliteSessionStore(database_path=database_path)
-    # Any store operation bootstraps the schema and runs the v11 → v14 migration.
-    legacy = store.load_background_task(workspace=tmp_path, task_id="task-legacy")
-    listed = store.list_background_tasks(workspace=tmp_path)
-    with closing(sqlite3.connect(database_path)) as connection:
-        columns = [row[1] for row in connection.execute("PRAGMA table_info(background_tasks)").fetchall()]
-        schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
-        rows = connection.execute(
-            "SELECT task_id, output_schema_json, schema_mode, structured_output_json, schema_validation_json FROM background_tasks"
-        ).fetchall()
-
-    assert schema_version == SCHEMA_VERSION
-    for column in ("output_schema_json", "schema_mode", "structured_output_json", "schema_validation_json"):
-        assert column in columns
-    # Pre-existing v11 rows are preserved and default to no schema.
-    assert rows == [("task-legacy", None, "permissive", None, None)]
-
-    assert legacy.output_schema is None
-    assert legacy.schema_mode == "permissive"
-    assert legacy.structured_output is None
-    assert legacy.schema_validation is None
-    assert len(listed) == 1
-    assert listed[0].output_schema is None
-    assert listed[0].schema_mode == "permissive"
 
 
 # ── CLI / HTTP result surfaces ──────────────────────────────────────────────

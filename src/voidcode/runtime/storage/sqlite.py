@@ -45,7 +45,7 @@ from .sessions import _SessionStorageMixin
 from .shared import SessionSealedError as SessionSealedError
 from .todos import _TodoStorageMixin
 
-SCHEMA_VERSION: Final[int] = 14
+SCHEMA_VERSION: Final[int] = 15
 
 
 @runtime_checkable
@@ -438,6 +438,7 @@ class SqliteSessionStore(
             ("session_id", "TEXT", 1, None, 2),
             ("dedupe_key", "TEXT", 1, None, 3),
             ("delivered_at", "INTEGER", 1, None, 0),
+            ("event_sequence", "INTEGER", 1, None, 0),
         ),
         "storage_sequences": (
             ("scope", "TEXT", 0, None, 1),
@@ -674,6 +675,7 @@ class SqliteSessionStore(
                 session_id TEXT NOT NULL,
                 dedupe_key TEXT NOT NULL,
                 delivered_at INTEGER NOT NULL,
+                event_sequence INTEGER NOT NULL,
                 PRIMARY KEY (workspace_id, session_id, dedupe_key)
             )
             """
@@ -686,48 +688,6 @@ class SqliteSessionStore(
             )
             """
         )
-        # Migration: add created_at_unix_ms column for v6 → v7 upgrade.
-        current_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if current_version == 6:
-            try:
-                connection.execute("ALTER TABLE sessions ADD COLUMN created_at_unix_ms INTEGER")
-            except sqlite3.OperationalError:
-                pass  # Column already exists (idempotent)
-        # Migration: add keep-alive steering columns for v10 → v11 upgrade.
-        if current_version == 10:
-            try:
-                connection.execute("ALTER TABLE background_tasks ADD COLUMN keep_alive INTEGER NOT NULL DEFAULT 0")
-            except sqlite3.OperationalError:
-                pass  # Column already exists (idempotent)
-            try:
-                connection.execute("ALTER TABLE background_tasks ADD COLUMN steer_prompt TEXT")
-            except sqlite3.OperationalError:
-                pass  # Column already exists (idempotent)
-        # Migration: add output-schema columns for v11 → v12 upgrade (and for
-        # the v10 → v12 upgrade path, which also ran the v10 → v11 block above).
-        if current_version in (10, 11):
-            try:
-                connection.execute("ALTER TABLE background_tasks ADD COLUMN output_schema_json TEXT")
-            except sqlite3.OperationalError:
-                pass  # Column already exists (idempotent)
-            try:
-                connection.execute("ALTER TABLE background_tasks ADD COLUMN schema_mode TEXT NOT NULL DEFAULT 'permissive'")
-            except sqlite3.OperationalError:
-                pass  # Column already exists (idempotent)
-            try:
-                connection.execute("ALTER TABLE background_tasks ADD COLUMN structured_output_json TEXT")
-            except sqlite3.OperationalError:
-                pass  # Column already exists (idempotent)
-            try:
-                connection.execute("ALTER TABLE background_tasks ADD COLUMN schema_validation_json TEXT")
-            except sqlite3.OperationalError:
-                pass  # Column already exists (idempotent)
-        # Migration: retain the bounded reason for restart-detected processes.
-        if current_version in (6, 10, 11, 12, 13):
-            try:
-                connection.execute("ALTER TABLE background_processes ADD COLUMN reconciliation_reason TEXT")
-            except sqlite3.OperationalError:
-                pass  # Column already exists (idempotent)
         # Validate the freshly-created/already-present schema before stamping the
         # user_version. Stamping after validation keeps schema setup atomic from the
         # caller's perspective: if any CREATE TABLE / canonical check fails, the
@@ -811,7 +771,7 @@ class SqliteSessionStore(
     def _assert_existing_schema_version(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
         """Validate persisted ``user_version`` before schema setup."""
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version in {0, 6, 10, 11, 12, 13, cls._SCHEMA_VERSION}:
+        if version in {0, cls._SCHEMA_VERSION}:
             return
         cls._raise_schema_mismatch(
             database_path=database_path,
@@ -822,7 +782,7 @@ class SqliteSessionStore(
     def _assert_schema_version(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
         """Stamp ``PRAGMA user_version`` after schema validation."""
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version in {0, 6, 10, 11, 12, 13}:
+        if version == 0:
             _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
             return
         if version != cls._SCHEMA_VERSION:

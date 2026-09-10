@@ -4,7 +4,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..security.shell_policy import shell_command_requires_approval
 from ..tools.contracts import Tool, ToolCall, ToolDefinition
 from .permission import (
     ExternalDirectoryPermissionConfig,
@@ -30,7 +29,9 @@ class PermissionEvaluation:
 
 
 def shell_command_for_tool_call(tool_call: ToolCall) -> str | None:
-    if tool_call.tool_name != "shell_exec":
+    if tool_call.tool_name not in {"shell_exec", "background_process_start", "background_process"}:
+        return None
+    if tool_call.tool_name == "background_process" and tool_call.arguments.get("op") != "start":
         return None
     command = tool_call.arguments.get("command")
     if isinstance(command, str) and command.strip():
@@ -112,13 +113,6 @@ class PermissionEngine:
                 rule_decision, matched_rule = pattern_match
                 policy_surface = "permission.rules"
                 canonical_path = normalized_paths[0] if normalized_paths else None
-
-        if shell_command is not None:
-            semantic_reason = shell_command_requires_approval(shell_command)
-            if semantic_reason is not None and rule_decision != "deny" and external_decision != "deny":
-                rule_decision = "ask"
-                matched_rule = f"shell_policy semantic={semantic_reason!r}"
-                policy_surface = "shell_policy"
 
         return PermissionEvaluation(
             path_scope=path_scope,

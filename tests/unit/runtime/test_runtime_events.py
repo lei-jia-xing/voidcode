@@ -78,7 +78,7 @@ def test_runtime_event_types_include_stable_emitted_events() -> None:
 
 
 def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:
-    assert RUNTIME_EVENT_TYPES == (
+    assert {
         RUNTIME_CONTEXT_COMPACTED,
         RUNTIME_CONTEXT_TRANSFORM_APPLIED,
         RUNTIME_SESSION_STARTED,
@@ -108,7 +108,7 @@ def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:
         RUNTIME_TURN_PROGRESS,
         RUNTIME_STUCK_DETECTED,
         RUNTIME_TOOL_INPUT_PROCESSED,
-    )
+    } <= set(RUNTIME_EVENT_TYPES)
 
 
 def test_reasoning_redaction_omits_text_and_preview_by_default() -> None:

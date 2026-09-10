@@ -36,6 +36,7 @@ const DEFAULT_SESSION_SIDEBAR_WIDTH = 344;
 // deterministically tear down the stream. Module scope (not store state) keeps
 // the controller out of the persisted store.
 let activeRunAbortController: AbortController | null = null;
+let activeRunIdentity: { sessionId: string; runId: string } | null = null;
 let notificationsRequestId = 0;
 let workspaceGeneration = 0;
 
@@ -1278,6 +1279,7 @@ export const useAppStore = create<AppState>()(
         const nextReplayRequestId = get().replayRequestId + 1;
         const abortController = new AbortController();
         activeRunAbortController = abortController;
+        activeRunIdentity = null;
         set({
           runStatus: "running",
           runOrigin: "local",
@@ -1365,6 +1367,20 @@ export const useAppStore = create<AppState>()(
               get().replayRequestId !== nextReplayRequestId
             )
               return;
+            const runtimeState = chunk.session?.metadata.runtime_state;
+            if (
+              chunk.session &&
+              runtimeState &&
+              typeof runtimeState === "object" &&
+              "run_id" in runtimeState &&
+              typeof runtimeState.run_id === "string" &&
+              runtimeState.run_id
+            ) {
+              activeRunIdentity = {
+                sessionId: chunk.session.session.id,
+                runId: runtimeState.run_id,
+              };
+            }
             if (chunk.event) {
               streamInterrupted =
                 isRuntimeCancellationEvent(chunk.event) || streamInterrupted;
@@ -1449,32 +1465,62 @@ export const useAppStore = create<AppState>()(
       },
 
       cancelCurrentRun: async () => {
-        const { currentSessionId, runStatus } = get();
-        if (!isRunLocked(runStatus)) {
+        const { currentSessionId, currentSessionState, runStatus, runOrigin } =
+          get();
+        if (!isRunLocked(runStatus) || runStatus === "cancelling") return;
+        const runtimeState = currentSessionState?.metadata.runtime_state;
+        const externalRunId =
+          runtimeState &&
+          typeof runtimeState === "object" &&
+          "run_id" in runtimeState &&
+          typeof runtimeState.run_id === "string"
+            ? runtimeState.run_id
+            : null;
+        const target =
+          runOrigin === "local"
+            ? activeRunIdentity
+            : currentSessionId && externalRunId
+              ? { sessionId: currentSessionId, runId: externalRunId }
+              : null;
+        set({ runStatus: "cancelling", runError: null, cancelRequested: true });
+        if (runOrigin === "local") activeRunAbortController?.abort();
+        // Before the first local snapshot, disconnect cancellation owns the run.
+        // Never send an unqualified POST that could cancel a subsequent run.
+        if (!target) {
+          if (runOrigin !== "local")
+            set({
+              runStatus: "error",
+              runError: i18n.t("chat.cancelIdentityUnavailable"),
+              cancelRequested: false,
+            });
           return;
         }
-
-        set({
-          runStatus: "cancelling",
-          runError: null,
-          cancelRequested: true,
-        });
-
-        // Deterministically tear down the local stream first: the resulting
-        // AbortError settles the run to idle, independent of whether the
-        // cancel POST succeeds or the backend emits an SSE cancellation event.
-        activeRunAbortController?.abort();
-
-        if (!currentSessionId) {
-          return;
-        }
-
+        const generation = workspaceGeneration;
+        const requestId = get().replayRequestId;
         try {
-          await RuntimeClient.cancelSession(currentSessionId);
-        } catch {
-          // The local abort already closed the stream; stay in "cancelling"
-          // until it settles to idle. Never flip back to "running": the
-          // interrupt intent stands even when the cancel POST fails.
+          await RuntimeClient.cancelSession(target.sessionId, target.runId);
+          if (
+            runOrigin !== "local" &&
+            generation === workspaceGeneration &&
+            requestId === get().replayRequestId &&
+            get().currentSessionId === target.sessionId &&
+            get().runStatus === "cancelling"
+          ) {
+            set({ runStatus: "idle", cancelRequested: false });
+          }
+        } catch (err) {
+          if (
+            runOrigin !== "local" &&
+            generation === workspaceGeneration &&
+            requestId === get().replayRequestId &&
+            get().currentSessionId === target.sessionId
+          ) {
+            set({
+              runStatus: "error",
+              runError: errorMessage(err),
+              cancelRequested: false,
+            });
+          }
         }
       },
 
@@ -1600,6 +1646,12 @@ export const useAppStore = create<AppState>()(
       },
 
       answerQuestion: async (answers) => {
+        const generation = workspaceGeneration;
+        const requestGeneration = get().replayRequestId;
+        const isCurrent = () =>
+          generation === workspaceGeneration &&
+          get().replayRequestId === requestGeneration &&
+          get().currentSessionId === currentSessionId;
         const {
           currentSessionId,
           currentSessionEvents,
@@ -1643,6 +1695,7 @@ export const useAppStore = create<AppState>()(
             requestId,
             answers,
           );
+          if (!isCurrent()) return;
           set({
             currentSessionId: response.session.session.id,
             currentSessionState: response.session,
@@ -1664,6 +1717,7 @@ export const useAppStore = create<AppState>()(
             sessionId: response.session.session.id,
           });
         } catch (err) {
+          if (!isCurrent()) return;
           set({
             questionStatus: "error",
             questionError: errorMessage(err),
@@ -1671,7 +1725,7 @@ export const useAppStore = create<AppState>()(
           try {
             const replay =
               await RuntimeClient.getSessionReplay(currentSessionId);
-            if (get().currentSessionId === currentSessionId) {
+            if (isCurrent()) {
               set({
                 currentSessionState: replay.session,
                 currentSessionEvents: replay.events,
@@ -1684,6 +1738,7 @@ export const useAppStore = create<AppState>()(
           } catch {
             // Preserve the last runtime-owned snapshot when replay is unavailable.
           }
+          if (!isCurrent()) return;
           await get().refreshAfterMutation({
             sessions: true,
             status: true,

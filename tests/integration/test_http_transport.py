@@ -1658,6 +1658,10 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
             b'{"request_id":"approval-request","decision":"allow"}',
         ),
         ("/api/sessions/resume-liveness/resume", b""),
+        (
+            "/api/sessions/question-liveness/question",
+            b'{"request_id":"question-request","responses":[{"header":"Path","answers":["A"]}]}',
+        ),
     ],
 )
 def test_transport_resume_routes_do_not_block_concurrent_requests(
@@ -1685,6 +1689,9 @@ def test_transport_resume_routes_do_not_block_concurrent_requests(
                 events=(),
                 output="resumed",
             )
+
+        def answer_question(self, session_id: str, **kwargs: object) -> object:
+            return self.resume(session_id, **kwargs)
 
         def __exit__(self, *_args: object) -> None:
             return None

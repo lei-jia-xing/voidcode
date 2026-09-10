@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.contracts import (
     ProviderInspectResult,
     ProviderModelsResult,
@@ -76,7 +77,7 @@ def test_interactive_question_uses_answer_question_stream(capsys: pytest.Capture
     runtime = MagicMock()
     runtime.run_stream.return_value = iter([_Chunk(waiting, question)])
     runtime.answer_question_stream.return_value = iter([_Chunk(completed, output="done")])
-    config = SimpleNamespace(approval_mode="ask")
+    config = RuntimeConfig(approval_mode="ask", execution_engine="deterministic")
     stdin = _Tty("yes\n")
     stderr = _Tty()
     with patch.object(app, "load_runtime_config", return_value=config):

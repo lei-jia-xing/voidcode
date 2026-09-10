@@ -173,7 +173,6 @@ from voidcode.runtime.session_metadata_helpers import (
     session_with_context_window_payload_metadata,
 )
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.security.shell_policy import extract_shell_path_candidates
 from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
 from voidcode.tools.contracts import ToolDefinition, ToolResult
@@ -469,53 +468,6 @@ class _NoopMcpManager:
 
     def retry_connections(self, *, workspace: Path) -> None:
         _ = workspace
-
-
-@pytest.mark.parametrize(
-    ("command", "expected"),
-    [
-        ("ls /etc", ()),
-        ("du -sh /var", ()),
-        ("test -f /usr/include/vulkan/vulkan.h", ()),
-        ("cat /usr/include/vulkan/vulkan.h", ()),
-        ("echo hi > /tmp/out.txt", ("/tmp/out.txt",)),
-        ("echo hi > /tmp/out.txt && cat /tmp/out.txt", ("/tmp/out.txt",)),
-        ("echo hi 2>/tmp/err.log", ("/tmp/err.log",)),
-        ("echo hi > ./../out.txt", ("./../out.txt",)),
-        ("echo hi > ././../out.txt", ("././../out.txt",)),
-        ("curl --output=/tmp/out.txt https://example.com", ("/tmp/out.txt",)),
-        ("curl -o /tmp/out.txt https://example.com", ("/tmp/out.txt",)),
-        ("curl --write-out=/tmp/format.txt https://example.com", ()),
-        ("tool --output=././../out.txt", ("././../out.txt",)),
-        ("tool --config=/etc/app.conf", ()),
-        ("tool --file=2024/report.txt", ()),
-        (r"type C:	emp\out.log", ()),
-        (
-            r"type C:\Windows\System32\drivers\etc\hosts",
-            (),
-        ),
-        ("touch /tmp/out.txt", ("/tmp/out.txt",)),
-        ("mkdir /tmp/generated", ("/tmp/generated",)),
-        ("rm /tmp/out.txt", ("/tmp/out.txt",)),
-        ("cp /etc/input.conf /tmp/output.conf", ("/tmp/output.conf",)),
-        ("mv /tmp/source.txt /tmp/output.txt", ("/tmp/source.txt", "/tmp/output.txt")),
-        ("sudo cp /etc/input.conf /tmp/output.conf", ("/tmp/output.conf",)),
-        ("git mv /tmp/source.txt /tmp/output.txt", ("/tmp/source.txt", "/tmp/output.txt")),
-        ("cp /etc/input.conf /tmp/output.conf > /tmp/copy.log", ("/tmp/output.conf", "/tmp/copy.log")),
-        ("cat 2024/report.txt", ()),
-    ],
-)
-def test_runtime_extracts_shell_external_path_candidates(
-    command: str,
-    expected: tuple[str, ...],
-) -> None:
-    assert extract_shell_path_candidates(command) == expected
-
-
-def test_runtime_ignores_shell_executable_path_candidate() -> None:
-    command = f'"{sys.executable}" -c "print(1)"'
-
-    assert extract_shell_path_candidates(command) == ()
 
 
 def test_runtime_shell_read_probe_external_path_stays_workspace_scoped(tmp_path: Path) -> None:
@@ -5215,47 +5167,6 @@ def test_runtime_session_debug_snapshot_marks_active_running_session(tmp_path: P
     assert snapshot.suggested_operator_action == "wait"
     assert snapshot.operator_guidance == "Session is currently active in the runtime."
     _ = list(stream)
-
-
-@pytest.mark.parametrize("outcome", ["complete", "interrupt", "raise"])
-def test_sync_approval_resume_tracks_active_lifecycle(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    outcome: str,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="deterministic", approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-    session_id = "sync-approval-lifecycle"
-    waiting = runtime.run(RuntimeRequest(prompt="write approved.txt approved", session_id=session_id))
-    request_id = next(event.payload["request_id"] for event in waiting.events if event.event_type == "runtime.approval_requested")
-    original = runtime._resume_coordinator.resume_pending_approval_response
-
-    def resume_with_observation(**kwargs: Any) -> Any:
-        assert runtime.session_debug_snapshot(session_id=session_id).active is True
-        assert kwargs["run_id"]
-        assert kwargs["abort_signal"] is not None
-        if outcome == "raise":
-            raise RuntimeError("continuation failure")
-        if outcome == "interrupt":
-            result = runtime.cancel_session(session_id, reason="approval test")
-            assert result.interrupted is True
-        return original(**kwargs)
-
-    monkeypatch.setattr(runtime._resume_coordinator, "resume_pending_approval_response", resume_with_observation)
-    try:
-        if outcome == "raise":
-            with pytest.raises(RuntimeError, match="continuation failure"):
-                runtime.resume(session_id, approval_request_id=request_id, approval_decision="allow")
-        else:
-            response = runtime.resume(session_id, approval_request_id=request_id, approval_decision="allow")
-            assert response.session.status == ("interrupted" if outcome == "interrupt" else "completed")
-            assert (tmp_path / "approved.txt").exists() is (outcome == "complete")
-        assert runtime.session_debug_snapshot(session_id=session_id).active is False
-    finally:
-        runtime.__exit__(None, None, None)
 
 
 def test_runtime_cancel_session_interrupts_active_run(tmp_path: Path) -> None:

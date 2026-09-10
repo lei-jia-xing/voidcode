@@ -36,13 +36,9 @@
 - 终端失败应保留给运行时错误、取消、无效会话状态或模型无法继续的情况
 
 
-## Shell command semantic guard
+## 命令执行授权
 
-`shell_exec` remains governed by the runtime permission engine. In addition to
-configured `permission.rules`, a narrow runtime-owned semantic guard forces
-`ask` for recursive removal of root/home paths and remote content piped into an
-interpreter. Explicit `deny` decisions and external-directory denials remain
-stronger. Ordinary workspace-scoped commands are not escalated by this guard.
+`shell_exec` 与后台进程启动统一通过 runtime 的执行能力授权，默认 `ask`；显式 `allow` 允许任意命令，显式 `deny` 与只读模式禁止执行。运行时不再解析 shell 字符串推断危险操作或外部文件访问。结构化文件工具的路径权限不受此变更影响。
 
 ## 审批请求契约
 
@@ -165,7 +161,7 @@ Payload 字段意图：
 
 `POST /api/sessions/{id}/approval` 提交决策并继续执行，返回下一次暂停或执行结束时的会话快照；它不是仅记录决策的接口，客户端无需再调用 `/resume`。后续出现不同 `request_id` 的审批属于新的暂停，不能重复使用已处理的审批请求。
 
-同步审批恢复与流式审批恢复都必须注册活跃运行并传递中断信号，在结束或异常退出时释放注册。HTTP 审批恢复在工作线程执行，不能阻塞事件循环上的状态查询、事件跟随或取消请求；HTTP 请求取消也不能提前关闭仍由工作线程使用的 runtime。
+同步审批恢复与流式审批恢复都必须注册活跃运行并传递中断信号，在结束或异常退出时释放注册。question 回答后的同步与流式继续执行遵守相同生命周期。HTTP 审批恢复与 question 回答在工作线程执行，不能阻塞事件循环上的状态查询、事件跟随或取消请求；HTTP 请求取消也不能提前关闭仍由工作线程使用的 runtime。
 
 ## MVP 不变量
 
@@ -190,7 +186,19 @@ Payload 字段意图：
 - 客户端可以根据运行时状态处理审批
 - 持久化会话可以重放审批历史并正确恢复
 
+### TODO：用 OS 级 syscall 访问控制替代 shell 推断
+
+当前已移除基于命令字符串的危险操作识别与文件路径推断。前台 shell 与后台命令统一按任意执行能力授权，默认 `ask`，显式 `allow` 不再附加危险命令黑名单；显式 command 匹配规则仍可用于授权，但不是文件隔离保证。后续由 runtime 管理的 OS 级 syscall 拦截与访问控制实现执行隔离；该方案尚未实现，当前没有工作区 sandbox。
+
+- 统一覆盖前台 shell、后台进程及其子进程；不能通过更换执行工具绕过同一权限边界。
+- 区分 syscall 观察与强制执行：仅记录调用（如 `strace`）不足以阻止访问，必须在有副作用的操作发生前实施授权或拒绝。
+- 文件访问约束应基于 OS 实际解析的对象，处理符号链接、目录文件描述符、路径替换竞态与子进程继承；不能重新退化为命令字符串或 syscall 路径参数的简单匹配。具体拦截机制及平台支持需另行验证。
+- 保留执行能力的 `ask` / `allow` / `deny`、只读模式、审批参数绑定，以及中断、超时和进程清理。无隔离能力时，`allow` 表示允许任意命令执行，不应向用户暗示工作区沙箱。
+- 结构化文件工具继续使用明确的路径权限检查；shell 超时和非交互环境设置不属于待删除的权限推断逻辑。
+
 ## 持久化与恢复预期
+
+SQLite schema 15 将每条 delivery 去重记录绑定到事件序号。中断恢复截断事件尾部时，在同一事务中只回收对应尾部的 delivery claims，保留前缀去重记录。旧 schema 不兼容、不自动迁移或重建；版本不匹配时明确报错并保留原库。
 
 持久化的会话状态必须能够保存：
 

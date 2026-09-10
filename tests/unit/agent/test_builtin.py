@@ -38,7 +38,6 @@ _MUTATING_TOOL_PATTERNS = frozenset(
 )
 _PROMPT_BOUNDARY_PHRASES = {
     "leader": (
-        "primary user-facing runtime agent",
         "Deliver complete working behavior",
         "Verify child results yourself",
         "narrowest specialist that fits",
@@ -417,9 +416,9 @@ def test_leader_prompt_requires_native_tool_actions_for_implementation() -> None
     prompt = render_agent_prompt({"preset": "leader", "prompt_profile": "leader"})
 
     assert prompt is not None
-    assert "Act through the runtime's tools" in prompt
+    assert "Act through the available tools" in prompt
     assert "gather evidence before claiming anything" in prompt
-    assert "Never present an unrun command, unread file, or unverified change as done" in prompt
+    assert "never present an unrun command, unread file, or unverified change as done" in prompt.lower()
     assert "report what you changed and how you verified it" in prompt
 
 

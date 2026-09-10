@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.runtime.config import RuntimeAgentConfig, RuntimeToolsConfig
+from voidcode.runtime.config import RuntimeAgentConfig, RuntimeAgentInternalState, RuntimeToolsConfig
 from voidcode.runtime.tool_registry import ToolRegistry
 from voidcode.runtime.tool_scope import RuntimeToolScopeResolver
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
@@ -94,7 +94,7 @@ def test_tool_scope_resolver_uses_same_decision_for_schema_and_raw_call() -> Non
 def test_delegation_policy_error_denies_write_for_manifest_scoped_child() -> None:
     agent = RuntimeAgentConfig(
         preset="worker",
-        manifest_tool_allowlist=("read",),
+        runtime_internal=RuntimeAgentInternalState(manifest_tool_allowlist=("read",)),
     )
 
     denial = RuntimeToolScopeResolver.delegation_policy_error(
@@ -112,7 +112,7 @@ def test_delegation_policy_error_denies_write_for_manifest_scoped_child() -> Non
 def test_tool_scope_resolver_does_not_claim_delegation_for_unknown_or_allowed_tools() -> None:
     agent = RuntimeAgentConfig(
         preset="worker",
-        manifest_tool_allowlist=("read",),
+        runtime_internal=RuntimeAgentInternalState(manifest_tool_allowlist=("read",)),
     )
 
     assert (
