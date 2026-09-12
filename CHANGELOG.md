@@ -37,6 +37,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 - **events:** register parallel task group completion
 
+- **runtime:** harden harness runtime adoption (#487)
+
+- **runtime:** finalize harness policy safeguards (#488)
+
 
 
 ### Changed
@@ -67,6 +71,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 
 
+### CI
+
+
+- **release:** validate built artifacts against release tags and publish distributions to PyPI
+
+### Build
+
+- **release:** add git-cliff changelog generation
+
 ### Fixed
 
 
@@ -85,35 +98,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 - **runtime:** re-dispatch stranded background tasks and terminalize queued orphans
 
 - **tui:** render background task events in order
-
-
-
-## [0.1.1] - 2026-05-12
-
-
-
-### Added
-
-
-- **runtime:** harden harness runtime adoption (#487)
-
-- **runtime:** finalize harness policy safeguards (#488)
-
-
-
-### Build
-
-
-- **release:** add git-cliff changelog generation
-
-
-
-### Fixed
-
-
 - **build:** include frontend sources in source distributions
 
 - **runtime:** preserve full reasoning output (#489)
+
 
 
 

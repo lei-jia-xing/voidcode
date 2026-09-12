@@ -7,7 +7,7 @@ on:
 
 jobs:
     verify:
-        name: Verify (lint, typecheck, tests)
+        name: Verify Python and frontend
         if: github.event.release.prerelease == false
         runs-on: ubuntu-latest
 
@@ -23,7 +23,7 @@ jobs:
             - name: Install Python
               run: uv python install 3.14
 
-            - name: Install dependencies
+            - name: Install Python dependencies
               run: uv sync --extra dev --extra syntax
 
             - name: Lint with Ruff
@@ -35,11 +35,34 @@ jobs:
             - name: Type-check with ty
               run: uv run ty check src
 
-            - name: Run tests
+            - name: Run Python tests
               run: uv run pytest -n auto -m 'not slow and not fuzz'
 
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@v2
+
+            - name: Install frontend dependencies
+              working-directory: frontend
+              run: bun install --frozen-lockfile
+
+            - name: Lint frontend
+              working-directory: frontend
+              run: bun run lint
+
+            - name: Type-check frontend
+              working-directory: frontend
+              run: bun run typecheck
+
+            - name: Run frontend tests
+              working-directory: frontend
+              run: bun run test:coverage
+
+            - name: Build frontend
+              working-directory: frontend
+              run: bun run build
+
     publish:
-        name: Publish to PyPI and attach artifacts to GitHub Release
+        name: Publish package and GitHub Release artifacts
         needs: verify
         if: github.event.release.prerelease == false
         runs-on: ubuntu-latest
@@ -53,8 +76,11 @@ jobs:
             id-token: write
 
         steps:
-            - name: Checkout repository
+            - name: Checkout release tag
               uses: actions/checkout@v6
+              with:
+                  fetch-depth: 0
+                  ref: ${{ github.event.release.tag_name }}
 
             - name: Setup uv
               uses: astral-sh/setup-uv@v7
@@ -87,30 +113,82 @@ jobs:
             - name: Verify packaged web bundle
               run: uv run python scripts/verify_packaged_web_bundle.py dist/*.whl
 
-            - name: Verify package version matches release tag
+            - name: Verify artifact versions match release tag
+              env:
+                  RELEASE_TAG: ${{ github.event.release.tag_name }}
               run: |
                   set -euo pipefail
-                  tag="${GITHUB_REF#refs/tags/}"
-                  expected="${tag#v}"
-                  actual="$(uv run python -c 'from importlib.metadata import version; print(version("voidcode"))')"
-                  if [ "$actual" != "$expected" ]; then
-                    echo "::error::package version $actual does not match release tag $tag (expected $expected)"
-                    exit 1
-                  fi
+                  expected="${RELEASE_TAG#v}"
+                  uv run python - "$expected" <<'PY'
+                  from __future__ import annotations
+
+                  import sys
+                  import tarfile
+                  import zipfile
+                  from email import policy
+                  from email.parser import BytesParser
+                  from pathlib import Path
+
+                  expected = sys.argv[1]
+
+                  def metadata_version(metadata: bytes, artifact: Path) -> str:
+                      message = BytesParser(policy=policy.compat32).parsebytes(metadata)
+                      version = message.get("Version")
+                      if not version:
+                          raise SystemExit(f"{artifact} has no Version metadata")
+                      return version
+
+                  def artifact_version(artifact: Path) -> str:
+                      if artifact.suffix == ".whl":
+                          with zipfile.ZipFile(artifact) as archive:
+                              metadata = next(
+                                  archive.read(name)
+                                  for name in archive.namelist()
+                                  if name.endswith(".dist-info/METADATA")
+                              )
+                      else:
+                          with tarfile.open(artifact) as archive:
+                              member = next(
+                                  item
+                                  for item in archive.getmembers()
+                                  if item.name.endswith("/PKG-INFO")
+                              )
+                              extracted = archive.extractfile(member)
+                              if extracted is None:
+                                  raise SystemExit(f"{artifact} has no readable PKG-INFO")
+                              metadata = extracted.read()
+                      return metadata_version(metadata, artifact)
+
+                  artifacts = sorted(Path("dist").glob("*.whl")) + sorted(Path("dist").glob("*.tar.gz"))
+                  if not artifacts:
+                      raise SystemExit("dist contains no wheel or source distribution")
+                  versions = {artifact: artifact_version(artifact) for artifact in artifacts}
+                  mismatches = {artifact: version for artifact, version in versions.items() if version != expected}
+                  if mismatches:
+                      details = ", ".join(f"{artifact}: {version}" for artifact, version in mismatches.items())
+                      raise SystemExit(f"release tag v{expected} does not match artifacts ({details})")
+                  print(f"verified {len(artifacts)} artifacts at version {expected}")
+                  PY
 
             - name: Generate release notes with git-cliff
-              run: git-cliff --config cliff.toml --latest --strip header --output release-notes.md
               env:
-                  GITHUB_REPO: ${{ github.repository }}
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  GITHUB_TOKEN: ${{ github.token }}
+                  RELEASE_TAG: ${{ github.event.release.tag_name }}
+              run: |
+                  set -euo pipefail
+                  git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}" >/dev/null
+                  git-cliff --config cliff.toml --latest --tag "$RELEASE_TAG" --strip header --output release-notes.md
+
+            - name: Publish package distributions to PyPI
+              uses: pypa/gh-action-pypi-publish@release/v1
+              with:
+                  packages-dir: dist/
 
             - name: Upload distributions to GitHub Release
               uses: softprops/action-gh-release@v3
               with:
+                  tag_name: ${{ github.event.release.tag_name }}
                   body_path: release-notes.md
                   files: |
                       dist/*.whl
                       dist/*.tar.gz
-
-            # - name: Publish package distributions to PyPI
-            #   uses: pypa/gh-action-pypi-publish@release/v1

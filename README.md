@@ -182,7 +182,7 @@ uv run pre-commit install
 `mise` orchestrates tasks and loads the local virtual environment. `uv` remains the source of truth for Python dependency management and execution. Use `mise run test:fast` for the tight local feedback loop, `mise run test` for parallel full pytest without coverage, and `mise run test:coverage` for coverage-bearing validation.
 Bun scripts are owned by `frontend/package.json`; the repository root intentionally has no `package.json` so root-level automation goes through `mise.toml`.
 
-Release notes are generated with `git-cliff` using [`cliff.toml`](./cliff.toml). The current GitHub release workflow keeps its `release.published` trigger and uses `git-cliff` to populate the GitHub Release body while artifact upload continues through GitHub Actions.
+`git-cliff` generates [`CHANGELOG.md`](./CHANGELOG.md) before a release. Keep `project.version` in [`pyproject.toml`](./pyproject.toml) at the current release version, regenerate and review the changelog, then create a GitHub Release whose tag is the same version with a `v` prefix (for example, `v0.1.0`). The release workflow validates both built artifact metadata and the tag, publishes the distributions to PyPI through trusted publishing, and uses the same tag's commits for the GitHub Release notes.
 
 ## Documentation
 

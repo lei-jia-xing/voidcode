@@ -1233,6 +1233,7 @@ def test_http_run_stream_accepts_metadata_for_skills() -> None:
         body=json.dumps(
             {
                 "prompt": "run with meta",
+                "metadata": {"skills": ["demo"]},
             }
         ).encode("utf-8"),
     )

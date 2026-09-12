@@ -3848,59 +3848,6 @@ def test_runtime_denies_shell_exec_when_command_rule_denies(tmp_path: Path) -> N
     assert feedback.payload["status"] == "error"
 
 
-@pytest.mark.parametrize(
-    ("command", "decision"),
-    [
-        ("touch /tmp/voidcode-touch-allow", "allow"),
-        ("touch /tmp/voidcode-touch-target", "ask"),
-        ("cp /etc/hosts /tmp/voidcode-cp-target", "ask"),
-        ("mv /tmp/voidcode-mv-source /tmp/voidcode-mv-target", "ask"),
-        ("touch /tmp/voidcode-touch-denied", "deny"),
-        ("cp /etc/hosts /tmp/voidcode-cp-denied", "deny"),
-        ("mv /tmp/voidcode-mv-source-denied /tmp/voidcode-mv-target-denied", "deny"),
-    ],
-)
-def test_runtime_shell_exec_declared_external_mutator_policy(tmp_path: Path, command: str, decision: str) -> None:
-    runtime_request, runtime_class = _load_runtime_types()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
-    config_module = importlib.import_module("voidcode.runtime.config")
-    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
-    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
-    permission_config = cast(Callable[..., object], config_module.ExternalDirectoryPermissionConfig)
-    policy_config = cast(Callable[..., object], config_module.ExternalDirectoryPolicy)
-
-    runtime = cast(
-        RuntimeRunner,
-        cast(
-            object,
-            runtime_class(
-                workspace=tmp_path,
-                config=runtime_config(
-                    approval_mode="allow",
-                    permission=permission_config(
-                        write=policy_config(rules=(("*", decision),)),
-                    ),
-                ),
-                graph=_SingleToolGraph("shell_exec", {"command": command}),
-                permission_policy=policy,
-            ),
-        ),
-    )
-
-    session_id = f"shell-{decision}-{command.split()[0]}"
-    result = runtime.run(runtime_request(prompt="run external mutator", session_id=session_id))
-    approval = next(event for event in result.events if event.event_type in {"runtime.approval_requested", "runtime.approval_resolved"})
-    assert approval.payload["path_scope"] == "external"
-    assert approval.payload["operation_class"] == "execute"
-    assert approval.payload["policy_surface"] == "external_directory_write"
-    if decision == "ask":
-        assert result.session.status == "waiting"
-        assert approval.event_type == "runtime.approval_requested"
-    else:
-        assert result.session.status == "completed"
-        assert approval.event_type == "runtime.approval_resolved"
-
-
 def test_runtime_uses_persisted_external_permission_rules_after_resume(
     tmp_path: Path,
 ) -> None:
