@@ -63,6 +63,7 @@ from voidcode.runtime.config import (
     RUNTIME_CONFIG_FILE_NAME,
     RuntimeAcpConfig,
     RuntimeAgentConfig,
+    RuntimeAgentInternalState,
     RuntimeBackgroundTaskConfig,
     RuntimeConfig,
     RuntimeContextWindowConfig,
@@ -6015,7 +6016,6 @@ def test_runtime_task_tool_starts_background_task_with_skill_metadata(tmp_path: 
         "agent": {
             "preset": "worker",
             "prompt_profile": "worker",
-            "prompt_materialization": _prompt_materialization_payload("worker"),
         },
     }
     assert task.request.prompt == "delegated child prompt"
@@ -6143,8 +6143,11 @@ def test_runtime_constructs_with_builtin_agent_hook_refs(tmp_path: Path) -> None
             agent=RuntimeAgentConfig(
                 preset="leader",
                 prompt_profile="researcher",
-                prompt_ref="researcher",
-                prompt_source="builtin",
+                runtime_internal=RuntimeAgentInternalState(
+                    prompt_ref="researcher",
+                    prompt_source="builtin",
+                    prompt_materialization=_prompt_materialization_payload("researcher"),
+                ),
                 hook_refs=("role_reminder",),
                 execution_engine="provider",
             ),
@@ -6159,9 +6162,11 @@ def test_runtime_constructs_with_builtin_agent_hook_refs(tmp_path: Path) -> None
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "researcher",
-        "prompt_materialization": _prompt_materialization_payload("researcher"),
-        "prompt_ref": "researcher",
-        "prompt_source": "builtin",
+        "runtime_internal": {
+            "prompt_materialization": _prompt_materialization_payload("researcher"),
+            "prompt_ref": "researcher",
+            "prompt_source": "builtin",
+        },
         "hook_refs": ["role_reminder"],
     }
     assert resolved_hook_presets["refs"] == ["role_reminder"]
@@ -6351,7 +6356,7 @@ def test_runtime_subagent_type_routing_resolves_real_child_agent_and_persists_id
     assert runtime_config["agent"] == {
         "preset": "explore",
         "prompt_profile": "explore",
-        "prompt_materialization": _prompt_materialization_payload("explore"),
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("explore")},
     }
     assert response.session.metadata["delegation"] == {
         "mode": "sync",
@@ -6479,11 +6484,12 @@ def test_runtime_subagent_type_routing_allows_custom_subagent_manifest(
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     agent_payload = cast(dict[str, object], runtime_config["agent"])
     assert agent_payload["preset"] == "local-auditor"
-    assert agent_payload["prompt_source"] == "custom_markdown"
-    assert agent_payload["manifest_source_scope"] == "project"
-    assert agent_payload["manifest_source_path"] == str(manifest_path)
-    assert agent_payload["manifest_tool_allowlist"] == ["read", "yield"]
-    prompt_materialization = cast(dict[str, object], agent_payload["prompt_materialization"])
+    runtime_internal = cast(dict[str, object], agent_payload["runtime_internal"])
+    assert runtime_internal["prompt_source"] == "custom_markdown"
+    assert runtime_internal["manifest_source_scope"] == "project"
+    assert runtime_internal["manifest_source_path"] == str(manifest_path)
+    assert runtime_internal["manifest_tool_allowlist"] == ["read", "yield"]
+    prompt_materialization = cast(dict[str, object], runtime_internal["prompt_materialization"])
     assert prompt_materialization["body"] == "Audit from local markdown."
     assert response.session.metadata["delegation"] == {
         "mode": "sync",
@@ -6933,7 +6939,6 @@ def test_runtime_background_delegation_executes_on_real_provider_child_path(
     assert created_providers[1].requests[0].agent_preset == {
         "preset": "worker",
         "prompt_profile": "worker",
-        "prompt_materialization": _prompt_materialization_payload("worker"),
         "model": "opencode/gpt-5.4",
     }
 
@@ -14652,14 +14657,13 @@ def test_runtime_agent_config_selects_provider_graph_and_persists_agent_metadata
     assert created_providers[0].requests[0].agent_preset == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
     }
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
         "model": "opencode/gpt-5.4",
     }
     assert effective.execution_engine == "provider"
@@ -14683,8 +14687,8 @@ def test_runtime_agent_prompts_include_delegation_and_child_boundaries() -> None
     assert "choosing the narrowest specialist that fits (explore, advisor, worker, researcher, product)" in leader_prompt
     assert "delegate to the product agent and read the plan back through its yield handoff" in leader_prompt
     assert "a child's completion is an incremental result, not a finished deliverable" in leader_prompt
-    assert "Collect outstanding child results with background_task" in leader_prompt
-    assert "Never present an unrun command, unread file, or unverified change as done" in leader_prompt
+    assert 'Collect outstanding child results with task(operation="output")' in leader_prompt
+    assert "never present an unrun command, unread file, or unverified change as done" in leader_prompt
 
     assert explore_prompt is not None
     assert "Stay read-only: do not edit or write files" in explore_prompt
@@ -14764,7 +14768,6 @@ def test_runtime_request_metadata_agent_override_persists_and_restores_agent_con
     assert created_providers[0].requests[0].agent_preset == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
     }
     assert effective.execution_engine == "provider"
@@ -14802,7 +14805,7 @@ def test_runtime_request_agent_override_preserves_existing_prompt_materializatio
             model="opencode/original",
             agent=RuntimeAgentConfig(
                 preset="leader",
-                prompt_materialization=initial_materialization,
+                runtime_internal=RuntimeAgentInternalState(prompt_materialization=initial_materialization),
             ),
         ),
         model_provider_registry=registry,
@@ -14817,7 +14820,70 @@ def test_runtime_request_agent_override_preserves_existing_prompt_materializatio
 
     assert resolved.model == "opencode/gpt-5.4"
     assert resolved.agent is not None
-    assert resolved.agent.prompt_materialization == initial_materialization
+    assert resolved.agent.runtime_internal is not None
+    assert resolved.agent.runtime_internal.prompt_materialization == initial_materialization
+
+    append_resolved = cast(Any, runtime).runtime_config_for_request(
+        RuntimeRequest(
+            prompt="hello",
+            metadata={"agent": {"preset": "leader", "prompt_append": "Request-specific append."}},
+        )
+    )
+    assert append_resolved.agent is not None
+    assert append_resolved.agent.runtime_internal is not None
+    appended_materialization = cast(dict[str, object], append_resolved.agent.runtime_internal.prompt_materialization)
+    assert appended_materialization["body"] == initial_materialization["body"]
+    assert appended_materialization["prompt_append"] == "Request-specific append."
+
+
+def test_runtime_request_prompt_profile_override_does_not_inherit_materialization(
+    tmp_path: Path,
+) -> None:
+    initial_materialization = {
+        "profile": "leader",
+        "version": 1,
+        "source": "custom_markdown",
+        "format": "markdown",
+        "body": "Use the repo-specific leader prompt.",
+    }
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/original",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                runtime_internal=RuntimeAgentInternalState(prompt_materialization=initial_materialization),
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    resolved = cast(Any, runtime).runtime_config_for_request(
+        RuntimeRequest(
+            prompt="hello",
+            metadata={
+                "agent": {
+                    "preset": "leader",
+                    "prompt_profile": "researcher",
+                    "model": "opencode/gpt-5.4",
+                }
+            },
+        )
+    )
+
+    assert resolved.agent is not None
+    assert resolved.agent.prompt_profile == "researcher"
+    assert resolved.agent.runtime_internal is not None
+    assert resolved.agent.runtime_internal.prompt_materialization is None
 
 
 def test_runtime_request_agent_explicit_prompt_materialization_replaces_existing(
@@ -14852,7 +14918,7 @@ def test_runtime_request_agent_explicit_prompt_materialization_replaces_existing
             model="opencode/original",
             agent=RuntimeAgentConfig(
                 preset="leader",
-                prompt_materialization=initial_materialization,
+                runtime_internal=RuntimeAgentInternalState(prompt_materialization=initial_materialization),
             ),
         ),
         model_provider_registry=registry,
@@ -14865,7 +14931,7 @@ def test_runtime_request_agent_explicit_prompt_materialization_replaces_existing
                 "agent": {
                     "preset": "leader",
                     "model": "opencode/gpt-5.4",
-                    "prompt_materialization": explicit_materialization,
+                    "prompt": explicit_materialization["body"],
                 }
             },
         )
@@ -14873,7 +14939,10 @@ def test_runtime_request_agent_explicit_prompt_materialization_replaces_existing
 
     assert resolved.model == "opencode/gpt-5.4"
     assert resolved.agent is not None
-    assert resolved.agent.prompt_materialization == explicit_materialization
+    assert resolved.agent.runtime_internal is not None
+    materialization = cast(dict[str, object], resolved.agent.runtime_internal.prompt_materialization)
+    assert materialization["source"] == "custom_markdown"
+    assert materialization["body"] == explicit_materialization["body"]
 
 
 def test_runtime_preserved_prompt_materialization_reaches_render_agent_prompt(
@@ -14887,7 +14956,15 @@ def test_runtime_preserved_prompt_materialization_reaches_render_agent_prompt(
             model="opencode/original",
             agent=RuntimeAgentConfig(
                 preset="leader",
-                prompt="Use only the custom leader prompt.",
+                runtime_internal=RuntimeAgentInternalState(
+                    prompt_materialization={
+                        "profile": "leader",
+                        "version": 1,
+                        "source": "custom_markdown",
+                        "format": "markdown",
+                        "body": "Use only the custom leader prompt.",
+                    }
+                ),
             ),
         ),
     )
@@ -14915,9 +14992,73 @@ def test_runtime_preserved_prompt_materialization_reaches_render_agent_prompt(
     assert "Delegate when the task is multi-step" not in agent_segments[0].content
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     agent_payload = cast(dict[str, object], runtime_config["agent"])
-    prompt_materialization = cast(dict[str, object], agent_payload["prompt_materialization"])
+    runtime_internal = cast(dict[str, object], agent_payload["runtime_internal"])
+    prompt_materialization = cast(dict[str, object], runtime_internal["prompt_materialization"])
     assert prompt_materialization["source"] == "custom_markdown"
     assert prompt_materialization["body"] == "Use only the custom leader prompt."
+
+
+def test_runtime_resume_provider_prompt_preserves_persisted_custom_materialization(
+    tmp_path: Path,
+) -> None:
+    materialization = {
+        "profile": "leader",
+        "version": 1,
+        "source": "custom_markdown",
+        "format": "markdown",
+        "body": "Persisted custom body.",
+        "prompt_append": "Persisted custom append.",
+    }
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(
+                        tool_call=ToolCall(
+                            tool_name="write",
+                            arguments={"path": "approval.txt", "content": "approved"},
+                        )
+                    ),
+                    ProviderTurnResult(output="resumed"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="ask",
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                runtime_internal=RuntimeAgentInternalState(prompt_materialization=materialization),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+        model_provider_registry=registry,
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="approve write", session_id="persisted-custom-resume"))
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+    resumed = runtime.resume(
+        "persisted-custom-resume",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "resumed"
+    assert created_providers
+    resumed_request = created_providers[0].requests[-1]
+    resumed_system_contents = [segment.content for segment in resumed_request.assembled_context.segments if segment.role == "system"]
+    assert any(
+        isinstance(content, str) and "Persisted custom body." in content and "Persisted custom append." in content
+        for content in resumed_system_contents
+    )
 
 
 def test_runtime_plan_command_keeps_leader_active_and_sets_plan_mode(tmp_path: Path) -> None:
@@ -14954,17 +15095,19 @@ def test_runtime_plan_command_keeps_leader_active_and_sets_plan_mode(tmp_path: P
     assert runtime_read_only_from_metadata(response.session.metadata) is True
     assert "workflow_preset" not in response.session.metadata
     # The /plan command keeps the leader active (mode=plan), so the
-    # provider-facing agent_preset is the leader's own config. This runtime
     # config sets only a top-level model (no agent block), so the leader agent
     # config carries no model of its own — the agent_preset reflects the agent
     # config, not the top-level model.
     assert created_providers[-1].requests[0].agent_preset == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
     }
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    assert runtime_config["agent"] == created_providers[-1].requests[0].agent_preset
+    assert runtime_config["agent"] == {
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
+    }
     assert "workflow" not in runtime_config
 
 
@@ -15016,7 +15159,6 @@ def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields
     assert created_providers[-1].requests[0].agent_preset == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
         "fallback_models": ["opencode/gpt-5.3"],
     }
@@ -15024,7 +15166,7 @@ def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
         "model": "opencode/gpt-5.4",
         "fallback_models": ["opencode/gpt-5.3"],
     }
@@ -15100,7 +15242,7 @@ def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Pa
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
         "model": "opencode/gpt-5.4",
         "tools": {"allowlist": ["read"]},
     }
@@ -15237,7 +15379,7 @@ def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path:
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
         "model": "opencode/gpt-5.4",
         "tools": {"builtin": {"enabled": False}},
     }
@@ -15375,7 +15517,7 @@ def test_runtime_agent_skills_config_loads_and_persists_runtime_skills(
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
         "skills": {"enabled": True, "paths": ["agent-skills"]},
     }
     assert _SkillCapturingStubGraph.last_request is not None
@@ -16118,7 +16260,7 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "prompt_materialization": _prompt_materialization_payload("leader"),
+        "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
     }
     assert runtime_config["fallback_models"] == ["custom/demo"]
     assert runtime_config["resolved_provider"] == {

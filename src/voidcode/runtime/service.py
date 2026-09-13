@@ -131,6 +131,7 @@ from .bundle import (
 from .config import (
     ExecutionEngineName,
     RuntimeAgentConfig,
+    RuntimeAgentInternalState,
     RuntimeConfig,
     RuntimeContextWindowConfig,
     RuntimeHooksConfig,
@@ -5210,12 +5211,36 @@ class VoidCodeRuntime(RuntimeSurface):
                             entry[k] = v
                     typed.append(entry)
             loaded_skills = tuple(typed)
+        raw_runtime_config = session_metadata.get("runtime_config")
+        raw_runtime_agent = cast(dict[str, object], raw_runtime_config).get("agent") if isinstance(raw_runtime_config, dict) else None
         raw_agent_preset = session_metadata.get("agent_preset")
-        if raw_agent_preset is None:
-            raw_runtime_config = session_metadata.get("runtime_config")
-            if isinstance(raw_runtime_config, dict):
-                raw_agent_preset = cast(dict[str, object], raw_runtime_config).get("agent")
-        agent_preset = cast(dict[str, object], raw_agent_preset) if isinstance(raw_agent_preset, dict) else None
+        agent_preset = dict(raw_agent_preset) if isinstance(raw_agent_preset, dict) else None
+        if agent_preset is None and isinstance(raw_runtime_agent, dict):
+            agent_preset = dict(raw_runtime_agent)
+        if agent_preset is not None:
+            agent_preset.pop("runtime_internal", None)
+            if isinstance(raw_runtime_agent, dict):
+                raw_internal = raw_runtime_agent.get("runtime_internal")
+                if isinstance(raw_internal, dict):
+                    raw_materialization = raw_internal.get("prompt_materialization")
+                    if isinstance(raw_materialization, dict):
+                        projected_materialization = {
+                            key: raw_materialization[key]
+                            for key in (
+                                "profile",
+                                "version",
+                                "source",
+                                "format",
+                                "body",
+                                "prompt_append",
+                                "model_family_overrides",
+                            )
+                            if key in raw_materialization
+                        }
+                        if projected_materialization:
+                            agent_preset["runtime_internal"] = {
+                                "prompt_materialization": projected_materialization,
+                            }
         model_family = effective_config.resolved_provider.active_target.selection.provider
         tool_feedback_mode = self._tool_feedback_mode_for_effective_config(effective_config)
         agent_prompt_context = render_agent_prompt(agent_preset, model_family=model_family) or ""
@@ -5655,8 +5680,25 @@ class VoidCodeRuntime(RuntimeSurface):
         *,
         allow_subagent_presets: bool = False,
     ) -> EffectiveRuntimeConfig:
+        raw_agent_payload = raw_agent if isinstance(raw_agent, dict) else {}
+        raw_agent_prompt_profile = raw_agent_payload.get("prompt_profile")
+        raw_agent_prompt = raw_agent_payload.get("prompt")
+        raw_agent_prompt_append = raw_agent_payload.get("prompt_append")
+        agent_payload_for_parse: object = raw_agent
+        if (
+            raw_agent_prompt is None
+            and raw_agent_prompt_append is not None
+            and raw_agent_prompt_profile is None
+            and resolved.agent is not None
+            and isinstance(resolved.agent.runtime_internal, RuntimeAgentInternalState)
+            and resolved.agent.preset == raw_agent_payload.get("preset")
+        ):
+            inherited_materialization = resolved.agent.runtime_internal.prompt_materialization
+            inherited_body = inherited_materialization.get("body") if isinstance(inherited_materialization, Mapping) else None
+            if isinstance(inherited_body, str) and inherited_body.strip():
+                agent_payload_for_parse = {**raw_agent_payload, "prompt": inherited_body}
         agent = parse_runtime_agent_payload(
-            raw_agent,
+            agent_payload_for_parse,
             source="request metadata 'agent'",
             hooks=self._config.hooks,
             agent_registry=self._agent_registry,
@@ -5672,6 +5714,16 @@ class VoidCodeRuntime(RuntimeSurface):
         model = agent.model if agent.model is not None else resolved.model
         execution_engine = _agent_effective_execution_engine(resolved.execution_engine, agent)
         provider_fallback = agent.provider_fallback if agent.provider_fallback is not None else resolved.provider_fallback
+        request_runtime_internal = agent.runtime_internal
+        if (
+            request_runtime_internal is not None
+            and request_runtime_internal.prompt_materialization is None
+            and raw_agent_prompt is None
+            and raw_agent_prompt_append is None
+            and raw_agent_prompt_profile is None
+            and (resolved.agent is None or agent.preset == resolved.agent.preset)
+        ):
+            request_runtime_internal = resolved.agent.runtime_internal if resolved.agent is not None else None
         merged_agent = RuntimeAgentConfig(
             preset=agent.preset,
             prompt_profile=(
@@ -5681,13 +5733,7 @@ class VoidCodeRuntime(RuntimeSurface):
             prompt_append=(
                 agent.prompt_append if agent.prompt_append is not None else resolved.agent.prompt_append if resolved.agent is not None else None
             ),
-            runtime_internal=(
-                agent.runtime_internal
-                if agent.runtime_internal is not None
-                else resolved.agent.runtime_internal
-                if resolved.agent is not None
-                else None
-            ),
+            runtime_internal=request_runtime_internal,
             hook_refs=(agent.hook_refs if agent.hook_refs else resolved.agent.hook_refs if resolved.agent is not None else ()),
             context_transform_refs=(
                 agent.context_transform_refs

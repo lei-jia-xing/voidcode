@@ -92,8 +92,12 @@ def render_agent_prompt(
 ) -> str | None:
     if agent_preset is None:
         return None
-    materialization = agent_preset.get("prompt_materialization")
     selected_profile: str | None = None
+    materialization = agent_preset.get("prompt_materialization")
+    if not isinstance(materialization, AgentPromptMaterialization | Mapping):
+        raw_internal = agent_preset.get("runtime_internal")
+        if isinstance(raw_internal, Mapping):
+            materialization = raw_internal.get("prompt_materialization")
     if isinstance(materialization, AgentPromptMaterialization):
         if materialization.source == "custom_markdown":
             if materialization.body is None:
