@@ -288,6 +288,82 @@ def test_provider_fallback_collaborator_marks_retry_exhausted_terminal() -> None
     }
 
 
+def test_provider_fallback_honors_explicit_recovery_veto_and_retry_after() -> None:
+    decision = decide_provider_error_policy(
+        error=ProviderExecutionError(
+            kind="rate_limit",
+            provider_name="primary",
+            model_name="model-a",
+            message="do not retry",
+            retryable=False,
+            fallback_allowed=False,
+            retry_after=2.5,
+        ),
+        current_provider_attempt=0,
+        provider_retry_attempt=0,
+        transient_retry_config=ProviderTransientRetryConfig(
+            max_retries=3,
+            base_delay_ms=1,
+            max_delay_ms=10_000,
+            jitter=False,
+        ),
+        fallback_target_provider="fallback",
+        fallback_target_model="model-b",
+        background_rate_limit_retry=False,
+    )
+
+    assert isinstance(decision, ProviderTerminalDecision)
+    assert decision.kind == "provider_error"
+
+
+def test_provider_fallback_uses_retry_after_when_retrying() -> None:
+    decision = decide_provider_error_policy(
+        error=ProviderExecutionError(
+            kind="rate_limit",
+            provider_name="primary",
+            model_name="model-a",
+            message="retry later",
+            retry_after=2.5,
+        ),
+        current_provider_attempt=0,
+        provider_retry_attempt=0,
+        transient_retry_config=ProviderTransientRetryConfig(
+            max_retries=1,
+            base_delay_ms=1,
+            max_delay_ms=10_000,
+            jitter=False,
+        ),
+        fallback_target_provider="fallback",
+        fallback_target_model="model-b",
+        background_rate_limit_retry=False,
+    )
+
+    assert isinstance(decision, ProviderTransientRetryDecision)
+    assert decision.delay_ms == 2500
+
+
+def test_provider_fallback_background_rate_limit_honors_explicit_veto() -> None:
+    decision = decide_provider_error_policy(
+        error=ProviderExecutionError(
+            kind="rate_limit",
+            provider_name="primary",
+            model_name="model-a",
+            message="do not retry in background",
+            retryable=False,
+            fallback_allowed=False,
+        ),
+        current_provider_attempt=0,
+        provider_retry_attempt=0,
+        transient_retry_config=ProviderTransientRetryConfig(max_retries=3, base_delay_ms=0, max_delay_ms=0, jitter=False),
+        fallback_target_provider="fallback",
+        fallback_target_model="model-b",
+        background_rate_limit_retry=True,
+    )
+
+    assert isinstance(decision, ProviderTerminalDecision)
+    assert decision.kind == "provider_error"
+
+
 def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prompt.") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"---\n{frontmatter}\n---\n{body}\n", encoding="utf-8")

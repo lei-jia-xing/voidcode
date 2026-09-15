@@ -223,6 +223,44 @@ def test_assemble_provider_context_injects_active_runtime_todos() -> None:
     assert todo_metadata == {"source": "runtime_todo_state", "tier": "task", "layer": "task_state"}
 
 
+def test_assemble_provider_context_keeps_todo_result_without_active_todo_state() -> None:
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(ToolResult(tool_name="todo", content="todo result", status="ok", data={}),),
+        session_metadata={},
+    )
+
+    assert any(segment.tool_name == "todo" and segment.role == "tool" for segment in assembled.segments)
+
+
+def test_assemble_provider_context_bounds_replayed_tool_content() -> None:
+    replayed = RuntimeContextSegment(
+        role="tool",
+        content="x" * 200,
+        tool_name="read",
+        tool_call_id="replayed-read",
+        metadata={"source": "replayed_conversation", "tier": "recent"},
+    )
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(),
+        session_metadata={},
+        replayed_conversation_segments=(replayed,),
+        policy=_context_window_policy(default_tool_result_tokens=10),
+    )
+
+    replayed_tools = [
+        segment
+        for segment in assembled.segments
+        if segment.metadata and segment.metadata.get("source") == "replayed_conversation" and segment.role == "tool"
+    ]
+    assert len(replayed_tools) == 1
+    assert replayed_tools[0].metadata is not None
+    assert replayed_tools[0].metadata["truncated"] is True
+    assert replayed_tools[0].metadata["partial"] is True
+    assert len(replayed_tools[0].content or "") < 200
+
+
 def test_assemble_provider_context_records_explicit_context_tiers() -> None:
     assembled = assemble_provider_context(
         prompt="continue",

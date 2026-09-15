@@ -112,7 +112,11 @@ def decide_provider_error_policy(
                 "cancelled": True,
             },
         )
-    if error.kind == "rate_limit" and background_rate_limit_retry:
+    default_retryable = error.kind in PROVIDER_TRANSIENT_RETRYABLE_KINDS
+    default_fallback_allowed = error.kind in PROVIDER_FALLBACK_ALLOWED_KINDS
+    retryable = default_retryable if error.retryable is None else error.retryable
+    fallback_allowed = default_fallback_allowed if error.fallback_allowed is None else error.fallback_allowed
+    if error.kind == "rate_limit" and background_rate_limit_retry and error.retryable is not False and error.fallback_allowed is not False:
         return ProviderTerminalDecision(
             kind="background_rate_limit_retry",
             payload={
@@ -123,23 +127,26 @@ def decide_provider_error_policy(
                 **({"provider_error_details": error.details} if error.details is not None else {}),
             },
         )
-    if error.kind in PROVIDER_TRANSIENT_RETRYABLE_KINDS and provider_retry_attempt < transient_retry_config.max_retries:
+    if retryable and provider_retry_attempt < transient_retry_config.max_retries:
         retry_attempt = provider_retry_attempt + 1
+        delay_ms = provider_transient_retry_delay_ms(
+            retry_attempt=retry_attempt,
+            base_delay_ms=transient_retry_config.base_delay_ms,
+            max_delay_ms=transient_retry_config.max_delay_ms,
+            jitter=transient_retry_config.jitter,
+        )
+        if error.retry_after is not None:
+            delay_ms = min(int(round(error.retry_after * 1000)), int(transient_retry_config.max_delay_ms))
         return ProviderTransientRetryDecision(
             reason=error.kind,
             provider=error.provider_name,
             model=error.model_name,
             retry_attempt=retry_attempt,
             max_retries=transient_retry_config.max_retries,
-            delay_ms=provider_transient_retry_delay_ms(
-                retry_attempt=retry_attempt,
-                base_delay_ms=transient_retry_config.base_delay_ms,
-                max_delay_ms=transient_retry_config.max_delay_ms,
-                jitter=transient_retry_config.jitter,
-            ),
+            delay_ms=max(0, delay_ms),
             provider_error_details=error.details,
         )
-    if error.kind in PROVIDER_FALLBACK_ALLOWED_KINDS and fallback_target_provider is not None and fallback_target_model is not None:
+    if fallback_allowed and fallback_target_provider is not None and fallback_target_model is not None:
         return ProviderFallbackDecision(
             reason=error.kind,
             from_provider=error.provider_name,
@@ -149,7 +156,7 @@ def decide_provider_error_policy(
             attempt=current_provider_attempt + 1,
             provider_error_details=error.details,
         )
-    if error.kind in PROVIDER_FALLBACK_ALLOWED_KINDS:
+    if fallback_allowed:
         return ProviderTerminalDecision(
             kind="fallback_exhausted",
             payload={
@@ -162,7 +169,7 @@ def decide_provider_error_policy(
                         "provider_retry_exhausted": True,
                         "provider_retry_attempts": provider_retry_attempt,
                     }
-                    if error.kind in PROVIDER_TRANSIENT_RETRYABLE_KINDS
+                    if retryable
                     else {}
                 ),
                 **({"provider_error_details": error.details} if error.details is not None else {}),

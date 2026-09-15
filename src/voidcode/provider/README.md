@@ -224,33 +224,31 @@ OpenCode Zen 与 OpenCode Go 是不同 provider：Zen 使用 `opencode/<model-id
 
 ## 流式传输
 
-VoidCode 的 Provider 抽象层输出标准化的流式事件包。
+VoidCode 的 Provider 抽象层输出标准化的流式事件包。当前 LiteLLM 只是默认 transport 实现；provider adapter 不应依赖 LiteLLM response 或 exception 类型，必须通过 `ProviderTransport` / `ProviderExecutionError` 边界。
 
 ### 事件包 (Event Envelope)
 
 事件通过 `ProviderStreamEvent` 结构表示，包含以下字段：
 
-- `kind`: 事件类型 (`delta`, `content`, `error`, `done`)。
-- `channel`: 数据通道 (`text`, `tool`, `reasoning`, `error`)。
+- `kind`: 事件类型 (`delta`, `content`, `error`, `done`).
+- `channel`: 数据通道 (`text`, `tool`, `reasoning`, `error`).
 - `text`: 流片段文本（仅 `delta` / `content`）。
-- `error`: 错误描述（仅 `error`）。
-- `error_kind`: 错误分类（`rate_limit`, `context_limit`, `invalid_model`, `transient_failure`, `cancelled`）。
-- `done_reason`: 上游终态原因；保留为 `stop`、`tool_calls`、`function_call`、`length`、`content_filter`、`cancelled`、`error` 或 `unknown`。`unknown` 表示上游未报告终态，不能视为成功完成。
+- `error`: 已脱敏的错误描述（仅 `error`）。
+- `error_kind`: 错误分类（包括 `rate_limit`, `context_limit`, `invalid_model`, `transient_failure`, `stream_tool_feedback_shape`, `cancelled`）。
+- `done_reason`: 上游终态原因；成功终态必须是 `stop`、`tool_calls`、`function_call`、`length` 或 `content_filter`。缺失或未知终态不会被视为成功。
 
-### 取消与超时行为
+### 错误边界
+
+- `ProviderExecutionError.message` 是 provider 原始错误的已脱敏可读文本，不应包含 LiteLLM/OpenAI wrapper 前缀。
+- `details` 保存有界、递归脱敏后的诊断信息；认证 token、cookie、header secret 不得进入持久化事件或 trace。
+- `retryable`、`fallback_allowed` 和 `retry_after` 是 runtime 恢复策略的输入；显式 `False` 会覆盖按错误种类推导出的默认策略。
+- `retry_after` 会被限制在 3600 秒以内，并覆盖同一次 retry 的指数退避延迟（仍受 runtime 最大延迟限制）。
+
+### 取消、超时与不完整 tool call
 
 - **显式取消**: 通过 `ProviderAbortSignal` 触发。一旦取消，流将立即产生 `error_kind: cancelled` 事件并终止。
-- **分片超时**: 如果两个流分片（chunk）之间的时间间隔超过配置的超时阈值，将抛出 `transient_failure` 错误。
-
-## 故障排除
-
-| 错误种类 (`error_kind`) | 常见原因 | 建议对策 |
-| :--- | :--- | :--- |
-| `invalid_model` | API Key 缺失/无效、模型名称拼写错误、无权限访问 | 检查环境变量和 `.voidcode.json`；确认供应商控制台权限。 |
-| `rate_limit` | 触发供应商频率限制或配额不足。 | 稍后重试或联系供应商增加额度。 |
-| `context_limit` | 对话历史过长或单次 Prompt 超过模型窗口。 | 减少工作区上下文注入或切换到更大窗口的模型。 |
-| `transient_failure` | 供应商服务中断、网络波动、超时。 | 检查网络连接；VoidCode 运行时会自动尝试 Fallback。 |
-| `cancelled` | 用户手动中止任务或客户端断开。 | 无需动作，按预期停止。 |
+- **分片超时**: LiteLLM transport 在相邻分片之间执行配置的 timeout 检查，并报告 `transient_failure`。
+- **不完整 tool call**: stream 结束时仍未形成完整 JSON object 的 tool call 会报告 `stream_tool_feedback_shape`，不会静默丢弃。
 
 ## 代码结构
 

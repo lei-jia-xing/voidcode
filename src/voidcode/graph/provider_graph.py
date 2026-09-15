@@ -245,6 +245,16 @@ class ProviderGraph:
             )
 
         turn_result = self._provider.propose_turn(turn_request)
+        supported_done_reasons = {"stop", "tool_calls", "function_call", "length", "content_filter", "completed"}
+        if (turn_result.done_reason == "unknown" and turn_result.finish_reason_reported) or (
+            turn_result.done_reason != "unknown" and turn_result.done_reason not in supported_done_reasons
+        ):
+            raise self._provider_execution_error(
+                kind="transient_failure",
+                model_name=turn_request.model_name,
+                message=f"provider turn ended with unsupported finish reason: {turn_result.done_reason}",
+                details={"source": "graph_nonstream", "reason": "unknown_done_reason", "done_reason": turn_result.done_reason},
+            )
         if turn_result.tool_calls:
             tool_calls = list(turn_result.tool_calls)
             first_tool_call = tool_calls.pop(0)
@@ -494,6 +504,13 @@ class ProviderGraph:
                 model_name=turn_request.model_name,
                 message="provider stream cancelled",
                 details={"source": "graph_stream", "reason": "done_cancelled"},
+            )
+        if done_reason not in {"stop", "tool_calls", "function_call", "length", "content_filter", "error", "completed"}:
+            raise self._provider_execution_error(
+                kind="transient_failure",
+                model_name=turn_request.model_name,
+                message=f"provider stream ended with unsupported finish reason: {done_reason}",
+                details={"source": "graph_stream", "reason": "unknown_done_reason", "done_reason": done_reason},
             )
         if done_reason == "error":
             raise self._provider_execution_error(

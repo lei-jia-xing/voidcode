@@ -941,6 +941,36 @@ def _clip_text_to_token_limit(text: str, *, limit: int, tokenizer_model: str | N
         clipped = clipped[:-1]
 
 
+def _bounded_replayed_conversation_segments(
+    segments: tuple[RuntimeContextSegment, ...],
+    *,
+    policy: ContextWindowPolicy,
+) -> tuple[RuntimeContextSegment, ...]:
+    bounded: list[RuntimeContextSegment] = []
+    for segment in segments:
+        if segment.role != "tool" or segment.content is None or segment.tool_name is None:
+            bounded.append(segment)
+            continue
+        metadata = segment.metadata or {}
+        if metadata.get("source") != "replayed_conversation":
+            bounded.append(segment)
+            continue
+        limit = policy.per_tool_result_tokens.get(segment.tool_name, policy.default_tool_result_tokens)
+        if limit is None:
+            bounded.append(segment)
+            continue
+        clipped = _clip_text_to_token_limit(
+            segment.content,
+            limit=limit,
+            tokenizer_model=policy.tokenizer_model,
+        )
+        if clipped == segment.content:
+            bounded.append(segment)
+            continue
+        bounded.append(replace(segment, content=clipped, metadata={**metadata, "truncated": True, "partial": True}))
+    return tuple(bounded)
+
+
 def _truncated_view_for_result(
     result: ToolResult | ToolResultView,
     *,
@@ -1506,6 +1536,11 @@ def assemble_provider_context(
         session_metadata=session_metadata,
         policy=policy,
         summary_projector=summary_projector,
+    )
+    effective_policy = policy or ContextWindowPolicy()
+    replayed_conversation_segments = _bounded_replayed_conversation_segments(
+        replayed_conversation_segments,
+        policy=effective_policy,
     )
     transform_result = context_transform_result or build_provider_context_transform_result(
         workspace=workspace,
