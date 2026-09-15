@@ -4,7 +4,9 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import re
+import threading
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,12 +34,18 @@ from ..tools.output import (
     strip_redaction_sentinels,
 )
 from .config import LiteLLMProviderConfig
-from .errors import provider_execution_error_from_api_payload
+from .errors import (
+    provider_execution_error_from_api_payload,
+    provider_execution_error_from_stream_payload,
+    redact_provider_error_details,
+    redact_provider_error_message,
+)
 from .model_catalog import ToolFeedbackMode
 from .protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
     ProviderTokenUsage,
+    ProviderTransport,
     ProviderTurnRequest,
     ProviderTurnResult,
     ProviderWireMaterialization,
@@ -62,6 +70,55 @@ _LITELLM_PROVIDER_MODEL_PREFIXES = {
 }
 _LITELLM_DEBUG_ENABLED = False
 _LITELLM_DEBUG_HANDLER: logging.Handler | None = None
+
+
+def _iter_stream_chunks_with_timeout(
+    stream: Iterator[Any],
+    *,
+    timeout_seconds: float,
+    provider_name: str,
+    model_name: str,
+) -> Iterator[Any]:
+    while True:
+        result_queue: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+
+        def publish(result_kind: str, result: object, result_queue=result_queue) -> None:
+            try:
+                result_queue.put_nowait((result_kind, result))
+            except queue.Full:
+                pass
+
+        def read_next(result_queue=result_queue) -> None:
+            try:
+                publish("value", next(stream), result_queue=result_queue)
+            except StopIteration:
+                publish("stop", None, result_queue=result_queue)
+            except BaseException as exc:
+                publish("error", exc, result_queue=result_queue)
+
+        threading.Thread(target=read_next, daemon=True).start()
+        try:
+            result_kind, result = result_queue.get(timeout=timeout_seconds)
+        except queue.Empty as exc:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+            raise ProviderExecutionError(
+                kind="transient_failure",
+                provider_name=provider_name,
+                model_name=model_name,
+                message="provider stream chunk timeout exceeded",
+                retryable=True,
+                fallback_allowed=True,
+            ) from exc
+        if result_kind == "stop":
+            return
+        if result_kind == "error":
+            raise cast(BaseException, result)
+        yield result
 
 
 def _usage_int(raw: object) -> int | None:
@@ -259,6 +316,7 @@ class _StreamedToolCallAccumulator:
 class LiteLLMBackendProvider:
     name: str
     config: LiteLLMProviderConfig | None
+    transport: ProviderTransport | None = None
     completion_kwargs: dict[str, object] | None = None
     use_raw_model_name: bool = False
     tool_feedback_model_overrides: Mapping[str, ToolFeedbackMode] = field(default_factory=_empty_tool_feedback_model_overrides)
@@ -870,46 +928,158 @@ class LiteLLMBackendProvider:
         return tool_calls[0] if tool_calls else None
 
     @staticmethod
+    def _strip_exception_wrapper(message: str) -> str:
+        return re.sub(
+            r"^(?:litellm|openai)(?:\.[A-Za-z0-9_]+)*(?:Error)?\s*:\s*",
+            "",
+            message.strip(),
+            flags=re.IGNORECASE,
+        )
+
+    @staticmethod
+    def _exception_payload(exc: Exception) -> dict[str, object]:
+        payload: dict[str, object] = {}
+        body = getattr(exc, "body", None)
+        if isinstance(body, Mapping):
+            payload.update(cast(Mapping[str, object], body))
+        elif isinstance(body, str) and body.strip():
+            try:
+                decoded = json.loads(body)
+            except json.JSONDecodeError:
+                payload["message"] = body
+            else:
+                if isinstance(decoded, dict):
+                    payload.update(cast(dict[str, object], decoded))
+        response = getattr(exc, "response", None)
+        response_json = getattr(response, "json", None)
+        if not payload and callable(response_json):
+            try:
+                decoded = response_json()
+            except Exception:
+                decoded = None
+            if isinstance(decoded, dict):
+                payload.update(cast(dict[str, object], decoded))
+        response_status = getattr(response, "status_code", None)
+        if isinstance(response_status, int):
+            payload.setdefault("status_code", response_status)
+        response_headers = getattr(response, "headers", None)
+        if isinstance(response_headers, Mapping):
+            payload.setdefault("headers", dict(cast(Mapping[str, object], response_headers)))
+
+        raw_message = getattr(exc, "message", None)
+        if not isinstance(raw_message, str) or not raw_message.strip():
+            raw_message = str(exc)
+        payload.setdefault("message", raw_message)
+        if isinstance(payload.get("message"), str):
+            payload["message"] = LiteLLMBackendProvider._strip_exception_wrapper(cast(str, payload["message"]))
+        error_obj = payload.get("error")
+        if isinstance(error_obj, dict) and isinstance(error_obj.get("message"), str):
+            error_obj["message"] = LiteLLMBackendProvider._strip_exception_wrapper(cast(str, error_obj["message"]))
+        status_code = getattr(exc, "status_code", None)
+        if isinstance(status_code, int):
+            payload.setdefault("status_code", status_code)
+        error_code = getattr(exc, "code", None)
+        if isinstance(error_code, str) and error_code.strip():
+            payload.setdefault("code", error_code)
+        return payload
+
+    @staticmethod
+    def _response_payload(value: object) -> dict[str, object]:
+        if isinstance(value, Mapping):
+            return dict(cast(Mapping[str, object], value))
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            dumped = model_dump()
+            if isinstance(dumped, Mapping):
+                return dict(cast(Mapping[str, object], dumped))
+        raise ValueError("provider response must be a mapping or expose model_dump()")
+
+    @staticmethod
+    def _raise_for_error_payload(
+        payload: dict[str, object],
+        *,
+        provider_name: str,
+        model_name: str,
+        source: str,
+    ) -> None:
+        error_obj = payload.get("error")
+        if error_obj is None and payload.get("type") != "error":
+            return
+        error_factory = provider_execution_error_from_stream_payload if source == "stream" else provider_execution_error_from_api_payload
+        raise error_factory(
+            provider_name=provider_name,
+            model_name=model_name,
+            payload=payload,
+        )
+
+    @staticmethod
     def _map_exception(exc: Exception, *, provider_name: str, model_name: str) -> ProviderExecutionError:
         if isinstance(exc, ProviderExecutionError):
             return exc
         status_code = getattr(exc, "status_code", None)
         error_code = getattr(exc, "code", None)
-        if isinstance(exc, APIError) or isinstance(status_code, int) or isinstance(error_code, str):
-            payload: dict[str, object] = {
-                "message": str(exc),
-                "status_code": status_code,
-                "code": error_code,
-            }
+        body = getattr(exc, "body", None)
+        response = getattr(exc, "response", None)
+        if isinstance(exc, APIError) or isinstance(status_code, int) or isinstance(error_code, str) or body is not None or response is not None:
             return provider_execution_error_from_api_payload(
                 provider_name=provider_name,
                 model_name=model_name,
-                payload=payload,
+                payload=LiteLLMBackendProvider._exception_payload(exc),
             )
+        raw_message = redact_provider_error_message(str(exc)) or "provider request failed"
+        details = redact_provider_error_details(
+            {
+                "exception_type": type(exc).__name__,
+                "exception_message": raw_message,
+            }
+        )
         return ProviderExecutionError(
             kind="transient_failure",
             provider_name=provider_name,
             model_name=model_name,
-            message=str(exc),
+            message=raw_message,
             retryable=True,
-            details={
-                "exception_type": type(exc).__name__,
-                "exception_message": str(exc),
-            },
+            fallback_allowed=True,
+            details=cast(dict[str, object], details),
         )
 
     @staticmethod
-    def _call_litellm_completion(payload: dict[str, Any]) -> Any:
+    def _call_litellm_completion(
+        payload: dict[str, Any],
+        *,
+        provider_name: str,
+        model_name: str,
+    ) -> Any:
         if litellm_module is None:
             raise ProviderExecutionError(
                 kind="transient_failure",
-                provider_name="litellm",
-                model_name="unknown",
-                message="litellm dependency is not installed",
+                provider_name=provider_name,
+                model_name=model_name,
+                message="provider transport dependency 'litellm' is not installed",
+                retryable=False,
+                fallback_allowed=True,
             )
         module_any = cast(Any, litellm_module)
         LiteLLMBackendProvider._enable_litellm_debug(module_any)
         return module_any.completion(**payload)
+
+    def _complete(
+        self,
+        payload: dict[str, Any],
+        *,
+        provider_name: str,
+        model_name: str,
+    ) -> Any:
+        if self.transport is not None:
+            response = self.transport.request(payload)
+            if isinstance(response, BaseException):
+                raise response
+            return response
+        return self._call_litellm_completion(
+            payload,
+            provider_name=provider_name,
+            model_name=model_name,
+        )
 
     @staticmethod
     def _enable_litellm_debug(module_any: Any) -> None:
@@ -961,8 +1131,19 @@ class LiteLLMBackendProvider:
             payload["tools"] = wire.tools
             payload["tool_choice"] = "auto"
         try:
-            response = self._call_litellm_completion(cast(dict[str, Any], payload))
-            response_payload = cast(dict[str, object], response.model_dump())
+            response = self._complete(
+                cast(dict[str, Any], payload),
+                provider_name=request.provider_name or self.name,
+                model_name=request.model_name or "unknown",
+            )
+            response_payload = self._response_payload(response)
+            self._raise_for_error_payload(
+                response_payload,
+                provider_name=request.provider_name or self.name,
+                model_name=request.model_name or "unknown",
+                source="api",
+            )
+
             write_provider_trace(
                 request=payload,
                 response=response_payload,
@@ -988,12 +1169,23 @@ class LiteLLMBackendProvider:
                 return ProviderTurnResult(output="", usage=usage, metadata=metadata)
             message = cast(dict[str, object], message_obj)
             content_obj = message.get("content")
+            if "finish_reason" not in first_choice:
+                raise ProviderExecutionError(
+                    kind="transient_failure",
+                    provider_name=request.provider_name or self.name,
+                    model_name=request.model_name or "unknown",
+                    message="provider response omitted finish_reason",
+                    retryable=False,
+                    fallback_allowed=True,
+                    details={"source": "response", "reason": "missing_finish_reason"},
+                )
             return ProviderTurnResult(
                 tool_calls=self._extract_tool_calls(message, provider_to_original=provider_to_original),
                 output=content_obj if isinstance(content_obj, str) else "",
                 usage=usage,
                 reasoning=_extract_non_stream_reasoning(message),
                 done_reason=cast(Any, self._done_reason(first_choice.get("finish_reason"))),
+                finish_reason_reported="finish_reason" in first_choice,
                 metadata=metadata,
             )
         except Exception as exc:
@@ -1026,13 +1218,25 @@ class LiteLLMBackendProvider:
             payload["tools"] = wire.tools
             payload["tool_choice"] = "auto"
         try:
-            stream = cast(Iterator[Any], self._call_litellm_completion(cast(dict[str, Any], payload)))
+            stream = cast(
+                Iterator[Any],
+                self._complete(
+                    cast(dict[str, Any], payload),
+                    provider_name=request.provider_name or self.name,
+                    model_name=request.model_name or "unknown",
+                ),
+            )
             streamed_tool_calls: dict[int, _StreamedToolCallAccumulator] = {}
             latest_usage: ProviderTokenUsage | None = None
             raw_chunks: list[object] = []
             done_reason = "unknown"
             response_metadata: dict[str, object] = {}
-            for chunk in stream:
+            for chunk in _iter_stream_chunks_with_timeout(
+                stream,
+                timeout_seconds=timeout_seconds,
+                provider_name=request.provider_name or self.name,
+                model_name=request.model_name or "unknown",
+            ):
                 if request.abort_signal is not None and request.abort_signal.cancelled:
                     yield ProviderStreamEvent(
                         kind="error",
@@ -1042,7 +1246,13 @@ class LiteLLMBackendProvider:
                     )
                     yield ProviderStreamEvent(kind="done", done_reason="cancelled")
                     return
-                chunk_payload = cast(dict[str, object], chunk.model_dump())
+                chunk_payload = self._response_payload(chunk)
+                self._raise_for_error_payload(
+                    chunk_payload,
+                    provider_name=request.provider_name or self.name,
+                    model_name=request.model_name or "unknown",
+                    source="stream",
+                )
                 raw_chunks.append(chunk_payload)
                 response_metadata.update(self._response_metadata(chunk_payload))
                 latest_usage = _extract_token_usage(chunk_payload) or latest_usage
@@ -1170,6 +1380,29 @@ class LiteLLMBackendProvider:
         completed_tool_calls = [
             (index, accumulator) for index, accumulator in sorted(streamed_tool_calls.items()) if accumulator.tool_name is not None
         ]
+        for _index, accumulator in completed_tool_calls:
+            try:
+                parsed_arguments = json.loads(accumulator.arguments)
+            except json.JSONDecodeError as exc:
+                raise ProviderExecutionError(
+                    kind="stream_tool_feedback_shape",
+                    provider_name=request.provider_name or self.name,
+                    model_name=request.model_name or "unknown",
+                    message="provider stream ended with incomplete tool-call arguments",
+                    retryable=False,
+                    fallback_allowed=True,
+                    details={"tool_name": accumulator.tool_name, "tool_call_id": accumulator.tool_call_id},
+                ) from exc
+            if not isinstance(parsed_arguments, dict):
+                raise ProviderExecutionError(
+                    kind="stream_tool_feedback_shape",
+                    provider_name=request.provider_name or self.name,
+                    model_name=request.model_name or "unknown",
+                    message="provider stream tool-call arguments were not an object",
+                    retryable=False,
+                    fallback_allowed=True,
+                    details={"tool_name": accumulator.tool_name, "tool_call_id": accumulator.tool_call_id},
+                )
         if completed_tool_calls:
             tool_payloads = [
                 {

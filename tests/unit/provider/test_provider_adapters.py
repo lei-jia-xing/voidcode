@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass, replace
 from typing import Any, cast
 
@@ -313,6 +314,7 @@ class _StubCompletionResponse:
             "choices": [
                 {
                     "message": message,
+                    "finish_reason": "stop",
                 }
             ]
         }
@@ -383,6 +385,29 @@ def _patch_litellm_completion(
         monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
     else:
         monkeypatch.setattr(backend_module.litellm_module, "completion", _completion)
+
+
+def test_litellm_error_mapping_preserves_response_headers_and_raw_message() -> None:
+    class _Response:
+        status_code = 429
+        headers = {"Retry-After": "2"}
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"error": {"message": "provider says slow down", "code": "rate_limit"}}
+
+    class _WrappedError(Exception):
+        status_code = 429
+        code = "rate_limit"
+        message = "litellm.APIError: provider says slow down"
+        response = _Response()
+
+    error = LiteLLMBackendProvider._map_exception(_WrappedError(), provider_name="openai", model_name="gpt-5.4")
+
+    assert error.message == "provider says slow down"
+    assert error.retry_after == 2.0
+    assert error.details is not None
+    assert error.details["status_code"] == 429
 
 
 _LAST_REQUEST_PAYLOAD: dict[str, object] = {}
@@ -2983,6 +3008,19 @@ def test_litellm_backend_propose_turn_omits_reasoning_when_absent(monkeypatch: p
     assert result.reasoning is None
 
 
+def test_litellm_backend_accepts_injected_transport_response_mapping() -> None:
+    class _Transport:
+        def request(self, payload: dict[str, object]) -> object:
+            assert payload["stream"] is False
+            return {"choices": [{"message": {"content": "transport response"}, "finish_reason": "stop"}]}
+
+    provider = LiteLLMBackendProvider(name="openai", config=None, transport=_Transport())
+    result = provider.propose_turn(_build_turn_request(model_name="openai"))
+
+    assert result.output == "transport response"
+    assert result.done_reason == "stop"
+
+
 def test_litellm_backend_omits_ssl_verify_when_not_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3788,7 +3826,7 @@ def test_provider_adapter_preserves_assistant_text_and_object_tool_arguments(
 
     assert result.output == "I will inspect it."
     assert result.tool_calls[0].arguments == {"path": "sample.txt"}
-    assert result.done_reason == "unknown"
+    assert result.done_reason == "stop"
 
 
 def test_wire_prefix_descriptor_is_final_materialization_seam() -> None:
@@ -3921,16 +3959,36 @@ def test_litellm_stream_keeps_parallel_tool_call_fragments_isolated(monkeypatch:
     assert ends == {"call-a": {"path": "a.txt"}, "call-b": {"path": "b.txt"}}
 
 
-def test_litellm_stream_does_not_end_incomplete_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_litellm_stream_rejects_incomplete_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = LiteLLMBackendProvider(name="openai", config=None)
     _patch_litellm_completion(
         monkeypatch,
         mode="stream",
         stream_tool_chunks=(([{"index": 0, "id": "call-read", "function": {"name": "read", "arguments": '{"path":'}}], "tool_calls"),),
     )
-    events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
-    assert [event.kind for event in events] == ["tool_call_start", "tool_call_delta", "done"]
-    assert not any(event.kind == "tool_call_end" for event in events)
+    with pytest.raises(ProviderExecutionError, match="incomplete tool-call arguments") as exc_info:
+        _ = list(provider.stream_turn(_build_turn_request(model_name="openai")))
+    assert exc_info.value.kind == "stream_tool_feedback_shape"
+    assert exc_info.value.details == {"tool_name": "read", "tool_call_id": "call-read"}
+
+
+def test_litellm_stream_timeout_interrupts_blocking_next() -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    def _slow_stream():
+        yield {"choices": [{"delta": {"content": "first"}}]}
+        time.sleep(0.2)
+        yield {"choices": [{"delta": {"content": "second"}, "finish_reason": "stop"}]}
+
+    iterator = backend_module._iter_stream_chunks_with_timeout(
+        iter(_slow_stream()),
+        timeout_seconds=0.01,
+        provider_name="openai",
+        model_name="gpt-5.4",
+    )
+    assert next(iterator)["choices"]
+    with pytest.raises(ProviderExecutionError, match="chunk timeout exceeded"):
+        next(iterator)
 
 
 def test_litellm_stream_abort_does_not_emit_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3946,3 +4004,56 @@ def test_litellm_stream_abort_does_not_emit_tool_call(monkeypatch: pytest.Monkey
     events = list(provider.stream_turn(replace(_build_turn_request(model_name="openai"), abort_signal=_AbortSignal())))
     assert [event.kind for event in events] == ["error", "done"]
     assert not any(event.kind.startswith("tool_call_") for event in events)
+
+
+def test_litellm_transport_exception_does_not_expose_wrapper() -> None:
+    class _Transport:
+        def request(self, _payload: dict[str, object]) -> object:
+            raise RuntimeError("litellm.exceptions.APIError: upstream transport failed")
+
+    provider = LiteLLMBackendProvider(name="openai", config=None, transport=_Transport())
+    with pytest.raises(ProviderExecutionError, match="upstream transport failed") as exc_info:
+        provider.propose_turn(_build_turn_request(model_name="openai"))
+
+    assert "litellm" not in str(exc_info.value).lower()
+    assert exc_info.value.kind == "transient_failure"
+
+
+def test_litellm_transport_error_payload_maps_without_wrapper() -> None:
+    class _Transport:
+        def request(self, _payload: dict[str, object]) -> object:
+            return {
+                "status_code": 429,
+                "error": {
+                    "code": "rate_limit",
+                    "message": "litellm.exceptions.APIError: upstream says slow down",
+                },
+            }
+
+    provider = LiteLLMBackendProvider(name="openai", config=None, transport=_Transport())
+    with pytest.raises(ProviderExecutionError, match="upstream says slow down") as exc_info:
+        provider.propose_turn(_build_turn_request(model_name="openai"))
+
+    assert exc_info.value.kind == "rate_limit"
+    assert exc_info.value.details is not None
+    assert "litellm" not in repr(exc_info.value.details).lower()
+
+
+def test_litellm_stream_error_payload_maps_without_wrapper() -> None:
+    class _Transport:
+        def request(self, _payload: dict[str, object]) -> object:
+            return iter(
+                (
+                    {
+                        "status_code": 500,
+                        "error": {"message": "litellm.APIError: stream backend failed"},
+                    },
+                )
+            )
+
+    provider = LiteLLMBackendProvider(name="openai", config=None, transport=_Transport())
+    with pytest.raises(ProviderExecutionError, match="stream backend failed") as exc_info:
+        _ = list(provider.stream_turn(_build_turn_request(model_name="openai")))
+
+    assert exc_info.value.kind == "transient_failure"
+    assert "litellm" not in repr(exc_info.value.details).lower()

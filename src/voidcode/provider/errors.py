@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, cast
 
 from .protocol import ProviderErrorKind, ProviderExecutionError
@@ -58,8 +60,17 @@ _SECRET_VALUE_PATTERNS = (
 )
 
 
+def _strip_provider_error_wrapper(value: str) -> str:
+    return re.sub(
+        r"^(?:litellm|openai)(?:\.[A-Za-z0-9_]+)*(?:Error)?\s*:\s*",
+        "",
+        value.strip(),
+        flags=re.IGNORECASE,
+    )
+
+
 def _redact_secret_text(value: str) -> str:
-    redacted = value
+    redacted = _strip_provider_error_wrapper(value)
     for pattern in _SECRET_VALUE_PATTERNS:
         redacted = pattern.sub(
             lambda match: f"{match.group(1)}=<redacted>" if match.lastindex and match.lastindex >= 2 else "<redacted>",
@@ -107,6 +118,7 @@ class ParsedProviderError:
     details: dict[str, object]
     retryable: bool
     fallback_allowed: bool
+    retry_after: float | None
     guidance: str
 
 
@@ -180,6 +192,33 @@ def _extract_status_code(payload: dict[str, Any]) -> int | None:
         return raw_status
     if isinstance(raw_status, str) and raw_status.isdigit():
         return int(raw_status)
+    return None
+
+
+def _extract_retry_after(payload: dict[str, Any]) -> float | None:
+    candidates: list[object] = [payload.get("retry_after"), payload.get("retry-after")]
+    headers = payload.get("headers")
+    if isinstance(headers, dict):
+        candidates.extend(value for key, value in headers.items() if str(key).lower() in {"retry-after", "x-ratelimit-reset-after"})
+    for raw in candidates:
+        value: float | None = None
+        if isinstance(raw, bool):
+            continue
+        if isinstance(raw, int | float):
+            value = float(raw)
+        elif isinstance(raw, str):
+            try:
+                value = float(raw)
+            except ValueError:
+                try:
+                    retry_at = parsedate_to_datetime(raw)
+                except TypeError, ValueError, OverflowError:
+                    continue
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=UTC)
+                value = (retry_at - datetime.now(UTC)).total_seconds()
+        if value is not None and value >= 0:
+            return min(value, 3600.0)
     return None
 
 
@@ -306,6 +345,7 @@ def parse_provider_api_error(payload: dict[str, Any]) -> ParsedProviderError:
     retryable, fallback_allowed = _recovery_policy_for_kind(kind)
     details = _provider_error_details(payload)
     guidance = guidance_for_provider_error_kind(kind)
+    retry_after = _extract_retry_after(payload)
     details.update(
         {
             "source": "api",
@@ -320,6 +360,7 @@ def parse_provider_api_error(payload: dict[str, Any]) -> ParsedProviderError:
         details=details,
         retryable=retryable,
         fallback_allowed=fallback_allowed,
+        retry_after=retry_after,
         guidance=guidance,
     )
 
@@ -332,6 +373,7 @@ def parse_provider_stream_error(payload: dict[str, Any]) -> ParsedProviderError:
     retryable, fallback_allowed = _recovery_policy_for_kind(kind)
     details = _provider_error_details(payload)
     guidance = guidance_for_provider_error_kind(kind)
+    retry_after = _extract_retry_after(payload)
     details.update(
         {
             "source": "stream",
@@ -346,6 +388,7 @@ def parse_provider_stream_error(payload: dict[str, Any]) -> ParsedProviderError:
         details=details,
         retryable=retryable,
         fallback_allowed=fallback_allowed,
+        retry_after=retry_after,
         guidance=guidance,
     )
 
@@ -363,6 +406,8 @@ def provider_execution_error_from_api_payload(
         model_name=model_name,
         message=parsed.message,
         retryable=parsed.retryable,
+        fallback_allowed=parsed.fallback_allowed,
+        retry_after=parsed.retry_after,
         details=parsed.details,
     )
 
@@ -380,6 +425,8 @@ def provider_execution_error_from_stream_payload(
         model_name=model_name,
         message=parsed.message,
         retryable=parsed.retryable,
+        fallback_allowed=parsed.fallback_allowed,
+        retry_after=parsed.retry_after,
         details=parsed.details,
     )
 

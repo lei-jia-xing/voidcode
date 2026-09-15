@@ -244,3 +244,49 @@ def test_provider_execution_error_from_stream_payload_preserves_details() -> Non
     assert exc.details is not None
     assert exc.details["status_code"] == 403
     assert exc.details["source"] == "stream"
+
+
+def test_provider_error_preserves_bounded_retry_after() -> None:
+    exc = provider_execution_error_from_api_payload(
+        provider_name="openai",
+        model_name="gpt-5.4",
+        payload={
+            "status_code": 429,
+            "message": "Too many requests",
+            "headers": {"Retry-After": "2.5"},
+        },
+    )
+
+    assert exc.retry_after == 2.5
+    assert exc.details is not None
+    assert "retry_after" not in exc.details
+
+
+def test_provider_error_caps_retry_after() -> None:
+    exc = provider_execution_error_from_api_payload(
+        provider_name="openai",
+        model_name="gpt-5.4",
+        payload={"status_code": 429, "message": "Too many requests", "retry_after": 99999},
+    )
+
+    assert exc.retry_after == 3600.0
+
+
+def test_provider_error_parses_http_date_retry_after(monkeypatch) -> None:
+    import voidcode.provider.errors as errors_module
+
+    fixed_now = errors_module.datetime(2026, 1, 1, tzinfo=errors_module.UTC)
+
+    class _Clock(errors_module.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    monkeypatch.setattr(errors_module, "datetime", _Clock)
+    exc = provider_execution_error_from_api_payload(
+        provider_name="openai",
+        model_name="gpt-5.4",
+        payload={"status_code": 429, "message": "Too many requests", "headers": {"Retry-After": "Thu, 01 Jan 2026 00:00:02 GMT"}},
+    )
+
+    assert exc.retry_after == 2.0

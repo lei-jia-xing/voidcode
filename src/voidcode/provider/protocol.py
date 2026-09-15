@@ -240,6 +240,7 @@ class ProviderTurnResult:
     # the same runtime.reasoning_part the streaming path aggregates.
     reasoning: str | None = None
     done_reason: ProviderDoneReason = "unknown"
+    finish_reason_reported: bool = False
     metadata: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
@@ -377,19 +378,38 @@ def wrap_provider_stream(
         yield ProviderStreamEvent(kind="done", done_reason="unknown")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class ProviderExecutionError(ValueError):
     kind: ProviderErrorKind
     provider_name: str
     model_name: str
     message: str
-    retryable: bool = False
-    fallback_allowed: bool = False
+    # ``None`` means the adapter did not make a recovery decision. Runtime
+    # fallback policy may then apply its kind defaults; explicit False is a
+    # provider veto and must not be overridden by those defaults.
+    retryable: bool | None = None
+    fallback_allowed: bool | None = None
     retry_after: float | None = None
     details: dict[str, object] | None = None
 
+    def __setattr__(self, name: str, value: object) -> None:
+        immutable_fields = {"kind", "provider_name", "model_name", "message", "retryable", "fallback_allowed", "retry_after", "details"}
+        if name in immutable_fields and hasattr(self, name):
+            raise AttributeError(f"ProviderExecutionError field '{name}' is immutable")
+        super().__setattr__(name, value)
+
+    def __hash__(self) -> int:
+        return hash((self.kind, self.provider_name, self.model_name, self.message, self.retryable, self.fallback_allowed, self.retry_after))
+
     def __str__(self) -> str:
         return self.message
+
+
+@runtime_checkable
+class ProviderTransport(Protocol):
+    """Transport seam between provider wire adapters and HTTP/SDK clients."""
+
+    def request(self, payload: dict[str, object]) -> object: ...
 
 
 @runtime_checkable
