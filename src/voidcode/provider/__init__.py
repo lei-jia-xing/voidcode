@@ -53,6 +53,7 @@ from .models import (
     ResolvedProviderModel,
 )
 from .openai import OpenAIModelProvider
+from .openai_native import OpenAIChatCompletionsProvider, OpenAIChatCompletionsTransport, OpenAITransport
 from .opencode import OpenCodeModelProvider
 from .opencode_go import OpenCodeGoModelProvider
 from .openrouter import OpenRouterModelProvider
@@ -96,6 +97,9 @@ __all__ = [
     "ProviderModelMetadata",
     "ModelProviderRegistry",
     "OpenRouterModelProvider",
+    "OpenAIChatCompletionsProvider",
+    "OpenAIChatCompletionsTransport",
+    "OpenAITransport",
     "OpenAIModelProvider",
     "OpenCodeModelProvider",
     "ProviderAuthAuthorizeRequest",

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from .anthropic import AnthropicModelProvider
-from .config import LiteLLMProviderConfig, ProviderConfigs
+from .config import LiteLLMProviderConfig, OpenAIProviderConfig, ProviderConfigs
 from .copilot import CopilotModelProvider
 from .deepseek import DeepSeekModelProvider
 from .fireworks import FireworksModelProvider
@@ -114,12 +114,12 @@ class ModelProviderRegistry:
     def resolve(self, provider_name: str) -> ModelTurnProvider:
         return self.resolve_with_metadata(provider_name).provider
 
-    def provider_config(self, provider_name: str) -> LiteLLMProviderConfig | None:
+    def provider_config(self, provider_name: str) -> LiteLLMProviderConfig | OpenAIProviderConfig | None:
         provider = self.providers.get(provider_name)
         if provider is not None:
             provider_config = getattr(provider, "provider_config", None)
             if callable(provider_config):
-                return cast(LiteLLMProviderConfig | None, provider_config())
+                return cast(LiteLLMProviderConfig | OpenAIProviderConfig | None, provider_config())
         if self.custom_provider_configs is not None and provider_name in self.custom_provider_configs:
             return self.custom_provider_configs[provider_name]
         return self.default_litellm_config
@@ -134,6 +134,16 @@ class ModelProviderRegistry:
 
     def refresh_available_models(self, provider_name: str) -> tuple[str, ...]:
         config = self.provider_config(provider_name)
+        # Discovery still consumes its legacy config shape; execution never does.
+        if isinstance(config, OpenAIProviderConfig):
+            config = LiteLLMProviderConfig(
+                api_key=config.api_key,
+                base_url=config.base_url,
+                discovery_base_url=config.discovery_base_url,
+                timeout_seconds=config.timeout_seconds,
+                openai_organization=config.organization,
+                openai_project=config.project,
+            )
         discovery = discover_available_models(provider_name, config)
         if self.model_catalog is not None:
             self.model_catalog[provider_name] = ProviderModelCatalog(

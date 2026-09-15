@@ -344,6 +344,7 @@ def _patch_litellm_completion(
     message_extra: dict[str, object] | None = None,
 ) -> None:
     import voidcode.provider.litellm_backend as backend_module
+    from voidcode.provider.openai_native import OpenAIChatCompletionsTransport, OpenAITransportError
 
     class _PatchedAPIError(_StubAPIError):
         pass
@@ -355,12 +356,7 @@ def _patch_litellm_completion(
             raise _PatchedAPIError(str(api_error), status_code=api_error.status_code, code=api_error.code)
         if mode == "stream":
             chunks: list[object] = [
-                _StubStreamChunk(
-                    text=text,
-                    finish_reason=finish,
-                    usage=usage if finish is not None else None,
-                )
-                for text, finish in stream_chunks
+                _StubStreamChunk(text=text, finish_reason=finish, usage=usage if finish is not None else None) for text, finish in stream_chunks
             ]
             chunks.extend(
                 _StubStreamChunk(text=None, finish_reason=finish, tool_calls=tool_calls_chunk) for tool_calls_chunk, finish in stream_tool_chunks
@@ -368,13 +364,16 @@ def _patch_litellm_completion(
             if stream_usage_tail and usage is not None:
                 chunks.append(_StubStreamUsageChunk(usage))
             return iter(chunks)
-        return _StubCompletionResponse(
-            content=completion_content,
-            tool_calls=tool_calls,
-            usage=usage,
-            message_extra=message_extra,
-        )
+        return _StubCompletionResponse(content=completion_content, tool_calls=tool_calls, usage=usage, message_extra=message_extra)
 
+    def _native_request(self: OpenAIChatCompletionsTransport, payload: dict[str, object], *, timeout_seconds: float) -> object:
+        _ = self, timeout_seconds
+        try:
+            return _completion(**payload).model_dump() if mode != "stream" else _completion(**payload)
+        except _PatchedAPIError as exc:
+            raise OpenAITransportError({"error": {"message": str(exc), "code": exc.code}, "status_code": exc.status_code}) from exc
+
+    monkeypatch.setattr(OpenAIChatCompletionsTransport, "request", _native_request)
     monkeypatch.setattr(backend_module, "APIError", _PatchedAPIError)
     if backend_module.litellm_module is None:
 
@@ -3391,31 +3390,18 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_reasoning_cont
     provider = provider.turn_provider()
     assert isinstance(provider, StreamableTurnProvider)
 
-    import voidcode.provider.litellm_backend as backend_module
+    from voidcode.provider.openai_native import OpenAIChatCompletionsTransport
 
-    def _completion(*args: Any, **kwargs: Any):
-        _ = args, kwargs
+    def _completion() -> object:
         return iter(
             [
-                _StubStreamChunk(
-                    text=None,
-                    finish_reason=None,
-                    reasoning_content="Thinking step.",
-                ),
-                _StubStreamChunk(text="Done.", finish_reason=None),
-                _StubStreamChunk(text=None, finish_reason="stop"),
+                _StubStreamChunk(text=None, finish_reason=None, reasoning_content="Thinking step").model_dump(),
+                _StubStreamChunk(text="Done.", finish_reason=None).model_dump(),
+                _StubStreamChunk(text=None, finish_reason="stop").model_dump(),
             ]
         )
 
-    if backend_module.litellm_module is None:
-
-        class _FakeLiteLLM:
-            def completion(self, *args: Any, **kwargs: Any):
-                return _completion(*args, **kwargs)
-
-        monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
-    else:
-        monkeypatch.setattr(backend_module.litellm_module, "completion", _completion)
+    monkeypatch.setattr(OpenAIChatCompletionsTransport, "request", lambda self, payload, timeout_seconds: _completion())
 
     events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
 
@@ -3423,8 +3409,8 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_reasoning_cont
         ProviderStreamEvent(
             kind="delta",
             channel="reasoning",
-            text="Thinking step.",
-            metadata={"source": "delta.reasoning"},
+            text="Thinking step",
+            metadata={"source": "delta.reasoning_content"},
         ),
         ProviderStreamEvent(kind="delta", channel="text", text="Done."),
         ProviderStreamEvent(kind="done", done_reason="stop"),
@@ -3438,31 +3424,18 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_reasoning(
     provider = provider.turn_provider()
     assert isinstance(provider, StreamableTurnProvider)
 
-    import voidcode.provider.litellm_backend as backend_module
+    from voidcode.provider.openai_native import OpenAIChatCompletionsTransport
 
-    def _completion(*args: Any, **kwargs: Any):
-        _ = args, kwargs
+    def _completion() -> object:
         return iter(
             [
-                _StubStreamChunk(
-                    text=None,
-                    finish_reason=None,
-                    reasoning="Reasoning step.",
-                ),
-                _StubStreamChunk(text="Done.", finish_reason=None),
-                _StubStreamChunk(text=None, finish_reason="stop"),
+                _StubStreamChunk(text=None, finish_reason=None, reasoning="Reasoning step.").model_dump(),
+                _StubStreamChunk(text="Done.", finish_reason=None).model_dump(),
+                _StubStreamChunk(text=None, finish_reason="stop").model_dump(),
             ]
         )
 
-    if backend_module.litellm_module is None:
-
-        class _FakeLiteLLM:
-            def completion(self, *args: Any, **kwargs: Any):
-                return _completion(*args, **kwargs)
-
-        monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
-    else:
-        monkeypatch.setattr(backend_module.litellm_module, "completion", _completion)
+    monkeypatch.setattr(OpenAIChatCompletionsTransport, "request", lambda self, payload, timeout_seconds: _completion())
 
     events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
 
@@ -3659,7 +3632,7 @@ def test_provider_adapters_call_litellm_directly_without_internal_bridge(
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
     assert isinstance(payload_obj, dict)
     payload = cast(dict[str, object], payload_obj)
-    assert payload["model"] == f"{provider_name}/demo"
+    assert payload["model"] == ("demo" if provider_name == "openai" else f"{provider_name}/demo")
 
 
 @pytest.mark.parametrize(
