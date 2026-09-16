@@ -14,10 +14,10 @@ from voidcode.provider.config import (
     CopilotProviderConfig,
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
-    LiteLLMProviderConfig,
     OpenAICompatibleProviderConfig,
     OpenAIProviderConfig,
     ProviderConfigs,
+    ProviderEndpointConfig,
 )
 
 
@@ -36,15 +36,15 @@ def test_provider_auth_methods_discovery_defaults_for_all_target_providers() -> 
     ]
     assert resolver.methods("copilot").default_method == "token"
     assert [method.id for method in resolver.methods("copilot").methods] == ["token", "oauth"]
-    assert resolver.methods("litellm").default_method == "none"
-    assert [method.id for method in resolver.methods("litellm").methods] == ["api_key", "none"]
+    assert resolver.methods("endpoint").default_method == "none"
+    assert [method.id for method in resolver.methods("endpoint").methods] == ["api_key", "none"]
 
 
 def test_provider_auth_methods_discovery_supports_custom_provider_from_config() -> None:
     resolver = ProviderAuthResolver(
         providers=ProviderConfigs(
             custom={
-                "llama-local": LiteLLMProviderConfig(
+                "llama-local": ProviderEndpointConfig(
                     api_key="custom-secret",
                     auth_scheme="bearer",
                 )
@@ -204,14 +204,14 @@ def test_provider_auth_callback_not_supported_for_non_callback_method() -> None:
     assert exc_info.value.code == "callback_not_supported"
 
 
-def test_provider_auth_authorize_litellm_with_api_key_returns_bearer_material() -> None:
-    resolver = ProviderAuthResolver(providers=ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="litellm-secret")))
+def test_provider_auth_authorize_endpoint_with_api_key_returns_bearer_material() -> None:
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(endpoint=ProviderEndpointConfig(api_key="endpoint-secret")))
 
-    result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="litellm", method="api_key"))
+    result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="endpoint", method="api_key"))
 
     assert result.status == "authorized"
     assert result.material is not None
-    assert result.material.headers == {"Authorization": "Bearer litellm-secret"}
+    assert result.material.headers == {"Authorization": "Bearer endpoint-secret"}
 
 
 def test_provider_auth_methods_rejects_unconfigured_custom_provider_name() -> None:
@@ -239,7 +239,7 @@ def test_provider_auth_authorize_rejects_unconfigured_custom_provider_name() -> 
 
 
 def test_provider_auth_callback_rejects_custom_provider_before_state_validation() -> None:
-    resolver = ProviderAuthResolver(providers=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(api_key="secret")}))
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(custom={"llama-local": ProviderEndpointConfig(api_key="secret")}))
 
     with pytest.raises(
         ProviderAuthResolutionError,
@@ -257,10 +257,10 @@ def test_provider_auth_callback_rejects_custom_provider_before_state_validation(
     assert exc_info.value.code == "callback_not_supported"
 
 
-def test_provider_auth_authorize_litellm_without_api_key_allows_none_mode() -> None:
-    resolver = ProviderAuthResolver(providers=ProviderConfigs(litellm=LiteLLMProviderConfig()))
+def test_provider_auth_authorize_endpoint_without_api_key_allows_none_mode() -> None:
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(endpoint=ProviderEndpointConfig()))
 
-    result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="litellm"))
+    result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="endpoint"))
 
     assert result.status == "authorized"
     assert result.method == "none"
@@ -269,7 +269,7 @@ def test_provider_auth_authorize_litellm_without_api_key_allows_none_mode() -> N
 
 
 def test_provider_auth_authorize_custom_provider_with_api_key_returns_bearer_material() -> None:
-    resolver = ProviderAuthResolver(providers=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(api_key="custom-secret")}))
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(custom={"llama-local": ProviderEndpointConfig(api_key="custom-secret")}))
 
     result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="llama-local"))
 
@@ -280,7 +280,7 @@ def test_provider_auth_authorize_custom_provider_with_api_key_returns_bearer_mat
 
 
 def test_provider_auth_authorize_custom_provider_none_mode_returns_empty_headers() -> None:
-    resolver = ProviderAuthResolver(providers=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(auth_scheme="none")}))
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(custom={"llama-local": ProviderEndpointConfig(auth_scheme="none")}))
 
     result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="llama-local"))
 
@@ -291,7 +291,7 @@ def test_provider_auth_authorize_custom_provider_none_mode_returns_empty_headers
 
 
 def test_provider_auth_authorize_custom_provider_respects_explicit_method_override() -> None:
-    resolver = ProviderAuthResolver(providers=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(api_key="custom-secret")}))
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(custom={"llama-local": ProviderEndpointConfig(api_key="custom-secret")}))
 
     result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="llama-local", method="none"))
 
@@ -301,38 +301,38 @@ def test_provider_auth_authorize_custom_provider_respects_explicit_method_overri
     assert result.material.headers == {}
 
 
-def test_provider_auth_custom_provider_matches_litellm_behavior_for_methods_and_authorize() -> None:
+def test_provider_auth_custom_provider_matches_endpoint_behavior_for_methods_and_authorize() -> None:
     providers = ProviderConfigs(
-        litellm=LiteLLMProviderConfig(api_key="same-secret"),
-        custom={"llama-local": LiteLLMProviderConfig(api_key="same-secret")},
+        endpoint=ProviderEndpointConfig(api_key="same-secret"),
+        custom={"llama-local": ProviderEndpointConfig(api_key="same-secret")},
     )
     resolver = ProviderAuthResolver(providers=providers)
 
-    litellm_methods = resolver.methods("litellm")
+    endpoint_methods = resolver.methods("endpoint")
     custom_methods = resolver.methods("llama-local")
-    assert [method.id for method in custom_methods.methods] == [method.id for method in litellm_methods.methods]
-    assert custom_methods.default_method == litellm_methods.default_method
+    assert [method.id for method in custom_methods.methods] == [method.id for method in endpoint_methods.methods]
+    assert custom_methods.default_method == endpoint_methods.default_method
 
-    litellm_auth = resolver.authorize(ProviderAuthAuthorizeRequest(provider="litellm"))
+    endpoint_auth = resolver.authorize(ProviderAuthAuthorizeRequest(provider="endpoint"))
     custom_auth = resolver.authorize(ProviderAuthAuthorizeRequest(provider="llama-local"))
-    assert litellm_auth.status == custom_auth.status == "authorized"
-    assert litellm_auth.material is not None
+    assert endpoint_auth.status == custom_auth.status == "authorized"
+    assert endpoint_auth.material is not None
     assert custom_auth.material is not None
-    assert litellm_auth.material.headers == custom_auth.material.headers
+    assert endpoint_auth.material.headers == custom_auth.material.headers
 
 
-def test_provider_auth_methods_litellm_prefers_none_when_auth_scheme_is_none() -> None:
-    resolver = ProviderAuthResolver(providers=ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="litellm-secret", auth_scheme="none")))
+def test_provider_auth_methods_endpoint_prefers_none_when_auth_scheme_is_none() -> None:
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(endpoint=ProviderEndpointConfig(api_key="endpoint-secret", auth_scheme="none")))
 
-    methods = resolver.methods("litellm")
+    methods = resolver.methods("endpoint")
 
     assert methods.default_method == "none"
 
 
-def test_provider_auth_authorize_litellm_defaults_to_none_when_auth_scheme_is_none() -> None:
-    resolver = ProviderAuthResolver(providers=ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="litellm-secret", auth_scheme="none")))
+def test_provider_auth_authorize_endpoint_defaults_to_none_when_auth_scheme_is_none() -> None:
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(endpoint=ProviderEndpointConfig(api_key="endpoint-secret", auth_scheme="none")))
 
-    result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="litellm"))
+    result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="endpoint"))
 
     assert result.method == "none"
     assert result.material is not None

@@ -2658,8 +2658,7 @@ describe("useAppStore integration flow", () => {
       {
         error: "provider retry exhausted",
         provider_error_details: {
-          exception_message:
-            "litellm.AuthenticationError: Insufficient balance.",
+          exception_message: "Insufficient balance.",
           exception_type: "AuthenticationError",
         },
       },
@@ -2678,9 +2677,7 @@ describe("useAppStore integration flow", () => {
 
     const state = useAppStore.getState();
     expect(state.runStatus).toBe("error");
-    expect(state.runError).toBe(
-      "litellm.AuthenticationError: Insufficient balance.",
-    );
+    expect(state.runError).toBe("Insufficient balance.");
   });
   it("keeps a transient provider error over a generic terminal failure", async () => {
     const sessionId = "transient-provider-error-session";

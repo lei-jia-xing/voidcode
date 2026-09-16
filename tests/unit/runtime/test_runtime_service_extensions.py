@@ -35,8 +35,8 @@ from voidcode.provider.auth import ProviderAuthAuthorizeRequest
 from voidcode.provider.config import (
     CopilotProviderAuthConfig,
     CopilotProviderConfig,
-    LiteLLMProviderConfig,
     OpenAIProviderConfig,
+    ProviderEndpointConfig,
     ProviderTransientRetryConfig,
 )
 from voidcode.provider.model_catalog import ProviderModelCatalog, ProviderModelMetadata
@@ -1221,7 +1221,7 @@ class _AbortableStreamingTurnProvider:
     """Streams one delta, then blocks until the abort signal fires.
 
     Mirrors the real abort-aware providers (``wrap_provider_stream``,
-    ``litellm_backend``): once ``abort_signal.cancelled`` is observed
+    ``OpenAIChatCompletionsProvider.stream_turn``): once ``abort_signal.cancelled`` is observed
     mid-stream, the provider surfaces ``error_kind="cancelled"`` and a
     ``done_reason="cancelled"`` so the graph converts the cancellation into
     ``ProviderExecutionError(kind="cancelled")`` — the exact shape of the
@@ -3358,7 +3358,7 @@ def test_runtime_background_rate_limit_retry_precedes_provider_fallback(
                 preferred_model="opencode/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
     )
 
@@ -3396,7 +3396,7 @@ def test_runtime_provider_fallback_resets_after_successful_turn(tmp_path: Path) 
                 preferred_model="primary/model-a",
                 fallback_models=("fallback/model-b",),
             ),
-            providers=RuntimeProvidersConfig(custom={"primary": LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))}),
+            providers=RuntimeProvidersConfig(custom={"primary": ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))}),
         ),
     )
 
@@ -3457,7 +3457,7 @@ def test_runtime_provider_retry_then_fallback_preserves_error_details_and_resets
             ),
             providers=RuntimeProvidersConfig(
                 custom={
-                    "primary": LiteLLMProviderConfig(
+                    "primary": ProviderEndpointConfig(
                         transient_retry=ProviderTransientRetryConfig(
                             max_retries=1,
                             base_delay_ms=0,
@@ -3534,7 +3534,7 @@ def test_runtime_provider_retry_exhausted_without_fallback_emits_terminal_payloa
             model="primary/model-a",
             providers=RuntimeProvidersConfig(
                 custom={
-                    "primary": LiteLLMProviderConfig(
+                    "primary": ProviderEndpointConfig(
                         transient_retry=ProviderTransientRetryConfig(
                             max_retries=1,
                             base_delay_ms=0,
@@ -3713,7 +3713,7 @@ def test_runtime_provider_fallback_skips_cancelled_and_context_limit_errors(
                 preferred_model="primary/model-a",
                 fallback_models=("fallback/model-b",),
             ),
-            providers=RuntimeProvidersConfig(custom={"primary": LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))}),
+            providers=RuntimeProvidersConfig(custom={"primary": ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))}),
         ),
     )
 
@@ -5178,7 +5178,7 @@ def test_runtime_session_debug_snapshot_classifies_provider_failure(tmp_path: Pa
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -5282,7 +5282,7 @@ def test_runtime_abort_during_provider_stream_seals_interrupted(tmp_path: Path) 
                 fallback_models=(),
             ),
             providers=RuntimeProvidersConfig(
-                custom={"primary": LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))},
+                custom={"primary": ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))},
             ),
         ),
     )
@@ -5627,7 +5627,7 @@ def test_runtime_provider_error_with_abort_stays_failed(tmp_path: Path) -> None:
                 fallback_models=(),
             ),
             providers=RuntimeProvidersConfig(
-                custom={"primary": LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))},
+                custom={"primary": ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))},
             ),
         ),
     )
@@ -6065,7 +6065,14 @@ def test_runtime_task_tool_starts_background_task_with_skill_metadata(tmp_path: 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_TaskToolGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True)),
+        # Delegation creation is an execute-class action, so it needs approval
+        # under the default "ask" mode. This test covers task metadata, so the
+        # task rule pre-approves delegation while every other action stays gated.
+        config=RuntimeConfig(
+            approval_mode="ask",
+            permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="task", decision="allow"),)),
+            skills=RuntimeSkillsConfig(enabled=True),
+        ),
     )
 
     response = runtime.run(RuntimeRequest(prompt="delegate this", session_id="leader-session"))
@@ -6152,7 +6159,14 @@ def test_runtime_parent_loaded_skill_body_does_not_leak_to_sync_child_prompt(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ParentSkillThenSyncTaskGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True)),
+        # The subject here is skill-prompt scoping, not the delegation approval
+        # gate, so only delegation creation is pre-approved; everything else is
+        # still scored by the "ask" policy.
+        config=RuntimeConfig(
+            approval_mode="ask",
+            permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="task", decision="allow"),)),
+            skills=RuntimeSkillsConfig(enabled=True),
+        ),
     )
 
     response = runtime.run(RuntimeRequest(prompt="parent loads skill", session_id="parent-skill"))
@@ -7103,6 +7117,9 @@ def test_provider_delegated_child_approval_restart_replay_preserves_runtime_trut
         approval_mode="ask",
         execution_engine="provider",
         model="scripted/leader-model",
+        # The child's ``write`` is the approval subject; the parent's delegation
+        # creation is pre-approved by policy so the parent routes immediately.
+        permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="task", decision="allow"),)),
         provider_fallback=RuntimeProviderFallbackConfig(
             preferred_model="scripted/leader-model",
             fallback_models=("fallback/leader-fallback",),
@@ -7161,6 +7178,11 @@ def test_provider_delegated_child_approval_restart_replay_preserves_runtime_trut
     child_waiting = runtime.session_result(session_id=child_session_id)
     approval_event = next(event for event in child_waiting.transcript if event.event_type == "runtime.approval_requested")
     approval_request_id = cast(str, approval_event.payload["request_id"])
+    assert approval_event.payload["tool"] == "write"
+    child_pending_approval = runtime.session_debug_snapshot(session_id=child_session_id).pending_approval
+    assert child_pending_approval is not None
+    assert child_pending_approval.tool_name == "write"
+    assert child_pending_approval.request_id == approval_request_id
     assert len(scripted_provider.created_providers) >= 2
     assert any(request.session_id == "provider-parent" for request in scripted_provider.requests)
     assert any(
@@ -7224,7 +7246,23 @@ def test_provider_delegated_child_approval_restart_replay_preserves_runtime_trut
     assert tuple(target.selection for target in effective_restarted.resolved_provider.target_chain.all_targets) == tuple(
         target.selection for target in effective_before.resolved_provider.target_chain.all_targets
     )
-    assert serialize_runtime_agent_config(effective_restarted.agent) == cast(dict[str, object], persisted_before["agent"])
+    # Persisted runtime metadata records agent provenance, so the rebuilt
+    # effective config must be compared with the same serialization flags.
+    assert serialize_runtime_agent_config(effective_restarted.agent, include_runtime_internal=True) == cast(
+        dict[str, object], persisted_before["agent"]
+    )
+    # The serializer falls back to the builtin manifest for
+    # ``prompt_materialization`` when ``runtime_internal`` is missing, so a
+    # dropped provenance payload would still serialize identically. Compare the
+    # parsed internal state against the persisted payload directly: re-derived
+    # provenance must not pass for preserved provenance.
+    restarted_agent = cast(RuntimeAgentConfig, effective_restarted.agent)
+    persisted_internal = cast(dict[str, object], cast(dict[str, object], persisted_before["agent"])["runtime_internal"])
+    assert restarted_agent.runtime_internal is not None
+    assert cast(dict[str, object], restarted_agent.runtime_internal.prompt_materialization) == cast(
+        dict[str, object], persisted_internal["prompt_materialization"]
+    )
+    assert restarted_agent.runtime_internal == cast(RuntimeAgentConfig, effective_before.agent).runtime_internal
 
     provider_request_count = len(scripted_provider.requests)
     resumed = restarted_runtime.resume(
@@ -11923,7 +11961,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
             ),
             providers=RuntimeProvidersConfig(
                 custom={
-                    "local-openai": LiteLLMProviderConfig(
+                    "local-openai": ProviderEndpointConfig(
                         base_url="http://localhost:11434/v1",
                         auth_scheme="none",
                         transient_retry=ProviderTransientRetryConfig(max_retries=2),
@@ -11986,7 +12024,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
     )
     assert effective.providers == RuntimeProvidersConfig(
         custom={
-            "local-openai": LiteLLMProviderConfig(
+            "local-openai": ProviderEndpointConfig(
                 transient_retry=ProviderTransientRetryConfig(max_retries=2),
             )
         }
@@ -13413,7 +13451,7 @@ def test_runtime_classifies_provider_context_limit_failures(tmp_path: Path) -> N
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
     )
 
@@ -14174,7 +14212,7 @@ def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: 
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -17085,7 +17123,7 @@ def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
                 preferred_model="opencode/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -17153,7 +17191,7 @@ def test_runtime_provider_streaming_emits_ordered_provider_stream_events(
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -17199,7 +17237,7 @@ def test_runtime_provider_streaming_persists_reasoning_as_runtime_part(
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -17240,7 +17278,7 @@ def test_runtime_non_streaming_persists_reasoning_as_runtime_part(tmp_path: Path
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -17289,7 +17327,7 @@ def test_runtime_non_streaming_reasoning_is_bounded_like_streaming(tmp_path: Pat
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -17331,7 +17369,7 @@ def test_runtime_reasoning_capture_preserves_all_provider_parts(tmp_path: Path) 
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -17385,7 +17423,7 @@ def test_runtime_reasoning_capture_preserves_parts_across_provider_turns(tmp_pat
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -17523,7 +17561,7 @@ def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> 
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -17618,7 +17656,7 @@ def test_runtime_provider_stream_error_maps_to_fallback_when_retryable(
                 preferred_model="opencode/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -17644,7 +17682,7 @@ def test_runtime_provider_retry_uses_persisted_session_provider_config(
                 preferred_model="opencode/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=2))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=2))),
         ),
         model_provider_registry=ModelProviderRegistry(
             providers={
@@ -17712,7 +17750,7 @@ def test_runtime_provider_retry_attempt_resets_after_successful_provider_call(
                 preferred_model="opencode/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=1))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=1))),
         ),
         model_provider_registry=ModelProviderRegistry(providers={"opencode": primary, "custom": fallback}),
     )
@@ -17774,7 +17812,7 @@ def test_runtime_provider_stream_json_error_payload_maps_to_context_limit_withou
                 preferred_model="opencode/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -17839,7 +17877,7 @@ def test_runtime_provider_transient_failure_after_tool_is_resumable(
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -17907,7 +17945,7 @@ def test_runtime_provider_failure_resume_reconciles_parent_background_tasks(
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -18061,7 +18099,7 @@ def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
         mcp_manager=mcp_manager,
@@ -18157,7 +18195,7 @@ def test_runtime_provider_failure_resume_persists_failed_chunk_when_loop_raises(
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -18351,7 +18389,7 @@ def test_runtime_fallback_event_preserves_provider_error_details(tmp_path: Path)
                 preferred_model="opencode/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
-            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+            providers=RuntimeProvidersConfig(opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
         ),
         model_provider_registry=registry,
     )
@@ -18501,7 +18539,7 @@ def test_runtime_refresh_provider_models_returns_catalog_with_model_map_fallback
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=RuntimeProvidersConfig(
-                litellm=LiteLLMProviderConfig(
+                endpoint=ProviderEndpointConfig(
                     base_url="http://127.0.0.1:65534",
                     auth_scheme="none",
                     model_map={"alias": "openrouter/openai/gpt-4o"},
@@ -18510,17 +18548,17 @@ def test_runtime_refresh_provider_models_returns_catalog_with_model_map_fallback
         ),
     )
 
-    models = runtime.refresh_provider_models("litellm")
+    models = runtime.refresh_provider_models("endpoint")
 
     assert models[0] == "alias"
     assert "openrouter/openai/gpt-4o" in models
-    assert runtime.provider_models("litellm") == models
+    assert runtime.provider_models("endpoint") == models
 
 
 def test_runtime_persists_provider_model_catalog_cache(tmp_path: Path) -> None:
     config = RuntimeConfig(
         providers=RuntimeProvidersConfig(
-            litellm=LiteLLMProviderConfig(
+            endpoint=ProviderEndpointConfig(
                 discovery_base_url="",
                 auth_scheme="none",
                 model_map={"alias": "gpt-4o"},
@@ -18529,15 +18567,15 @@ def test_runtime_persists_provider_model_catalog_cache(tmp_path: Path) -> None:
     )
     first_runtime = VoidCodeRuntime(workspace=tmp_path, config=config)
 
-    models = first_runtime.refresh_provider_models("litellm")
+    models = first_runtime.refresh_provider_models("endpoint")
     second_runtime = VoidCodeRuntime(workspace=tmp_path, config=config)
-    result = second_runtime.provider_models_result("litellm")
+    result = second_runtime.provider_models_result("endpoint")
 
     assert (tmp_path / ".xdg-cache" / "voidcode" / "provider-model-catalog.json").is_file()
     assert result.models == models
     assert result.source == "fallback"
     assert result.last_refresh_status == "skipped"
-    # Without a discovery endpoint the litellm catalog carries no metadata:
+    # Without a discovery endpoint the endpoint catalog carries no metadata:
     # the static catalog is keyed by first-party provider + model, so the
     # persisted cache round-trips models and status without model_metadata.
     assert result.model_metadata == {}
@@ -18590,8 +18628,8 @@ def test_runtime_provider_validation_refreshes_past_persisted_catalog_cache(
             {
                 "version": 1,
                 "providers": {
-                    "litellm": {
-                        "provider": "litellm",
+                    "endpoint": {
+                        "provider": "endpoint",
                         "models": ["stale"],
                         "model_metadata": {},
                         "refreshed": True,
@@ -18607,7 +18645,7 @@ def test_runtime_provider_validation_refreshes_past_persisted_catalog_cache(
     )
     config = RuntimeConfig(
         providers=RuntimeProvidersConfig(
-            litellm=LiteLLMProviderConfig(
+            endpoint=ProviderEndpointConfig(
                 discovery_base_url="",
                 auth_scheme="none",
                 model_map={"alias": "gpt-4o"},
@@ -18616,8 +18654,8 @@ def test_runtime_provider_validation_refreshes_past_persisted_catalog_cache(
     )
     runtime = VoidCodeRuntime(workspace=tmp_path, config=config)
 
-    validation = runtime.validate_provider_credentials("litellm")
-    inspect = runtime.inspect_provider("litellm")
+    validation = runtime.validate_provider_credentials("endpoint")
+    inspect = runtime.inspect_provider("endpoint")
 
     assert validation.status == "skipped"
     assert validation.last_error == "provider model discovery disabled by config"
@@ -18763,7 +18801,7 @@ def test_runtime_provider_fallback_exhaustion_after_three_targets_reports_termin
                 fallback_models=("openai/gpt-4.1", "anthropic/claude-3-7-sonnet"),
             ),
             providers=RuntimeProvidersConfig(
-                opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0)),
+                opencode=ProviderEndpointConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0)),
                 openai=OpenAIProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0)),
             ),
         ),

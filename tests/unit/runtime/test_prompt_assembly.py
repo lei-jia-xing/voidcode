@@ -34,7 +34,7 @@ PROVIDER_SPECIFIC_PROMPT_TERMS = (
     "Anthropic",
     "Claude",
     "DeepSeek",
-    "LiteLLM",
+    "Endpoint",
     "cache_control",
 )
 

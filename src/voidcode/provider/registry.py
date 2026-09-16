@@ -2,18 +2,24 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import cast
 
 from .anthropic import AnthropicModelProvider
-from .config import LiteLLMProviderConfig, OpenAIProviderConfig, ProviderConfigs
+from .config import (
+    AnthropicProviderConfig,
+    CopilotProviderConfig,
+    GoogleProviderConfig,
+    OpenAIProviderConfig,
+    ProviderConfigs,
+    ProviderEndpointConfig,
+)
 from .copilot import CopilotModelProvider
 from .deepseek import DeepSeekModelProvider
+from .endpoint import OpenAIEndpointProvider
 from .fireworks import FireworksModelProvider
 from .google import GoogleModelProvider
 from .grok import GrokModelProvider
 from .groq import GroqModelProvider
 from .kimi import KimiModelProvider
-from .litellm import LiteLLMModelProvider
 from .minimax import MiniMaxModelProvider
 from .mistral import MistralModelProvider
 from .model_catalog import (
@@ -27,6 +33,12 @@ from .opencode import OpenCodeModelProvider
 from .opencode_go import OpenCodeGoModelProvider
 from .openrouter import OpenRouterModelProvider
 from .protocol import ModelTurnProvider, StubTurnProvider, TurnProvider
+from .provider_config import (
+    anthropic_provider_config,
+    copilot_provider_config,
+    google_provider_config,
+    openai_provider_config,
+)
 from .qwen import QwenModelProvider
 from .together import TogetherModelProvider
 from .zai import ZAIModelProvider
@@ -49,11 +61,26 @@ class ProviderResolution:
     configured: bool
 
 
+def _discovery_config(config: object) -> ProviderEndpointConfig | None:
+    """Normalize any config shape a registry entry exposes into the single shape model discovery consumes."""
+    if config is None or isinstance(config, ProviderEndpointConfig):
+        return config
+    if isinstance(config, OpenAIProviderConfig):
+        return openai_provider_config(config)
+    if isinstance(config, AnthropicProviderConfig):
+        return anthropic_provider_config(config)
+    if isinstance(config, GoogleProviderConfig):
+        return google_provider_config(config)
+    if isinstance(config, CopilotProviderConfig):
+        return copilot_provider_config(config)
+    return None
+
+
 @dataclass(slots=True)
 class ModelProviderRegistry:
     providers: dict[str, ModelTurnProvider]
-    default_litellm_config: LiteLLMProviderConfig | None = None
-    custom_provider_configs: Mapping[str, LiteLLMProviderConfig] | None = None
+    default_endpoint_config: ProviderEndpointConfig | None = None
+    custom_provider_configs: Mapping[str, ProviderEndpointConfig] | None = None
     model_catalog: dict[str, ProviderModelCatalog] | None = None
 
     @classmethod
@@ -66,7 +93,7 @@ class ModelProviderRegistry:
                 "anthropic": AnthropicModelProvider(config=configs.anthropic),
                 "google": GoogleModelProvider(config=configs.google),
                 "copilot": CopilotModelProvider(config=configs.copilot),
-                "litellm": LiteLLMModelProvider(config=configs.litellm),
+                "endpoint": OpenAIEndpointProvider(name="endpoint", config=configs.endpoint),
                 "deepseek": DeepSeekModelProvider(config=configs.deepseek),
                 "openrouter": OpenRouterModelProvider(config=configs.openrouter),
                 "zai": ZAIModelProvider(config=configs.zai),
@@ -81,7 +108,7 @@ class ModelProviderRegistry:
                 "fireworks": FireworksModelProvider(config=configs.fireworks),
                 "mistral": MistralModelProvider(config=configs.mistral),
             },
-            default_litellm_config=configs.litellm,
+            default_endpoint_config=configs.endpoint,
             custom_provider_configs=configs.custom,
             model_catalog={},
         )
@@ -100,29 +127,29 @@ class ModelProviderRegistry:
             if custom_config is not None:
                 return ProviderResolution(
                     provider_name=provider_name,
-                    provider=LiteLLMModelProvider(name=provider_name, config=custom_config),
+                    provider=OpenAIEndpointProvider(name=provider_name, config=custom_config),
                     source="custom",
                     configured=True,
                 )
         return ProviderResolution(
             provider_name=provider_name,
-            provider=LiteLLMModelProvider(name=provider_name, config=self.default_litellm_config),
-            source="default_litellm",
-            configured=self.default_litellm_config is not None,
+            provider=OpenAIEndpointProvider(name=provider_name, config=self.default_endpoint_config),
+            source="default_endpoint",
+            configured=self.default_endpoint_config is not None,
         )
 
     def resolve(self, provider_name: str) -> ModelTurnProvider:
         return self.resolve_with_metadata(provider_name).provider
 
-    def provider_config(self, provider_name: str) -> LiteLLMProviderConfig | OpenAIProviderConfig | None:
+    def provider_config(self, provider_name: str) -> ProviderEndpointConfig | None:
         provider = self.providers.get(provider_name)
         if provider is not None:
             provider_config = getattr(provider, "provider_config", None)
             if callable(provider_config):
-                return cast(LiteLLMProviderConfig | OpenAIProviderConfig | None, provider_config())
+                return _discovery_config(provider_config())
         if self.custom_provider_configs is not None and provider_name in self.custom_provider_configs:
             return self.custom_provider_configs[provider_name]
-        return self.default_litellm_config
+        return self.default_endpoint_config
 
     def available_models(self, provider_name: str) -> tuple[str, ...]:
         if self.model_catalog is None:
@@ -133,18 +160,7 @@ class ModelProviderRegistry:
         return entry.models
 
     def refresh_available_models(self, provider_name: str) -> tuple[str, ...]:
-        config = self.provider_config(provider_name)
-        # Discovery still consumes its legacy config shape; execution never does.
-        if isinstance(config, OpenAIProviderConfig):
-            config = LiteLLMProviderConfig(
-                api_key=config.api_key,
-                base_url=config.base_url,
-                discovery_base_url=config.discovery_base_url,
-                timeout_seconds=config.timeout_seconds,
-                openai_organization=config.organization,
-                openai_project=config.project,
-            )
-        discovery = discover_available_models(provider_name, config)
+        discovery = discover_available_models(provider_name, self.provider_config(provider_name))
         if self.model_catalog is not None:
             self.model_catalog[provider_name] = ProviderModelCatalog(
                 provider=provider_name,

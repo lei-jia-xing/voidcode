@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import override
 
-from .config import LiteLLMProviderConfig
-from .litellm_backend import LiteLLMBackendProvider
-from .protocol import ProviderTurnRequest, TurnProvider
+from .config import ProviderEndpointConfig
+from .openai_native import OpenAIChatCompletionsProvider
+from .protocol import TurnProvider
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
@@ -13,24 +12,15 @@ _OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
 
 
 @dataclass(frozen=True, slots=True)
-class OpenRouterProvider(LiteLLMBackendProvider):
+class OpenRouterModelProvider:
     """OpenRouter's OpenAI-compatible chat-completions gateway."""
 
-    @override
-    def _completion_kwargs_for_request(self, request: ProviderTurnRequest) -> dict[str, object]:
-        kwargs = LiteLLMBackendProvider._completion_kwargs_for_request(self, request)
-        kwargs["custom_llm_provider"] = "openai"
-        return kwargs
-
-
-@dataclass(frozen=True, slots=True)
-class OpenRouterModelProvider:
     name: str = "openrouter"
-    config: LiteLLMProviderConfig | None = None
+    config: ProviderEndpointConfig | None = None
 
-    def provider_config(self) -> LiteLLMProviderConfig:
+    def provider_config(self) -> ProviderEndpointConfig:
         if self.config is None:
-            return LiteLLMProviderConfig(
+            return ProviderEndpointConfig(
                 api_key_env_var=_OPENROUTER_API_KEY_ENV_VAR,
                 base_url=_OPENROUTER_BASE_URL,
                 discovery_base_url=_OPENROUTER_MODELS_URL,
@@ -39,7 +29,7 @@ class OpenRouterModelProvider:
         discovery_base_url = self.config.discovery_base_url
         if discovery_base_url is None:
             discovery_base_url = None if self.config.base_url else _OPENROUTER_MODELS_URL
-        return LiteLLMProviderConfig(
+        return ProviderEndpointConfig(
             api_key=self.config.api_key,
             api_key_env_var=self.config.api_key_env_var or _OPENROUTER_API_KEY_ENV_VAR,
             base_url=self.config.base_url or _OPENROUTER_BASE_URL,
@@ -54,7 +44,7 @@ class OpenRouterModelProvider:
         )
 
     def turn_provider(self) -> TurnProvider:
-        return OpenRouterProvider(
+        return OpenAIChatCompletionsProvider(
             name=self.name,
             config=self.provider_config(),
         )

@@ -2367,7 +2367,7 @@ def test_provider_runtime_falls_back_to_next_provider_target(tmp_path: Path) -> 
                     fallback_models=("custom/demo",),
                 ),
                 providers=config_module.RuntimeProvidersConfig(
-                    opencode=provider_config_module.LiteLLMProviderConfig(
+                    opencode=provider_config_module.ProviderEndpointConfig(
                         transient_retry=provider_config_module.ProviderTransientRetryConfig(
                             max_retries=0,
                         )
@@ -5482,7 +5482,7 @@ def test_cli_run_command_prints_clean_file_contents_by_default(tmp_path: Path) -
 
     assert result.returncode == 0
     assert result.stdout == "Read 1 line(s) from sample.txt.\n"
-    assert "LiteLLM:WARNING" in result.stderr or result.stderr == ""
+    assert result.stderr == ""
 
 
 def test_cli_run_command_json_outputs_events_and_file_contents(tmp_path: Path) -> None:
@@ -5513,7 +5513,7 @@ def test_cli_run_command_json_outputs_events_and_file_contents(tmp_path: Path) -
     event_types = [event["event_type"] for event in payload["events"]]
 
     assert result.returncode == 0
-    assert "LiteLLM:WARNING" in result.stderr or result.stderr == ""
+    assert result.stderr == ""
     assert "runtime.request_received" in event_types
     assert "runtime.tool_completed" in event_types
     assert payload["output"] == "Read 1 line(s) from sample.txt."

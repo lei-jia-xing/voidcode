@@ -3412,6 +3412,37 @@ def test_run_reports_invalid_config_with_copyable_doctor_action() -> None:
     assert "Traceback" not in result.stderr
 
 
+def test_run_command_with_unready_provider_prints_doctor_recovery_and_exits(tmp_path: Path, capsys: Any) -> None:
+    """A provider-engine ``voidcode run`` must stop before any turn with doctor guidance."""
+    cli = importlib.import_module("voidcode.cli.app")
+    config = RuntimeConfig(approval_mode="allow", execution_engine="provider")
+    readiness = cli.ProviderReadinessResult(
+        provider="runtime",
+        model="model",
+        configured=False,
+        ok=False,
+        status="unconfigured",
+        guidance="Add provider credentials in environment variables or .voidcode.json.",
+        auth_present=False,
+        fallback_chain=("runtime/model",),
+    )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.provider_readiness.return_value = readiness
+            result = cli.main(["run", "read README.md", "--workspace", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert result == cli.EXIT_PROVIDER_ERROR
+    assert captured.out == ""
+    assert "status: not_ready" in captured.err
+    assert "error: Add provider credentials in environment variables or .voidcode.json." in captured.err
+    assert "actions:" in captured.err
+    assert f"voidcode doctor --workspace {tmp_path}" in captured.err
+    assert "api_key" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_config_init_rejects_malformed_model_without_writing() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
@@ -3511,7 +3542,7 @@ def test_provider_models_command_outputs_refreshed_provider_model_list() -> None
             runtime_class.return_value.refresh_provider_models.return_value = models
             contracts = importlib.import_module("voidcode.runtime.contracts")
             runtime_class.return_value.provider_models_result.return_value = contracts.ProviderModelsResult(
-                provider="litellm",
+                provider="endpoint",
                 configured=True,
                 models=models,
                 model_metadata={
@@ -3529,7 +3560,7 @@ def test_provider_models_command_outputs_refreshed_provider_model_list() -> None
                 [
                     "provider",
                     "models",
-                    "litellm",
+                    "endpoint",
                     "--workspace",
                     str(workspace),
                     "--refresh",
@@ -3538,8 +3569,8 @@ def test_provider_models_command_outputs_refreshed_provider_model_list() -> None
 
     assert result == 0
     runtime_class.assert_called_once_with(workspace=workspace)
-    runtime_class.return_value.refresh_provider_models.assert_called_once_with("litellm")
-    runtime_class.return_value.provider_models_result.assert_called_once_with("litellm")
+    runtime_class.return_value.refresh_provider_models.assert_called_once_with("endpoint")
+    runtime_class.return_value.provider_models_result.assert_called_once_with("endpoint")
 
 
 def test_provider_inspect_command_outputs_provider_capabilities() -> None:

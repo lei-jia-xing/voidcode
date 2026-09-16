@@ -41,6 +41,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 - **runtime:** finalize harness policy safeguards (#488)
 
+- **cli:** expose the resolved provider endpoint (`endpoint.base_url`, `endpoint.source`, `endpoint.discovery_base_url`) in `voidcode provider inspect`
+
 
 
 ### Changed
@@ -68,6 +70,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 - **command:** trim slash commands to init and plan
 - **runtime:** remove LangGraph dependency and replace deterministic execution with the plain-Python graph loop; provider-backed execution remains runtime-owned
+- **provider:** replace LiteLLM with official provider SDKs (openai, anthropic, google-genai); rename the `litellm` provider to `endpoint` and the `LITELLM_*` env vars to `ENDPOINT_API_KEY` / `ENDPOINT_BASE_URL` (breaking)
+- **provider:** drop built-in default model maps in favor of provider model discovery (breaking)
+- **provider:** resolve each provider's own default base URL instead of falling back to `api.openai.com` for every OpenAI-compatible vendor whose config block is absent; `copilot` now defaults to `https://api.individual.githubcopilot.com` so Copilot credentials never point at OpenAI, and a provider with neither a configured nor a default endpoint fails with the new `not_configured` error (non-retryable, fallback allowed) instead of borrowing another vendor's host (breaking)
+- **provider:** disable model discovery for `google` `service_account` auth instead of issuing an unauthenticated probe
+- **provider:** route `opencode-go` and `opencode` (Zen) per model instead of one wire per provider, mirroring OMP's per-model catalogs: `opencode-go/minimax-m3` and Zen's `claude-*` / `qwen3.5-plus` / `qwen3.6-plus` speak Anthropic Messages at the gateway host root, Zen's `gemini-*` models speak the Google generative-ai wire at the gateway endpoint, and models whose upstream wire is the OpenAI Responses API (`opencode-go/gpt-5.6-luna`, Zen `gpt-*` / `grok-*` / `muse-spark-*`) fail with `unsupported_feature` instead of silently downgrading to chat-completions
+- **provider:** resolve `google` `service_account` auth from the configured `auth.service_account_json_path` as cloud-platform credentials on the Vertex AI surface (a missing or unreadable file is a non-retryable `missing_auth` error instead of a silent `GOOGLE_API_KEY` substitution), select Vertex for API-key-free `project`/`region` configs, and honour `providers.google.base_url` as a complete endpoint root that the SDK does not extend with its own version segment
 
 
 
@@ -101,6 +109,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 - **build:** include frontend sources in source distributions
 
 - **runtime:** preserve full reasoning output (#489)
+
+- **provider:** send the OpenCode gateway's per-conversation `x-opencode-session`/`x-opencode-client` request headers on every OpenCode Zen and OpenCode Go wire
 
 
 

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .config import CopilotProviderConfig, LiteLLMProviderConfig
-from .litellm_backend import LiteLLMBackendProvider
-from .litellm_config import copilot_provider_config
+from .config import CopilotProviderConfig, ProviderEndpointConfig
+from .openai_native import OpenAIChatCompletionsProvider
 from .protocol import TurnProvider
+from .provider_config import copilot_provider_config
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,7 +13,7 @@ class CopilotModelProvider:
     name: str = "copilot"
     config: CopilotProviderConfig | None = None
 
-    def provider_config(self) -> LiteLLMProviderConfig:
+    def provider_config(self) -> ProviderEndpointConfig:
         return copilot_provider_config(self.config)
 
     def turn_provider(self) -> TurnProvider:
@@ -24,9 +24,9 @@ class CopilotModelProvider:
                 import os
 
                 token = os.environ.get(self.config.auth.token_env_var)
-        adapted_config = LiteLLMProviderConfig(
+        adapted_config = ProviderEndpointConfig(
             api_key=token,
             base_url=None if self.config is None else self.config.base_url,
             timeout_seconds=None if self.config is None else self.config.timeout_seconds,
         )
-        return LiteLLMBackendProvider(name=self.name, config=adapted_config)
+        return OpenAIChatCompletionsProvider(name=self.name, config=adapted_config)

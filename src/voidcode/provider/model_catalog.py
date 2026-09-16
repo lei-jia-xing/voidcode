@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from .config import LiteLLMProviderConfig
+from .config import ProviderEndpointConfig
 from .reasoning_effort import CANONICAL_EFFORTS
 
 type ToolFeedbackMode = Literal["standard", "synthetic_user_message"]
@@ -270,7 +270,7 @@ class _GoogleDiscoveryPayload(_DiscoveryPayloadModel):
 
 def discover_available_models(
     provider_name: str,
-    config: LiteLLMProviderConfig | None,
+    config: ProviderEndpointConfig | None,
     *,
     fetcher: ModelCatalogFetcher | None = None,
 ) -> ModelDiscoveryResult:
@@ -338,13 +338,13 @@ def _tool_feedback_mode(value: object) -> ToolFeedbackMode | None:
     return None
 
 
-def _timeout_for_discovery(config: LiteLLMProviderConfig | None) -> float:
+def _timeout_for_discovery(config: ProviderEndpointConfig | None) -> float:
     if config is None or config.timeout_seconds is None:
         return 10.0
     return max(1.0, float(config.timeout_seconds))
 
 
-def _headers_for_discovery(config: LiteLLMProviderConfig | None) -> dict[str, str]:
+def _headers_for_discovery(config: ProviderEndpointConfig | None) -> dict[str, str]:
     if config is None or config.api_key is None or config.auth_scheme == "none":
         return {}
     if config.auth_scheme == "token":
@@ -355,7 +355,7 @@ def _headers_for_discovery(config: LiteLLMProviderConfig | None) -> dict[str, st
     return {header_name: f"Bearer {config.api_key}"}
 
 
-def _build_discovery_plan(*, provider_name: str, config: LiteLLMProviderConfig | None) -> ModelDiscoveryPlan:
+def _build_discovery_plan(*, provider_name: str, config: ProviderEndpointConfig | None) -> ModelDiscoveryPlan:
     if config is not None and config.discovery_base_url is not None:
         candidate = config.discovery_base_url.strip()
         if not candidate:
@@ -387,7 +387,7 @@ def _build_discovery_plan(*, provider_name: str, config: LiteLLMProviderConfig |
 def _discovery_plan_from_base_url(
     *,
     provider_name: str,
-    config: LiteLLMProviderConfig | None,
+    config: ProviderEndpointConfig | None,
     base_url: str,
     discovery_mode: Literal["configured_endpoint", "configured_base_url"],
 ) -> ModelDiscoveryPlan:

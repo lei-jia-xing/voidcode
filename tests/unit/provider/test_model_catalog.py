@@ -8,7 +8,7 @@ from urllib.request import Request
 import pytest
 
 from voidcode.provider import model_catalog
-from voidcode.provider.config import LiteLLMProviderConfig
+from voidcode.provider.config import ProviderEndpointConfig
 from voidcode.provider.model_catalog import (
     DiscoveryRequest,
     ModelDiscoveryFetchResult,
@@ -18,7 +18,7 @@ from voidcode.provider.model_catalog import (
 
 
 def test_discover_available_models_combines_alias_discovery_and_targets() -> None:
-    config = LiteLLMProviderConfig(
+    config = ProviderEndpointConfig(
         discovery_base_url="http://127.0.0.1:4000",
         model_map={
             "alias-a": "provider/model-a",
@@ -27,7 +27,7 @@ def test_discover_available_models_combines_alias_discovery_and_targets() -> Non
     )
 
     models = discover_available_models(
-        "litellm",
+        "endpoint",
         config,
         fetcher=lambda _request: ("provider/model-a", "provider/model-c"),
     )
@@ -50,7 +50,7 @@ def test_discover_available_models_for_openai_uses_endpoint_fetcher() -> None:
         captured.append(request)
         return ("gpt-4o",)
 
-    config = LiteLLMProviderConfig(
+    config = ProviderEndpointConfig(
         api_key="sk-test",
         discovery_base_url="https://api.openai.com",
     )
@@ -71,7 +71,7 @@ def test_discover_available_models_includes_known_model_budget_metadata(
     monkeypatch.setattr(model_catalog, "_static_catalog_metadata", lambda *_: None)
     result = discover_available_models(
         "openai",
-        LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
+        ProviderEndpointConfig(discovery_base_url="https://api.openai.com"),
         fetcher=lambda _request: ModelDiscoveryFetchResult(
             models=("gpt-5", "unknown-model"),
             model_metadata={"gpt-5": ProviderModelMetadata(context_window=400_000)},
@@ -92,7 +92,7 @@ def test_discover_available_models_prefers_discovery_metadata_over_catalog(
     )
     result = discover_available_models(
         "openai",
-        LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
+        ProviderEndpointConfig(discovery_base_url="https://api.openai.com"),
         fetcher=lambda _request: ModelDiscoveryFetchResult(
             models=("gpt-5",),
             model_metadata={"gpt-5": ProviderModelMetadata(context_window=999)},
@@ -105,7 +105,7 @@ def test_discover_available_models_prefers_discovery_metadata_over_catalog(
 def test_discover_available_models_preserves_zero_priced_remote_costs() -> None:
     result = discover_available_models(
         "openai",
-        LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
+        ProviderEndpointConfig(discovery_base_url="https://api.openai.com"),
         fetcher=lambda _request: ModelDiscoveryFetchResult(
             models=("gpt-4o",),
             model_metadata={
@@ -132,7 +132,7 @@ def test_discover_available_models_fills_gaps_from_static_catalog(
     )
     result = discover_available_models(
         "openai",
-        LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
+        ProviderEndpointConfig(discovery_base_url="https://api.openai.com"),
         fetcher=lambda _request: ModelDiscoveryFetchResult(
             models=("gpt-5",),
             model_metadata={},
@@ -158,7 +158,7 @@ def test_static_catalog_metadata_lowercases_and_looks_up(
 def test_discover_available_models_recomputes_input_limit_for_remote_context_override() -> None:
     result = discover_available_models(
         "openai",
-        LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
+        ProviderEndpointConfig(discovery_base_url="https://api.openai.com"),
         fetcher=lambda _request: ModelDiscoveryFetchResult(
             models=("gpt-4o",),
             model_metadata={
@@ -179,7 +179,7 @@ def test_discover_available_models_recomputes_input_limit_for_remote_context_ove
 def test_discover_available_models_recomputes_input_limit_for_remote_output_override() -> None:
     result = discover_available_models(
         "openai",
-        LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
+        ProviderEndpointConfig(discovery_base_url="https://api.openai.com"),
         fetcher=lambda _request: ModelDiscoveryFetchResult(
             models=("gpt-4o",),
             model_metadata={
@@ -232,7 +232,7 @@ def test_google_discovery_preserves_preview_model_status(
 
     result = discover_available_models(
         "google",
-        LiteLLMProviderConfig(discovery_base_url="https://generativelanguage.googleapis.com"),
+        ProviderEndpointConfig(discovery_base_url="https://generativelanguage.googleapis.com"),
     )
 
     metadata = result.model_metadata["gemini-3-pro-preview"]
@@ -291,7 +291,7 @@ def test_discover_available_models_for_anthropic_uses_provider_specific_headers(
         captured.append(request)
         return ("claude-3-7-sonnet-latest",)
 
-    config = LiteLLMProviderConfig(
+    config = ProviderEndpointConfig(
         api_key="sk-ant-test",
         discovery_base_url="https://api.anthropic.com",
     )
@@ -315,7 +315,7 @@ def test_discover_available_models_for_google_uses_google_base_url() -> None:
         captured.append(request)
         return ("gemini-2.0-flash",)
 
-    config = LiteLLMProviderConfig(
+    config = ProviderEndpointConfig(
         api_key="AIza-test",
         discovery_base_url="https://generativelanguage.googleapis.com",
     )
@@ -360,7 +360,7 @@ def test_discover_available_models_for_google_with_api_key_header_does_not_appen
 
     result = discover_available_models(
         "google",
-        LiteLLMProviderConfig(
+        ProviderEndpointConfig(
             base_url="https://generativelanguage.googleapis.com",
             api_key="AIza-test",
             auth_header="x-goog-api-key",
@@ -403,7 +403,7 @@ def test_discover_available_models_for_google_with_oauth_header_does_not_append_
 
     result = discover_available_models(
         "google",
-        LiteLLMProviderConfig(
+        ProviderEndpointConfig(
             base_url="https://generativelanguage.googleapis.com",
             api_key="oauth-token",
             auth_header="Authorization",
@@ -416,7 +416,7 @@ def test_discover_available_models_for_google_with_oauth_header_does_not_append_
 
 
 def test_discover_available_models_skips_when_no_discovery_base_url_or_base_url() -> None:
-    result = discover_available_models("openai", LiteLLMProviderConfig(api_key="sk-test"))
+    result = discover_available_models("openai", ProviderEndpointConfig(api_key="sk-test"))
 
     assert result.source == "fallback"
     assert result.last_refresh_status == "skipped"
@@ -427,7 +427,7 @@ def test_discover_available_models_skips_when_no_discovery_base_url_or_base_url(
 def test_fireworks_discovery_defaults_to_model_map_only() -> None:
     result = discover_available_models(
         "fireworks",
-        LiteLLMProviderConfig(
+        ProviderEndpointConfig(
             api_key="fireworks-key",
             base_url="https://api.fireworks.ai/inference/v1",
             discovery_base_url="",
@@ -446,7 +446,7 @@ def test_discover_available_models_marks_fallback_on_fetch_failure() -> None:
 
     result = discover_available_models(
         "openai",
-        LiteLLMProviderConfig(
+        ProviderEndpointConfig(
             model_map={"alias": "provider/model"},
             discovery_base_url="https://api.openai.com",
         ),
@@ -486,7 +486,7 @@ def test_discover_available_models_falls_back_on_invalid_openai_discovery_payloa
 
     result = discover_available_models(
         "openai",
-        LiteLLMProviderConfig(
+        ProviderEndpointConfig(
             discovery_base_url="https://api.openai.com",
             model_map={"alias": "gpt-4o"},
         ),
@@ -528,7 +528,7 @@ def test_discover_available_models_custom_provider_builds_url_from_plain_base_ur
 
     result = discover_available_models(
         "llama-local",
-        LiteLLMProviderConfig(base_url="https://gateway.example.com", api_key="k1"),
+        ProviderEndpointConfig(base_url="https://gateway.example.com", api_key="k1"),
     )
 
     assert result.models == ("provider/model-a",)
@@ -567,7 +567,7 @@ def test_discover_available_models_custom_provider_keeps_existing_v1_models_path
 
     result = discover_available_models(
         "llama-local",
-        LiteLLMProviderConfig(base_url="https://gateway.example.com/v1/models", api_key="k2"),
+        ProviderEndpointConfig(base_url="https://gateway.example.com/v1/models", api_key="k2"),
     )
 
     assert result.models == ("provider/model-b",)
@@ -613,7 +613,7 @@ def test_discover_available_models_zai_providers_use_v4_models_path(
 
     result = discover_available_models(
         provider_name,
-        LiteLLMProviderConfig(base_url=base_url, api_key="provider-key"),
+        ProviderEndpointConfig(base_url=base_url, api_key="provider-key"),
     )
 
     assert result.models == ("glm-4-flash",)
@@ -650,7 +650,7 @@ def test_discover_available_models_respects_discovery_base_url_when_set(
 
     result = discover_available_models(
         "opencode-go",
-        LiteLLMProviderConfig(
+        ProviderEndpointConfig(
             base_url="https://opencode.ai/zen/go",
             discovery_base_url="https://opencode.ai/zen/v1",
             api_key="opencode-go-key",
@@ -663,7 +663,7 @@ def test_discover_available_models_respects_discovery_base_url_when_set(
 
 
 def test_discover_available_models_skips_remote_when_discovery_base_url_is_empty() -> None:
-    config = LiteLLMProviderConfig(
+    config = ProviderEndpointConfig(
         base_url="https://api.minimax.io",
         discovery_base_url="",
         model_map={"alias": "MiniMax-M2.7"},
@@ -708,7 +708,7 @@ def test_discover_available_models_custom_provider_uses_token_auth_header_withou
 
     result = discover_available_models(
         "llama-local",
-        LiteLLMProviderConfig(
+        ProviderEndpointConfig(
             base_url="https://gateway.example.com/v1",
             api_key="token-raw",
             auth_scheme="token",

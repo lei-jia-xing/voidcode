@@ -129,6 +129,7 @@ def fallback_graph_for_provider_error(
     next_target = provider_chain.target_at(next_attempt)
     if error.kind not in {
         "missing_auth",
+        "not_configured",
         "rate_limit",
         "invalid_model",
         "transient_failure",

@@ -21,6 +21,7 @@ type ProviderDoneReason = Literal["stop", "tool_calls", "length", "content_filte
 type ProviderErrorKind = Literal[
     "missing_auth",
     "invalid_model",
+    "not_configured",
     "rate_limit",
     "transient_failure",
     "context_limit",

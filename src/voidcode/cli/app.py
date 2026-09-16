@@ -86,6 +86,7 @@ from ..runtime.events import (
     redact_reasoning_payload,
 )
 from ..runtime.permission import PermissionDecision, PermissionResolution
+from ..runtime.provider_inspection import ProviderEndpointFacts, RuntimeProviderEndpointInspector
 from ..runtime.question import QuestionResponse
 from ..runtime.serialization import serialize_revert_marker, serialize_session_debug_snapshot
 from ..runtime.service import VoidCodeRuntime
@@ -2351,7 +2352,12 @@ def _provider_readiness_payload(readiness: ProviderReadinessResult) -> dict[str,
     }
 
 
-def _provider_inspect_payload(result: ProviderInspectResult, *, workspace: Path) -> dict[str, object]:
+def _provider_inspect_payload(
+    result: ProviderInspectResult,
+    *,
+    workspace: Path,
+    endpoint: ProviderEndpointFacts,
+) -> dict[str, object]:
     return {
         "workspace": str(workspace),
         "provider": {
@@ -2360,6 +2366,10 @@ def _provider_inspect_payload(result: ProviderInspectResult, *, workspace: Path)
             "configured": result.summary.configured,
             "current": result.summary.current,
         },
+        # The endpoint this provider resolves to on the wire, and why: a config
+        # block that named a base URL, the provider's own vendor default, or the
+        # generic endpoint provider's local gateway.
+        "endpoint": endpoint.as_payload(),
         "models": {
             "provider": result.models.provider,
             "configured": result.models.configured,
@@ -2390,6 +2400,12 @@ def _provider_inspect_payload(result: ProviderInspectResult, *, workspace: Path)
     }
 
 
+def _provider_endpoint_facts_for_cli(workspace: Path, provider_name: str) -> ProviderEndpointFacts:
+    """Resolve the inspected provider's endpoint from the runtime config the CLI would load."""
+    config = _load_runtime_config_for_cli(workspace)
+    return RuntimeProviderEndpointInspector(providers=config.providers).facts(provider_name)
+
+
 def _handle_provider_inspect_command(args: ProviderArgs) -> int:
     workspace = args.workspace
     provider = args.provider
@@ -2400,7 +2416,8 @@ def _handle_provider_inspect_command(args: ProviderArgs) -> int:
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
 
-    print(json.dumps(_provider_inspect_payload(result, workspace=workspace), sort_keys=True))
+    endpoint = _provider_endpoint_facts_for_cli(workspace, provider)
+    print(json.dumps(_provider_inspect_payload(result, workspace=workspace, endpoint=endpoint), sort_keys=True))
     readiness = result.readiness
     if readiness is not None and not readiness.ok:
         return EXIT_PROVIDER_ERROR

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from voidcode.provider.config import (
-    LiteLLMProviderConfig,
     ProviderConfigs,
+    ProviderEndpointConfig,
     parse_provider_configs_payload,
     provider_configs_from_env,
     serialize_provider_configs,
@@ -15,7 +15,7 @@ from voidcode.provider.resolution import resolve_provider_model
 def test_registry_resolves_openrouter_with_slash_model_id() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            openrouter=LiteLLMProviderConfig(api_key="router-key"),
+            openrouter=ProviderEndpointConfig(api_key="router-key"),
         )
     )
 
@@ -50,21 +50,21 @@ def test_openrouter_config_reads_env_and_round_trips_without_secret() -> None:
         env={"OPENROUTER_API_KEY": "router-secret"},
     )
 
-    assert parsed == ProviderConfigs(openrouter=LiteLLMProviderConfig(api_key="router-secret"))
+    assert parsed == ProviderConfigs(openrouter=ProviderEndpointConfig(api_key="router-secret"))
     assert serialize_provider_configs(parsed) == {
         "openrouter": {
             "auth_scheme": "bearer",
         }
     }
     assert provider_configs_from_env({"OPENROUTER_API_KEY": "router-secret"}) == ProviderConfigs(
-        openrouter=LiteLLMProviderConfig(api_key="router-secret")
+        openrouter=ProviderEndpointConfig(api_key="router-secret")
     )
 
 
-def test_openrouter_auth_uses_litellm_bearer_material() -> None:
+def test_openrouter_auth_uses_endpoint_bearer_material() -> None:
     from voidcode.provider.auth import ProviderAuthAuthorizeRequest, ProviderAuthResolver
 
-    resolver = ProviderAuthResolver(providers=ProviderConfigs(openrouter=LiteLLMProviderConfig(api_key="router-secret")))
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(openrouter=ProviderEndpointConfig(api_key="router-secret")))
 
     methods = resolver.methods("openrouter")
     result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="openrouter"))

@@ -2950,7 +2950,7 @@ def _first_configured_provider_name(providers: RuntimeProvidersConfig | None) ->
         ("anthropic", providers.anthropic),
         ("google", providers.google),
         ("copilot", providers.copilot),
-        ("litellm", providers.litellm),
+        ("endpoint", providers.endpoint),
         ("opencode", providers.opencode),
         ("openrouter", providers.openrouter),
         ("deepseek", providers.deepseek),
@@ -2985,8 +2985,8 @@ def _provider_api_key_present(providers: RuntimeProvidersConfig | None, provider
         return bool(providers.google and providers.google.auth and providers.google.auth.api_key)
     if provider == "copilot":
         return bool(providers.copilot and providers.copilot.auth and providers.copilot.auth.token)
-    if provider == "litellm":
-        return bool(providers.litellm and providers.litellm.api_key)
+    if provider == "endpoint":
+        return bool(providers.endpoint and providers.endpoint.api_key)
     if provider == "opencode":
         return bool(providers.opencode and providers.opencode.api_key)
     if provider == "openrouter":
@@ -3027,7 +3027,7 @@ def _set_provider_api_key_payload(*, raw_providers: object, provider: str, api_k
         nested_payload["api_key"] = api_key
         providers_payload[provider] = nested_payload
         return providers_payload
-    if provider in {"openai", "anthropic", "litellm", "opencode", "openrouter"}:
+    if provider in {"openai", "anthropic", "endpoint", "opencode", "openrouter"}:
         nested = providers_payload.get(provider)
         nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
         nested_payload["api_key"] = api_key

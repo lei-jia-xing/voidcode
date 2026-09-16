@@ -9,6 +9,7 @@ from voidcode.provider.errors import (
     parse_provider_stream_error,
     provider_execution_error_from_api_payload,
     provider_execution_error_from_stream_payload,
+    redact_provider_error_message,
 )
 
 
@@ -290,3 +291,63 @@ def test_provider_error_parses_http_date_retry_after(monkeypatch) -> None:
     )
 
     assert exc.retry_after == 2.0
+
+
+def test_provider_error_message_strips_class_path_wrappers() -> None:
+    assert redact_provider_error_message("openai.AuthenticationError: Incorrect API key provided") == "Incorrect API key provided"
+    assert redact_provider_error_message("openai._exceptions.AuthenticationError: boom") == "boom"
+    assert redact_provider_error_message("anthropic.BadRequestError: prompt is too long") == "prompt is too long"
+
+
+def test_provider_error_message_leaves_unrelated_error_code_text_intact() -> None:
+    reported = "gateway reported Error code 500 after 3 attempts"
+    no_separator = "Error code 500 without a status separator"
+
+    assert redact_provider_error_message(reported) == reported
+    assert redact_provider_error_message(no_separator) == no_separator
+
+
+def test_parse_provider_api_error_prefers_provider_message_over_sdk_wrapper() -> None:
+    blob = 'Error code: 401 - {"error": {"message": "Incorrect API key provided", "type": "invalid_request_error"}}'
+    parsed = parse_provider_api_error(
+        {
+            "error": {"message": "Incorrect API key provided", "type": "invalid_request_error"},
+            "status_code": 401,
+            "message": blob,
+        }
+    )
+
+    assert parsed.kind == "missing_auth"
+    assert parsed.message == "Incorrect API key provided"
+
+
+def test_parse_provider_api_error_unwraps_sdk_body_without_nested_payload_message() -> None:
+    parsed = parse_provider_api_error(
+        {
+            "status_code": 400,
+            "message": 'Error code: 400 - {"error": {"message": "prompt is too long: 250000 tokens > 200000 maximum"}}',
+        }
+    )
+
+    assert parsed.kind == "context_limit"
+    assert parsed.message == "prompt is too long: 250000 tokens > 200000 maximum"
+
+
+def test_parse_provider_api_error_unwraps_sdk_plain_text_body() -> None:
+    parsed = parse_provider_api_error({"status_code": 529, "message": "Error code: 529 - upstream overloaded"})
+
+    assert parsed.message == "upstream overloaded"
+    assert parsed.kind == "transient_failure"
+
+
+def test_parse_provider_api_error_redacts_secret_inside_sdk_wrapper_body() -> None:
+    secret = "sk-live-abcdef123456"
+    parsed = parse_provider_api_error(
+        {
+            "status_code": 401,
+            "message": f'Error code: 401 - {{"error": {{"message": "Incorrect API key provided: {secret}"}}}}',
+        }
+    )
+
+    assert parsed.message == "Incorrect API key provided: <redacted>"
+    assert secret not in parsed.message

@@ -5,12 +5,15 @@ import json
 import os
 import re
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
 from threading import Event, Thread
 from typing import Any, Protocol, cast
 
-import httpx
+import httpx2
+from anthropic import Anthropic
+from anthropic import APIError as AnthropicAPIError
+from anthropic import Omit as AnthropicAPIKeyOmit
 
 from ..tools.contracts import ToolCall
 from ..tools.output import (
@@ -42,6 +45,11 @@ _DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 _DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_TIMEOUT_SECONDS = 300.0
 _DEFAULT_MAX_TOKENS = 8192
+# The SDK refuses to construct a client without a credential, and an explicit
+# credential also stops it from reading ambient ones (``ANTHROPIC_API_KEY``,
+# profile, workload identity). The placeholder only satisfies that check:
+# ``_default_headers`` decides which credential headers are sent.
+_PLACEHOLDER_API_KEY = "voidcode-no-api-key"
 _THINKING_BUDGETS = {
     "minimal": 1024,
     "low": 2048,
@@ -75,8 +83,7 @@ class AnthropicMessagesTransport:
         beta_headers: tuple[str, ...] = (),
         auth_header: str | None = None,
         bearer_token: str | None = None,
-        http_transport: httpx.BaseTransport | None = None,
-        client: httpx.Client | None = None,
+        http_client: httpx2.Client | None = None,
     ) -> None:
         self.base_url = _normalize_base_url(base_url)
         self.api_key = api_key
@@ -84,103 +91,84 @@ class AnthropicMessagesTransport:
         self.beta_headers = tuple(dict.fromkeys(value.strip() for value in beta_headers if value.strip()))
         self.auth_header = auth_header
         self.bearer_token = bearer_token
-        self.http_transport = http_transport
-        self.client = client
+        self.http_client = http_client
+        self._sdk_client: Anthropic | None = None
 
-    def request(self, payload: dict[str, object], *, timeout_seconds: float) -> object:
-        if bool(payload.get("stream")):
-            return self._iter_stream(payload, timeout_seconds=timeout_seconds)
-        return _response_json_or_error(self._post(payload, timeout_seconds=timeout_seconds))
-
-    def _headers(self, *, streaming: bool) -> dict[str, str]:
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream" if streaming else "application/json",
-            "anthropic-version": self.version,
-        }
+    def _default_headers(self) -> dict[str, str]:
+        # ``Accept`` is deliberately left to the SDK (``application/json`` for
+        # streaming too): the official client never sends
+        # ``text/event-stream`` and the API selects SSE from the ``stream``
+        # body field, so negotiation is body-driven.
+        headers = {"anthropic-version": self.version}
         if self.beta_headers:
             headers["anthropic-beta"] = ",".join(self.beta_headers)
-        if self.auth_header:
-            token = self.bearer_token or self.api_key
-            if token:
-                headers[self.auth_header] = f"Bearer {token}" if self.auth_header.lower() == "authorization" else token
-        elif self.api_key:
-            headers["x-api-key"] = self.api_key
+        # ``x-api-key`` carries the SDK's API-key header. It is dropped whenever
+        # that header is not the credential this transport is configuring: for a
+        # custom scheme because the configured header stays authoritative, and for
+        # a keyless transport because the constructor placeholder must never reach
+        # the wire. The SDK types this mapping as str -> str but honours its own
+        # ``Omit`` sentinel, which both removes the header and satisfies its auth
+        # check.
+        omit_api_key = not self.api_key
+        token = self.bearer_token or self.api_key
+        if self.auth_header and token:
+            headers[self.auth_header] = f"Bearer {token}" if self.auth_header.lower() == "authorization" else token
+            # A ``x-api-key`` scheme is the SDK's own header, so the value written
+            # above must survive instead of being dropped.
+            omit_api_key = self.auth_header.lower() != "x-api-key"
+        if omit_api_key:
+            headers["x-api-key"] = cast(str, AnthropicAPIKeyOmit())
         return headers
 
-    def _post(self, payload: dict[str, object], *, timeout_seconds: float) -> httpx.Response:
-        if self.client is not None:
-            return self.client.post(f"{self.base_url}/messages", headers=self._headers(streaming=False), json=payload, timeout=timeout_seconds)
-        with httpx.Client(transport=self.http_transport, timeout=timeout_seconds) as client:
-            return client.post(f"{self.base_url}/messages", headers=self._headers(streaming=False), json=payload)
+    def _sdk(self) -> Anthropic:
+        if self._sdk_client is None:
+            # ``max_retries=0`` keeps retry/fallback owned by the runtime.
+            self._sdk_client = Anthropic(
+                api_key=self.api_key or _PLACEHOLDER_API_KEY,
+                base_url=self.base_url,
+                default_headers=self._default_headers(),
+                http_client=self.http_client,
+                max_retries=0,
+            )
+        return self._sdk_client
 
-    def _iter_stream(self, payload: dict[str, object], *, timeout_seconds: float) -> Iterator[dict[str, object]]:
-        if self.client is not None:
-            with self.client.stream(
-                "POST", f"{self.base_url}/messages", headers=self._headers(streaming=True), json=payload, timeout=timeout_seconds
-            ) as response:
-                yield from _iter_sse_response(response)
-            return
-        with httpx.Client(transport=self.http_transport, timeout=timeout_seconds) as client:
-            with client.stream("POST", f"{self.base_url}/messages", headers=self._headers(streaming=True), json=payload) as response:
-                yield from _iter_sse_response(response)
+    @staticmethod
+    def _api_error_payload(exc: AnthropicAPIError) -> dict[str, object]:
+        payload: dict[str, object] = {}
+        body = getattr(exc, "body", None)
+        if isinstance(body, Mapping):
+            payload.update(cast(Mapping[str, object], body))
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if isinstance(status_code, int):
+            payload["status_code"] = status_code
+        headers = getattr(response, "headers", None)
+        if isinstance(headers, Mapping):
+            payload.setdefault("headers", dict(cast(Mapping[str, object], headers)))
+        payload.setdefault("message", str(exc))
+        return payload
+
+    def request(self, payload: dict[str, object], *, timeout_seconds: float) -> object:
+        try:
+            result = self._sdk().messages.create(**cast(Any, payload), timeout=timeout_seconds)
+        except AnthropicAPIError as exc:
+            raise AnthropicTransportError(self._api_error_payload(exc)) from exc
+        if bool(payload.get("stream")):
+            return self._iter_sdk_stream(result)
+        return result
+
+    def _iter_sdk_stream(self, stream: object) -> Iterator[object]:
+        try:
+            yield from cast(Iterator[object], stream)
+        except AnthropicAPIError as exc:
+            raise AnthropicTransportError(self._api_error_payload(exc)) from exc
 
 
 def _normalize_base_url(base_url: str | None) -> str:
     value = (base_url or _DEFAULT_ANTHROPIC_BASE_URL).strip().rstrip("/") or _DEFAULT_ANTHROPIC_BASE_URL
-    # Accept either a host or an already-versioned host, but materialize one
-    # and only one /v1 segment before appending /messages.
-    return value if re.search(r"/v1$", value, flags=re.IGNORECASE) else f"{value}/v1"
-
-
-def _response_error_payload(response: httpx.Response) -> dict[str, object]:
-    # Streaming responses have not been buffered; read before accessing
-    # ``response.json()`` so HTTP errors are normalized rather than leaking
-    # httpx.ResponseNotRead.
-    try:
-        response.read()
-    except Exception:
-        pass
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = {"message": response.text}
-    result = dict(cast(dict[str, object], payload)) if isinstance(payload, dict) else {"message": str(payload)}
-    result.setdefault("status_code", response.status_code)
-    result.setdefault("headers", dict(response.headers))
-    return result
-
-
-def _response_json_or_error(response: httpx.Response) -> dict[str, object]:
-    if response.status_code >= 400:
-        raise AnthropicTransportError(_response_error_payload(response))
-    try:
-        payload = response.json()
-    except ValueError:
-        raise AnthropicTransportError({"message": "provider response was not valid JSON", "status_code": response.status_code}) from None
-    if not isinstance(payload, dict):
-        raise AnthropicTransportError({"message": "provider response was not a JSON object", "status_code": response.status_code})
-    return cast(dict[str, object], payload)
-
-
-def _iter_sse_response(response: httpx.Response) -> Iterator[dict[str, object]]:
-    if response.status_code >= 400:
-        raise AnthropicTransportError(_response_error_payload(response))
-    for line in response.iter_lines():
-        if isinstance(line, bytes):
-            line = line.decode("utf-8", errors="replace")
-        if not line.startswith("data:"):
-            continue
-        data = line[5:].strip()
-        if not data:
-            continue
-        try:
-            payload = json.loads(data)
-        except json.JSONDecodeError as exc:
-            raise AnthropicTransportError({"message": "provider stream returned invalid JSON", "details": {"line": data[:256]}}) from exc
-        if not isinstance(payload, dict):
-            raise AnthropicTransportError({"message": "provider stream event was not a JSON object"})
-        yield cast(dict[str, object], payload)
+    # The official SDK appends its own ``/v1`` path segment, so a configured
+    # host must not carry one or the request path doubles the version.
+    return re.sub(r"/v1$", "", value, flags=re.IGNORECASE) or _DEFAULT_ANTHROPIC_BASE_URL
 
 
 def _iter_stream_with_timeout(stream: Iterator[object], *, timeout_seconds: float, provider_name: str, model_name: str) -> Iterator[object]:
@@ -372,11 +360,53 @@ class _ToolAccumulator:
         return "".join(self.fragments)
 
 
+@dataclass(slots=True)
+class _OwnedTransport:
+    """One-slot holder letting a frozen provider own a single transport."""
+
+    value: AnthropicTransport | None = None
+
+
+def _empty_extra_request_headers() -> dict[str, str]:
+    return {}
+
+
+# A declared request header may name the conversation with ``{session_id}``. The
+# transport -- and therefore its SDK client -- is cached across turns, so a value
+# resolved at construction time would freeze the first conversation's id; it is
+# resolved per request instead.
+_SESSION_ID_PLACEHOLDER = "{session_id}"
+
+
+def _resolve_extra_request_headers(declared: Mapping[str, str], session_id: str | None) -> dict[str, str]:
+    """Resolve declared request headers for one turn, dropping ones with no value.
+
+    A declaration whose value names ``{session_id}`` is omitted when the request
+    carries no session id: an empty header is not a routable conversation.
+    """
+    resolved: dict[str, str] = {}
+    for name, value in declared.items():
+        if _SESSION_ID_PLACEHOLDER in value:
+            if not session_id:
+                continue
+            value = value.replace(_SESSION_ID_PLACEHOLDER, session_id)
+        resolved[name] = value
+    return resolved
+
+
 @dataclass(frozen=True, slots=True)
 class AnthropicMessagesProvider:
     name: str = "anthropic"
     config: AnthropicProviderConfig | None = None
     transport: AnthropicTransport | None = None
+    # Headers this gateway requires on every request it serves. They reach the wire
+    # through the SDK's ``extra_headers`` argument, which the transport passes to
+    # ``messages.create`` from the payload, so the JSON body never carries them.
+    extra_request_headers: Mapping[str, str] = field(default_factory=_empty_extra_request_headers)
+    # One transport -- and therefore one SDK client and HTTP connection pool --
+    # per provider, reused across every turn. Building it per request leaked a
+    # pool per turn. Only the first-use race can drop one losing transport.
+    _owned_transport: _OwnedTransport = field(default_factory=_OwnedTransport, compare=False, repr=False)
 
     def provider_config(self) -> AnthropicProviderConfig | None:
         return self.config
@@ -384,13 +414,16 @@ class AnthropicMessagesProvider:
     def _transport(self) -> AnthropicTransport:
         if self.transport is not None:
             return self.transport
-        config = self.config
-        return AnthropicMessagesTransport(
-            base_url=config.base_url if config and config.base_url else _DEFAULT_ANTHROPIC_BASE_URL,
-            api_key=(config.api_key if config else None) or os.environ.get("ANTHROPIC_API_KEY"),
-            version=config.version if config and config.version else _DEFAULT_ANTHROPIC_VERSION,
-            beta_headers=config.beta_headers if config else (),
-        )
+        owned = self._owned_transport
+        if owned.value is None:
+            config = self.config
+            owned.value = AnthropicMessagesTransport(
+                base_url=config.base_url if config and config.base_url else _DEFAULT_ANTHROPIC_BASE_URL,
+                api_key=(config.api_key if config else None) or os.environ.get("ANTHROPIC_API_KEY"),
+                version=config.version if config and config.version else _DEFAULT_ANTHROPIC_VERSION,
+                beta_headers=config.beta_headers if config else (),
+            )
+        return owned.value
 
     @staticmethod
     def _tool_maps(request: ProviderTurnRequest) -> tuple[dict[str, str], dict[str, str]]:
@@ -543,6 +576,11 @@ class AnthropicMessagesProvider:
                 payload["tools"] = wire.tools
             elif system:
                 payload["system"] = [{"type": "text", "text": system, "cache_control": cache_control}]
+        extra_headers = _resolve_extra_request_headers(self.extra_request_headers, request.session_id)
+        if extra_headers:
+            # A request option, not a body field: the SDK merges it into the HTTP
+            # request and never serializes it into the JSON payload.
+            payload["extra_headers"] = extra_headers
         return payload
 
     @staticmethod

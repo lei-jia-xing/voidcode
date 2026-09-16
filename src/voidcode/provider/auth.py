@@ -8,9 +8,9 @@ from uuid import uuid4
 from .config import (
     CopilotProviderConfig,
     GoogleProviderConfig,
-    LiteLLMProviderConfig,
     OpenAICompatibleProviderConfig,
     ProviderConfigs,
+    ProviderEndpointConfig,
 )
 
 type ProviderAuthProvider = str
@@ -105,7 +105,7 @@ _COPILOT_METHODS: tuple[ProviderAuthMethod, ...] = (
     ProviderAuthMethod(id="token", label="Token"),
     ProviderAuthMethod(id="oauth", label="OAuth", requires_callback=True),
 )
-_LITELLM_METHODS: tuple[ProviderAuthMethod, ...] = (
+_ENDPOINT_AUTH_METHODS: tuple[ProviderAuthMethod, ...] = (
     ProviderAuthMethod(id="api_key", label="API Key"),
     ProviderAuthMethod(id="none", label="No Auth"),
 )
@@ -123,7 +123,7 @@ class ProviderAuthResolver:
         self._env: Mapping[str, str] = {} if env is None else env
         self._pending_callback_states: dict[str, tuple[str, str]] = {}
 
-    def _custom_provider_config(self, provider: str) -> LiteLLMProviderConfig | None:
+    def _custom_provider_config(self, provider: str) -> ProviderEndpointConfig | None:
         return self._providers.custom.get(provider)
 
     def _openai_compatible_provider_config(self, provider: str) -> OpenAICompatibleProviderConfig | None:
@@ -174,7 +174,7 @@ class ProviderAuthResolver:
                 methods=_COPILOT_METHODS,
                 default_method=configured or "token",
             )
-        if provider in {"litellm", "opencode", "openrouter"}:
+        if provider in {"endpoint", "opencode", "openrouter"}:
             configured = getattr(self._providers, provider)
             default_method = "none"
             if configured is not None and configured.auth_scheme == "none":
@@ -183,7 +183,7 @@ class ProviderAuthResolver:
                 default_method = "api_key"
             return ProviderAuthMethodsResponse(
                 provider=provider,
-                methods=_LITELLM_METHODS,
+                methods=_ENDPOINT_AUTH_METHODS,
                 default_method=default_method,
             )
         compatible_config = self._openai_compatible_provider_config(provider)
@@ -205,7 +205,7 @@ class ProviderAuthResolver:
                 default_method = "api_key"
             return ProviderAuthMethodsResponse(
                 provider=provider,
-                methods=_LITELLM_METHODS,
+                methods=_ENDPOINT_AUTH_METHODS,
                 default_method=default_method,
             )
         raise self._error(
@@ -224,8 +224,8 @@ class ProviderAuthResolver:
             return self._authorize_google(request)
         if request.provider == "copilot":
             return self._authorize_copilot(request)
-        if request.provider in {"litellm", "opencode", "openrouter"}:
-            return self._authorize_litellm_compatible(
+        if request.provider in {"endpoint", "opencode", "openrouter"}:
+            return self._authorize_endpoint_compatible(
                 request=request,
                 provider_name=request.provider,
                 provider_config=getattr(self._providers, request.provider),
@@ -238,7 +238,7 @@ class ProviderAuthResolver:
             )
         custom_config = self._custom_provider_config(request.provider)
         if custom_config is not None:
-            return self._authorize_litellm_compatible(
+            return self._authorize_endpoint_compatible(
                 request=request,
                 provider_name=request.provider,
                 provider_config=custom_config,
@@ -250,12 +250,12 @@ class ProviderAuthResolver:
             message=f"provider auth provider '{request.provider}' is not supported",
         )
 
-    def _authorize_litellm_compatible(
+    def _authorize_endpoint_compatible(
         self,
         *,
         request: ProviderAuthAuthorizeRequest,
         provider_name: str,
-        provider_config: LiteLLMProviderConfig | None,
+        provider_config: ProviderEndpointConfig | None,
     ) -> ProviderAuthAuthorizeResult:
         payload = {} if request.payload is None else dict(request.payload)
         method = request.method

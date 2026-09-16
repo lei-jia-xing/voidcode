@@ -15,9 +15,9 @@ from .auth import (
     provider_auth_error_to_execution_kind,
 )
 from .config import (
-    LiteLLMProviderConfig,
     OpenAICompatibleProviderConfig,
     ProviderConfigs,
+    ProviderEndpointConfig,
     ProviderFallbackConfig,
     parse_provider_configs_payload,
     parse_provider_fallback_payload,
@@ -26,6 +26,7 @@ from .config import (
 )
 from .copilot import CopilotModelProvider
 from .deepseek import DeepSeekModelProvider
+from .endpoint import OpenAIEndpointProvider
 from .errors import (
     ProviderContextLimitError,
     ProviderError,
@@ -38,7 +39,6 @@ from .google import GoogleModelProvider
 from .grok import GrokModelProvider
 from .groq import GroqModelProvider
 from .kimi import KimiModelProvider
-from .litellm import LiteLLMModelProvider
 from .minimax import MiniMaxModelProvider
 from .mistral import MistralModelProvider
 from .model_catalog import (
@@ -95,7 +95,7 @@ __all__ = [
     "GroqModelProvider",
     "MistralModelProvider",
     "GrokModelProvider",
-    "LiteLLMModelProvider",
+    "OpenAIEndpointProvider",
     "ModelTurnProvider",
     "ProviderModelCatalog",
     "ProviderModelMetadata",
@@ -130,8 +130,8 @@ __all__ = [
     "ProviderTurnResult",
     "ProviderContextLimitError",
     "ProviderError",
-    "LiteLLMProviderConfig",
     "OpenAICompatibleProviderConfig",
+    "ProviderEndpointConfig",
     "StaticModelProvider",
     "StubTurnProvider",
     "ZAIModelProvider",

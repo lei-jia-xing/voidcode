@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from voidcode.provider.config import LiteLLMProviderConfig, ProviderConfigs
-from voidcode.provider.litellm import LiteLLMModelProvider
+from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
+from voidcode.provider.endpoint import OpenAIEndpointProvider
 from voidcode.provider.models import ResolvedProviderConfig
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import (
@@ -42,15 +42,15 @@ def test_resolve_provider_model_parses_known_provider_reference() -> None:
 
 def test_resolve_provider_model_allows_slashes_inside_model_id() -> None:
     resolved = resolve_provider_model(
-        "litellm/openrouter/openai/gpt-4o",
+        "endpoint/openrouter/openai/gpt-4o",
         registry=ModelProviderRegistry.with_defaults(),
     )
 
-    assert resolved.selection.provider == "litellm"
+    assert resolved.selection.provider == "endpoint"
     assert resolved.selection.model == "openrouter/openai/gpt-4o"
-    assert resolved.selection.raw_model == "litellm/openrouter/openai/gpt-4o"
+    assert resolved.selection.raw_model == "endpoint/openrouter/openai/gpt-4o"
     assert resolved.provider is not None
-    assert resolved.provider.name == "litellm"
+    assert resolved.provider.name == "endpoint"
     assert resolved.resolution.source == "builtin"
     assert resolved.resolution.configured is True
 
@@ -65,14 +65,14 @@ def test_resolve_provider_model_creates_generic_provider_for_unknown_name() -> N
     assert resolved.selection.model == "demo-model"
     assert resolved.provider is not None
     assert resolved.provider.name == "custom"
-    assert isinstance(resolved.provider, LiteLLMModelProvider)
-    assert resolved.resolution.source == "default_litellm"
+    assert isinstance(resolved.provider, OpenAIEndpointProvider)
+    assert resolved.resolution.source == "default_endpoint"
     assert resolved.resolution.configured is False
 
 
 def test_resolve_provider_model_marks_custom_configured_provider_resolution() -> None:
     registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(base_url="http://localhost:11434/v1")})
+        provider_configs=ProviderConfigs(custom={"llama-local": ProviderEndpointConfig(base_url="http://localhost:11434/v1")})
     )
 
     resolved = resolve_provider_model("llama-local/coder", registry=registry)

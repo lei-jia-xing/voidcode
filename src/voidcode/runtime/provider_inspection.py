@@ -2,20 +2,58 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 from ..provider.auth import (
     ProviderAuthAuthorizeRequest,
     ProviderAuthResolutionError,
     ProviderAuthResolver,
 )
-from ..provider.config import ProviderConfigs
+from ..provider.config import ProviderConfigs, ProviderEndpointConfig
 from ..provider.errors import guidance_for_provider_error_kind
+from ..provider.openai_native import normalize_openai_base_url
+from ..provider.provider_config import DEFAULT_ENDPOINT_BASE_URL
+from ..provider.registry import ModelProviderRegistry
 from .contracts import (
     ProviderModelsResult,
     ProviderReadinessResult,
     ProviderSummary,
     ProviderValidationResult,
 )
+
+# Builtin provider id -> ``ProviderConfigs`` field. Custom providers use the
+# ``custom`` mapping instead, keyed by provider name.
+_PROVIDER_CONFIG_FIELDS: dict[str, str] = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "google": "google",
+    "copilot": "copilot",
+    "endpoint": "endpoint",
+    "opencode": "opencode",
+    "openrouter": "openrouter",
+    "deepseek": "deepseek",
+    "zai": "zai",
+    "zhipuai": "zhipuai",
+    "grok": "grok",
+    "minimax": "minimax",
+    "kimi": "kimi",
+    "opencode-go": "opencode_go",
+    "qwen": "qwen",
+    "groq": "groq",
+    "together": "together",
+    "fireworks": "fireworks",
+    "mistral": "mistral",
+}
+
+
+def provider_config_entry(providers: ProviderConfigs | None, provider_name: str) -> object | None:
+    """Return the raw ``provider_name`` config entry, or ``None`` when unconfigured."""
+    if providers is None:
+        return None
+    field_name = _PROVIDER_CONFIG_FIELDS.get(provider_name)
+    if field_name is not None:
+        return getattr(providers, field_name)
+    return providers.custom.get(provider_name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,33 +81,7 @@ class RuntimeProviderAuthInspector:
         self._env = env
 
     def is_configured(self, provider_name: str) -> bool:
-        providers = self._providers
-        if providers is None:
-            return False
-        configured = {
-            "openai": providers.openai,
-            "anthropic": providers.anthropic,
-            "google": providers.google,
-            "copilot": providers.copilot,
-            "litellm": providers.litellm,
-            "openrouter": providers.openrouter,
-            "deepseek": providers.deepseek,
-            "zai": providers.zai,
-            "zhipuai": providers.zhipuai,
-            "grok": providers.grok,
-            "minimax": providers.minimax,
-            "kimi": providers.kimi,
-            "opencode": providers.opencode,
-            "opencode-go": providers.opencode_go,
-            "qwen": providers.qwen,
-            "groq": providers.groq,
-            "together": providers.together,
-            "fireworks": providers.fireworks,
-            "mistral": providers.mistral,
-        }
-        if provider_name in configured:
-            return configured[provider_name] is not None
-        return provider_name in providers.custom
+        return provider_config_entry(self._providers, provider_name) is not None
 
     def presence(self, provider_name: str | None) -> ProviderAuthPresence:
         if provider_name is None:
@@ -116,6 +128,66 @@ class RuntimeProviderAuthInspector:
                 message=("provider auth field 'copilot.token' must be provided for copilot oauth auth"),
             )
         return None
+
+
+type ProviderEndpointSource = Literal["config", "provider_default", "endpoint_default"]
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderEndpointFacts:
+    """The endpoint one provider resolves to, and where that endpoint came from."""
+
+    base_url: str | None
+    source: ProviderEndpointSource
+    discovery_base_url: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "base_url": self.base_url,
+            "source": self.source,
+            "discovery_base_url": self.discovery_base_url,
+        }
+
+
+class RuntimeProviderEndpointInspector:
+    """Report the endpoint a provider turn would use, before anything is sent.
+
+    Resolution goes through the same registry and the same base-URL
+    normalization the wire adapter applies, so ``provider inspect`` and the
+    request cannot disagree about which host a provider talks to.
+    """
+
+    def __init__(self, *, providers: ProviderConfigs | None) -> None:
+        self._providers = providers
+        self._registry = ModelProviderRegistry.with_defaults(provider_configs=providers)
+
+    def facts(self, provider_name: str) -> ProviderEndpointFacts:
+        endpoint_config = self._registry.provider_config(provider_name)
+        return ProviderEndpointFacts(
+            base_url=self._base_url(endpoint_config),
+            source=self._source(provider_name, endpoint_config),
+            discovery_base_url=None if endpoint_config is None else endpoint_config.discovery_base_url,
+        )
+
+    @staticmethod
+    def _base_url(endpoint_config: ProviderEndpointConfig | None) -> str | None:
+        if endpoint_config is None or not endpoint_config.base_url:
+            return None
+        if endpoint_config.anthropic_messages_compatible:
+            # The Anthropic wire owns its own path conventions; reporting it as
+            # an OpenAI chat base URL would name an endpoint nothing calls.
+            return endpoint_config.base_url
+        return normalize_openai_base_url(endpoint_config.base_url)
+
+    def _source(self, provider_name: str, endpoint_config: ProviderEndpointConfig | None) -> ProviderEndpointSource:
+        configured = getattr(provider_config_entry(self._providers, provider_name), "base_url", None)
+        if isinstance(configured, str) and configured.strip():
+            return "config"
+        if endpoint_config is not None and endpoint_config.base_url == DEFAULT_ENDPOINT_BASE_URL:
+            # Nothing configured: the generic endpoint provider's documented
+            # local gateway is the only host the runtime will call.
+            return "endpoint_default"
+        return "provider_default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,10 +364,13 @@ class ProviderSummaryProjector:
 
 __all__ = [
     "ProviderAuthPresence",
+    "ProviderEndpointFacts",
     "ProviderReadinessFacts",
     "ProviderSummaryProjector",
     "ProviderValidationFacts",
     "RuntimeProviderAuthInspector",
+    "RuntimeProviderEndpointInspector",
     "RuntimeProviderReadinessProjector",
     "RuntimeProviderValidationProjector",
+    "provider_config_entry",
 ]

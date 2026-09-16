@@ -3912,7 +3912,7 @@ class VoidCodeRuntime(RuntimeSurface):
             "anthropic": "Anthropic",
             "google": "Google",
             "copilot": "Copilot",
-            "litellm": "LiteLLM",
+            "endpoint": "Endpoint",
             "deepseek": "DeepSeek",
             "zai": "Z.AI",
             "zhipuai": "ZhipuAI",

@@ -8,10 +8,10 @@ from voidcode.provider.config import (
     CopilotProviderConfig,
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
-    LiteLLMProviderConfig,
     OpenAICompatibleProviderConfig,
     OpenAIProviderConfig,
     ProviderConfigs,
+    ProviderEndpointConfig,
     ProviderFallbackConfig,
     ProviderTransientRetryConfig,
     merge_provider_configs,
@@ -39,10 +39,10 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
                     "refresh_leeway_seconds": 30,
                 }
             },
-            "litellm": {
+            "endpoint": {
                 "base_url": "http://localhost:4000",
                 "auth_scheme": "token",
-                "api_key_env_var": "LITELLM_KEY",
+                "api_key_env_var": "ENDPOINT_KEY",
                 "model_map": {"gpt-4o": "openrouter/openai/gpt-4o"},
                 "transient_retry": {
                     "max_retries": 3,
@@ -68,7 +68,7 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
             "OPENAI_API_KEY": "openai-env-key",
             "ANTHROPIC_API_KEY": "anthropic-env-key",
             "GOOGLE_API_KEY": "google-env-key",
-            "LITELLM_KEY": "litellm-env-key",
+            "ENDPOINT_KEY": "endpoint-env-key",
         },
     )
 
@@ -94,9 +94,9 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
                 refresh_leeway_seconds=30,
             )
         ),
-        litellm=LiteLLMProviderConfig(
-            api_key="litellm-env-key",
-            api_key_env_var="LITELLM_KEY",
+        endpoint=ProviderEndpointConfig(
+            api_key="endpoint-env-key",
+            api_key_env_var="ENDPOINT_KEY",
             base_url="http://localhost:4000",
             auth_scheme="token",
             model_map={"gpt-4o": "openrouter/openai/gpt-4o"},
@@ -107,19 +107,26 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
                 jitter=False,
             ),
         ),
-        opencode=LiteLLMProviderConfig(
+        opencode=ProviderEndpointConfig(
             auth_scheme="none",
             auth_scheme_explicit=True,
             transient_retry=ProviderTransientRetryConfig(max_retries=0),
         ),
         custom={
-            "llama-local": LiteLLMProviderConfig(
+            "llama-local": ProviderEndpointConfig(
                 base_url="http://localhost:11434/v1",
                 auth_scheme="none",
                 model_map={"coder": "ollama/qwen2.5-coder:latest"},
             )
         },
     )
+
+    assert parsed is not None
+    assert parsed.endpoint is not None
+    assert parsed.endpoint.auth_scheme_explicit is True
+    assert parsed.opencode is not None
+    assert parsed.opencode.auth_scheme_explicit is True
+    assert parsed.custom["llama-local"].auth_scheme_explicit is True
 
 
 def test_parse_provider_configs_payload_parses_transient_retry_for_openai_compatible_provider() -> None:
@@ -204,7 +211,7 @@ def test_parse_provider_configs_payload_parses_ssl_verify_for_custom_provider() 
 
     assert parsed == ProviderConfigs(
         custom={
-            "team-gateway": LiteLLMProviderConfig(
+            "team-gateway": ProviderEndpointConfig(
                 base_url="https://gateway.example.test/v1",
                 ssl_verify=False,
             )
@@ -255,27 +262,38 @@ def test_parse_provider_configs_payload_rejects_unknown_provider_block() -> None
         )
 
 
-def test_merge_provider_configs_preserves_fallback_litellm_none_auth_scheme() -> None:
-    primary = ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="env-key"))
-    fallback = ProviderConfigs(litellm=LiteLLMProviderConfig(auth_scheme="none"))
+def test_parse_provider_configs_payload_rejects_legacy_litellm_block_with_rename_hint() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'providers\.litellm' is not supported; use 'providers\.endpoint' instead",
+    ):
+        _ = parse_provider_configs_payload(
+            {"litellm": {}},
+            source="runtime config field 'providers'",
+        )
+
+
+def test_merge_provider_configs_preserves_fallback_endpoint_none_auth_scheme() -> None:
+    primary = ProviderConfigs(endpoint=ProviderEndpointConfig(api_key="env-key"))
+    fallback = ProviderConfigs(endpoint=ProviderEndpointConfig(auth_scheme="none"))
 
     merged = merge_provider_configs(primary, fallback)
 
     assert merged is not None
-    assert merged.litellm == LiteLLMProviderConfig(
+    assert merged.endpoint == ProviderEndpointConfig(
         api_key="env-key",
         auth_scheme="none",
     )
 
 
-def test_merge_provider_configs_preserves_fallback_litellm_token_auth_scheme() -> None:
-    primary = ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="env-key"))
-    fallback = ProviderConfigs(litellm=LiteLLMProviderConfig(auth_scheme="token", auth_header="X-API-Key"))
+def test_merge_provider_configs_preserves_fallback_endpoint_token_auth_scheme() -> None:
+    primary = ProviderConfigs(endpoint=ProviderEndpointConfig(api_key="env-key"))
+    fallback = ProviderConfigs(endpoint=ProviderEndpointConfig(auth_scheme="token", auth_header="X-API-Key"))
 
     merged = merge_provider_configs(primary, fallback)
 
     assert merged is not None
-    assert merged.litellm == LiteLLMProviderConfig(
+    assert merged.endpoint == ProviderEndpointConfig(
         api_key="env-key",
         auth_header="X-API-Key",
         auth_scheme="token",
@@ -283,13 +301,13 @@ def test_merge_provider_configs_preserves_fallback_litellm_token_auth_scheme() -
 
 
 def test_merge_provider_configs_preserves_primary_custom_ssl_verify_false() -> None:
-    primary = ProviderConfigs(custom={"team-gateway": LiteLLMProviderConfig(ssl_verify=False)})
-    fallback = ProviderConfigs(custom={"team-gateway": LiteLLMProviderConfig(ssl_verify=True)})
+    primary = ProviderConfigs(custom={"team-gateway": ProviderEndpointConfig(ssl_verify=False)})
+    fallback = ProviderConfigs(custom={"team-gateway": ProviderEndpointConfig(ssl_verify=True)})
 
     merged = merge_provider_configs(primary, fallback)
 
     assert merged is not None
-    assert merged.custom["team-gateway"] == LiteLLMProviderConfig(ssl_verify=False)
+    assert merged.custom["team-gateway"] == ProviderEndpointConfig(ssl_verify=False)
 
 
 def test_merge_provider_configs_preserves_primary_openai_compatible_ssl_verify_false() -> None:
@@ -348,9 +366,15 @@ def test_serialize_provider_configs_preserves_explicit_empty_anthropic_beta_head
 
 
 def test_serialize_provider_configs_includes_custom_ssl_verify() -> None:
-    payload = serialize_provider_configs(ProviderConfigs(custom={"team-gateway": LiteLLMProviderConfig(ssl_verify=False)}))
+    payload = serialize_provider_configs(ProviderConfigs(custom={"team-gateway": ProviderEndpointConfig(ssl_verify=False)}))
 
     assert payload == {"custom": {"team-gateway": {"auth_scheme": "bearer", "ssl_verify": False}}}
+
+
+def test_serialize_provider_configs_includes_endpoint_ssl_verify() -> None:
+    payload = serialize_provider_configs(ProviderConfigs(endpoint=ProviderEndpointConfig(ssl_verify=False)))
+
+    assert payload == {"endpoint": {"auth_scheme": "bearer", "ssl_verify": False}}
 
 
 def test_serialize_provider_configs_includes_openai_compatible_ssl_verify() -> None:
@@ -370,13 +394,13 @@ def test_parse_provider_configs_payload_rejects_invalid_openai_base_url_type() -
         )
 
 
-def test_parse_provider_configs_payload_rejects_invalid_litellm_model_map_value() -> None:
+def test_parse_provider_configs_payload_rejects_invalid_endpoint_model_map_value() -> None:
     with pytest.raises(
         ValueError,
-        match=r"runtime config field 'providers\.litellm\.model_map\.demo' must be a string",
+        match=r"runtime config field 'providers\.endpoint\.model_map\.demo' must be a string",
     ):
         _ = parse_provider_configs_payload(
-            {"litellm": {"model_map": {"demo": 123}}},
+            {"endpoint": {"model_map": {"demo": 123}}},
             source="runtime config field 'providers'",
         )
 
@@ -398,7 +422,7 @@ def test_parse_provider_configs_payload_rejects_invalid_custom_provider_name() -
         )
 
 
-@pytest.mark.parametrize("builtin_name", ["openai", "anthropic", "google", "copilot", "litellm", "opencode"])
+@pytest.mark.parametrize("builtin_name", ["openai", "anthropic", "google", "copilot", "endpoint", "opencode"])
 def test_parse_provider_configs_payload_rejects_custom_provider_name_colliding_with_builtin(
     builtin_name: str,
 ) -> None:
@@ -821,6 +845,18 @@ def test_provider_configs_from_env_builds_zhipuai_with_zhipu_api_key() -> None:
     assert parsed.zhipuai == OpenAICompatibleProviderConfig(api_key="zhipu-env-key")
 
 
+def test_provider_configs_from_env_builds_qwen_with_dashscope_api_key() -> None:
+    parsed = provider_configs_from_env({"DASHSCOPE_API_KEY": "qwen-env-key"})
+
+    assert parsed is not None
+    assert parsed.qwen == OpenAICompatibleProviderConfig(api_key="qwen-env-key")
+
+    other_provider_env = provider_configs_from_env({"ZAI_API_KEY": "zai-env-key"})
+
+    assert other_provider_env is not None
+    assert other_provider_env.qwen is None
+
+
 def test_merge_provider_configs_keeps_repo_provider_over_environment_fallback() -> None:
     merged = merge_provider_configs(
         ProviderConfigs(opencode_go=OpenAICompatibleProviderConfig(api_key="repo-key")),
@@ -835,7 +871,7 @@ def test_merge_provider_configs_preserves_empty_base_url_override() -> None:
     merged = merge_provider_configs(
         ProviderConfigs(
             openai=OpenAIProviderConfig(base_url="", discovery_base_url=""),
-            litellm=LiteLLMProviderConfig(base_url="", discovery_base_url=""),
+            endpoint=ProviderEndpointConfig(base_url="", discovery_base_url=""),
             opencode_go=OpenAICompatibleProviderConfig(base_url="", discovery_base_url=""),
         ),
         ProviderConfigs(
@@ -843,9 +879,9 @@ def test_merge_provider_configs_preserves_empty_base_url_override() -> None:
                 base_url="https://fallback.openai.example",
                 discovery_base_url="https://fallback.openai.example/v1",
             ),
-            litellm=LiteLLMProviderConfig(
-                base_url="https://fallback.litellm.example",
-                discovery_base_url="https://fallback.litellm.example/v1",
+            endpoint=ProviderEndpointConfig(
+                base_url="https://fallback.endpoint.example",
+                discovery_base_url="https://fallback.endpoint.example/v1",
             ),
             opencode_go=OpenAICompatibleProviderConfig(
                 base_url="https://fallback.opencode.example",
@@ -858,9 +894,9 @@ def test_merge_provider_configs_preserves_empty_base_url_override() -> None:
     assert merged.openai is not None
     assert merged.openai.base_url == ""
     assert merged.openai.discovery_base_url == ""
-    assert merged.litellm is not None
-    assert merged.litellm.base_url == ""
-    assert merged.litellm.discovery_base_url == ""
+    assert merged.endpoint is not None
+    assert merged.endpoint.base_url == ""
+    assert merged.endpoint.discovery_base_url == ""
     assert merged.opencode_go is not None
     assert merged.opencode_go.base_url == ""
     assert merged.opencode_go.discovery_base_url == ""

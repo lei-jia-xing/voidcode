@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
-from voidcode.provider.config import LiteLLMProviderConfig
-from voidcode.provider.openrouter import (
-    OpenRouterModelProvider,
-    OpenRouterProvider,
-)
+from voidcode.provider.config import ProviderEndpointConfig
+from voidcode.provider.openai_native import OpenAIChatCompletionsProvider
+from voidcode.provider.openrouter import OpenRouterModelProvider
 
 
 def test_openrouter_defaults_to_openai_compatible_gateway() -> None:
@@ -18,12 +14,14 @@ def test_openrouter_defaults_to_openai_compatible_gateway() -> None:
     assert config.base_url == "https://openrouter.ai/api/v1"
     assert config.discovery_base_url == "https://openrouter.ai/api/v1/models"
     assert config.model_map == {}
-    assert isinstance(provider.turn_provider(), OpenRouterProvider)
+    turn_provider = provider.turn_provider()
+    assert isinstance(turn_provider, OpenAIChatCompletionsProvider)
+    assert turn_provider.name == "openrouter"
 
 
 def test_openrouter_preserves_explicit_endpoint_and_credentials() -> None:
     provider = OpenRouterModelProvider(
-        config=LiteLLMProviderConfig(
+        config=ProviderEndpointConfig(
             api_key="router-key",
             base_url="https://router.example.test/v1",
             model_map={"alias": "provider/model"},
@@ -39,11 +37,10 @@ def test_openrouter_preserves_explicit_endpoint_and_credentials() -> None:
     assert config.model_map == {"alias": "provider/model"}
 
 
-def test_openrouter_completion_forces_openai_litellm_adapter() -> None:
-    provider = OpenRouterProvider(name="openrouter", config=LiteLLMProviderConfig())
+def test_openrouter_turn_provider_uses_resolved_endpoint_config() -> None:
+    provider = OpenRouterModelProvider(config=ProviderEndpointConfig(api_key="router-key"))
 
-    # The request is only used by this hook to calculate optional reasoning
-    # kwargs; a request without reasoning leaves the base kwargs unchanged.
-    kwargs = provider._completion_kwargs_for_request(SimpleNamespace(reasoning_effort=None))  # type: ignore[arg-type]
+    turn_provider = provider.turn_provider()
 
-    assert kwargs == {"custom_llm_provider": "openai"}
+    assert isinstance(turn_provider, OpenAIChatCompletionsProvider)
+    assert turn_provider.config == provider.provider_config()

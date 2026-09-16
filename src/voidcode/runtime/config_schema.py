@@ -264,9 +264,9 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "anthropic": {"$ref": "#/$defs/anthropicProviderConfig"},
                     "google": {"$ref": "#/$defs/googleProviderConfig"},
                     "copilot": {"$ref": "#/$defs/copilotProviderConfig"},
-                    "litellm": {"$ref": "#/$defs/litellmProviderConfig"},
-                    "opencode": {"$ref": "#/$defs/litellmProviderConfig"},
-                    "openrouter": {"$ref": "#/$defs/litellmProviderConfig"},
+                    "endpoint": {"$ref": "#/$defs/endpointProviderConfig"},
+                    "opencode": {"$ref": "#/$defs/endpointProviderConfig"},
+                    "openrouter": {"$ref": "#/$defs/endpointProviderConfig"},
                     "deepseek": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
                     "zai": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
                     "zhipuai": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
@@ -281,10 +281,10 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "mistral": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
                     "custom": {
                         "type": "object",
-                        "additionalProperties": {"$ref": "#/$defs/litellmProviderConfig"},
+                        "additionalProperties": {"$ref": "#/$defs/endpointProviderConfig"},
                         "propertyNames": {
                             "pattern": (
-                                r"^(?!(?:openai|anthropic|google|copilot|litellm|opencode|openrouter|"
+                                r"^(?!(?:openai|anthropic|google|copilot|endpoint|opencode|openrouter|"
                                 r"deepseek|zai|zhipuai|grok|minimax|kimi|opencode-go|qwen|groq|together|"
                                 r"fireworks|mistral)$)(?!\s)(?!.*\s$)(?!.*[/]).+$"
                             )
@@ -561,7 +561,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "transient_retry": {"$ref": "#/$defs/providerTransientRetryConfig"},
                 },
             },
-            "litellmProviderConfig": {
+            "endpointProviderConfig": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {

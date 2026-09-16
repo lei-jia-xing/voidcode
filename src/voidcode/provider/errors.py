@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -60,13 +61,56 @@ _SECRET_VALUE_PATTERNS = (
 )
 
 
+# Class-path wrapper emitted by higher-level SDK shims, e.g. `openai.AuthenticationError: ...`.
+_CLASS_PATH_WRAPPER_PREFIX = re.compile(
+    r"^(?:openai|anthropic)(?:\.[A-Za-z0-9_]+)*(?:Error)?\s*:\s*",
+    re.IGNORECASE,
+)
+# Wrapper the official SDKs build for non-2xx responses: `Error code: <status> - <body>`
+# (see openai/anthropic `_base_client.py`). The body is the parsed response payload.
+_SDK_ERROR_WRAPPER_PREFIX = re.compile(r"^Error code:\s*\d+", re.IGNORECASE)
+
+
+def _message_from_container(value: object) -> str | None:
+    """Provider message text nested in a decoded error payload (`message` or `error.message`)."""
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        mapping = cast(dict[str, Any], value)
+        direct = mapping.get("message")
+        if isinstance(direct, str) and direct.strip():
+            return direct
+        return _message_from_container(mapping.get("error"))
+    return None
+
+
+def _sdk_error_wrapper_body(value: str) -> str | None:
+    """Provider text inside an SDK `Error code: <status> - <body>` wrapper, without the wrapper."""
+    text = value.strip()
+    match = _SDK_ERROR_WRAPPER_PREFIX.match(text)
+    if match is None:
+        return None
+    remainder = text[match.end() :].strip()
+    if not remainder.startswith("-"):
+        return None
+    body = remainder[1:].strip()
+    if not body:
+        return None
+    try:
+        decoded = json.loads(body)
+    except ValueError:
+        return body
+    return _message_from_container(decoded) or body
+
+
+def _nested_error_message(payload: dict[str, Any]) -> str | None:
+    return _message_from_container(payload.get("error"))
+
+
 def _strip_provider_error_wrapper(value: str) -> str:
-    return re.sub(
-        r"^(?:litellm|openai)(?:\.[A-Za-z0-9_]+)*(?:Error)?\s*:\s*",
-        "",
-        value.strip(),
-        flags=re.IGNORECASE,
-    )
+    stripped = _CLASS_PATH_WRAPPER_PREFIX.sub("", value.strip())
+    unwrapped = _sdk_error_wrapper_body(stripped)
+    return stripped if unwrapped is None else unwrapped
 
 
 def _redact_secret_text(value: str) -> str:
@@ -128,6 +172,7 @@ def _recovery_policy_for_kind(kind: ProviderErrorKind) -> tuple[bool, bool]:
     if kind in {
         "missing_auth",
         "invalid_model",
+        "not_configured",
         "unsupported_feature",
         "stream_tool_feedback_shape",
     }:
@@ -144,6 +189,8 @@ def guidance_for_provider_error_kind(kind: ProviderErrorKind) -> str:
         return "Configure the provider API key or auth method, then retry."
     if kind == "invalid_model":
         return "Check the configured provider/model name and model access permissions."
+    if kind == "not_configured":
+        return "Set providers.<name>.base_url (and the provider API key) before using this provider."
     if kind == "rate_limit":
         return "Retry later, reduce request volume, or configure a fallback model."
     if kind == "context_limit":
@@ -160,17 +207,11 @@ def guidance_for_provider_error_kind(kind: ProviderErrorKind) -> str:
 def _extract_error_message(payload: dict[str, Any]) -> str | None:
     direct = payload.get("message")
     if isinstance(direct, str) and direct.strip():
-        return direct
-
-    error_obj = payload.get("error")
-    if isinstance(error_obj, str) and error_obj.strip():
-        return error_obj
-    if isinstance(error_obj, dict):
-        error_payload = dict(cast(dict[str, Any], error_obj))
-        nested_message = error_payload.get("message")
-        if isinstance(nested_message, str) and nested_message.strip():
-            return nested_message
-    return None
+        if _SDK_ERROR_WRAPPER_PREFIX.match(direct.strip()) is None:
+            return direct
+        # The SDK synthesised `Error code: <status> - <body>`; prefer the provider's own text.
+        return _nested_error_message(payload) or _sdk_error_wrapper_body(direct) or direct
+    return _nested_error_message(payload)
 
 
 def _extract_error_code(payload: dict[str, Any]) -> str | None:

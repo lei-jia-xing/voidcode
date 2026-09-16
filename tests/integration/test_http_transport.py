@@ -757,8 +757,19 @@ def test_transport_reports_configured_opencode_go_validation_unavailable(tmp_pat
 
 
 def test_transport_provider_inspect_exposes_model_capabilities(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    global_config = tmp_path / "global-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config))
     create_runtime_app = _load_transport_app_factory()
+    # Model lists are discovery- or user-driven now: opencode-go has no public
+    # model listing endpoint, so the model must come from configuration.
+    config_dir = global_config / "voidcode"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    _ = (config_dir / "config.json").write_text(
+        json.dumps({"providers": {"opencode-go": {"model_map": {"glm-5.1": "glm-5.1"}}}}),
+        encoding="utf-8",
+    )
     app = create_runtime_app(workspace=tmp_path)
 
     _ = _run_app(

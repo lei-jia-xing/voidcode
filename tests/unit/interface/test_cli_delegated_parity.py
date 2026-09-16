@@ -192,7 +192,7 @@ def test_cli_parser_has_serve_subcommand() -> None:
 def test_cli_run_delegates_task_via_task_tool_in_graph(tmp_path: Path) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = tmp_path
-    config = SimpleNamespace(approval_mode="allow")
+    config = SimpleNamespace(approval_mode="allow", execution_engine="deterministic")
 
     class _StubSession:
         def __init__(self, id_: str, status: str) -> None:
@@ -554,7 +554,7 @@ def test_cli_run_inline_approval_loop_emits_events(capsys: Any) -> None:
     """Interactive ``voidcode run`` must emit approval_requested events and
     wait for user input before resuming."""
     cli = importlib.import_module("voidcode.cli.app")
-    config = SimpleNamespace(approval_mode="ask")
+    config = SimpleNamespace(approval_mode="ask", execution_engine="deterministic")
 
     class _StubSession:
         def __init__(self, id_: str, status: str) -> None:
@@ -678,7 +678,7 @@ def test_cli_run_non_interactive_skips_approval_loop(capsys: Any) -> None:
     """Non-interactive ``voidcode run`` must NOT enter the approval loop and
     must return immediately after the initial stream ends."""
     cli = importlib.import_module("voidcode.cli.app")
-    config = SimpleNamespace(approval_mode="ask")
+    config = SimpleNamespace(approval_mode="ask", execution_engine="deterministic")
 
     class _StubSession:
         def __init__(self, id_: str, status: str) -> None:

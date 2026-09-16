@@ -1,27 +1,34 @@
 from __future__ import annotations
 
+import pytest
+
 from voidcode.provider.anthropic import AnthropicModelProvider
+from voidcode.provider.anthropic_native import AnthropicMessagesProvider
 from voidcode.provider.config import (
     AnthropicProviderConfig,
+    CopilotProviderAuthConfig,
+    CopilotProviderConfig,
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
-    LiteLLMProviderConfig,
     OpenAICompatibleProviderConfig,
     OpenAIProviderConfig,
     ProviderConfigs,
+    ProviderEndpointConfig,
+    openai_compatible_endpoint_config,
 )
 from voidcode.provider.copilot import CopilotModelProvider
 from voidcode.provider.deepseek import DeepSeekModelProvider
+from voidcode.provider.endpoint import OpenAIEndpointProvider
 from voidcode.provider.fireworks import FireworksModelProvider
 from voidcode.provider.google import GoogleModelProvider
 from voidcode.provider.grok import GrokModelProvider
 from voidcode.provider.groq import GroqModelProvider
 from voidcode.provider.kimi import KimiModelProvider
-from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.minimax import MiniMaxModelProvider
 from voidcode.provider.mistral import MistralModelProvider
 from voidcode.provider.model_catalog import ProviderModelCatalog, ProviderModelMetadata
 from voidcode.provider.openai import OpenAIModelProvider
+from voidcode.provider.openai_native import OpenAIChatCompletionsProvider
 from voidcode.provider.opencode import OpenCodeModelProvider
 from voidcode.provider.opencode_go import OpenCodeGoModelProvider
 from voidcode.provider.qwen import QwenModelProvider
@@ -39,52 +46,52 @@ def test_registry_registers_concrete_provider_adapters() -> None:
     assert isinstance(registry.resolve("anthropic"), AnthropicModelProvider)
     assert isinstance(registry.resolve("google"), GoogleModelProvider)
     assert isinstance(registry.resolve("copilot"), CopilotModelProvider)
-    assert isinstance(registry.resolve("litellm"), LiteLLMModelProvider)
+    assert isinstance(registry.resolve("endpoint"), OpenAIEndpointProvider)
 
 
-def test_registry_resolves_unknown_provider_to_litellm_adapter() -> None:
+def test_registry_resolves_unknown_provider_to_endpoint_adapter() -> None:
     registry = ModelProviderRegistry.with_defaults()
 
     resolved = registry.resolve("custom")
 
-    assert isinstance(resolved, LiteLLMModelProvider)
+    assert isinstance(resolved, OpenAIEndpointProvider)
     assert resolved.name == "custom"
 
 
-def test_registry_unknown_provider_reuses_default_litellm_config() -> None:
-    litellm_config = LiteLLMProviderConfig(
+def test_registry_unknown_provider_reuses_default_endpoint_config() -> None:
+    endpoint_config = ProviderEndpointConfig(
         api_key="token",
         base_url="http://localhost:4000",
     )
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(litellm=litellm_config))
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(endpoint=endpoint_config))
 
     resolved = registry.resolve("custom")
 
-    assert isinstance(resolved, LiteLLMModelProvider)
-    assert resolved.config == litellm_config
+    assert isinstance(resolved, OpenAIEndpointProvider)
+    assert resolved.config == endpoint_config
 
 
 def test_registry_unknown_provider_prefers_custom_provider_config() -> None:
-    default_config = LiteLLMProviderConfig(api_key="default", base_url="http://localhost:4000")
-    custom_config = LiteLLMProviderConfig(api_key="custom", base_url="http://localhost:11434/v1")
+    default_config = ProviderEndpointConfig(api_key="default", base_url="http://localhost:4000")
+    custom_config = ProviderEndpointConfig(api_key="custom", base_url="http://localhost:11434/v1")
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            litellm=default_config,
+            endpoint=default_config,
             custom={"llama-local": custom_config},
         )
     )
 
     resolved = registry.resolve("llama-local")
 
-    assert isinstance(resolved, LiteLLMModelProvider)
+    assert isinstance(resolved, OpenAIEndpointProvider)
     assert resolved.name == "llama-local"
     assert resolved.config == custom_config
 
 
-def test_registry_litellm_provider_config_preserves_ssl_verify() -> None:
+def test_registry_endpoint_provider_config_preserves_ssl_verify() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            litellm=LiteLLMProviderConfig(
+            endpoint=ProviderEndpointConfig(
                 api_key="internal-litellm-key",
                 base_url="https://litellm.example.test",
                 ssl_verify=False,
@@ -92,7 +99,7 @@ def test_registry_litellm_provider_config_preserves_ssl_verify() -> None:
         )
     )
 
-    config = registry.provider_config("litellm")
+    config = registry.provider_config("endpoint")
 
     assert config is not None
     assert config.ssl_verify is False
@@ -115,11 +122,11 @@ def test_registry_openai_compatible_provider_config_preserves_ssl_verify() -> No
 
 
 def test_registry_resolve_with_metadata_distinguishes_builtin_custom_and_default_sources() -> None:
-    default_config = LiteLLMProviderConfig(api_key="default")
-    custom_config = LiteLLMProviderConfig(api_key="custom", base_url="http://localhost:11434/v1")
+    default_config = ProviderEndpointConfig(api_key="default")
+    custom_config = ProviderEndpointConfig(api_key="custom", base_url="http://localhost:11434/v1")
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            litellm=default_config,
+            endpoint=default_config,
             custom={"llama-local": custom_config},
         )
     )
@@ -133,7 +140,7 @@ def test_registry_resolve_with_metadata_distinguishes_builtin_custom_and_default
     assert custom.source == "custom"
     assert custom.configured is True
     assert custom.provider.name == "llama-local"
-    assert fallback.source == "default_litellm"
+    assert fallback.source == "default_endpoint"
     assert fallback.configured is True
     assert fallback.provider.name == "typo-provider"
 
@@ -150,7 +157,7 @@ def test_registry_registers_opencode_zen_provider_with_model_discovery() -> None
 def test_registry_opencode_zen_custom_base_url_disables_default_discovery() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            opencode=LiteLLMProviderConfig(
+            opencode=ProviderEndpointConfig(
                 api_key="opencode-key",
                 base_url="https://opencode-proxy.example.test/zen/v1",
             )
@@ -167,7 +174,7 @@ def test_registry_opencode_zen_custom_base_url_disables_default_discovery() -> N
 def test_registry_opencode_zen_explicit_discovery_base_url_wins_with_custom_base_url() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            opencode=LiteLLMProviderConfig(
+            opencode=ProviderEndpointConfig(
                 api_key="opencode-key",
                 base_url="https://opencode-proxy.example.test/zen/v1",
                 discovery_base_url="https://opencode-proxy.example.test/zen/v1/models",
@@ -183,7 +190,7 @@ def test_registry_opencode_zen_explicit_discovery_base_url_wins_with_custom_base
 
 
 def test_registry_refresh_available_models_prefers_model_map_aliases() -> None:
-    litellm_config = LiteLLMProviderConfig(
+    endpoint_config = ProviderEndpointConfig(
         base_url="http://127.0.0.1:65534",
         auth_scheme="none",
         model_map={
@@ -191,9 +198,9 @@ def test_registry_refresh_available_models_prefers_model_map_aliases() -> None:
             "coder": "ollama/qwen2.5-coder:latest",
         },
     )
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(litellm=litellm_config))
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(endpoint=endpoint_config))
 
-    models = registry.refresh_available_models("litellm")
+    models = registry.refresh_available_models("endpoint")
 
     assert models[:2] == ("gpt-4o", "coder")
     assert "openrouter/openai/gpt-4o" in models
@@ -201,26 +208,114 @@ def test_registry_refresh_available_models_prefers_model_map_aliases() -> None:
 
 
 def test_registry_refresh_available_models_stores_model_metadata() -> None:
-    litellm_config = LiteLLMProviderConfig(
+    endpoint_config = ProviderEndpointConfig(
         discovery_base_url="",
         model_map={"gpt-4o": "openrouter/openai/gpt-4o"},
     )
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(litellm=litellm_config))
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(endpoint=endpoint_config))
 
-    models = registry.refresh_available_models("litellm")
-    catalog = registry.provider_catalog("litellm")
+    models = registry.refresh_available_models("endpoint")
+    catalog = registry.provider_catalog("endpoint")
 
     assert "gpt-4o" in models
     assert catalog is not None
     # Without a discovery endpoint, the catalog lists aliases and targets but
     # attaches no metadata: the static catalog is keyed by first-party
-    # provider + model, and "litellm" is a generic passthrough provider.
+    # provider + model, and "endpoint" is a generic passthrough provider.
     assert catalog.model_metadata == {}
-    assert registry.available_models("litellm") == models
-    catalog = registry.provider_catalog("litellm")
-    assert catalog is not None
-    assert catalog.last_refresh_status in {"ok", "failed", "skipped"}
-    assert catalog.discovery_mode in {"configured_endpoint", "configured_base_url", "disabled"}
+    assert registry.available_models("endpoint") == models
+    assert catalog.last_refresh_status == "skipped"
+    assert catalog.discovery_mode == "disabled"
+
+
+def test_registry_refresh_normalizes_raw_native_provider_configs() -> None:
+    registry = ModelProviderRegistry(
+        providers={
+            "openai-native": OpenAIChatCompletionsProvider(
+                name="openai-native",
+                config=OpenAIProviderConfig(api_key="sk-native", discovery_base_url="", timeout_seconds=3.0),
+            ),
+            "anthropic-native": AnthropicMessagesProvider(
+                name="anthropic-native",
+                config=AnthropicProviderConfig(api_key="sk-native", discovery_base_url="", timeout_seconds=3.0),
+            ),
+        },
+        model_catalog={},
+    )
+
+    for provider_name in ("openai-native", "anthropic-native"):
+        config = registry.provider_config(provider_name)
+
+        assert isinstance(config, ProviderEndpointConfig)
+        assert config.api_key == "sk-native"
+        assert config.discovery_base_url == ""
+        assert config.timeout_seconds == 3.0
+
+        assert registry.refresh_available_models(provider_name) == ()
+        catalog = registry.provider_catalog(provider_name)
+        assert catalog is not None
+        assert catalog.discovery_mode == "disabled"
+        assert catalog.last_refresh_status == "skipped"
+
+
+def test_registry_shipped_provider_resolves_models_and_metadata_from_model_map() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            zai=OpenAICompatibleProviderConfig(
+                api_key="zai-key",
+                discovery_base_url="",
+                model_map={"glm": "glm-4.5"},
+            )
+        )
+    )
+
+    models = registry.refresh_available_models("zai")
+
+    assert models == ("glm", "glm-4.5")
+    assert registry.available_models("zai") == models
+    assert registry.model_metadata_for_model("zai", "glm") is None
+
+    metadata = registry.model_metadata_for_model("zai", "glm-4.5")
+    assert metadata is not None
+    assert metadata.supports_tools is True
+
+    resolved = resolve_provider_model("zai/glm-4.5", registry=registry)
+
+    assert resolved.resolution.source == "builtin"
+    assert resolved.resolution.configured is True
+    assert resolved.metadata is not None
+    assert resolved.metadata.supports_tools is True
+
+
+def test_registry_shipped_providers_without_discovery_report_no_models() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            copilot=CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token="copilot-token")),
+            minimax=OpenAICompatibleProviderConfig(api_key="minimax-key"),
+            fireworks=OpenAICompatibleProviderConfig(api_key="fireworks-key"),
+            opencode_go=OpenAICompatibleProviderConfig(api_key="opencode-go-key"),
+        )
+    )
+
+    discovery_modes = {
+        # Copilot, MiniMax, Fireworks and OpenCode Go each resolve to a real
+        # host with no public model listing, so discovery is disabled -- never
+        # attempted unauthenticated.
+        "copilot": "disabled",
+        "minimax": "disabled",
+        "fireworks": "disabled",
+        "opencode-go": "disabled",
+    }
+
+    for provider_name, discovery_mode in discovery_modes.items():
+        assert registry.refresh_available_models(provider_name) == ()
+
+        catalog = registry.provider_catalog(provider_name)
+        assert catalog is not None
+        assert catalog.models == ()
+        assert catalog.discovery_mode == discovery_mode
+        assert catalog.last_refresh_status == "skipped"
+        assert catalog.last_error is not None
 
 
 def test_resolved_provider_model_carries_catalog_metadata_for_routing() -> None:
@@ -251,7 +346,7 @@ def test_resolved_provider_model_carries_catalog_metadata_for_routing() -> None:
 
 
 def test_registry_refresh_custom_provider_uses_custom_config() -> None:
-    custom_config = LiteLLMProviderConfig(
+    custom_config = ProviderEndpointConfig(
         base_url="http://127.0.0.1:65534",
         auth_scheme="none",
         model_map={"coder": "ollama/qwen2.5-coder:latest"},
@@ -276,20 +371,11 @@ def test_registry_google_provider_config_uses_google_api_key_header_for_api_key_
 
     config = registry.provider_config("google")
 
-    assert config == LiteLLMProviderConfig(
+    assert config == ProviderEndpointConfig(
         api_key="AIza-test",
         discovery_base_url="https://generativelanguage.googleapis.com",
         auth_header="x-goog-api-key",
         auth_scheme="token",
-        model_map={
-            "gemini-3-pro-preview": "gemini-3-pro-preview",
-            "gemini-3-flash-preview": "gemini-3-flash-preview",
-            "gemini-2.5-pro": "gemini-2.5-pro",
-            "gemini-2.5-flash": "gemini-2.5-flash",
-            "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
-            "gemini-3.1-flash-live-preview": "gemini-3.1-flash-live-preview",
-            "gemini-3.1-flash-tts-preview": "gemini-3.1-flash-tts-preview",
-        },
     )
 
 
@@ -301,7 +387,28 @@ def test_registry_openai_provider_config_sets_default_discovery_base_url() -> No
     assert config is not None
     assert config.api_key == "sk-openai"
     assert config.discovery_base_url == "https://api.openai.com"
-    assert config.model_map["gpt-5.5"] == "gpt-5.5"
+
+
+def test_registry_google_service_account_auth_disables_discovery() -> None:
+    """Service-account auth carries no key the discovery path could send."""
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="service_account", service_account_json_path="/tmp/sa.json"))
+        )
+    )
+
+    config = registry.provider_config("google")
+
+    assert config is not None
+    assert config.api_key is None
+    assert config.auth_header is None
+    assert config.discovery_base_url == ""
+
+    assert registry.refresh_available_models("google") == ()
+    catalog = registry.provider_catalog("google")
+    assert catalog is not None
+    assert catalog.discovery_mode == "disabled"
+    assert catalog.last_refresh_status == "skipped"
 
 
 def test_registry_openai_provider_config_with_custom_base_url_disables_default_discovery() -> None:
@@ -319,7 +426,6 @@ def test_registry_openai_provider_config_with_custom_base_url_disables_default_d
     assert config is not None
     assert config.base_url == "https://proxy.example.com/v1"
     assert config.discovery_base_url is None
-    assert config.model_map["gpt-5.5"] == "gpt-5.5"
 
 
 def test_registry_anthropic_provider_config_sets_default_discovery_base_url() -> None:
@@ -330,16 +436,15 @@ def test_registry_anthropic_provider_config_sets_default_discovery_base_url() ->
     assert config is not None
     assert config.api_key == "sk-anthropic"
     assert config.discovery_base_url == "https://api.anthropic.com"
-    assert config.model_map["claude-opus-4-7"] == "claude-opus-4-7"
 
 
-def test_registry_litellm_provider_config_sets_default_discovery_base_url() -> None:
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="litellm-key")))
+def test_registry_endpoint_provider_config_sets_default_discovery_base_url() -> None:
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(endpoint=ProviderEndpointConfig(api_key="endpoint-key")))
 
-    config = registry.provider_config("litellm")
+    config = registry.provider_config("endpoint")
 
     assert config is not None
-    assert config.api_key == "litellm-key"
+    assert config.api_key == "endpoint-key"
     assert config.discovery_base_url == "http://127.0.0.1:4000"
 
 
@@ -355,7 +460,6 @@ def test_registry_registers_zai_provider() -> None:
     assert config.api_key == "zai-key"
     assert config.base_url == "https://api.z.ai/api/paas/v4"
     assert config.discovery_base_url == "https://api.z.ai/api/paas/v4"
-    assert "glm-4-flash" in config.model_map
 
 
 def test_registry_registers_zhipuai_provider() -> None:
@@ -370,7 +474,6 @@ def test_registry_registers_zhipuai_provider() -> None:
     assert config.api_key == "zhipu-key"
     assert config.base_url == "https://open.bigmodel.cn/api/paas/v4"
     assert config.discovery_base_url == "https://open.bigmodel.cn/api/paas/v4"
-    assert "glm-4-flash" in config.model_map
 
 
 def test_registry_registers_deepseek_provider() -> None:
@@ -385,7 +488,6 @@ def test_registry_registers_deepseek_provider() -> None:
     assert config.api_key == "deepseek-key"
     assert config.base_url == "https://api.deepseek.com"
     assert config.discovery_base_url == "https://api.deepseek.com"
-    assert "deepseek-v4-pro" in config.model_map.values()
 
 
 def test_registry_deepseek_custom_base_url_uses_configured_base_url_discovery() -> None:
@@ -417,7 +519,6 @@ def test_registry_registers_grok_provider() -> None:
     assert config.api_key == "grok-key"
     assert config.base_url == "https://api.x.ai"
     assert config.discovery_base_url == "https://api.x.ai"
-    assert "grok-4-1-fast-reasoning" in config.model_map.values()
 
 
 def test_registry_registers_minimax_provider() -> None:
@@ -432,7 +533,6 @@ def test_registry_registers_minimax_provider() -> None:
     assert config.api_key == "minimax-key"
     assert config.base_url == "https://api.minimax.io"
     assert config.discovery_base_url == ""
-    assert "MiniMax-M2.7" in config.model_map.values()
 
 
 def test_registry_registers_kimi_provider() -> None:
@@ -447,7 +547,6 @@ def test_registry_registers_kimi_provider() -> None:
     assert config.api_key == "kimi-key"
     assert config.base_url == "https://api.moonshot.ai"
     assert config.discovery_base_url == "https://api.moonshot.ai/v1"
-    assert "kimi-k2.5" in config.model_map.values()
 
 
 def test_registry_registers_opencode_go_provider() -> None:
@@ -464,15 +563,6 @@ def test_registry_registers_opencode_go_provider() -> None:
     assert config.api_key == "opencode-go-key"
     assert config.base_url == "https://opencode.ai/zen/go"
     assert config.discovery_base_url == ""
-    assert "kimi-k2.5" in config.model_map.values()
-    assert "kimi-k2.6" in config.model_map.values()
-    assert "mimo-v2.5" in config.model_map.values()
-    assert "mimo-v2.5-pro" in config.model_map.values()
-    assert "qwen-plus" not in config.model_map
-    assert "qwen-max" not in config.model_map
-    assert "qwen-flash" not in config.model_map
-    assert "qwen3.5-flash" in config.model_map
-    assert "qwen3.6-plus" in config.model_map
 
 
 def test_registry_opencode_go_custom_base_url_keeps_discovery_disabled() -> None:
@@ -504,7 +594,6 @@ def test_registry_registers_qwen_provider() -> None:
     assert config.api_key == "qwen-key"
     assert config.base_url == "https://dashscope.aliyuncs.com/compatible-mode"
     assert config.discovery_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    assert "qwen-plus" in config.model_map.values()
 
 
 def test_registry_zhipuai_provider_config_with_base_url_and_model_map() -> None:
@@ -520,12 +609,13 @@ def test_registry_zhipuai_provider_config_with_base_url_and_model_map() -> None:
 
     config = registry.provider_config("zhipuai")
 
-    assert config == LiteLLMProviderConfig(
+    assert config == ProviderEndpointConfig(
         api_key="zhipu-key",
         base_url="https://custom.zhipu.example",
         discovery_base_url="https://open.bigmodel.cn/api/paas/v4",
         model_map={"glm4": "glm-4-flash"},
     )
+    assert set(config.model_map) == {"glm4"}
 
 
 def test_registry_openai_compatible_provider_uses_default_base_url_when_not_set() -> None:
@@ -546,56 +636,44 @@ def test_registry_openai_compatible_provider_uses_default_base_url_when_not_set(
     assert deepseek_config is not None
     assert deepseek_config.base_url == "https://api.deepseek.com"
     assert deepseek_config.discovery_base_url == "https://api.deepseek.com"
-    assert deepseek_config.model_map.get("deepseek-v4-flash") == "deepseek-v4-flash"
 
     zai_config = registry.provider_config("zai")
     assert zai_config is not None
     assert zai_config.base_url == "https://api.z.ai/api/paas/v4"
     assert zai_config.discovery_base_url == "https://api.z.ai/api/paas/v4"
-    assert zai_config.model_map.get("glm-4-flash") == "glm-4-flash"
 
     zhipuai_config = registry.provider_config("zhipuai")
     assert zhipuai_config is not None
     assert zhipuai_config.base_url == "https://open.bigmodel.cn/api/paas/v4"
     assert zhipuai_config.discovery_base_url == "https://open.bigmodel.cn/api/paas/v4"
-    assert zhipuai_config.model_map.get("glm-4-flash") == "glm-4-flash"
 
     grok_config = registry.provider_config("grok")
     assert grok_config is not None
     assert grok_config.base_url == "https://api.x.ai"
     assert grok_config.discovery_base_url == "https://api.x.ai"
-    assert grok_config.model_map.get("grok-4-1-fast-reasoning") == ("grok-4-1-fast-reasoning")
 
     minimax_config = registry.provider_config("minimax")
     assert minimax_config is not None
     assert minimax_config.base_url == "https://api.minimax.io"
     assert minimax_config.discovery_base_url == ""
-    assert minimax_config.model_map.get("minimax-m2.7") == "MiniMax-M2.7"
 
     kimi_config = registry.provider_config("kimi")
     assert kimi_config is not None
     assert kimi_config.base_url == "https://api.moonshot.ai"
     assert kimi_config.discovery_base_url == "https://api.moonshot.ai/v1"
-    assert kimi_config.model_map.get("kimi-k2.5") == "kimi-k2.5"
 
     opencode_go_config = registry.provider_config("opencode-go")
     assert opencode_go_config is not None
     assert opencode_go_config.base_url == "https://opencode.ai/zen/go"
     assert opencode_go_config.discovery_base_url == ""
-    assert opencode_go_config.model_map.get("kimi-k2.5") == "kimi-k2.5"
-    assert opencode_go_config.model_map.get("kimi-k2.6") == "kimi-k2.6"
-    assert opencode_go_config.model_map.get("glm-5") == "glm-5"
-    assert opencode_go_config.model_map.get("glm-5.1") == "glm-5.1"
-    assert opencode_go_config.model_map.get("mimo-v2.5") == "mimo-v2.5"
 
     qwen_config = registry.provider_config("qwen")
     assert qwen_config is not None
     assert qwen_config.base_url == "https://dashscope.aliyuncs.com/compatible-mode"
     assert qwen_config.discovery_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    assert qwen_config.model_map.get("qwen-plus") == "qwen-plus"
 
 
-def test_registry_openai_compatible_provider_user_model_map_overrides_default() -> None:
+def test_registry_openai_compatible_provider_preserves_user_model_map() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
             zai=OpenAICompatibleProviderConfig(
@@ -608,7 +686,6 @@ def test_registry_openai_compatible_provider_user_model_map_overrides_default() 
     config = registry.provider_config("zai")
     assert config is not None
     assert config.model_map == {"custom": "custom-model"}
-    assert "glm-4-flash" not in config.model_map
 
 
 def test_registry_openai_compatible_provider_user_base_url_overrides_default() -> None:
@@ -667,3 +744,62 @@ def test_registry_registers_groq_together_fireworks_and_mistral() -> None:
     assert registry.provider_config("together").base_url == "https://api.together.ai/v1"
     assert registry.provider_config("fireworks").discovery_base_url == ""
     assert registry.provider_config("mistral").discovery_base_url == "https://api.mistral.ai/v1"
+
+
+def test_registry_openai_compatible_provider_without_a_config_block_keeps_its_own_host() -> None:
+    """An unconfigured shipped provider resolves to its own vendor default.
+
+    Resolution used to answer "no endpoint" for an absent config block, which
+    left callers to fall back to whichever host their transport defaulted to.
+    """
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs())
+
+    expected_base_urls = {
+        "deepseek": "https://api.deepseek.com",
+        "zai": "https://api.z.ai/api/paas/v4",
+        "zhipuai": "https://open.bigmodel.cn/api/paas/v4",
+        "grok": "https://api.x.ai",
+        "minimax": "https://api.minimax.io",
+        "kimi": "https://api.moonshot.ai",
+        "opencode-go": "https://opencode.ai/zen/go",
+        "qwen": "https://dashscope.aliyuncs.com/compatible-mode",
+        "groq": "https://api.groq.com/openai/v1",
+        "together": "https://api.together.ai/v1",
+        "fireworks": "https://api.fireworks.ai/inference/v1",
+        "mistral": "https://api.mistral.ai/v1",
+    }
+
+    for provider_name, expected_base_url in expected_base_urls.items():
+        config = registry.provider_config(provider_name)
+
+        assert config is not None, provider_name
+        assert config.base_url == expected_base_url, provider_name
+        assert config.api_key is None, provider_name
+        # Nobody asked us to list this vendor's models, and an unauthenticated
+        # listing must not be issued.
+        assert config.discovery_base_url == "", provider_name
+
+
+def test_registry_copilot_without_a_config_base_url_keeps_its_own_host() -> None:
+    configured = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(copilot=CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token="copilot-token")))
+    )
+    unconfigured = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs())
+
+    for registry in (configured, unconfigured):
+        config = registry.provider_config("copilot")
+
+        assert config is not None
+        # A Copilot token must never be sent to api.openai.com.
+        assert config.base_url == "https://api.individual.githubcopilot.com"
+        assert config.discovery_base_url == ""
+
+    assert configured.provider_config("copilot").api_key == "copilot-token"
+    assert unconfigured.provider_config("copilot").api_key is None
+
+
+def test_registry_openai_compatible_endpoint_config_rejects_unknown_provider_names() -> None:
+    with pytest.raises(ValueError, match="Unknown OpenAI-compatible provider"):
+        openai_compatible_endpoint_config("acme-gateway", None)
+    with pytest.raises(ValueError, match="Unknown OpenAI-compatible provider"):
+        openai_compatible_endpoint_config("acme-gateway", OpenAICompatibleProviderConfig(api_key="key"))

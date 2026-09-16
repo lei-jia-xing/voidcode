@@ -1,18 +1,30 @@
-"""Live contract matrix for builtin runtime tool definitions."""
+"""Live contract matrix for builtin runtime tool definitions.
+
+Every check is evaluated against the live builtin registry — never against a
+hand-maintained table of names — and the provider-schema check inspects the tool
+payload the runtime actually hands to a provider transport. A builtin tool that loses
+its guidance sidecar, emits a provider schema that is not a valid object envelope, or
+drifts from its capability-catalog row therefore fails the suite.
+"""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+import httpx
 import jsonschema
 import pytest
 
-from voidcode.provider.litellm_backend import LiteLLMBackendProvider
+from voidcode.provider.config import OpenAIProviderConfig
+from voidcode.provider.openai import OpenAIModelProvider
+from voidcode.provider.openai_native import OpenAIChatCompletionsTransport
+from voidcode.provider.protocol import ProviderAssembledContext, ProviderContextSegment, ProviderContextWindow, ProviderTurnRequest
 from voidcode.runtime.service import VoidCodeRuntime
-from voidcode.runtime.tool_registry import ToolRegistry
+from voidcode.runtime.tool_registry import ESSENTIAL_TOOL_NAMES, ToolRegistry
 from voidcode.tools.contracts import ToolDefinition
 from voidcode.tools.guidance import guidance_filename_for_tool, guidance_for_tool
 
@@ -20,21 +32,6 @@ from voidcode.tools.guidance import guidance_filename_for_tool, guidance_for_too
 def _static_definitions(registry: ToolRegistry) -> tuple[ToolDefinition, ...]:
     """Return the live builtin definitions, excluding runtime-discovered MCP tools."""
     return tuple(definition for definition in registry.definitions() if not definition.name.startswith("mcp/"))
-
-
-def _provider_function_schema(definition: ToolDefinition) -> dict[str, object]:
-    payload = LiteLLMBackendProvider._to_tool_schema(
-        definition,
-        original_to_provider={definition.name: definition.name},
-    )
-    assert payload["type"] == "function"
-    function = payload["function"]
-    assert isinstance(function, dict)
-    assert function["name"] == definition.name
-    assert function["description"] == definition.description
-    parameters = function["parameters"]
-    assert isinstance(parameters, dict)
-    return cast(dict[str, object], parameters)
 
 
 @pytest.fixture
@@ -46,13 +43,13 @@ def runtime(tmp_path: Path) -> Iterator[VoidCodeRuntime]:
         value.__exit__(None, None, None)
 
 
-def test_live_builtin_registry_has_unique_metadata_and_guidance(runtime: VoidCodeRuntime) -> None:
-    definitions = _static_definitions(runtime._base_tool_registry)
+def test_live_builtin_registry_metadata_and_guidance_sidecars(runtime: VoidCodeRuntime) -> None:
+    registry = runtime._base_tool_registry
+    definitions = _static_definitions(registry)
     assert definitions
-    assert len({definition.name for definition in definitions}) == len(definitions)
-    names = {definition.name for definition in definitions}
-    assert "background_process" in names
-    assert not names.intersection({"background_process_start", "background_process_logs", "background_process_send", "background_process_stop"})
+
+    mismatched = sorted(name for name, tool in registry.tools.items() if name != tool.definition.name)
+    assert mismatched == [], f"registry keys must equal definition names: {mismatched}"
 
     for definition in definitions:
         assert definition.name.strip() == definition.name
@@ -66,53 +63,117 @@ def test_live_builtin_registry_has_unique_metadata_and_guidance(runtime: VoidCod
         assert filename != "mcp.txt"
         assert guidance_for_tool(definition.name), f"missing guidance sidecar for {definition.name}"
 
-    # Dynamic MCP tools intentionally use the shared sidecar and are not part
-    # of the static matrix above.
+    # Dynamic MCP tools intentionally share one sidecar and stay outside the static matrix.
     assert guidance_filename_for_tool("mcp/example/tool") == "mcp.txt"
     assert guidance_for_tool("mcp/example/tool")
 
 
-def test_live_builtin_provider_schemas_normalize_to_valid_object_envelopes(
-    runtime: VoidCodeRuntime,
-) -> None:
-    definitions = _static_definitions(runtime._base_tool_registry)
-    provider_names = {
-        definition.name
-        for definition in runtime.provider_tool_definitions(
-            runtime._base_tool_registry,
-            runtime._initial_effective_config,
-        )
-        if not definition.name.startswith("mcp/")
-    }
-    assert provider_names == {definition.name for definition in definitions}
-
-    for definition in definitions:
-        parameters = _provider_function_schema(definition)
-        jsonschema.Draft202012Validator.check_schema(parameters)
-        json.dumps(parameters, ensure_ascii=True, sort_keys=True)
-
-        assert parameters["type"] == "object"
-        properties = parameters.get("properties")
-        assert isinstance(properties, dict)
-        assert all(isinstance(name, str) and isinstance(schema, dict) for name, schema in properties.items())
-
-        additional_properties = parameters.get("additionalProperties")
-        assert isinstance(additional_properties, bool)
-        required = parameters.get("required", [])
-        assert isinstance(required, list)
-        assert len(required) == len(set(required))
-        assert all(isinstance(name, str) and name in properties for name in required)
-
-
-def test_live_builtin_catalog_rows_match_registry_metadata(runtime: VoidCodeRuntime) -> None:
-    definitions = _static_definitions(runtime._base_tool_registry)
-    by_name = {definition.name: definition for definition in definitions}
-    entries = {entry.name: entry for entry in runtime._base_tool_registry.capability_catalog() if not entry.name.startswith("mcp/")}
+def test_live_builtin_capability_catalog_agrees_with_registry(runtime: VoidCodeRuntime) -> None:
+    registry = runtime._base_tool_registry
+    by_name = {definition.name: definition for definition in _static_definitions(registry)}
+    entries = {entry.name: entry for entry in registry.capability_catalog() if not entry.name.startswith("mcp/")}
     assert set(entries) == set(by_name)
+    assert len({entry.documentation_uri for entry in entries.values()}) == len(entries)
 
     for name, definition in by_name.items():
         entry = entries[name]
         assert entry.documentation_uri == f"voidcode://tool/{name}"
         assert entry.read_only is definition.read_only
         assert entry.replay_policy == definition.effective_replay_policy
-        assert entry.visibility in {"essential", "discoverable"}
+        assert entry.visibility == ("essential" if name in ESSENTIAL_TOOL_NAMES else "discoverable")
+
+
+@dataclass(frozen=True, slots=True)
+class _ContextWindow:
+    prompt: str
+    tool_results: tuple[object, ...] = ()
+    compacted: bool = False
+    retained_tool_result_count: int = 0
+    continuity_state: object | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Context:
+    prompt: str
+    segments: tuple[ProviderContextSegment, ...]
+    metadata: dict[str, object]
+    tool_results: tuple[object, ...] = ()
+    continuity_state: object | None = None
+
+
+def _provider_request(definitions: tuple[ToolDefinition, ...]) -> ProviderTurnRequest:
+    context = _Context(prompt="hello", segments=(ProviderContextSegment(role="user", content="hello"),), metadata={})
+    return ProviderTurnRequest(
+        assembled_context=cast(ProviderAssembledContext, context),
+        bounded_context_window=cast(ProviderContextWindow, _ContextWindow(prompt="hello")),
+        available_tools=definitions,
+        provider_name="openai",
+        model_name="gpt-4o",
+        raw_model="openai/gpt-4o",
+        abort_signal=None,
+    )
+
+
+def _provider_tool_parameters(definitions: tuple[ToolDefinition, ...]) -> dict[str, dict[str, object]]:
+    """Return the ``parameters`` envelope a real provider turn emits per tool name."""
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-contract",
+                "model": "gpt-4o",
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    transport = OpenAIChatCompletionsTransport(api_key="sk-test", http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    OpenAIModelProvider(config=OpenAIProviderConfig(api_key="sk-test"), transport=transport).turn_provider().propose_turn(
+        _provider_request(definitions)
+    )
+
+    payload = cast(dict[str, object], seen["payload"])
+    emitted: dict[str, dict[str, object]] = {}
+    for raw_tool in cast(list[dict[str, object]], payload["tools"]):
+        function = cast(dict[str, object], raw_tool["function"])
+        emitted[cast(str, function["name"])] = cast(dict[str, object], function["parameters"])
+    return emitted
+
+
+def _declared_property_names(definition: ToolDefinition) -> set[str]:
+    """Names the definition declares, whether it uses the envelope or flat map form."""
+    schema = definition.input_schema
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        return set(cast(dict[str, object], properties))
+    return {key for key in schema if key != "required"}
+
+
+def test_live_builtin_provider_schemas_validate_as_object_envelopes(runtime: VoidCodeRuntime) -> None:
+    definitions = _static_definitions(runtime._base_tool_registry)
+    emitted = _provider_tool_parameters(definitions)
+
+    assert set(emitted) == {definition.name for definition in definitions}
+
+    for definition in definitions:
+        parameters = emitted[definition.name]
+        jsonschema.Draft202012Validator.check_schema(parameters)
+        json.dumps(parameters, ensure_ascii=True, sort_keys=True)
+
+        assert parameters.get("type") == "object", f"{definition.name} provider schema is not an object envelope"
+        properties = parameters.get("properties")
+        assert isinstance(properties, dict), f"{definition.name} provider schema has no properties object"
+        assert all(isinstance(schema, dict) for schema in properties.values())
+        assert isinstance(parameters.get("additionalProperties"), bool), f"{definition.name} provider schema is not strict about unknown arguments"
+
+        required = parameters.get("required", [])
+        assert isinstance(required, list)
+        assert len(required) == len(set(required))
+        assert all(isinstance(name, str) and name in properties for name in required)
+
+        # A definition whose declared properties do not survive the provider projection
+        # would silently hand the model a schema missing arguments.
+        assert _declared_property_names(definition) <= set(properties), f"{definition.name} lost declared properties in the provider schema"

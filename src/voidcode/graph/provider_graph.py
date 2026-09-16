@@ -249,11 +249,21 @@ class ProviderGraph:
         if (turn_result.done_reason == "unknown" and turn_result.finish_reason_reported) or (
             turn_result.done_reason != "unknown" and turn_result.done_reason not in supported_done_reasons
         ):
+            # The provider's own token survives on metadata; the mapped reason alone
+            # ("unknown") is not diagnosable.
+            raw_finish_reason = (turn_result.metadata or {}).get("finish_reason_raw")
+            details: dict[str, object] = {
+                "source": "graph_nonstream",
+                "reason": "unknown_done_reason",
+                "done_reason": turn_result.done_reason,
+            }
+            if isinstance(raw_finish_reason, str) and raw_finish_reason:
+                details["finish_reason_raw"] = raw_finish_reason
             raise self._provider_execution_error(
                 kind="transient_failure",
                 model_name=turn_request.model_name,
-                message=f"provider turn ended with unsupported finish reason: {turn_result.done_reason}",
-                details={"source": "graph_nonstream", "reason": "unknown_done_reason", "done_reason": turn_result.done_reason},
+                message=f"provider turn ended with unsupported finish reason: {raw_finish_reason or turn_result.done_reason}",
+                details=details,
             )
         if turn_result.tool_calls:
             tool_calls = list(turn_result.tool_calls)
@@ -373,6 +383,7 @@ class ProviderGraph:
         complete_tool_payload_order: int | None = None
         lifecycle_tool_calls: dict[str, dict[str, object]] = {}
         done_reason: str | None = None
+        raw_finish_reason: str | None = None
         provider_usage: ProviderTokenUsage | None = None
         stream_provider = cast(StreamableTurnProvider, cast(object, self._provider))
         for stream_event_index, stream_event in enumerate(stream_provider.stream_turn(turn_request)):
@@ -473,6 +484,7 @@ class ProviderGraph:
                 parsed_kind = parsed.kind
                 if stream_event.error_kind in {
                     "missing_auth",
+                    "not_configured",
                     "rate_limit",
                     "context_limit",
                     "invalid_model",
@@ -489,6 +501,8 @@ class ProviderGraph:
                 )
             if stream_event.kind == "done":
                 done_reason = stream_event.done_reason
+                raw_token = (stream_event.metadata or {}).get("finish_reason_raw")
+                raw_finish_reason = raw_token if isinstance(raw_token, str) and raw_token else None
                 break
 
         if done_reason is None:
@@ -506,11 +520,14 @@ class ProviderGraph:
                 details={"source": "graph_stream", "reason": "done_cancelled"},
             )
         if done_reason not in {"stop", "tool_calls", "function_call", "length", "content_filter", "error", "completed"}:
+            details: dict[str, object] = {"source": "graph_stream", "reason": "unknown_done_reason", "done_reason": done_reason}
+            if raw_finish_reason is not None:
+                details["finish_reason_raw"] = raw_finish_reason
             raise self._provider_execution_error(
                 kind="transient_failure",
                 model_name=turn_request.model_name,
-                message=f"provider stream ended with unsupported finish reason: {done_reason}",
-                details={"source": "graph_stream", "reason": "unknown_done_reason", "done_reason": done_reason},
+                message=f"provider stream ended with unsupported finish reason: {raw_finish_reason or done_reason}",
+                details=details,
             )
         if done_reason == "error":
             raise self._provider_execution_error(
@@ -716,6 +733,7 @@ class ProviderGraph:
             "rate_limit",
             "context_limit",
             "invalid_model",
+            "not_configured",
             "transient_failure",
             "cancelled",
         ],

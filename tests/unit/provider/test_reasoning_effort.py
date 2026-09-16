@@ -104,12 +104,6 @@ def test_map_effort_for_provider_maps_anthropic_max_to_max() -> None:
     }
 
 
-def test_map_effort_for_provider_maps_google_max_to_high() -> None:
-    assert map_effort_for_provider(provider_name="google", effort="max") == {
-        "reasoning_effort": "high",
-    }
-
-
 def test_map_effort_for_provider_passes_other_values_through() -> None:
     assert map_effort_for_provider(provider_name="openai", effort="medium") == {
         "reasoning_effort": "medium",
@@ -147,15 +141,6 @@ def test_map_effort_for_provider_routes_deepseek_through_extra_body(
     expected: dict[str, object],
 ) -> None:
     assert map_effort_for_provider(provider_name="deepseek", effort=effort) == expected
-
-
-@pytest.mark.parametrize("effort", ALL_EFFORTS)
-def test_map_effort_for_provider_maps_opencode_go_m2_5_to_adaptive_thinking_for_every_effort(
-    effort: str,
-) -> None:
-    assert map_effort_for_provider(provider_name="opencode-go", model_name="minimax-m2.5", effort=effort) == {
-        "extra_body": {"thinking": {"type": "adaptive"}},
-    }
 
 
 @pytest.mark.parametrize(
@@ -200,8 +185,9 @@ def test_map_effort_for_provider_uses_reasoning_effort_kwarg_for_generic_provide
     ("provider_name", "model_name", "expected"),
     [
         ("deepseek", "deepseek-chat", None),
-        ("opencode-go", "minimax-m2.5", True),
+        ("opencode-go", "minimax-m2.5", False),
         ("opencode-go", "minimax-m2.7", True),
+        ("opencode-go", "minimax-m3", True),
         ("opencode-go", "glm-5", False),
         ("zai", "glm-4-flash", False),
         ("zai", "glm-5", True),

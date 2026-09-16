@@ -47,7 +47,7 @@ _json_like = st.recursive(
 _invalid_text_value = st.one_of(_blank_text, _json_scalar, st.lists(_json_like, max_size=3))
 
 
-class _RecordingBackgroundOutputRuntime:
+class _RecordingTaskOutputRuntime:
     def __init__(self) -> None:
         self.task_ids: list[str] = []
 
@@ -83,7 +83,7 @@ class _RecordingBackgroundOutputRuntime:
         raise AssertionError(session_id)
 
 
-class _MissingSessionBackgroundOutputRuntime(_RecordingBackgroundOutputRuntime):
+class _MissingSessionTaskOutputRuntime(_RecordingTaskOutputRuntime):
     def load_background_task_result(
         self,
         task_id: str,
@@ -203,13 +203,13 @@ def test_question_tool_parse_prompts_rejects_malformed_questions_payload(
 
 @CI_SETTINGS
 @given(task_id=_non_blank_text)
-def test_background_output_tool_trims_task_id_before_runtime_lookup(task_id: str) -> None:
-    runtime = _RecordingBackgroundOutputRuntime()
+def test_task_output_tool_trims_task_id_before_runtime_lookup(task_id: str) -> None:
+    runtime = _RecordingTaskOutputRuntime()
     tool = TaskOutputTool(runtime=runtime)
 
     with TemporaryDirectory() as temp_dir:
         result = tool.invoke(
-            ToolCall(tool_name="background_output", arguments={"task_id": f"  {task_id}  "}),
+            ToolCall(tool_name="task_output", arguments={"task_id": f"  {task_id}  "}),
             workspace=Path(temp_dir),
         )
 
@@ -220,32 +220,32 @@ def test_background_output_tool_trims_task_id_before_runtime_lookup(task_id: str
 
 @CI_SETTINGS
 @given(task_id=_invalid_text_value)
-def test_background_output_tool_rejects_invalid_task_id_values(task_id: object) -> None:
-    tool = TaskOutputTool(runtime=_RecordingBackgroundOutputRuntime())
+def test_task_output_tool_rejects_invalid_task_id_values(task_id: object) -> None:
+    tool = TaskOutputTool(runtime=_RecordingTaskOutputRuntime())
 
     with TemporaryDirectory() as temp_dir:
         with pytest.raises(
             ValueError,
             match=(
-                r"background_output Validation error: (?:task_id|arguments): .* "
+                r"task_output Validation error: (?:task_id|arguments): .* "
                 r"Please retry with corrected arguments that satisfy the tool schema\."
             ),
         ):
             tool.invoke(
-                ToolCall(tool_name="background_output", arguments={"task_id": task_id}),
+                ToolCall(tool_name="task_output", arguments={"task_id": task_id}),
                 workspace=Path(temp_dir),
             )
 
 
 @CI_SETTINGS
 @given(task_id=_non_blank_text)
-def test_background_output_full_session_tolerates_missing_child_session(task_id: str) -> None:
-    tool = TaskOutputTool(runtime=_MissingSessionBackgroundOutputRuntime())
+def test_task_output_full_session_tolerates_missing_child_session(task_id: str) -> None:
+    tool = TaskOutputTool(runtime=_MissingSessionTaskOutputRuntime())
 
     with TemporaryDirectory() as temp_dir:
         result = tool.invoke(
             ToolCall(
-                tool_name="background_output",
+                tool_name="task_output",
                 arguments={"task_id": task_id, "full_session": True},
             ),
             workspace=Path(temp_dir),

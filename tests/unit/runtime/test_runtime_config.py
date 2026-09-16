@@ -16,9 +16,9 @@ from voidcode.provider.config import (
     CopilotProviderConfig,
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
-    LiteLLMProviderConfig,
     OpenAICompatibleProviderConfig,
     OpenAIProviderConfig,
+    ProviderEndpointConfig,
 )
 from voidcode.runtime import config as runtime_config
 from voidcode.runtime.config import (
@@ -665,11 +665,11 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
                     "base_url": "https://api.githubcopilot.test",
                     "timeout_seconds": 15,
                 },
-                "litellm": {
-                    "api_key": "litellm-inline-key",
+                "endpoint": {
+                    "api_key": "endpoint-inline-key",
                     "base_url": "http://127.0.0.1:4000",
                     "auth_scheme": "token",
-                    "auth_header": "X-LiteLLM-Key",
+                    "auth_header": "X-Endpoint-Key",
                     "timeout_seconds": 10,
                     "model_map": {"gpt-4o": "openrouter/openai/gpt-4o"},
                 },
@@ -731,16 +731,16 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
         base_url="https://api.githubcopilot.test",
         timeout_seconds=15.0,
     )
-    assert config.providers.litellm == LiteLLMProviderConfig(
-        api_key="litellm-inline-key",
+    assert config.providers.endpoint == ProviderEndpointConfig(
+        api_key="endpoint-inline-key",
         base_url="http://127.0.0.1:4000",
         auth_scheme="token",
-        auth_header="X-LiteLLM-Key",
+        auth_header="X-Endpoint-Key",
         timeout_seconds=10.0,
         model_map={"gpt-4o": "openrouter/openai/gpt-4o"},
     )
     assert config.providers.custom == {
-        "llama-local": LiteLLMProviderConfig(
+        "llama-local": ProviderEndpointConfig(
             base_url="http://localhost:11434/v1",
             auth_scheme="none",
             model_map={"coder": "ollama/qwen2.5-coder:latest"},
@@ -757,7 +757,7 @@ def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path:
                 "anthropic": {},
                 "google": {"auth": {"method": "api_key"}},
                 "copilot": {"auth": {"method": "token", "token_env_var": "COPILOT_TOKEN"}},
-                "litellm": {},
+                "endpoint": {},
             }
         },
     )
@@ -768,8 +768,8 @@ def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path:
             "OPENAI_API_KEY": "openai-env-key",
             "ANTHROPIC_API_KEY": "anthropic-env-key",
             "GOOGLE_API_KEY": "google-env-key",
-            "LITELLM_API_KEY": "litellm-env-key",
-            "LITELLM_BASE_URL": "http://localhost:4000",
+            "ENDPOINT_API_KEY": "endpoint-env-key",
+            "ENDPOINT_BASE_URL": "http://localhost:4000",
         },
     )
 
@@ -778,8 +778,8 @@ def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path:
     assert config.providers.anthropic == AnthropicProviderConfig(api_key="anthropic-env-key")
     assert config.providers.google == GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="api_key", api_key="google-env-key"))
     assert config.providers.copilot == CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN"))
-    assert config.providers.litellm == LiteLLMProviderConfig(
-        api_key="litellm-env-key",
+    assert config.providers.endpoint == ProviderEndpointConfig(
+        api_key="endpoint-env-key",
         base_url="http://localhost:4000",
         auth_scheme="bearer",
     )
@@ -798,7 +798,7 @@ def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: 
                 "copilot": {
                     "auth": {"method": "token", "token": "copilot-repo-token"},
                 },
-                "litellm": {"api_key": "litellm-repo-key"},
+                "endpoint": {"api_key": "endpoint-repo-key"},
             }
         },
     )
@@ -810,7 +810,7 @@ def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: 
             "ANTHROPIC_API_KEY": "anthropic-env-key",
             "GOOGLE_API_KEY": "google-env-key",
             "GITHUB_COPILOT_TOKEN": "copilot-env-token",
-            "LITELLM_API_KEY": "litellm-env-key",
+            "ENDPOINT_API_KEY": "endpoint-env-key",
         },
     )
 
@@ -819,8 +819,8 @@ def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: 
     assert config.providers.anthropic == AnthropicProviderConfig(api_key="anthropic-repo-key")
     assert config.providers.google == GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="api_key", api_key="google-repo-key"))
     assert config.providers.copilot == CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token="copilot-repo-token"))
-    assert config.providers.litellm == LiteLLMProviderConfig(
-        api_key="litellm-repo-key",
+    assert config.providers.endpoint == ProviderEndpointConfig(
+        api_key="endpoint-repo-key",
         auth_scheme="bearer",
     )
 
@@ -2273,14 +2273,14 @@ def test_runtime_config_rejects_invalid_payload(tmp_path: Path, payload: dict[st
             id="providers-copilot-refresh-leeway-invalid",
         ),
         pytest.param(
-            {"providers": {"litellm": {"auth_scheme": "oauth"}}},
-            "runtime config field 'providers.litellm.auth_scheme'",
-            id="providers-litellm-auth-scheme-invalid",
+            {"providers": {"endpoint": {"auth_scheme": "oauth"}}},
+            "runtime config field 'providers.endpoint.auth_scheme'",
+            id="providers-endpoint-auth-scheme-invalid",
         ),
         pytest.param(
-            {"providers": {"litellm": {"model_map": {"gpt-4o": 4}}}},
-            "runtime config field 'providers.litellm.model_map.gpt-4o'",
-            id="providers-litellm-model-map-value-invalid",
+            {"providers": {"endpoint": {"model_map": {"gpt-4o": 4}}}},
+            "runtime config field 'providers.endpoint.model_map.gpt-4o'",
+            id="providers-endpoint-model-map-value-invalid",
         ),
         pytest.param(
             {"hooks": {"pre_tool": "python scripts/pre.py"}},

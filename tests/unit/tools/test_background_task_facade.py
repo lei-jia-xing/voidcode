@@ -10,7 +10,7 @@ from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeSessionResul
 from voidcode.runtime.permission import PermissionPolicy, resolve_permission
 from voidcode.runtime.permission_context import operation_class_for_tool
 from voidcode.runtime.session import SessionRef, SessionState
-from voidcode.tools import TaskControlTool, ToolCall
+from voidcode.tools import TaskControlTool, TaskTool, ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
@@ -155,6 +155,37 @@ def test_background_task_controls_require_operation_specific_permissions() -> No
             assert outcome.decision == "allow"
         else:
             assert outcome.decision == "deny"
+
+
+def test_task_tool_creation_is_an_execute_class_action() -> None:
+    """Delegation creation requires approval under ``ask``.
+
+    ``task`` advertises ``read_only=True`` because it mutates nothing itself,
+    but spawning a subagent is an execute-class action (like
+    ``background_process``), so the default policy must gate it.
+    """
+    tool = TaskTool(runtime=_Runtime())
+
+    operation = operation_class_for_tool(
+        "task",
+        tool.definition.read_only,
+        tool_instance=tool,
+        arguments={"prompt": "delegate", "run_in_background": True, "subagent_type": "worker"},
+    )
+
+    assert tool.definition.read_only is True
+    assert operation == "execute"
+    outcome = resolve_permission(
+        tool.definition,
+        ToolCall(
+            tool_name="task",
+            arguments={"prompt": "delegate", "run_in_background": True, "subagent_type": "worker"},
+        ),
+        policy=PermissionPolicy(mode="ask"),
+        operation_class=operation,
+    )
+    assert outcome.decision == "ask"
+    assert outcome.pending_approval is not None
 
 
 def test_background_task_steer_uses_parent_context() -> None:

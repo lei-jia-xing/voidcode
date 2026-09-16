@@ -583,10 +583,10 @@ def test_provider_schema_and_parser_reject_same_invalid_values() -> None:
     invalid_payloads = (
         {"providers": {"custom": {"openai": {}}}},
         {"providers": {"openai": {"timeout_seconds": 0}}},
-        {"providers": {"litellm": {"auth_scheme": "invalid"}}},
+        {"providers": {"endpoint": {"auth_scheme": "invalid"}}},
         {"providers": {"google": {"auth": {"method": "invalid"}}}},
         {"providers": {"copilot": {"auth": {"method": "invalid"}}}},
-        {"providers": {"litellm": {"model_map": {"alias": ""}}}},
+        {"providers": {"endpoint": {"model_map": {"alias": ""}}}},
         {"providers": {"custom": {" custom ": {}}}},
     )
     for payload in invalid_payloads:
@@ -617,7 +617,7 @@ def test_provider_schema_and_parser_accept_explicit_null_as_unset() -> None:
                 "base_url": None,
                 "timeout_seconds": None,
             },
-            "litellm": {"model_map": None, "timeout_seconds": None},
+            "endpoint": {"model_map": None, "timeout_seconds": None},
         }
     }
     jsonschema.validate(providers, schema)

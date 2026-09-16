@@ -3,7 +3,7 @@ from __future__ import annotations
 """Canonical reasoning-effort values and provider-specific mapping helpers.
 
 This module is intentionally dependency-free and leaf: it is importable from
-`runtime/` without pulling in LiteLLM or any provider adapter, so effort
+`runtime/` without pulling in a provider SDK or adapter, so effort
 normalization, clamping, and provider mapping can be shared across the
 runtime control plane and provider backends.
 """
@@ -72,9 +72,9 @@ def clamp_effort_to_supported(effort: str, supported: tuple[str, ...] | None) ->
 
 
 # DeepSeek graded reasoning-effort levels (canonical -> DeepSeek upstream value).
-# Routed via `extra_body` because litellm's deepseek adapter binary-collapses a
-# top-level `reasoning_effort` kwarg into `thinking: {type: enabled}`, dropping
-# the level. `off` maps to the binary `thinking` disable toggle instead.
+# DeepSeek exposes the level through `thinking`/`reasoning_effort` in the request
+# body rather than as a top-level OpenAI SDK parameter, so it rides in
+# `extra_body`. `off` maps to the binary `thinking` disable toggle instead.
 _DEEPSEEK_GRADED_EFFORT: dict[str, str] = {
     REASONING_EFFORT_MINIMAL: "low",
     REASONING_EFFORT_LOW: "low",
@@ -84,15 +84,14 @@ _DEEPSEEK_GRADED_EFFORT: dict[str, str] = {
     REASONING_EFFORT_MAX: "max",
 }
 
-# OpenCodeGo minimax reasoning-capable model names (stage-1 routing: m2.5 goes
-# through the Anthropic adapter, m2.7 through the OpenAI adapter). Anything else
-# on opencode-go (glm/kimi/qwen/mimo/deepseek-v4-*) is gated out upstream.
-_OPENCODE_GO_REASONING_MODELS = frozenset({"minimax-m2.5", "minimax-m2.7"})
+# OpenCodeGo minimax reasoning-capable model names (m3 goes through the
+# Anthropic adapter, m2.7 through the OpenAI adapter). Anything else on
+# opencode-go (glm/kimi/qwen/mimo/deepseek-v4-*) is gated out upstream.
+_OPENCODE_GO_REASONING_MODELS = frozenset({"minimax-m2.7", "minimax-m3"})
 
-# OpenCodeGo `minimax-m2.7` (OpenAI route) ladder: canonical -> upstream
-# `reasoning_effort`. Upstream has no "max"; xhigh/max clamp to "high". Sent
-# via `extra_body` because litellm's openai adapter otherwise rejects or
-# collapses a top-level `reasoning_effort` for this model name.
+# OpenCodeGo `minimax-m2.7` (OpenAI-compatible route) ladder: canonical ->
+# upstream `reasoning_effort`. Upstream has no "max"; xhigh/max clamp to "high".
+# Sent via `extra_body` because the gateway reads it from the request body.
 _OPENCODE_GO_M2_7_EFFORT: dict[str, str] = {
     REASONING_EFFORT_OFF: REASONING_EFFORT_LOW,
     REASONING_EFFORT_MINIMAL: REASONING_EFFORT_LOW,
@@ -109,21 +108,18 @@ def map_effort_for_provider(*, provider_name: str, model_name: str = "", effort:
 
     The Z.AI and ZhipuAI providers take a binary `extra_body.thinking.type` of
     "enabled"/"disabled" (keyed on the exact provider name). The DeepSeek
-    provider takes graded levels via `extra_body.reasoning_effort` (litellm's
-    adapter collapses a top-level `reasoning_effort` kwarg into binary
-    `thinking`, so it must ride in `extra_body`); "off" maps to
-    `extra_body.thinking.type = disabled`.
+    provider takes graded levels via `extra_body.reasoning_effort`; "off" maps
+    to `extra_body.thinking.type = disabled`. Both ride in `extra_body` because
+    the upstream APIs read these fields from the request body rather than as
+    top-level OpenAI SDK parameters.
 
-    OpenCodeGo maps per-model, and both reasoning-capable models ride in
-    `extra_body` because litellm's openai/anthropic adapters otherwise reject
-    or collapse a top-level `reasoning_effort` for these model names:
-    - `minimax-m2.5` (Anthropic route) always sends
-      `extra_body.thinking.type = "adaptive"`: reasoning is mandatory, so
-      every effort — including "off" — maps to adaptive and can never be
-      disabled.
-    - `minimax-m2.7` (OpenAI route) maps the canonical ladder to
-      `extra_body.reasoning_effort` of low/medium/high; "off"/"minimal"/"low"
-      all map to "low" and "xhigh"/"max" clamp to "high" (no upstream "max").
+    OpenCodeGo maps per-model:
+    - `minimax-m3` (Anthropic route) is not mapped here: the Anthropic adapter
+      owns Anthropic thinking and its own budget ladder.
+    - `minimax-m2.7` (OpenAI-compatible route) maps the canonical ladder to
+      `extra_body.reasoning_effort` of low/medium/high, read from the request
+      body by the gateway; "off"/"minimal"/"low" all map to "low" and
+      "xhigh"/"max" clamp to "high" (no upstream "max").
     - Any other opencode-go model name falls through to the generic
       `reasoning_effort` kwarg handling below (they are gated out upstream by
       `provider_supports_reasoning_effort`, but map defensively).
@@ -143,8 +139,6 @@ def map_effort_for_provider(*, provider_name: str, model_name: str = "", effort:
 
     if provider_name == "opencode-go":
         model = model_name.strip().lower()
-        if model == "minimax-m2.5":
-            return {"extra_body": {"thinking": {"type": "adaptive"}}}
         if model == "minimax-m2.7":
             return {"extra_body": {"reasoning_effort": _OPENCODE_GO_M2_7_EFFORT[effort]}}
 
@@ -153,8 +147,6 @@ def map_effort_for_provider(*, provider_name: str, model_name: str = "", effort:
     elif effort == REASONING_EFFORT_MAX:
         if provider_name == "anthropic":
             mapped = REASONING_EFFORT_MAX
-        elif provider_name == "google":
-            mapped = REASONING_EFFORT_HIGH
         else:
             mapped = REASONING_EFFORT_XHIGH
     else:
@@ -168,12 +160,12 @@ _PROVIDERS_WITHOUT_REASONING_EFFORT = frozenset({"qwen", "kimi", "minimax"})
 def provider_supports_reasoning_effort(provider_name: str, model_name: str) -> bool | None:
     """Provider-derived reasoning-effort capability gate (NOT model metadata).
 
-    Returns False for providers whose LiteLLM adapters reject the OpenAI-style
-    `reasoning_effort` kwarg (litellm raises `UnsupportedParamsError`) or otherwise
-    do not forward it (Qwen/Kimi/MiniMax are explicitly unsupported here).
+    Returns False for providers whose upstream APIs reject the OpenAI-style
+    `reasoning_effort` parameter or otherwise do not support it (Qwen/Kimi/MiniMax
+    are explicitly unsupported here).
     Z.AI and ZhipuAI are binary (thinking.type), not reasoning_effort: True only for reasoning GLM models.
-    OpenCodeGo is per-model: only `minimax-m2.5` (Anthropic adaptive thinking) and
-    `minimax-m2.7` (OpenAI reasoning_effort ladder) are reasoning-capable; every other
+    OpenCodeGo is per-model: only `minimax-m2.7` (OpenAI reasoning_effort ladder) and
+    `minimax-m3` (Anthropic Messages thinking) are reasoning-capable; every other
     opencode-go model (glm/kimi/qwen/mimo/deepseek-v4-*) fails fast.
     Returns None (unknown → passthrough) otherwise.
     """

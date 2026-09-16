@@ -173,7 +173,7 @@ class _CopilotProviderConfigPayload(_ProviderPayloadModel):
     transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
-class _LiteLLMProviderConfigPayload(_ProviderPayloadModel):
+class _ProviderEndpointConfigPayload(_ProviderPayloadModel):
     api_key: BoundaryOptionalString = None
     api_key_env_var: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
@@ -202,9 +202,9 @@ class _ProviderConfigsPayload(_ProviderPayloadModel):
     anthropic: _AnthropicProviderConfigPayload | None = None
     google: _GoogleProviderConfigPayload | None = None
     copilot: _CopilotProviderConfigPayload | None = None
-    litellm: _LiteLLMProviderConfigPayload | None = None
-    opencode: _LiteLLMProviderConfigPayload | None = None
-    openrouter: _LiteLLMProviderConfigPayload | None = None
+    endpoint: _ProviderEndpointConfigPayload | None = None
+    opencode: _ProviderEndpointConfigPayload | None = None
+    openrouter: _ProviderEndpointConfigPayload | None = None
     deepseek: _OpenAICompatibleProviderConfigPayload | None = None
     zai: _OpenAICompatibleProviderConfigPayload | None = None
     zhipuai: _OpenAICompatibleProviderConfigPayload | None = None
@@ -217,7 +217,7 @@ class _ProviderConfigsPayload(_ProviderPayloadModel):
     together: _OpenAICompatibleProviderConfigPayload | None = None
     fireworks: _OpenAICompatibleProviderConfigPayload | None = None
     mistral: _OpenAICompatibleProviderConfigPayload | None = None
-    custom: dict[str, _LiteLLMProviderConfigPayload] = Field(default_factory=dict)
+    custom: dict[str, _ProviderEndpointConfigPayload] = Field(default_factory=dict)
 
 
 class _ProviderFallbackPayload(_ProviderPayloadModel):
@@ -269,175 +269,56 @@ class OpenAICompatibleProviderConfig:
     transient_retry: ProviderTransientRetryConfig | None = None
 
 
-_OPENAI_COMPATIBLE_DEFAULTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
+# Default endpoint per provider. Only base URLs live here: the model list is
+# always discovered from the provider so there is no second list to maintain.
+_OPENAI_COMPATIBLE_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "deepseek": (
         "https://api.deepseek.com",
         "https://api.deepseek.com",
-        {
-            "deepseek-v4-flash": "deepseek-v4-flash",
-            "deepseek-v4-pro": "deepseek-v4-pro",
-            "deepseek-chat": "deepseek-chat",
-            "deepseek-reasoner": "deepseek-reasoner",
-        },
     ),
     "zai": (
         "https://api.z.ai/api/paas/v4",
         "https://api.z.ai/api/paas/v4",
-        {
-            "glm-5.1": "glm-5.1",
-            "glm-4-flash": "glm-4-flash",
-            "glm-4-plus": "glm-4-plus",
-            "glm-4": "glm-4-flash",
-            "glm-5": "glm-5",
-            "glm-5-turbo": "glm-5-turbo",
-        },
     ),
     "zhipuai": (
         "https://open.bigmodel.cn/api/paas/v4",
         "https://open.bigmodel.cn/api/paas/v4",
-        {
-            "glm-5.1": "glm-5.1",
-            "glm-4-flash": "glm-4-flash",
-            "glm-4-plus": "glm-4-plus",
-            "glm-4": "glm-4-flash",
-            "glm-5": "glm-5",
-            "glm-5-turbo": "glm-5-turbo",
-        },
     ),
     "grok": (
         "https://api.x.ai",
         "https://api.x.ai",
-        {
-            "grok-4-1-fast-reasoning": "grok-4-1-fast-reasoning",
-            "grok-4-1-fast-non-reasoning": "grok-4-1-fast-non-reasoning",
-            "grok-4-fast-reasoning": "grok-4-fast-reasoning",
-            "grok-4-fast-non-reasoning": "grok-4-fast-non-reasoning",
-            "grok-4": "grok-4",
-            "grok-code-fast-1": "grok-code-fast-1",
-        },
     ),
     "minimax": (
         "https://api.minimax.io",
         "",
-        {
-            "minimax-m2.7": "MiniMax-M2.7",
-            "minimax-m2.7-highspeed": "MiniMax-M2.7-highspeed",
-            "minimax-m2.5": "MiniMax-M2.5",
-            "minimax-m2.5-highspeed": "MiniMax-M2.5-highspeed",
-            "minimax-m2.1": "MiniMax-M2.1",
-            "minimax-m2.1-highspeed": "MiniMax-M2.1-highspeed",
-            "minimax-m2": "MiniMax-M2",
-        },
     ),
     "kimi": (
         "https://api.moonshot.ai",
         "https://api.moonshot.ai/v1",
-        {
-            "kimi-k2.6": "kimi-k2.6",
-            "kimi-k2.5": "kimi-k2.5",
-            "kimi-k2-0905-preview": "kimi-k2-0905-preview",
-            "kimi-k2-0711-preview": "kimi-k2-0711-preview",
-            "kimi-k2": "kimi-k2",
-            "kimi-k2-turbo": "kimi-k2-turbo-preview",
-            "kimi-k2-thinking": "kimi-k2-thinking",
-            "kimi-k2-thinking-turbo": "kimi-k2-thinking-turbo",
-            "moonshot-v1-8k": "moonshot-v1-8k",
-            "moonshot-v1-32k": "moonshot-v1-32k",
-            "moonshot-v1-128k": "moonshot-v1-128k",
-        },
     ),
     "opencode-go": (
         "https://opencode.ai/zen/go",
         "",
-        {
-            "deepseek-v4-flash": "deepseek-v4-flash",
-            "deepseek-v4-pro": "deepseek-v4-pro",
-            "glm-5": "glm-5",
-            "glm-5.1": "glm-5.1",
-            "kimi-k2.5": "kimi-k2.5",
-            "kimi-k2.6": "kimi-k2.6",
-            "mimo-v2-omni": "mimo-v2-omni",
-            "mimo-v2-pro": "mimo-v2-pro",
-            "mimo-v2.5": "mimo-v2.5",
-            "mimo-v2.5-pro": "mimo-v2.5-pro",
-            "minimax-m2.5": "minimax-m2.5",
-            "minimax-m2.7": "minimax-m2.7",
-            "qwen3.5-plus": "qwen3.5-plus",
-            "qwen3.5-flash": "qwen3.5-flash",
-            "qwen3.6-plus": "qwen3.6-plus",
-            "qwen3.6-flash": "qwen3.6-flash",
-            "qwen3.6-max-preview": "qwen3.6-max-preview",
-        },
     ),
     "qwen": (
         "https://dashscope.aliyuncs.com/compatible-mode",
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        {
-            "qwen3.6-plus": "qwen3.6-plus",
-            "qwen3.6-plus-2026-04-02": "qwen3.6-plus-2026-04-02",
-            "qwen3.6-flash": "qwen3.6-flash",
-            "qwen3.6-flash-2026-04-16": "qwen3.6-flash-2026-04-16",
-            "qwen3.6-max-preview": "qwen3.6-max-preview",
-            "qwen3.5-plus": "qwen3.5-plus",
-            "qwen3.5-plus-2026-02-15": "qwen3.5-plus-2026-02-15",
-            "qwen3.5-flash": "qwen3.5-flash",
-            "qwen3.5-flash-2026-02-23": "qwen3.5-flash-2026-02-23",
-            "qwen3.5-397b-a17b": "qwen3.5-397b-a17b",
-            "qwen3.5-122b-a10b": "qwen3.5-122b-a10b",
-            "qwen3.5-35b-a3b": "qwen3.5-35b-a3b",
-            "qwen3.5-27b": "qwen3.5-27b",
-            "qwen3-coder-plus": "qwen3-coder-plus",
-            "qwen3-coder-flash": "qwen3-coder-flash",
-            "qwen-plus-us": "qwen-plus-us",
-            "qwen-flash-us": "qwen-flash-us",
-            "qwen-plus": "qwen-plus",
-            "qwen-max": "qwen-max",
-            "qwen-flash": "qwen-flash",
-            "qwq-plus": "qwq-plus",
-        },
     ),
     "groq": (
         "https://api.groq.com/openai/v1",
         "https://api.groq.com/openai/v1",
-        {
-            "llama-3.3-70b-versatile": "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant": "llama-3.1-8b-instant",
-            "openai/gpt-oss-120b": "openai/gpt-oss-120b",
-            "openai/gpt-oss-20b": "openai/gpt-oss-20b",
-            "qwen/qwen3-32b": "qwen/qwen3-32b",
-        },
     ),
     "together": (
         "https://api.together.ai/v1",
         "https://api.together.ai/v1",
-        {
-            "llama-3.3-70b": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-            "llama-3.1-8b": "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
-            "deepseek-v3": "deepseek-ai/DeepSeek-V3",
-            "qwen3-coder": "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
-            "kimi-k2": "moonshotai/Kimi-K2-Instruct",
-        },
     ),
     "fireworks": (
         "https://api.fireworks.ai/inference/v1",
         "",
-        {
-            "llama-3.1-70b": "accounts/fireworks/models/llama-v3p1-70b-instruct",
-            "deepseek-v3": "accounts/fireworks/models/deepseek-v3p1",
-            "qwen3-235b": "accounts/fireworks/models/qwen3-235b-a22b",
-            "kimi-k2": "accounts/fireworks/models/kimi-k2-instruct",
-        },
     ),
     "mistral": (
         "https://api.mistral.ai/v1",
         "https://api.mistral.ai/v1",
-        {
-            "mistral-large": "mistral-large-latest",
-            "mistral-small": "mistral-small-latest",
-            "codestral": "codestral-latest",
-            "devstral-small": "devstral-small-latest",
-            "magistral-medium": "magistral-medium-latest",
-        },
     ),
 }
 
@@ -446,9 +327,9 @@ _OPENAI_COMPATIBLE_PROVIDER_NAMES = frozenset(_OPENAI_COMPATIBLE_DEFAULTS)
 _OPENAI_COMPATIBLE_PROVIDERS_USING_BASE_URL_DISCOVERY = frozenset({"deepseek"})
 
 
-def openai_compatible_defaults(provider_name: str) -> tuple[str, dict[str, str]]:
-    default = _OPENAI_COMPATIBLE_DEFAULTS.get(provider_name, ("", "", {}))
-    return default[0], dict(default[2])
+def openai_compatible_default_base_url(provider_name: str) -> str:
+    default = _OPENAI_COMPATIBLE_DEFAULTS.get(provider_name)
+    return "" if default is None else default[0]
 
 
 def openai_compatible_discovery_base_url(provider_name: str) -> str | None:
@@ -458,33 +339,38 @@ def openai_compatible_discovery_base_url(provider_name: str) -> str | None:
     return default[1]
 
 
-def openai_compatible_config_to_litellm(
+def openai_compatible_endpoint_config(
     provider_name: str,
     config: OpenAICompatibleProviderConfig | None,
-) -> LiteLLMProviderConfig | None:
-    if config is None:
-        return None
+) -> ProviderEndpointConfig:
     if provider_name not in _OPENAI_COMPATIBLE_PROVIDER_NAMES:
         raise ValueError(f"Unknown OpenAI-compatible provider: {provider_name!r}")
-    default_base_url, default_model_map = openai_compatible_defaults(provider_name)
+    if config is None:
+        # An unconfigured provider still has exactly one endpoint: its own
+        # vendor default. Discovery stays off -- nobody asked us to list this
+        # vendor's models, and an unauthenticated listing must not go out.
+        return ProviderEndpointConfig(
+            base_url=openai_compatible_default_base_url(provider_name),
+            discovery_base_url="",
+        )
+    default_base_url = openai_compatible_default_base_url(provider_name)
     default_discovery_base_url = openai_compatible_discovery_base_url(provider_name)
     if config.discovery_base_url is not None:
         discovery_base_url = config.discovery_base_url
     elif config.base_url is not None and default_discovery_base_url == "":
+        # An empty default marks a provider with no public model listing.
         discovery_base_url = ""
     elif config.base_url is not None and provider_name in _OPENAI_COMPATIBLE_PROVIDERS_USING_BASE_URL_DISCOVERY:
         discovery_base_url = None
-    elif config.base_url is not None:
-        discovery_base_url = default_discovery_base_url
     else:
         discovery_base_url = default_discovery_base_url
-    return LiteLLMProviderConfig(
+    return ProviderEndpointConfig(
         api_key=config.api_key,
         base_url=config.base_url if config.base_url else default_base_url,
         discovery_base_url=discovery_base_url,
         ssl_verify=config.ssl_verify,
         timeout_seconds=config.timeout_seconds,
-        model_map=dict(config.model_map) if config.model_map else default_model_map,
+        model_map=dict(config.model_map),
     )
 
 
@@ -499,6 +385,7 @@ _XAI_API_KEY_ENV_VAR = "XAI_API_KEY"
 _MINIMAX_API_KEY_ENV_VAR = "MINIMAX_API_KEY"
 _KIMI_API_KEY_ENV_VAR = "KIMI_API_KEY"
 _OPENCODE_API_KEY_ENV_VAR = "OPENCODE_API_KEY"
+_DASHSCOPE_API_KEY_ENV_VAR = "DASHSCOPE_API_KEY"
 _GROQ_API_KEY_ENV_VAR = "GROQ_API_KEY"
 _TOGETHER_API_KEY_ENV_VAR = "TOGETHER_API_KEY"
 _FIREWORKS_API_KEY_ENV_VAR = "FIREWORKS_API_KEY"
@@ -539,7 +426,7 @@ class AnthropicProviderConfig:
 
 
 type GoogleAuthMethod = Literal["api_key", "oauth", "service_account"]
-type LiteLLMAuthScheme = Literal["bearer", "token", "none"]
+type EndpointAuthScheme = Literal["bearer", "token", "none"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -582,13 +469,13 @@ class CopilotProviderConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class LiteLLMProviderConfig:
+class ProviderEndpointConfig:
     api_key: str | None = None
     api_key_env_var: str | None = None
     base_url: str | None = None
     discovery_base_url: str | None = None
     auth_header: str | None = None
-    auth_scheme: LiteLLMAuthScheme = "bearer"
+    auth_scheme: EndpointAuthScheme = "bearer"
     ssl_verify: bool | None = None
     timeout_seconds: float | None = None
     model_map: dict[str, str] = field(default_factory=dict)
@@ -612,9 +499,9 @@ class ProviderConfigs:
     anthropic: AnthropicProviderConfig | None = None
     google: GoogleProviderConfig | None = None
     copilot: CopilotProviderConfig | None = None
-    litellm: LiteLLMProviderConfig | None = None
-    opencode: LiteLLMProviderConfig | None = None
-    openrouter: LiteLLMProviderConfig | None = None
+    endpoint: ProviderEndpointConfig | None = None
+    opencode: ProviderEndpointConfig | None = None
+    openrouter: ProviderEndpointConfig | None = None
     deepseek: OpenAICompatibleProviderConfig | None = None
     zai: OpenAICompatibleProviderConfig | None = None
     zhipuai: OpenAICompatibleProviderConfig | None = None
@@ -627,18 +514,16 @@ class ProviderConfigs:
     together: OpenAICompatibleProviderConfig | None = None
     fireworks: OpenAICompatibleProviderConfig | None = None
     mistral: OpenAICompatibleProviderConfig | None = None
-    custom: dict[str, LiteLLMProviderConfig] = field(default_factory=dict)
+    custom: dict[str, ProviderEndpointConfig] = field(default_factory=dict)
 
 
 _OPENAI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
 _ANTHROPIC_API_KEY_ENV_VAR = "ANTHROPIC_API_KEY"
 _GOOGLE_API_KEY_ENV_VAR = "GOOGLE_API_KEY"
 _COPILOT_TOKEN_ENV_VAR = "GITHUB_COPILOT_TOKEN"
-_LITELLM_API_KEY_ENV_VAR = "LITELLM_API_KEY"
-_LITELLM_PROXY_API_KEY_ENV_VAR = "LITELLM_PROXY_API_KEY"
-_LITELLM_BASE_URL_ENV_VAR = "LITELLM_BASE_URL"
+_ENDPOINT_API_KEY_ENV_VAR = "ENDPOINT_API_KEY"
+_ENDPOINT_BASE_URL_ENV_VAR = "ENDPOINT_BASE_URL"
 _OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
-_LITELLM_PROXY_URL_ENV_VAR = "LITELLM_PROXY_URL"
 
 _VALID_GOOGLE_AUTH_METHODS: tuple[GoogleAuthMethod, ...] = (
     "api_key",
@@ -646,7 +531,7 @@ _VALID_GOOGLE_AUTH_METHODS: tuple[GoogleAuthMethod, ...] = (
     "service_account",
 )
 _VALID_COPILOT_AUTH_METHODS: tuple[CopilotAuthMethod, ...] = ("token", "oauth")
-_VALID_LITELLM_AUTH_SCHEMES: tuple[LiteLLMAuthScheme, ...] = (
+_VALID_ENDPOINT_AUTH_SCHEMES: tuple[EndpointAuthScheme, ...] = (
     "bearer",
     "token",
     "none",
@@ -673,14 +558,14 @@ def _parse_copilot_auth_method(raw_method: str, *, field_path: str) -> CopilotAu
     raise ValueError(f"{_nested_config_field(field_path, 'method')} must be one of: {allowed}")
 
 
-def _parse_litellm_auth_scheme(raw_scheme: str, *, field_path: str) -> LiteLLMAuthScheme:
+def _parse_endpoint_auth_scheme(raw_scheme: str, *, field_path: str) -> EndpointAuthScheme:
     if raw_scheme == "bearer":
         return "bearer"
     if raw_scheme == "token":
         return "token"
     if raw_scheme == "none":
         return "none"
-    allowed = ", ".join(_VALID_LITELLM_AUTH_SCHEMES)
+    allowed = ", ".join(_VALID_ENDPOINT_AUTH_SCHEMES)
     raise ValueError(f"{_nested_config_field(field_path, 'auth_scheme')} must be one of: {allowed}")
 
 
@@ -689,7 +574,7 @@ _BUILTIN_PROVIDER_NAMES: frozenset[str] = frozenset(
         "openai",
         "anthropic",
         "google",
-        "litellm",
+        "endpoint",
         "opencode",
         "openrouter",
         "copilot",
@@ -735,9 +620,9 @@ def provider_configs_from_env(env: Mapping[str, str]) -> ProviderConfigs | None:
             if (copilot_token := env.get(_COPILOT_TOKEN_ENV_VAR))
             else None
         ),
-        litellm=_litellm_provider_config_from_env(env),
-        opencode=(LiteLLMProviderConfig(api_key=opencode_key) if (opencode_key := env.get(_OPENCODE_API_KEY_ENV_VAR)) else None),
-        openrouter=(LiteLLMProviderConfig(api_key=openrouter_key) if (openrouter_key := env.get(_OPENROUTER_API_KEY_ENV_VAR)) else None),
+        endpoint=_endpoint_provider_config_from_env(env),
+        opencode=(ProviderEndpointConfig(api_key=opencode_key) if (opencode_key := env.get(_OPENCODE_API_KEY_ENV_VAR)) else None),
+        openrouter=(ProviderEndpointConfig(api_key=openrouter_key) if (openrouter_key := env.get(_OPENROUTER_API_KEY_ENV_VAR)) else None),
         deepseek=_openai_compatible_provider_config_from_env(env, _DEEPSEEK_API_KEY_ENV_VAR),
         zai=_openai_compatible_provider_config_from_env(env, _ZAI_API_KEY_ENV_VAR),
         zhipuai=_openai_compatible_provider_config_from_env(
@@ -752,7 +637,7 @@ def provider_configs_from_env(env: Mapping[str, str]) -> ProviderConfigs | None:
         minimax=_openai_compatible_provider_config_from_env(env, _MINIMAX_API_KEY_ENV_VAR),
         kimi=_openai_compatible_provider_config_from_env(env, _KIMI_API_KEY_ENV_VAR),
         opencode_go=_openai_compatible_provider_config_from_env(env, _OPENCODE_API_KEY_ENV_VAR),
-        qwen=_openai_compatible_provider_config_from_env(env, "DASHSCOPE_API_KEY"),
+        qwen=_openai_compatible_provider_config_from_env(env, _DASHSCOPE_API_KEY_ENV_VAR),
         groq=_openai_compatible_provider_config_from_env(env, _GROQ_API_KEY_ENV_VAR),
         together=_openai_compatible_provider_config_from_env(env, _TOGETHER_API_KEY_ENV_VAR),
         fireworks=_openai_compatible_provider_config_from_env(env, _FIREWORKS_API_KEY_ENV_VAR),
@@ -777,9 +662,9 @@ def merge_provider_configs(
         anthropic=_merge_anthropic_provider_config(primary.anthropic, fallback.anthropic),
         google=_merge_google_provider_config(primary.google, fallback.google),
         copilot=_merge_copilot_provider_config(primary.copilot, fallback.copilot),
-        litellm=_merge_litellm_provider_config(primary.litellm, fallback.litellm),
-        opencode=_merge_litellm_provider_config(primary.opencode, fallback.opencode),
-        openrouter=_merge_litellm_provider_config(primary.openrouter, fallback.openrouter),
+        endpoint=_merge_endpoint_provider_config(primary.endpoint, fallback.endpoint),
+        opencode=_merge_endpoint_provider_config(primary.opencode, fallback.opencode),
+        openrouter=_merge_endpoint_provider_config(primary.openrouter, fallback.openrouter),
         deepseek=_merge_openai_compatible_provider_config(primary.deepseek, fallback.deepseek),
         zai=_merge_openai_compatible_provider_config(primary.zai, fallback.zai),
         zhipuai=_merge_openai_compatible_provider_config(primary.zhipuai, fallback.zhipuai),
@@ -874,15 +759,15 @@ def _merge_copilot_provider_config(
     )
 
 
-def _merge_litellm_provider_config(
-    primary: LiteLLMProviderConfig | None,
-    fallback: LiteLLMProviderConfig | None,
-) -> LiteLLMProviderConfig | None:
+def _merge_endpoint_provider_config(
+    primary: ProviderEndpointConfig | None,
+    fallback: ProviderEndpointConfig | None,
+) -> ProviderEndpointConfig | None:
     if primary is None:
         return fallback
     if fallback is None:
         return primary
-    return LiteLLMProviderConfig(
+    return ProviderEndpointConfig(
         api_key=_prefer_primary(primary.api_key, fallback.api_key),
         api_key_env_var=_prefer_primary(primary.api_key_env_var, fallback.api_key_env_var),
         base_url=_prefer_primary(primary.base_url, fallback.base_url),
@@ -917,12 +802,12 @@ def _merge_openai_compatible_provider_config(
     )
 
 
-def _litellm_provider_config_from_env(env: Mapping[str, str]) -> LiteLLMProviderConfig | None:
-    api_key = env.get(_LITELLM_API_KEY_ENV_VAR) or env.get(_LITELLM_PROXY_API_KEY_ENV_VAR)
-    base_url = env.get(_LITELLM_BASE_URL_ENV_VAR) or env.get(_LITELLM_PROXY_URL_ENV_VAR)
+def _endpoint_provider_config_from_env(env: Mapping[str, str]) -> ProviderEndpointConfig | None:
+    api_key = env.get(_ENDPOINT_API_KEY_ENV_VAR)
+    base_url = env.get(_ENDPOINT_BASE_URL_ENV_VAR)
     if api_key is None and base_url is None:
         return None
-    return LiteLLMProviderConfig(api_key=api_key, base_url=base_url)
+    return ProviderEndpointConfig(api_key=api_key, base_url=base_url)
 
 
 def _openai_compatible_provider_config_from_env(
@@ -943,7 +828,7 @@ def _provider_configs_has_entries(providers: ProviderConfigs) -> bool:
             providers.anthropic,
             providers.google,
             providers.copilot,
-            providers.litellm,
+            providers.endpoint,
             providers.opencode,
             providers.openrouter,
             providers.deepseek,
@@ -998,6 +883,11 @@ def _validation_reason_from_error(error: dict[str, object]) -> str:
     return cast(str, error.get("msg", "is invalid"))
 
 
+# Provider keys renamed after a session was persisted. The persisted parsing
+# boundary migrates these; live config still rejects them, pointing at the new key.
+_RENAMED_PROVIDER_KEY_REPLACEMENTS: dict[str, str] = {"litellm": "providers.endpoint"}
+
+
 def _format_provider_payload_validation_error(
     *,
     field_path: str,
@@ -1011,6 +901,9 @@ def _format_provider_payload_validation_error(
         suffix = " when provided" if object_when_provided else ""
         return f"{target} must be an object{suffix}"
     if error_type == "extra_forbidden":
+        replacement = _RENAMED_PROVIDER_KEY_REPLACEMENTS.get(str(loc[-1])) if len(loc) == 1 else None
+        if replacement is not None:
+            return f"{target} is not supported; use '{replacement}' instead"
         return f"{target} is not supported"
     reason = _validation_reason_from_error(error)
     if reason.startswith("[") or reason.startswith("."):
@@ -1073,18 +966,18 @@ def parse_provider_configs_payload(
             field_path=_nested_config_field(source, "copilot"),
             env=environment,
         ),
-        litellm=_parse_litellm_provider_config(
-            payload.litellm,
-            field_path=_nested_config_field(source, "litellm"),
+        endpoint=_parse_endpoint_provider_config(
+            payload.endpoint,
+            field_path=_nested_config_field(source, "endpoint"),
             env=environment,
         ),
-        opencode=_parse_litellm_provider_config(
+        opencode=_parse_endpoint_provider_config(
             payload.opencode,
             field_path=_nested_config_field(source, "opencode"),
             env=environment,
             default_api_key_env_var=_OPENCODE_API_KEY_ENV_VAR,
         ),
-        openrouter=_parse_litellm_provider_config(
+        openrouter=_parse_endpoint_provider_config(
             payload.openrouter,
             field_path=_nested_config_field(source, "openrouter"),
             env=environment,
@@ -1137,7 +1030,7 @@ def parse_provider_configs_payload(
             payload.qwen,
             field_path=_nested_config_field(source, "qwen"),
             env=environment,
-            api_key_env_var="DASHSCOPE_API_KEY",
+            api_key_env_var=_DASHSCOPE_API_KEY_ENV_VAR,
         ),
         groq=_parse_openai_compatible_provider_config(
             payload.groq,
@@ -1163,7 +1056,7 @@ def parse_provider_configs_payload(
             env=environment,
             api_key_env_var=_MISTRAL_API_KEY_ENV_VAR,
         ),
-        custom=_parse_custom_litellm_provider_configs(
+        custom=_parse_custom_endpoint_provider_configs(
             payload.custom,
             field_path=_nested_config_field(source, "custom"),
             env=environment,
@@ -1199,18 +1092,18 @@ def serialize_provider_configs(
             providers.copilot,
             include_secrets=include_secrets,
         )
-    if providers.litellm is not None:
-        serialized["litellm"] = _serialize_litellm_provider_config(
-            providers.litellm,
+    if providers.endpoint is not None:
+        serialized["endpoint"] = _serialize_endpoint_provider_config(
+            providers.endpoint,
             include_secrets=include_secrets,
         )
     if providers.opencode is not None:
-        serialized["opencode"] = _serialize_litellm_provider_config(
+        serialized["opencode"] = _serialize_endpoint_provider_config(
             providers.opencode,
             include_secrets=include_secrets,
         )
     if providers.openrouter is not None:
-        serialized["openrouter"] = _serialize_litellm_provider_config(
+        serialized["openrouter"] = _serialize_endpoint_provider_config(
             providers.openrouter,
             include_secrets=include_secrets,
         )
@@ -1277,7 +1170,7 @@ def serialize_provider_configs(
     if providers.custom:
         custom_payload: dict[str, object] = {}
         for provider_name, custom_config in providers.custom.items():
-            custom_payload[provider_name] = _serialize_litellm_provider_config(
+            custom_payload[provider_name] = _serialize_endpoint_provider_config(
                 custom_config,
                 include_secrets=include_secrets,
             )
@@ -1578,22 +1471,22 @@ def _parse_copilot_auth_config(
     )
 
 
-def _parse_litellm_provider_config(
+def _parse_endpoint_provider_config(
     raw_value: object,
     *,
     field_path: str,
     env: Mapping[str, str],
     default_api_key_env_var: str | None = None,
-) -> LiteLLMProviderConfig | None:
+) -> ProviderEndpointConfig | None:
     if raw_value is None:
         return None
     payload = (
         raw_value
-        if isinstance(raw_value, _LiteLLMProviderConfigPayload)
+        if isinstance(raw_value, _ProviderEndpointConfigPayload)
         else _validate_provider_payload_model(
             raw_value,
             field_path=field_path,
-            model_type=_LiteLLMProviderConfigPayload,
+            model_type=_ProviderEndpointConfigPayload,
         )
     )
 
@@ -1605,18 +1498,18 @@ def _parse_litellm_provider_config(
         elif default_api_key_env_var is not None:
             api_key = env.get(default_api_key_env_var)
         else:
-            api_key = env.get(_LITELLM_API_KEY_ENV_VAR) or env.get(_LITELLM_PROXY_API_KEY_ENV_VAR)
+            api_key = env.get(_ENDPOINT_API_KEY_ENV_VAR)
 
     base_url = payload.base_url
     if base_url is None:
-        base_url = env.get(_LITELLM_BASE_URL_ENV_VAR) or env.get(_LITELLM_PROXY_URL_ENV_VAR)
+        base_url = env.get(_ENDPOINT_BASE_URL_ENV_VAR)
 
     raw_auth_scheme = payload.auth_scheme
-    auth_scheme: LiteLLMAuthScheme = "bearer"
+    auth_scheme: EndpointAuthScheme = "bearer"
     if raw_auth_scheme is not None:
-        auth_scheme = _parse_litellm_auth_scheme(raw_auth_scheme, field_path=field_path)
+        auth_scheme = _parse_endpoint_auth_scheme(raw_auth_scheme, field_path=field_path)
 
-    return LiteLLMProviderConfig(
+    return ProviderEndpointConfig(
         api_key=api_key,
         api_key_env_var=api_key_env_var,
         base_url=base_url,
@@ -1831,8 +1724,8 @@ def _serialize_copilot_auth_config(
     return payload
 
 
-def _serialize_litellm_provider_config(
-    provider: LiteLLMProviderConfig,
+def _serialize_endpoint_provider_config(
+    provider: ProviderEndpointConfig,
     *,
     include_secrets: bool,
 ) -> dict[str, object]:
@@ -1895,19 +1788,19 @@ def _serialize_transient_retry_config(
     }
 
 
-def _parse_custom_litellm_provider_configs(
+def _parse_custom_endpoint_provider_configs(
     raw_value: object,
     *,
     field_path: str,
     env: Mapping[str, str],
-) -> dict[str, LiteLLMProviderConfig]:
+) -> dict[str, ProviderEndpointConfig]:
     if raw_value is None:
         return {}
     if not isinstance(raw_value, dict):
         raise ValueError(f"{field_path} must be an object when provided")
 
     payload = cast(dict[object, object], raw_value)
-    parsed: dict[str, LiteLLMProviderConfig] = {}
+    parsed: dict[str, ProviderEndpointConfig] = {}
     for raw_provider_name, provider_payload in payload.items():
         if not isinstance(raw_provider_name, str) or not raw_provider_name:
             raise ValueError(f"{field_path} keys must be non-empty strings")
@@ -1923,7 +1816,7 @@ def _parse_custom_litellm_provider_configs(
                 f"(conflicts with '{normalized_provider_name}')"
             )
 
-        parsed_config = _parse_litellm_provider_config(
+        parsed_config = _parse_endpoint_provider_config(
             provider_payload,
             field_path=_nested_config_field(field_path, raw_provider_name),
             env=env,

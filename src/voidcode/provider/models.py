@@ -7,7 +7,7 @@ from .config import ProviderFallbackConfig
 from .model_catalog import ProviderModelMetadata
 from .protocol import ModelTurnProvider
 
-type ProviderResolutionSource = Literal["builtin", "custom", "default_litellm"]
+type ProviderResolutionSource = Literal["builtin", "custom", "default_endpoint"]
 
 
 @dataclass(frozen=True, slots=True)

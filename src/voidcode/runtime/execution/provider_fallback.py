@@ -12,6 +12,7 @@ PROVIDER_TRANSIENT_RETRYABLE_KINDS = frozenset({"rate_limit", "transient_failure
 PROVIDER_FALLBACK_ALLOWED_KINDS = frozenset(
     {
         "missing_auth",
+        "not_configured",
         "rate_limit",
         "invalid_model",
         "transient_failure",
@@ -215,8 +216,8 @@ def provider_transient_retry_config(
         provider_config = providers.google
     elif provider_name == "copilot":
         provider_config = providers.copilot
-    elif provider_name == "litellm":
-        provider_config = providers.litellm
+    elif provider_name == "endpoint":
+        provider_config = providers.endpoint
     elif provider_name == "opencode":
         provider_config = providers.opencode
     elif provider_name == "openrouter":
