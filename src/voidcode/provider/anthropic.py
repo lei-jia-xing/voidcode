@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .config import AnthropicProviderConfig, LiteLLMProviderConfig
-from .litellm_backend import LiteLLMBackendProvider
-from .litellm_config import anthropic_provider_config
+from .anthropic_native import AnthropicMessagesProvider
+from .config import AnthropicProviderConfig
 from .protocol import TurnProvider
 
 
@@ -13,11 +12,8 @@ class AnthropicModelProvider:
     name: str = "anthropic"
     config: AnthropicProviderConfig | None = None
 
-    def provider_config(self) -> LiteLLMProviderConfig:
-        return anthropic_provider_config(self.config)
+    def provider_config(self) -> AnthropicProviderConfig | None:
+        return self.config
 
     def turn_provider(self) -> TurnProvider:
-        return LiteLLMBackendProvider(
-            name=self.name,
-            config=self.provider_config(),
-        )
+        return AnthropicMessagesProvider(name=self.name, config=self.config)

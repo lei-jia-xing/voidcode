@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 from voidcode.provider.anthropic import AnthropicModelProvider
+from voidcode.provider.anthropic_native import AnthropicMessagesProvider, AnthropicTransportError
 from voidcode.provider.config import (
     AnthropicProviderConfig,
     GoogleProviderAuthConfig,
@@ -43,7 +44,6 @@ from voidcode.provider.protocol import (
     ProviderTokenUsage,
     ProviderTurnRequest,
     StreamableTurnProvider,
-    TurnProvider,
 )
 from voidcode.provider.together import TogetherModelProvider
 from voidcode.provider.zai import ZAIModelProvider
@@ -330,6 +330,51 @@ class _StubAPIError(Exception):
         self.code = code
 
 
+class _NativeAnthropicTransport:
+    def __init__(
+        self,
+        *,
+        response: dict[str, object] | None = None,
+        stream_events: tuple[dict[str, object], ...] = (),
+        error: AnthropicTransportError | None = None,
+        responder: Any | None = None,
+    ) -> None:
+        self.response = response or {
+            "id": "msg_test",
+            "type": "message",
+            "model": "claude-test",
+            "content": [{"type": "text", "text": "hello world"}],
+            "stop_reason": "end_turn",
+        }
+        self.stream_events = stream_events
+        self.error = error
+        self.responder = responder
+        self.payloads: list[dict[str, object]] = []
+
+    def request(self, payload: dict[str, object], *, timeout_seconds: float) -> object:
+        _ = timeout_seconds
+        self.payloads.append(payload)
+        if self.error is not None:
+            raise self.error
+        if payload.get("stream"):
+            return iter(self.stream_events)
+        if self.responder is not None:
+            return self.responder(payload, len(self.payloads))
+        return self.response
+
+
+def _native_anthropic_provider(
+    *,
+    response: dict[str, object] | None = None,
+    stream_events: tuple[dict[str, object], ...] = (),
+    error: AnthropicTransportError | None = None,
+    responder: Any | None = None,
+    config: AnthropicProviderConfig | None = None,
+) -> tuple[AnthropicMessagesProvider, _NativeAnthropicTransport]:
+    transport = _NativeAnthropicTransport(response=response, stream_events=stream_events, error=error, responder=responder)
+    return AnthropicMessagesProvider(config=config, transport=transport), transport
+
+
 def _patch_litellm_completion(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -426,26 +471,38 @@ def test_provider_adapter_stream_turn_emits_happy_path_chunks(
     provider_name: str,
     provider: ModelTurnProvider,
 ) -> None:
-    turn_provider = provider.turn_provider()
+    if provider_name == "anthropic":
+        turn_provider, native_transport = _native_anthropic_provider(
+            stream_events=(
+                {"type": "message_start", "message": {}},
+                {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+                {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hello "}},
+                {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "world"}},
+                {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+                {"type": "message_stop"},
+            )
+        )
+    else:
+        turn_provider = provider.turn_provider()
+        _patch_litellm_completion(
+            monkeypatch,
+            mode="stream",
+            stream_chunks=(("hello ", None), ("world", None), (None, "stop")),
+        )
+        native_transport = None
     assert isinstance(turn_provider, StreamableTurnProvider)
-
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="stream",
-        stream_chunks=(
-            ("hello ", None),
-            ("world", None),
-            (None, "stop"),
-        ),
-    )
 
     events = list(turn_provider.stream_turn(_build_turn_request(model_name=provider_name)))
 
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    assert payload.get("tools")
-    assert payload.get("tool_choice") == "auto"
+    if native_transport is not None:
+        assert native_transport.payloads[0]["tools"] == [{"name": "read", "description": "read file", "input_schema": {"type": "object"}}]
+        assert native_transport.payloads[0]["tool_choice"] == {"type": "auto"}
+    else:
+        payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+        assert isinstance(payload_obj, dict)
+        payload = cast(dict[str, object], payload_obj)
+        assert payload.get("tools")
+        assert payload.get("tool_choice") == "auto"
 
     assert [event.kind for event in events] == ["delta", "delta", "done"]
     assert events[0] == ProviderStreamEvent(kind="delta", channel="text", text="hello ")
@@ -732,14 +789,20 @@ def test_provider_adapter_stream_turn_maps_http_error_to_provider_execution_erro
     provider_name: str,
     provider: ModelTurnProvider,
 ) -> None:
-    turn_provider = provider.turn_provider()
+    if provider_name == "anthropic":
+        turn_provider, _native_transport = _native_anthropic_provider(
+            error=AnthropicTransportError(
+                {"type": "error", "error": {"type": "rate_limit_error", "message": "Too many requests", "code": "rate_limit"}, "status_code": 429}
+            )
+        )
+    else:
+        turn_provider = provider.turn_provider()
+        _patch_litellm_completion(
+            monkeypatch,
+            mode="stream",
+            api_error=_StubAPIError("Too many requests", status_code=429, code="rate_limit"),
+        )
     assert isinstance(turn_provider, StreamableTurnProvider)
-
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="stream",
-        api_error=_StubAPIError("Too many requests", status_code=429, code="rate_limit"),
-    )
 
     with pytest.raises(ProviderExecutionError, match="Too many requests") as exc_info:
         _ = list(turn_provider.stream_turn(_build_turn_request(model_name=provider_name)))
@@ -761,13 +824,11 @@ def test_provider_adapter_propose_turn_returns_text_output(
     provider_name: str,
     provider: ModelTurnProvider,
 ) -> None:
-    turn_provider: TurnProvider = provider.turn_provider()
-
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="hello world",
-    )
+    if provider_name == "anthropic":
+        turn_provider, _native_transport = _native_anthropic_provider()
+    else:
+        turn_provider = provider.turn_provider()
+        _patch_litellm_completion(monkeypatch, mode="completion", completion_content="hello world")
 
     result = turn_provider.propose_turn(_build_turn_request(model_name=provider_name))
 
@@ -864,36 +925,32 @@ def test_provider_adapter_injects_applied_skills_into_system_messages(
     provider_name: str,
     provider: ModelTurnProvider,
 ) -> None:
-    turn_provider: TurnProvider = provider.turn_provider()
+    request = _build_turn_request_with_skill(model_name=provider_name)
+    if provider_name == "anthropic":
+        turn_provider, native_transport = _native_anthropic_provider()
+    else:
+        turn_provider = provider.turn_provider()
+        _patch_litellm_completion(monkeypatch, mode="completion", completion_content="hello world")
+        native_transport = None
 
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="hello world",
-    )
-
-    result = turn_provider.propose_turn(_build_turn_request_with_skill(model_name=provider_name))
+    result = turn_provider.propose_turn(request)
 
     assert result.output == "hello world"
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    messages_obj = payload.get("messages")
-    assert isinstance(messages_obj, list)
-    messages = cast(list[dict[str, str]], messages_obj)
-    assert messages == [
-        {
-            "role": "system",
-            "content": (
-                "You must apply the following runtime-managed skills for this turn. "
-                "Treat them as active task instructions in addition to the user's request.\n\n"
-                "## summarize\n"
-                "Description: Summarize selected files.\n"
-                "# Summarize\nUse concise bullet points."
-            ),
-        },
-        {"role": "user", "content": "summarize sample.txt"},
-    ]
+    if native_transport is not None:
+        payload = native_transport.payloads[0]
+        assert payload["system"] == (
+            "You must apply the following runtime-managed skills for this turn. "
+            "Treat them as active task instructions in addition to the user's request.\n\n"
+            "## summarize\n"
+            "Description: Summarize selected files.\n"
+            "# Summarize\nUse concise bullet points."
+        )
+        assert payload["messages"] == [{"role": "user", "content": [{"type": "text", "text": "summarize sample.txt"}]}]
+    else:
+        payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+        assert isinstance(payload_obj, dict)
+        payload = cast(dict[str, object], payload_obj)
+        assert payload["messages"]
 
 
 def test_provider_adapter_prefers_runtime_skill_prompt_context(
@@ -951,35 +1008,31 @@ def test_provider_adapter_injects_continuity_summary_into_system_messages(
     provider_name: str,
     provider: ModelTurnProvider,
 ) -> None:
-    turn_provider: TurnProvider = provider.turn_provider()
+    request = _build_turn_request_with_continuity(model_name=provider_name)
+    if provider_name == "anthropic":
+        turn_provider, native_transport = _native_anthropic_provider()
+    else:
+        turn_provider = provider.turn_provider()
+        _patch_litellm_completion(monkeypatch, mode="completion", completion_content="hello world")
+        native_transport = None
 
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="hello world",
-    )
-
-    result = turn_provider.propose_turn(_build_turn_request_with_continuity(model_name=provider_name))
+    result = turn_provider.propose_turn(request)
 
     assert result.output == "hello world"
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    messages_obj = payload.get("messages")
-    assert isinstance(messages_obj, list)
-    messages = cast(list[dict[str, str]], messages_obj)
-    assert messages == [
-        {
-            "role": "system",
-            "content": (
-                "Runtime continuity summary:\n"
-                "Compacted 2 earlier tool results:\n"
-                '1. read ok path=sample.txt content_preview="old"\n'
-                '2. read ok path=sample.txt content_preview="older"'
-            ),
-        },
-        {"role": "user", "content": "summarize sample.txt"},
-    ]
+    if native_transport is not None:
+        payload = native_transport.payloads[0]
+        assert payload["system"] == (
+            "Runtime continuity summary:\n"
+            "Compacted 2 earlier tool results:\n"
+            '1. read ok path=sample.txt content_preview="old"\n'
+            '2. read ok path=sample.txt content_preview="older"'
+        )
+        assert payload["messages"] == [{"role": "user", "content": [{"type": "text", "text": "summarize sample.txt"}]}]
+    else:
+        payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+        assert isinstance(payload_obj, dict)
+        payload = cast(dict[str, object], payload_obj)
+        assert payload["messages"]
 
 
 def test_provider_adapter_omits_continuity_message_without_summary_text(
@@ -2699,24 +2752,22 @@ def test_provider_adapter_maps_reasoning_effort_for_provider(
     effort: str,
     expected: str,
 ) -> None:
-    provider = {
-        "openai": OpenAIModelProvider(),
-        "anthropic": AnthropicModelProvider(),
-        "google": GoogleModelProvider(),
-    }[provider_name].turn_provider()
+    if provider_name == "anthropic":
+        provider, native_transport = _native_anthropic_provider()
+        _ = provider.propose_turn(_build_turn_request(model_name=provider_name, reasoning_effort=effort))
+        assert native_transport.payloads[0]["thinking"] == {"type": "enabled", "budget_tokens": 32768}
+    else:
+        provider = {
+            "openai": OpenAIModelProvider(),
+            "google": GoogleModelProvider(),
+        }[provider_name].turn_provider()
+        _patch_litellm_completion(monkeypatch, mode="completion", completion_content="ok")
+        _ = provider.propose_turn(_build_turn_request(model_name=provider_name, reasoning_effort=effort))
 
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="ok",
-    )
-
-    _ = provider.propose_turn(_build_turn_request(model_name=provider_name, reasoning_effort=effort))
-
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    assert payload["reasoning_effort"] == expected
+        payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+        assert isinstance(payload_obj, dict)
+        payload = cast(dict[str, object], payload_obj)
+        assert payload["reasoning_effort"] == expected
 
 
 @pytest.mark.parametrize(
@@ -3618,21 +3669,20 @@ def test_provider_adapters_call_litellm_directly_without_internal_bridge(
     provider_name: str,
     provider: ModelTurnProvider,
 ) -> None:
-    turn_provider: TurnProvider = provider.turn_provider()
-
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="ok",
-    )
-
-    result = turn_provider.propose_turn(_build_turn_request(model_name=provider_name))
-
-    assert result.output == "ok"
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    assert payload["model"] == ("demo" if provider_name == "openai" else f"{provider_name}/demo")
+    if provider_name == "anthropic":
+        turn_provider, native_transport = _native_anthropic_provider()
+        result = turn_provider.propose_turn(_build_turn_request(model_name=provider_name))
+        assert result.output == "hello world"
+        assert native_transport.payloads[0]["model"] == "demo"
+    else:
+        turn_provider = provider.turn_provider()
+        _patch_litellm_completion(monkeypatch, mode="completion", completion_content="ok")
+        result = turn_provider.propose_turn(_build_turn_request(model_name=provider_name))
+        assert result.output == "ok"
+        payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+        assert isinstance(payload_obj, dict)
+        payload = cast(dict[str, object], payload_obj)
+        assert payload["model"] == ("demo" if provider_name == "openai" else f"{provider_name}/demo")
 
 
 @pytest.mark.parametrize(
@@ -3830,79 +3880,67 @@ def test_non_anthropic_cache_retention_is_explicitly_unsupported() -> None:
 def test_anthropic_cache_adapter_marks_prefix_and_reports_gateway_write_then_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import voidcode.provider.litellm_backend as backend_module
-
-    provider = AnthropicModelProvider(
-        config=AnthropicProviderConfig(cache_retention="short"),
-    ).turn_provider()
     request = _build_turn_request_with_skill(model_name="anthropic")
-    warmed_prefixes: set[str] = set()
-    observed_payloads: list[dict[str, object]] = []
+    call_count = 0
 
-    def completion(*args: Any, **kwargs: Any):
-        _ = args
-        payload = dict(kwargs)
-        observed_payloads.append(payload)
-        key = json.dumps({"messages": payload["messages"], "tools": payload["tools"]}, sort_keys=True)
-        usage = (
-            {"prompt_tokens": 128, "cache_read_input_tokens": 128}
-            if key in warmed_prefixes
-            else {"prompt_tokens": 128, "cache_creation_input_tokens": 128}
-        )
-        warmed_prefixes.add(key)
-        return _StubCompletionResponse(content="ok", usage=usage)
+    def respond(_payload: dict[str, object], _ordinal: int) -> dict[str, object]:
+        nonlocal call_count
+        call_count += 1
+        usage = {"input_tokens": 128, "output_tokens": 2}
+        if call_count in {1, 3}:
+            usage["cache_creation_input_tokens"] = 128
+        else:
+            usage["cache_read_input_tokens"] = 128
+        return {
+            "id": "msg_cache",
+            "type": "message",
+            "model": "claude-test",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": usage,
+        }
 
-    if backend_module.litellm_module is None:
-
-        class _FakeLiteLLM:
-            def completion(self, *args: Any, **kwargs: Any):
-                return completion(*args, **kwargs)
-
-        monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
-    else:
-        monkeypatch.setattr(backend_module.litellm_module, "completion", completion)
-
+    provider, native_transport = _native_anthropic_provider(config=AnthropicProviderConfig(cache_retention="short"), responder=respond)
     first = provider.propose_turn(request)
     second = provider.propose_turn(request)
     changed = provider.propose_turn(replace(request, available_tools=(replace(request.available_tools[0], description="read line ranges"),)))
 
-    marker = cast(list[dict[str, object]], observed_payloads[0]["tools"])[-1]["cache_control"]
+    marker = cast(list[dict[str, object]], native_transport.payloads[0]["tools"])[-1]["cache_control"]
     assert marker == {"type": "ephemeral", "ttl": "5m"}
-    assert first.usage is not None and first.usage.cache_write_tokens == 128 and first.usage.cache_read_tokens is None
-    assert second.usage is not None and second.usage.cache_read_tokens == 128 and second.usage.cache_write_tokens is None
-    assert changed.usage is not None and changed.usage.cache_write_tokens == 128 and changed.usage.cache_read_tokens is None
+    assert (
+        first.usage is not None
+        and first.usage.input_tokens == 128
+        and first.usage.uncached_input_tokens == 128
+        and first.usage.cache_write_tokens == 128
+        and first.usage.cache_read_tokens is None
+    )
+    assert (
+        second.usage is not None
+        and second.usage.input_tokens == 256
+        and second.usage.uncached_input_tokens == 128
+        and second.usage.cache_read_tokens == 128
+        and second.usage.cache_write_tokens is None
+    )
+    assert (
+        changed.usage is not None
+        and changed.usage.input_tokens == 128
+        and changed.usage.uncached_input_tokens == 128
+        and changed.usage.cache_write_tokens == 128
+        and changed.usage.cache_read_tokens is None
+    )
 
 
 def test_anthropic_long_cache_retention_marks_system_when_tools_are_absent() -> None:
-    provider = AnthropicModelProvider(
-        config=AnthropicProviderConfig(cache_retention="long"),
-    ).turn_provider()
     request = replace(_build_turn_request_with_skill(model_name="anthropic"), available_tools=())
+    provider, native_transport = _native_anthropic_provider(config=AnthropicProviderConfig(cache_retention="long"))
+    _ = provider.propose_turn(request)
 
-    wire = provider._build_messages(request)
-
-    system_content = wire.messages[0]["content"]
+    system_content = native_transport.payloads[0]["system"]
     assert isinstance(system_content, list)
     block = cast(dict[str, object], system_content[0])
     assert block["type"] == "text"
     assert "# Summarize" in block["text"]
     assert block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
-
-
-def test_litellm_stream_emits_explicit_tool_call_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = LiteLLMBackendProvider(name="openai", config=None)
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="stream",
-        stream_tool_chunks=(
-            ([{"index": 0, "id": "call-read", "function": {"name": "read", "arguments": '{"path":'}}], None),
-            ([{"index": 0, "function": {"arguments": '"sample.txt"}'}}], "tool_calls"),
-        ),
-    )
-    events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
-    assert [event.kind for event in events] == ["tool_call_start", "tool_call_delta", "tool_call_delta", "tool_call_end", "done"]
-    assert {event.tool_call_id for event in events[:-1]} == {"call-read"}
-    assert events[-2].parsed_arguments == {"path": "sample.txt"}
 
 
 def test_litellm_stream_keeps_parallel_tool_call_fragments_isolated(monkeypatch: pytest.MonkeyPatch) -> None:

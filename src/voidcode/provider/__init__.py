@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .anthropic import AnthropicModelProvider
+from .anthropic_native import AnthropicMessagesProvider, AnthropicMessagesTransport, AnthropicTransport
 from .auth import (
     ProviderAuthAuthorizeRequest,
     ProviderAuthAuthorizeResult,
@@ -83,6 +84,9 @@ from .zai import ZAIModelProvider
 from .zhipuai import ZhipuAIModelProvider
 
 __all__ = [
+    "AnthropicMessagesProvider",
+    "AnthropicMessagesTransport",
+    "AnthropicTransport",
     "AnthropicModelProvider",
     "CopilotModelProvider",
     "DeepSeekModelProvider",
