@@ -87,7 +87,6 @@ from voidcode.runtime.context.transforms import (
     RuntimeFileRulesTransformProvider,
 )
 from voidcode.runtime.context.window import (
-    ContextProjection,
     ContextWindowPolicy,
     RuntimeContextWindow,
     ToolResultView,
@@ -100,7 +99,6 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
-    RUNTIME_CONTEXT_COMPACTED,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_HOOK_PRESETS_LOADED,
     RUNTIME_MCP_SERVER_FAILED,
@@ -170,8 +168,6 @@ from voidcode.runtime.session import SessionRef, SessionStatus
 from voidcode.runtime.session_metadata_helpers import (
     continuity_state_from_session_metadata,
     session_with_context_compacted_state,
-    session_with_context_window_metadata,
-    session_with_context_window_payload_metadata,
 )
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.skills import SkillRegistry
@@ -502,8 +498,7 @@ def _assert_context_window_recomputed(
 
 
 def _context_window_policy(**overrides: object) -> ContextWindowPolicy:
-    resolved = {"tokenizer_model": None, **overrides}
-    return ContextWindowPolicy(**cast(Any, resolved))
+    return ContextWindowPolicy(**cast(Any, overrides))
 
 
 class _NoopMcpManager:
@@ -11945,9 +11940,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
                 context_transform_refs=("runtime_file_rules",),
                 model="opencode/gpt-5.4",
             ),
-            context_window=RuntimeContextWindowConfig(
-                auto_compaction=False,
-            ),
+            context_window=RuntimeContextWindowConfig(),
             lsp=RuntimeLspConfig(enabled=True),
             mcp=RuntimeMcpConfig(enabled=True),
             agents={"leader": RuntimeAgentConfig(preset="leader", model="opencode/gpt-5.4")},
@@ -12010,9 +12003,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
         model="opencode/gpt-5.4",
         execution_engine="provider",
     )
-    assert effective.context_window == RuntimeContextWindowConfig(
-        auto_compaction=False,
-    )
+    assert effective.context_window == RuntimeContextWindowConfig()
 
 
 def test_runtime_config_request_metadata_overrides_supported_fields(
@@ -12747,184 +12738,6 @@ def test_runtime_resume_uses_persisted_approval_mode_for_follow_up_gated_tools(
     assert resumed.events[-1].event_type == "runtime.approval_requested"
 
 
-def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: Path) -> None:
-    sample_file = tmp_path / "sample.txt"
-    sample_file.write_text("alpha\n", encoding="utf-8")
-    created_providers: list[_ScriptedTurnProvider] = []
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
-                outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
-                    ProviderTurnResult(
-                        tool_call=ToolCall(
-                            "write",
-                            {"path": "beta.txt", "content": "2"},
-                        )
-                    ),
-                    ProviderTurnResult(output="done"),
-                ),
-                created_providers=created_providers,
-            )
-        }
-    )
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            approval_mode="ask",
-        ),
-        permission_policy=PermissionPolicy(mode="ask"),
-        model_provider_registry=registry,
-        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=30),
-    )
-
-    waiting = runtime.run(
-        RuntimeRequest(
-            prompt="read sample.txt\nread sample.txt\nwrite beta.txt 2",
-            session_id="continuity-approval",
-        )
-    )
-    assert waiting.session.status == "waiting"
-    waiting_runtime_state = cast(dict[str, object], waiting.session.metadata["runtime_state"])
-    initial_continuity = cast(dict[str, object], waiting_runtime_state["context_projection"])
-    assert initial_continuity["objective"] == "read sample.txt read sample.txt write beta.txt 2"
-    assert initial_continuity["dropped_tool_result_count"] == 1
-    assert initial_continuity["retained_tool_result_count"] == 1
-    assert initial_continuity["source"] == "tool_result_window"
-    assert initial_continuity["version"] == 3
-    assert "## Objective" in cast(str, initial_continuity["summary_text"])
-    assert "current_goal" not in initial_continuity
-    assert "next_step" not in initial_continuity
-    assert "fact_reference_count" not in initial_continuity
-    initial_continuity_summary = cast(dict[str, object], waiting_runtime_state["context_projection_summary"])
-    assert initial_continuity_summary["source"] == {
-        "tool_result_start": 0,
-        "tool_result_end": 1,
-    }
-
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-    resumed = runtime.resume(
-        session_id="continuity-approval",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    resumed_runtime_state = cast(dict[str, object], resumed.session.metadata["runtime_state"])
-    expected_resumed_continuity = cast(dict[str, object], resumed_runtime_state["context_projection"])
-    assert expected_resumed_continuity["objective"] == ("read sample.txt read sample.txt write beta.txt 2")
-    assert expected_resumed_continuity["dropped_tool_result_count"] == 2
-    assert expected_resumed_continuity["retained_tool_result_count"] == 1
-    assert expected_resumed_continuity["source"] == "tool_result_window"
-    assert expected_resumed_continuity["version"] == 3
-    resumed_continuity_summary = cast(dict[str, object], resumed_runtime_state["context_projection_summary"])
-    assert resumed_continuity_summary["anchor"] != initial_continuity_summary["anchor"]
-    assert resumed_continuity_summary["source"] == {
-        "tool_result_start": 0,
-        "tool_result_end": 2,
-    }
-    assembled_context = _last_main_provider_request_from_providers(created_providers).assembled_context
-    assert assembled_context is not None
-    continuity_state = cast(ContextProjection | None, assembled_context.continuity_state)
-    context_window = cast(dict[str, object], resumed.session.metadata["context_window"])
-    assert continuity_state is not None
-    assert continuity_state.metadata_payload() == expected_resumed_continuity
-    assert context_window["summary_anchor"] == (resumed_continuity_summary["anchor"])
-    assert context_window["summary_source"] == {
-        "tool_result_start": 0,
-        "tool_result_end": 2,
-    }
-    resumed_event_types = [event.event_type for event in resumed.events]
-    assert resumed_event_types.count("runtime.approval_requested") == 1
-    assert resumed_event_types.count("runtime.approval_resolved") == 1
-    memory_refreshed_events = [event for event in resumed.events if event.event_type == RUNTIME_CONTEXT_COMPACTED]
-    assert len(memory_refreshed_events) == 2
-    assert memory_refreshed_events[0].payload["projection"] == initial_continuity
-    assert memory_refreshed_events[-1].payload["projection"] == expected_resumed_continuity
-    tool_completed_events = [event for event in resumed.events if event.event_type == "runtime.tool_completed"]
-    assert tool_completed_events[-1].payload["tool"] == "write"
-    assert tool_completed_events[-1].payload["path"] == "beta.txt"
-    assert (tmp_path / "beta.txt").read_text(encoding="utf-8") == "2"
-
-
-def test_runtime_approval_resume_preserves_token_budget_context_metadata(
-    tmp_path: Path,
-) -> None:
-    sample_file = tmp_path / "sample.txt"
-    sample_file.write_text("x" * 300, encoding="utf-8")
-    created_providers: list[_ScriptedTurnProvider] = []
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
-                outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
-                    ProviderTurnResult(
-                        tool_call=ToolCall(
-                            "write",
-                            {"path": "beta.txt", "content": "2"},
-                        )
-                    ),
-                    ProviderTurnResult(output="done"),
-                ),
-                created_providers=created_providers,
-            )
-        }
-    )
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            approval_mode="ask",
-        ),
-        permission_policy=PermissionPolicy(mode="ask"),
-        model_provider_registry=registry,
-        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=1),
-    )
-
-    waiting = runtime.run(
-        RuntimeRequest(
-            prompt="read sample.txt\nread sample.txt\nwrite beta.txt 2",
-            session_id="token-continuity-approval",
-        )
-    )
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-    resumed = runtime.resume(
-        session_id="token-continuity-approval",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    resumed_runtime_state = cast(dict[str, object], resumed.session.metadata["runtime_state"])
-    resumed_continuity = cast(dict[str, object], resumed_runtime_state["context_projection"])
-    persisted_context_window = cast(dict[str, object], resumed.session.metadata["context_window"])
-    context_window = cast(
-        RuntimeContextWindow,
-        _last_main_provider_request_from_providers(created_providers).context_window,
-    )
-
-    assert context_window.token_budget == 1
-    assert context_window.token_estimate_source == "approx_chars_per_4"
-    assert context_window.original_tool_result_tokens is not None
-    assert context_window.retained_tool_result_tokens is not None
-    assert context_window.dropped_tool_result_tokens is not None
-    assert resumed_continuity["token_budget"] == context_window.token_budget
-    assert resumed_continuity["token_estimate_source"] == context_window.token_estimate_source
-    assert isinstance(resumed_continuity["original_tool_result_tokens"], int)
-    assert isinstance(resumed_continuity["retained_tool_result_tokens"], int)
-    assert isinstance(resumed_continuity["dropped_tool_result_tokens"], int)
-    assert persisted_context_window["original_tool_result_tokens"] == context_window.original_tool_result_tokens
-    assert persisted_context_window["retained_tool_result_tokens"] == context_window.retained_tool_result_tokens
-    assert persisted_context_window["dropped_tool_result_tokens"] == context_window.dropped_tool_result_tokens
-    assert persisted_context_window["token_budget"] == context_window.token_budget
-    assert persisted_context_window["token_estimate_source"] == context_window.token_estimate_source
-
-
 def test_runtime_rejects_boolean_continuity_version_in_session_metadata() -> None:
     continuity_from_metadata = continuity_state_from_session_metadata
     continuity = continuity_from_metadata(
@@ -12936,60 +12749,6 @@ def test_runtime_rejects_boolean_continuity_version_in_session_metadata() -> Non
                     "retained_tool_result_count": 1,
                     "source": "tool_result_window",
                     "version": True,
-                }
-            }
-        }
-    )
-
-    assert continuity is None
-
-
-def test_runtime_restores_token_budget_continuity_metadata() -> None:
-    continuity_from_metadata = continuity_state_from_session_metadata
-    continuity = continuity_from_metadata(
-        {
-            "runtime_state": {
-                "context_projection": {
-                    "summary_text": "summary",
-                    "dropped_tool_result_count": 2,
-                    "retained_tool_result_count": 1,
-                    "source": "tool_result_window",
-                    "version": 3,
-                    "original_tool_result_tokens": 300,
-                    "retained_tool_result_tokens": 80,
-                    "dropped_tool_result_tokens": 220,
-                    "token_budget": 100,
-                    "token_estimate_source": "approx_chars_per_4",
-                }
-            }
-        }
-    )
-
-    assert continuity == ContextProjection(
-        summary_text="summary",
-        dropped_tool_result_count=2,
-        retained_tool_result_count=1,
-        source="tool_result_window",
-        original_tool_result_tokens=300,
-        retained_tool_result_tokens=80,
-        dropped_tool_result_tokens=220,
-        token_budget=100,
-        token_estimate_source="approx_chars_per_4",
-        version=3,
-    )
-
-
-def test_runtime_rejects_invalid_token_budget_continuity_metadata() -> None:
-    continuity_from_metadata = continuity_state_from_session_metadata
-    continuity = continuity_from_metadata(
-        {
-            "runtime_state": {
-                "context_projection": {
-                    "summary_text": "summary",
-                    "dropped_tool_result_count": 2,
-                    "retained_tool_result_count": 1,
-                    "source": "tool_result_window",
-                    "token_budget": True,
                 }
             }
         }
@@ -13341,85 +13100,6 @@ def test_runtime_graph_selection_seam_uses_provider_attempt_target(tmp_path: Pat
     assert selection.provider_target.selection.provider == "fallback"
     assert selection.provider_target.selection.model == "model-b"
     assert created_providers[-1].name == "fallback"
-
-
-def test_runtime_context_window_policy_uses_fallback_attempt_model_metadata(
-    tmp_path: Path,
-) -> None:
-    registry = ModelProviderRegistry.with_defaults()
-    registry.model_catalog = {
-        "kimi": ProviderModelCatalog(
-            provider="kimi",
-            models=("moonshot-v1-8k",),
-            refreshed=True,
-            model_metadata={
-                "moonshot-v1-8k": ProviderModelMetadata(context_window=8_000),
-            },
-        ),
-    }
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            provider_fallback=RuntimeProviderFallbackConfig(
-                preferred_model="opencode/gpt-5.4",
-                fallback_models=("kimi/moonshot-v1-8k",),
-            ),
-        ),
-        model_provider_registry=registry,
-    )
-
-    context_window = runtime.prepare_provider_context_window(
-        prompt="read sample.txt",
-        tool_results=(),
-        session_metadata={
-            "provider_attempt": 1,
-            "runtime_config": runtime._runtime_config_metadata(),
-        },
-    )
-
-    assert context_window.token_budget == 8_000
-
-
-def test_runtime_context_window_policy_recomputes_default_for_fallback_attempt(
-    tmp_path: Path,
-) -> None:
-    registry = ModelProviderRegistry.with_defaults()
-    registry.model_catalog = {
-        "kimi": ProviderModelCatalog(
-            provider="kimi",
-            models=("moonshot-v1-8k",),
-            refreshed=True,
-            model_metadata={
-                "moonshot-v1-8k": ProviderModelMetadata(context_window=8_000),
-            },
-        ),
-    }
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            provider_fallback=RuntimeProviderFallbackConfig(
-                preferred_model="opencode/gpt-5.4",
-                fallback_models=("kimi/moonshot-v1-8k",),
-            ),
-        ),
-        model_provider_registry=registry,
-    )
-
-    context_window = runtime.prepare_provider_context_window(
-        prompt="read sample.txt",
-        tool_results=(),
-        session_metadata={
-            "provider_attempt": 1,
-            "runtime_config": runtime._runtime_config_metadata(),
-        },
-        policy=runtime._default_context_window_policy,
-    )
-
-    assert context_window.token_budget == 8_000
 
 
 def test_runtime_execute_graph_loop_reuses_initial_context_window_on_first_iteration(
@@ -13813,91 +13493,6 @@ def test_runtime_agent_summary_exposes_stable_agent_and_model_fields(tmp_path: P
     fallback_summary = fallback_runtime.list_agent_summaries()[0]
 
     assert fallback_summary.fallback_chain == ("opencode/gpt-5.4", "opencode/gpt-5.3")
-
-
-def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadata(
-    tmp_path: Path,
-) -> None:
-    sample_file = tmp_path / "sample.txt"
-    sample_file.write_text("alpha\n", encoding="utf-8")
-    created_providers: list[_ScriptedTurnProvider] = []
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
-                outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
-                    ProviderTurnResult(output="done"),
-                ),
-                created_providers=created_providers,
-            )
-        }
-    )
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(model="opencode/gpt-5.4"),
-        model_provider_registry=registry,
-        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=30),
-    )
-
-    response = runtime.run(
-        RuntimeRequest(
-            prompt="read sample.txt\nread sample.txt",
-            session_id="continuity-session",
-        )
-    )
-    replay = runtime.resume("continuity-session")
-
-    memory_events = [event for event in response.events if event.event_type == RUNTIME_CONTEXT_COMPACTED]
-
-    assert response.session.status == "completed"
-    assert len(memory_events) == 1
-    summary_anchor = memory_events[0].payload["summary_anchor"]
-    summary_source = memory_events[0].payload["summary_source"]
-    assert isinstance(summary_anchor, str)
-    assert summary_anchor.startswith("continuity:")
-    assert summary_source == {"tool_result_start": 0, "tool_result_end": 1}
-    expected_continuity = cast(dict[str, object], memory_events[0].payload["projection"])
-    assert expected_continuity["objective"] == "read sample.txt read sample.txt"
-    assert expected_continuity["dropped_tool_result_count"] == 1
-    assert expected_continuity["retained_tool_result_count"] == 1
-    assert expected_continuity["source"] == "tool_result_window"
-    assert expected_continuity["version"] == 3
-    assert "## Objective" in cast(str, expected_continuity["summary_text"])
-    assert "current_goal" not in expected_continuity
-    assert memory_events[0].payload["reason"] == "tool_result_window"
-    assert memory_events[0].payload["compacted"] is True
-    assert memory_events[0].payload["projection"] == expected_continuity
-    assert memory_events[0].payload["summary_anchor"] == summary_anchor
-    assert memory_events[0].payload["summary_source"] == summary_source
-    response_context_window = cast(dict[str, object], response.session.metadata["context_window"])
-    prompt_stack = cast(dict[str, object], response_context_window["prompt_stack"])
-    prompt_stack_fragments = cast(list[dict[str, object]], prompt_stack["fragments"])
-    assert prompt_stack["version"] == 1
-    assert prompt_stack["redacted"] is True
-    assert prompt_stack["fragment_count"] == len(prompt_stack_fragments)
-    assert prompt_stack_fragments[-1]["source"] == "current_user_prompt"
-    assert response_context_window["compacted"] is True
-    assert response_context_window["projection"] == expected_continuity
-    assert response_context_window["summary_anchor"] == summary_anchor
-    assert response_context_window["summary_source"] == summary_source
-    assert isinstance(response_context_window["estimated_context_tokens"], int)
-    assert response_context_window["estimated_context_tokens"] > 0
-    runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
-    assert runtime_state["context_projection"] == expected_continuity
-    assert runtime_state["context_projection_summary"] == {
-        "anchor": summary_anchor,
-        "source": summary_source,
-    }
-    assert runtime_state["context_compacted"] == {
-        "last_summary_anchor": summary_anchor,
-        "last_original_tool_result_count": 2,
-        "last_retained_tool_result_count": 1,
-        "last_emitted_run_id": runtime_state["run_id"],
-    }
-    replay_runtime_state = cast(dict[str, object], replay.session.metadata["runtime_state"])
-    assert replay_runtime_state["context_projection"] == expected_continuity
 
 
 def test_runtime_provider_context_policy_warn_does_not_block_provider_call(
@@ -14379,15 +13974,15 @@ def test_runtime_context_transform_event_reports_retained_tool_result_count(
         config=RuntimeConfig(
             approval_mode="allow",
         ),
-        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=30),
+        context_window_policy=ContextWindowPolicy(default_tool_result_chars=30),
     )
 
     response = runtime.run(RuntimeRequest(prompt="apply rules", session_id="transform-retained-count"))
 
     transform_events = [event for event in response.events if event.event_type == RUNTIME_CONTEXT_TRANSFORM_APPLIED]
-    assert [event.payload["tool_result_count"] for event in transform_events] == [0, 1]
-    assert len(transform_events) == 2
-    assert transform_events[1].payload["injection_count"] == 2
+    assert [event.payload["tool_result_count"] for event in transform_events] == [0, 1, 2]
+    assert len(transform_events) == 3
+    assert transform_events[2].payload["injection_count"] == 3
 
 
 def test_runtime_context_compacted_guard_suppresses_duplicate_anchor(tmp_path: Path) -> None:
@@ -14558,46 +14153,6 @@ def test_runtime_stuck_detected_hook_fires_once_for_repeated_tool_loop(
     assert stuck_events[0].payload["reason"] == "repeated_tool_loop"
     assert stuck_events[0].payload["tool_result_count"] == 2
     assert stuck_events[0].payload["hook_status"] == "ok"
-
-
-def test_runtime_context_compacted_replay_keeps_running_status_until_terminal_event(
-    tmp_path: Path,
-) -> None:
-    sample_file = tmp_path / "sample.txt"
-    sample_file.write_text("x" * 300, encoding="utf-8")
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
-                outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
-                    ProviderTurnResult(output="done"),
-                ),
-            )
-        }
-    )
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-        ),
-        model_provider_registry=registry,
-        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=30),
-    )
-
-    response = runtime.run(RuntimeRequest(prompt="read sample.txt\nread sample.txt", session_id="context-refresh-replay"))
-    replay_chunks = list(runtime.resume_stream("context-refresh-replay"))
-    replay_context_sessions = [
-        chunk.session.status
-        for chunk in replay_chunks
-        if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == RUNTIME_CONTEXT_COMPACTED
-    ]
-
-    assert response.session.status == "completed"
-    assert replay_context_sessions
-    assert all(status == "running" for status in replay_context_sessions)
 
 
 def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: Path) -> None:
@@ -19150,40 +18705,6 @@ def test_runtime_inspect_provider_combines_status_models_and_validation(tmp_path
     assert result.current_model_metadata.model_status == "active"
 
 
-def test_runtime_context_window_policy_uses_active_model_limit(tmp_path: Path) -> None:
-    registry = ModelProviderRegistry.with_defaults()
-    registry.model_catalog = {
-        "openai": ProviderModelCatalog(
-            provider="openai",
-            models=("gpt-4o",),
-            refreshed=True,
-            model_metadata={
-                "gpt-4o": ProviderModelMetadata(
-                    context_window=128_000,
-                    max_output_tokens=16_384,
-                    supports_tools=True,
-                    model_status="active",
-                )
-            },
-        )
-    }
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(model="openai/gpt-4o"),
-        model_provider_registry=registry,
-    )
-
-    context = runtime.prepare_provider_context_window(
-        prompt="read sample.txt",
-        tool_results=(),
-        session_metadata={
-            "runtime_config": runtime._runtime_config_metadata(),
-        },
-    )
-
-    assert context.token_budget == 128_000
-
-
 def test_runtime_rejects_malformed_model_reference_during_initialization(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="provider/model"):
         _ = VoidCodeRuntime(
@@ -19628,128 +19149,6 @@ def test_runtime_executes_delegated_result_hook_for_completed_background_child(
 # ── Context window projection contract tests ────────────────────────────────
 
 
-def test_runtime_context_window_projection_preserves_full_session_truth(
-    tmp_path: Path,
-) -> None:
-    """Session metadata must preserve complete context window information
-    (original counts, continuity state, compaction reason) even when the
-    provider only receives a bounded projection."""
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=1),
-    )
-
-    context_window = runtime.prepare_provider_context_window(
-        prompt="verify build",
-        tool_results=(
-            ToolResult(tool_name="read", status="ok", content="a", data={"index": 1}),
-            ToolResult(tool_name="read", status="ok", content="b", data={"index": 2}),
-            ToolResult(tool_name="read", status="ok", content="c", data={"index": 3}),
-        ),
-        session_metadata={
-            "runtime_config": runtime._runtime_config_metadata(),
-        },
-    )
-    session = SessionState(
-        session=SessionRef("proj-preserve-session"),
-        status="running",
-        turn=1,
-        metadata={
-            "runtime_config": runtime._runtime_config_metadata(),
-        },
-    )
-    enriched = session_with_context_window_metadata(session, context_window)
-
-    persisted_cw = cast(dict[str, object], enriched.metadata["context_window"])
-    assert persisted_cw["original_tool_result_count"] == 3
-    assert persisted_cw["compacted"] is True
-    runtime_state = cast(dict[str, object], enriched.metadata.get("runtime_state", {}))
-    continuity_summary = runtime_state.get("context_projection_summary")
-    assert isinstance(continuity_summary, dict)
-    assert "anchor" in continuity_summary
-    assert "source" in continuity_summary
-
-
-def test_runtime_persists_assembled_context_token_estimate(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        tool_registry=ToolRegistry.from_tools(()),
-        context_window_policy=ContextWindowPolicy(model_context_window_tokens=1000),
-    )
-    session_metadata: dict[str, object] = {
-        "runtime_config": runtime._runtime_config_metadata(),
-    }
-    assembled = runtime.assemble_provider_context(
-        prompt="检查构建输出",
-        tool_results=(ToolResult(tool_name="read", status="ok", content="hello world", data={}),),
-        session_metadata=session_metadata,
-    )
-    session = SessionState(
-        session=SessionRef("assembled-context-session"),
-        status="running",
-        turn=1,
-        metadata=session_metadata,
-    )
-
-    enriched = session_with_context_window_payload_metadata(
-        session,
-        assembled.metadata,
-    )
-
-    context_window = cast(dict[str, object], enriched.metadata["context_window"])
-    assert context_window["model_context_window_tokens"] == 1000
-    assert context_window["estimated_context_token_source"] == "approx_chars_per_4"
-    assert isinstance(context_window["estimated_context_tokens"], int)
-    assert context_window["estimated_context_tokens"] > 0
-
-
-def test_runtime_context_window_resume_continuity_metadata_is_projection_only(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path)
-    prior_payload: dict[str, object] = {
-        "version": 3,
-        "summary_text": "Prior compact summary is projection metadata",
-        "objective": "ship resume-safe continuity",
-        "dropped_tool_result_count": 2,
-        "retained_tool_result_count": 1,
-        "source": "tool_result_window",
-        "distillation_source": "deterministic",
-        "dropped_tool_results": [
-            {"tool_name": "read", "status": "ok", "index": 1},
-            {"tool_name": "grep", "status": "ok", "index": 2},
-        ],
-    }
-    session_metadata: dict[str, object] = {
-        "runtime_config": runtime._runtime_config_metadata(),
-        "runtime_state": {"context_projection": prior_payload},
-    }
-
-    assembled = runtime.assemble_provider_context(
-        prompt="resume using raw events",
-        tool_results=(ToolResult(tool_name="read", status="ok", content="raw retained"),),
-        session_metadata=session_metadata,
-    )
-
-    assert assembled.continuity_state is not None
-    assert assembled.continuity_state.summary_text
-    continuity_metadata = cast(dict[str, object], assembled.metadata["projection"])
-    assert continuity_metadata["version"] == 3
-    assert isinstance(continuity_metadata["summary_text"], str)
-    assert continuity_metadata["dropped_tool_result_count"] == 2
-    assert assembled.metadata["summary_source"] == {"tool_result_start": 0, "tool_result_end": 2}
-    assert [segment.content for segment in assembled.segments if segment.role == "tool"] == ["raw retained"]
-    assert any(
-        segment.metadata is not None
-        and segment.metadata.get("source") == "context_projection"
-        and segment.content is not None
-        and "Prior compact summary is projection metadata" in segment.content
-        for segment in assembled.segments
-    )
-
-
 def test_runtime_context_window_malformed_resume_continuity_falls_back_safely(
     tmp_path: Path,
 ) -> None:
@@ -19814,38 +19213,10 @@ def test_runtime_context_window_projection_no_command_name_scoring(
     assert context_a.compacted == context_b.compacted
 
 
-def test_runtime_context_window_projection_bounded_output_within_limit(
+def test_runtime_context_window_projection_preserves_all_results(
     tmp_path: Path,
 ) -> None:
-    """The provider context is a bounded derived projection.
-    With a small token budget and 4 inputs, only 2 results should be retained."""
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=1),
-    )
-
-    context = runtime.prepare_provider_context_window(
-        prompt="continue coding",
-        tool_results=(
-            ToolResult(tool_name="read", status="ok", content="a", data={"index": 1}),
-            ToolResult(tool_name="read", status="ok", content="b", data={"index": 2}),
-            ToolResult(tool_name="read", status="ok", content="c", data={"index": 3}),
-            ToolResult(tool_name="read", status="ok", content="d", data={"index": 4}),
-        ),
-        session_metadata={
-            "runtime_config": runtime._runtime_config_metadata(),
-        },
-    )
-    assert context.retained_tool_result_count >= 1
-    assert context.compacted is True
-    assert context.compaction_reason == "tool_result_window"
-
-
-def test_runtime_context_window_projection_auto_compaction_disabled_preserves_all(
-    tmp_path: Path,
-) -> None:
-    """When auto_compaction is false, all results are preserved in the
-    projection (derived output matches complete truth for this case)."""
+    """Provider context never drops tool results; only per-tool character caps clip."""
     runtime = VoidCodeRuntime(workspace=tmp_path)
 
     context = runtime.prepare_provider_context_window(
@@ -19858,7 +19229,6 @@ def test_runtime_context_window_projection_auto_compaction_disabled_preserves_al
         session_metadata={
             "runtime_config": runtime._runtime_config_metadata(),
         },
-        policy=ContextWindowPolicy(auto_compaction=False),
     )
 
     assert context.original_tool_result_count == 3

@@ -166,14 +166,10 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `tools.default`：字符串数组，用于 active agent 默认可见工具集合，只能在 allowlist 内进一步收窄
 - `skills.enabled`：布尔值
 - `skills.paths`：字符串数组
-- `context_window.auto_compaction`：布尔值
-- `context_window.max_tool_result_tokens`：大于等于 1 的整数
-- `context_window.max_context_ratio`：大于 0 的数字
-- `context_window.model_context_window_tokens`：大于等于 1 的整数
-- `context_window.reserved_output_tokens`：大于等于 1 的整数
-- `context_window.default_tool_result_tokens`：大于等于 1 的整数
-- `context_window.per_tool_result_tokens`：对象，value 为大于等于 1 的整数
-- `context_window.tokenizer_model`：字符串
+- `context_window.default_tool_result_chars`：单个 tool result provider payload 的明确字符 hard cap；默认 `6000`，`null` 表示不截断单个结果
+- `context_window.per_tool_result_chars`：对象，按 tool name 覆盖单个结果字符 hard cap
+- provider context 不再使用 whole-context token budget 或 `chars/4` 估算丢弃历史；没有 provider usage 时，完整历史交给 provider，由 provider context-limit error/runtime recovery 处理
+- token usage 只来自 provider response/terminal stream，并保留 `None`（未报告）与 `0`（观测到零）的区别；它是后验 turn usage，不是下一轮 transcript 余额
 - `lsp.enabled`：布尔值；默认 `true`（未声明即开启，显式 `false` 关闭；未配置 `servers` 时不启动任何 server 进程）
 - `lsp.servers`：对象
 

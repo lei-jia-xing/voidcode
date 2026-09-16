@@ -1444,7 +1444,7 @@ def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path
                 approval_mode="allow",
                 execution_engine="provider",
                 model="opencode/gpt-5.4",
-                context_window=config_module.RuntimeContextWindowConfig(model_context_window_tokens=30),
+                context_window=config_module.RuntimeContextWindowConfig(default_tool_result_chars=30),
             ),
             permission_policy=permission_module.PermissionPolicy(mode="allow"),
             model_provider_registry=model_provider_module.ModelProviderRegistry(providers={"opencode": _TodoModelProvider()}),
@@ -1576,7 +1576,6 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read(
 ) -> None:
     contracts_module = importlib.import_module("voidcode.runtime.contracts")
     config_module = importlib.import_module("voidcode.runtime.config")
-    context_window_module = importlib.import_module("voidcode.runtime.context.window")
     model_provider_module = importlib.import_module("voidcode.provider.registry")
     model_catalog_module = importlib.import_module("voidcode.provider.model_catalog")
     permission_module = importlib.import_module("voidcode.runtime.permission")
@@ -1603,8 +1602,7 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read(
         execution_engine="provider",
         model="opencode-go/minimax-m2.7",
         context_window=config_module.RuntimeContextWindowConfig(
-            auto_compaction=False,
-            model_context_window_tokens=100_000,
+            default_tool_result_chars=100_000,
         ),
     )
     runtime = service_module.VoidCodeRuntime(
@@ -1653,12 +1651,8 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read(
     ]
     assert live_tool_result.data["tool_call_id"] == "read-1"
     assert live_tool_result.data["arguments"] == {"path": "sample.txt"}
-    live_metadata = _assembled_context(requests[1]).metadata
-    assert live_metadata["original_tool_result_tokens"] == live_metadata["retained_tool_result_tokens"]
     normalized = cast(str, live_tool_result.data["raw_content"])
     assert normalized == "alpha\nbeta"
-    normalized_tokens = context_window_module.count_text_tokens(normalized).tokens
-    assert cast(int, live_metadata["original_tool_result_tokens"]) > normalized_tokens
 
     live_event = next(event for event in response.events if event.event_type == "runtime.tool_completed")
     loaded_event = next(event for event in loaded.transcript if event.event_type == "runtime.tool_completed")
@@ -1979,93 +1973,6 @@ def test_provider_existing_session_parent_mismatch_excludes_prior_conversation_c
     )
 
     assert rehydrated_segments == ()
-
-
-def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shape(
-    tmp_path: Path,
-) -> None:
-    contracts_module = importlib.import_module("voidcode.runtime.contracts")
-    config_module = importlib.import_module("voidcode.runtime.config")
-    model_provider_module = importlib.import_module("voidcode.provider.registry")
-    permission_module = importlib.import_module("voidcode.runtime.permission")
-    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
-    service_module = importlib.import_module("voidcode.runtime.service")
-    tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
-    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
-    requests: list[object] = []
-    _ = (tmp_path / "sample.txt").write_text("fresh\n", encoding="utf-8")
-
-    class _CompactionModelProvider:
-        def turn_provider(self) -> object:
-            class _Provider:
-                name = "opencode"
-
-                def propose_turn(self, request: object) -> object:
-                    requests.append(request)
-                    if len(requests) == 1:
-                        return provider_protocol_module.ProviderTurnResult(
-                            tool_call=tool_contracts_module.ToolCall(
-                                tool_name="shell_exec",
-                                arguments={
-                                    "command": "printf 'old shell output\\n'",
-                                    "description": "emit old shell output",
-                                },
-                                tool_call_id="shell-1",
-                            )
-                        )
-                    if len(requests) == 2:
-                        return provider_protocol_module.ProviderTurnResult(
-                            tool_call=tool_contracts_module.ToolCall(
-                                tool_name="read",
-                                arguments={"path": "sample.txt"},
-                                tool_call_id="read-1",
-                            )
-                        )
-                    return provider_protocol_module.ProviderTurnResult(output="done")
-
-            return _Provider()
-
-    runtime = service_module.VoidCodeRuntime(
-        workspace=tmp_path,
-        config=config_module.RuntimeConfig(
-            approval_mode="allow",
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            context_window=config_module.RuntimeContextWindowConfig(auto_compaction=True, model_context_window_tokens=30),
-        ),
-        permission_policy=permission_module.PermissionPolicy(mode="allow"),
-        model_provider_registry=model_provider_module.ModelProviderRegistry(providers={"opencode": _CompactionModelProvider()}),
-    )
-
-    response = runtime.run(runtime_request(prompt="compact old output", session_id="provider-context-compacted"))
-    snapshot = runtime.session_debug_snapshot(session_id="provider-context-compacted")
-
-    assert response.session.status == "completed"
-    # Two tool turns plus the terminal turn. Compaction is deterministic and
-    # no longer spends a separate provider turn on model-assisted distillation.
-    assert len(requests) == 3
-    final_context = _assembled_context(requests[-1])
-    assert [result.tool_name for result in final_context.tool_results] == ["read"]
-
-    provider_context = snapshot.provider_context
-    assert provider_context is not None
-    assert provider_context.context_window["compacted"] is True
-    assert provider_context.context_window["original_tool_result_count"] == 2
-    assert provider_context.context_window["retained_tool_result_count"] == 1
-    continuity = provider_context.context_window["projection"]
-    assert isinstance(continuity, dict)
-    assert continuity["dropped_tool_result_count"] == 1
-    assert isinstance(continuity["summary_text"], str)
-    retained_tool_segments = [segment for segment in provider_context.segments if segment.role == "tool"]
-    assert [segment.tool_name for segment in retained_tool_segments] == ["read"]
-    assert retained_tool_segments[0].content == final_context.tool_results[0].content
-    provider_message_text = "\n".join(message.content or "" for message in provider_context.provider_messages)
-    assert '"tool_name": "read"' in provider_message_text
-    assert '"tool_name": "shell_exec"' not in provider_message_text
-    assert any(
-        segment.role == "system" and segment.source == "context_projection" and "shell_exec" in (segment.content or "")
-        for segment in provider_context.segments
-    )
 
 
 def test_runtime_delegated_background_hook_events_have_exact_metadata(

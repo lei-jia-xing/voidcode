@@ -3415,21 +3415,10 @@ class VoidCodeRuntime(RuntimeSurface):
         resolved_provider: ResolvedProviderConfig | None,
         provider_attempt: int,
     ) -> ContextWindowPolicy:
-        if policy.model_context_window_tokens is not None:
-            return policy
-        if resolved_provider is None:
-            return policy
-        provider_target = resolved_provider.target_chain.target_at(provider_attempt)
-        if provider_target is None:
-            provider_target = resolved_provider.active_target
-        provider_name = provider_target.selection.provider
-        model_name = provider_target.selection.model
-        if provider_name is None or model_name is None:
-            return policy
-        metadata = self._metadata_for_provider_model(provider_name, model_name)
-        if metadata is None or metadata.context_window is None:
-            return policy
-        return replace(policy, model_context_window_tokens=metadata.context_window)
+        # Provider context limits are enforced by the provider. Without a
+        # provider-reported turn usage value, runtime must not invent a budget.
+        _ = resolved_provider, provider_attempt
+        return policy
 
     def list_provider_summaries(self) -> tuple[ProviderSummary, ...]:
         return self._provider_summary_projector.project_all(
@@ -3468,11 +3457,6 @@ class VoidCodeRuntime(RuntimeSurface):
                 streaming_supported = metadata.supports_streaming
                 context_window = metadata.context_window
                 max_output_tokens = metadata.max_output_tokens
-        if effective_config.context_window is not None:
-            if effective_config.context_window.model_context_window_tokens is not None:
-                context_window = effective_config.context_window.model_context_window_tokens
-            if effective_config.context_window.reserved_output_tokens is not None:
-                max_output_tokens = effective_config.context_window.reserved_output_tokens
         configured = provider_name is not None and self._provider_is_configured(provider_name)
         auth_present, auth_failure_kind, auth_message = self._provider_auth_presence(provider_name)
         return RuntimeProviderReadinessProjector.project(

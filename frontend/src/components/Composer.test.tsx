@@ -125,7 +125,6 @@ describe("Composer", () => {
           contextWindow: 198_000,
           totalTokens: 18_900,
           cacheHitRate: null,
-          estimated: false,
         }}
         onReasoningEffortChange={onReasoningEffortChange}
         providerModels={{
@@ -172,13 +171,10 @@ describe("Composer", () => {
     expect(onReasoningEffortChange).toHaveBeenCalledWith("low");
   });
 
-  it("prefers session context window metadata over selected model metadata", () => {
+  it("uses selected model metadata without session token estimates", () => {
     render(
       <Composer
         {...baseProps}
-        sessionMetadata={{
-          context_window: { model_context_window_tokens: 512_000 },
-        }}
         providerModels={{
           deepseek: {
             ...baseProps.providerModels.deepseek,
@@ -193,8 +189,7 @@ describe("Composer", () => {
       />,
     );
 
-    expect(screen.getByText("512K ctx · 128K out")).toBeInTheDocument();
-    expect(screen.queryByText("198K ctx · 128K out")).not.toBeInTheDocument();
+    expect(screen.getByText("198K ctx · 128K out")).toBeInTheDocument();
   });
 
   it("hides reasoning effort controls for models without effort support", () => {
@@ -231,7 +226,6 @@ describe("Composer", () => {
           contextWindow: null,
           totalTokens: 4096,
           cacheHitRate: null,
-          estimated: false,
         }}
       />,
     );
@@ -250,32 +244,12 @@ describe("Composer", () => {
           contextWindow: 1_000_000,
           totalTokens: 6200,
           cacheHitRate: null,
-          estimated: false,
         }}
       />,
     );
 
     expect(
       screen.getByText("Context unavailable · 1M window · 6.2K total"),
-    ).toBeInTheDocument();
-  });
-
-  it("marks estimated context token usage", () => {
-    render(
-      <Composer
-        {...baseProps}
-        sessionContextUsage={{
-          usedTokens: 12_400,
-          contextWindow: 1_000_000,
-          totalTokens: 30_000,
-          cacheHitRate: null,
-          estimated: true,
-        }}
-      />,
-    );
-
-    expect(
-      screen.getByText("≈12.4K ctx · 1.2% · 30K total"),
     ).toBeInTheDocument();
   });
 
@@ -288,7 +262,6 @@ describe("Composer", () => {
           contextWindow: 198_000,
           totalTokens: 18_900,
           cacheHitRate: 0.85,
-          estimated: false,
         }}
       />,
     );
@@ -305,7 +278,6 @@ describe("Composer", () => {
           contextWindow: 198_000,
           totalTokens: 18_900,
           cacheHitRate: null,
-          estimated: false,
         }}
       />,
     );

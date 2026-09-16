@@ -85,11 +85,6 @@ class ProviderTurnRequest:
             continuity_state=self.assembled_context.continuity_state,
             compacted=bool(payload.get("compacted", False)),
             retained_tool_result_count=retained_count,
-            token_budget=cast(int | None, payload.get("token_budget")),
-            token_estimate_source=cast(str | None, payload.get("token_estimate_source")),
-            original_tool_result_tokens=cast(int | None, payload.get("original_tool_result_tokens")),
-            retained_tool_result_tokens=cast(int | None, payload.get("retained_tool_result_tokens")),
-            dropped_tool_result_tokens=cast(int | None, payload.get("dropped_tool_result_tokens")),
             original_tool_result_count=cast(int | None, payload.get("original_tool_result_count")),
             compaction_reason=cast(str | None, payload.get("compaction_reason")),
             summary_anchor=cast(str | None, payload.get("summary_anchor")),
@@ -132,11 +127,6 @@ class _DerivedContextWindow:
     continuity_state: object | None = None
     compacted: bool = False
     retained_tool_result_count: int = 0
-    token_budget: int | None = None
-    token_estimate_source: str | None = None
-    original_tool_result_tokens: int | None = None
-    retained_tool_result_tokens: int | None = None
-    dropped_tool_result_tokens: int | None = None
     original_tool_result_count: int | None = None
     compaction_reason: str | None = None
     summary_anchor: str | None = None

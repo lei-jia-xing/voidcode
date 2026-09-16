@@ -182,7 +182,7 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     }
     context_window_config = cast(dict[str, object], defs["contextWindowConfig"])
     context_window_properties = cast(dict[str, object], context_window_config["properties"])
-    for key in ("reserved_output_tokens",):
+    for key in ("default_tool_result_chars",):
         numeric_property = cast(dict[str, object], context_window_properties[key])
         assert numeric_property["minimum"] == 1
     provider_context_diagnostics = cast(dict[str, object], context_window_properties["provider_context_diagnostics"])

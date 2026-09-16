@@ -401,16 +401,12 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "version": {"type": "integer", "const": 1},
-                    "auto_compaction": {"type": "boolean"},
-                    "model_context_window_tokens": {"type": "integer", "minimum": 1},
-                    "reserved_output_tokens": {"type": "integer", "minimum": 1},
-                    "default_tool_result_tokens": {"type": "integer", "minimum": 1},
-                    "per_tool_result_tokens": {
+                    "version": {"type": "integer", "const": 2},
+                    "default_tool_result_chars": {"type": "integer", "minimum": 1},
+                    "per_tool_result_chars": {
                         "type": "object",
                         "additionalProperties": {"type": "integer", "minimum": 1},
                     },
-                    "tokenizer_model": {"type": "string", "minLength": 1},
                     "provider_context_diagnostics": {
                         "type": "string",
                         "enum": ["off", "warn", "block"],

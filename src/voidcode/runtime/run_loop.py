@@ -1894,13 +1894,6 @@ class RuntimeRunLoopCoordinator:
                 compaction_reason=base_context.compaction_reason,
                 original_tool_result_count=base_context.original_tool_result_count,
                 retained_tool_result_count=base_context.retained_tool_result_count,
-                original_tool_result_tokens=base_context.original_tool_result_tokens,
-                retained_tool_result_tokens=base_context.retained_tool_result_tokens,
-                dropped_tool_result_tokens=base_context.dropped_tool_result_tokens,
-                token_budget=base_context.token_budget,
-                token_estimate_source=base_context.token_estimate_source,
-                model_context_window_tokens=base_context.model_context_window_tokens,
-                reserved_output_tokens=base_context.reserved_output_tokens,
                 truncated_tool_result_count=base_context.truncated_tool_result_count,
                 continuity_state=reinjected_continuity,
                 summary_anchor=summary_anchor,
@@ -1953,13 +1946,6 @@ class RuntimeRunLoopCoordinator:
             **assembled_context.metadata,
             **context_window.metadata_payload(),
         }
-        for estimate_key in (
-            "estimated_context_tokens",
-            "estimated_context_token_source",
-            "estimated_context_token_exact",
-        ):
-            if estimate_key in assembled_context.metadata:
-                context_window_payload[estimate_key] = assembled_context.metadata[estimate_key]
         session = session_with_context_window_payload_metadata(
             session,
             context_window_payload,
@@ -3842,20 +3828,10 @@ class RuntimeRunLoopCoordinator:
     ) -> dict[str, object] | None:
         if not context_window.compacted:
             return None
-        token_metadata: dict[str, object] = {}
-        if context_window.token_budget is not None:
-            token_metadata = {
-                "original_tool_result_tokens": context_window.original_tool_result_tokens,
-                "retained_tool_result_tokens": context_window.retained_tool_result_tokens,
-                "dropped_tool_result_tokens": context_window.dropped_tool_result_tokens,
-                "token_budget": context_window.token_budget,
-                "token_estimate_source": context_window.token_estimate_source,
-            }
         return {
             "reason": context_window.compaction_reason,
             "original_tool_result_count": context_window.original_tool_result_count,
             "retained_tool_result_count": context_window.retained_tool_result_count,
-            **token_metadata,
             "compacted": True,
             "summary_anchor": context_window.summary_anchor,
             "projection_id": context_window.summary_anchor,

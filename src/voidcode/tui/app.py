@@ -1213,11 +1213,7 @@ class VoidCodeTUI(App[int]):
         context_window = cast(dict[str, object], cw)
 
         retained = self._context_int_value(context_window, "retained_tool_result_count")
-        token_budget = self._context_int_value(context_window, "token_budget")
-
         text = f"{retained} results"
-        if token_budget > 0:
-            text += f"\n[Budget: {token_budget} tokens]"
 
         if self._context_int_value(context_window, "compacted", 0) or context_window.get("compacted") is True:
             reason = self._context_str_value(context_window, "compaction_reason")

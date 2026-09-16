@@ -250,9 +250,7 @@ def test_runtime_config_defaults_to_provider_for_product_runs(
     assert config.execution_engine == "provider"
     assert config.model is None
     assert RuntimeConfig().execution_engine == "provider"
-    assert RuntimeContextWindowConfig().model_context_window_tokens is None
-    assert RuntimeContextWindowConfig().default_tool_result_tokens == 1_500
-    assert RuntimeContextWindowConfig().tokenizer_model == "cl100k_base"
+    assert RuntimeContextWindowConfig().default_tool_result_chars == 6_000
 
 
 def test_runtime_config_supports_provider_first_opt_in_with_stub_model(
@@ -276,12 +274,9 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
         json.dumps(
             {
                 "context_window": {
-                    "auto_compaction": False,
-                    "model_context_window_tokens": 128_000,
-                    "reserved_output_tokens": 20_000,
-                    "default_tool_result_tokens": 1_000,
-                    "per_tool_result_tokens": {"grep": 500},
-                    "tokenizer_model": "gpt-4o",
+                    "version": 2,
+                    "default_tool_result_chars": 1_000,
+                    "per_tool_result_chars": {"grep": 500},
                     "provider_context_diagnostics": "block",
                     "provider_context_oversized_feedback_chars": 16_000,
                     "context_transform_failure_policy": "block",
@@ -290,45 +285,26 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
         ),
         encoding="utf-8",
     )
-
     config = load_runtime_config(tmp_path, env={})
-
     assert config.context_window == RuntimeContextWindowConfig(
-        auto_compaction=False,
-        model_context_window_tokens=128_000,
-        reserved_output_tokens=20_000,
-        default_tool_result_tokens=1_000,
-        per_tool_result_tokens={"grep": 500},
-        tokenizer_model="gpt-4o",
+        default_tool_result_chars=1_000,
+        per_tool_result_chars={"grep": 500},
         provider_context_diagnostics="block",
         provider_context_oversized_feedback_chars=16_000,
         context_transform_failure_policy="block",
     )
 
 
-def test_runtime_config_uses_current_context_window_defaults_for_partial_repo_file(
-    tmp_path: Path,
-) -> None:
+def test_runtime_config_uses_current_context_window_defaults_for_partial_repo_file(tmp_path: Path) -> None:
     config_path = tmp_path / RUNTIME_CONFIG_FILE_NAME
-    config_path.write_text(
-        json.dumps({"context_window": {"auto_compaction": True}}),
-        encoding="utf-8",
-    )
-
+    config_path.write_text(json.dumps({"context_window": {"version": 2}}), encoding="utf-8")
     config = load_runtime_config(tmp_path, env={})
-
-    assert config.context_window is not None
-    assert config.context_window == RuntimeContextWindowConfig(
-        auto_compaction=True,
-        default_tool_result_tokens=1_500,
-        tokenizer_model="cl100k_base",
-    )
+    assert config.context_window == RuntimeContextWindowConfig()
 
 
 def test_runtime_context_window_config_serializes_for_session_resume() -> None:
     config = RuntimeContextWindowConfig(
-        reserved_output_tokens=100,
-        per_tool_result_tokens={"shell_exec": 400},
+        per_tool_result_chars={"shell_exec": 400},
         provider_context_diagnostics="block",
         provider_context_oversized_feedback_chars=12_000,
         context_transform_failure_policy="ignore",
@@ -346,9 +322,8 @@ def test_runtime_context_window_config_serializes_for_session_resume() -> None:
 def test_runtime_persists_context_window_config_for_resume(tmp_path: Path) -> None:
     _ = (tmp_path / "AGENTS.md").write_text("context window\n", encoding="utf-8")
     context_window = RuntimeContextWindowConfig(
-        model_context_window_tokens=500,
-        reserved_output_tokens=100,
-        per_tool_result_tokens={"shell_exec": 400},
+        default_tool_result_chars=500,
+        per_tool_result_chars={"shell_exec": 400},
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -2014,8 +1989,8 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
             id="hook-timeout-type",
         ),
         pytest.param(
-            {"context_window": {"reserved_output_tokens": 0}},
-            "runtime config field 'context_window.reserved_output_tokens'.*greater than or equal to 1",
+            {"context_window": {"default_tool_result_chars": 0}},
+            "runtime config field 'context_window.default_tool_result_chars'.*greater than or equal to 1",
             id="context-window-reserved-output-zero",
         ),
         pytest.param(

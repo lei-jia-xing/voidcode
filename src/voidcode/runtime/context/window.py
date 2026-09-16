@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal, NamedTuple, cast
+from typing import Literal, cast
 
 from ...agent.prompt_sections import dynamic_boundary_marker
 from ...tools.contracts import ToolDiagnostics, ToolResult, ToolResultStatus
 from ..todos import render_provider_todo_state
-from .projection import project_summary
 from .prompt_assembly import (
     PromptAssemblyPlan,
     PromptAssemblySection,
@@ -45,16 +43,11 @@ class DroppedToolResultDiagnostic:
     command: str | None = None
     pattern: str | None = None
     diagnostics: dict[str, object] | None = None
-    estimated_tokens: int | None = None
     truncated: bool = False
     partial: bool = False
 
     def metadata_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "tool_name": self.tool_name,
-            "status": self.status,
-            "index": self.index,
-        }
+        payload: dict[str, object] = {"tool_name": self.tool_name, "status": self.status, "index": self.index}
         if self.tool_call_id is not None:
             payload["tool_call_id"] = self.tool_call_id
         if self.artifact_id is not None:
@@ -75,8 +68,6 @@ class DroppedToolResultDiagnostic:
             payload["pattern"] = self.pattern
         if self.diagnostics is not None:
             payload["diagnostics"] = dict(self.diagnostics)
-        if self.estimated_tokens is not None:
-            payload["estimated_tokens"] = self.estimated_tokens
         if self.truncated:
             payload["truncated"] = True
         if self.partial:
@@ -86,8 +77,6 @@ class DroppedToolResultDiagnostic:
 
 @dataclass(frozen=True, slots=True)
 class ContextProjection:
-    # Canonical context projection identity. The runtime treats this object as
-    # the provider-facing projection produced by compaction.
     projection_id: str | None = None
     source_event_sequence: int | None = None
     source_checkpoint_id: str | None = None
@@ -106,20 +95,11 @@ class ContextProjection:
     retained_tool_result_count: int = 0
     source: str = "tool_result_window"
     source_references: tuple[str, ...] = ()
-    original_tool_result_tokens: int | None = None
-    retained_tool_result_tokens: int | None = None
-    dropped_tool_result_tokens: int | None = None
-    token_budget: int | None = None
-    token_estimate_source: str | None = None
     dropped_tool_results: tuple[DroppedToolResultDiagnostic, ...] = ()
-    # Lightweight versioning for continuity state to aid reinjection/refresh
-    # semantics. This is incremented when the shape evolves and is included
-    # in the serialized payload so consumers can decide how to handle newer
-    # fields.
-    version: int = 3
+    version: int = 4
 
     def metadata_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {
+        return {
             "projection_id": self.projection_id,
             "source_event_sequence": self.source_event_sequence,
             "source_checkpoint_id": self.source_checkpoint_id,
@@ -139,68 +119,34 @@ class ContextProjection:
             "source": self.source,
             "source_references": list(self.source_references),
             "version": self.version,
+            "dropped_tool_results": [item.metadata_payload() for item in self.dropped_tool_results],
         }
-        if self.original_tool_result_tokens is not None:
-            payload["original_tool_result_tokens"] = self.original_tool_result_tokens
-        if self.retained_tool_result_tokens is not None:
-            payload["retained_tool_result_tokens"] = self.retained_tool_result_tokens
-        if self.dropped_tool_result_tokens is not None:
-            payload["dropped_tool_result_tokens"] = self.dropped_tool_result_tokens
-        if self.token_budget is not None:
-            payload["token_budget"] = self.token_budget
-        if self.token_estimate_source is not None:
-            payload["token_estimate_source"] = self.token_estimate_source
-        if self.dropped_tool_results:
-            payload["dropped_tool_results"] = [item.metadata_payload() for item in self.dropped_tool_results]
-        return payload
 
 
 @dataclass(frozen=True, slots=True)
 class ContextWindowPolicy:
-    # Behavior flip: whole-context budget trimming is opt-in only. The default
-    # path retains every tool result (per-tool cap truncation is the only
-    # automatic clipping) so an over-budget context surfaces as an explicit
-    # provider overflow instead of silent data loss.
-    auto_compaction: bool = False
-    model_context_window_tokens: int | None = None
-    reserved_output_tokens: int | None = None
-    default_tool_result_tokens: int | None = 1_500
-    per_tool_result_tokens: Mapping[str, int] = field(default_factory=_empty_tool_limits)
-    tokenizer_model: str | None = "cl100k_base"
+    # Whole-context compaction is not performed without authoritative provider
+    # usage. This cap is an explicit character limit for one tool payload.
+    default_tool_result_chars: int | None = 6_000
+    per_tool_result_chars: Mapping[str, int] = field(default_factory=_empty_tool_limits)
     summary_strategy: Literal["deterministic", "model_assisted"] = "deterministic"
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "per_tool_result_tokens", dict(self.per_tool_result_tokens))
-        if self.model_context_window_tokens is not None and self.model_context_window_tokens < 1:
-            raise ValueError("model_context_window_tokens must be >= 1 when provided")
-        if self.reserved_output_tokens is not None and self.reserved_output_tokens < 0:
-            raise ValueError("reserved_output_tokens must be >= 0 when provided")
-        if self.default_tool_result_tokens is not None and self.default_tool_result_tokens < 1:
-            raise ValueError("default_tool_result_tokens must be >= 1 when provided")
-        for tool_name, limit in self.per_tool_result_tokens.items():
+        object.__setattr__(self, "per_tool_result_chars", dict(self.per_tool_result_chars))
+        if self.default_tool_result_chars is not None and self.default_tool_result_chars < 1:
+            raise ValueError("default_tool_result_chars must be >= 1 when provided")
+        for tool_name, limit in self.per_tool_result_chars.items():
             if not tool_name:
-                raise ValueError("per_tool_result_tokens tool names must be non-empty")
+                raise ValueError("per_tool_result_chars tool names must be non-empty")
             if limit < 1:
-                raise ValueError("per_tool_result_tokens limits must be >= 1")
-        if self.tokenizer_model is not None and not self.tokenizer_model:
-            raise ValueError("tokenizer_model must be non-empty when provided")
+                raise ValueError("per_tool_result_chars limits must be >= 1")
 
     def metadata_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "version": 1,
-            "auto_compaction": self.auto_compaction,
-            "summary_strategy": self.summary_strategy,
-        }
-        if self.model_context_window_tokens is not None:
-            payload["model_context_window_tokens"] = self.model_context_window_tokens
-        if self.reserved_output_tokens is not None:
-            payload["reserved_output_tokens"] = self.reserved_output_tokens
-        if self.default_tool_result_tokens is not None:
-            payload["default_tool_result_tokens"] = self.default_tool_result_tokens
-        if self.per_tool_result_tokens:
-            payload["per_tool_result_tokens"] = dict(self.per_tool_result_tokens)
-        if self.tokenizer_model is not None:
-            payload["tokenizer_model"] = self.tokenizer_model
+        payload: dict[str, object] = {"version": 1, "summary_strategy": self.summary_strategy}
+        if self.default_tool_result_chars is not None:
+            payload["default_tool_result_chars"] = self.default_tool_result_chars
+        if self.per_tool_result_chars:
+            payload["per_tool_result_chars"] = dict(self.per_tool_result_chars)
         return payload
 
 
@@ -212,13 +158,6 @@ class RuntimeContextWindow:
     compaction_reason: str | None = None
     original_tool_result_count: int = 0
     retained_tool_result_count: int = 0
-    original_tool_result_tokens: int | None = None
-    retained_tool_result_tokens: int | None = None
-    dropped_tool_result_tokens: int | None = None
-    token_budget: int | None = None
-    token_estimate_source: str | None = None
-    model_context_window_tokens: int | None = None
-    reserved_output_tokens: int | None = None
     truncated_tool_result_count: int = 0
     continuity_state: ContextProjection | None = None
     summary_anchor: str | None = None
@@ -233,20 +172,6 @@ class RuntimeContextWindow:
             "original_tool_result_count": self.original_tool_result_count,
             "retained_tool_result_count": self.retained_tool_result_count,
         }
-        if self.original_tool_result_tokens is not None:
-            payload["original_tool_result_tokens"] = self.original_tool_result_tokens
-        if self.retained_tool_result_tokens is not None:
-            payload["retained_tool_result_tokens"] = self.retained_tool_result_tokens
-        if self.dropped_tool_result_tokens is not None:
-            payload["dropped_tool_result_tokens"] = self.dropped_tool_result_tokens
-        if self.token_budget is not None:
-            payload["token_budget"] = self.token_budget
-        if self.token_estimate_source is not None:
-            payload["token_estimate_source"] = self.token_estimate_source
-        if self.model_context_window_tokens is not None:
-            payload["model_context_window_tokens"] = self.model_context_window_tokens
-        if self.reserved_output_tokens is not None:
-            payload["reserved_output_tokens"] = self.reserved_output_tokens
         if self.truncated_tool_result_count:
             payload["truncated_tool_result_count"] = self.truncated_tool_result_count
         if self.continuity_state is not None:
@@ -263,17 +188,13 @@ class RuntimeContextWindow:
 
 @dataclass(frozen=True, slots=True)
 class ToolResultView:
-    """Provider-facing rendering view of a tool result.
-
-    Persisted truth remains the original ``ToolResult``; ``data`` is an
-    isolated deep copy so provider-facing handlers cannot mutate it.
-    """
+    """Provider-facing rendering view of a tool result."""
 
     result: ToolResult
     content: str | None
     clipped: bool = False
-    original_content_tokens: int | None = None
-    content_token_limit: int | None = None
+    original_content_chars: int | None = None
+    content_char_limit: int | None = None
     _isolated_data: dict[str, object] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -325,11 +246,6 @@ class ToolResultProjection:
     retained_results: tuple[ToolResultView, ...]
     dropped_results: tuple[ToolResultView, ...]
     truncated_count: int
-    original_tokens: int | None = None
-    retained_tokens: int | None = None
-    dropped_tokens: int | None = None
-    token_budget: int | None = None
-    token_estimate_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -373,29 +289,6 @@ def _context_tier_metadata(
         "order": order,
         "counts": counts,
     }
-
-
-def estimate_provider_context_tokens(segments: tuple[RuntimeContextSegment, ...], *, tokenizer_model: str | None = None) -> TokenCount:
-    payload: list[dict[str, object]] = []
-    for segment in segments:
-        entry: dict[str, object] = {"role": segment.role}
-        if segment.content is not None:
-            entry["content"] = segment.content
-        if segment.tool_call_id is not None:
-            entry["tool_call_id"] = segment.tool_call_id
-        if segment.tool_name is not None:
-            entry["tool_name"] = segment.tool_name
-        if segment.tool_arguments is not None:
-            entry["tool_arguments"] = segment.tool_arguments
-        payload.append(entry)
-    serialized = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-        ensure_ascii=False,
-    )
-    return count_text_tokens(serialized, tokenizer_model=tokenizer_model)
 
 
 def _tool_result_preview(result: ToolResult | ToolResultView, *, max_preview_chars: int) -> str:
@@ -472,14 +365,10 @@ def _dropped_tool_diagnostics_from_metadata_payload(
         tool_name = entry.get("tool_name")
         status = entry.get("status")
         index = entry.get("index")
-        if not isinstance(tool_name, str) or not tool_name:
-            continue
-        if not isinstance(status, str) or not status:
+        if not isinstance(tool_name, str) or not tool_name or not isinstance(status, str) or not status:
             continue
         if not isinstance(index, int) or isinstance(index, bool):
             continue
-
-        estimated_tokens = entry.get("estimated_tokens")
         diagnostics.append(
             DroppedToolResultDiagnostic(
                 tool_name=tool_name,
@@ -494,7 +383,6 @@ def _dropped_tool_diagnostics_from_metadata_payload(
                 path=_optional_entry_string(entry, "path"),
                 command=_optional_entry_string(entry, "command"),
                 diagnostics=(cast(dict[str, object], entry["diagnostics"]) if isinstance(entry.get("diagnostics"), dict) else None),
-                estimated_tokens=(estimated_tokens if isinstance(estimated_tokens, int) and not isinstance(estimated_tokens, bool) else None),
                 truncated=entry.get("truncated") is True,
                 partial=entry.get("partial") is True,
             )
@@ -506,11 +394,8 @@ def continuity_state_from_metadata_payload(
     payload: Mapping[str, object],
 ) -> ContextProjection | None:
     version = payload.get("version")
-    if not isinstance(version, int) or isinstance(version, bool):
+    if not isinstance(version, int) or isinstance(version, bool) or version != 4:
         return None
-    if version != 3:
-        return None
-
     summary_text = payload.get("summary_text")
     if summary_text is not None and not isinstance(summary_text, str):
         return None
@@ -520,32 +405,21 @@ def continuity_state_from_metadata_payload(
     dropped = payload.get("dropped_tool_result_count")
     retained = payload.get("retained_tool_result_count")
     source = payload.get("source")
-    source_references = _metadata_string_tuple(payload, "source_references")
     if not isinstance(dropped, int) or isinstance(dropped, bool):
         return None
     if not isinstance(retained, int) or isinstance(retained, bool):
         return None
     if not isinstance(source, str):
         return None
-
-    def _optional_int(value: object) -> int | None:
-        if value is None:
-            return None
-        if isinstance(value, int) and not isinstance(value, bool):
-            return value
-        raise ValueError
-
-    try:
-        original_token_count = _optional_int(payload.get("original_tool_result_tokens"))
-        retained_token_count = _optional_int(payload.get("retained_tool_result_tokens"))
-        dropped_token_count = _optional_int(payload.get("dropped_tool_result_tokens"))
-        resolved_token_budget = _optional_int(payload.get("token_budget"))
-    except ValueError:
-        return None
-    token_estimate_source = payload.get("token_estimate_source")
-    if token_estimate_source is not None and not isinstance(token_estimate_source, str):
-        return None
+    projection_id = payload.get("projection_id")
+    source_event_sequence = payload.get("source_event_sequence")
+    source_checkpoint_id = payload.get("source_checkpoint_id")
+    if not isinstance(source_event_sequence, int) or isinstance(source_event_sequence, bool):
+        source_event_sequence = None
     return ContextProjection(
+        projection_id=projection_id if isinstance(projection_id, str) else None,
+        source_event_sequence=source_event_sequence,
+        source_checkpoint_id=source_checkpoint_id if isinstance(source_checkpoint_id, str) else None,
         summary_text=summary_text,
         objective=objective,
         files_changed=_metadata_string_tuple(payload, "files_changed"),
@@ -553,22 +427,14 @@ def continuity_state_from_metadata_payload(
         progress_completed=_metadata_string_tuple(payload, "progress_completed"),
         blockers_open_questions=_metadata_string_tuple(payload, "blockers_open_questions"),
         key_decisions=_metadata_string_tuple(payload, "key_decisions"),
-        relevant_files_commands_errors=_metadata_string_tuple(
-            payload,
-            "relevant_files_commands_errors",
-        ),
+        relevant_files_commands_errors=_metadata_string_tuple(payload, "relevant_files_commands_errors"),
         verification_state=_metadata_string_tuple(payload, "verification_state"),
         delegated_task_summaries=_metadata_string_tuple(payload, "delegated_task_summaries"),
         recent_tail=_metadata_string_tuple(payload, "recent_tail"),
         dropped_tool_result_count=dropped,
         retained_tool_result_count=retained,
         source=source,
-        source_references=source_references,
-        original_tool_result_tokens=original_token_count,
-        retained_tool_result_tokens=retained_token_count,
-        dropped_tool_result_tokens=dropped_token_count,
-        token_budget=resolved_token_budget,
-        token_estimate_source=token_estimate_source,
+        source_references=_metadata_string_tuple(payload, "source_references"),
         dropped_tool_results=_dropped_tool_diagnostics_from_metadata_payload(payload),
         version=version,
     )
@@ -718,70 +584,6 @@ def _provider_continuity_summary(summary_text: str, *, prompt: str) -> str:
     return "\n\n".join(retained).strip()
 
 
-_CHARS_PER_TOKEN = 4
-_APPROX_CHARS_PER_4_SOURCE = "approx_chars_per_4"
-
-type TokenCountMethod = Literal["tiktoken", "estimated"]
-
-
-@dataclass(frozen=True, slots=True)
-class TokenCount:
-    tokens: int
-    method: TokenCountMethod
-    source: str
-    exact: bool = False
-
-    def metadata_payload(self) -> dict[str, object]:
-        return {
-            "tokens": self.tokens,
-            "method": self.method,
-            "source": self.source,
-            "exact": self.exact,
-        }
-
-
-class _TokenEstimate(NamedTuple):
-    tokens: int
-    source: str
-
-
-def count_text_tokens(value: str, *, tokenizer_model: str | None = None) -> TokenCount:
-    _ = tokenizer_model
-    if not value:
-        return TokenCount(0, method="estimated", source=_APPROX_CHARS_PER_4_SOURCE)
-    return TokenCount(
-        tokens=max(1, (len(value) + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN),
-        method="estimated",
-        source=_APPROX_CHARS_PER_4_SOURCE,
-        exact=False,
-    )
-
-
-def _estimated_token_count(value: str, *, tokenizer_model: str | None = None) -> _TokenEstimate:
-    counted = count_text_tokens(value, tokenizer_model=tokenizer_model)
-    return _TokenEstimate(counted.tokens, counted.source)
-
-
-def _tool_result_token_estimate(result: ToolResult | ToolResultView, *, tokenizer_model: str | None = None) -> _TokenEstimate:  # noqa: ARG001 — reserved for tokenizer-backed estimates; current fallback is deterministic.
-    _ = tokenizer_model
-    payload = {
-        "tool_name": result.tool_name,
-        "status": result.status,
-        "content": result.content,
-        "error": result.error,
-        "data": result.data,
-    }
-    serialized = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-        ensure_ascii=False,
-    )
-    token_count = max(1, (len(serialized) + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN)
-    return _TokenEstimate(token_count, _APPROX_CHARS_PER_4_SOURCE)
-
-
 def _optional_tool_string(result: ToolResult | ToolResultView, key: str) -> str | None:
     value = result.data.get(key)
     return value if isinstance(value, str) and value else None
@@ -815,7 +617,6 @@ def _dropped_tool_diagnostics(
     results: tuple[ToolResult | ToolResultView, ...],
     *,
     original_indexes: tuple[int, ...] | None = None,
-    tokenizer_model: str | None = None,
 ) -> tuple[DroppedToolResultDiagnostic, ...]:
     diagnostics: list[DroppedToolResultDiagnostic] = []
     for position, result in enumerate(results):
@@ -828,20 +629,12 @@ def _dropped_tool_diagnostics(
                 tool_call_id=_optional_tool_string(result, "tool_call_id"),
                 artifact_id=_artifact_metadata_string(result, "artifact_id"),
                 artifact_status=_artifact_metadata_string(result, "status") or _optional_tool_string(result, "artifact_status"),
-                artifact_byte_count=_artifact_metadata_int(result, "byte_count")
-                or _optional_tool_int(result, "original_byte_count")
-                or _optional_tool_int(result, "original_error_byte_count"),
-                artifact_line_count=_artifact_metadata_int(result, "line_count")
-                or _optional_tool_int(result, "original_line_count")
-                or _optional_tool_int(result, "original_error_line_count"),
+                artifact_byte_count=_artifact_metadata_int(result, "byte_count") or _optional_tool_int(result, "original_byte_count"),
+                artifact_line_count=_artifact_metadata_int(result, "line_count") or _optional_tool_int(result, "original_line_count"),
                 reference=result.reference,
                 path=_optional_tool_string(result, "path"),
                 command=_optional_tool_string(result, "command"),
                 diagnostics=(result.diagnostics.as_payload() if result.diagnostics is not None else None),
-                estimated_tokens=_tool_result_token_estimate(
-                    result,
-                    tokenizer_model=tokenizer_model,
-                ).tokens,
                 truncated=result.truncated,
                 partial=result.partial,
             )
@@ -849,96 +642,22 @@ def _dropped_tool_diagnostics(
     return tuple(diagnostics)
 
 
-def _select_recent_tool_result_indexes(
-    results: Sequence[ToolResult | ToolResultView],
-) -> tuple[int, ...]:
-    if not results:
-        return ()
+def _select_recent_tool_result_indexes(results: Sequence[ToolResult | ToolResultView]) -> tuple[int, ...]:
     return tuple(range(len(results)))
 
 
-def _retain_indexes_within_token_budget(
-    results: Sequence[ToolResult | ToolResultView],
-    candidate_indexes: tuple[int, ...],
-    *,
-    token_budget: int,
-    tokenizer_model: str | None,
-) -> tuple[int, ...]:
-    if not candidate_indexes:
-        return ()
-    retained: set[int] = set()
-    retained_tokens = 0
-    ordered_indexes = tuple(sorted(candidate_indexes, reverse=True))
-    newest_index = ordered_indexes[0]
-    newest_retained = False
-    for index in ordered_indexes:
-        estimate = _tool_result_token_estimate(results[index], tokenizer_model=tokenizer_model).tokens
-        if index == newest_index:
-            retained.add(index)
-            retained_tokens = estimate
-            newest_retained = True
-            continue
-        if retained_tokens + estimate > token_budget:
-            continue
-        retained.add(index)
-        retained_tokens += estimate
-    if retained and newest_retained:
-        return tuple(sorted(retained))
-    return (newest_index,)
-
-
-def _policy_token_budget(policy: ContextWindowPolicy) -> int | None:
-    if policy.model_context_window_tokens is None:
-        return None
-    if policy.reserved_output_tokens is not None:
-        return max(1, policy.model_context_window_tokens - policy.reserved_output_tokens)
-    return policy.model_context_window_tokens
-
-
 def _tool_limit_for_result(result: ToolResult | ToolResultView, policy: ContextWindowPolicy) -> int | None:
-    return policy.per_tool_result_tokens.get(result.tool_name, policy.default_tool_result_tokens)
+    return policy.per_tool_result_chars.get(result.tool_name, policy.default_tool_result_chars)
 
 
-def _clip_plain_text_to_token_limit(text: str, *, limit: int, tokenizer_model: str | None) -> str:
-    clipped: list[str] = []
-    used = 0
-    for char in text:
-        char_tokens = _estimated_token_count(char, tokenizer_model=tokenizer_model).tokens
-        if used + char_tokens > limit:
-            break
-        clipped.append(char)
-        used += char_tokens
-    candidate = "".join(clipped)
-    while candidate and _estimated_token_count(candidate, tokenizer_model=tokenizer_model).tokens > limit:
-        candidate = candidate[:-1]
-    return candidate
-
-
-def _truncation_message(*, omitted_chars: int) -> str:
-    return f"\n[Tool output truncated by context window policy; omitted {omitted_chars} chars]"
-
-
-def _clip_text_to_token_limit(text: str, *, limit: int, tokenizer_model: str | None) -> str:
-    if _estimated_token_count(text, tokenizer_model=tokenizer_model).tokens <= limit:
+def _clip_text_to_char_limit(text: str, *, limit: int) -> str:
+    if len(text) <= limit:
         return text
-    clipped = _clip_plain_text_to_token_limit(
-        text,
-        limit=limit,
-        tokenizer_model=tokenizer_model,
-    )
-    while True:
-        omitted = len(text) - len(clipped)
-        truncation_message = _truncation_message(omitted_chars=omitted)
-        candidate = f"{clipped}{truncation_message}"
-        if _estimated_token_count(candidate, tokenizer_model=tokenizer_model).tokens <= limit:
-            return candidate
-        if not clipped:
-            return _clip_plain_text_to_token_limit(
-                truncation_message,
-                limit=limit,
-                tokenizer_model=tokenizer_model,
-            )
-        clipped = clipped[:-1]
+    omitted = len(text) - limit
+    marker = f"\n[Tool output truncated by character limit; omitted {omitted} chars]"
+    if len(marker) >= limit:
+        return marker[:limit]
+    return f"{text[: limit - len(marker)]}{marker}"
 
 
 def _bounded_replayed_conversation_segments(
@@ -955,19 +674,15 @@ def _bounded_replayed_conversation_segments(
         if metadata.get("source") != "replayed_conversation":
             bounded.append(segment)
             continue
-        limit = policy.per_tool_result_tokens.get(segment.tool_name, policy.default_tool_result_tokens)
+        limit = policy.per_tool_result_chars.get(segment.tool_name, policy.default_tool_result_chars)
         if limit is None:
             bounded.append(segment)
             continue
-        clipped = _clip_text_to_token_limit(
-            segment.content,
-            limit=limit,
-            tokenizer_model=policy.tokenizer_model,
-        )
+        clipped = _clip_text_to_char_limit(segment.content, limit=limit)
         if clipped == segment.content:
             bounded.append(segment)
             continue
-        bounded.append(replace(segment, content=clipped, metadata={**metadata, "truncated": True, "partial": True}))
+        bounded.append(replace(segment, content=clipped, metadata={**metadata, "truncated": True, "partial": True, "char_limit": limit}))
     return tuple(bounded)
 
 
@@ -975,45 +690,24 @@ def _truncated_view_for_result(
     result: ToolResult | ToolResultView,
     *,
     limit: int | None,
-    tokenizer_model: str | None,
 ) -> tuple[ToolResultView, bool]:
-    """Return a provider rendering view for ``result``, clipping ``content``
-    to the per-tool token cap when needed.
-
-    The original ``ToolResult`` is never rebuilt or mutated; the returned view
-    is the single object used both for token-budget accounting and for final
-    provider rendering, so the budget decision always matches what the model
-    sees. Already-prepared views pass through unchanged (no re-clipping).
-    """
     if isinstance(result, ToolResultView):
         return result, False
     if limit is None or result.content is None:
         return ToolResultView(result=result, content=result.content), False
-    original_estimate = _estimated_token_count(
-        result.content,
-        tokenizer_model=tokenizer_model,
-    )
-    if original_estimate.tokens <= limit:
+    if len(result.content) <= limit:
         return ToolResultView(result=result, content=result.content), False
-    clipped = _clip_text_to_token_limit(
-        result.content,
-        limit=limit,
-        tokenizer_model=tokenizer_model,
-    )
+    clipped = _clip_text_to_char_limit(result.content, limit=limit)
     return (
         ToolResultView(
             result=result,
             content=clipped,
             clipped=True,
-            original_content_tokens=original_estimate.tokens,
-            content_token_limit=limit,
+            original_content_chars=len(result.content),
+            content_char_limit=limit,
         ),
         True,
     )
-
-
-def _token_estimate_source(_policy: ContextWindowPolicy, _sample: str = "sample") -> str:
-    return _APPROX_CHARS_PER_4_SOURCE
 
 
 def _coerce_optional_int(payload: Mapping[str, object], key: str) -> int | None:
@@ -1072,12 +766,6 @@ def _build_continuity_state(
     retained_count: int,
     preview_item_limit: int,
     preview_char_limit: int,
-    original_tokens: int | None = None,
-    retained_tokens: int | None = None,
-    dropped_tokens: int | None = None,
-    token_budget: int | None = None,
-    token_estimate_source: str | None = None,
-    tokenizer_model: str | None = None,
 ) -> ContextProjection:
     dropped_count = len(dropped_results)
     previewable_dropped_results = tuple(result for result in dropped_results if result.tool_name != "todo")
@@ -1092,6 +780,7 @@ def _build_continuity_state(
     )
     retained_tail = tuple(_tool_result_preview(result, max_preview_chars=preview_char_limit) for result in retained_results[-preview_item_limit:])
     previous_constraints = previous.verbatim_user_constraints if previous is not None else ()
+    constraints = _merge_unique_strings(previous_constraints, _constraint_lines(prompt), limit=12)
     previous_progress = previous.progress_completed if previous is not None else ()
     previous_blockers = previous.blockers_open_questions if previous is not None else ()
     previous_decisions = previous.key_decisions if previous is not None else ()
@@ -1099,39 +788,7 @@ def _build_continuity_state(
     previous_verification = previous.verification_state if previous is not None else ()
     previous_delegated = previous.delegated_task_summaries if previous is not None else ()
     previous_tail = previous.recent_tail if previous is not None else ()
-    constraints = _merge_unique_strings(previous_constraints, _constraint_lines(prompt), limit=12)
-    if dropped_count == 0:
-        return ContextProjection(
-            objective=objective,
-            verbatim_user_constraints=constraints,
-            progress_completed=previous_progress,
-            blockers_open_questions=previous_blockers,
-            key_decisions=previous_decisions,
-            relevant_files_commands_errors=previous_refs,
-            verification_state=previous_verification,
-            delegated_task_summaries=previous_delegated,
-            recent_tail=_merge_unique_strings(retained_tail, previous_tail, limit=8),
-            retained_tool_result_count=retained_count,
-            original_tool_result_tokens=original_tokens,
-            retained_tool_result_tokens=retained_tokens,
-            dropped_tool_result_tokens=dropped_tokens,
-            token_budget=token_budget,
-            token_estimate_source=token_estimate_source,
-            dropped_tool_results=previous.dropped_tool_results if previous is not None else (),
-            source_references=previous.source_references if previous is not None else (),
-        )
-
-    dropped_preview_summary = None
-    if previewable_dropped_results:
-        preview_count = min(preview_item_limit, len(previewable_dropped_results))
-        lines = [f"Compacted {dropped_count} earlier tool results:"]
-        for index, result in enumerate(previewable_dropped_results[:preview_count], start=1):
-            lines.append(f"{index}. {_tool_result_preview(result, max_preview_chars=preview_char_limit)}")
-        remaining = len(previewable_dropped_results) - preview_count
-        if remaining > 0:
-            lines.append(f"... and {remaining} more")
-        dropped_preview_summary = "\n".join(lines)
-    state_without_summary = ContextProjection(
+    state = ContextProjection(
         objective=objective,
         verbatim_user_constraints=constraints,
         progress_completed=_merge_unique_strings(previous_progress, progress, limit=16),
@@ -1144,43 +801,25 @@ def _build_continuity_state(
         dropped_tool_result_count=dropped_count,
         retained_tool_result_count=retained_count,
         source="tool_result_window",
-        original_tool_result_tokens=original_tokens,
-        retained_tool_result_tokens=retained_tokens,
-        dropped_tool_result_tokens=dropped_tokens,
-        token_budget=token_budget,
-        token_estimate_source=token_estimate_source,
-        dropped_tool_results=_dropped_tool_diagnostics(
-            dropped_results,
-            original_indexes=dropped_result_indexes,
-            tokenizer_model=tokenizer_model,
-        ),
+        dropped_tool_results=_dropped_tool_diagnostics(dropped_results, original_indexes=dropped_result_indexes),
+        source_references=previous.source_references if previous is not None else (),
     )
-
-    canonical_summary = _continuity_summary_text(state_without_summary)
-    summary_text = canonical_summary
-    if dropped_preview_summary is not None:
-        summary_text = f"{canonical_summary}\n\n## Dropped Tool Preview\n{dropped_preview_summary}"
-    return ContextProjection(
-        summary_text=summary_text,
-        objective=state_without_summary.objective,
-        verbatim_user_constraints=state_without_summary.verbatim_user_constraints,
-        progress_completed=state_without_summary.progress_completed,
-        blockers_open_questions=state_without_summary.blockers_open_questions,
-        key_decisions=state_without_summary.key_decisions,
-        relevant_files_commands_errors=state_without_summary.relevant_files_commands_errors,
-        verification_state=state_without_summary.verification_state,
-        delegated_task_summaries=state_without_summary.delegated_task_summaries,
-        recent_tail=state_without_summary.recent_tail,
-        dropped_tool_result_count=state_without_summary.dropped_tool_result_count,
-        retained_tool_result_count=state_without_summary.retained_tool_result_count,
-        source=state_without_summary.source,
-        original_tool_result_tokens=state_without_summary.original_tool_result_tokens,
-        retained_tool_result_tokens=state_without_summary.retained_tool_result_tokens,
-        dropped_tool_result_tokens=state_without_summary.dropped_tool_result_tokens,
-        token_budget=state_without_summary.token_budget,
-        token_estimate_source=state_without_summary.token_estimate_source,
-        dropped_tool_results=state_without_summary.dropped_tool_results,
-    )
+    if dropped_count == 0:
+        return replace(
+            state,
+            progress_completed=previous_progress,
+            blockers_open_questions=previous_blockers,
+            recent_tail=_merge_unique_strings(retained_tail, previous_tail, limit=8),
+            dropped_tool_results=previous.dropped_tool_results if previous is not None else (),
+        )
+    dropped_preview = [f"Compacted {dropped_count} earlier tool results:"]
+    for index, result in enumerate(previewable_dropped_results[:preview_item_limit], start=1):
+        dropped_preview.append(f"{index}. {_tool_result_preview(result, max_preview_chars=preview_char_limit)}")
+    remaining = len(previewable_dropped_results) - min(preview_item_limit, len(previewable_dropped_results))
+    if remaining > 0:
+        dropped_preview.append(f"... and {remaining} more")
+    summary = _continuity_summary_text(state)
+    return replace(state, summary_text=f"{summary}\n\n## Dropped Tool Preview\n{chr(10).join(dropped_preview)}")
 
 
 def _summary_anchor(summary_text: str | None, *, dropped_count: int, retained_count: int) -> str | None:
@@ -1301,70 +940,21 @@ def project_tool_results_for_context_window(
     tool_results: tuple[ToolResult | ToolResultView, ...],
     policy: ContextWindowPolicy,
 ) -> ToolResultProjection:
-    token_budget = _policy_token_budget(policy)
     prepared_results: list[ToolResultView] = []
     truncated_count = 0
     for result in tool_results:
-        content_limit = _tool_limit_for_result(result, policy)
-        prepared_result, was_truncated = _truncated_view_for_result(
-            result,
-            limit=content_limit,
-            tokenizer_model=policy.tokenizer_model,
-        )
+        prepared_result, was_truncated = _truncated_view_for_result(result, limit=_tool_limit_for_result(result, policy))
         prepared_results.append(prepared_result)
-        if was_truncated:
-            truncated_count += 1
-
-    count_limited_indexes = _select_recent_tool_result_indexes(prepared_results)
-    retained_indexes = (
-        _retain_indexes_within_token_budget(
-            prepared_results,
-            count_limited_indexes,
-            token_budget=token_budget,
-            tokenizer_model=policy.tokenizer_model,
-        )
-        if token_budget is not None
-        else _select_recent_tool_result_indexes(prepared_results)
-    )
-    retained_index_set = set(retained_indexes)
-    dropped_indexes = tuple(index for index in range(len(prepared_results)) if index not in retained_index_set)
-    retained_results = tuple(prepared_results[index] for index in retained_indexes)
-    dropped_results = tuple(prepared_results[index] for index in dropped_indexes)
-
-    original_tokens = None
-    retained_tokens = None
-    dropped_tokens = None
-    token_estimate_source = None
-    if token_budget is not None:
-        original_tokens = sum(
-            _tool_result_token_estimate(
-                result,
-                tokenizer_model=policy.tokenizer_model,
-            ).tokens
-            for result in prepared_results
-        )
-        retained_tokens = sum(
-            _tool_result_token_estimate(
-                result,
-                tokenizer_model=policy.tokenizer_model,
-            ).tokens
-            for result in retained_results
-        )
-        dropped_tokens = original_tokens - retained_tokens
-        token_estimate_source = _token_estimate_source(policy)
-
+        truncated_count += int(was_truncated)
+    indexes = _select_recent_tool_result_indexes(prepared_results)
+    retained_results = tuple(prepared_results)
     return ToolResultProjection(
         prepared_results=tuple(prepared_results),
-        retained_indexes=retained_indexes,
-        dropped_indexes=dropped_indexes,
+        retained_indexes=indexes,
+        dropped_indexes=(),
         retained_results=retained_results,
-        dropped_results=dropped_results,
+        dropped_results=(),
         truncated_count=truncated_count,
-        original_tokens=original_tokens,
-        retained_tokens=retained_tokens,
-        dropped_tokens=dropped_tokens,
-        token_budget=token_budget,
-        token_estimate_source=token_estimate_source,
     )
 
 
@@ -1376,138 +966,18 @@ def prepare_provider_context(
     policy: ContextWindowPolicy | None = None,
     summary_projector: Callable[[Mapping[str, object]], str] | None = None,
 ) -> RuntimeContextWindow:
+    _ = session_metadata, summary_projector
     effective_policy = policy or ContextWindowPolicy()
-    original_count = len(tool_results)
-    token_budget = _policy_token_budget(effective_policy)
-
-    if not effective_policy.auto_compaction:
-        # Default path: per-tool cap truncation is the only automatic clipping
-        # (anti-explosion baseline). Every result is retained in full; an
-        # over-budget context surfaces as an explicit provider overflow rather
-        # than silent trimming. Views render the same clipped content the token
-        # statistics below are computed from.
-        prepared_views: list[ToolResultView] = []
-        truncated_count = 0
-        for result in tool_results:
-            content_limit = _tool_limit_for_result(result, effective_policy)
-            prepared_view, was_truncated = _truncated_view_for_result(
-                result,
-                limit=content_limit,
-                tokenizer_model=effective_policy.tokenizer_model,
-            )
-            prepared_views.append(prepared_view)
-            if was_truncated:
-                truncated_count += 1
-        retained_results = tuple(prepared_views)
-        retained_count = len(retained_results)
-        original_tokens = None
-        retained_tokens = None
-        if token_budget is not None:
-            original_tokens = sum(
-                _tool_result_token_estimate(
-                    result,
-                    tokenizer_model=effective_policy.tokenizer_model,
-                ).tokens
-                for result in tool_results
-            )
-            retained_tokens = sum(
-                _tool_result_token_estimate(
-                    result,
-                    tokenizer_model=effective_policy.tokenizer_model,
-                ).tokens
-                for result in retained_results
-            )
-        return RuntimeContextWindow(
-            prompt=prompt,
-            tool_results=retained_results,
-            compacted=False,
-            compaction_reason=None,
-            original_tool_result_count=original_count,
-            retained_tool_result_count=retained_count,
-            original_tool_result_tokens=original_tokens,
-            retained_tool_result_tokens=retained_tokens,
-            dropped_tool_result_tokens=0 if token_budget is not None else None,
-            token_budget=token_budget,
-            token_estimate_source=(_token_estimate_source(effective_policy) if token_budget is not None else None),
-            model_context_window_tokens=effective_policy.model_context_window_tokens,
-            reserved_output_tokens=effective_policy.reserved_output_tokens,
-            truncated_tool_result_count=truncated_count,
-            summary_strategy=("fallback" if effective_policy.summary_strategy == "model_assisted" else "deterministic"),
-        )
-
-    # Legacy explicit opt-in: whole-context budget trimming with continuity
-    # projection. Retained for users who explicitly request aggressive
-    # trimming; the default flow above never drops results.
-    projection = project_tool_results_for_context_window(
-        tool_results=tool_results,
-        policy=effective_policy,
-    )
-    retained_results = projection.retained_results
-    retained_count = len(retained_results)
-    compacted = retained_count < original_count
-    dropped_indexes = projection.dropped_indexes
-    dropped_results = projection.dropped_results
-    original_tokens = projection.original_tokens
-    retained_tokens = projection.retained_tokens
-    dropped_tokens = projection.dropped_tokens
-    token_estimate_source = projection.token_estimate_source
-
-    continuity_state = (
-        _build_continuity_state(
-            prompt=prompt,
-            session_metadata=session_metadata,
-            dropped_results=dropped_results,
-            dropped_result_indexes=dropped_indexes,
-            retained_results=retained_results,
-            retained_count=retained_count,
-            preview_item_limit=3,
-            preview_char_limit=80,
-            original_tokens=original_tokens,
-            retained_tokens=retained_tokens,
-            dropped_tokens=dropped_tokens,
-            token_budget=token_budget,
-            token_estimate_source=token_estimate_source,
-            tokenizer_model=effective_policy.tokenizer_model,
-        )
-        if compacted
-        else None
-    )
-    summary_strategy: Literal["deterministic", "model_assisted", "fallback"] = "deterministic"
-    summary_fallback_reason: str | None = None
-    if continuity_state is not None:
-        projected_summary, summary_strategy, summary_fallback_reason = project_summary(
-            strategy=effective_policy.summary_strategy,
-            facts=continuity_state.metadata_payload(),
-            deterministic_summary=continuity_state.summary_text or "",
-            projector=summary_projector,
-        )
-        continuity_state = replace(continuity_state, summary_text=projected_summary)
-    summary_anchor, summary_source = continuity_summary_metadata(continuity_state) if continuity_state is not None else (None, None)
-    if continuity_state is not None and continuity_state.projection_id is None:
-        continuity_state = replace(
-            continuity_state,
-            projection_id=summary_anchor,
-        )
+    projection = project_tool_results_for_context_window(tool_results=tool_results, policy=effective_policy)
     return RuntimeContextWindow(
         prompt=prompt,
-        tool_results=retained_results,
-        compacted=compacted,
-        compaction_reason="tool_result_window" if compacted else None,
-        original_tool_result_count=original_count,
-        retained_tool_result_count=retained_count,
-        original_tool_result_tokens=original_tokens,
-        retained_tool_result_tokens=retained_tokens,
-        dropped_tool_result_tokens=dropped_tokens,
-        token_budget=token_budget,
-        token_estimate_source=token_estimate_source,
-        model_context_window_tokens=effective_policy.model_context_window_tokens,
-        reserved_output_tokens=effective_policy.reserved_output_tokens,
-        summary_strategy=summary_strategy,
-        summary_fallback_reason=summary_fallback_reason,
+        tool_results=projection.retained_results,
+        compacted=False,
+        compaction_reason=None,
+        original_tool_result_count=len(tool_results),
+        retained_tool_result_count=len(projection.retained_results),
         truncated_tool_result_count=projection.truncated_count,
-        continuity_state=continuity_state,
-        summary_anchor=summary_anchor,
-        summary_source=summary_source,
+        summary_strategy="deterministic",
     )
 
 
@@ -1703,13 +1173,6 @@ def assemble_provider_context(
         "protected_tiers": ["instruction", "workspace", "task"],
         "compaction_target": "recent",
     }
-    context_token_count = estimate_provider_context_tokens(
-        tuple(segments),
-        tokenizer_model=policy.tokenizer_model if policy is not None else None,
-    )
-    metadata_payload["estimated_context_tokens"] = context_token_count.tokens
-    metadata_payload["estimated_context_token_source"] = context_token_count.source
-    metadata_payload["estimated_context_token_exact"] = context_token_count.exact
     return RuntimeAssembledContext(
         prompt=prompt,
         tool_results=context_window.tool_results,

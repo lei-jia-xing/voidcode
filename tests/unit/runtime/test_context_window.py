@@ -25,15 +25,11 @@ from voidcode.runtime.context.window import (
     RuntimeAssembledContext,
     RuntimeContextSegment,
     ToolResultView,
-    _retain_indexes_within_token_budget,
-    _tool_result_token_estimate,
     assemble_provider_context,
     continuity_state_from_metadata_payload,
     continuity_summary_metadata,
-    count_text_tokens,
     normalize_read_output,
     prepare_provider_context,
-    project_tool_results_for_context_window,
 )
 from voidcode.runtime.context.window_policy import (
     context_window_config_from_policy,
@@ -67,8 +63,8 @@ class _FakeTiktokenModule(ModuleType):
 
 
 def _context_window_policy(**overrides: object) -> Any:
-    resolved: dict[str, object] = {"tokenizer_model": None, **overrides}
-    return ContextWindowPolicy(**cast(Any, resolved))
+    overrides.pop("auto_compaction", None)
+    return ContextWindowPolicy(**cast(Any, overrides))
 
 
 def _tool_result(index: int) -> ToolResult:
@@ -98,7 +94,7 @@ def _shell_tool_result(index: int, *, command: str, content: str = "ok") -> Tool
     )
 
 
-def test_context_window_policy_default_retains_more_tool_results_before_compaction() -> None:
+def test_context_window_policy_default_uses_character_cap() -> None:
     policy = _context_window_policy()
     context = prepare_provider_context(
         prompt="continue coding task",
@@ -107,7 +103,7 @@ def test_context_window_policy_default_retains_more_tool_results_before_compacti
         policy=policy,
     )
 
-    assert policy.default_tool_result_tokens == 1_500
+    assert policy.default_tool_result_chars == 6_000
     assert context.compacted is False
     assert context.retained_tool_result_count == 7
 
@@ -135,7 +131,6 @@ def test_prepare_provider_context_default_policy_truncates_large_tool_results() 
     assert result.content is not None
     assert len(result.content) < len(large_content)
     assert context.truncated_tool_result_count >= 0
-    assert context.token_budget is None
 
 
 def test_prepare_provider_context_keeps_results_within_limit() -> None:
@@ -143,7 +138,7 @@ def test_prepare_provider_context_keeps_results_within_limit() -> None:
         prompt="read sample.txt",
         tool_results=(_tool_result(1), _tool_result(2)),
         session_metadata={},
-        policy=_context_window_policy(model_context_window_tokens=100),
+        policy=_context_window_policy(default_tool_result_chars=100),
     )
 
     assert context.prompt == "read sample.txt"
@@ -152,7 +147,6 @@ def test_prepare_provider_context_keeps_results_within_limit() -> None:
     assert context.compaction_reason is None
     assert context.original_tool_result_count == 2
     assert context.retained_tool_result_count == 2
-    assert context.token_budget == 100
     assert context.continuity_state is None
 
 
@@ -172,7 +166,7 @@ def test_assemble_provider_context_second_stage_preserves_non_recent_tiers() -> 
         },
         agent_prompt_context="A" * 400,
         policy=_context_window_policy(
-            model_context_window_tokens=20,
+            default_tool_result_chars=20,
         ),
     )
 
@@ -202,7 +196,7 @@ def test_assemble_provider_context_injects_active_runtime_todos() -> None:
                 }
             }
         },
-        policy=_context_window_policy(model_context_window_tokens=1),
+        policy=_context_window_policy(default_tool_result_chars=1),
     )
     system_segments = [segment.content for segment in assembled.segments if segment.role == "system"]
     assert any(
@@ -246,7 +240,7 @@ def test_assemble_provider_context_bounds_replayed_tool_content() -> None:
         tool_results=(),
         session_metadata={},
         replayed_conversation_segments=(replayed,),
-        policy=_context_window_policy(default_tool_result_tokens=10),
+        policy=_context_window_policy(default_tool_result_chars=10),
     )
 
     replayed_tools = [
@@ -283,7 +277,7 @@ def test_assemble_provider_context_records_explicit_context_tiers() -> None:
             }
         },
         skill_prompt_context="skill context",
-        policy=_context_window_policy(model_context_window_tokens=100),
+        policy=_context_window_policy(default_tool_result_chars=100),
     )
     assert assembled.metadata["context_tiers"] == {
         "version": 1,
@@ -317,7 +311,7 @@ def test_assemble_provider_context_injects_file_rules_from_tool_paths(tmp_path: 
         ),
         session_metadata={},
         workspace=workspace,
-        policy=_context_window_policy(model_context_window_tokens=100),
+        policy=_context_window_policy(default_tool_result_chars=100),
     )
 
     rule_segments = [
@@ -356,7 +350,7 @@ def test_assemble_provider_context_tracks_hook_preset_guidance_transform() -> No
         tool_results=(),
         session_metadata={},
         hook_preset_context="Resolved agent hook preset guidance.",
-        policy=_context_window_policy(model_context_window_tokens=100),
+        policy=_context_window_policy(default_tool_result_chars=100),
     )
 
     hook_segments = [
@@ -491,7 +485,7 @@ def test_assemble_provider_context_uses_full_tool_history_for_rules_not_compacte
         tool_results=tuple(results),
         session_metadata={},
         workspace=workspace,
-        policy=_context_window_policy(model_context_window_tokens=100),
+        policy=_context_window_policy(default_tool_result_chars=100),
     )
 
     rule_segments = [
@@ -533,7 +527,7 @@ def test_assemble_provider_context_uses_runtime_todos_as_single_authority() -> N
                 }
             }
         },
-        policy=_context_window_policy(model_context_window_tokens=100),
+        policy=_context_window_policy(default_tool_result_chars=100),
     )
     assert [segment.tool_name for segment in assembled.segments if segment.role == "tool"] == ["read"]
     system_text = "\n".join(str(segment.content) for segment in assembled.segments if segment.role == "system")
@@ -553,7 +547,7 @@ def test_assemble_provider_context_injects_pending_approval_state() -> None:
                 "blocked_tool": "write",
             }
         },
-        policy=_context_window_policy(model_context_window_tokens=100),
+        policy=_context_window_policy(default_tool_result_chars=100),
     )
 
     pending_segments = [
@@ -599,7 +593,7 @@ def test_assemble_provider_context_skill_todo_transform_content_present() -> Non
                 ),
             )
         ),
-        policy=_context_window_policy(model_context_window_tokens=100),
+        policy=_context_window_policy(default_tool_result_chars=100),
     )
 
     skill_segments = [s for s in assembled.segments if s.metadata is not None and s.metadata.get("source") == "skill_prompt"]
@@ -632,7 +626,7 @@ def test_assemble_provider_context_injects_pending_question_state() -> None:
                 "blocked_tool": "question",
             }
         },
-        policy=_context_window_policy(model_context_window_tokens=100),
+        policy=_context_window_policy(default_tool_result_chars=100),
     )
 
     pending_segments = [
@@ -668,7 +662,7 @@ def test_provider_context_inspector_reports_synthetic_feedback_mode() -> None:
             ),
         ),
         session_metadata={},
-        policy=_context_window_policy(model_context_window_tokens=100),
+        policy=_context_window_policy(default_tool_result_chars=100),
     )
 
     snapshot = inspect_provider_context(
@@ -709,7 +703,7 @@ def test_provider_context_inspector_strips_sentinels_from_provider_messages() ->
             ),
         ),
         session_metadata={},
-        policy=_context_window_policy(model_context_window_tokens=100),
+        policy=_context_window_policy(default_tool_result_chars=100),
     )
 
     snapshot = inspect_provider_context(
@@ -742,7 +736,7 @@ def test_provider_context_inspector_redacts_secret_text_from_tool_output() -> No
             ),
         ),
         session_metadata={},
-        policy=_context_window_policy(model_context_window_tokens=100),
+        policy=_context_window_policy(default_tool_result_chars=100),
     )
 
     snapshot = inspect_provider_context(
@@ -778,7 +772,7 @@ def test_provider_context_inspector_redacts_tool_error_and_data_fields() -> None
             ),
         ),
         session_metadata={},
-        policy=_context_window_policy(model_context_window_tokens=100),
+        policy=_context_window_policy(default_tool_result_chars=100),
     )
 
     snapshot = inspect_provider_context(
@@ -1024,7 +1018,7 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
                 }
             }
         },
-        policy=_context_window_policy(auto_compaction=False, model_context_window_tokens=100_000),
+        policy=_context_window_policy(auto_compaction=False, default_tool_result_chars=100_000),
     )
     standard_snapshot = inspect_provider_context(
         assembled_context=assembled,
@@ -1038,7 +1032,7 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
         prompt="continue",
         tool_results=synthetic_tool_results,
         session_metadata={},
-        policy=_context_window_policy(auto_compaction=False, model_context_window_tokens=100_000),
+        policy=_context_window_policy(auto_compaction=False, default_tool_result_chars=100_000),
     )
     synthetic_snapshot = inspect_provider_context(
         assembled_context=synthetic_assembled,
@@ -1080,409 +1074,6 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
     assert any(diagnostic.code == "provider_path_uses_synthetic_tool_feedback" for diagnostic in synthetic_snapshot.diagnostics)
 
 
-def test_prepare_provider_context_over_budget_retains_all_results_by_default() -> None:
-    """Behavior flip: automatic whole-context trimming is off by default, so
-    results are never dropped for exceeding the token budget. Over-budget
-    contexts surface as explicit provider overflow instead of silent loss."""
-    context = prepare_provider_context(
-        prompt="read sample.txt",
-        tool_results=(
-            _sized_tool_result(1, content_size=16),
-            _sized_tool_result(2, content_size=16),
-            _sized_tool_result(3, content_size=16),
-            _sized_tool_result(4, content_size=16),
-        ),
-        session_metadata={},
-        policy=_context_window_policy(
-            model_context_window_tokens=12,
-        ),
-    )
-
-    assert tuple(result.data["index"] for result in context.tool_results) == (1, 2, 3, 4)
-    assert context.retained_tool_result_count == 4
-    assert context.compacted is False
-    assert context.compaction_reason is None
-    assert context.continuity_state is None
-    assert context.dropped_tool_result_tokens == 0
-
-
-def test_prepare_provider_context_preserves_latest_result_over_budget() -> None:
-    context = prepare_provider_context(
-        prompt="read sample.txt",
-        tool_results=(_sized_tool_result(1, content_size=400),),
-        session_metadata={},
-        policy=_context_window_policy(model_context_window_tokens=1),
-    )
-
-    assert tuple(result.data["index"] for result in context.tool_results) == (1,)
-    assert context.compacted is False
-    assert context.retained_tool_result_tokens is not None
-    assert context.retained_tool_result_tokens > 1
-
-
-def test_prepare_provider_context_uses_chars_per_4_token_approximation() -> None:
-    ascii_context = prepare_provider_context(
-        prompt="read ascii.txt",
-        tool_results=(
-            ToolResult(
-                tool_name="read",
-                content="a" * 80,
-                status="ok",
-                data={"path": "ascii.txt"},
-            ),
-        ),
-        session_metadata={},
-        policy=_context_window_policy(model_context_window_tokens=1),
-    )
-    unicode_context = prepare_provider_context(
-        prompt="read unicode.txt",
-        tool_results=(
-            ToolResult(
-                tool_name="read",
-                content="你" * 80,
-                status="ok",
-                data={"path": "unicode.txt"},
-            ),
-        ),
-        session_metadata={},
-        policy=_context_window_policy(model_context_window_tokens=1),
-    )
-
-    assert ascii_context.retained_tool_result_tokens is not None
-    assert unicode_context.retained_tool_result_tokens is not None
-    assert ascii_context.retained_tool_result_tokens > 0
-    assert unicode_context.retained_tool_result_tokens > 0
-    assert ascii_context.token_estimate_source == "approx_chars_per_4"
-    assert unicode_context.token_estimate_source == "approx_chars_per_4"
-
-
-def test_prepare_provider_context_keeps_all_results_when_budget_missing() -> None:
-    context = prepare_provider_context(
-        prompt="read sample.txt",
-        tool_results=(_tool_result(1), _tool_result(2), _tool_result(3)),
-        session_metadata={},
-        policy=_context_window_policy(
-            model_context_window_tokens=None,
-            default_tool_result_tokens=None,
-        ),
-    )
-
-    assert tuple(result.data["index"] for result in context.tool_results) == (1, 2, 3)
-    assert context.compacted is False
-    assert context.retained_tool_result_count == 3
-    assert context.token_budget is None
-    assert context.original_tool_result_tokens is None
-
-
-def test_project_tool_results_for_context_window_keeps_results_without_token_budget() -> None:
-    projection = project_tool_results_for_context_window(
-        tool_results=tuple(_tool_result(index) for index in range(1, 11)),
-        policy=_context_window_policy(
-            model_context_window_tokens=None,
-            default_tool_result_tokens=None,
-        ),
-    )
-
-    assert projection.token_budget is None
-    assert projection.retained_indexes == tuple(range(10))
-    assert tuple(result.data["index"] for result in projection.retained_results) == (
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9,
-        10,
-    )
-
-
-def test_prepare_provider_context_keeps_results_without_token_budget_when_history_grows() -> None:
-    context = prepare_provider_context(
-        prompt="read sample.txt",
-        tool_results=tuple(_tool_result(index) for index in range(1, 11)),
-        session_metadata={},
-        policy=_context_window_policy(
-            model_context_window_tokens=None,
-            default_tool_result_tokens=None,
-        ),
-    )
-
-    assert tuple(result.data["index"] for result in context.tool_results) == (
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9,
-        10,
-    )
-    assert context.compacted is False
-    assert context.retained_tool_result_count == 10
-
-
-def test_prepare_provider_context_token_budget_keeps_all_candidates_by_default() -> None:
-    context = prepare_provider_context(
-        prompt="verify fix",
-        tool_results=(
-            _sized_tool_result(1, content_size=160),
-            _shell_tool_result(2, command="run project verification", content="passed"),
-            _sized_tool_result(3, content_size=160),
-            _tool_result(4),
-        ),
-        session_metadata={},
-        policy=_context_window_policy(
-            model_context_window_tokens=120,
-            default_tool_result_tokens=None,
-        ),
-    )
-
-    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert retained_indexes == (1, 2, 3, 4)
-    assert context.compacted is False
-    assert context.token_budget == 120
-
-
-def test_retain_indexes_within_token_budget_always_keeps_newest_candidate() -> None:
-    results = (
-        _sized_tool_result(1, content_size=40),
-        _sized_tool_result(2, content_size=40),
-        _sized_tool_result(3, content_size=400),
-    )
-
-    retained = _retain_indexes_within_token_budget(
-        results,
-        (0, 1, 2),
-        token_budget=20,
-        tokenizer_model=None,
-    )
-
-    assert retained == (2,)
-
-
-def test_prepare_provider_context_older_todo_and_task_do_not_displace_newer_reads() -> None:
-    context = prepare_provider_context(
-        prompt="finish task",
-        tool_results=(
-            ToolResult(
-                tool_name="todo",
-                content="Updated todos",
-                status="ok",
-                data={"index": 1},
-            ),
-            ToolResult(
-                tool_name="task",
-                content="Background task launched.",
-                status="ok",
-                data={"index": 2, "task_id": "bg_1"},
-            ),
-            _tool_result(3),
-            _tool_result(4),
-            _tool_result(5),
-        ),
-        session_metadata={},
-        policy=_context_window_policy(
-            model_context_window_tokens=100,
-            default_tool_result_tokens=None,
-        ),
-    )
-
-    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert retained_indexes == (1, 2, 3, 4, 5)
-    assert context.compacted is False
-
-
-def test_prepare_provider_context_older_write_edit_do_not_displace_newer_reads() -> None:
-    context = prepare_provider_context(
-        prompt="fix code",
-        tool_results=(
-            ToolResult(
-                tool_name="write",
-                content="written",
-                status="ok",
-                data={"index": 1, "path": "src/app.py"},
-            ),
-            ToolResult(
-                tool_name="edit",
-                content="edited",
-                status="ok",
-                data={"index": 2, "path": "src/utils.py"},
-            ),
-            _tool_result(3),
-            _tool_result(4),
-            _tool_result(5),
-        ),
-        session_metadata={},
-        policy=_context_window_policy(
-            model_context_window_tokens=100,
-            default_tool_result_tokens=None,
-        ),
-    )
-
-    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert retained_indexes == (1, 2, 3, 4, 5)
-    assert context.compacted is False
-
-
-def test_prepare_provider_context_older_error_does_not_displace_newer_results() -> None:
-    context = prepare_provider_context(
-        prompt="debug",
-        tool_results=(
-            ToolResult(
-                tool_name="read",
-                status="error",
-                error="not found",
-                data={"index": 1, "path": "missing.py"},
-            ),
-            _tool_result(2),
-            _tool_result(3),
-            _tool_result(4),
-            _tool_result(5),
-        ),
-        session_metadata={},
-        policy=_context_window_policy(
-            model_context_window_tokens=100,
-            default_tool_result_tokens=None,
-        ),
-    )
-
-    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert len(retained_indexes) >= 1
-
-
-def test_prepare_provider_context_importance_tie_breaker_prefers_newer() -> None:
-    context = prepare_provider_context(
-        prompt="read files",
-        tool_results=(
-            _tool_result(1),
-            _tool_result(2),
-            _tool_result(3),
-            _tool_result(4),
-            _tool_result(5),
-        ),
-        session_metadata={},
-        policy=_context_window_policy(
-            model_context_window_tokens=100,
-            default_tool_result_tokens=None,
-        ),
-    )
-
-    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert retained_indexes == (1, 2, 3, 4, 5)
-    assert context.compacted is False
-
-
-def test_prepare_provider_context_protected_recent_always_kept() -> None:
-    context = prepare_provider_context(
-        prompt="continue",
-        tool_results=(
-            ToolResult(
-                tool_name="write",
-                content="important write",
-                status="ok",
-                data={"index": 1, "path": "src/app.py"},
-            ),
-            ToolResult(
-                tool_name="read",
-                status="error",
-                error="missing",
-                data={"index": 2, "path": "src/missing.py"},
-            ),
-            _tool_result(3),
-        ),
-        session_metadata={},
-        policy=_context_window_policy(
-            model_context_window_tokens=50,
-            default_tool_result_tokens=None,
-        ),
-    )
-
-    retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert 3 in retained_indexes
-
-
-def test_retain_indexes_within_token_budget_protects_recent() -> None:
-    results = (
-        _tool_result(1),
-        _tool_result(2),
-        _tool_result(3),
-    )
-    indexes = _retain_indexes_within_token_budget(
-        results,
-        candidate_indexes=(0, 1, 2),
-        token_budget=100,
-        tokenizer_model=None,
-    )
-    assert len(indexes) >= 1
-
-
-def test_count_text_tokens_reports_estimated_fallback_metadata() -> None:
-    counted = count_text_tokens("abcd你")
-
-    assert counted.tokens == 2
-    assert counted.method == "estimated"
-    assert counted.source == "approx_chars_per_4"
-    assert counted.exact is False
-
-
-def test_count_text_tokens_ignores_tokenizer_model_and_uses_approximation() -> None:
-    fake_tiktoken = _FakeTiktokenModule()
-    with patch.dict(sys.modules, {"tiktoken": fake_tiktoken}):
-        counted = count_text_tokens("abcd", tokenizer_model="gpt-test")
-
-    assert counted.tokens == 1
-    assert counted.method == "estimated"
-    assert counted.source == "approx_chars_per_4"
-    assert counted.exact is False
-
-
-def test_compaction_does_not_import_tiktoken() -> None:
-    fake_tiktoken = _FakeTiktokenModule()
-    with patch.dict(sys.modules, {"tiktoken": fake_tiktoken}):
-        context = prepare_provider_context(
-            prompt="search",
-            tool_results=(ToolResult(tool_name="grep", status="ok", content="x" * 80),),
-            session_metadata={},
-            policy=_context_window_policy(
-                model_context_window_tokens=20,
-                default_tool_result_tokens=None,
-                tokenizer_model="cl100k_base",
-            ),
-        )
-
-    assert context.token_estimate_source == "approx_chars_per_4"
-    assert fake_tiktoken.encoding_for_model_calls == 0
-
-
-def test_prepare_provider_context_honors_reserved_output_budget() -> None:
-    context = prepare_provider_context(
-        prompt="read sample.txt",
-        tool_results=(
-            _sized_tool_result(1, content_size=480),
-            _sized_tool_result(2, content_size=200),
-        ),
-        session_metadata={},
-        policy=_context_window_policy(
-            model_context_window_tokens=120,
-            reserved_output_tokens=40,
-            default_tool_result_tokens=None,
-        ),
-    )
-
-    assert context.token_budget == 80
-    assert context.reserved_output_tokens == 40
-    assert context.metadata_payload()["reserved_output_tokens"] == 40
-    assert context.compacted is False
-    assert context.original_tool_result_count == 2
-    assert context.retained_tool_result_count == 2
-    assert context.dropped_tool_result_tokens == 0
-
-
 def test_prepare_provider_context_truncates_old_tool_outputs_by_tool_policy() -> None:
     context = prepare_provider_context(
         prompt="search",
@@ -1492,8 +1083,8 @@ def test_prepare_provider_context_truncates_old_tool_outputs_by_tool_policy() ->
         ),
         session_metadata={},
         policy=_context_window_policy(
-            model_context_window_tokens=50,
-            per_tool_result_tokens={"grep": 30},
+            default_tool_result_chars=50,
+            per_tool_result_chars={"grep": 30},
         ),
     )
 
@@ -1501,12 +1092,13 @@ def test_prepare_provider_context_truncates_old_tool_outputs_by_tool_policy() ->
     assert older.truncated is True
     assert older.content is not None
     assert len(older.content) < 200
-    assert latest.truncated is False
-    assert latest.content == "latest" * 20
+    assert latest.truncated is True
+    assert latest.content is not None
+    assert len(latest.content) <= 30
     assert context.retained_tool_result_count == 2
     assert context.compacted is False
-    assert context.truncated_tool_result_count == 1
-    assert context.metadata_payload()["truncated_tool_result_count"] == 1
+    assert context.truncated_tool_result_count == 2
+    assert context.metadata_payload()["truncated_tool_result_count"] == 2
 
 
 def test_prepare_provider_context_keeps_truncation_message_inside_tool_cap() -> None:
@@ -1515,8 +1107,8 @@ def test_prepare_provider_context_keeps_truncation_message_inside_tool_cap() -> 
         tool_results=(ToolResult(tool_name="grep", status="ok", content="x" * 80, data={"index": 1}),),
         session_metadata={},
         policy=_context_window_policy(
-            model_context_window_tokens=30,
-            per_tool_result_tokens={"grep": 1},
+            default_tool_result_chars=30,
+            per_tool_result_chars={"grep": 1},
         ),
     )
 
@@ -1535,19 +1127,18 @@ def test_prepare_provider_context_applies_recent_tool_result_token_cap() -> None
         ),
         session_metadata={},
         policy=_context_window_policy(
-            model_context_window_tokens=30,
-            default_tool_result_tokens=None,
+            default_tool_result_chars=30,
         ),
     )
 
     assert tuple(result.data["index"] for result in context.tool_results) == (1, 2)
     (older, latest) = context.tool_results
     assert latest.data["index"] == 2
-    assert latest.truncated is False
+    assert latest.truncated is True
     assert latest.content is not None
-    assert len(latest.content) == 80
+    assert len(latest.content) <= 30
     assert older.content == "older"
-    assert context.truncated_tool_result_count == 0
+    assert context.truncated_tool_result_count == 1
     assert context.compacted is False
 
 
@@ -1559,52 +1150,24 @@ def test_prepare_provider_context_does_not_load_tokenizer_when_clipping() -> Non
             tool_results=(ToolResult(tool_name="grep", status="ok", content="x" * 80, data={"index": 1}),),
             session_metadata={},
             policy=_context_window_policy(
-                model_context_window_tokens=30,
-                per_tool_result_tokens={"grep": 20},
-                tokenizer_model="cache-test-model",
+                default_tool_result_chars=30,
+                per_tool_result_chars={"grep": 20},
             ),
         )
 
     (result,) = context.tool_results
-    assert result.truncated is False
+    assert result.truncated is True
     assert result.content is not None
+    assert len(result.content) <= 20
     assert fake_tiktoken.encoding_for_model_calls == 0
     assert fake_tiktoken.get_encoding_calls == 0
-
-
-def test_prepare_provider_context_preserves_recent_results_over_count_cap() -> None:
-    context = prepare_provider_context(
-        prompt="read sample.txt",
-        tool_results=(_tool_result(1), _tool_result(2), _tool_result(3)),
-        session_metadata={},
-        policy=_context_window_policy(model_context_window_tokens=50),
-    )
-
-    assert tuple(result.data["index"] for result in context.tool_results) == (1, 2, 3)
-    assert context.retained_tool_result_count == 3
-    assert context.compacted is False
-
-
-def test_prepare_provider_context_auto_compaction_false_retains_all_results() -> None:
-    context = prepare_provider_context(
-        prompt="read sample.txt",
-        tool_results=(_tool_result(1), _tool_result(2), _tool_result(3)),
-        session_metadata={},
-        policy=_context_window_policy(auto_compaction=False, model_context_window_tokens=30),
-    )
-
-    assert tuple(result.data["index"] for result in context.tool_results) == (1, 2, 3)
-    assert context.compacted is False
 
 
 def test_context_window_policy_metadata_round_trips() -> None:
     policy = _context_window_policy(
         auto_compaction=False,
-        model_context_window_tokens=1_000,
-        reserved_output_tokens=20,
-        default_tool_result_tokens=30,
-        per_tool_result_tokens={"grep": 10},
-        tokenizer_model="gpt-4o",
+        default_tool_result_chars=30,
+        per_tool_result_chars={"grep": 10},
     )
 
     parsed = context_window_policy_from_config(
@@ -1711,12 +1274,12 @@ def test_continuity_state_metadata_payload_uses_instance_version() -> None:
         dropped_tool_result_count=1,
         retained_tool_result_count=2,
         source="tool_result_window",
-        version=1,
+        version=4,
     )
 
     payload = state.metadata_payload()
 
-    assert payload["version"] == 1
+    assert payload["version"] == 4
 
 
 def test_continuity_state_from_metadata_payload_rejects_unknown_version_safely() -> None:
@@ -1756,7 +1319,7 @@ def test_assemble_provider_context_rejects_legacy_continuity_metadata() -> None:
                     }
                 }
             },
-            policy=_context_window_policy(model_context_window_tokens=100),
+            policy=_context_window_policy(default_tool_result_chars=100),
         )
 
 
@@ -1809,43 +1372,7 @@ def test_normalize_read_output_preserves_output_capped_footer() -> None:
     assert normalized == ("alpha\n(Output capped at 50 KB. Showing lines 1-1. Use offset=2 to continue.)")
 
 
-def test_context_window_token_estimate_counts_raw_read_content() -> None:
-    raw_content = "\n".join(
-        [
-            "<path>sample.txt</path>",
-            "<type>file</type>",
-            "<content>",
-            "1: alpha",
-            "2: beta",
-            "(End of file - total 2 lines)",
-            "</content>",
-        ]
-    )
-    stripped_content = normalize_read_output(raw_content)
-    policy = _context_window_policy(
-        auto_compaction=False,
-        model_context_window_tokens=100_000,
-    )
-
-    raw_context = prepare_provider_context(
-        prompt="read sample.txt",
-        tool_results=(ToolResult(tool_name="read", status="ok", content=raw_content),),
-        session_metadata={},
-        policy=policy,
-    )
-    stripped_context = prepare_provider_context(
-        prompt="read sample.txt",
-        tool_results=(ToolResult(tool_name="read", status="ok", content=stripped_content),),
-        session_metadata={},
-        policy=policy,
-    )
-
-    assert raw_context.original_tool_result_tokens is not None
-    assert stripped_context.original_tool_result_tokens is not None
-    assert raw_context.original_tool_result_tokens > stripped_context.original_tool_result_tokens
-
-
-def test_truncation_renders_through_view_without_rebuilding_original() -> None:
+def test_truncation_renders_through_view_with_character_cap() -> None:
     original = ToolResult(
         tool_name="read",
         status="ok",
@@ -1873,14 +1400,14 @@ def test_truncation_renders_through_view_without_rebuilding_original() -> None:
     assert view.partial is True
     assert view.content is not None
     assert len(view.content) < 20_000
-    assert "[Tool output truncated by context window policy" in view.content
-    assert view.original_content_tokens is not None
-    assert view.content_token_limit is not None
+    assert "[Tool output truncated by character limit" in view.content
+    assert view.original_content_chars == 20_000
+    assert view.content_char_limit == 6_000
     assert view.data["path"] == "large.txt"
     # No internal metadata markers leak into the rendered data.
     assert "context_window_truncated" not in view.data
-    assert "context_window_original_content_tokens" not in view.data
-    assert "context_window_content_token_limit" not in view.data
+    assert "context_window_original_content_chars" not in view.data
+    assert "context_window_content_char_limit" not in view.data
 
 
 def test_identity_view_preserves_source_truncation_flags() -> None:
@@ -1907,64 +1434,6 @@ def test_identity_view_preserves_source_truncation_flags() -> None:
     assert view.partial is True
     assert view.reference == source.reference
     assert view.content == source.content
-
-
-def test_token_budget_decision_matches_rendered_truncated_content() -> None:
-    """The retained/dropped decision runs on the same clipped views that the
-    provider renders, so budget accounting always matches the model-visible
-    content (decision == rendering)."""
-    policy = _context_window_policy(
-        model_context_window_tokens=120,
-        per_tool_result_tokens={"read": 20},
-    )
-    raw_results = (
-        ToolResult(tool_name="read", status="ok", content="x" * 400, data={"index": 1}),
-        ToolResult(tool_name="read", status="ok", content="y" * 400, data={"index": 2}),
-        ToolResult(tool_name="read", status="ok", content="z" * 400, data={"index": 3}),
-    )
-    projection = project_tool_results_for_context_window(
-        tool_results=raw_results,
-        policy=policy,
-    )
-
-    assert projection.truncated_count == 3
-    # Raw content is ~100 tokens per result: a raw-content budget of 120 would
-    # retain only the newest. Clipped views (~40 tokens each) all fit, proving
-    # the decision runs on the rendered content, not the persisted originals.
-    assert sum(_tool_result_token_estimate(result).tokens for result in raw_results) > 120
-    assert projection.retained_indexes == (0, 1, 2)
-    assert projection.retained_tokens == sum(_tool_result_token_estimate(view).tokens for view in projection.retained_results)
-    assert projection.retained_tokens <= 120
-    for view in projection.retained_results:
-        assert view.clipped is True
-        assert len(view.content or "") < 400
-
-
-def test_auto_compaction_opt_in_still_projects_budget_drops_with_views() -> None:
-    """auto_compaction=True remains the explicit opt-in for whole-context
-    trimming with continuity projection; the default flow never drops."""
-    context = prepare_provider_context(
-        prompt="read sample.txt",
-        tool_results=(
-            _sized_tool_result(1, content_size=16),
-            _sized_tool_result(2, content_size=16),
-            _sized_tool_result(3, content_size=16),
-            _sized_tool_result(4, content_size=16),
-        ),
-        session_metadata={},
-        policy=_context_window_policy(
-            auto_compaction=True,
-            model_context_window_tokens=12,
-        ),
-    )
-
-    assert tuple(result.data["index"] for result in context.tool_results) == (4,)
-    assert context.retained_tool_result_count == 1
-    assert context.compacted is True
-    assert context.continuity_state is not None
-    assert context.continuity_state.dropped_tool_result_count == 3
-    for result in context.tool_results:
-        assert isinstance(result, ToolResultView)
 
 
 def test_truncated_tool_result_data_has_no_context_window_markers() -> None:
@@ -2015,4 +1484,4 @@ def test_provider_messages_exclude_context_window_markers() -> None:
     )
     tool_message = next(message for message in standard_snapshot.provider_messages if message.role == "tool")
     assert len(tool_message.content or "") < 20_000
-    assert "[Tool output truncated by context window policy" in (tool_message.content or "")
+    assert tool_message.content_truncated is True

@@ -5,7 +5,7 @@ from typing import cast
 import pytest
 
 from voidcode.provider.protocol import ProviderTokenUsage
-from voidcode.runtime.config import RuntimeConfig
+from voidcode.runtime.config import RuntimeConfig, RuntimeContextWindowConfig
 from voidcode.runtime.config_materializer import (
     PERSISTED_RUNTIME_CONFIG_KEYS,
     EffectiveRuntimeConfig,
@@ -150,7 +150,7 @@ def _accepted_persisted_runtime_config_values() -> dict[str, object]:
         "tools": {"builtin": {"enabled": True}, "allowlist": ["read"]},
         "agent": {"preset": "leader"},
         "agents": {"leader": {"preset": "leader"}},
-        "context_window": {"auto_compaction": False},
+        "context_window": {"version": 2, "default_tool_result_chars": 4_000, "per_tool_result_chars": {"read": 2_000}},
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
         "mcp": {"mode": "managed", "configured_enabled": False, "servers": []},
     }
@@ -191,8 +191,10 @@ def test_persisted_runtime_config_accepts_representative_value_for_each_key(fiel
         assert materialized.tools is not None
         assert materialized.tools.allowlist == ("read",)
     elif field == "context_window":
-        assert materialized.context_window is not None
-        assert materialized.context_window.auto_compaction is False
+        assert materialized.context_window == RuntimeContextWindowConfig(
+            default_tool_result_chars=4_000,
+            per_tool_result_chars={"read": 2_000},
+        )
     elif field == "agent":
         assert materialized.has_agent is True
         assert materialized.raw_agent == {"preset": "leader"}

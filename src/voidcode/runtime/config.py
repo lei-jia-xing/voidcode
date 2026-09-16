@@ -136,12 +136,8 @@ _FORMATTER_CONFIG_KEYS = frozenset({"enabled", "format_on_write", "languages"})
 _CONTEXT_WINDOW_CONFIG_KEYS = frozenset(
     {
         "version",
-        "auto_compaction",
-        "model_context_window_tokens",
-        "reserved_output_tokens",
-        "default_tool_result_tokens",
-        "per_tool_result_tokens",
-        "tokenizer_model",
+        "default_tool_result_chars",
+        "per_tool_result_chars",
         "provider_context_diagnostics",
         "provider_context_oversized_feedback_chars",
         "context_transform_failure_policy",
@@ -315,12 +311,8 @@ def _empty_context_window_tool_limits() -> dict[str, int]:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeContextWindowConfig:
-    auto_compaction: bool = False
-    model_context_window_tokens: int | None = None
-    reserved_output_tokens: int | None = None
-    default_tool_result_tokens: int | None = 1_500
-    per_tool_result_tokens: Mapping[str, int] = field(default_factory=_empty_context_window_tool_limits)
-    tokenizer_model: str | None = "cl100k_base"
+    default_tool_result_chars: int | None = 6_000
+    per_tool_result_chars: Mapping[str, int] = field(default_factory=_empty_context_window_tool_limits)
     provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
     provider_context_oversized_feedback_chars: int = 8_000
     context_transform_failure_policy: RuntimeContextTransformFailureMode = "warn"
@@ -1508,55 +1500,27 @@ def _parse_background_task_config(raw_value: object) -> RuntimeBackgroundTaskCon
 
 class _RuntimeContextWindowValidationModel(BaseModel):
     model_config = ConfigDict(extra="ignore", validate_default=True)
-
-    version: int = 1
-    auto_compaction: bool = False
-    model_context_window_tokens: int | None = None
-    reserved_output_tokens: int | None = None
-    default_tool_result_tokens: int | None = 1_500
-    per_tool_result_tokens: dict[str, int] = Field(default_factory=dict)
-    tokenizer_model: str | None = "cl100k_base"
+    version: int = 2
+    default_tool_result_chars: int | None = 6_000
+    per_tool_result_chars: dict[str, int] = Field(default_factory=dict)
     provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
     provider_context_oversized_feedback_chars: int = 8_000
     context_transform_failure_policy: RuntimeContextTransformFailureMode = "warn"
     summary_strategy: Literal["deterministic", "model_assisted"] = "deterministic"
 
-    @field_validator("auto_compaction", mode="before")
-    @classmethod
-    def _validate_auto_compaction(cls, value: object) -> bool:
-        parsed = _parse_optional_bool(value, field_path="context_window.auto_compaction")
-        return False if parsed is None else parsed
-
     @field_validator("version", mode="before")
     @classmethod
     def _validate_version(cls, value: object) -> int:
         if value is None:
-            return 1
-        if value != 1:
-            raise ValueError("runtime config field 'context_window.version' must be 1")
-        return 1
+            return 2
+        if value != 2:
+            raise ValueError("runtime config field 'context_window.version' must be 2")
+        return 2
 
-    @field_validator(
-        "model_context_window_tokens",
-        "default_tool_result_tokens",
-        mode="before",
-    )
+    @field_validator("default_tool_result_chars", mode="before")
     @classmethod
-    def _validate_optional_positive_int(cls, value: object, info: ValidationInfo) -> int | None:
-        field_name = info.field_name or "unknown"
-        field_path = f"context_window.{field_name}"
-        return _parse_optional_positive_int(value, field_path=field_path)
-
-    @field_validator("reserved_output_tokens", mode="before")
-    @classmethod
-    def _validate_reserved_output_tokens(cls, value: object) -> int | None:
-        if value is None:
-            return None
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise ValueError("runtime config field 'context_window.reserved_output_tokens' must be an integer")
-        if value < 1:
-            raise ValueError("runtime config field 'context_window.reserved_output_tokens' must be greater than or equal to 1")
-        return value
+    def _validate_default_chars(cls, value: object, info: ValidationInfo) -> int | None:
+        return _parse_optional_positive_int(value, field_path=f"context_window.{info.field_name}")
 
     @field_validator("provider_context_diagnostics", mode="before")
     @classmethod
@@ -1568,9 +1532,7 @@ class _RuntimeContextWindowValidationModel(BaseModel):
     def _validate_provider_context_oversized_feedback_chars(cls, value: object) -> int:
         if value is None:
             return 8_000
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise ValueError("runtime config field 'context_window.provider_context_oversized_feedback_chars' must be an integer")
-        if value < 1:
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             raise ValueError("runtime config field 'context_window.provider_context_oversized_feedback_chars' must be greater than or equal to 1")
         return value
 
@@ -1579,42 +1541,26 @@ class _RuntimeContextWindowValidationModel(BaseModel):
     def _validate_context_transform_failure_policy(cls, value: object) -> RuntimeContextTransformFailureMode:
         return _parse_context_transform_failure_mode(value)
 
-    @field_validator("per_tool_result_tokens", mode="before")
+    @field_validator("per_tool_result_chars", mode="before")
     @classmethod
-    def _validate_per_tool_result_tokens(cls, value: object) -> dict[str, int]:
+    def _validate_per_tool_result_chars(cls, value: object) -> dict[str, int]:
         if value is None:
             return {}
         if not isinstance(value, dict):
-            raise ValueError("runtime config field 'context_window.per_tool_result_tokens' must be an object")
+            raise ValueError("runtime config field 'context_window.per_tool_result_chars' must be an object")
         parsed: dict[str, int] = {}
         for raw_key, raw_limit in cast(dict[object, object], value).items():
             if not isinstance(raw_key, str) or not raw_key:
-                raise ValueError("runtime config field 'context_window.per_tool_result_tokens' keys must be non-empty strings")
-            limit = _parse_optional_positive_int(
-                raw_limit,
-                field_path=f"context_window.per_tool_result_tokens.{raw_key}",
-            )
+                raise ValueError("runtime config field 'context_window.per_tool_result_chars' keys must be non-empty strings")
+            limit = _parse_optional_positive_int(raw_limit, field_path=f"context_window.per_tool_result_chars.{raw_key}")
             assert limit is not None
             parsed[raw_key] = limit
         return parsed
 
-    @field_validator("tokenizer_model", mode="before")
-    @classmethod
-    def _validate_tokenizer_model(cls, value: object) -> str | None:
-        if value is None:
-            return RuntimeContextWindowConfig().tokenizer_model
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("runtime config field 'context_window.tokenizer_model' must be a non-empty string")
-        return value.strip()
-
     def to_runtime_config(self) -> RuntimeContextWindowConfig:
         return RuntimeContextWindowConfig(
-            auto_compaction=self.auto_compaction,
-            model_context_window_tokens=self.model_context_window_tokens,
-            reserved_output_tokens=self.reserved_output_tokens,
-            default_tool_result_tokens=self.default_tool_result_tokens,
-            per_tool_result_tokens=dict(self.per_tool_result_tokens),
-            tokenizer_model=self.tokenizer_model,
+            default_tool_result_chars=self.default_tool_result_chars,
+            per_tool_result_chars=dict(self.per_tool_result_chars),
             provider_context_diagnostics=self.provider_context_diagnostics,
             provider_context_oversized_feedback_chars=self.provider_context_oversized_feedback_chars,
             context_transform_failure_policy=self.context_transform_failure_policy,
@@ -2799,23 +2745,16 @@ def serialize_runtime_context_window_config(
     if context_window is None:
         return None
     payload: dict[str, object] = {
-        "version": 1,
-        "auto_compaction": context_window.auto_compaction,
+        "version": 2,
         "provider_context_diagnostics": context_window.provider_context_diagnostics,
-        "provider_context_oversized_feedback_chars": (context_window.provider_context_oversized_feedback_chars),
+        "provider_context_oversized_feedback_chars": context_window.provider_context_oversized_feedback_chars,
         "context_transform_failure_policy": context_window.context_transform_failure_policy,
         "summary_strategy": context_window.summary_strategy,
     }
-    if context_window.model_context_window_tokens is not None:
-        payload["model_context_window_tokens"] = context_window.model_context_window_tokens
-    if context_window.reserved_output_tokens is not None:
-        payload["reserved_output_tokens"] = context_window.reserved_output_tokens
-    if context_window.default_tool_result_tokens is not None:
-        payload["default_tool_result_tokens"] = context_window.default_tool_result_tokens
-    if context_window.per_tool_result_tokens:
-        payload["per_tool_result_tokens"] = dict(context_window.per_tool_result_tokens)
-    if context_window.tokenizer_model is not None:
-        payload["tokenizer_model"] = context_window.tokenizer_model
+    if context_window.default_tool_result_chars is not None:
+        payload["default_tool_result_chars"] = context_window.default_tool_result_chars
+    if context_window.per_tool_result_chars:
+        payload["per_tool_result_chars"] = dict(context_window.per_tool_result_chars)
     return payload
 
 

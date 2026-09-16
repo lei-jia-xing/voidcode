@@ -1000,7 +1000,6 @@ function App() {
               disabled={composerDisabled}
               isRunning={isRunning}
               agentPreset={agentPreset}
-              sessionMetadata={currentSessionState?.metadata}
               onSubmit={handleSendMessage}
               onSteer={handleSteer}
               onCancel={cancelCurrentRun}
@@ -1153,38 +1152,12 @@ function sessionContextUsageFromMetadata(
   >,
 ): SessionContextUsage {
   const providerTokens = providerContextTokens(metadata);
-  const estimatedTokens = contextWindowEstimatedTokens(metadata);
   return {
-    usedTokens: providerTokens ?? estimatedTokens,
+    usedTokens: providerTokens,
     totalTokens: providerTotalTokens(metadata),
     cacheHitRate: providerCacheHitRate(metadata),
-    estimated: providerTokens === null && estimatedTokens !== null,
-    contextWindow:
-      selectedModelContextWindow(providerModel, providerModels) ??
-      modelContextWindowFromMetadata(metadata) ??
-      contextWindowBudget(metadata),
+    contextWindow: selectedModelContextWindow(providerModel, providerModels),
   };
-}
-
-function contextWindowEstimatedTokens(
-  metadata: Record<string, unknown> | undefined,
-): number | null {
-  const contextWindow = objectValue(metadata, "context_window");
-  return positiveNumericValue(contextWindow, "estimated_context_tokens");
-}
-
-function modelContextWindowFromMetadata(
-  metadata: Record<string, unknown> | undefined,
-): number | null {
-  const contextWindow = objectValue(metadata, "context_window");
-  return positiveNumericValue(contextWindow, "model_context_window_tokens");
-}
-
-function contextWindowBudget(
-  metadata: Record<string, unknown> | undefined,
-): number | null {
-  const contextWindow = objectValue(metadata, "context_window");
-  return positiveNumericValue(contextWindow, "token_budget");
 }
 
 function selectedModelContextWindow(
@@ -1205,34 +1178,6 @@ function selectedModelContextWindow(
   return typeof contextWindow === "number" && contextWindow > 0
     ? contextWindow
     : null;
-}
-
-function objectValue(
-  source: Record<string, unknown> | undefined,
-  key: string,
-): Record<string, unknown> | undefined {
-  const value = source?.[key];
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function numericValue(
-  source: Record<string, unknown> | undefined,
-  key: string,
-): number {
-  const value = source?.[key];
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? value
-    : 0;
-}
-
-function positiveNumericValue(
-  source: Record<string, unknown> | undefined,
-  key: string,
-): number | null {
-  const value = numericValue(source, key);
-  return value > 0 ? value : null;
 }
 
 export default App;

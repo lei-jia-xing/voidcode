@@ -19,7 +19,6 @@ interface ComposerProps {
   agentPreset?: string;
   providerModel?: string;
   reasoningEffort?: string;
-  sessionMetadata?: Record<string, unknown>;
   agentPresets?: AgentSummary[];
   commands?: CommandSummary[];
   providers?: ProviderSummary[];
@@ -43,7 +42,6 @@ export interface SessionContextUsage {
   contextWindow: number | null;
   totalTokens: number | null;
   cacheHitRate: number | null;
-  estimated: boolean;
 }
 
 export function Composer({
@@ -52,7 +50,6 @@ export function Composer({
   agentPreset,
   providerModel,
   reasoningEffort = "",
-  sessionMetadata,
   agentPresets,
   commands,
   providers,
@@ -119,7 +116,6 @@ export function Composer({
     reasoningEffort ||
     selectedModelMetadata?.default_reasoning_effort ||
     "medium";
-  const contextUsageLabel = formatSessionContextUsage(sessionContextUsage, t);
   const selectableAgentPresets = useMemo(() => {
     return (agentPresets ?? []).filter((agent) => agent.selectable !== false);
   }, [agentPresets]);
@@ -128,15 +124,8 @@ export function Composer({
     if (normalizedAgentPreset) return normalizedAgentPreset;
     return selectableAgentPresets[0]?.id;
   }, [agentPreset, selectableAgentPresets]);
-  const sessionContextWindow = useMemo(
-    () => sessionContextWindowFromMetadata(sessionMetadata),
-    [sessionMetadata],
-  );
-  const displayModelMetadata = useMemo(
-    () => withSessionContextWindow(selectedModelMetadata, sessionContextWindow),
-    [selectedModelMetadata, sessionContextWindow],
-  );
-  const contextLabel = formatModelContext(displayModelMetadata);
+  const contextUsageLabel = formatSessionContextUsage(sessionContextUsage, t);
+  const contextLabel = formatModelContext(selectedModelMetadata);
   const trimmedInput = input.trimStart();
   const slashMatch = trimmedInput.match(/^\/(\S*)/);
   const slashQuery = slashMatch?.[1] ?? "";
@@ -518,8 +507,7 @@ export function Composer({
                   {contextUsageLabel}
                 </span>
               ) : (
-                (selectedModelAvailable ||
-                  sessionContextWindow !== undefined) &&
+                selectedModelAvailable &&
                 contextLabel && (
                   <span className="px-1.5 py-1 text-[var(--vc-text-subtle)]">
                     {contextLabel}
@@ -604,33 +592,6 @@ function rankSlashCommands(
     .map((entry) => entry.command);
 }
 
-function sessionContextWindowFromMetadata(
-  sessionMetadata: Record<string, unknown> | undefined,
-): number | undefined {
-  const rawContextWindow = sessionMetadata?.context_window;
-  if (!rawContextWindow || typeof rawContextWindow !== "object") {
-    return undefined;
-  }
-  const modelContextWindowTokens = (rawContextWindow as Record<string, unknown>)
-    .model_context_window_tokens;
-  return typeof modelContextWindowTokens === "number"
-    ? modelContextWindowTokens
-    : undefined;
-}
-
-function withSessionContextWindow(
-  metadata: ProviderModelMetadata | undefined,
-  sessionContextWindow: number | undefined,
-): ProviderModelMetadata | undefined {
-  if (sessionContextWindow === undefined) {
-    return metadata;
-  }
-  return {
-    ...(metadata ?? {}),
-    context_window: sessionContextWindow,
-  };
-}
-
 function formatModelContext(
   metadata: ProviderModelMetadata | undefined,
 ): string {
@@ -668,7 +629,7 @@ function formatSessionContextUsage(
     }
     return t("chat.contextUsageUnavailable", { total });
   }
-  const tokens = `${usage.estimated ? "≈" : ""}${formatTokenCount(usage.usedTokens)}`;
+  const tokens = formatTokenCount(usage.usedTokens);
   if (
     typeof usage.contextWindow !== "number" ||
     usage.contextWindow <= 0 ||
