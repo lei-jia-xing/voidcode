@@ -105,6 +105,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 
+- **frontend:** render one tool row per call when the deterministic engine announces a call before the runtime names it (including an approval-denied call), accept a pushed live frame only for the session on screen, dedupe live-only bursts by payload instead of the shared cursor, and recover the boot selection when the replayed session is gone; a raw-HTML tool payload renders as text
+
 - **runtime:** keep the retry/fallback after a provider attempt has already surfaced streamed output and mark the restart with `discarded_streamed_output: true`, so the TUI (and the web store) retract the abandoned attempt's live projection; nothing persisted is ever discarded, and the transcript keeps its single `graph.response_ready`
 
 - **runtime:** treat an unrecognized or absent provider finish reason as a completed, stop-equivalent terminal state instead of a user-visible failure (`error` / `cancelled` still fail, and an empty stream still fails at the graph), record `finish_reason` / `finish_reason_reported` on `graph.response_ready` so a silently truncated turn stays diagnosable, and keep the provider's raw token in metadata

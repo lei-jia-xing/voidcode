@@ -292,168 +292,173 @@ const NO_DELEGATED_CONTEXT = {
   message: "no delegated child context",
 };
 
-describe("useAppStore integration flow", () => {
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    localStorage.clear();
-    vi.resetModules();
-    runtimeClientMocks.listNotificationsMock.mockResolvedValue([]);
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
-    runtimeClientMocks.getChildSessionContextMock.mockRejectedValue(
-      NO_DELEGATED_CONTEXT,
-    );
-    ({ useAppStore } = await import("./store"));
-    useAppStore.setState({
-      language: "en",
-      agentPreset: "leader",
-      providerModel: "deepseek/deepseek-v4-pro",
-      workspaces: null,
-      workspacesStatus: "idle",
-      workspacesError: null,
-      workspaceSwitchStatus: "idle",
-      workspaceSwitchError: null,
-      providers: [],
-      providersStatus: "idle",
-      providersError: null,
-      providerModels: {},
-      providerValidationResults: {},
-      providerValidationStatus: {},
-      providerValidationError: {},
-      agentPresets: [],
-      agentsStatus: "idle",
-      agentsError: null,
-      sessions: [],
-      currentSessionId: null,
-      childSessionParentId: null,
-      sessionSidebarWidth: 344,
-      currentSessionState: null,
-      currentSessionEvents: [],
-      currentSessionOutput: null,
-      sessionsStatus: "idle",
-      sessionsError: null,
-      replayStatus: "idle",
-      replayError: null,
-      runStatus: "idle",
-      runError: null,
-      approvalStatus: "idle",
-      approvalError: null,
-      questionStatus: "idle",
-      questionError: null,
-      backgroundTasks: [],
-      backgroundTasksStatus: "idle",
-      backgroundTasksError: null,
-      selectedBackgroundTaskOutputId: null,
-      backgroundTaskOutput: null,
-      backgroundTaskOutputStatus: "idle",
-      backgroundTaskOutputError: null,
-      sessionDebug: null,
-      sessionDebugStatus: "idle",
-      sessionDebugError: null,
-      replayRequestId: 0,
-      statusSnapshot: null,
-      statusStatus: "idle",
-      statusError: null,
-      mcpRetryStatus: "idle",
-      mcpRetryError: null,
-      reviewSnapshot: null,
-      reviewStatus: "idle",
-      reviewError: null,
-      reviewSelectedPath: null,
-      reviewDiff: null,
-      reviewDiffStatus: "idle",
-      reviewDiffError: null,
-      reviewMode: "changes",
-      settings: null,
-      settingsStatus: "idle",
-      settingsError: null,
-    });
-    runtimeClientMocks.openWorkspaceMock.mockResolvedValue({
-      current: null,
-      recent: [],
-      candidates: [],
-    });
-    runtimeClientMocks.listProvidersMock.mockResolvedValue([]);
-    runtimeClientMocks.listProviderModelsMock.mockResolvedValue({
-      provider: "opencode-go",
-      configured: true,
-      models: [],
-    });
-    runtimeClientMocks.listAgentsMock.mockResolvedValue([]);
-    runtimeClientMocks.listCommandsMock.mockResolvedValue([]);
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
-    runtimeClientMocks.getStatusMock.mockResolvedValue(emptyStatusSnapshot);
-    runtimeClientMocks.retryMcpConnectionsMock.mockResolvedValue(
-      emptyStatusSnapshot,
-    );
-    runtimeClientMocks.getReviewMock.mockResolvedValue({
-      root: "/workspace",
-      git: { state: "git_ready" },
-      changed_files: [],
-      tree: [],
-    });
-    runtimeClientMocks.getReviewDiffMock.mockResolvedValue({
-      root: "/workspace",
-      path: "README.md",
-      state: "clean",
-      diff: null,
-    });
-    runtimeClientMocks.getSettingsMock.mockResolvedValue({});
-    runtimeClientMocks.updateSettingsMock.mockResolvedValue({});
-    runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([]);
-    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
-    runtimeClientMocks.cancelSessionMock.mockResolvedValue({
-      session_id: "session-1",
-      status: "interrupted",
-      interrupted: true,
-      cancelled: true,
-      run_id: "run-1",
-      reason: "web user interrupt",
-    });
-    runtimeClientMocks.getBackgroundTaskOutputMock.mockResolvedValue({
-      task: {
-        task_id: "task-1",
-        status: "completed",
-        parent_session_id: "session-1",
-        requested_child_session_id: null,
-        child_session_id: "child-session-1",
-        approval_request_id: null,
-        question_request_id: null,
-        approval_blocked: false,
-        summary_output: "summary",
-        error: null,
-        result_available: true,
-        cancellation_cause: null,
-        routing: { mode: "subagent", subagent_type: "explore" },
-      },
-      session_result: null,
-      output: "output",
-    });
-    runtimeClientMocks.getSessionDebugMock.mockResolvedValue({
-      session: makeSessionState("session-1", "completed"),
-      prompt: "read README.md",
-      persisted_status: "completed",
-      current_status: "completed",
-      active: false,
-      resumable: false,
-      replayable: true,
-      terminal: true,
-      pending_approval: null,
-      pending_question: null,
-      last_relevant_event: null,
-      last_failure_event: null,
-      failure: null,
-      last_tool: null,
-      suggested_operator_action: null,
-      operator_guidance: null,
-    });
-    runtimeClientMocks.validateProviderCredentialsMock.mockResolvedValue({
-      provider: "deepseek",
-      configured: true,
-      ok: true,
-      status: "ok",
-      message: "Remote provider validation succeeded.",
-    });
+// The shared reset every suite in this file starts from: mocks, the persisted
+// blob, and a fresh store module with default state. Registered by the suites
+// that need it so a `-t`-filtered run is independent of the other suites.
+async function resetStoreForTest() {
+  vi.clearAllMocks();
+  localStorage.clear();
+  vi.resetModules();
+  runtimeClientMocks.listNotificationsMock.mockResolvedValue([]);
+  runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
+  runtimeClientMocks.getChildSessionContextMock.mockRejectedValue(
+    NO_DELEGATED_CONTEXT,
+  );
+  ({ useAppStore } = await import("./store"));
+  useAppStore.setState({
+    language: "en",
+    agentPreset: "leader",
+    providerModel: "deepseek/deepseek-v4-pro",
+    workspaces: null,
+    workspacesStatus: "idle",
+    workspacesError: null,
+    workspaceSwitchStatus: "idle",
+    workspaceSwitchError: null,
+    providers: [],
+    providersStatus: "idle",
+    providersError: null,
+    providerModels: {},
+    providerValidationResults: {},
+    providerValidationStatus: {},
+    providerValidationError: {},
+    agentPresets: [],
+    agentsStatus: "idle",
+    agentsError: null,
+    sessions: [],
+    currentSessionId: null,
+    childSessionParentId: null,
+    sessionSidebarWidth: 344,
+    currentSessionState: null,
+    currentSessionEvents: [],
+    currentSessionOutput: null,
+    sessionsStatus: "idle",
+    sessionsError: null,
+    replayStatus: "idle",
+    replayError: null,
+    runStatus: "idle",
+    runError: null,
+    approvalStatus: "idle",
+    approvalError: null,
+    questionStatus: "idle",
+    questionError: null,
+    backgroundTasks: [],
+    backgroundTasksStatus: "idle",
+    backgroundTasksError: null,
+    selectedBackgroundTaskOutputId: null,
+    backgroundTaskOutput: null,
+    backgroundTaskOutputStatus: "idle",
+    backgroundTaskOutputError: null,
+    sessionDebug: null,
+    sessionDebugStatus: "idle",
+    sessionDebugError: null,
+    replayRequestId: 0,
+    statusSnapshot: null,
+    statusStatus: "idle",
+    statusError: null,
+    mcpRetryStatus: "idle",
+    mcpRetryError: null,
+    reviewSnapshot: null,
+    reviewStatus: "idle",
+    reviewError: null,
+    reviewSelectedPath: null,
+    reviewDiff: null,
+    reviewDiffStatus: "idle",
+    reviewDiffError: null,
+    reviewMode: "changes",
+    settings: null,
+    settingsStatus: "idle",
+    settingsError: null,
   });
+  runtimeClientMocks.openWorkspaceMock.mockResolvedValue({
+    current: null,
+    recent: [],
+    candidates: [],
+  });
+  runtimeClientMocks.listProvidersMock.mockResolvedValue([]);
+  runtimeClientMocks.listProviderModelsMock.mockResolvedValue({
+    provider: "opencode-go",
+    configured: true,
+    models: [],
+  });
+  runtimeClientMocks.listAgentsMock.mockResolvedValue([]);
+  runtimeClientMocks.listCommandsMock.mockResolvedValue([]);
+  runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
+  runtimeClientMocks.getStatusMock.mockResolvedValue(emptyStatusSnapshot);
+  runtimeClientMocks.retryMcpConnectionsMock.mockResolvedValue(
+    emptyStatusSnapshot,
+  );
+  runtimeClientMocks.getReviewMock.mockResolvedValue({
+    root: "/workspace",
+    git: { state: "git_ready" },
+    changed_files: [],
+    tree: [],
+  });
+  runtimeClientMocks.getReviewDiffMock.mockResolvedValue({
+    root: "/workspace",
+    path: "README.md",
+    state: "clean",
+    diff: null,
+  });
+  runtimeClientMocks.getSettingsMock.mockResolvedValue({});
+  runtimeClientMocks.updateSettingsMock.mockResolvedValue({});
+  runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([]);
+  runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
+  runtimeClientMocks.cancelSessionMock.mockResolvedValue({
+    session_id: "session-1",
+    status: "interrupted",
+    interrupted: true,
+    cancelled: true,
+    run_id: "run-1",
+    reason: "web user interrupt",
+  });
+  runtimeClientMocks.getBackgroundTaskOutputMock.mockResolvedValue({
+    task: {
+      task_id: "task-1",
+      status: "completed",
+      parent_session_id: "session-1",
+      requested_child_session_id: null,
+      child_session_id: "child-session-1",
+      approval_request_id: null,
+      question_request_id: null,
+      approval_blocked: false,
+      summary_output: "summary",
+      error: null,
+      result_available: true,
+      cancellation_cause: null,
+      routing: { mode: "subagent", subagent_type: "explore" },
+    },
+    session_result: null,
+    output: "output",
+  });
+  runtimeClientMocks.getSessionDebugMock.mockResolvedValue({
+    session: makeSessionState("session-1", "completed"),
+    prompt: "read README.md",
+    persisted_status: "completed",
+    current_status: "completed",
+    active: false,
+    resumable: false,
+    replayable: true,
+    terminal: true,
+    pending_approval: null,
+    pending_question: null,
+    last_relevant_event: null,
+    last_failure_event: null,
+    failure: null,
+    last_tool: null,
+    suggested_operator_action: null,
+    operator_guidance: null,
+  });
+  runtimeClientMocks.validateProviderCredentialsMock.mockResolvedValue({
+    provider: "deepseek",
+    configured: true,
+    ok: true,
+    status: "ok",
+    message: "Remote provider validation succeeded.",
+  });
+}
+
+describe("useAppStore integration flow", () => {
+  beforeEach(resetStoreForTest);
 
   it("refreshes only the explicitly requested mutation surfaces", async () => {
     const sessionId = "session-refresh";
@@ -480,6 +485,9 @@ describe("useAppStore integration flow", () => {
     expect(runtimeClientMocks.listBackgroundTasksMock).not.toHaveBeenCalled();
     expect(runtimeClientMocks.getSessionDebugMock).not.toHaveBeenCalled();
 
+    // The task surface is requested without a session scope, so state the scope
+    // rather than relying on the list refresh having dropped the selection.
+    useAppStore.setState({ currentSessionId: null });
     await useAppStore.getState().refreshAfterMutation({
       backgroundTasks: true,
       debug: true,
@@ -1456,7 +1464,6 @@ describe("useAppStore integration flow", () => {
     await useAppStore.getState().loadSessions();
 
     state = useAppStore.getState();
-    expect(state.currentSessionId).toBeNull();
     expect(state.replayError).toBeNull();
 
     await useAppStore.getState().selectSession(sessionId);
@@ -4227,5 +4234,277 @@ describe("useAppStore integration flow", () => {
     expect(useAppStore.getState().runStatus).toBe("running");
     secondEnd.resolve();
     await second;
+  });
+});
+
+describe("delegated child session restore", () => {
+  beforeEach(resetStoreForTest);
+
+  // The blob the shell actually writes at HEAD: the flat session list omits
+  // delegated children, so the parent is never part of the persisted selection.
+  function seedBootSelection(sessionId: string) {
+    localStorage.setItem(
+      "app-storage",
+      JSON.stringify({
+        state: {
+          language: "en",
+          agentPreset: "leader",
+          providerModel: "test-model/v1",
+          reasoningEffort: "",
+          currentSessionId: sessionId,
+          sessionSidebarWidth: 344,
+          reviewMode: "changes",
+        },
+        version: 0,
+      }),
+    );
+  }
+
+  it("keeps the boot selection while the list refresh cannot judge it", async () => {
+    // Nothing has been replayed yet, so the flat list cannot tell a delegated
+    // child from a session that was deleted; dropping the selection here is
+    // what lost a child on reload. This seeds the persisted blob the way the
+    // shell writes it (the session id only), so it exercises that guard.
+    const { useAppStore: store } = await import("./store");
+    seedBootSelection("child-session");
+    await store.persist.rehydrate();
+    expect(store.getState().currentSessionId).toBe("child-session");
+
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary("session-parent", "completed", "parent prompt"),
+    ]);
+    await store.getState().loadSessions();
+
+    expect(store.getState().currentSessionId).toBe("child-session");
+    expect(store.getState().replayStatus).toBe("idle");
+  });
+
+  it("returns to the empty state when the replayed selection is gone", async () => {
+    // The counterpart of the rule above: a persisted selection with nothing
+    // behind it must not survive its failed replay. Otherwise boot strands the
+    // app on a session that can never be opened.
+    const { useAppStore: store } = await import("./store");
+    seedBootSelection("gone-session");
+    await store.persist.rehydrate();
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary("session-parent", "completed", "parent prompt"),
+    ]);
+    runtimeClientMocks.getChildSessionContextMock.mockRejectedValueOnce({
+      status: 404,
+      code: "delegated_context_missing",
+      message: "no delegated child context for session: gone-session",
+    });
+    runtimeClientMocks.getSessionReplayMock.mockRejectedValueOnce(
+      new Error("Not Found"),
+    );
+
+    await store.getState().loadSessions();
+    await store.getState().selectSession("gone-session");
+
+    const state = store.getState();
+    expect(state.currentSessionId).toBeNull();
+    expect(state.childSessionParentId).toBeNull();
+    expect(state.replayStatus).toBe("idle");
+    expect(state.replayError).toBeNull();
+    expect(
+      JSON.parse(localStorage.getItem("app-storage") ?? "{}").state
+        .currentSessionId,
+    ).toBeNull();
+  });
+
+  it("restores the on-screen transcript with a banner when the target replay fails", async () => {
+    const { useAppStore: store } = await import("./store");
+    runtimeClientMocks.getChildSessionContextMock.mockRejectedValueOnce({
+      status: 404,
+      code: "delegated_context_missing",
+      message: "no delegated child context for session: stale-parent",
+    });
+    runtimeClientMocks.getSessionReplayMock.mockRejectedValueOnce(
+      new Error("Not Found"),
+    );
+    store.setState({
+      sessions: [],
+      currentSessionId: "open-session",
+      childSessionParentId: null,
+      currentSessionState: makeSessionState("open-session", "completed"),
+      currentSessionEvents: [],
+      currentSessionOutput: "open output",
+      replayStatus: "success",
+    });
+
+    await store.getState().selectSession("stale-parent");
+
+    const state = store.getState();
+    expect(state.currentSessionId).toBe("open-session");
+    expect(state.currentSessionOutput).toBe("open output");
+    expect(state.replayStatus).toBe("error");
+    expect(state.replayError).toBe("Not Found");
+    expect(state.replayTargetSessionId).toBe("stale-parent");
+  });
+
+  it("clears the selection in memory and in storage when the workspace switches", async () => {
+    const { useAppStore: store } = await import("./store");
+    runtimeClientMocks.openWorkspaceMock.mockResolvedValueOnce({
+      current: null,
+      recent: [],
+      candidates: [],
+    });
+    store.setState({
+      currentSessionId: "open-session",
+      childSessionParentId: "session-parent",
+      currentSessionState: makeSessionState("open-session", "completed"),
+      currentSessionOutput: "open output",
+    });
+
+    await store.getState().switchWorkspace("/other");
+
+    expect(store.getState().currentSessionId).toBeNull();
+    expect(store.getState().childSessionParentId).toBeNull();
+    expect(
+      JSON.parse(localStorage.getItem("app-storage") ?? "{}").state
+        .currentSessionId,
+    ).toBeNull();
+  });
+
+  it("recovers the parent of a child session that has no background task row", async () => {
+    // Synchronous delegation registers no task, so the delegated-context lookup
+    // answers `delegated_context_missing` and the session replays like any
+    // other. The replayed row names the parent, which is what the child-session
+    // panel and the back-to-parent action need.
+    runtimeClientMocks.getChildSessionContextMock.mockRejectedValueOnce({
+      status: 404,
+      code: "delegated_context_missing",
+      message: "no delegated child context for session: child-session",
+    });
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValueOnce({
+      session: {
+        ...makeSessionState("child-session", "completed"),
+        session: { id: "child-session", parent_id: "session-parent" },
+      },
+      events: [],
+      output: "child output",
+    });
+    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
+    const { useAppStore: store } = await import("./store");
+    store.setState({ sessions: [], currentSessionId: null });
+
+    await store.getState().selectSession("child-session");
+
+    const state = store.getState();
+    expect(state.currentSessionId).toBe("child-session");
+    expect(state.childSessionParentId).toBe("session-parent");
+  });
+});
+
+describe("live session pushes while a delegated child is selected", () => {
+  beforeEach(resetStoreForTest);
+
+  it("accepts every live-only delta of a burst, not just the first", async () => {
+    // Live-only frames share the persisted cursor rather than an identity of
+    // their own, so the (session_id, sequence) dedupe that exists for replayed
+    // persisted events must not swallow them: a running turn would otherwise
+    // stop updating after its first delta.
+    const { useAppStore: store } = await import("./store");
+    store.setState({
+      currentSessionId: "child-session",
+      childSessionParentId: "session-parent",
+      currentSessionEvents: [
+        makeEvent(
+          1,
+          "runtime.request_received",
+          { prompt: "child prompt" },
+          "runtime",
+          "child-session",
+        ),
+      ],
+      currentSessionState: makeSessionState("child-session", "running"),
+    });
+
+    for (const text of ["one ", "two ", "three "]) {
+      expect(
+        store
+          .getState()
+          .mergeSessionEvent(
+            makeEvent(
+              4,
+              "graph.provider_stream",
+              { kind: "delta", channel: "text", text },
+              "graph",
+              "child-session",
+            ),
+          ),
+      ).toBe(true);
+    }
+    const text = deriveChatMessages(
+      store.getState().currentSessionEvents,
+      null,
+      "child-session",
+    )
+      .filter((message) => message.role === "assistant")
+      .map((message) => message.content)
+      .join("");
+    expect(text).toContain("one two three ");
+
+    // A persisted event still dedupes on its identity.
+    const persisted = makeEvent(
+      5,
+      "runtime.tool_completed",
+      { tool: "read", tool_call_id: "call-1", content: "ok" },
+      "runtime",
+      "child-session",
+    );
+    expect(store.getState().mergeSessionEvent(persisted)).toBe(true);
+    expect(store.getState().mergeSessionEvent(persisted)).toBe(false);
+  });
+
+  it("accepts pushes for the session on screen and drops other sessions", async () => {
+    const { useAppStore: store } = await import("./store");
+    store.setState({
+      currentSessionId: "child-session",
+      childSessionParentId: "session-parent",
+      currentSessionEvents: [],
+      currentSessionState: makeSessionState("child-session", "running"),
+    });
+
+    const accepted = store
+      .getState()
+      .mergeSessionEvent(
+        makeEvent(
+          7,
+          "graph.provider_stream",
+          { kind: "delta", channel: "text", text: "child delta" },
+          "graph",
+          "child-session",
+        ),
+      );
+    expect(accepted).toBe(true);
+    expect(store.getState().currentSessionEvents).toHaveLength(1);
+
+    const dropped = store
+      .getState()
+      .mergeSessionEvent(
+        makeEvent(
+          8,
+          "graph.provider_stream",
+          { kind: "delta", channel: "text", text: "parent delta" },
+          "graph",
+          "session-parent",
+        ),
+      );
+    expect(dropped).toBe(false);
+    expect(store.getState().currentSessionEvents).toHaveLength(1);
+
+    expect(
+      store
+        .getState()
+        .mergeSessionState(makeSessionState("child-session", "completed")),
+    ).toBe(true);
+    expect(store.getState().currentSessionState?.status).toBe("completed");
+    expect(
+      store
+        .getState()
+        .mergeSessionState(makeSessionState("session-parent", "running")),
+    ).toBe(false);
+    expect(store.getState().currentSessionState?.status).toBe("completed");
   });
 });

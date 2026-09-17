@@ -2230,3 +2230,170 @@ describe("Tool Card Display Contract", () => {
     });
   });
 });
+
+describe("anonymous tool call adoption", () => {
+  it("renders one tool row when the runtime names a call it announced without an id", () => {
+    // The deterministic graph announces a call through
+    // `graph.tool_request_created` with no `tool_call_id`, then starts it with a
+    // runtime-generated id and no `arguments`. The announced row must be adopted
+    // by that lifecycle instead of surviving as a second, forever-pending row.
+    const events: EventEnvelope[] = [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "read README.md" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "graph.tool_request_created",
+        source: "graph",
+        payload: {
+          tool: "read",
+          arguments: { path: "README.md" },
+          path: "README.md",
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 3,
+        event_type: "runtime.tool_started",
+        source: "runtime",
+        payload: {
+          tool: "read",
+          tool_call_id: "runtime-tool-1",
+          tool_status: {
+            invocation_id: "runtime-tool-1",
+            tool_name: "read",
+            phase: "running",
+            status: "running",
+            display: { kind: "read", title: "Read", summary: "README.md" },
+          },
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 4,
+        event_type: "runtime.tool_completed",
+        source: "runtime",
+        payload: {
+          tool: "read",
+          tool_call_id: "runtime-tool-1",
+          arguments: { path: "README.md" },
+          content: "Read 1 line(s) from README.md.",
+          status: "ok",
+          tool_status: {
+            invocation_id: "runtime-tool-1",
+            tool_name: "read",
+            phase: "completed",
+            status: "completed",
+            display: { kind: "read", title: "Read", summary: "README.md" },
+          },
+        },
+      },
+    ];
+
+    const messages = deriveChatMessages(events, null, "session-1");
+    const assistant = messages.find((message) => message.role === "assistant");
+    expect(assistant?.tools).toHaveLength(1);
+    expect(assistant?.tools[0]?.status).toBe("completed");
+    expect(assistant?.tools[0]?.id).toBe("runtime-tool-1");
+    expect(
+      assistant?.parts?.filter((part) => part.kind === "tool"),
+    ).toHaveLength(1);
+
+    render(<ChatThread {...baseProps} messages={messages} />);
+    const rows = document.querySelectorAll("[data-tool-row]");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.textContent).toContain("read");
+    expect(rows[0]?.textContent).toContain("path=README.md");
+    expect(rows[0]?.textContent).not.toContain("pending");
+  });
+});
+
+describe("denied tool call adoption", () => {
+  it("renders one failed row when the approval denial names an announced call", () => {
+    // Approval denies the call before the runtime names it: the announcement is
+    // marked failed by `runtime.approval_resolved`, and the denial's own
+    // `runtime.tool_completed` is the first event that carries the id. That row
+    // must be adopted too, or one denied call renders twice.
+    const display = {
+      kind: "shell",
+      title: "Run",
+      summary: "echo hi",
+      args: ["echo hi"],
+    };
+    const events: EventEnvelope[] = [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "run echo hi" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 5,
+        event_type: "graph.tool_request_created",
+        source: "graph",
+        payload: { tool: "shell_exec", arguments: { command: "echo hi" } },
+      },
+      {
+        session_id: "session-1",
+        sequence: 7,
+        event_type: "runtime.approval_requested",
+        source: "runtime",
+        payload: {
+          tool: "shell_exec",
+          request_id: "approval-1",
+          decision: "ask",
+          target_summary: "echo hi",
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 8,
+        event_type: "runtime.approval_resolved",
+        source: "runtime",
+        payload: { request_id: "approval-1", decision: "deny" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 9,
+        event_type: "runtime.tool_completed",
+        source: "runtime",
+        payload: {
+          tool: "shell_exec",
+          tool_call_id: "runtime-tool-denied",
+          arguments: { command: "echo hi" },
+          status: "error",
+          error: "permission denied for tool: shell_exec",
+          tool_status: {
+            invocation_id: "runtime-tool-denied",
+            tool_name: "shell_exec",
+            phase: "completed",
+            status: "failed",
+            display,
+          },
+        },
+      },
+    ];
+
+    const messages = deriveChatMessages(events, null, "session-1");
+    const assistant = messages.find((message) => message.role === "assistant");
+    expect(assistant?.tools).toHaveLength(1);
+    expect(assistant?.tools[0]?.status).toBe("failed");
+    expect(assistant?.tools[0]?.id).toBe("runtime-tool-denied");
+    expect(
+      assistant?.parts?.filter((part) => part.kind === "tool"),
+    ).toHaveLength(1);
+
+    render(<ChatThread {...baseProps} messages={messages} />);
+    const rows = document.querySelectorAll("[data-tool-row]");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.textContent).toContain("echo hi");
+    expect(rows[0]?.textContent).toContain("failed");
+  });
+});

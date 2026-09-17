@@ -275,18 +275,30 @@ function upsertTool(
     id: tool.id,
     name: tool.name,
   });
-  const matchingUnidentified =
-    tool.id && !existingByIdentity && tool.arguments
+  // A call can be announced before the runtime names it: the deterministic
+  // graph emits `graph.tool_request_created` without a `tool_call_id`, and the
+  // `runtime.tool_started` that follows carries the id but no `arguments`, so an
+  // argument-equality match is impossible and the announced row would survive as
+  // a second row for one call. Adopt the single anonymous row of the same name
+  // whenever the arguments on hand cannot contradict it.
+  const unidentified =
+    tool.id && !existingByIdentity
       ? currentAssistant.tools.filter(
           (candidate) =>
             !candidate.id &&
             candidate.name === tool.name &&
-            (candidate.status === "pending" ||
-              candidate.status === "running") &&
-            candidate.arguments !== undefined &&
-            deeplyEqual(candidate.arguments, tool.arguments),
+            // `failed` is adoptable too: a denied approval marks the announced
+            // row failed before the denial's own `runtime.tool_completed`, which
+            // is the event that finally carries the id.
+            candidate.status !== "completed",
         )
       : [];
+  const matchingUnidentified = unidentified.filter(
+    (candidate) =>
+      candidate.arguments === undefined ||
+      tool.arguments === undefined ||
+      deeplyEqual(candidate.arguments, tool.arguments),
+  );
   const existing =
     existingByIdentity ??
     (tool.id && matchingUnidentified.length === 1

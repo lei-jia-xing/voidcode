@@ -3,7 +3,10 @@ import { persist } from "zustand/middleware";
 import { RuntimeClient } from "../lib/runtime/client";
 import i18n from "../i18n";
 import { errorMessage } from "../lib/errorMessage";
-import { failureMessageFromEvent } from "../lib/runtime/event-parser";
+import {
+  deeplyEqual,
+  failureMessageFromEvent,
+} from "../lib/runtime/event-parser";
 import {
   AgentSummary,
   ApprovalDecision,
@@ -951,13 +954,26 @@ export const useAppStore = create<AppState>()(
         try {
           const sessions = await RuntimeClient.listSessions();
           if (generation !== workspaceGeneration) return;
-          const { currentSessionId, childSessionParentId } = get();
+          const { currentSessionId, childSessionParentId, replayStatus } =
+            get();
+          const selectionHasTranscript =
+            get().currentSessionState !== null ||
+            get().currentSessionEvents.length > 0 ||
+            get().currentSessionOutput !== null;
 
           if (
             currentSessionId &&
             // Delegated child sessions are not part of the flat session list;
             // while one is being browsed its absence must not reset the app.
             childSessionParentId === null &&
+            // Only a selection with a resolved transcript behind it can be
+            // judged against this list. Before the replay lands (and while it is
+            // in flight, when `childSessionParentId` has already been cleared for
+            // the new selection) nothing here knows whether the selected session
+            // is a delegated child, and the list can never contain one. A session
+            // that is really gone is reported by the replay itself.
+            selectionHasTranscript &&
+            replayStatus !== "loading" &&
             !sessions.some((s) => s.session.id === currentSessionId)
           ) {
             set({
@@ -1047,20 +1063,28 @@ export const useAppStore = create<AppState>()(
 
       mergeSessionEvent: (event) => {
         const state = get();
-        if (
-          state.childSessionParentId !== null ||
-          state.currentSessionId !== event.session_id
-        ) {
+        // Accept a pushed frame when it belongs to the session the client is
+        // showing, and drop every other session's. The shell always selects the
+        // session it displays (a delegated child is selected by its own id), so
+        // this is also what keeps a reloaded child receiving live updates; the
+        // parent's frames are simply not its frames.
+        if (state.currentSessionId !== event.session_id) {
           return false;
         }
         // Value-based dedupe. The follow stream resumes from the cursor the
         // client already replayed, so a pushed frame can legitimately repeat an
         // event `selectSession` delivered; (session_id, sequence) is the
-        // runtime's per-session identity for an event.
+        // runtime's per-session identity for a persisted event. A live-only
+        // frame has no identity of its own — every delta of one attempt carries
+        // the same persisted cursor — so it is judged on its whole payload
+        // instead: that still catches a re-pushed duplicate without dropping the
+        // rest of the burst.
         const alreadyDelivered = state.currentSessionEvents.some(
           (existing) =>
             existing.session_id === event.session_id &&
-            existing.sequence === event.sequence,
+            existing.sequence === event.sequence &&
+            (LIVE_STREAM_EVENT_TYPES[event.event_type] !== true ||
+              deeplyEqual(existing.payload, event.payload)),
         );
         if (alreadyDelivered) return false;
         set({
@@ -1074,10 +1098,9 @@ export const useAppStore = create<AppState>()(
 
       mergeSessionState: (session) => {
         const state = get();
-        if (
-          state.childSessionParentId !== null ||
-          state.currentSessionId !== session.session.id
-        ) {
+        // Same rule as `mergeSessionEvent`: the pushed row is only this client's
+        // when it is the row of the session on screen.
+        if (state.currentSessionId !== session.session.id) {
           return false;
         }
         const previous = state.currentSessionState;
@@ -1263,7 +1286,11 @@ export const useAppStore = create<AppState>()(
             currentSessionState: replay.session,
             currentSessionEvents: replay.events,
             currentSessionOutput: replay.output,
-            childSessionParentId: null,
+            // A delegated child that has no background-task row (synchronous
+            // delegation) is a plain session whose parent only the session row
+            // names, so keep that relationship: the child-session panel then
+            // offers the real parent instead of the child's own id.
+            childSessionParentId: replay.session.session.parent_id ?? null,
             runStatus: runStatusForReplay(replay.session),
             runOrigin: replay.session.status === "running" ? "external" : null,
             replayStatus: "success",
@@ -1281,8 +1308,13 @@ export const useAppStore = create<AppState>()(
           ) {
             return;
           }
+          // Only a selection that actually has a transcript on screen is worth
+          // falling back to. A persisted id with nothing replayed behind it (the
+          // boot after the runtime lost that session) must reach the usable
+          // empty state instead of restoring a selection whose replay just
+          // failed — which would leave the app pinned to a session that can no
+          // longer be opened.
           const hasPreviousTranscript =
-            previousSessionId !== null ||
             previousSessionState !== null ||
             previousSessionEvents.length > 0 ||
             previousSessionOutput !== null;
