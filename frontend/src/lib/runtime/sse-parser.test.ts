@@ -59,6 +59,42 @@ describe("SseFrameParser frame splitting", () => {
     expect(parser.push("\n\n")).toEqual([]);
     expect(parser.flush()).toEqual([]);
   });
+
+  it("keeps a frame whose data: keyword is split across three chunks", () => {
+    const parser = new SseFrameParser();
+    expect(parser.push("da")).toEqual([]);
+    expect(parser.push('ta: {"a":1}')).toEqual([]);
+    expect(parser.push("\n\n")).toEqual(['{"a":1}']);
+    expect(parser.flush()).toEqual([]);
+  });
+
+  it("emits a frame when the blank-line terminator straddles two chunks", () => {
+    const parser = new SseFrameParser();
+    expect(parser.push('data: {"a":1}\n')).toEqual([]);
+    expect(parser.push("\n")).toEqual(['{"a":1}']);
+    expect(parser.flush()).toEqual([]);
+  });
+
+  it("ignores a chunk that contains only a comment", () => {
+    const parser = new SseFrameParser();
+    expect(parser.push(": keep-alive\n")).toEqual([]);
+    expect(parser.push('data: {"a":1}\n\n')).toEqual(['{"a":1}']);
+    expect(parser.flush()).toEqual([]);
+  });
+
+  it("flushes a multi-line tail whose last line is not a data field", () => {
+    const parser = new SseFrameParser();
+    expect(parser.push('data: {"a":1}\ndata: {"b":2}\nnot-a-field')).toEqual(
+      [],
+    );
+    expect(parser.flush()).toEqual(['{"a":1}\n{"b":2}']);
+  });
+
+  it("flushes a CRLF-terminated tail without a blank line", () => {
+    const parser = new SseFrameParser();
+    expect(parser.push('data: {"a":1}\r\n')).toEqual([]);
+    expect(parser.flush()).toEqual(['{"a":1}']);
+  });
 });
 
 describe("parseSseDataPayload chunk conversion", () => {

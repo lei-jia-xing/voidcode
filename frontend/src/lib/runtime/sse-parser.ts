@@ -1,3 +1,5 @@
+import { createParser, type EventSourceParser } from "eventsource-parser";
+
 import { RuntimeStreamChunk } from "./types";
 
 /**
@@ -5,56 +7,54 @@ import { RuntimeStreamChunk } from "./types";
  * into complete `data:` payloads.
  *
  * This is the single implementation both `RuntimeClient.runStream` and
- * `RuntimeClient.sessionEvents` stream through. It encodes the tolerant wire
- * contract the runStream path has always relied on:
+ * `RuntimeClient.sessionEvents` stream through. It is a thin adapter over
+ * `eventsource-parser`'s `createParser`, which owns the tolerant wire contract
+ * the runStream path has always relied on:
  *  - multi-line `data:` fields are joined with `\n`;
  *  - comment (`: ...`) and other unknown lines are ignored;
  *  - a single leading space after `data:` is stripped, matching SSE semantics;
  *  - trailing carriage returns are stripped (CRLF frames are accepted);
- *  - a trailing payload without a terminating blank line is flushed on close.
+ *  - only frames terminated by a blank line are complete.
+ *
+ * End-of-stream differs from the SSE spec: the runStream path also needs the
+ * trailing payload of a stream that closes without a terminating blank line.
+ * Measured with a throwaway probe against `eventsource-parser@4.1.1`:
+ * `feed('data: {"a":1}')` emits nothing, and neither `reset()` nor
+ * `reset({ consume: true })` emits it afterwards — the library drops every
+ * event whose terminating blank line never arrives. `flush()` therefore feeds a
+ * synthetic blank line, which completes a buffered partial line and terminates
+ * the pending event block without emitting anything when no `data:` field is
+ * pending (empty blocks never dispatch).
+ *
+ * `reset()` is deliberately not used: there is no reconnect path here, and
+ * reconnecting a stream is not the same operation as re-running an agent run.
+ * Parse errors are ignored (no `onError` callback), matching the previous
+ * hand-rolled parser, which skipped unparsable lines silently.
  */
 export class SseFrameParser {
-  private buffer = "";
-  private dataLines: string[] = [];
+  private readonly parser: EventSourceParser;
+  private frames: string[] = [];
+
+  constructor() {
+    this.parser = createParser({
+      onEvent: (event) => {
+        this.frames.push(event.data);
+      },
+    });
+  }
 
   /** Feed decoded text; returns any complete `data:` payloads delimited by blank lines. */
   push(input: string): string[] {
-    this.buffer += input;
-    const frames: string[] = [];
-    let eolIndex = this.buffer.indexOf("\n");
-    while (eolIndex >= 0) {
-      const line = this.buffer.slice(0, eolIndex);
-      this.buffer = this.buffer.slice(eolIndex + 1);
-      const trimmedLine = line.replace(/\r$/, "");
-      if (trimmedLine === "") {
-        // Empty line indicates the end of an SSE event.
-        if (this.dataLines.length > 0) {
-          frames.push(this.dataLines.join("\n"));
-          this.dataLines = [];
-        }
-      } else if (trimmedLine.startsWith("data:")) {
-        this.dataLines.push(trimmedLine.slice(5).replace(/^ /, ""));
-      }
-      eolIndex = this.buffer.indexOf("\n");
-    }
-    return frames;
+    this.frames = [];
+    this.parser.feed(input);
+    return this.frames;
   }
 
   /** Finalize the stream; flushes any trailing payload without a blank line. */
   flush(): string[] {
-    const frames: string[] = [];
-    if (this.buffer.length > 0) {
-      const trimmedLine = this.buffer.replace(/\r$/, "");
-      if (trimmedLine.startsWith("data:")) {
-        this.dataLines.push(trimmedLine.slice(5).replace(/^ /, ""));
-      }
-      this.buffer = "";
-    }
-    if (this.dataLines.length > 0) {
-      frames.push(this.dataLines.join("\n"));
-      this.dataLines = [];
-    }
-    return frames;
+    this.frames = [];
+    this.parser.feed("\n\n");
+    return this.frames;
   }
 }
 

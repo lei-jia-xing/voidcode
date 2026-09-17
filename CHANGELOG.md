@@ -95,6 +95,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 
+- **frontend:** frame SSE streams with `eventsource-parser` instead of the hand-rolled line splitter; the tolerant wire contract (multi-line `data:`, comments, CRLF frames, trailing payload on close) is unchanged
+
 - **runtime:** exit background task shutdown busy loop
 
 - **transport:** make session replay read-only
