@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import logging
 import re
 from pathlib import Path
 from typing import ClassVar
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
+from markdownify import MarkdownConverter
 
 from ..security.url_policy import validate_redirect_target, validate_url
 from .contracts import ToolCall, ToolDefinition, ToolResult
@@ -14,13 +16,30 @@ from .contracts import ToolCall, ToolDefinition, ToolResult
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024
 DEFAULT_TIMEOUT = 30
 
+logger = logging.getLogger(__name__)
 
-def _extract_text_from_html(html: str) -> str:
+# Non-content tags removed before any text or markdown extraction. This tool is a
+# fetcher, not a readability extractor: no boilerplate/nav heuristics live here.
+REMOVED_TAGS = ("script", "style", "noscript", "iframe", "object", "embed")
+
+# `<pre class="language-python">` / `<pre><code class="language-python">` (highlight.js,
+# Prism and GitHub all use the `language-` prefix; some generators use `lang-`).
+CODE_LANGUAGE_CLASS_PATTERN = re.compile(r"^(?:language|lang)-(.+)$")
+
+
+def _clean_html(html: str) -> BeautifulSoup:
+    """Parse HTML and drop non-content tags so neither extraction path sees markup noise."""
     soup = BeautifulSoup(html, "html.parser")
 
-    for tag_name in ("script", "style", "noscript", "iframe", "object", "embed"):
+    for tag_name in REMOVED_TAGS:
         for tag in soup.find_all(tag_name):
             tag.decompose()
+
+    return soup
+
+
+def _extract_text_from_html(html: str) -> str:
+    soup = _clean_html(html)
 
     for tag in soup.find_all(["br", "li", "p", "div", "section", "article", "tr"]):
         tag.append("\n")
@@ -32,31 +51,62 @@ def _extract_text_from_html(html: str) -> str:
     return result.strip()
 
 
-def _convert_html_to_markdown(html: str) -> str:
-    # Improve HTML->Markdown conversion by applying simple heuristics on extracted text
-    lines = _extract_text_from_html(html).split("\n")
-    markdown_lines: list[str] = []
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            markdown_lines.append("")
+def _code_language(pre_element: Tag) -> str | None:
+    """Read a code language from `class="language-x"`/`class="lang-x"` on `<pre>` or its `<code>`."""
+    for element in (pre_element, pre_element.find("code")):
+        if not isinstance(element, Tag):
             continue
-
-        # Normalize emphasis markers already present
-        line = re.sub(r"\*\*(.+?)\*\*", r"**\1**", line)
-        line = re.sub(r"\*(.+?)\*", r"*\1*", line)
-        line = re.sub(r"__(.+?)__", r"_\1_", line)
-        line = re.sub(r"_(.+?)_", r"_\1_", line)
-
-        # Heuristic: treat all-uppercase lines as headings
-        if line.isupper() and len(line) > 3 and not any(ch.isdigit() for ch in line):
-            markdown_lines.append("# " + line.title())
+        class_attribute = element.get("class")
+        if not isinstance(class_attribute, list):
             continue
+        for class_name in class_attribute:
+            match = CODE_LANGUAGE_CLASS_PATTERN.match(str(class_name))
+            if match is not None:
+                return match.group(1)
+    return None
 
-        markdown_lines.append(line)
 
-    return "\n".join(markdown_lines)
+def _html_to_markdown(html: str) -> str:
+    """Convert HTML to Markdown with markdownify, then normalize whitespace only.
+
+    Structure (heading level, link target, code fence language, table cells) is owned by
+    markdownify; the regexes below only touch blank lines and trailing whitespace.
+
+    Options:
+    - `heading_style="ATX"`: `#`-prefixed headings instead of setext underlines, so levels
+      survive re-parsing and nested headings are unambiguous.
+    - `newline_style="backslash"`: `<br>` becomes a backslash hard break, which survives the
+      per-line trailing-whitespace strip below (the default `spaces` style would be erased).
+    - `code_language_callback`: preserves `language-x`/`lang-x` classes as the fence info string.
+    Everything else keeps markdownify 1.2.3 defaults, including GFM pipe tables
+    (`table_infer_header=False` leaves the header row empty rather than promoting a data row).
+    """
+    converter = MarkdownConverter(
+        heading_style="ATX",
+        newline_style="backslash",
+        code_language_callback=_code_language,
+    )
+    markdown = converter.convert_soup(_clean_html(html))
+    markdown = re.sub(r"\n{3,}", "\n\n", markdown)
+    markdown = re.sub(r"[ \t]+$", "", markdown, flags=re.MULTILINE)
+    return markdown.strip()
+
+
+def _html_to_markdown_or_text(html: str, *, url: str) -> str:
+    """Depth guard for the single markdown pipeline.
+
+    markdownify converts recursively, so a hostile or merely broken page with hundreds of
+    nested block elements exhausts the interpreter stack (measured: 494 nested `<div>` work,
+    495 raise with the default recursion limit). Degrade that one case to the plain-text
+    extraction that `format="text"` already uses instead of failing the fetch. This is a
+    documented depth guard, not a second converter and not a resurrection of the removed
+    line heuristics; every other failure still propagates.
+    """
+    try:
+        return _html_to_markdown(html)
+    except RecursionError:
+        logger.warning("web_fetch markdown conversion exceeded the nesting depth guard for %s; returning plain text", url)
+        return _extract_text_from_html(html)
 
 
 class WebFetchTool:
@@ -206,7 +256,7 @@ class WebFetchTool:
                     timeout_seconds=timeout,
                 )
             if "text/html" in mime:
-                output = _convert_html_to_markdown(content)
+                output = _html_to_markdown_or_text(content, url=url_value)
             else:
                 output = content
         else:
@@ -231,7 +281,7 @@ class WebFetchTool:
                     timeout_seconds=timeout,
                 )
             if "text/html" in mime:
-                output = _convert_html_to_markdown(content)
+                output = _html_to_markdown_or_text(content, url=url_value)
             else:
                 output = content
 

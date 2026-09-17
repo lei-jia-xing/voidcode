@@ -48,6 +48,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 ### Changed
 
 
+- **tools:** render `web_fetch` HTML responses as Markdown with markdownify instead of regex line heuristics, so heading levels, link targets, code fence languages, and GFM tables survive the conversion; `format=text` output is unchanged
+
 - **runtime:** enable LSP and MCP tooling by default
 
 - **tools:** rename write_file tool to write (breaking)

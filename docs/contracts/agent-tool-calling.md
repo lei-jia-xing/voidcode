@@ -841,6 +841,8 @@ runtime 在成功的 mutation 后更新 session metadata 中的 runtime todo sta
 图片响应可能以 `data.attachment` 形式返回 base64 data URI。
 
 - 选择原则：有具体 URL 且需要正文时使用；不要用它探测 localhost 或内部网络。
+
+`format=markdown` 对 `text/html` 响应使用 `markdownify` 转换：保留标题层级（ATX）、链接目标、代码围栏语言（`language-*` / `lang-*` 类）、GFM 表格、嵌套/有序列表和图片 alt；只移除 `script` / `style` / `noscript` / `iframe` / `object` / `embed`，不做正文提取（不剥离导航或样板内容）。`format=text` 仍是纯文本抽取。
 ### 动态 MCP 工具
 
 #### `mcp/<server>/<tool>`

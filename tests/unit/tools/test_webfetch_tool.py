@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -9,6 +10,7 @@ import pytest
 
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ToolCall, WebFetchTool
+from voidcode.tools.web_fetch import _extract_text_from_html, _html_to_markdown
 
 
 def _response(
@@ -82,7 +84,149 @@ def test_webfetch_markdown_uses_markdown_conversion_for_html() -> None:
     request_mock.assert_called_once()
     assert result.status == "ok"
     assert result.content is not None
-    assert "TITLE" in str(result.data["content"])
+    assert result.data["content"] == "# TITLE\n\nHello"
+
+
+def test_webfetch_markdown_end_to_end_preserves_document_structure() -> None:
+    tool = WebFetchTool()
+    html = (
+        b"<html><body>\n"
+        b"<h1>Guide</h1>\n"
+        b'<p>See <a href="https://example.com/docs">docs</a>.</p>\n'
+        b'<pre><code class="language-python">x = 1</code></pre>\n'
+        b"<p>THIS IS IMPORTANT</p>\n"
+        b"</body></html>"
+    )
+    with patch("httpx.Client.request", return_value=_response(content=html)):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="web_fetch",
+                arguments={"url": "https://example.com", "format": "markdown"},
+            ),
+            workspace=Path("/tmp"),
+        )
+
+    assert result.status == "ok"
+    assert result.data["content"] == ("# Guide\n\nSee [docs](https://example.com/docs).\n\n```python\nx = 1\n```\n\nTHIS IS IMPORTANT")
+
+
+def test_webfetch_markdown_degrades_to_plain_text_on_pathological_nesting(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tool = WebFetchTool()
+    nested = "<div>" * 2000 + "deep content" + "</div>" * 2000
+    html = f"<html><body>{nested}</body></html>".encode()
+    with caplog.at_level(logging.WARNING, logger="voidcode.tools.web_fetch"):
+        with patch("httpx.Client.request", return_value=_response(content=html)):
+            result = tool.invoke(
+                ToolCall(
+                    tool_name="web_fetch",
+                    arguments={"url": "https://example.com/deep", "format": "markdown"},
+                ),
+                workspace=Path("/tmp"),
+            )
+
+    assert result.status == "ok"
+    assert result.data["content"] == _extract_text_from_html(html.decode())
+    assert "deep content" in str(result.data["content"])
+    guard_warnings = [record for record in caplog.records if record.name == "voidcode.tools.web_fetch"]
+    assert len(guard_warnings) == 1
+    assert "https://example.com/deep" in guard_warnings[0].getMessage()
+
+
+def test_webfetch_markdown_happy_path_does_not_trigger_depth_guard(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tool = WebFetchTool()
+    html = b"<html><body><h1>Title</h1><p>Body</p></body></html>"
+    with caplog.at_level(logging.WARNING, logger="voidcode.tools.web_fetch"):
+        with patch("httpx.Client.request", return_value=_response(content=html)):
+            result = tool.invoke(
+                ToolCall(
+                    tool_name="web_fetch",
+                    arguments={"url": "https://example.com", "format": "markdown"},
+                ),
+                workspace=Path("/tmp"),
+            )
+
+    assert result.data["content"] == "# Title\n\nBody"
+    assert [record for record in caplog.records if record.name == "voidcode.tools.web_fetch"] == []
+
+
+@pytest.mark.parametrize(
+    ("tag", "expected"),
+    [("h1", "# Section"), ("h2", "## Section"), ("h3", "### Section"), ("h4", "#### Section")],
+)
+def test_html_to_markdown_preserves_heading_levels(tag: str, expected: str) -> None:
+    assert _html_to_markdown(f"<{tag}>Section</{tag}>") == expected
+
+
+def test_html_to_markdown_preserves_link_targets() -> None:
+    html = '<p>See <a href="https://example.com/docs">the docs</a>.</p>'
+
+    assert _html_to_markdown(html) == "See [the docs](https://example.com/docs)."
+
+
+@pytest.mark.parametrize(
+    ("html", "expected"),
+    [
+        (
+            '<pre><code class="language-python">def add(a, b):\n    return a + b\n</code></pre>',
+            "```python\ndef add(a, b):\n    return a + b\n```",
+        ),
+        ('<pre class="lang-rust"><code>fn main() {}</code></pre>', "```rust\nfn main() {}\n```"),
+    ],
+)
+def test_html_to_markdown_emits_fenced_code_block_with_language(html: str, expected: str) -> None:
+    assert _html_to_markdown(html) == expected
+
+
+def test_html_to_markdown_emits_table_rows_and_cells() -> None:
+    html = "<table><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody><tr><td>id</td><td>int</td></tr></tbody></table>"
+
+    assert _html_to_markdown(html) == "| Name | Type |\n| --- | --- |\n| id | int |"
+
+
+def test_html_to_markdown_keeps_headerless_table_rows_as_data() -> None:
+    html = "<table><tr><td>1</td><td>2</td></tr><tr><td>3</td><td>4</td></tr></table>"
+
+    assert _html_to_markdown(html) == "|  |  |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |"
+
+
+def test_html_to_markdown_emits_nested_and_ordered_lists() -> None:
+    html = "<ul><li>alpha<ul><li>alpha one</li></ul></li><li>beta</li></ul><ol><li>first</li><li>second</li></ol>"
+
+    assert _html_to_markdown(html) == "* alpha\n  + alpha one\n* beta\n\n1. first\n2. second"
+
+
+def test_html_to_markdown_preserves_image_alt_text() -> None:
+    html = '<p><img src="/logo.png" alt="Project logo"></p>'
+
+    assert _html_to_markdown(html) == "![Project logo](/logo.png)"
+
+
+def test_html_to_markdown_decodes_html_entities() -> None:
+    assert _html_to_markdown("<p>Tom &amp; Jerry</p>") == "Tom & Jerry"
+
+
+def test_html_to_markdown_keeps_all_caps_paragraph_as_paragraph() -> None:
+    assert _html_to_markdown("<p>THIS IS AN ALL CAPS PARAGRAPH</p>") == "THIS IS AN ALL CAPS PARAGRAPH"
+
+
+def test_html_to_markdown_keeps_line_breaks_from_br() -> None:
+    assert _html_to_markdown("<p>line one<br>line two</p>") == "line one\\\nline two"
+
+
+def test_html_to_markdown_drops_non_content_tags() -> None:
+    html = "<div>keep<script>var x = 1;</script><style>p { color: red; }</style></div>"
+
+    assert _html_to_markdown(html) == "keep"
+
+
+def test_html_to_markdown_collapses_excess_blank_lines() -> None:
+    html = "<p>one</p>" + "<div></div>" * 5 + "<p>two</p>"
+
+    assert _html_to_markdown(html) == "one\n\ntwo"
 
 
 def test_webfetch_tolerates_malformed_html() -> None:
