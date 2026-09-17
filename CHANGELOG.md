@@ -48,6 +48,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 ### Changed
 
 
+- **runtime:** connect to MCP servers only when a run needs them: a run whose configured servers are all covered by the persisted discovered-tool catalog connects to nothing (measured run-start latency 1.53 s / 6.9 s → 0), while an uncovered or reconfigured server set still discovers once at run start and persists the surface, so the first turn sees the MCP tools; disabled configs never connect, and a failed server is never cached
+
 - **cli:** split `cli/app.py` (124 KB) into one module per command plus shared plumbing, replace the monolithic smoke suite with a per-command contract suite, print the discarded-attempt notice in the CLI transcript, and derive the first-run provider remediation actions from the runtime's own guidance (breaking for importers of `voidcode.cli.app` internals)
 
 - **runtime:** answer a question on a session with nothing pending as `409` with `code=no_pending_question` instead of an indistinguishable `404`, run the served process with uvicorn lifecycle handling enabled so shutdown releases the workspace coordinator, and delete the `voidcode.runtime.http` compatibility facade (breaking for importers of that module)

@@ -32,6 +32,7 @@ from ..hook.typed import (
     ToolResultHandlerRegistry,
     builtin_tool_input_handler_registry,
 )
+from ..mcp import McpCachedToolSurface, McpToolDescriptor
 from ..mcp.redaction import redact_mcp_command
 from ..provider.auth import (
     ProviderAuthResolver,
@@ -266,9 +267,10 @@ from .hook_runtime import (
 )
 from .interaction_queue import drain_runtime_messages, enqueue_runtime_message
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
-from .mcp import McpManager, build_mcp_manager, release_mcp_session_events
+from .mcp import McpManager, build_mcp_manager, mcp_server_for_tool_name, release_mcp_session_events
+from .mcp_tool_cache import McpToolCatalogCache
 from .mode import MODE_DEFINITIONS, resolve_mode
-from .paths import provider_catalog_cache_path
+from .paths import mcp_tool_catalog_cache_path, provider_catalog_cache_path
 from .permission import (
     PendingApproval,
     PermissionDecision,
@@ -368,8 +370,10 @@ from .tool_execution import RuntimeToolExecutor
 from .tool_materializer import RuntimeToolMaterialization, RuntimeToolMaterializer
 from .tool_provider import (
     LocalCustomToolProvider,
+    scoped_tool_registry_for_agent,
 )
 from .tool_registry import (
+    DeferredToolSource,
     ToolPolicyDecision,
     ToolRegistry,
     agent_required_tool_patterns,
@@ -559,7 +563,10 @@ class VoidCodeRuntime(RuntimeSurface):
         self._bind_provider_auth_inspector()
         self._lsp_manager = lsp_manager or build_lsp_manager(self._config.lsp)
         self._mcp_manager_is_injected = mcp_manager is not None
-        self._mcp_manager = mcp_manager or build_mcp_manager(self._config.mcp)
+        self._mcp_manager = mcp_manager or build_mcp_manager(
+            self._config.mcp,
+            tool_catalog_cache=McpToolCatalogCache(path=mcp_tool_catalog_cache_path()),
+        )
         self._skill_registry_is_injected = skill_registry is not None
         self._skill_registry = skill_registry or self._build_skill_registry(self._config.skills)
         self._base_tool_registry = tool_registry or self._build_base_tool_registry()
@@ -900,12 +907,9 @@ class VoidCodeRuntime(RuntimeSurface):
 
         return LspTool(requester=self.request_lsp)
 
-    def _build_mcp_tools(self) -> tuple[Tool, ...]:
-        if self._mcp_manager.current_state().mode != "managed":
-            return ()
+    def _mcp_tools_from_descriptors(self, descriptors: Iterable[McpToolDescriptor]) -> tuple[Tool, ...]:
         from ..tools.mcp import McpTool
 
-        context = current_runtime_tool_context()
         return tuple(
             McpTool(
                 server_name=tool.server_name,
@@ -915,11 +919,19 @@ class VoidCodeRuntime(RuntimeSurface):
                 safety=tool.safety,
                 requester=self.request_mcp_tool,
             )
-            for tool in self._mcp_manager.list_tools(
+            for tool in descriptors
+            if tool.enabled
+        )
+
+    def _build_mcp_tools(self) -> tuple[Tool, ...]:
+        if self._mcp_manager.current_state().mode != "managed":
+            return ()
+        context = current_runtime_tool_context()
+        return self._mcp_tools_from_descriptors(
+            self._mcp_manager.list_tools(
                 workspace=self._workspace,
                 owner_session_id=context.session_id if context is not None else None,
             )
-            if tool.enabled
         )
 
     def _refresh_mcp_tools(self) -> None:
@@ -927,6 +939,158 @@ class VoidCodeRuntime(RuntimeSurface):
             return
         self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._build_mcp_tools())
         self._tool_registry = self._tool_materialization.registry
+
+    def mcp_cached_surface(self, *, owner_session_id: str | None) -> McpCachedToolSurface:
+        """Passively remembered MCP surface for the configured servers."""
+        cached_surface = getattr(self._mcp_manager, "cached_surface", None)
+        if cached_surface is None or self._mcp_manager.current_state().mode != "managed":
+            return McpCachedToolSurface()
+        return cast(
+            McpCachedToolSurface,
+            cached_surface(workspace=self._workspace, owner_session_id=owner_session_id),
+        )
+
+    def _materialize_cached_mcp_tools(self, surface: McpCachedToolSurface) -> None:
+        """Advertise a discovered MCP surface without connecting."""
+        self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._mcp_tools_from_descriptors(surface.descriptors()))
+        self._tool_registry = self._tool_materialization.registry
+
+    def mcp_tools_available_for_run(
+        self,
+        *,
+        request_metadata: Mapping[str, object],
+        effective_config: EffectiveRuntimeConfig,
+    ) -> bool:
+        return not (
+            self.should_skip_mcp_startup_for_request(
+                request_metadata=request_metadata,
+                effective_config=effective_config,
+            )
+            or self._is_background_child_mcp_deferred(
+                request_metadata=request_metadata,
+                effective_config=effective_config,
+            )
+        )
+
+    def materialize_mcp_tools_for_run(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        request_metadata: Mapping[str, object],
+        effective_config: EffectiveRuntimeConfig,
+        failure_kind: str,
+    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None]:
+        """Materialize MCP tools at run start under the runtime's laziness policy.
+
+        Laziness comes from the catalog, never from hiding the surface: a run
+        whose configured servers are all covered by a previous discovery
+        connects to nothing, while a cold install (or a server whose
+        configuration changed) discovers once, synchronously, exactly as it did
+        before — and persists the result so later runs connect never. Discovery
+        failures stay run-start diagnostics. A caller-injected manager keeps its
+        explicit discovery behaviour.
+        """
+        if not self.mcp_tools_available_for_run(request_metadata=request_metadata, effective_config=effective_config):
+            self.reset_tool_registry_to_base()
+            return (), session, sequence, None
+        if self._mcp_manager_is_injected:
+            return self.refresh_mcp_tools_for_session(
+                session=session,
+                sequence=sequence,
+                failure_kind=failure_kind,
+            )
+        surface = self.mcp_cached_surface(owner_session_id=session.session.id)
+        configured_servers = self._mcp_manager.current_state().configuration.servers
+        if not surface.covers(configured_servers):
+            return self.refresh_mcp_tools_for_session(
+                session=session,
+                sequence=sequence,
+                failure_kind=failure_kind,
+            )
+        self._materialize_cached_mcp_tools(surface)
+        return (), session, sequence, None
+
+    def tool_registry_for_run(
+        self,
+        *,
+        session: SessionState,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> ToolRegistry:
+        """Registry for one run: scoped tools plus on-demand MCP resolution."""
+        registry = self.tool_registry_for_effective_config(effective_config, metadata=session.metadata)
+        if not self.mcp_tools_available_for_run(request_metadata=session.metadata, effective_config=effective_config):
+            return registry
+        return registry.with_deferred_tools(
+            self._deferred_mcp_tool_source(
+                session=session,
+                effective_config=effective_config,
+            )
+        )
+
+    def _deferred_mcp_tool_source(
+        self,
+        *,
+        session: SessionState,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> DeferredToolSource | None:
+        """Resolve an MCP tool call by discovering its server on demand.
+
+        Returned only for runtime-owned managers: an injected manager keeps the
+        explicit discovery behaviour its caller asked for.
+        """
+        if self._mcp_manager_is_injected:
+            return None
+        state = self._mcp_manager.current_state()
+        if state.mode != "managed":
+            return None
+        server_names = tuple(state.configuration.servers)
+        if not server_names:
+            return None
+
+        def resolve_on_miss(tool_name: str) -> Mapping[str, Tool]:
+            server_name = mcp_server_for_tool_name(tool_name, server_names)
+            if server_name is None:
+                return {}
+            return self._discover_mcp_tools_for_session(
+                session=session,
+                effective_config=effective_config,
+                server_name=server_name,
+            )
+
+        return resolve_on_miss
+
+    def _discover_mcp_tools_for_session(
+        self,
+        *,
+        session: SessionState,
+        effective_config: EffectiveRuntimeConfig,
+        server_name: str | None = None,
+    ) -> Mapping[str, Tool]:
+        """Connect for the missing MCP tool surface and return the tools this run may use.
+
+        Discovery failures are not run failures: the requested tool simply stays
+        unresolvable, exactly as it would be if the server had failed at startup.
+        """
+        try:
+            descriptors = self._mcp_manager.list_tools(
+                workspace=self._workspace,
+                owner_session_id=session.session.id,
+                server_name=server_name,
+            )
+        except Exception:
+            logger.info(
+                "MCP discovery for session %s failed during tool resolution",
+                session.session.id,
+                exc_info=True,
+            )
+            return {}
+        self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._mcp_tools_from_descriptors(descriptors))
+        self._tool_registry = self._tool_materialization.registry
+        # The agent allowlist is the same gate the run-start materialization
+        # applies, so a lazily discovered tool cannot widen this run's scope.
+        scoped = scoped_tool_registry_for_agent(self._tool_materialization.registry, agent=effective_config.agent)
+        return {name: tool for name, tool in scoped.tools.items() if name.startswith("mcp/")}
 
     def refresh_mcp_tools_for_session(
         self,
@@ -995,22 +1159,11 @@ class VoidCodeRuntime(RuntimeSurface):
     def _build_mcp_tools_for_owner(self, *, owner_session_id: str | None) -> tuple[Tool, ...]:
         if self._mcp_manager.current_state().mode != "managed":
             return ()
-        from ..tools.mcp import McpTool
-
-        return tuple(
-            McpTool(
-                server_name=tool.server_name,
-                tool_name=tool.tool_name,
-                description=tool.description,
-                input_schema=tool.input_schema,
-                safety=tool.safety,
-                requester=self.request_mcp_tool,
-            )
-            for tool in self._mcp_manager.list_tools(
+        return self._mcp_tools_from_descriptors(
+            self._mcp_manager.list_tools(
                 workspace=self._workspace,
                 owner_session_id=owner_session_id,
             )
-            if tool.enabled
         )
 
     def tool_registry_for_effective_config(
@@ -1958,33 +2111,25 @@ class VoidCodeRuntime(RuntimeSurface):
         effective_config = prep.effective_config
         request_metadata = prep.request_metadata
         resolved_hook_presets = prep.resolved_hook_presets
-        if self.should_skip_mcp_startup_for_request(
+        (
+            mcp_startup_chunks,
+            session,
+            sequence,
+            mcp_failed_chunk,
+        ) = self.materialize_mcp_tools_for_run(
+            session=session,
+            sequence=sequence,
             request_metadata=request_metadata,
             effective_config=effective_config,
-        ) or self._is_background_child_mcp_deferred(
-            request_metadata=request_metadata,
-            effective_config=effective_config,
-        ):
-            self._tool_materialization = self._tool_materializer.base()
-            self._tool_registry = self._tool_materialization.registry
-        else:
-            (
-                mcp_startup_chunks,
-                session,
-                sequence,
-                mcp_failed_chunk,
-            ) = self.refresh_mcp_tools_for_session(
-                session=session,
-                sequence=sequence,
-                failure_kind="mcp_startup_failed",
-            )
-            for chunk in mcp_startup_chunks:
-                persisted_chunk = self._persist_emitted_chunk(chunk)
-                sequence = cast(EventEnvelope, persisted_chunk.event).sequence
-                yield persisted_chunk
-            if mcp_failed_chunk is not None:
-                yield self._persist_emitted_chunk(mcp_failed_chunk)
-                return None
+            failure_kind="mcp_startup_failed",
+        )
+        for chunk in mcp_startup_chunks:
+            persisted_chunk = self._persist_emitted_chunk(chunk)
+            sequence = cast(EventEnvelope, persisted_chunk.event).sequence
+            yield persisted_chunk
+        if mcp_failed_chunk is not None:
+            yield self._persist_emitted_chunk(mcp_failed_chunk)
+            return None
 
         tool_materialization = self._tool_materialization_for_effective_config(
             effective_config,
@@ -1997,7 +2142,7 @@ class VoidCodeRuntime(RuntimeSurface):
             resolved_hook_presets=resolved_hook_presets,
             tool_materialization=tool_materialization,
         )
-        tool_registry = tool_materialization.registry
+        tool_registry = self.tool_registry_for_run(session=session, effective_config=effective_config)
         skill_registry = self.skill_registry_for_effective_config(effective_config)
 
         start_hook_outcome = run_lifecycle_hooks_for_session(

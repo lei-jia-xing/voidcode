@@ -119,7 +119,12 @@ BOUNDARY NOTES:
    SDK client foundation.
 
 2. Deferred Discovery: MCP servers are started lazily on first list_tools or
-   call_tool invocation. There is no pre-initialization.
+   call_tool invocation, never hidden behind the cache. A run whose configured
+   servers are all covered by the persisted catalog (runtime/mcp_tool_cache.py)
+   connects to nothing; a cold install, or a server whose configuration
+   changed, discovers once at run start and persists the surface, so the first
+   turn still sees the configured MCP tools. Further connections happen only
+   when an MCP tool call or an explicit status/refresh request needs a server.
 
 3. Tool Naming: MCP tools are exposed with the naming convention:
    mcp/{server_name}/{tool_name}

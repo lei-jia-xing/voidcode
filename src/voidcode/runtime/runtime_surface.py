@@ -173,6 +173,30 @@ class RuntimeSurface(Protocol):
         effective_config: EffectiveRuntimeConfig,
     ) -> bool: ...
 
+    def mcp_tools_available_for_run(
+        self,
+        *,
+        request_metadata: Mapping[str, object],
+        effective_config: EffectiveRuntimeConfig,
+    ) -> bool: ...
+
+    def materialize_mcp_tools_for_run(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        request_metadata: Mapping[str, object],
+        effective_config: EffectiveRuntimeConfig,
+        failure_kind: str,
+    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None]: ...
+
+    def tool_registry_for_run(
+        self,
+        *,
+        session: SessionState,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> ToolRegistry: ...
+
     def refresh_mcp_tools_for_session(
         self,
         *,

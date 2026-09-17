@@ -92,6 +92,24 @@ class McpConfigState:
 
 
 @dataclass(frozen=True, slots=True)
+class McpCachedToolSurface:
+    """Passively known MCP tool surface, per server, without connecting.
+
+    ``servers`` is keyed by configured server name; a server present with an
+    empty tuple is known to expose no tools, which is different from a server
+    whose surface was never discovered.
+    """
+
+    servers: dict[str, tuple[McpToolDescriptor, ...]] = field(default_factory=dict)
+
+    def descriptors(self) -> tuple[McpToolDescriptor, ...]:
+        return tuple(tool for tools in self.servers.values() for tool in tools)
+
+    def covers(self, server_names: Any) -> bool:
+        return set(server_names) <= set(self.servers)
+
+
+@dataclass(frozen=True, slots=True)
 class McpManagerState:
     """Static MCP manager state - does not depend on runtime lifecycle."""
 
@@ -132,7 +150,16 @@ class McpManager(Protocol):
         workspace: Any,
         owner_session_id: str | None = None,
         parent_session_id: str | None = None,
+        server_name: str | None = None,
     ) -> tuple[McpToolDescriptor, ...]: ...
+
+    def cached_surface(
+        self,
+        *,
+        workspace: Any,
+        owner_session_id: str | None = None,
+        parent_session_id: str | None = None,
+    ) -> McpCachedToolSurface: ...
 
     def call_tool(
         self,

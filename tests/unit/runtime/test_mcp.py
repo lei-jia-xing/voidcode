@@ -23,7 +23,9 @@ from voidcode.runtime.mcp import (
     McpManagerState,
     McpRuntimeEvent,
     build_mcp_manager,
+    mcp_server_for_tool_name,
 )
+from voidcode.runtime.mcp_tool_cache import McpToolCatalogCache
 
 _MCP_SERVER_SCRIPT = r"""
 from __future__ import annotations
@@ -1972,3 +1974,74 @@ for raw_line in sys.stdin:
     diagnostics = collector.get_diagnostics()
     assert diagnostics
     assert diagnostics[-1].category == "call"
+
+
+def test_mcp_manager_reports_the_cached_surface_without_connecting(tmp_path: Path) -> None:
+    server_script = tmp_path / "echo_mcp_server.py"
+    server_script.write_text(_MCP_SERVER_SCRIPT, encoding="utf-8")
+    config = RuntimeMcpConfig(
+        enabled=True,
+        servers={"echo": RuntimeMcpServerConfig(transport="stdio", command=(sys.executable, str(server_script)))},
+    )
+    catalog_path = tmp_path / "mcp-tool-catalog.json"
+    manager = build_mcp_manager(config, tool_catalog_cache=McpToolCatalogCache(path=catalog_path))
+
+    assert manager.cached_surface(workspace=tmp_path).covers(("echo",)) is False
+    assert manager.current_state().servers["echo"].status == "stopped"
+    assert catalog_path.exists() is False
+
+    discovered = manager.list_tools(workspace=tmp_path)
+
+    cached = manager.cached_surface(workspace=tmp_path)
+    assert cached.covers(("echo",)) is True
+    assert [tool.tool_name for tool in cached.servers["echo"]] == [tool.tool_name for tool in discovered]
+    assert cached.servers["echo"][0].input_schema == discovered[0].input_schema
+    assert manager.shutdown()
+
+    reloaded = build_mcp_manager(config, tool_catalog_cache=McpToolCatalogCache(path=catalog_path))
+
+    restored = reloaded.cached_surface(workspace=tmp_path)
+    assert restored.covers(("echo",)) is True
+    assert [tool.tool_name for tool in restored.servers["echo"]] == [tool.tool_name for tool in discovered]
+    assert restored.servers["echo"][0].input_schema == discovered[0].input_schema
+    # Reading the catalog never starts the server process.
+    assert reloaded.current_state().servers["echo"].status == "stopped"
+
+
+def test_mcp_manager_discovers_a_single_server_on_demand(tmp_path: Path) -> None:
+    server_script = tmp_path / "echo_mcp_server.py"
+    server_script.write_text(_MCP_SERVER_SCRIPT, encoding="utf-8")
+    config = RuntimeMcpConfig(
+        enabled=True,
+        servers={
+            "echo": RuntimeMcpServerConfig(transport="stdio", command=(sys.executable, str(server_script))),
+            "broken": RuntimeMcpServerConfig(transport="stdio", command=("voidcode-missing-mcp-binary",)),
+        },
+    )
+    manager = build_mcp_manager(config)
+
+    discovered = manager.list_tools(workspace=tmp_path, server_name="echo")
+
+    assert [tool.tool_name for tool in discovered] == ["echo"]
+    assert manager.current_state().servers["broken"].status == "stopped"
+    with pytest.raises(ValueError, match="failed to start server"):
+        _ = manager.list_tools(workspace=tmp_path)
+    assert manager.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "server_names", "expected"),
+    [
+        ("mcp/echo/echo", ("echo",), "echo"),
+        ("mcp/echo/echo", ("other",), None),
+        ("mcp/echo", ("echo",), None),
+        ("read", ("echo",), None),
+        ("mcp/echo/sub/tool", ("echo", "echo/sub"), "echo/sub"),
+    ],
+)
+def test_mcp_server_for_tool_name_matches_configured_servers(
+    tool_name: str,
+    server_names: tuple[str, ...],
+    expected: str | None,
+) -> None:
+    assert mcp_server_for_tool_name(tool_name, server_names) == expected

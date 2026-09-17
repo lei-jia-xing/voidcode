@@ -57,6 +57,7 @@ from .types import (
     MCP_CLIENT_NAME,
     MCP_CLIENT_VERSION,
     MCP_PROTOCOL_VERSION,
+    McpCachedToolSurface,
     McpConfigState,
     McpManager,
     McpManagerState,
@@ -69,6 +70,7 @@ from .types import (
 
 __all__ = [
     # Types
+    "McpCachedToolSurface",
     "McpConfigState",
     "McpManager",
     "McpManagerState",

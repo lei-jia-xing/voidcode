@@ -30,7 +30,7 @@
 参见 `contract.py` 中的 `SUPPORTED_CAPABILITIES`:
 
 - **Transport**: stdio + remote-http (Streamable HTTP)
-- **Discovery**: deferred (懒加载)
+- **Discovery**: deferred (懒加载，由 runtime 在需要时触发)
 - **Operations**: tools/list, tools/call
 - **Lifecycle**: runtime-owned
 - **Client foundation**: official Python MCP SDK
@@ -66,7 +66,7 @@ grep.app 提供三个不同的端点，用途各不相同:
 
 内置 `grep_app` 描述符现在指向官方 MCP 端点 `https://mcp.grep.app`:
 - LSP/MCP 工具默认开启：未声明 `mcp.enabled`（或显式 `mcp.enabled: true`）时，runtime 会自动装载内置远程 MCP 描述符（`context7`、`websearch`、`grep_app`）；只有显式 `mcp.enabled: false` 才会关闭
-- 启用后 runtime 会自动连接到远程 MCP 端点
+- runtime 只在**冷启动**（配置的 server 尚未被目录覆盖，或身份发生变化）时于 run 开始时同步 discovery 一次并持久化到 `runtime/mcp_tool_cache.py`；目录覆盖全部已配置 server 之后，run 开始不再连接任何 MCP server（未使用 MCP 的运行不再承担连接/initialize 延迟），连接只发生在真正需要时——某个 MCP 工具被调用，或显式的 status/refresh 请求（`retry_mcp_connections`）
 - 连接失败会作为 runtime MCP 诊断/状态输出，而不是模糊的工具错误
 
 ### 文件结构

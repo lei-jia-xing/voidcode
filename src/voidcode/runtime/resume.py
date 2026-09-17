@@ -353,10 +353,7 @@ class RuntimeResumeCoordinator:
             )
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
-        tool_registry = runtime.tool_registry_for_effective_config(
-            effective_config,
-            metadata=session.metadata,
-        )
+        tool_registry = runtime.tool_registry_for_run(session=session, effective_config=effective_config)
         skill_registry = runtime.skill_registry_for_effective_config(effective_config)
         resumed_skill_snapshot = runtime.build_skill_snapshot(
             skill_registry,
@@ -648,21 +645,14 @@ class RuntimeResumeCoordinator:
         validate_session_workspace(session, session_id=stored.session.session.id, workspace=self._workspace)
         session = session_with_current_acp_metadata(session, self._acp_adapter.current_state())
         effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
-        mcp_state = self._mcp_manager.current_state()
-        if mcp_state.configuration.configured_enabled is True and not runtime.should_skip_mcp_startup_for_request(
+        mcp_startup_chunks, session, _, mcp_failed_chunk = runtime.materialize_mcp_tools_for_run(
+            session=session,
+            sequence=max_stored_sequence,
             request_metadata=session.metadata,
             effective_config=effective_config,
-        ):
-            mcp_startup_chunks, session, _, mcp_failed_chunk = runtime.refresh_mcp_tools_for_session(
-                session=session,
-                sequence=max_stored_sequence,
-                failure_kind="mcp_startup_failed",
-            )
-            effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
-        else:
-            mcp_startup_chunks = ()
-            mcp_failed_chunk = None
-            runtime.reset_tool_registry_to_base()
+            failure_kind="mcp_startup_failed",
+        )
+        effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
         try:
             validate_reasoning_effort_capability(
                 effective_config,
@@ -670,10 +660,7 @@ class RuntimeResumeCoordinator:
             )
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
-        tool_registry = runtime.tool_registry_for_effective_config(
-            effective_config,
-            metadata=session.metadata,
-        )
+        tool_registry = runtime.tool_registry_for_run(session=session, effective_config=effective_config)
         skill_registry = runtime.skill_registry_for_effective_config(effective_config)
 
         resumed_skill_snapshot = runtime.build_skill_snapshot(
@@ -1283,10 +1270,7 @@ class RuntimeResumeCoordinator:
             )
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
-        tool_registry = runtime.tool_registry_for_effective_config(
-            effective_config,
-            metadata=session.metadata,
-        )
+        tool_registry = runtime.tool_registry_for_run(session=session, effective_config=effective_config)
         skill_registry = runtime.skill_registry_for_effective_config(effective_config)
         resumed_skill_snapshot = runtime.build_skill_snapshot(
             skill_registry,

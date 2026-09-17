@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from typing import Literal
@@ -9,6 +9,12 @@ from ..tools.contracts import Tool, ToolDefinition
 from .config import RuntimeAgentConfig, RuntimeHooksConfig
 from .edit_schema_policy import EditSchemaResolver
 from .tool_provider import BuiltinToolProvider
+
+#: Consulted only when a lookup misses: the runtime-owned source for tools that
+#: are materialized on demand (today: MCP servers, whose tool surface is only
+#: known once something actually needs it). It returns everything it can now
+#: provide and MUST NOT raise; an unusable source simply provides nothing.
+type DeferredToolSource = Callable[[str], Mapping[str, Tool]]
 
 #: Tools always shown top-level in the provider tools array when the
 #: essential/discoverable split is enabled. Everything not in this set is
@@ -115,6 +121,7 @@ class ToolRegistry:
     """Small in-memory registry used by the runtime boundary."""
 
     tools: dict[str, Tool] = field(default_factory=dict)
+    deferred_tools: DeferredToolSource | None = None
 
     @classmethod
     def from_tools(cls, tools: Iterable[Tool]) -> ToolRegistry:
@@ -125,6 +132,12 @@ class ToolRegistry:
                 raise ValueError(f"duplicate tool definition: {name}")
             registry[name] = tool
         return cls(tools=registry)
+
+    def with_deferred_tools(self, source: DeferredToolSource | None) -> ToolRegistry:
+        """Return a copy of this registry that resolves misses through ``source``."""
+        if source is None:
+            return self
+        return ToolRegistry(tools=dict(self.tools), deferred_tools=source)
 
     @classmethod
     def with_defaults(
@@ -239,21 +252,34 @@ class ToolRegistry:
         return "\n".join(lines)
 
     def resolve(self, tool_name: str) -> Tool:
-        try:
-            return self.tools[tool_name]
-        except KeyError as exc:
-            raise ValueError(f"unknown tool: {tool_name}") from exc
+        tool = self.tools.get(tool_name)
+        if tool is None and self.deferred_tools is not None:
+            # Lazy materialization: the source provides the tools it can now
+            # resolve, and the ones it provides join this registry for the rest
+            # of the run.
+            self.tools.update(self.deferred_tools(tool_name))
+            tool = self.tools.get(tool_name)
+        if tool is None:
+            raise ValueError(f"unknown tool: {tool_name}")
+        return tool
 
     def filtered(self, patterns: Iterable[str]) -> ToolRegistry:
         normalized_patterns = tuple(pattern for pattern in patterns if pattern)
         return ToolRegistry(
-            tools={name: tool for name, tool in self.tools.items() if any(fnmatchcase(name, pattern) for pattern in normalized_patterns)}
+            tools={name: tool for name, tool in self.tools.items() if any(fnmatchcase(name, pattern) for pattern in normalized_patterns)},
+            deferred_tools=self.deferred_tools,
         )
 
     def excluding(self, tool_names: Iterable[str]) -> ToolRegistry:
         excluded = frozenset(tool_names)
-        return ToolRegistry(tools={name: tool for name, tool in self.tools.items() if name not in excluded})
+        return ToolRegistry(
+            tools={name: tool for name, tool in self.tools.items() if name not in excluded},
+            deferred_tools=self.deferred_tools,
+        )
 
     def allowed_by_policy(self, policy: Iterable[ToolPolicyDecision]) -> ToolRegistry:
         allowed_names = frozenset(decision.tool_name for decision in policy if decision.allowed)
-        return ToolRegistry(tools={name: tool for name, tool in self.tools.items() if name in allowed_names})
+        return ToolRegistry(
+            tools={name: tool for name, tool in self.tools.items() if name in allowed_names},
+            deferred_tools=self.deferred_tools,
+        )

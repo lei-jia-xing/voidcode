@@ -30,6 +30,7 @@ from pathlib import Path
 VOIDCODE_DIR_NAME = "voidcode"
 SESSIONS_DB_FILENAME = "sessions.sqlite3"
 PROVIDER_CATALOG_FILENAME = "provider-model-catalog.json"
+MCP_TOOL_CATALOG_FILENAME = "mcp-tool-catalog.json"
 
 DB_PATH_ENV = "VOIDCODE_DB_PATH"
 
@@ -111,13 +112,20 @@ def provider_catalog_cache_path(env: Mapping[str, str] | None = None) -> Path:
     return cache_home(env) / PROVIDER_CATALOG_FILENAME
 
 
+def mcp_tool_catalog_cache_path(env: Mapping[str, str] | None = None) -> Path:
+    """Resolve the discovered MCP tool catalog cache file path."""
+    return cache_home(env) / MCP_TOOL_CATALOG_FILENAME
+
+
 __all__ = [
     "DB_PATH_ENV",
+    "MCP_TOOL_CATALOG_FILENAME",
     "PROVIDER_CATALOG_FILENAME",
     "SESSIONS_DB_FILENAME",
     "VOIDCODE_DIR_NAME",
     "cache_home",
     "data_home",
+    "mcp_tool_catalog_cache_path",
     "provider_catalog_cache_path",
     "sessions_db_path",
     "state_home",

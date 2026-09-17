@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +32,7 @@ from mcp.types import CallToolResult, Implementation, InitializeResult, ListTool
 from ..mcp import (
     MCP_CLIENT_NAME,
     MCP_CLIENT_VERSION,
+    McpCachedToolSurface,
     McpConfigState,
     McpDiagnostic,
     McpDiagnosticsCollector,
@@ -47,7 +48,7 @@ from ..mcp import (
     create_diagnostic,
     redact_mcp_command,
 )
-from .config import RuntimeMcpConfig
+from .config import RuntimeMcpConfig, RuntimeMcpServerConfig
 from .event_envelopes import envelopes_for_mcp_events
 from .events import (
     RUNTIME_MCP_SERVER_ACQUIRED,
@@ -59,6 +60,7 @@ from .events import (
     RUNTIME_MCP_SERVER_STOPPED,
     EventEnvelope,
 )
+from .mcp_tool_cache import McpToolCatalogCache, mcp_server_identity
 
 DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS = 30.0
 DEFAULT_SESSION_MCP_IDLE_TIMEOUT_SECONDS = 300.0
@@ -76,6 +78,31 @@ _RECOVERABLE_MCP_CALL_ERROR_CODES = frozenset(
 #: when the underlying connection dies (e.g. the connect POST failed), which is
 #: how an unreachable endpoint surfaces through ``ClientSession.initialize``.
 _MCP_CONNECTION_CLOSED_CODE = -32000
+
+#: MCP tools are exposed as ``mcp/{server_name}/{tool_name}`` (see
+#: ``voidcode.mcp.contract``); this prefix is the only way a raw provider tool
+#: call can name an MCP tool before discovery has run.
+_MCP_TOOL_NAME_PREFIX = "mcp/"
+
+
+def mcp_server_for_tool_name(tool_name: str, server_names: Iterable[str]) -> str | None:
+    """Return the configured MCP server that owns ``tool_name``, if any.
+
+    Only the documented ``mcp/{server_name}/{tool_name}`` shape matches. The
+    longest configured name wins so a server whose name contains ``/`` is still
+    matched unambiguously.
+    """
+    if not tool_name.startswith(_MCP_TOOL_NAME_PREFIX):
+        return None
+    matched: str | None = None
+    for server_name in server_names:
+        if not server_name:
+            continue
+        if not tool_name.startswith(f"{_MCP_TOOL_NAME_PREFIX}{server_name}/"):
+            continue
+        if matched is None or len(server_name) > len(matched):
+            matched = server_name
+    return matched
 
 
 def _validate_input_schema(raw_schema: object) -> dict[str, object]:
@@ -211,9 +238,20 @@ class DisabledMcpManager:
         workspace: Path,
         owner_session_id: str | None = None,
         parent_session_id: str | None = None,
+        server_name: str | None = None,
     ) -> tuple[McpToolDescriptor, ...]:
-        _ = workspace, owner_session_id, parent_session_id
+        _ = workspace, owner_session_id, parent_session_id, server_name
         raise ValueError("MCP runtime support is disabled")
+
+    def cached_surface(
+        self,
+        *,
+        workspace: Path,
+        owner_session_id: str | None = None,
+        parent_session_id: str | None = None,
+    ) -> McpCachedToolSurface:
+        _ = workspace, owner_session_id, parent_session_id
+        return McpCachedToolSurface()
 
     def call_tool(
         self,
@@ -316,6 +354,7 @@ class ManagedMcpManager:
         config: RuntimeMcpConfig,
         *,
         diagnostics_collector: McpDiagnosticsCollector | None = None,
+        tool_catalog_cache: McpToolCatalogCache | None = None,
     ) -> None:
         self._configuration = McpConfigState.from_runtime_config(config)
         self._running_servers: dict[_McpServerKey, _RunningMcpServer] = {}
@@ -336,6 +375,8 @@ class ManagedMcpManager:
         self._portal_context: AbstractContextManager[BlockingPortal] | None = None
         self._portal: BlockingPortal | None = None
         self._tool_descriptors_by_server: dict[_McpServerKey, dict[str, McpToolDescriptor]] = {}
+        self._tool_catalog_cache = tool_catalog_cache
+        self._discovered_tools: dict[str, tuple[McpToolDescriptor, ...]] = {}
 
     @property
     def configuration(self) -> McpConfigState:
@@ -355,18 +396,86 @@ class ManagedMcpManager:
         workspace: Path,
         owner_session_id: str | None = None,
         parent_session_id: str | None = None,
+        server_name: str | None = None,
     ) -> tuple[McpToolDescriptor, ...]:
+        """Discover tools, connecting to configured servers.
+
+        ``server_name`` narrows discovery to one server so an on-demand MCP
+        tool call only pays for the server it actually needs.
+        """
         _ = parent_session_id
+        server_names = (server_name,) if server_name is not None else tuple(self._configuration.servers)
         tools: list[McpToolDescriptor] = []
-        for server_name in self._configuration.servers:
+        for name in server_names:
             tools.extend(
                 self._list_tools_for_server(
-                    server_name=server_name,
+                    server_name=name,
                     workspace=workspace,
                     owner_session_id=owner_session_id,
                 )
             )
         return tuple(tools)
+
+    def cached_surface(
+        self,
+        *,
+        workspace: Path,
+        owner_session_id: str | None = None,
+        parent_session_id: str | None = None,
+    ) -> McpCachedToolSurface:
+        """Return the last discovered tool surface without connecting.
+
+        This is the passive read the runtime uses to keep MCP tools advertised
+        across runs: the catalog holds the descriptors discovered by an earlier
+        run, never a live connection. Configured servers the catalog does not
+        cover are absent, which is how the runtime knows it has to discover once.
+        """
+        _ = parent_session_id, owner_session_id
+        servers: dict[str, tuple[McpToolDescriptor, ...]] = {}
+        for server_name, server_config in self._configuration.servers.items():
+            descriptors = self._cached_tools_for_server(server_name=server_name, workspace=workspace, config=server_config)
+            if descriptors is not None:
+                servers[server_name] = descriptors
+        return McpCachedToolSurface(servers=servers)
+
+    def _cached_tools_for_server(
+        self,
+        *,
+        server_name: str,
+        workspace: Path,
+        config: RuntimeMcpServerConfig,
+    ) -> tuple[McpToolDescriptor, ...] | None:
+        """Remembered descriptors for one server, or ``None`` when undiscovered."""
+        discovered = self._discovered_tools.get(server_name)
+        if discovered is not None:
+            return discovered
+        if self._tool_catalog_cache is None:
+            return None
+        entry = self._tool_catalog_cache.entry_for(
+            server_name=server_name,
+            identity=mcp_server_identity(server_name, config, workspace_root=workspace),
+        )
+        if entry is None:
+            return None
+        self._discovered_tools[server_name] = entry
+        return entry
+
+    def _remember_discovered_tools(
+        self,
+        *,
+        server_name: str,
+        workspace: Path,
+        descriptors: tuple[McpToolDescriptor, ...],
+    ) -> None:
+        self._discovered_tools[server_name] = descriptors
+        config = self._configuration.servers.get(server_name)
+        if config is None or self._tool_catalog_cache is None:
+            return
+        self._tool_catalog_cache.store(
+            server_name=server_name,
+            identity=mcp_server_identity(server_name, config, workspace_root=workspace),
+            descriptors=descriptors,
+        )
 
     def call_tool(
         self,
@@ -962,7 +1071,13 @@ class ManagedMcpManager:
             server_descriptors[descriptor.tool_name] = descriptor
             descriptors.append(descriptor)
         self._tool_descriptors_by_server[key] = server_descriptors
-        return tuple(descriptors)
+        discovered = tuple(descriptors)
+        self._remember_discovered_tools(
+            server_name=server_name,
+            workspace=workspace,
+            descriptors=discovered,
+        )
+        return discovered
 
     @staticmethod
     def _server_key(
@@ -1336,6 +1451,7 @@ def build_mcp_manager(
     config: RuntimeMcpConfig | None,
     *,
     diagnostics_collector: McpDiagnosticsCollector | None = None,
+    tool_catalog_cache: McpToolCatalogCache | None = None,
 ) -> McpManager:
     """Build an MCP manager based on configuration."""
     configuration = McpConfigState.from_runtime_config(config)
@@ -1344,6 +1460,7 @@ def build_mcp_manager(
     return ManagedMcpManager(
         config or RuntimeMcpConfig(),
         diagnostics_collector=diagnostics_collector,
+        tool_catalog_cache=tool_catalog_cache,
     )
 
 
