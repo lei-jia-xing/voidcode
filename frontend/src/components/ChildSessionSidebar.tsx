@@ -54,7 +54,7 @@ export function ChildSessionSidebar({
   actionError = null,
 }: ChildSessionSidebarProps) {
   const { t } = useTranslation();
-  const [steerPrompt, setSteerPrompt] = useState("");
+  const [steerPrompts, setSteerPrompts] = useState<Record<string, string>>({});
   const childSessionId = taskOutput?.session_result?.session.session.id ?? null;
 
   if (!parentSessionId) return null;
@@ -213,21 +213,29 @@ export function ChildSessionSidebar({
                         onSubmit={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
-                          const prompt = steerPrompt.trim();
+                          const prompt = (
+                            steerPrompts[task.task.id] ?? ""
+                          ).trim();
                           if (!prompt || actionLoading) return;
-                          setSteerPrompt("");
+                          setSteerPrompts((current) => ({
+                            ...current,
+                            [task.task.id]: "",
+                          }));
                           void onSteerTask?.(task.task.id, prompt);
                         }}
                       >
                         <input
-                          value={steerPrompt}
+                          value={steerPrompts[task.task.id] ?? ""}
                           onChange={(event) =>
-                            setSteerPrompt(event.target.value)
+                            setSteerPrompts((current) => ({
+                              ...current,
+                              [task.task.id]: event.target.value,
+                            }))
                           }
                           placeholder={t("childSessions.steerPlaceholder")}
                           aria-label={t("childSessions.steer")}
                           disabled={actionLoading}
-                          className="min-w-0 flex-1 rounded border border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] px-1.5 py-1 text-[10px] text-[var(--vc-text-primary)] outline-none"
+                          className="min-w-0 flex-1 rounded border border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] px-1.5 py-1 text-[10px] text-[var(--vc-text-primary)] outline-hidden"
                         />
                         <ControlButton
                           compact

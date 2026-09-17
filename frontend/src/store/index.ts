@@ -253,14 +253,28 @@ function isRuntimeCancellationEvent(event: EventEnvelope): boolean {
 }
 
 function getPendingQuestionRequestId(events: EventEnvelope[]): string | null {
+  const answeredRequestIds = new Set<string>();
+
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
+    const requestId = event.payload.request_id;
+
+    if (event.event_type === "runtime.question_answered") {
+      if (typeof requestId === "string" && requestId.length > 0) {
+        answeredRequestIds.add(requestId);
+      }
+      continue;
+    }
+
     if (event.event_type !== "runtime.question_requested") {
       continue;
     }
 
-    const requestId = event.payload.request_id;
-    if (typeof requestId === "string" && requestId.length > 0) {
+    if (
+      typeof requestId === "string" &&
+      requestId.length > 0 &&
+      !answeredRequestIds.has(requestId)
+    ) {
       return requestId;
     }
   }

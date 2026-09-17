@@ -259,12 +259,11 @@ export interface RuntimeRequest {
   parent_session_id?: string | null;
   metadata?: {
     agent?: Record<string, unknown>;
-    mode?: "normal" | "analyze" | "plan";
+    mode?: "normal" | "plan";
     read_only?: boolean;
     skills?: string[];
     force_load_skills?: string[];
     context_transform_refs?: string[];
-    workflow_mode?: string;
     delegation?: Record<string, unknown>;
     provider_stream?: boolean;
     reasoning_effort?: string;

@@ -598,10 +598,20 @@ function App() {
     async (taskId: string, action: (taskId: string) => Promise<unknown>) => {
       setBackgroundTaskAction({ taskId, status: "loading", error: null });
       try {
-        await action(taskId);
+        const result = await action(taskId);
         await loadBackgroundTasks();
+        let nextTaskId = taskId;
+        if (result && typeof result === "object" && "task" in result) {
+          const taskValue = result.task;
+          if (taskValue && typeof taskValue === "object" && "id" in taskValue) {
+            const idValue = taskValue.id;
+            if (typeof idValue === "string" && idValue.length > 0) {
+              nextTaskId = idValue;
+            }
+          }
+        }
         if (selectedBackgroundTaskOutputIdRef.current === taskId) {
-          await loadBackgroundTaskOutput(taskId);
+          await loadBackgroundTaskOutput(nextTaskId);
         }
         setBackgroundTaskAction(null);
       } catch (error) {
