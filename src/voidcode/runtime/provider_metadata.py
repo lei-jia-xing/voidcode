@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import cast
+from dataclasses import dataclass
+from typing import Literal, cast
 
 from ..provider.model_catalog import ProviderModelMetadata as CatalogProviderModelMetadata
 from ..provider.model_catalog import ToolFeedbackMode
@@ -63,6 +64,7 @@ def catalog_metadata_from_payload(
         cost_per_cache_write_token=optional_positive_float(payload.get("cost_per_cache_write_token")),
         supports_reasoning_effort=optional_bool(payload.get("supports_reasoning_effort")),
         default_reasoning_effort=optional_string(payload.get("default_reasoning_effort")),
+        supported_effort_levels=optional_string_tuple(payload.get("supported_effort_levels")),
         supports_reasoning_summary=optional_bool(payload.get("supports_reasoning_summary")),
         supports_thinking_budget=optional_bool(payload.get("supports_thinking_budget")),
         supports_interleaved_reasoning=optional_bool(payload.get("supports_interleaved_reasoning")),
@@ -92,6 +94,7 @@ def contract_metadata_from_catalog(
         cost_per_cache_write_token=catalog_metadata.cost_per_cache_write_token,
         supports_reasoning_effort=catalog_metadata.supports_reasoning_effort,
         default_reasoning_effort=catalog_metadata.default_reasoning_effort,
+        supported_effort_levels=catalog_metadata.supported_effort_levels,
         supports_reasoning_summary=catalog_metadata.supports_reasoning_summary,
         supports_thinking_budget=catalog_metadata.supports_thinking_budget,
         supports_interleaved_reasoning=catalog_metadata.supports_interleaved_reasoning,
@@ -108,6 +111,8 @@ def contract_metadata_from_payload(payload: dict[str, object]) -> ProviderModelM
 
 
 __all__ = [
+    "ReasoningEffortCapability",
+    "ReasoningEffortCapabilitySource",
     "catalog_metadata_from_payload",
     "contract_metadata_from_catalog",
     "contract_metadata_from_payload",
@@ -116,24 +121,71 @@ __all__ = [
     "optional_positive_int",
     "optional_string",
     "optional_string_tuple",
+    "resolve_reasoning_effort_capability",
     "tool_feedback_mode",
     "validate_reasoning_effort_capability",
 ]
 
 
-def validate_reasoning_effort_capability(config: EffectiveRuntimeConfig) -> None:
+type ReasoningEffortCapabilitySource = Literal["model_metadata", "provider_default", "unknown"]
+
+
+@dataclass(frozen=True, slots=True)
+class ReasoningEffortCapability:
+    """Whether the resolved model accepts a reasoning-effort hint, and where that verdict came from.
+
+    ``supported`` is the verdict; ``source`` records its provenance so callers can
+    report it honestly instead of blaming the wrong layer:
+
+    - ``model_metadata``: the model's own capability, from the provider catalog.
+    - ``provider_default``: the legacy provider-level allowlist, consulted only
+      when the model metadata is silent.
+    - ``unknown``: neither source knows. Callers forward best-effort and must
+      record that the capability was unverified.
+    """
+
+    supported: bool | None
+    source: ReasoningEffortCapabilitySource
+
+
+def resolve_reasoning_effort_capability(
+    *,
+    provider_name: str | None,
+    model_name: str | None,
+    model_metadata: ProviderModelMetadata | None,
+) -> ReasoningEffortCapability:
+    """Resolve reasoning-effort capability for one resolved provider/model target.
+
+    Reasoning effort belongs to the model, so model metadata wins. The provider
+    allowlist is a fallback only: a provider name must never override a model
+    that declares its own capability.
+    """
+    if model_metadata is not None and model_metadata.supports_reasoning_effort is not None:
+        return ReasoningEffortCapability(
+            supported=model_metadata.supports_reasoning_effort,
+            source="model_metadata",
+        )
+    if provider_name is not None and model_name is not None:
+        provider_default = provider_supports_reasoning_effort(provider_name, model_name)
+        if provider_default is not None:
+            return ReasoningEffortCapability(supported=provider_default, source="provider_default")
+    return ReasoningEffortCapability(supported=None, source="unknown")
+
+
+def validate_reasoning_effort_capability(
+    config: EffectiveRuntimeConfig,
+    capability: ReasoningEffortCapability,
+) -> None:
+    """Fail fast when the effective config asks for an effort the target cannot take."""
     if config.reasoning_effort is None:
         return
     if config.execution_engine != "provider":
         return
-    active_target = config.resolved_provider.active_target.selection
-    provider_name = active_target.provider
-    model_name = active_target.model
-    if provider_name is None or model_name is None:
+    if capability.supported is not False:
         return
-    if provider_supports_reasoning_effort(provider_name, model_name) is False:
-        raise ValueError(
-            "reasoning_effort is configured but model "
-            f"'{provider_name}/{model_name}' does not support reasoning effort; "
-            "remove the reasoning_effort hint or pick a reasoning-effort capable model"
-        )
+    active_target = config.resolved_provider.active_target.selection
+    raise ValueError(
+        "reasoning_effort is configured but model "
+        f"'{active_target.provider}/{active_target.model}' does not support reasoning effort; "
+        "remove the reasoning_effort hint or pick a reasoning-effort capable model"
+    )

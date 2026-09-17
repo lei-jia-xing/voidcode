@@ -36,6 +36,7 @@ from .contracts import (
     RuntimeStreamChunk,
 )
 from .permission import PendingApproval, PermissionPolicy, PermissionResolution
+from .provider_metadata import ReasoningEffortCapability
 from .session import SessionState
 from .skills import SkillExecutionSnapshot
 from .tool_registry import ToolPolicyDecision, ToolRegistry
@@ -61,6 +62,8 @@ class RuntimeSurface(Protocol):
     def effective_runtime_config_from_metadata(self, metadata: dict[str, object] | None) -> EffectiveRuntimeConfig: ...
 
     def runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig: ...
+
+    def reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> ReasoningEffortCapability: ...
 
     # --- permission / tool governance (runtime owns uniformly) ---
     def resolve_permission(

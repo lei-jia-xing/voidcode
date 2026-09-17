@@ -346,7 +346,10 @@ class RuntimeResumeCoordinator:
 
         effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
         try:
-            validate_reasoning_effort_capability(effective_config)
+            validate_reasoning_effort_capability(
+                effective_config,
+                runtime.reasoning_effort_capability(effective_config),
+            )
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
         tool_registry = runtime.tool_registry_for_effective_config(
@@ -660,7 +663,10 @@ class RuntimeResumeCoordinator:
             mcp_failed_chunk = None
             runtime.reset_tool_registry_to_base()
         try:
-            validate_reasoning_effort_capability(effective_config)
+            validate_reasoning_effort_capability(
+                effective_config,
+                runtime.reasoning_effort_capability(effective_config),
+            )
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
         tool_registry = runtime.tool_registry_for_effective_config(
@@ -1270,7 +1276,10 @@ class RuntimeResumeCoordinator:
         session = session_with_current_acp_metadata(session, self._acp_adapter.current_state())
         effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
         try:
-            validate_reasoning_effort_capability(effective_config)
+            validate_reasoning_effort_capability(
+                effective_config,
+                runtime.reasoning_effort_capability(effective_config),
+            )
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
         tool_registry = runtime.tool_registry_for_effective_config(

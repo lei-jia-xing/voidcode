@@ -2838,6 +2838,67 @@ describe("useAppStore integration flow", () => {
     });
   });
 
+  it("forwards reasoning_effort when the model capability is unknown", async () => {
+    // Old promise: the client dropped the user's choice unless metadata said
+    // `supports_reasoning_effort === true`, which silently discarded it for any
+    // model without capability data. New promise: only an explicit `false` vetoes;
+    // unknown capability forwards and the runtime clamps to the model's levels.
+    const sessionId = "session-unknown-reasoning-effort";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "think carefully" },
+      "runtime",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "completed", requestReceived);
+      yield makeStreamChunk(sessionId, "completed", null, "ok");
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "think carefully"),
+    ]);
+    useAppStore.setState({
+      reasoningEffort: "xhigh",
+      providerModel: "endpoint/custom-model",
+      providers: [
+        {
+          name: "endpoint",
+          label: "Endpoint",
+          configured: true,
+          current: true,
+        },
+      ],
+      providerModels: {
+        endpoint: {
+          provider: "endpoint",
+          configured: true,
+          models: ["custom-model"],
+          model_metadata: {
+            "custom-model": { context_window: 128_000 },
+          },
+        },
+      },
+    });
+
+    await useAppStore.getState().runTask("think carefully");
+
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
+      prompt: "think carefully",
+      session_id: null,
+      metadata: {
+        reasoning_effort: "xhigh",
+        agent: {
+          preset: "leader",
+          model: "endpoint/custom-model",
+        },
+      },
+    });
+  });
+
   it("omits reasoning_effort when the selected model does not support it", async () => {
     const sessionId = "session-no-reasoning-effort";
     const requestReceived = makeEvent(

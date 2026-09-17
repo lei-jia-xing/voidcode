@@ -37,10 +37,7 @@ class RuntimeProviderCatalogQuery:
         model_name: str,
     ) -> ProviderModelMetadata | None:
         self._validate_provider_name(provider_name)
-        catalog = self._registry.provider_catalog(provider_name)
-        if catalog is None:
-            return None
-        catalog_metadata = catalog.model_metadata.get(model_name)
+        catalog_metadata = self._registry.model_metadata_for_model(provider_name, model_name)
         if catalog_metadata is None:
             return None
         return contract_metadata_from_catalog(catalog_metadata)

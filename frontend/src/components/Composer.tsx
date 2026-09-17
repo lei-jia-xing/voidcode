@@ -7,7 +7,10 @@ import type {
   ProviderModelsResult,
   ProviderSummary,
 } from "../lib/runtime/types";
-import { REASONING_EFFORT_LEVELS } from "../lib/reasoningEffort";
+import {
+  defaultReasoningEffortForModel,
+  reasoningEffortLevelsForModel,
+} from "../lib/reasoningEffort";
 import {
   canonicalModelReference,
   displayModelName,
@@ -120,12 +123,31 @@ export function Composer({
     }
     return undefined;
   }, [availableModelGroups, providerModels, selectedModel]);
+  // Reasoning effort belongs to the model: the selector offers the levels the
+  // model's catalog metadata declares (plus the `off` disable intent), and the
+  // only client-side veto is metadata that says the model cannot take an effort
+  // hint at all. The runtime clamps whatever the user picks to the model's levels.
+  const reasoningEffortMetadata = {
+    supports_reasoning_effort: selectedModelMetadata?.supports_reasoning_effort,
+    default_reasoning_effort: selectedModelMetadata?.default_reasoning_effort,
+    supported_effort_levels: selectedModelMetadata?.supported_effort_levels,
+  };
   const supportsReasoningEffort =
-    selectedModelMetadata?.supports_reasoning_effort === true;
+    reasoningEffortMetadata.supports_reasoning_effort !== false;
+  const selectedReasoningEffort = reasoningEffort.trim();
+  const reasoningEffortLevels = reasoningEffortLevelsForModel(
+    reasoningEffortMetadata,
+  );
+  // A stored level the model no longer lists stays selectable rather than
+  // rendering the control blank; the runtime clamps it before it is sent.
+  const reasoningEffortOptions =
+    selectedReasoningEffort &&
+    !reasoningEffortLevels.includes(selectedReasoningEffort)
+      ? [...reasoningEffortLevels, selectedReasoningEffort]
+      : reasoningEffortLevels;
   const effectiveReasoningEffort =
-    reasoningEffort ||
-    selectedModelMetadata?.default_reasoning_effort ||
-    "medium";
+    selectedReasoningEffort ||
+    defaultReasoningEffortForModel(reasoningEffortMetadata);
   const selectableAgentPresets = useMemo(() => {
     return (agentPresets ?? []).filter((agent) => agent.selectable !== false);
   }, [agentPresets]);
@@ -532,9 +554,9 @@ export function Composer({
                     value={effectiveReasoningEffort}
                     onChange={handleEffortSelect}
                     disabled={disabled}
-                    className="rounded-md bg-transparent px-1 py-1 text-[var(--vc-text-muted)] disabled:opacity-50 hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+                    className="rounded-md bg-transparent px-1 py-1 text-[var(--vc-text-muted)] disabled:opacity-50 hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
                   >
-                    {REASONING_EFFORT_LEVELS.map((level) => (
+                    {reasoningEffortOptions.map((level) => (
                       <option key={level} value={level}>
                         {level}
                       </option>

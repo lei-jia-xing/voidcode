@@ -765,6 +765,7 @@ class ProviderModelMetadata:
     cost_per_cache_write_token: float | None = None
     supports_reasoning_effort: bool | None = None
     default_reasoning_effort: str | None = None
+    supported_effort_levels: tuple[str, ...] | None = None
     supports_reasoning_summary: bool | None = None
     supports_thinking_budget: bool | None = None
     supports_interleaved_reasoning: bool | None = None

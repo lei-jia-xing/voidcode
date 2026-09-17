@@ -17,7 +17,7 @@ from voidcode.provider.config import (
     provider_configs_from_env,
 )
 from voidcode.provider.errors import guidance_for_provider_error_kind
-from voidcode.provider.model_catalog import _headers_for_discovery
+from voidcode.provider.model_catalog import ProviderModelMetadata, _headers_for_discovery, static_catalog_metadata
 from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.openai_native import OpenAIChatCompletionsProvider, OpenAIChatCompletionsTransport
 from voidcode.provider.protocol import (
@@ -616,7 +616,13 @@ def test_native_standard_feedback_keeps_tool_role_without_reasoning_replay() -> 
     assert "reasoning_content" not in messages[1]
 
 
-def _reasoning_request(*, provider_name: str, model_name: str, reasoning_effort: str) -> ProviderTurnRequest:
+def _reasoning_request(
+    *,
+    provider_name: str,
+    model_name: str,
+    reasoning_effort: str,
+    model_metadata: ProviderModelMetadata | None = None,
+) -> ProviderTurnRequest:
     context = _Context(prompt="hello", segments=(ProviderContextSegment(role="user", content="hello"),), metadata={})
     return ProviderTurnRequest(
         assembled_context=cast(ProviderAssembledContext, context),
@@ -626,6 +632,7 @@ def _reasoning_request(*, provider_name: str, model_name: str, reasoning_effort:
         model_name=model_name,
         raw_model=f"{provider_name}/{model_name}",
         reasoning_effort=reasoning_effort,
+        model_metadata=model_metadata,
     )
 
 
@@ -635,6 +642,7 @@ def _captured_reasoning_body(
     model_name: str,
     base_url: str,
     reasoning_effort: str,
+    model_metadata: ProviderModelMetadata | None = None,
 ) -> dict[str, object]:
     seen: dict[str, object] = {}
 
@@ -648,7 +656,14 @@ def _captured_reasoning_body(
         config=ProviderEndpointConfig(base_url=base_url),
         transport=transport,
     )
-    provider.propose_turn(_reasoning_request(provider_name=provider_name, model_name=model_name, reasoning_effort=reasoning_effort))
+    provider.propose_turn(
+        _reasoning_request(
+            provider_name=provider_name,
+            model_name=model_name,
+            reasoning_effort=reasoning_effort,
+            model_metadata=model_metadata,
+        )
+    )
     return cast(dict[str, object], seen["payload"])
 
 
@@ -690,6 +705,89 @@ def test_native_reasoning_body_fields_reach_the_wire(
     # `extra_body` is an SDK-level envelope the client merges into the JSON body;
     # it must never appear on the wire itself.
     assert "extra_body" not in body
+
+
+def test_native_clamps_reasoning_effort_to_the_models_shipped_levels() -> None:
+    # Shipped metadata for deepseek-v4-pro is low/high/max. The clamp (not a
+    # provider-name table) now decides the level, so "medium" snaps down to "low";
+    # the removed hardcoded DeepSeek table sent "high" here.
+    metadata = static_catalog_metadata("deepseek", "deepseek-v4-pro")
+    assert metadata is not None
+    assert metadata.supported_effort_levels == ("low", "high", "max")
+
+    body = _captured_reasoning_body(
+        provider_name="deepseek",
+        model_name="deepseek-v4-pro",
+        base_url="https://api.deepseek.com",
+        reasoning_effort="medium",
+        model_metadata=metadata,
+    )
+
+    assert body["reasoning_effort"] == "low"
+    assert "thinking" not in body
+
+
+def test_native_sends_the_lowest_supported_level_for_off() -> None:
+    # New "off" rule: never a bare "none"; the model gets the least reasoning it
+    # supports, and a model without levels gets no effort field at all.
+    metadata = static_catalog_metadata("openai", "gpt-5.5")
+    assert metadata is not None
+
+    body = _captured_reasoning_body(
+        provider_name="openai",
+        model_name="gpt-5.5",
+        base_url="https://api.openai.com/v1",
+        reasoning_effort="off",
+        model_metadata=metadata,
+    )
+
+    assert body["reasoning_effort"] == "low"
+    assert "thinking" not in body
+
+    omitted = _captured_reasoning_body(
+        provider_name="groq",
+        model_name="llama-3.3-70b-versatile",
+        base_url="https://api.groq.com/openai/v1",
+        reasoning_effort="off",
+        model_metadata=ProviderModelMetadata(context_window=131_072),
+    )
+
+    assert "reasoning_effort" not in omitted
+
+    # opencode-go/minimax-m2.7 keeps the exact values its removed name-keyed ladder
+    # produced: "off" still lands on the lowest supported level.
+    minimax = static_catalog_metadata("opencode-go", "minimax-m2.7")
+    assert minimax is not None
+    minimax_body = _captured_reasoning_body(
+        provider_name="opencode-go",
+        model_name="minimax-m2.7",
+        base_url="https://opencode.ai/zen/go",
+        reasoning_effort="off",
+        model_metadata=minimax,
+    )
+
+    assert minimax_body["reasoning_effort"] == "low"
+
+
+def test_native_gateway_model_levels_reach_the_wire_from_the_shipped_catalog() -> None:
+    # opencode-go/deepseek-v4.1-flash used to be rejected outright (the gateway had
+    # a two-name provider allowlist and the model was not catalogued). Its shipped
+    # levels are low/high/max, so medium (and minimal/off) snap down to low and the
+    # catalogue's own levels pass through untouched.
+    metadata = static_catalog_metadata("opencode-go", "deepseek-v4.1-flash")
+    assert metadata is not None
+    assert metadata.supports_reasoning_effort is True
+    assert metadata.supported_effort_levels == ("low", "high", "max")
+
+    for effort, expected in (("off", "low"), ("low", "low"), ("medium", "low"), ("high", "high"), ("max", "max")):
+        body = _captured_reasoning_body(
+            provider_name="opencode-go",
+            model_name="deepseek-v4.1-flash",
+            base_url="https://opencode.ai/zen/go",
+            reasoning_effort=effort,
+            model_metadata=metadata,
+        )
+        assert body["reasoning_effort"] == expected, effort
 
 
 def test_native_sanitizes_mcp_tool_names_and_decodes_runtime_names() -> None:

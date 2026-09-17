@@ -6965,6 +6965,72 @@ def test_runtime_allows_reasoning_effort_when_metadata_unknown(tmp_path: Path) -
     assert runtime_config_metadata["reasoning_effort"] == "medium"
 
 
+def test_runtime_allows_reasoning_effort_for_a_model_the_provider_fallback_denies(
+    tmp_path: Path,
+) -> None:
+    # `qwen` sits on the provider-level fallback denylist, but qwen3.5-plus ships in
+    # the catalog with its own effort levels: the model's capability wins.
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="qwen/qwen3.5-plus",
+            reasoning_effort="high",
+        ),
+    )
+    try:
+        resolved = cast(Any, runtime).runtime_config_for_request(RuntimeRequest(prompt="leader"))
+        capability = runtime.reasoning_effort_capability(resolved)
+    finally:
+        runtime.__exit__(None, None, None)
+
+    assert resolved.reasoning_effort == "high"
+    assert capability.supported is True
+    assert capability.source == "model_metadata"
+
+
+def test_runtime_forwarders_an_uncatalogued_gateway_model_unverified(tmp_path: Path) -> None:
+    # opencode-go serves many upstreams, so a model the shipped catalog does not
+    # describe must forward instead of being rejected on the provider's name.
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode-go/not-in-any-catalog",
+            reasoning_effort="high",
+        ),
+    )
+    try:
+        resolved = cast(Any, runtime).runtime_config_for_request(RuntimeRequest(prompt="leader"))
+        capability = runtime.reasoning_effort_capability(resolved)
+    finally:
+        runtime.__exit__(None, None, None)
+
+    assert resolved.reasoning_effort == "high"
+    assert capability.supported is None
+    assert capability.source == "unknown"
+
+
+def test_runtime_fails_fast_when_only_the_provider_fallback_denies_reasoning_effort(
+    tmp_path: Path,
+) -> None:
+    # The target has no metadata anywhere, so the provider-level fallback decides -
+    # and it denies `qwen`.
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="qwen/not-in-any-catalog",
+            reasoning_effort="high",
+        ),
+    )
+    try:
+        with pytest.raises(RuntimeRequestError, match="does not support reasoning effort"):
+            _ = cast(Any, runtime).runtime_config_for_request(RuntimeRequest(prompt="leader"))
+    finally:
+        runtime.__exit__(None, None, None)
+
+
 def test_runtime_background_delegation_executes_on_real_provider_child_path(
     tmp_path: Path,
 ) -> None:

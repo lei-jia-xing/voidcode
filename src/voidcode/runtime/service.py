@@ -45,7 +45,6 @@ from ..provider.models import (
 from ..provider.protocol import (
     ProviderAbortSignal,
 )
-from ..provider.reasoning_effort import provider_supports_reasoning_effort
 from ..provider.registry import ModelProviderRegistry
 from ..provider.resolution import resolve_provider_config
 from ..provider.snapshot import (
@@ -299,6 +298,8 @@ from .provider_inspection import (
     RuntimeProviderValidationProjector,
 )
 from .provider_metadata import (
+    ReasoningEffortCapability,
+    resolve_reasoning_effort_capability,
     tool_feedback_mode,
     validate_reasoning_effort_capability,
 )
@@ -859,7 +860,7 @@ class VoidCodeRuntime(RuntimeSurface):
             context_transform_refs=context_transform_refs,
         )
         try:
-            validate_reasoning_effort_capability(resolved)
+            validate_reasoning_effort_capability(resolved, self.reasoning_effort_capability(resolved))
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
         return resolved
@@ -3440,6 +3441,25 @@ class VoidCodeRuntime(RuntimeSurface):
     def _metadata_for_provider_model(self, provider_name: str, model_name: str) -> ProviderModelMetadata | None:
         return self._provider_catalog_query.metadata_for_model(provider_name, model_name)
 
+    def reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> ReasoningEffortCapability:
+        """Resolve the reasoning-effort capability of a config's active provider/model target.
+
+        Reasoning effort belongs to the model, so the model's own catalog metadata
+        decides; the provider-level allowlist is only the fallback for models whose
+        metadata is silent (see `resolve_reasoning_effort_capability`).
+        """
+        selection = config.resolved_provider.active_target.selection
+        provider_name = selection.provider
+        model_name = selection.model
+        model_metadata = (
+            self._metadata_for_provider_model(provider_name, model_name) if provider_name is not None and model_name is not None else None
+        )
+        return resolve_reasoning_effort_capability(
+            provider_name=provider_name,
+            model_name=model_name,
+            model_metadata=model_metadata,
+        )
+
     def _context_window_policy_for_provider_attempt(
         self,
         policy: ContextWindowPolicy,
@@ -3519,6 +3539,13 @@ class VoidCodeRuntime(RuntimeSurface):
         provider_name: str | None,
         model_name: str | None,
     ) -> dict[str, object]:
+        """Report what the runtime will do with the configured reasoning-effort hint.
+
+        The verdict is resolved exactly like the request path does it: the model's
+        own catalog metadata first, the provider allowlist only as a fallback. The
+        payload therefore names the layer that decided and, when neither layer
+        knows, says the forward is unverified instead of claiming support.
+        """
         effort = effective_config.reasoning_effort
         payload: dict[str, object] = {
             "reasoning_effort_requested": effort is not None,
@@ -3530,17 +3557,29 @@ class VoidCodeRuntime(RuntimeSurface):
             payload["status"] = "unavailable"
             payload["reason"] = "provider_model_unresolved"
             return payload
-        supports = provider_supports_reasoning_effort(provider_name, model_name)
-        payload["supports_reasoning_effort"] = supports
+        capability = resolve_reasoning_effort_capability(
+            provider_name=provider_name,
+            model_name=model_name,
+            model_metadata=self._metadata_for_provider_model(provider_name, model_name),
+        )
+        payload["supports_reasoning_effort"] = capability.supported
+        payload["capability_source"] = capability.source
         if effort is None:
             return payload
-        if supports is False:
+        if capability.supported is False:
             payload["status"] = "unsupported"
-            payload["reason"] = "model_metadata_disallows_reasoning_effort"
+            payload["reason"] = (
+                "model_metadata_disallows_reasoning_effort"
+                if capability.source == "model_metadata"
+                else "provider_default_disallows_reasoning_effort"
+            )
             return payload
-        payload["status"] = "forwarded"
+        if capability.supported is None:
+            payload["status"] = "forwarded_unverified"
+            payload["reason"] = "model_capability_unknown"
+        else:
+            payload["status"] = "forwarded"
         payload["forwarded"] = True
-        payload["provider_parameter"] = "reasoning_effort"
         return payload
 
     def _reasoning_controls_diagnostic_for_config(

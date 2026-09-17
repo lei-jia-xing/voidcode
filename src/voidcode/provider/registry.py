@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .anthropic import AnthropicModelProvider
 from .config import (
@@ -26,6 +26,7 @@ from .model_catalog import (
     ProviderModelCatalog,
     ProviderModelMetadata,
     discover_available_models,
+    static_catalog_metadata,
 )
 from .models import ProviderResolutionSource
 from .openai import OpenAIModelProvider
@@ -175,12 +176,30 @@ class ModelProviderRegistry:
         return discovery.models
 
     def model_metadata_for_model(self, provider_name: str, model_name: str) -> ProviderModelMetadata | None:
-        if self.model_catalog is None:
-            return None
-        catalog = self.model_catalog.get(provider_name)
-        if catalog is None:
-            return None
-        return catalog.model_metadata.get(model_name)
+        catalog = self.model_catalog.get(provider_name) if self.model_catalog is not None else None
+        discovered = catalog.model_metadata.get(model_name) if catalog is not None else None
+        if discovered is not None and (discovered.supports_reasoning_effort is not None or discovered.supported_effort_levels is not None):
+            return discovered
+        shipped = static_catalog_metadata(provider_name, model_name)
+        if shipped is None or discovered is None:
+            return shipped if discovered is None else discovered
+        # A discovered entry - including one hydrated from a catalog cache written by
+        # an older build - owns model sizes and costs, but it may predate the shipped
+        # reasoning-effort facts. Fill only the effort fields it leaves unset instead
+        # of letting a stale cache hide the model's own capability, which is what the
+        # runtime gate and the effort clamp read.
+        return replace(
+            discovered,
+            supports_reasoning_effort=(
+                discovered.supports_reasoning_effort if discovered.supports_reasoning_effort is not None else shipped.supports_reasoning_effort
+            ),
+            default_reasoning_effort=(
+                discovered.default_reasoning_effort if discovered.default_reasoning_effort is not None else shipped.default_reasoning_effort
+            ),
+            supported_effort_levels=(
+                discovered.supported_effort_levels if discovered.supported_effort_levels is not None else shipped.supported_effort_levels
+            ),
+        )
 
     def provider_catalog(self, provider_name: str) -> ProviderModelCatalog | None:
         if self.model_catalog is None:

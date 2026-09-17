@@ -1386,6 +1386,12 @@ export const useAppStore = create<AppState>()(
           get().providers,
           get().providerModels,
         );
+        // The runtime owns the capability decision and clamps to the model's own
+        // levels, so the client only vetoes when the model's catalog metadata says
+        // it cannot take an effort hint at all (`false`); an unknown capability
+        // (`undefined`/`null`) still forwards the user's choice.
+        const reasoningEffortAllowed =
+          modelMetadata?.supports_reasoning_effort !== false;
         const requestedReasoningEffort =
           typeof rawMetadata.reasoning_effort === "string" &&
           rawMetadata.reasoning_effort.trim()
@@ -1395,8 +1401,7 @@ export const useAppStore = create<AppState>()(
               "";
         const metadata = {
           ...forwardMetadata,
-          ...(modelMetadata?.supports_reasoning_effort === true &&
-          requestedReasoningEffort
+          ...(reasoningEffortAllowed && requestedReasoningEffort
             ? { reasoning_effort: requestedReasoningEffort }
             : {}),
           agent: {

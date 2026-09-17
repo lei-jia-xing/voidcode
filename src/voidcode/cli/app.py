@@ -2322,6 +2322,7 @@ def _provider_model_metadata_payload(
             "cost_per_cache_write_token": metadata.cost_per_cache_write_token,
             "supports_reasoning_effort": metadata.supports_reasoning_effort,
             "default_reasoning_effort": metadata.default_reasoning_effort,
+            "supported_effort_levels": list(metadata.supported_effort_levels) if metadata.supported_effort_levels is not None else None,
             "supports_reasoning_summary": metadata.supports_reasoning_summary,
             "supports_thinking_budget": metadata.supports_thinking_budget,
             "supports_interleaved_reasoning": metadata.supports_interleaved_reasoning,

@@ -761,8 +761,11 @@ class OpenAIChatCompletionsProvider:
             supported = request.model_metadata.supported_effort_levels if request.model_metadata is not None else None
             mapped = map_effort_for_provider(
                 provider_name=request.provider_name or self.name,
-                model_name=model_name,
+                # The clamp decides the level from the model's own metadata; the
+                # mapping only picks the request field (and needs the raw levels
+                # again to resolve an explicit "off").
                 effort=clamp_effort_to_supported(effort, supported),
+                supported_levels=supported,
             )
             extra_body = mapped.get("extra_body")
             if isinstance(extra_body, dict):

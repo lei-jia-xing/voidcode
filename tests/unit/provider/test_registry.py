@@ -287,6 +287,55 @@ def test_registry_shipped_provider_resolves_models_and_metadata_from_model_map()
     assert resolved.metadata.supports_tools is True
 
 
+def test_registry_answers_reasoning_effort_from_the_shipped_catalog_without_discovery() -> None:
+    registry = ModelProviderRegistry.with_defaults()
+
+    metadata = registry.model_metadata_for_model("zai", "glm-5")
+
+    assert metadata is not None
+    assert metadata.supports_reasoning_effort is True
+    assert metadata.supported_effort_levels == ("minimal", "low", "medium", "high", "xhigh")
+
+
+def test_registry_fills_reasoning_effort_facts_a_stale_catalog_entry_lacks() -> None:
+    # Catalog entries recorded by a build that did not ask for effort facts would
+    # otherwise hide the model's capability from the gate and the clamp.
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "deepseek": ProviderModelCatalog(
+            provider="deepseek",
+            models=("deepseek-v4-pro",),
+            refreshed=True,
+            model_metadata={"deepseek-v4-pro": ProviderModelMetadata(context_window=1_000_000)},
+        )
+    }
+
+    metadata = registry.model_metadata_for_model("deepseek", "deepseek-v4-pro")
+
+    assert metadata is not None
+    assert metadata.context_window == 1_000_000
+    assert metadata.supports_reasoning_effort is True
+    assert metadata.supported_effort_levels == ("low", "high", "max")
+
+
+def test_registry_prefers_discovered_reasoning_effort_facts_over_the_shipped_catalog() -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "deepseek": ProviderModelCatalog(
+            provider="deepseek",
+            models=("deepseek-v4-pro",),
+            refreshed=True,
+            model_metadata={"deepseek-v4-pro": ProviderModelMetadata(supports_reasoning_effort=False)},
+        )
+    }
+
+    metadata = registry.model_metadata_for_model("deepseek", "deepseek-v4-pro")
+
+    assert metadata is not None
+    assert metadata.supports_reasoning_effort is False
+    assert metadata.supported_effort_levels is None
+
+
 def test_registry_shipped_providers_without_discovery_report_no_models() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(

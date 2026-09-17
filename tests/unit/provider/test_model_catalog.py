@@ -68,7 +68,7 @@ def test_discover_available_models_for_openai_uses_endpoint_fetcher() -> None:
 def test_discover_available_models_includes_known_model_budget_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(model_catalog, "_static_catalog_metadata", lambda *_: None)
+    monkeypatch.setattr(model_catalog, "static_catalog_metadata", lambda *_: None)
     result = discover_available_models(
         "openai",
         ProviderEndpointConfig(discovery_base_url="https://api.openai.com"),
@@ -87,7 +87,7 @@ def test_discover_available_models_prefers_discovery_metadata_over_catalog(
 ) -> None:
     monkeypatch.setattr(
         model_catalog,
-        "_static_catalog_metadata",
+        "static_catalog_metadata",
         lambda *_: ProviderModelMetadata(context_window=111),
     )
     result = discover_available_models(
@@ -127,7 +127,7 @@ def test_discover_available_models_fills_gaps_from_static_catalog(
 ) -> None:
     monkeypatch.setattr(
         model_catalog,
-        "_static_catalog_metadata",
+        "static_catalog_metadata",
         lambda *_: ProviderModelMetadata(context_window=111),
     )
     result = discover_available_models(
@@ -151,8 +151,8 @@ def test_static_catalog_metadata_lowercases_and_looks_up(
         lambda: {"openai": {"gpt-5": ProviderModelMetadata(context_window=400_000)}},
     )
 
-    assert model_catalog._static_catalog_metadata("OpenAI", "GPT-5").context_window == 400_000
-    assert model_catalog._static_catalog_metadata("openai", "nope") is None
+    assert model_catalog.static_catalog_metadata("OpenAI", "GPT-5").context_window == 400_000
+    assert model_catalog.static_catalog_metadata("openai", "nope") is None
 
 
 def test_discover_available_models_recomputes_input_limit_for_remote_context_override() -> None:

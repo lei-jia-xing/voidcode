@@ -13,7 +13,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -30,7 +38,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -47,7 +63,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -64,7 +88,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -81,7 +113,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -98,7 +138,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -115,7 +162,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -132,7 +187,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -149,7 +212,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -166,7 +237,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -183,7 +262,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -200,7 +287,13 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -217,7 +310,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     }
@@ -236,7 +337,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -253,7 +362,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -270,7 +387,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -287,7 +412,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -304,7 +436,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -321,7 +461,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -338,7 +486,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -355,7 +511,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -372,7 +536,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -389,7 +561,13 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -406,7 +584,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -425,7 +611,12 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -444,7 +635,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -461,7 +659,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -477,7 +682,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -495,6 +707,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -510,7 +723,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -526,7 +746,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -543,7 +770,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -560,7 +794,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -577,7 +818,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -593,7 +841,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -609,7 +864,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -626,7 +888,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -643,7 +912,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -660,7 +937,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -677,7 +962,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -693,7 +986,15 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -709,7 +1010,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -719,13 +1027,20 @@
       "cost_per_cache_write_token": 0.0,
       "cost_per_input_token": 3e-06,
       "cost_per_output_token": 1.5e-05,
+      "default_reasoning_effort": "max",
       "max_output_tokens": 131072,
       "modalities_input": [
         "text",
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -740,7 +1055,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -757,7 +1080,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     }
@@ -804,7 +1135,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -819,7 +1156,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     }
@@ -836,7 +1179,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -851,7 +1202,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -866,7 +1225,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -883,7 +1250,15 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -898,7 +1273,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -915,7 +1298,15 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -930,7 +1321,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -945,7 +1344,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -960,7 +1367,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -975,7 +1390,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -990,7 +1413,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1005,7 +1436,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1020,7 +1459,12 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1035,7 +1479,12 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1045,12 +1494,19 @@
       "cost_per_cache_write_token": 0.0,
       "cost_per_input_token": 0.0,
       "cost_per_output_token": 0.0,
+      "default_reasoning_effort": "max",
       "max_output_tokens": 131072,
       "modalities_input": [
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1068,7 +1524,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     }
@@ -1085,7 +1549,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1100,7 +1572,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1115,7 +1595,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1132,7 +1620,15 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1147,7 +1643,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1164,7 +1668,15 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1179,7 +1691,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1194,7 +1714,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1209,7 +1737,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1224,7 +1760,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1239,7 +1783,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1254,7 +1806,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1269,7 +1829,12 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1284,7 +1849,12 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1294,12 +1864,19 @@
       "cost_per_cache_write_token": 0.0,
       "cost_per_input_token": 0.0,
       "cost_per_output_token": 0.0,
+      "default_reasoning_effort": "max",
       "max_output_tokens": 131072,
       "modalities_input": [
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1317,7 +1894,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     }
@@ -1338,7 +1923,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1357,7 +1949,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1373,7 +1972,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1392,7 +1998,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1411,7 +2024,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1430,7 +2050,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1449,7 +2076,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1468,7 +2102,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1484,7 +2125,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1502,7 +2150,14 @@
         "audio"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1521,7 +2176,12 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1540,7 +2200,12 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1559,7 +2224,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1578,7 +2250,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1597,7 +2276,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1616,7 +2302,13 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1635,7 +2327,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1654,7 +2353,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1672,7 +2378,14 @@
         "audio"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1688,7 +2401,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1704,7 +2424,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     }
@@ -1724,6 +2451,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1741,6 +2469,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": true,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1757,7 +2486,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1774,7 +2510,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1791,7 +2534,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1809,6 +2560,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": true,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": true
     }
@@ -1826,6 +2578,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1841,6 +2594,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1855,7 +2609,14 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1870,7 +2631,14 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1886,6 +2654,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -1902,7 +2671,14 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1919,7 +2695,14 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1936,7 +2719,14 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1953,7 +2743,14 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -1963,6 +2760,7 @@
       "cost_per_cache_write_token": 0.0,
       "cost_per_input_token": 3e-06,
       "cost_per_output_token": 1.5e-05,
+      "default_reasoning_effort": "max",
       "max_output_tokens": 131072,
       "modalities_input": [
         "text",
@@ -1970,7 +2768,13 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     }
@@ -1987,7 +2791,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -2002,7 +2812,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -2017,7 +2833,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -2032,7 +2854,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -2047,7 +2875,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -2062,7 +2896,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -2079,7 +2919,13 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     }
@@ -2099,6 +2945,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2116,6 +2963,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2133,6 +2981,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2149,6 +2998,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2165,6 +3015,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2182,6 +3033,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2197,7 +3049,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2213,7 +3072,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2229,7 +3095,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2245,7 +3118,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2261,7 +3141,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2277,7 +3164,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2293,7 +3187,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2309,7 +3210,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2326,6 +3234,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2342,7 +3251,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2359,7 +3275,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2376,7 +3299,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2392,7 +3322,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2408,7 +3345,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2424,7 +3368,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2441,7 +3392,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2458,7 +3416,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2475,7 +3440,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2492,7 +3465,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2509,7 +3490,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2526,7 +3515,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2543,7 +3540,15 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2560,7 +3565,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2576,7 +3589,15 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     }
@@ -2593,7 +3614,12 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -2610,7 +3636,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2627,7 +3661,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2644,7 +3686,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2661,7 +3711,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2678,7 +3735,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2695,7 +3760,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2712,7 +3785,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2729,7 +3810,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2746,7 +3835,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2763,7 +3860,13 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2780,7 +3883,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2795,7 +3906,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -2810,7 +3927,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -2825,7 +3948,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -2844,7 +3973,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2863,7 +3999,12 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2882,7 +4023,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2901,7 +4049,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2920,7 +4075,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2939,7 +4101,13 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -2954,7 +4122,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -2969,7 +4145,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -2984,7 +4168,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3000,7 +4192,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3016,7 +4215,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3032,7 +4238,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3048,7 +4261,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3064,7 +4284,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3080,7 +4307,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3096,7 +4330,12 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3112,7 +4351,14 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3129,7 +4375,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3146,7 +4399,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3161,7 +4421,14 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3178,7 +4445,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3195,7 +4469,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3212,7 +4493,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3229,7 +4517,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3246,7 +4541,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3263,7 +4565,14 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3280,7 +4589,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3297,7 +4614,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3314,7 +4639,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3330,7 +4663,15 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3346,7 +4687,15 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3363,7 +4712,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3378,7 +4735,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3395,7 +4760,15 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3412,7 +4785,15 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3429,7 +4810,15 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3439,6 +4828,7 @@
       "cost_per_cache_write_token": 0.0,
       "cost_per_input_token": 3e-06,
       "cost_per_output_token": 1.5e-05,
+      "default_reasoning_effort": "max",
       "max_output_tokens": 131072,
       "modalities_input": [
         "text",
@@ -3446,7 +4836,13 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3461,7 +4857,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3479,7 +4883,13 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3494,7 +4904,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3509,7 +4925,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3526,7 +4948,15 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3545,7 +4975,15 @@
         "audio"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3560,7 +4998,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3575,7 +5021,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3592,7 +5046,15 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3609,7 +5071,15 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     }
@@ -3626,9 +5096,31 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
+    },
+    "deepseek-v4-flash-vision-exp": {
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
+      "supports_vision": true
     },
     "deepseek-v4-pro": {
       "context_window": 1000000,
@@ -3641,8 +5133,47 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
+      "supports_vision": false
+    },
+    "deepseek-v4.1-flash": {
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
+      "supports_vision": true
+    },
+    "glm-5": {
+      "context_window": 202752,
+      "max_output_tokens": 32768,
+      "modalities_input": [
+        "text"
+      ],
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_vision": false
     },
     "glm-5.1": {
@@ -3656,7 +5187,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3671,7 +5210,15 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3681,14 +5228,38 @@
       "cost_per_cache_write_token": 0.0,
       "cost_per_input_token": 1.4e-06,
       "cost_per_output_token": 4.4e-06,
+      "default_reasoning_effort": "max",
       "max_output_tokens": 131072,
       "modalities_input": [
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
+    },
+    "glm-5.3-flash": {
+      "context_window": 1000000,
+      "default_reasoning_effort": "max",
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
+      "supports_vision": true
     },
     "gpt-5.6-luna": {
       "context_window": 1050000,
@@ -3703,7 +5274,15 @@
         "pdf"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3719,8 +5298,34 @@
         "image"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
+      "supports_vision": true
+    },
+    "grok-4.6": {
+      "context_window": 500000,
+      "max_output_tokens": 500000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_vision": true
     },
     "hy3": {
@@ -3734,9 +5339,52 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
+    },
+    "hy4-preview": {
+      "context_window": 1024000,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text"
+      ],
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
+      "supports_vision": false
+    },
+    "kimi-k2.5": {
+      "context_window": 262144,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
+      "supports_vision": true
     },
     "kimi-k2.6": {
       "context_window": 262144,
@@ -3751,7 +5399,15 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3768,7 +5424,15 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3778,6 +5442,7 @@
       "cost_per_cache_write_token": 0.0,
       "cost_per_input_token": 3e-06,
       "cost_per_output_token": 1.5e-05,
+      "default_reasoning_effort": "max",
       "max_output_tokens": 131072,
       "modalities_input": [
         "text",
@@ -3785,9 +5450,63 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
+    },
+    "longcat-2.0": {
+      "context_window": 1000000,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
+      "supports_vision": false
+    },
+    "mimo-v2-omni": {
+      "context_window": 262144,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
+      "supports_vision": true
+    },
+    "mimo-v2-pro": {
+      "context_window": 1048576,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text"
+      ],
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
+      "supports_vision": false
     },
     "mimo-v2.5": {
       "context_window": 1000000,
@@ -3803,7 +5522,13 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3818,8 +5543,29 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
+      "supports_vision": false
+    },
+    "minimax-m2.5": {
+      "context_window": 204800,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text"
+      ],
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_vision": false
     },
     "minimax-m2.7": {
@@ -3833,7 +5579,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3850,8 +5602,85 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
+      "supports_vision": true
+    },
+    "muse-spark-1.2-contributor": {
+      "context_window": 1048576,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
+      "supports_vision": true
+    },
+    "muse-spark-1.3-contributor": {
+      "context_window": 1048576,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
+      "supports_vision": true
+    },
+    "ox-alpha-free": {
+      "context_window": 1000000,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "supported_effort_levels": [
+        "low",
+        "high",
+        "max"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
+      "supports_vision": true
+    },
+    "qwen3.5-plus": {
+      "context_window": 262144,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_vision": true
     },
     "qwen3.6-plus": {
@@ -3867,7 +5696,14 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3882,7 +5718,14 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3899,8 +5742,33 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
+      "supports_vision": true
+    },
+    "qwen3.8-flash": {
+      "context_window": 1000000,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_vision": true
     },
     "qwen3.8-max": {
@@ -3916,7 +5784,14 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     }
@@ -3933,7 +5808,14 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3948,7 +5830,14 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3965,7 +5854,14 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -3980,7 +5876,13 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -3996,6 +5898,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -4011,6 +5914,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -4026,6 +5930,7 @@
       ],
       "model_status": "active",
       "supports_reasoning": false,
+      "supports_reasoning_effort": false,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -4042,7 +5947,14 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -4059,7 +5971,14 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -4076,7 +5995,14 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     },
@@ -4091,7 +6017,14 @@
         "text"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": false
     },
@@ -4108,24 +6041,31 @@
         "video"
       ],
       "model_status": "active",
+      "supported_effort_levels": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
       "supports_reasoning": true,
+      "supports_reasoning_effort": true,
       "supports_tools": true,
       "supports_vision": true
     }
   },
   "groq": {
-    "llama-3.3-70b-versatile": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supports_tools": true, "supports_vision": false},
-    "llama-3.1-8b-instant": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supports_tools": true, "supports_vision": false},
-    "openai/gpt-oss-120b": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supports_tools": true, "supports_vision": false},
-    "openai/gpt-oss-20b": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supports_tools": true, "supports_vision": false},
-    "qwen/qwen3-32b": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supports_tools": true, "supports_vision": false}
+    "llama-3.3-70b-versatile": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supports_reasoning_effort": false, "supports_tools": true, "supports_vision": false},
+    "llama-3.1-8b-instant": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supports_reasoning_effort": false, "supports_tools": true, "supports_vision": false},
+    "openai/gpt-oss-120b": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supported_effort_levels": ["low", "medium", "high"], "supports_reasoning_effort": true, "supports_tools": true, "supports_vision": false},
+    "openai/gpt-oss-20b": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supported_effort_levels": ["low", "medium", "high"], "supports_reasoning_effort": true, "supports_tools": true, "supports_vision": false},
+    "qwen/qwen3-32b": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supports_reasoning_effort": false, "supports_tools": true, "supports_vision": false}
   },
   "together": {
-    "llama-3.3-70b": {"context_window": 131072, "max_output_tokens": 4096, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "llama-3.3-70b": {"context_window": 131072, "max_output_tokens": 4096, "model_status": "active", "supports_reasoning_effort": false, "supports_tools": true, "supports_vision": false},
     "llama-3.1-8b": {"context_window": 131072, "max_output_tokens": 4096, "model_status": "active", "supports_tools": true, "supports_vision": false},
-    "deepseek-v3": {"context_window": 131072, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
-    "qwen3-coder": {"context_window": 262144, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
-    "kimi-k2": {"context_window": 131072, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false}
+    "deepseek-v3": {"context_window": 131072, "max_output_tokens": 8192, "model_status": "active", "supports_reasoning_effort": false, "supports_tools": true, "supports_vision": false},
+    "qwen3-coder": {"context_window": 262144, "max_output_tokens": 8192, "model_status": "active", "supports_reasoning_effort": false, "supports_tools": true, "supports_vision": false},
+    "kimi-k2": {"context_window": 131072, "max_output_tokens": 8192, "model_status": "active", "supports_reasoning_effort": false, "supports_tools": true, "supports_vision": false}
   },
   "fireworks": {
     "llama-3.1-70b": {"context_window": 131072, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
@@ -4134,10 +6074,10 @@
     "kimi-k2": {"context_window": 131072, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false}
   },
   "mistral": {
-    "mistral-large": {"context_window": 128000, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
-    "mistral-small": {"context_window": 128000, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
-    "codestral": {"context_window": 256000, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "mistral-large": {"context_window": 128000, "max_output_tokens": 8192, "model_status": "active", "supports_reasoning_effort": false, "supports_tools": true, "supports_vision": false},
+    "mistral-small": {"context_window": 128000, "max_output_tokens": 8192, "model_status": "active", "supported_effort_levels": ["minimal", "low", "medium", "high", "xhigh"], "supports_reasoning_effort": true, "supports_tools": true, "supports_vision": false},
+    "codestral": {"context_window": 256000, "max_output_tokens": 8192, "model_status": "active", "supports_reasoning_effort": false, "supports_tools": true, "supports_vision": false},
     "devstral-small": {"context_window": 128000, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
-    "magistral-medium": {"context_window": 128000, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false}
+    "magistral-medium": {"context_window": 128000, "max_output_tokens": 8192, "model_status": "active", "supported_effort_levels": ["minimal", "low", "medium", "high", "xhigh"], "supports_reasoning_effort": true, "supports_tools": true, "supports_vision": false}
   }
 }

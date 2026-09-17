@@ -60,6 +60,7 @@ export interface ProviderModelsResult {
       supports_reasoning?: boolean | null;
       supports_reasoning_effort?: boolean | null;
       default_reasoning_effort?: string | null;
+      supported_effort_levels?: string[] | null;
       supports_tools?: boolean | null;
       supports_vision?: boolean | null;
       supports_streaming?: boolean | null;

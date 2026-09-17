@@ -119,7 +119,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `agent`：agent preset 的 runtime 消费入口。当前顶层 active run 仅使用 builtin `leader`（默认或显式选择）；runtime-owned delegation path 上的 child run 可执行 builtin child preset（包括只读 plan subagent `product`）或本地自定义 `mode: subagent` manifest。`product` 不能作为 top-level active agent。
 - `policy`：Runtime Harness Policy v1 配置入口，只能提供 schema-bounded narrowing/default intent；runtime hard denials、persisted snapshot、agent manifest 与 request/session 边界仍按固定优先级收口。
 - `agents`：按 agent preset 配置 model / fallback defaults。这里是“已发现 preset 的配置覆盖/别名入口”，不是 manifest 定义入口；内置 preset key 与已发现本地 manifest key 可省略 `preset`，其他 alias key 必须显式声明 `preset`。
-- `reasoning_effort`：可选的 runtime-owned reasoning-effort hint（例如 `low` / `medium` / `high`），透传给当前 active provider；当前 model metadata 显式 `supports_reasoning_effort=false` 时 runtime 会 fail-fast，未知能力按 best-effort 透传。
+- `reasoning_effort`：可选的 runtime-owned reasoning-effort hint（例如 `low` / `medium` / `high`）。能力判定以 **model 自身** 的 catalog metadata（`supports_reasoning_effort` / `supported_effort_levels` / `default_reasoning_effort`）为准：model metadata 显式 `supports_reasoning_effort=false` 时 runtime 在请求早期 fail-fast；model metadata 缺省时才回退到 provider 级 allowlist（`provider_supports_reasoning_effort`，只对上游 API 不接受该字段的单上游 provider 返回 `False`）；两者都未知时按 best-effort 透传，并在 readiness 中标记为 `status="forwarded_unverified"`（`reason="model_capability_unknown"`），不静默当作已支持。多上游网关（`opencode-go`）不提供 provider 级结论：其目录覆盖的 model 由 model metadata 判定，目录没有的 model 一律透传并记录为 unverified。`supported_effort_levels` 同时决定 clamp：转发前会向下对齐到该 model 真实支持的档位。
 
 ### Execution engine 生命周期决策
 
@@ -140,6 +140,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `permission.rules`：有序数组，每条规则可包含 `tool`、`path`、`command` 与必填 `decision`，用于 runtime-owned 的工具/路径/命令 pattern 权限匹配
 - `model`：字符串
 - `reasoning_effort`：字符串枚举，仅接受 `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；`"none"` 不被接受（实现见 `src/voidcode/provider/reasoning_effort.py`）
+- `reasoning_effort = "off"` 表示“不要推理”，其转发形态按 provider/model 解析：已知的二元关闭形态（Z.AI / ZhipuAI 与 DeepSeek 的 `extra_body.thinking.type = "disabled"`）保持不变；其余 provider/model 发送该 model `supported_effort_levels` 中**最低**的一级；model 没有任何受支持档位时不发送该参数。runtime 不会向不接受 `"none"` 的 model 发送字面量 `"none"`（实现见 `src/voidcode/provider/reasoning_effort.py::explicit_off_kwargs`）
 - `hooks.enabled`：布尔值；默认 `true`
 - `hooks.pre_tool`：命令数组的数组，每个命令在 workspace cwd 中执行
 - `hooks.post_tool`：命令数组的数组，每个命令在 workspace cwd 中执行
@@ -485,7 +486,7 @@ workspace 本地覆盖路径保持为：
 
 对于 fresh run，`RuntimeRequest.metadata["reasoning_effort"]` 可以作为窄范围的请求级覆盖；`execution_engine` 同样会进入显式 / 仓库本地 / 环境 / 默认值解析，并在会话恢复时优先采用持久化的会话配置。未知 metadata 会因 request schema 拒绝，不能静默忽略。
 
-`reasoning_effort` 的 capability-aware 校验由 runtime 在请求处理早期完成：当解析后的 `provider/model` 的 `ProviderModelMetadata.supports_reasoning_effort` 显式为 `False` 时，runtime 抛出 `RuntimeRequestError`；未知能力按 best-effort 透传。
+`reasoning_effort` 的 capability-aware 校验由 runtime 在请求处理早期完成，判定顺序固定为：先取解析后的 `provider/model` 的 model metadata `supports_reasoning_effort`（显式 `False` → 抛 `RuntimeRequestError`；显式 `True` → 通过），metadata 缺省时才回退到 provider 级 allowlist（`provider_supports_reasoning_effort`），两者都未知时按 best-effort 透传，并在 provider readiness 中报告 `capability_source="unknown"` 与 `status="forwarded_unverified"`。readiness payload 不再声明具体的 provider 参数名：不同 adapter 使用 `extra_body.thinking.type`、`extra_body.reasoning_effort`、`thinking`、`thinking_config` 等不同字段，凭 provider 名猜测会给出错误信息。
 
 ## 当前代码锚点
 

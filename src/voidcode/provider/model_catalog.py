@@ -137,6 +137,9 @@ def _load_static_catalog() -> dict[str, dict[str, ProviderModelMetadata]]:
                 cost_per_cache_write_token=_non_negative_float(entry.get("cost_per_cache_write_token")),
                 supports_tools=_optional_bool(entry.get("supports_tools")),
                 supports_reasoning=_optional_bool(entry.get("supports_reasoning")),
+                supports_reasoning_effort=_optional_bool(entry.get("supports_reasoning_effort")),
+                default_reasoning_effort=_canonical_effort(entry.get("default_reasoning_effort")),
+                supported_effort_levels=_modalities(entry.get("supported_effort_levels")),
                 supports_vision=_optional_bool(entry.get("supports_vision")),
                 modalities_input=_modalities(entry.get("modalities_input")),
                 model_status=_optional_str(entry.get("model_status")),
@@ -145,7 +148,13 @@ def _load_static_catalog() -> dict[str, dict[str, ProviderModelMetadata]]:
     return result
 
 
-def _static_catalog_metadata(provider_name: str, model_name: str) -> ProviderModelMetadata | None:
+def static_catalog_metadata(provider_name: str, model_name: str) -> ProviderModelMetadata | None:
+    """Shipped catalog metadata for one provider/model, independent of discovery.
+
+    Discovery results take precedence where they exist; this lookup is the offline
+    fallback so a run does not need a successful `/models` refresh (or a warm
+    catalog cache) before the runtime can clamp a reasoning effort to the model.
+    """
     provider = provider_name.strip().lower()
     model = model_name.strip().lower()
     if not model:
@@ -318,7 +327,7 @@ def discover_available_models(
     for model in deduped:
         metadata = discovered_metadata.get(model)
         if metadata is None:
-            metadata = _static_catalog_metadata(provider_name, model)
+            metadata = static_catalog_metadata(provider_name, model)
         if metadata is not None:
             model_metadata[model] = metadata
 
