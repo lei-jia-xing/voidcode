@@ -327,7 +327,7 @@ describe("Tool Status Contract", () => {
     });
   });
 
-  it("marks approval-blocked tool rows as failed when approval is denied", () => {
+  it("marks only the approval-blocked tool row as failed when approval is denied", () => {
     const events: EventEnvelope[] = [
       {
         session_id: "test",
@@ -379,7 +379,7 @@ describe("Tool Status Contract", () => {
     const messages = deriveChatMessages(events, null);
     const assistantMessage = messages.find((m) => m.role === "assistant");
 
-    expect(assistantMessage?.status).toBe("failed");
+    expect(assistantMessage?.status).toBe("waiting");
     expect(assistantMessage?.approval).toBeNull();
     expect(assistantMessage?.tools[0]).toMatchObject({
       id: "shell-deny-1",

@@ -1142,7 +1142,6 @@ export function deriveChatMessages(
           if (pendingTool) {
             pendingTool.status = "failed";
           }
-          currentAssistant.status = "failed";
         } else if (currentAssistant.status === "waiting") {
           currentAssistant.status = "in_progress";
         }
