@@ -54,6 +54,19 @@ logger = logging.getLogger(__name__)
 
 _SLASH_COMMANDS: tuple[str, ...] = ("/expand",)
 
+# Live-only provider output: the runtime never persists these events, so their
+# sequence is the current persisted cursor rather than a fresh identity. They are
+# the client's projection of the in-flight attempt and must bypass the
+# persisted-sequence dedupe (and be retractable when the attempt restarts).
+_LIVE_ONLY_EVENT_TYPES = frozenset(
+    {
+        "graph.provider_stream",
+        "graph.tool_call_start",
+        "graph.tool_call_delta",
+        "graph.tool_call_end",
+    }
+)
+
 
 @runtime_checkable
 class RuntimeProtocol(Protocol):
@@ -653,7 +666,32 @@ class VoidCodeTUI(App[int]):
             classes="timeline-block question-answer tool-success",
         )
 
+    def _discard_streamed_attempt(self) -> None:
+        """Retract the in-flight attempt's live projection after a provider restart.
+
+        The runtime keeps the retry/fallback and announces
+        ``discarded_streamed_output`` on the event because the live deltas it
+        streamed are not persisted. Clearing the buffers and the live widgets
+        leaves the surviving attempt's text as the only assistant output for the
+        turn.
+        """
+        self._pending_output.clear()
+        self._stream_output_buffer = ""
+        self._streamed_provider_text = False
+        self._thinking_buffer = ""
+        log = self.query_one("#transcript-log", TimelineView)
+        if self._active_response_key is not None:
+            log.update_live(self._active_response_key, Text(""))
+        if self._active_thinking_key is not None and log.has_block(self._active_thinking_key):
+            log.update_block(self._active_thinking_key, content=Text(""))
+
     def _write_event_line(self, event: EventEnvelope) -> None:
+        if (
+            event.event_type in {"runtime.provider_transient_retry", "runtime.provider_fallback"}
+            and event.payload.get("discarded_streamed_output") is True
+        ):
+            self._discard_streamed_attempt()
+            return
         if event.event_type == "graph.provider_stream":
             payload = event.payload or {}
             if payload.get("channel") == "reasoning" and payload.get("kind") in {"delta", "content"}:
@@ -1359,7 +1397,10 @@ class VoidCodeTUI(App[int]):
 
         if chunk.kind == "event" and chunk.event is not None:
             event_sequence = chunk.event.sequence
-            if event_sequence > 0:
+            # Live-only deltas share the persisted cursor by contract, so the
+            # sequence dedupe (which exists for replayed persisted events) must
+            # not swallow them.
+            if event_sequence > 0 and chunk.event.event_type not in _LIVE_ONLY_EVENT_TYPES:
                 last_sequence = self._last_event_sequence_by_session.get(self.session_id, 0)
                 if event_sequence <= last_sequence:
                     return

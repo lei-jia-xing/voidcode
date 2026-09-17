@@ -256,6 +256,35 @@ function isRuntimeCancellationEvent(event: EventEnvelope): boolean {
   );
 }
 
+// Live-only provider output: the runtime never persists these events, so they are
+// the client's in-flight projection of the current attempt. A transient retry or
+// provider fallback that restarts the attempt must drop them; the persisted
+// transcript (and its single graph.response_ready) is untouched.
+const LIVE_STREAM_EVENT_TYPES: Record<string, true> = {
+  "graph.provider_stream": true,
+  "graph.tool_call_start": true,
+  "graph.tool_call_delta": true,
+  "graph.tool_call_end": true,
+};
+
+function applyLiveStreamEvent(
+  events: EventEnvelope[],
+  event: EventEnvelope,
+): EventEnvelope[] {
+  const restarted =
+    (event.event_type === "runtime.provider_transient_retry" ||
+      event.event_type === "runtime.provider_fallback") &&
+    event.payload.discarded_streamed_output === true;
+  if (!restarted) {
+    return [...events, event];
+  }
+  let end = events.length;
+  while (end > 0 && LIVE_STREAM_EVENT_TYPES[events[end - 1].event_type]) {
+    end -= 1;
+  }
+  return [...events.slice(0, end), event];
+}
+
 function getPendingQuestionRequestId(events: EventEnvelope[]): string | null {
   const answeredRequestIds = new Set<string>();
 
@@ -1034,7 +1063,12 @@ export const useAppStore = create<AppState>()(
             existing.sequence === event.sequence,
         );
         if (alreadyDelivered) return false;
-        set({ currentSessionEvents: [...state.currentSessionEvents, event] });
+        set({
+          currentSessionEvents: applyLiveStreamEvent(
+            state.currentSessionEvents,
+            event,
+          ),
+        });
         return true;
       },
 
@@ -1476,7 +1510,7 @@ export const useAppStore = create<AppState>()(
               )
                 return state;
               const newEvents = chunk.event
-                ? [...state.currentSessionEvents, chunk.event]
+                ? applyLiveStreamEvent(state.currentSessionEvents, chunk.event)
                 : state.currentSessionEvents;
               return {
                 currentSessionState: chunk.session ?? state.currentSessionState,

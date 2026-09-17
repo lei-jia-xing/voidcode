@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { deriveChatMessages } from "./lib/runtime/event-parser";
+
 import type {
   ApprovalDecision,
   BackgroundTaskOutput,
@@ -2787,6 +2789,96 @@ describe("useAppStore integration flow", () => {
     expect(state.currentSessionState?.status).toBe("failed");
     expect(state.runStatus).toBe("error");
     expect(state.runError).toBe("Provider authentication failed for deepseek.");
+  });
+
+  it("drops the in-flight streamed text when the runtime restarts the attempt", async () => {
+    const sessionId = "retry-discard-session";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "hello" },
+      "runtime",
+      sessionId,
+    );
+    const firstAttemptDelta = makeEvent(
+      1,
+      "graph.provider_stream",
+      { kind: "delta", channel: "text", text: "first attempt" },
+      "graph",
+      sessionId,
+    );
+    const retryEvent = makeEvent(
+      2,
+      "runtime.provider_transient_retry",
+      { reason: "transient_failure", discarded_streamed_output: true },
+      "runtime",
+      sessionId,
+    );
+    const secondAttemptDelta = makeEvent(
+      2,
+      "graph.provider_stream",
+      { kind: "delta", channel: "text", text: "second attempt" },
+      "graph",
+      sessionId,
+    );
+    const responseReady = makeEvent(
+      3,
+      "graph.response_ready",
+      { output_preview: "second attempt" },
+      "graph",
+      sessionId,
+    );
+
+    const renderedAfterChunk: string[] = [];
+    const latestAssistantText = () => {
+      const messages = deriveChatMessages(
+        useAppStore.getState().currentSessionEvents,
+        null,
+      );
+      const assistants = messages.filter(
+        (message) => message.role === "assistant",
+      );
+      return assistants[assistants.length - 1]?.content ?? "";
+    };
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      yield makeStreamChunk(sessionId, "running", firstAttemptDelta);
+      yield makeStreamChunk(sessionId, "running", retryEvent);
+      renderedAfterChunk.push(latestAssistantText());
+      yield makeStreamChunk(sessionId, "running", secondAttemptDelta);
+      renderedAfterChunk.push(latestAssistantText());
+      yield makeStreamChunk(sessionId, "completed", responseReady);
+      yield makeStreamChunk(sessionId, "completed", null, "second attempt");
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValue(
+      makeRuntimeResponse(
+        sessionId,
+        "completed",
+        [requestReceived, responseReady],
+        "second attempt",
+      ),
+    );
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "hello"),
+    ]);
+
+    await useAppStore.getState().runTask("hello");
+
+    // The restart event retracts the first attempt's live text, so the surviving
+    // attempt is the only thing rendered (the persisted transcript is untouched).
+    expect(renderedAfterChunk).toEqual(["", "second attempt"]);
+    const messages = deriveChatMessages(
+      useAppStore.getState().currentSessionEvents,
+      null,
+    );
+    const assistants = messages.filter(
+      (message) => message.role === "assistant",
+    );
+    const assistant = assistants[assistants.length - 1];
+    expect(assistant?.content).toBe("second attempt");
   });
 
   it("uses the generic fallback when a failed session has no error event", async () => {

@@ -47,7 +47,7 @@ EventEnvelope(
 以下事件当前属于稳定的运行时事件契约，与 `src/voidcode/runtime/events.py` 的 `CoreEventType`（即 `EMITTED_EVENT_TYPES`）一致。它们覆盖当前 deterministic 与 provider 两条 execution engine 路径：
 
 - 请求与技能：`runtime.request_received`、`runtime.skills_loaded`、`runtime.skills_applied`、`runtime.hook_presets_loaded`
-- provider 治理：`runtime.provider_fallback`、`runtime.provider_transient_retry`
+- provider 治理：`runtime.provider_fallback`、`runtime.provider_transient_retry`。当被重启的那次尝试已经向客户端流出可见内容（assistant/reasoning 文本、tool-call 预览）时，事件 payload 增加 `discarded_streamed_output: true`，客户端据此丢弃该次尝试的实时投影（实时投影不进入持久化 transcript）；未流出任何内容的尝试不带此字段
 - provider 终态语义：无法识别的 `done_reason`（含缺失原因）按已完成的 stop 等价终态处理；`error` / `cancelled` 仍为失败终态
 - provider 终态诊断：`graph.response_ready` payload 记录 `finish_reason`（规范终态）与 `finish_reason_reported`。`finish_reason_reported` 为 `false` 表示上游声明终态但未给出可读取的原因，此时运行时以 `warning` 记录，使被截断但仍"正常结束"的流可被 `sessions debug` 之类检查发现；正常 `stop` 为 `true`
 - ACP：`runtime.acp_connected`、`runtime.acp_disconnected`、`runtime.acp_failed`、`runtime.acp_delegated_lifecycle`

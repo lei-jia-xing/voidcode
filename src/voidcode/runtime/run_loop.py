@@ -395,6 +395,23 @@ def _abort_reason(request: GraphRunRequest) -> str | None:
     return _abort_signal_reason(request.abort_signal)
 
 
+def _live_event_surfaces_output(event: GraphEvent) -> bool:
+    """Whether a live-only graph event renders part of the provider response.
+
+    Only content-bearing deltas and tool-call lifecycle events reach the client as
+    assistant output. ``error``/``done`` markers carry no output, so they must not
+    block a retry/fallback.
+    """
+    if event.event_type == "graph.provider_stream":
+        if event.payload.get("kind") not in {"delta", "content"}:
+            return False
+        if event.payload.get("channel") not in {"text", "reasoning"}:
+            return False
+        text = event.payload.get("text")
+        return isinstance(text, str) and bool(text)
+    return event.event_type in {"graph.tool_call_start", "graph.tool_call_delta", "graph.tool_call_end"}
+
+
 class _ProviderErrorPolicyVerdict(TypedDict):
     action: Literal["exit", "reraise", "retry", "fallback"]
     exc: NotRequired[BaseException]
@@ -403,6 +420,21 @@ class _ProviderErrorPolicyVerdict(TypedDict):
     graph: NotRequired[RuntimeGraph]
     session: NotRequired[SessionState]
     graph_request: NotRequired[GraphRunRequest]
+
+
+@dataclass(slots=True)
+class _AttemptStreamVisibility:
+    """Whether the in-flight provider attempt already surfaced live stream output.
+
+    Live provider deltas are client-only: they are not persisted, so the runtime
+    has no transcript record to reconcile them against. When such an attempt is
+    restarted (transient retry or provider fallback) the runtime keeps the
+    recovery and annotates the retry/fallback event with
+    ``discarded_streamed_output`` so the client can drop its in-flight
+    projection. ``surfaced`` is reset at the start of every attempt.
+    """
+
+    surfaced: bool = False
 
 
 class RuntimeRunLoopCoordinator:
@@ -1220,6 +1252,7 @@ class RuntimeRunLoopCoordinator:
         provider_retry_attempt: int = provider_retry_attempt_from_metadata(graph_request.metadata)
         reasoning_capture_state = ReasoningCaptureState()
         active_graph_request: GraphRunRequest = graph_request
+        attempt_stream_visibility = _AttemptStreamVisibility()
         pending_provider_attempt_reset: _ProviderAttemptReset | None = None
         first_iteration = True
         stuck_detected_emitted = False
@@ -1338,6 +1371,7 @@ class RuntimeRunLoopCoordinator:
                     sequence=sequence,
                     reasoning_capture_state=reasoning_capture_state,
                     graph=graph,
+                    attempt_stream_visibility=attempt_stream_visibility,
                 )
                 if graph_step is None:
                     return
@@ -1357,6 +1391,7 @@ class RuntimeRunLoopCoordinator:
                     current_available_tools=current_available_tools,
                     current_abort_signal=current_abort_signal,
                     graph=graph,
+                    attempt_stream_visibility=attempt_stream_visibility,
                 )
                 action = verdict["action"]
                 if action == "exit":
@@ -2111,9 +2146,13 @@ class RuntimeRunLoopCoordinator:
         sequence: int,
         reasoning_capture_state: ReasoningCaptureState,
         graph: RuntimeGraph,
+        attempt_stream_visibility: _AttemptStreamVisibility,
     ) -> Generator[RuntimeStreamChunk, None, tuple[Any | None, int, list[str]]]:
         graph_request = graph_request_for_session(active_graph_request, session)
         streamed_reasoning_texts: list[str] = []
+        # A new provider attempt starts unseen; anything the previous attempt
+        # surfaced was already handled by the error policy.
+        attempt_stream_visibility.surfaced = False
         if _is_abort_requested(active_graph_request):
             yield from self._emit_interrupted_failure(
                 session=session,
@@ -2198,6 +2237,11 @@ class RuntimeRunLoopCoordinator:
                     continue
                 if isinstance(streamed_item, GraphEvent):
                     streamed_item = decorate_live_event(streamed_item)
+                    # Content-bearing live events are about to reach the client;
+                    # from here on the attempt has user-visible stream output and
+                    # must not be silently replayed (retry/fallback).
+                    if _live_event_surfaces_output(streamed_item):
+                        attempt_stream_visibility.surfaced = True
                     # Live client-only stream deltas are NOT persisted, so
                     # they must not advance the persisted-sequence cursor.
                     # They share the current cursor value; the renumbered
@@ -2267,6 +2311,7 @@ class RuntimeRunLoopCoordinator:
         current_available_tools: tuple[ToolDefinition, ...],
         current_abort_signal: ProviderAbortSignal | None,
         graph: RuntimeGraph,
+        attempt_stream_visibility: _AttemptStreamVisibility,
     ) -> Generator[RuntimeStreamChunk, None, _ProviderErrorPolicyVerdict]:
         current_provider_attempt = provider_attempt_from_metadata({"provider_attempt": provider_attempt})
         provider_error = exc if isinstance(exc, ProviderExecutionError) else None
@@ -2333,11 +2378,18 @@ class RuntimeRunLoopCoordinator:
                     provider_decision.max_retries,
                     delay_ms,
                 )
+                retry_payload = provider_decision.event_payload()
+                if attempt_stream_visibility.surfaced:
+                    # The client already rendered live deltas from the attempt
+                    # that is now being restarted; the runtime announces it so the
+                    # client can discard that in-flight projection (it is not
+                    # persisted truth). Absent for attempts that surfaced nothing.
+                    retry_payload["discarded_streamed_output"] = True
                 envelope = self._persist_event(
                     session_id=session.session.id,
                     event_type=RUNTIME_PROVIDER_TRANSIENT_RETRY,
                     source="runtime",
-                    payload=provider_decision.event_payload(),
+                    payload=retry_payload,
                 )
                 sequence = envelope.sequence
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
@@ -2394,11 +2446,18 @@ class RuntimeRunLoopCoordinator:
                     provider_error.kind,
                     provider_decision.attempt,
                 )
+                fallback_payload = provider_decision.event_payload()
+                if attempt_stream_visibility.surfaced:
+                    # Same contract as the transient-retry announcement: the
+                    # fallback target restarts a turn whose live deltas the
+                    # client already rendered, so it must discard that
+                    # in-flight projection (never the persisted events).
+                    fallback_payload["discarded_streamed_output"] = True
                 envelope = self._persist_event(
                     session_id=session.session.id,
                     event_type=RUNTIME_PROVIDER_FALLBACK,
                     source="runtime",
-                    payload=provider_decision.event_payload(),
+                    payload=fallback_payload,
                 )
                 sequence = envelope.sequence
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)

@@ -16,11 +16,14 @@ something was actually surfaced, and the terminal reason is recorded.
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 from voidcode.graph.contracts import GraphRunRequest
 from voidcode.graph.provider_graph import ProviderGraph
+from voidcode.provider.config import ProviderEndpointConfig, ProviderTransientRetryConfig
 from voidcode.provider.protocol import (
     ProviderDoneReason,
     ProviderExecutionError,
@@ -31,6 +34,12 @@ from voidcode.provider.protocol import (
 )
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
+from voidcode.runtime.config import (
+    RuntimeConfig,
+    RuntimeProviderFallbackConfig,
+    RuntimeProvidersConfig,
+)
+from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.policy import materialize_runtime_policy_snapshot
 from voidcode.runtime.service import RuntimeStreamChunk, SessionState, ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef
@@ -191,6 +200,48 @@ def test_unrecognized_finish_reason_completes_without_a_restart(tmp_path: Path) 
     assert [payload.get("output_preview") for payload in _response_ready_payloads(store, workspace=tmp_path, session_id="session-1")] == ["hi"]
 
 
+def test_transient_failure_after_streamed_text_retries_and_announces_the_discard(tmp_path: Path) -> None:
+    provider = _RestartStreamingProvider(fail_on_attempt=1)
+
+    chunks, store = _run_graph_loop(tmp_path=tmp_path, provider=provider, session_id="session-2")
+
+    # The runtime keeps the recovery; the retried attempt is the one that lands.
+    assert _streamed_text(chunks) == ["attempt 1", "attempt 2"]
+    assert provider.attempts == 2
+    retry_payloads = _events_of_type(chunks, "runtime.provider_transient_retry")
+    assert len(retry_payloads) == 1
+    assert retry_payloads[0]["discarded_streamed_output"] is True
+    assert chunks[-1].session.status == "completed"
+    # Exactly one assistant message survives for the round.
+    assert _response_ready_payloads(store, workspace=tmp_path, session_id="session-2") == [
+        {"output_preview": "attempt 2", "finish_reason": "stop", "finish_reason_reported": True}
+    ]
+
+
+def test_transient_failure_before_any_streamed_text_has_no_discard_field(tmp_path: Path) -> None:
+    # Fail before yielding anything: nothing was surfaced, so nothing is discarded.
+    class _FailsBeforeStreamingProvider(_RestartStreamingProvider):
+        def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
+            _ = request
+            self.attempts += 1
+            if self.attempts == 1:
+                raise ProviderExecutionError(
+                    kind="transient_failure",
+                    provider_name=self.name,
+                    model_name="gpt-5.4",
+                    message="temporary ssl failure",
+                )
+            yield ProviderStreamEvent(kind="delta", channel="text", text="attempt 2")
+            yield ProviderStreamEvent(kind="done", done_reason="stop")
+
+    failing = _FailsBeforeStreamingProvider(fail_on_attempt=1)
+    chunks, _store = _run_graph_loop(tmp_path=tmp_path, provider=failing, session_id="session-3")
+
+    retry_payloads = _events_of_type(chunks, "runtime.provider_transient_retry")
+    assert len(retry_payloads) == 1
+    assert "discarded_streamed_output" not in retry_payloads[0]
+
+
 def test_absent_finish_reason_is_recorded_in_the_persisted_transcript(tmp_path: Path) -> None:
     provider = _RestartStreamingProvider(fail_on_attempt=None, finish_reason="unknown")
     chunks, store = _run_graph_loop(tmp_path=tmp_path, provider=provider, session_id="session-4")
@@ -208,3 +259,89 @@ def test_reported_finish_reason_is_recorded_as_reported(tmp_path: Path) -> None:
     assert _response_ready_payloads(store, workspace=tmp_path, session_id="session-5") == [
         {"output_preview": "attempt 1", "finish_reason": "stop", "finish_reason_reported": True}
     ]
+
+
+class _StreamingScriptedRegistryProvider:
+    """Registry entry whose turn provider streams text, then fails on one attempt."""
+
+    def __init__(self, *, name: str, fail_on_attempt: int | None) -> None:
+        self.name = name
+        self._fail_on_attempt = fail_on_attempt
+
+    def turn_provider(self) -> TurnProvider:
+        name = self.name
+        fail_on_attempt = self._fail_on_attempt
+        state = {"attempt": 0}
+
+        class _Provider:
+            def __init__(self) -> None:
+                self.name = name
+
+            def propose_turn(self, request: object) -> ProviderTurnResult:
+                _ = request
+                return ProviderTurnResult(output="non-stream output", done_reason="stop")
+
+            def stream_turn(self, request: object) -> Iterator[ProviderStreamEvent]:
+                _ = request
+                state["attempt"] += 1
+                yield ProviderStreamEvent(kind="delta", channel="text", text=f"{name} attempt {state['attempt']}")
+                if fail_on_attempt is not None and state["attempt"] == fail_on_attempt:
+                    raise ProviderExecutionError(
+                        kind="transient_failure",
+                        provider_name=name,
+                        model_name="m1",
+                        message="temporary ssl failure",
+                    )
+                yield ProviderStreamEvent(kind="done", done_reason="stop")
+
+        return cast(TurnProvider, _Provider())
+
+
+def test_transient_failure_after_streamed_text_falls_back_and_announces_the_discard(tmp_path: Path) -> None:
+    with tempfile.TemporaryDirectory() as state_dir:
+        with VoidCodeRuntime(
+            workspace=tmp_path,
+            session_store=SqliteSessionStore(),
+            config=RuntimeConfig(
+                approval_mode="allow",
+                execution_engine="provider",
+                model="primary/m1",
+                provider_fallback=RuntimeProviderFallbackConfig(
+                    preferred_model="primary/m1",
+                    fallback_models=("secondary/m2",),
+                ),
+                providers=RuntimeProvidersConfig(
+                    custom={
+                        "primary": ProviderEndpointConfig(
+                            transient_retry=ProviderTransientRetryConfig(max_retries=0, base_delay_ms=0, max_delay_ms=0, jitter=False)
+                        ),
+                        "secondary": ProviderEndpointConfig(
+                            transient_retry=ProviderTransientRetryConfig(max_retries=0, base_delay_ms=0, max_delay_ms=0, jitter=False)
+                        ),
+                    }
+                ),
+            ),
+            model_provider_registry=ModelProviderRegistry(
+                providers={
+                    "primary": _StreamingScriptedRegistryProvider(name="primary", fail_on_attempt=1),
+                    "secondary": _StreamingScriptedRegistryProvider(name="secondary", fail_on_attempt=None),
+                }
+            ),
+        ) as runtime:
+            _ = state_dir
+            chunks = list(
+                runtime.run_stream(
+                    RuntimeRequest(
+                        prompt="hi",
+                        allocate_session_id=True,
+                        metadata={"provider_stream": True},
+                    )
+                )
+            )
+
+    # The fallback target runs and its output is the one that lands.
+    assert _streamed_text(chunks) == ["primary attempt 1", "secondary attempt 1"]
+    fallback_payloads = _events_of_type(chunks, "runtime.provider_fallback")
+    assert len(fallback_payloads) == 1
+    assert fallback_payloads[0]["discarded_streamed_output"] is True
+    assert chunks[-1].session.status == "completed"
