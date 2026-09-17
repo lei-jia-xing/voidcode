@@ -67,6 +67,10 @@ class SessionSealedError(Exception):
     ``interrupted`` rows with no active run and gates the interaction queue.
     """
 
+    # Stable machine-readable reason, carried onto the HTTP error envelope so a
+    # client can distinguish "this session is sealed" from any other rejection.
+    code = "session_sealed"
+
 
 # Event types still allowed to append once a session is terminal. Each entry
 # names the source that emits it after/around terminal status so the list stays

@@ -170,46 +170,100 @@ MVP 生命周期：
 
 当前已交付的本地 HTTP routes 包括：
 
-- `POST /api/runtime/run/stream`（SSE 帧信封与 `session` 字段交付规则见 `stream-transport.md`）
-- `GET /api/sessions`
-- `GET /api/sessions/{id}`
-- `GET /api/sessions/{id}/events`（支持 `after_sequence` / `follow` 查询参数；SSE 帧信封、`session` 字段交付规则与 `follow` 增量读取语义见 `stream-transport.md`）
-- `GET /api/sessions/{id}/result`
-- `GET /api/sessions/{id}/debug`
-- `GET /api/sessions/{id}/delegated-context`
-- `POST /api/sessions/{id}/approval`
-- `POST /api/sessions/{id}/question`
-- `POST /api/sessions/{id}/cancel`
-- `POST /api/sessions/{id}/interrupt`
-- `POST /api/sessions/{id}/undo`
-- `POST /api/sessions/{id}/revert`
-- `POST /api/sessions/{id}/unrevert`
-- `GET /api/sessions/{parent}/tasks`
-- `GET /api/tasks`
-- `POST /api/tasks`
-- `GET /api/tasks/{id}`
-- `GET /api/tasks/{id}/output`
-- `POST /api/tasks/{id}/cancel`
-- `POST /api/tasks/{id}/retry`
-- `GET /api/notifications`
-- `POST /api/notifications/{id}/ack`
-- `GET /api/settings`
-- `POST /api/settings`
-- `GET /api/workspaces`
-- `POST /api/workspaces/open`
-- `GET /api/providers`
-- `GET /api/providers/{name}/models`
-- `GET /api/providers/{name}/inspect`
-- `POST /api/providers/{name}/validate`
-- `GET /api/agents`
-- `GET /api/skills`
-- `GET /api/commands`
-- `GET /api/status`
-- `POST /api/status/mcp/retry`
-- `GET /api/review`
-- `GET /api/review/diff/{path}`
+- `POST /api/runtime/run/stream` — 运行请求并以 SSE 交付有序事件与最终输出（SSE 帧信封与 `session` 字段交付规则见 `stream-transport.md`）；成功 `200`（SSE 流）；错误 `400`（请求无效）、`500`（内部错误）、`405`（方法不允许）
+- `GET /api/sessions` — 列出持久化主会话摘要；成功 `200`；错误 `405`
+- `GET /api/sessions/{id}` — 只读加载/重放持久化会话（不得触发 resume）；成功 `200`；错误 `404`、`405`
+- `GET /api/sessions/{id}/events` — 订阅会话有序事件流，支持 `after_sequence` / `follow` 查询参数（SSE 帧信封、`session` 字段交付规则与 `follow` 增量读取语义见 `stream-transport.md`）；成功 `200`（SSE 流）；错误 `400`（`after_sequence` 非整数或为负）、`404`、`405`
+- `GET /api/sessions/{id}/result` — 读取会话终态结果视图；成功 `200`；错误 `404`、`405`
+- `GET /api/sessions/{id}/debug` — 读取会话调试快照；成功 `200`；错误 `404`、`405`
+- `GET /api/sessions/{id}/delegated-context` — 读取 delegated 子会话上下文；成功 `200`；错误 `404`（`code=delegated_context_missing`）、`405`
+- `POST /api/sessions/{id}/approval` — 提交审批决策并继续执行，返回下一次暂停或执行结束时的会话快照；成功 `200`；错误 `400`、`409`（`code=no_pending_approval`）、`405`
+- `POST /api/sessions/{id}/question` — 回答等待中的问题，返回恢复后的 `RuntimeResponse`；成功 `200`；错误 `400`、`404`、`405`
+- `POST /api/sessions/{id}/cancel` — 按 run identity 取消/中断会话；成功 `200`；错误 `400`、`405`
+- `POST /api/sessions/{id}/steer` — 向会话排队一条 steer 消息；成功 `200`；错误 `400`、`404`、`409`（`code=session_sealed`）、`405`
+- `POST /api/sessions/{id}/resume` — 显式恢复 interrupted / failed-retryable 会话（会重新进入 graph loop 并重新执行 provider）；成功 `200`；错误 `404`、`405`
+- `POST /api/sessions/{id}/undo` — 撤销（回退）会话；成功 `200`；错误 `404`、`405`
+- `POST /api/sessions/{id}/revert` — 写入 revert marker；成功 `200`；错误 `400`、`404`、`405`
+- `POST /api/sessions/{id}/unrevert` — 清除 revert marker；成功 `200`；错误 `404`、`405`
+- `GET /api/sessions/{parent}/tasks` — 按 parent session 列出 background tasks；成功 `200`；错误 `405`
+- `GET /api/tasks` — 列出 background tasks（workspace 全局视图）；成功 `200`；错误 `405`
+- `POST /api/tasks` — 创建 background task；成功 `201`；错误 `400`、`405`
+- `GET /api/tasks/{id}` — 读取单个 task 状态；成功 `200`；错误 `404`、`405`
+- `GET /api/tasks/{id}/output` — 读取 task 输出/结果视图；成功 `200`；错误 `404`、`405`
+- `POST /api/tasks/{id}/cancel` — 取消 task；成功 `200`；错误 `404`、`405`
+- `POST /api/tasks/{id}/retry` — 重试 terminal task（复用旧请求创建新的 queued task handle）；成功 `201`；错误 `400`、`405`
+- `POST /api/tasks/{id}/steer` — 向 keep-alive task 派发下一 worker turn；成功 `200`；错误 `400`、`405`
+- `GET /api/notifications` — 列出通知；成功 `200`；错误 `405`
+- `POST /api/notifications/{id}/ack` — 确认通知；成功 `200`；错误 `404`、`405`
+- `GET /api/settings` — 读取运行时设置；成功 `200`；错误 `405`
+- `POST /api/settings` — 更新运行时设置；成功 `200`；错误 `400`、`405`
+- `GET /api/workspaces` — 列出 workspace registry 快照；成功 `200`；错误 `405`
+- `POST /api/workspaces/open` — 打开/切换 workspace；成功 `200`；错误 `400`、`404`、`405`
+- `GET /api/providers` — 列出 providers 及 configured/current 状态；成功 `200`；错误 `405`
+- `GET /api/providers/{name}/models` — 列出 provider 模型与 catalog metadata；成功 `200`（已配置）/ `409`（未配置，body 仍为 JSON）；错误 `400`、`405`
+- `GET /api/providers/{name}/inspect` — 读取 provider 端点/配置检查视图；成功 `200` / `409`；错误 `400`、`405`
+- `POST /api/providers/{name}/validate` — 校验 provider 凭据/就绪状态；成功 `200` / `409`；错误 `405`
+- `GET /api/agents` — 列出可用 agents；成功 `200`；错误 `405`
+- `GET /api/skills` — 列出 skills；成功 `200`；错误 `405`
+- `GET /api/commands` — 列出命令；成功 `200`；错误 `405`
+- `GET /api/status` — 读取运行时状态快照（git / lsp / mcp / background_tasks）；成功 `200`；错误 `405`
+- `POST /api/status/mcp/retry` — 重试 MCP 连接并返回状态快照；成功 `200`；错误 `400`、`405`
+- `GET /api/review` — 读取 workspace review 快照；成功 `200`；错误 `405`
+- `GET /api/review/diff/{path}` — 读取单个文件 diff（`{path}` 为 path-safe 多段路径）；成功 `200`；错误 `400`、`405`
+- `GET /api/openapi.json` — 返回本路由表对应的 OpenAPI 文档（JSON）；成功 `200`；错误 `405`
+
+所有 route 在方法不匹配时返回 `405`（`{"error": "method not allowed", "code": null}`）；未知 `/api/*` 路径返回 `404`（`{"error": "not found", "code": null}`）。`/api/openapi.json` 是传输层自己渲染的 route，因此 SPA fallback 不会遮蔽它，未知 `/api/*` 路径也不会落到 `index.html`。
+
+`GET /api/sessions/{parent}/tasks`（parent 作用域）与 `GET /api/tasks`（workspace 全局）共用同一套 task summary 序列化，但作用域不同；两者都是 shipped surface，调用方按需要选择：会话详情用前者，跨会话 roster 用后者。
+
+### `show_thinking` 查询参数
+
+`show_thinking`（布尔，缺省 `false`）控制响应中的 reasoning/thinking 内容是否脱敏：
+
+- 缺省（`false`）时 reasoning payload 只保留脱敏后的占位字段；`true` 时返回未脱敏内容。
+- 接受的写法：`true` / `1` / `yes` / `on`（大小写不敏感）；其他取值一律视为 `false`，不会产生校验错误。
+- 唯一拼写是 `show_thinking`（下划线）。
+- honour 该参数的 route：`POST /api/runtime/run/stream`、`GET /api/sessions/{id}/events`、`GET /api/sessions/{id}`、`GET /api/sessions/{id}/result`、`GET /api/sessions/{id}/debug`、`GET /api/sessions/{id}/delegated-context`、`GET /api/tasks/{id}/output`、`POST /api/sessions/{id}/resume`、`POST /api/sessions/{id}/approval`、`POST /api/sessions/{id}/question`；其余 route 忽略该参数。
+- 该参数只影响客户端可见的展示内容，不写入 session truth（`runtime.reasoning_part` 等事件仍按原样持久化；脱敏发生在交付给客户端的投影层）。
 
 本文档仍然有意地将契约定义与具体框架实现细节解耦；但这些路由边界与 delegated/task surfaces 本身已经属于当前 shipped API，而不是 future work。
+
+## HTTP 错误信封
+
+本地 HTTP 层的所有错误响应共用同一个信封：
+
+```json
+{"error": "<面向用户的错误消息>", "code": "<稳定的机器可读原因，或 null>"}
+```
+
+- `error` 始终存在，内容就是面向用户的句子（例如 `not found`、`method not allowed`、
+  `request body must be valid JSON`、`prompt must be a non-empty string`）。
+- `code` 只在失败操作本身携带稳定原因时给出；其余错误为 `null`。客户端应当按 `code`
+  分流，不要匹配 `error` 文本。
+- 请求体校验失败统一返回 `400`，错误消息保持按字段定位的文本，不使用框架默认的
+  `422` 与错误字典列表。
+- 未匹配的路径返回 `404 {"error": "not found", "code": null}`；方法不匹配返回
+  `405 {"error": "method not allowed", "code": null}`。
+- `/api/*` 上任何未被处理的服务端异常返回 `500 {"error": "internal server error",
+  "code": null}`；服务端仍会把该异常的 traceback 记入日志（响应与日志都会发生）。
+- JSON 响应固定为 `content-type: application/json; charset=utf-8`，键按字典序输出。
+- 该信封只覆盖 `/api/*`：非 API 路径（前端静态资源与 SPA fallback）在服务端异常时保持
+  `500 text/plain: Internal Server Error`。
+
+当前稳定的 `code` 取值（由 runtime 的错误类型拥有，传输层只负责携带）：
+
+| `code` | 触发条件 | 状态 | 拥有者 |
+|---|---|---|---|
+| `workspace_busy` | 有活跃 run/approval/task 时打开其它 workspace | `409` | `WorkspaceOpenError`（`runtime/workspace.py`） |
+| `invalid_workspace` | workspace 路径不存在/不可用 | `400` | `WorkspaceOpenError` |
+| `session_sealed` | 对已封印（terminal 且无活跃 run）的会话 steer | `409` | `SessionSealedError`（`runtime/storage/shared.py`） |
+| `no_pending_approval` | 对没有待审批请求的会话提交审批决策 | `409` | `NoPendingApprovalError`（`runtime/contracts.py`） |
+| `delegated_context_missing` | 该会话没有 delegated 子会话上下文（`/api/sessions/{id}/delegated-context`） | `404` | 传输层（runtime 返回 `None` 即该语义） |
+
+`null` 覆盖其余全部错误：未知会话/task/通知（`404`）、方法不允许（`405`）、未匹配路径
+（`404`）、请求体与查询参数校验（`400`）、provider 未配置或校验失败（`409`）、凭据类
+`ValueError`（`400`）等。这些是"输入/状态不对"的统一拒绝，不构成需要客户端区分语义的
+机器可读原因。
 
 ## Provider context 与 provider identity 可见性
 

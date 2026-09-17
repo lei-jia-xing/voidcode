@@ -17,6 +17,7 @@ from .acp import (
 )
 from .config import RuntimeConfig, serialize_runtime_agent_config
 from .contracts import (
+    NoPendingApprovalError,
     NoPendingQuestionError,
     RuntimeRequest,
     RuntimeRequestError,
@@ -1523,7 +1524,7 @@ class RuntimeResumeCoordinator:
         )
         checkpoint = self.load_resume_checkpoint(session_id=session_id)
         if pending is None:
-            raise ValueError(f"no pending approval for session: {session_id}")
+            raise NoPendingApprovalError(f"no pending approval for session: {session_id}")
         if pending.request_id != approval_request_id:
             raise ValueError("approval request id does not match pending session approval")
         validate_pending_approval_matches_recorded_request(
@@ -1540,7 +1541,7 @@ class RuntimeResumeCoordinator:
             session_id=session_id,
         )
         if pending is None:
-            raise ValueError(f"no pending approval for session: {session_id}")
+            raise NoPendingApprovalError(f"no pending approval for session: {session_id}")
         self._load_pending_approval_context(
             session_id=session_id,
             approval_request_id=approval_request_id,

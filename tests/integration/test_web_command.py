@@ -22,6 +22,11 @@ from unittest.mock import Mock, patch
 import pytest
 
 
+def _error_body(message: str, *, code: str | None = None) -> dict[str, object]:
+    """The transport's error envelope: a message plus the runtime's optional code."""
+    return {"error": message, "code": code}
+
+
 def write_frontend_dist_fixture(tmp_path: Path) -> Path:
     frontend_dist = tmp_path / "dist"
     assets_dir = frontend_dist / "assets"
@@ -349,7 +354,7 @@ def test_frontend_does_not_spa_fallback_unknown_api_routes(tmp_path: Path) -> No
     headers = decode_headers(start)
     assert "application/json" in headers.get("content-type", "")
     body = b"".join(cast(bytes, m.get("body", b"")) for m in sent if cast(str, m["type"]) == "http.response.body")
-    assert json.loads(body.decode("utf-8")) == {"error": "not found"}
+    assert json.loads(body.decode("utf-8")) == _error_body("not found")
 
 
 def test_frontend_returns_404_for_missing_static_asset(tmp_path: Path) -> None:
@@ -381,7 +386,7 @@ def test_frontend_returns_404_for_missing_static_asset(tmp_path: Path) -> None:
     headers = decode_headers(start)
     assert "application/json" in headers.get("content-type", "")
     body = b"".join(cast(bytes, m.get("body", b"")) for m in sent if cast(str, m["type"]) == "http.response.body")
-    assert json.loads(body.decode("utf-8")) == {"error": "not found"}
+    assert json.loads(body.decode("utf-8")) == _error_body("not found")
 
 
 def test_frontend_returns_404_when_no_dist_configured() -> None:

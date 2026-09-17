@@ -256,6 +256,11 @@ def _load_stream_types() -> tuple[
     )
 
 
+def _error_body(message: str, *, code: str | None = None) -> dict[str, object]:
+    """The transport's error envelope: a message plus the runtime's optional code."""
+    return {"error": message, "code": code}
+
+
 @dataclass(frozen=True, slots=True)
 class _TransportResponse:
     status: int
@@ -462,7 +467,7 @@ def test_transport_steer_session_rejects_empty_content() -> None:
     )
 
     assert response.status == 400
-    assert response.json() == {"error": "content must be a non-empty string"}
+    assert response.json() == _error_body("content must be a non-empty string")
 
 
 def test_transport_steer_session_returns_not_found_for_unknown_session(tmp_path: Path) -> None:
@@ -477,7 +482,7 @@ def test_transport_steer_session_returns_not_found_for_unknown_session(tmp_path:
     )
 
     assert response.status == 404
-    assert response.json() == {"error": "unknown session: missing-session"}
+    assert response.json() == _error_body("unknown session: missing-session")
 
 
 def _parse_sse_payloads(response: _TransportResponse) -> list[dict[str, object]]:
@@ -865,7 +870,7 @@ def test_transport_rejects_invalid_settings_payload(
     response = _run_app(app, method="POST", path="/api/settings", body=body)
 
     assert response.status == 400
-    assert response.json() == {"error": expected_error}
+    assert response.json() == _error_body(expected_error)
 
 
 def test_create_runtime_app_forwards_config_to_default_runtime_factory(tmp_path: Path) -> None:
@@ -1570,7 +1575,7 @@ def test_transport_returns_not_found_for_missing_session_debug_snapshot(tmp_path
     response = _run_app(app, method="GET", path="/api/sessions/missing-session/debug")
 
     assert response.status == 404
-    assert response.json() == {"error": "unknown session: missing-session"}
+    assert response.json() == _error_body("unknown session: missing-session")
 
 
 def test_transport_debug_endpoint_does_not_shut_down_shared_runtime_background_tasks(
@@ -1853,7 +1858,7 @@ def test_transport_notification_routes_enforce_methods_and_workspace_ownership(
     )
 
     assert response.status == expected_status
-    assert response.json() == {"error": expected_error}
+    assert response.json() == _error_body(expected_error)
 
 
 def test_transport_round_trips_parent_session_lineage(tmp_path: Path) -> None:
@@ -2519,7 +2524,7 @@ def test_transport_rejects_invalid_approval_resolution_payload(
     )
 
     assert response.status == 400
-    assert response.json() == {"error": expected_error}
+    assert response.json() == _error_body(expected_error)
 
 
 def test_transport_returns_conflict_when_approval_resolution_has_no_pending_request(
@@ -2547,7 +2552,10 @@ def test_transport_returns_conflict_when_approval_resolution_has_no_pending_requ
     )
 
     assert response.status == 409
-    assert response.json() == {"error": "no pending approval for session: completed-session"}
+    assert response.json() == _error_body(
+        "no pending approval for session: completed-session",
+        code="no_pending_approval",
+    )
 
 
 def test_transport_rejects_non_post_method_for_approval_resolution_route(tmp_path: Path) -> None:
@@ -2557,7 +2565,7 @@ def test_transport_rejects_non_post_method_for_approval_resolution_route(tmp_pat
     response = _run_app(app, method="GET", path="/api/sessions/approval-session/approval")
 
     assert response.status == 405
-    assert response.json() == {"error": "method not allowed"}
+    assert response.json() == _error_body("method not allowed")
 
 
 def test_transport_rejects_invalid_question_answer_payload(tmp_path: Path) -> None:
@@ -2572,7 +2580,7 @@ def test_transport_rejects_invalid_question_answer_payload(tmp_path: Path) -> No
     )
 
     assert response.status == 400
-    assert response.json() == {"error": "responses must be a non-empty array"}
+    assert response.json() == _error_body("responses must be a non-empty array")
 
 
 def test_transport_rejects_invalid_question_answer_item_payload(tmp_path: Path) -> None:
@@ -2597,7 +2605,7 @@ def test_transport_rejects_invalid_question_answer_item_payload(tmp_path: Path) 
     )
 
     assert response.status == 400
-    assert response.json() == {"error": "responses[0].answers[0] must be a non-empty string"}
+    assert response.json() == _error_body("responses[0].answers[0] must be a non-empty string")
 
 
 def test_transport_rejects_non_post_method_for_question_route(tmp_path: Path) -> None:
@@ -2607,7 +2615,7 @@ def test_transport_rejects_non_post_method_for_question_route(tmp_path: Path) ->
     response = _run_app(app, method="GET", path="/api/sessions/question-session/question")
 
     assert response.status == 405
-    assert response.json() == {"error": "method not allowed"}
+    assert response.json() == _error_body("method not allowed")
 
 
 def test_transport_answers_pending_question_over_http(tmp_path: Path) -> None:
@@ -2751,7 +2759,7 @@ def test_transport_returns_not_found_for_missing_pending_question(tmp_path: Path
     )
 
     assert response.status == 404
-    assert response.json() == {"error": "no pending question for session: question-session"}
+    assert response.json() == _error_body("no pending question for session: question-session")
 
 
 def test_transport_streams_runtime_chunks_in_sse_order() -> None:
@@ -2915,6 +2923,10 @@ def test_transport_run_stream_cancels_run_on_client_disconnect() -> None:
 
     async def _send(message: dict[str, object]) -> None:
         sent.append(message)
+        # A real ASGI send suspends on the socket write. Yielding here is what
+        # lets the server's disconnect listener deliver the dropped connection
+        # to the streaming task instead of the response running to completion.
+        await asyncio.sleep(0)
 
     scope: dict[str, object] = {
         "type": "http",
@@ -2976,6 +2988,9 @@ def test_transport_session_events_stops_replay_burst_on_client_disconnect() -> N
 
     async def _send(message: dict[str, object]) -> None:
         sent.append(message)
+        # A real ASGI send suspends on the socket write; yielding is what lets
+        # the server's disconnect listener interrupt the replay burst.
+        await asyncio.sleep(0)
 
     scope: dict[str, object] = {
         "type": "http",
@@ -3990,7 +4005,7 @@ def test_transport_logs_unexpected_streaming_errors(caplog: pytest.LogCaptureFix
         )
 
     assert response.status == 500
-    assert response.json() == {"error": "internal server error"}
+    assert response.json() == _error_body("internal server error")
     assert "unexpected transport streaming failure" in caplog.text
 
 
@@ -4016,7 +4031,7 @@ def test_transport_run_stream_reports_factory_failure_without_unboundlocalerror(
         )
 
     assert response.status == 500
-    assert response.json() == {"error": "internal server error"}
+    assert response.json() == _error_body("internal server error")
     assert "boom from factory" in caplog.text
     assert "UnboundLocalError" not in caplog.text
 
@@ -4033,7 +4048,7 @@ def test_transport_rejects_invalid_run_stream_payload() -> None:
     )
 
     assert response.status == 400
-    assert response.json() == {"error": "prompt must be a non-empty string"}
+    assert response.json() == _error_body("prompt must be a non-empty string")
 
 
 def test_transport_rejects_invalid_agent_model_format_as_bad_request(tmp_path: Path) -> None:
@@ -4055,7 +4070,7 @@ def test_transport_rejects_invalid_agent_model_format_as_bad_request(tmp_path: P
     )
 
     assert response.status == 400
-    assert response.json() == {"error": "model must use provider/model format"}
+    assert response.json() == _error_body("model must use provider/model format")
 
 
 def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> None:
@@ -4231,7 +4246,7 @@ def test_transport_rejects_non_post_method_for_mcp_retry(tmp_path: Path) -> None
     response = _run_app(app, method="GET", path="/api/status/mcp/retry")
 
     assert response.status == 405
-    assert response.json() == {"error": "method not allowed"}
+    assert response.json() == _error_body("method not allowed")
 
 
 def test_transport_retry_mcp_value_error_returns_http_400_and_closes_runtime_once(
@@ -4347,7 +4362,7 @@ def test_transport_retry_mcp_value_error_returns_http_400_and_closes_runtime_onc
     response = _run_app(app, method="POST", path="/api/status/mcp/retry")
 
     assert response.status == 400
-    assert response.json() == {"error": "retry failed"}
+    assert response.json() == _error_body("retry failed")
     assert RetryMcpErrorRuntime.close_calls == 1
 
 
@@ -4728,7 +4743,7 @@ def test_transport_rejects_unsupported_request_metadata_field() -> None:
     )
 
     assert response.status == 400
-    assert response.json() == {"error": "unsupported request metadata field(s): client"}
+    assert response.json() == _error_body("unsupported request metadata field(s): client")
 
 
 def test_transport_rejects_unknown_parent_session_in_run_stream_payload(tmp_path: Path) -> None:
@@ -4748,7 +4763,7 @@ def test_transport_rejects_unknown_parent_session_in_run_stream_payload(tmp_path
     )
 
     assert response.status == 400
-    assert response.json() == {"error": "parent session does not exist: missing-parent"}
+    assert response.json() == _error_body("parent session does not exist: missing-parent")
 
 
 def test_transport_allows_parent_session_while_parent_stream_request_is_active(
@@ -4842,7 +4857,7 @@ def test_transport_rejects_empty_session_id_in_run_stream_payload() -> None:
     )
 
     assert response.status == 400
-    assert response.json() == {"error": "session_id must be a non-empty string when provided"}
+    assert response.json() == _error_body("session_id must be a non-empty string when provided")
 
 
 def test_transport_rejects_unreplayable_session_id_in_run_stream_payload() -> None:
@@ -4857,7 +4872,7 @@ def test_transport_rejects_unreplayable_session_id_in_run_stream_payload() -> No
     )
 
     assert response.status == 400
-    assert response.json() == {"error": "session_id must not contain '/'"}
+    assert response.json() == _error_body("session_id must not contain '/'")
 
 
 def test_transport_returns_not_found_for_unknown_session(tmp_path: Path) -> None:
@@ -4867,7 +4882,7 @@ def test_transport_returns_not_found_for_unknown_session(tmp_path: Path) -> None
     response = _run_app(app, method="GET", path="/api/sessions/missing-session")
 
     assert response.status == 404
-    assert response.json() == {"error": "unknown session: missing-session"}
+    assert response.json() == _error_body("unknown session: missing-session")
 
 
 def test_transport_returns_not_found_for_unaddressable_session_id(tmp_path: Path) -> None:
@@ -4877,4 +4892,4 @@ def test_transport_returns_not_found_for_unaddressable_session_id(tmp_path: Path
     response = _run_app(app, method="GET", path="/api/sessions/bad/session")
 
     assert response.status == 404
-    assert response.json() == {"error": "not found"}
+    assert response.json() == _error_body("not found")

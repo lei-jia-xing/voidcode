@@ -1,19 +1,31 @@
+"""Runtime HTTP transport backed by FastAPI.
+
+This module owns the runtime's only HTTP surface. It keeps the wire contract the
+hand-rolled ASGI app established — routes, methods, status codes, the error
+envelope, byte-stable JSON rendering and hand-framed server-sent events — while
+FastAPI owns routing, method dispatch, request-body parsing and error handling.
+The client contract for those shapes lives in
+:mod:`voidcode.runtime.transport.http_contract`.
+"""
+
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import queue
 import sys
 import threading
-from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import contextmanager, nullcontext
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import ExitStack, asynccontextmanager, contextmanager, nullcontext, suppress
 from copy import deepcopy
 from pathlib import Path
 from typing import Protocol, cast, final
-from urllib.parse import parse_qs
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException
+from starlette.middleware import Middleware
+from starlette.responses import Response
+from starlette.types import Receive, Scope, Send
 
 from ..active_session import ActiveRunInterruptResult
 from ..background.models import (
@@ -72,6 +84,32 @@ from ..service import VoidCodeRuntime
 from ..session import SessionRef, SessionState, StoredSessionSummary
 from ..storage.shared import SessionSealedError
 from ..workspace import WorkspaceOpenError, WorkspaceRuntimeCoordinator
+from .http_contract import (
+    AfterSequenceQuery,
+    EventStreamResponse,
+    FollowQuery,
+    HttpError,
+    JsonBodyContentTypeMiddleware,
+    JsonResponse,
+    ShowThinkingQuery,
+    StreamCompletion,
+    _ApprovalResolutionRequestPayload,
+    _QuestionAnswerRequestPayload,
+    _RunStreamRequestPayload,
+    _SessionCancelRequestPayload,
+    _SessionRevertRequestPayload,
+    _SettingsRequestPayload,
+    _SteerSessionRequestPayload,
+    _TaskSteerRequestPayload,
+    _WorkspaceOpenRequestPayload,
+    error_code,
+    http_exception_response,
+    is_api_path,
+    json_response,
+    request_validation_error_response,
+    sse_frame,
+    unhandled_exception_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +135,74 @@ _SESSION_TERMINAL_STATUSES = frozenset({"completed", "failed", "interrupted"})
 
 # Idle poll interval for the session-event follow stream. The tick itself only
 # reads events past the client cursor plus the session status, so the interval
-# bounds follow latency without loading the transcript again.
+# bounds follow latency without loading the transcript again. Starlette owns the
+# connection's ``receive()``, so the tick is an idle sleep rather than a
+# disconnect-polling receive.
 _SESSION_EVENT_FOLLOW_POLL_SECONDS = 1.0
+
+# Upper bound on how long a closing stream waits for its producer thread. The
+# runtime's ``run_stream`` is a synchronous generator with no cancellation seam,
+# so a chunk already in flight cannot be interrupted; the thread is a daemon and
+# stops at its next chunk boundary once the stop flag is set.
+_STREAM_WORKER_JOIN_SECONDS = 0.05
+
+
+async def _aclose_async_iterator(iterator: AsyncIterator[object]) -> None:
+    """Close an async generator that a response owns, swallowing teardown noise."""
+    aclose = getattr(iterator, "aclose", None)
+    if aclose is None:
+        return
+    with suppress(BaseException):
+        await aclose()
+
+
+def _chunk_reports_failure(chunk: RuntimeStreamChunk) -> bool:
+    """Whether a run-stream chunk is the terminal failure frame."""
+    return chunk.event is not None and chunk.event.event_type == "runtime.failed"
+
+
+def _resolved_task_output(
+    task_result: BackgroundTaskResult,
+    child_session_result: RuntimeSessionResult | None,
+) -> str | None:
+    """The output the background-task read surfaces fall back to.
+
+    The child session's own transcript wins, then the task's summarized output,
+    then its error. The three read surfaces over one task
+    (``/api/tasks/{id}/output`` and ``/api/sessions/{id}/delegated-context``)
+    must agree, so they share this one derivation.
+    """
+    if child_session_result is not None and child_session_result.output is not None:
+        return child_session_result.output
+    if task_result.summary_output is not None:
+        return task_result.summary_output
+    return task_result.error
+
+
+@final
+class _ClientDisconnectCancellation:
+    """Cancel a streamed run exactly once, whoever notices the disconnect first.
+
+    Both the frame generator (cancellation) and the response (a failing send)
+    can be the first to observe that the client is gone, and the run must be
+    cancelled exactly once either way.
+    """
+
+    __slots__ = ("_runtime", "_session_id", "_cancelled")
+
+    def __init__(self, runtime: RuntimeTransport, session_id: str) -> None:
+        self._runtime = runtime
+        self._session_id = session_id
+        self._cancelled = False
+
+    def __call__(self) -> None:
+        if self._cancelled:
+            return
+        self._cancelled = True
+        try:
+            self._runtime.cancel_session(self._session_id, reason="client_disconnected")
+        except Exception:
+            logger.exception("failed to cancel run after client disconnect")
 
 
 @final
@@ -257,220 +361,44 @@ class RuntimeTransport(Protocol):
     ) -> RuntimeResponse: ...
 
 
-class Receive(Protocol):
-    async def __call__(self) -> dict[str, object]: ...
+def _runtime_request_from(payload: _RunStreamRequestPayload) -> RuntimeRequest:
+    """Build the runtime request, applying the runtime's own boundary checks.
 
+    Session ids and request metadata are runtime-owned boundary inputs, so their
+    failures are reported as the requested-value errors the transport has always
+    produced rather than as field validation.
+    """
+    session_id = payload.session_id
+    if session_id is not None:
+        validate_session_id(session_id)
 
-class Send(Protocol):
-    async def __call__(self, message: dict[str, object]) -> None: ...
+    parent_session_id = payload.parent_session_id
+    if parent_session_id is not None:
+        validate_session_reference_id(
+            parent_session_id,
+            field_name="parent_session_id",
+        )
 
-
-class _HttpBoundaryModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", validate_default=True)
-
-
-class _RunStreamRequestPayload(_HttpBoundaryModel):
-    prompt: str | None = None
-    session_id: str | None = None
-    parent_session_id: str | None = None
-    metadata: dict[str, object] = Field(default_factory=dict)
-
-    @field_validator("prompt", mode="before")
-    @classmethod
-    def _validate_prompt(cls, value: object) -> str:
-        if not isinstance(value, str) or not value:
-            raise ValueError("must be a non-empty string")
-        return value
-
-    @field_validator("session_id", "parent_session_id", mode="before")
-    @classmethod
-    def _validate_optional_string(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise ValueError("must be a string when provided")
-        return value
-
-    @field_validator("metadata", mode="before")
-    @classmethod
-    def _validate_metadata(cls, value: object) -> dict[str, object]:
-        if value is None:
-            return {}
-        if not isinstance(value, dict):
-            raise ValueError("must be an object when provided")
-        return cast(dict[str, object], value)
-
-
-class _ApprovalResolutionRequestPayload(_HttpBoundaryModel):
-    request_id: str | None = None
-    decision: str | None = None
-
-    @field_validator("request_id", mode="before")
-    @classmethod
-    def _validate_request_id(cls, value: object) -> str:
-        if not isinstance(value, str) or not value:
-            raise ValueError("must be a non-empty string")
-        return value
-
-    @field_validator("decision", mode="before")
-    @classmethod
-    def _validate_decision(cls, value: object) -> str:
-        if value not in ("allow", "deny"):
-            raise ValueError("must be 'allow' or 'deny'")
-        return cast(str, value)
-
-
-class _SessionCancelRequestPayload(_HttpBoundaryModel):
-    run_id: str | None = None
-    reason: str | None = None
-
-    @field_validator("run_id", "reason", mode="before")
-    @classmethod
-    def _validate_optional_string(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise ValueError("must be a string when provided")
-        stripped = value.strip()
-        return stripped or None
-
-
-class _SettingsRequestPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    provider: str | None = None
-    provider_api_key: str | None = None
-    model: str | None = None
-
-    @field_validator("provider", "provider_api_key", "model", mode="before")
-    @classmethod
-    def _validate_optional_string(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise ValueError("must be a string when provided")
-        stripped = value.strip()
-        return stripped or None
-
-
-class _QuestionResponsePayload(_HttpBoundaryModel):
-    header: str | None = None
-    answers: tuple[str, ...] | None = None
-
-    @field_validator("header", mode="before")
-    @classmethod
-    def _validate_header(cls, value: object) -> str:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("must be a non-empty string")
-        return value
-
-    @field_validator("answers", mode="before")
-    @classmethod
-    def _validate_answers(cls, value: object) -> tuple[str, ...]:
-        if not isinstance(value, list) or not value:
-            raise ValueError("must be a non-empty array")
-        answer_items = cast(list[object], value)
-        answers: list[str] = []
-        for index, raw_answer in enumerate(answer_items):
-            if not isinstance(raw_answer, str) or not raw_answer.strip():
-                raise ValueError(f"[{index}] must be a non-empty string")
-            answers.append(raw_answer)
-        return tuple(answers)
-
-
-class _QuestionAnswerRequestPayload(_HttpBoundaryModel):
-    request_id: str | None = None
-    responses: tuple[_QuestionResponsePayload, ...] | None = None
-
-    @field_validator("request_id", mode="before")
-    @classmethod
-    def _validate_request_id(cls, value: object) -> str:
-        if not isinstance(value, str) or not value:
-            raise ValueError("must be a non-empty string")
-        return value
-
-    @field_validator("responses", mode="before")
-    @classmethod
-    def _validate_responses(cls, value: object) -> list[object]:
-        if not isinstance(value, list) or not value:
-            raise ValueError("must be a non-empty array")
-        return cast(list[object], value)
-
-
-class _SessionRevertRequestPayload(_HttpBoundaryModel):
-    sequence: int | None = None
-
-    @field_validator("sequence", mode="before")
-    @classmethod
-    def _validate_sequence(cls, value: object) -> int:
-        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-            raise ValueError("must be a positive integer")
-        return value
-
-
-class _SteerSessionRequestPayload(_HttpBoundaryModel):
-    content: str | None = None
-
-    @field_validator("content", mode="before")
-    @classmethod
-    def _validate_content(cls, value: object) -> str:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("must be a non-empty string")
-        return value
-
-
-def _parse_json_body(body: bytes) -> object:
-    try:
-        return json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("request body must be valid JSON") from exc
-
-
-def _http_path_from_loc(loc: tuple[object, ...]) -> str:
-    parts: list[str] = []
-    for item in loc:
-        if isinstance(item, int):
-            if not parts:
-                parts.append(f"[{item}]")
-                continue
-            parts[-1] = f"{parts[-1]}[{item}]"
-            continue
-        parts.append(str(item))
-    return ".".join(parts)
-
-
-def _http_validation_reason(error: dict[str, object]) -> str:
-    error_type = cast(str, error.get("type", ""))
-    if error_type == "value_error":
-        context = error.get("ctx")
-        if isinstance(context, dict):
-            nested_error = cast(dict[str, object], context).get("error")
-            if isinstance(nested_error, ValueError):
-                return str(nested_error)
-    return cast(str, error.get("msg", "is invalid"))
-
-
-def _format_http_validation_error(error: dict[str, object]) -> str:
-    loc = tuple(cast(tuple[object, ...], error.get("loc", ())))
-    error_type = cast(str, error.get("type", ""))
-    path = _http_path_from_loc(loc)
-    if error_type == "extra_forbidden":
-        unknown_keys = ", ".join(str(item) for item in loc if isinstance(item, str))
-        return f"unsupported settings field(s): {unknown_keys}"
-    if error_type in {"model_type", "dict_type"}:
-        if not path:
-            return "request body must be a JSON object"
-        return f"{path} must be an object"
-    reason = _http_validation_reason(error)
-    if not path:
-        return reason
-    if reason.startswith("[") or reason.startswith("."):
-        return f"{path}{reason}"
-    return f"{path} {reason}"
+    return RuntimeRequest(
+        prompt=cast(str, payload.prompt),
+        session_id=session_id,
+        parent_session_id=parent_session_id,
+        metadata=validate_runtime_request_metadata(payload.metadata),
+        allocate_session_id=session_id is None,
+    )
 
 
 @final
-class RuntimeTransportApp:
+class RuntimeTransportApp(FastAPI):
+    """The runtime's HTTP transport as a FastAPI application.
+
+    Construction and routing are frozen for the test suite: the app is still
+    built through ``create_runtime_app`` or ``RuntimeTransportApp(runtime_factory=,
+    workspace_coordinator=, frontend_dist=)``, every route keeps its path,
+    method, status code and body shape, and the streaming paths stay
+    hand-framed.
+    """
+
     _runtime_factory: Callable[[], RuntimeTransport]
     _workspace_coordinator: WorkspaceRuntimeCoordinator | None
 
@@ -481,9 +409,271 @@ class RuntimeTransportApp:
         workspace_coordinator: WorkspaceRuntimeCoordinator | None = None,
         frontend_dist: Path | None = None,
     ) -> None:
+        super().__init__(
+            title="VoidCode runtime API",
+            description=(
+                "Local-first VoidCode runtime. Every API response is JSON (or a hand-framed SSE stream) and every "
+                '/api error uses the {"error", "code"} envelope: validation failures are 400, unmatched paths 404, '
+                "wrong methods 405 and unhandled failures 500."
+            ),
+            docs_url=None,
+            redoc_url=None,
+            # The interactive UIs stay off because they load assets from a CDN
+            # and this server is local-first by design. FastAPI's own OpenAPI
+            # route is off too: the transport serves the document itself so it
+            # keeps the one JSON renderer (sorted keys, explicit charset).
+            openapi_url=None,
+            redirect_slashes=False,
+            default_response_class=JsonResponse,
+            lifespan=self._lifespan,
+            middleware=[Middleware(JsonBodyContentTypeMiddleware)],
+            exception_handlers={
+                HTTPException: http_exception_response,
+                RequestValidationError: request_validation_error_response,
+                # Starlette routes a handler for ``Exception`` to its outermost
+                # server-error middleware: the transport's envelope is sent, and
+                # the exception is re-raised afterwards so the server still logs
+                # the traceback.
+                Exception: unhandled_exception_response,
+            },
+        )
         self._runtime_factory = runtime_factory
         self._workspace_coordinator = workspace_coordinator
         self._frontend_dist = frontend_dist
+        # Paths no API route claimed fall through to the static/SPA handler,
+        # which is also what keeps unknown ``/api`` paths a JSON 404.
+        self.router.default = self._serve_unmatched_path
+        self._register_routes()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        scope_type = scope.get("type")
+        if scope_type not in ("http", "lifespan"):
+            raise RuntimeError(f"unsupported scope type: {scope_type!r}")
+        await super().__call__(scope, receive, send)
+
+    @asynccontextmanager
+    async def _lifespan(self, _app: FastAPI) -> AsyncIterator[None]:
+        """Release the workspace coordinator on server shutdown.
+
+        ``server.py`` still runs uvicorn with ``lifespan="off"``, so the served
+        process never reaches this path; it preserves the transport's previous
+        behaviour for embedders and tests that drive a lifespan scope.
+        """
+        yield
+        if self._workspace_coordinator is not None:
+            self._workspace_coordinator.close()
+
+    def _register_routes(self) -> None:
+        """The transport's route table.
+
+        Paths, methods and status codes are the hand-rolled transport's; ``tag``
+        and ``summary`` exist for the OpenAPI document at ``/api/openapi.json``,
+        and ``response_model=None`` keeps FastAPI out of the response shapes
+        because those dicts are runtime-owned serializer output.
+        """
+
+        def route(
+            path: str,
+            endpoint: Callable[..., Awaitable[Response]],
+            *,
+            methods: list[str],
+            tag: str,
+            summary: str,
+            in_schema: bool = True,
+        ) -> None:
+            self.add_api_route(
+                path,
+                endpoint,
+                methods=methods,
+                tags=[tag],
+                summary=summary,
+                response_model=None,
+                include_in_schema=in_schema,
+            )
+
+        route(
+            "/api/openapi.json",
+            self._handle_openapi_document,
+            methods=["GET"],
+            tag="runtime",
+            summary="Read this API surface as an OpenAPI document",
+            in_schema=False,
+        )
+
+        route(
+            "/api/runtime/run/stream",
+            self._handle_run_stream,
+            methods=["POST"],
+            tag="runtime",
+            summary="Run a prompt and stream ordered events as SSE",
+        )
+        route("/api/sessions", self._handle_list_sessions, methods=["GET"], tag="sessions", summary="List persisted main sessions")
+        route("/api/tasks", self._handle_list_background_tasks, methods=["GET"], tag="tasks", summary="List background tasks")
+        route("/api/tasks", self._handle_start_background_task, methods=["POST"], tag="tasks", summary="Start a background task")
+        route("/api/notifications", self._handle_list_notifications, methods=["GET"], tag="notifications", summary="List notifications")
+        route("/api/settings", self._handle_get_settings, methods=["GET"], tag="settings", summary="Read runtime web settings")
+        route("/api/settings", self._handle_update_settings, methods=["POST"], tag="settings", summary="Update runtime web settings")
+        route("/api/workspaces", self._handle_list_workspaces, methods=["GET"], tag="workspaces", summary="List the workspace registry")
+        route(
+            "/api/workspaces/open",
+            self._handle_open_workspace,
+            methods=["POST"],
+            tag="workspaces",
+            summary="Open or switch the active workspace",
+        )
+        route("/api/providers", self._handle_list_providers, methods=["GET"], tag="providers", summary="List providers")
+        route("/api/agents", self._handle_list_agents, methods=["GET"], tag="runtime", summary="List available agents")
+        route("/api/skills", self._handle_list_skills, methods=["GET"], tag="runtime", summary="List available skills")
+        route("/api/commands", self._handle_list_commands, methods=["GET"], tag="runtime", summary="List available commands")
+        route("/api/status", self._handle_get_status, methods=["GET"], tag="runtime", summary="Read the runtime status snapshot")
+        route("/api/status/mcp/retry", self._handle_retry_mcp, methods=["POST"], tag="runtime", summary="Retry MCP connections")
+        route("/api/review", self._handle_get_review, methods=["GET"], tag="review", summary="Read the workspace review snapshot")
+        route("/api/review/diff/{path:path}", self._handle_get_review_diff, methods=["GET"], tag="review", summary="Read one file diff")
+        route(
+            "/api/notifications/{notification_id:path}/ack",
+            self._handle_acknowledge_notification,
+            methods=["POST"],
+            tag="notifications",
+            summary="Acknowledge a notification",
+        )
+        route("/api/tasks/{task_id}", self._handle_background_task_status, methods=["GET"], tag="tasks", summary="Read one background task")
+        route(
+            "/api/tasks/{task_id}/output",
+            self._handle_background_task_output,
+            methods=["GET"],
+            tag="tasks",
+            summary="Read a background task's output",
+        )
+        route("/api/tasks/{task_id}/cancel", self._handle_cancel_background_task, methods=["POST"], tag="tasks", summary="Cancel a background task")
+        route(
+            "/api/tasks/{task_id}/retry",
+            self._handle_retry_background_task,
+            methods=["POST"],
+            tag="tasks",
+            summary="Retry a terminal background task",
+        )
+        route(
+            "/api/tasks/{task_id}/steer",
+            self._handle_steer_background_task,
+            methods=["POST"],
+            tag="tasks",
+            summary="Steer a keep-alive background task",
+        )
+        route(
+            "/api/sessions/{session_id}",
+            self._handle_session_replay,
+            methods=["GET"],
+            tag="sessions",
+            summary="Replay a persisted session (read-only)",
+        )
+        route(
+            "/api/sessions/{session_id}/events",
+            self._handle_session_events,
+            methods=["GET"],
+            tag="sessions",
+            summary="Stream a session's ordered events as SSE",
+        )
+        route(
+            "/api/sessions/{session_id}/tasks",
+            self._handle_list_background_tasks_by_parent_session,
+            methods=["GET"],
+            tag="sessions",
+            summary="List a parent session's background tasks",
+        )
+        route(
+            "/api/sessions/{session_id}/delegated-context",
+            self._handle_child_session_context,
+            methods=["GET"],
+            tag="sessions",
+            summary="Read a delegated child session's context",
+        )
+        route(
+            "/api/sessions/{session_id}/approval",
+            self._handle_approval_resolution,
+            methods=["POST"],
+            tag="sessions",
+            summary="Resolve a pending approval and continue the run",
+        )
+        route(
+            "/api/sessions/{session_id}/question",
+            self._handle_question_answer,
+            methods=["POST"],
+            tag="sessions",
+            summary="Answer a pending question and continue the run",
+        )
+        route(
+            "/api/sessions/{session_id}/result",
+            self._handle_session_result,
+            methods=["GET"],
+            tag="sessions",
+            summary="Read a session's terminal result",
+        )
+        route(
+            "/api/sessions/{session_id}/debug",
+            self._handle_session_debug,
+            methods=["GET"],
+            tag="sessions",
+            summary="Read a session's debug snapshot",
+        )
+        route("/api/sessions/{session_id}/undo", self._handle_session_undo, methods=["POST"], tag="sessions", summary="Undo the session revert")
+        route(
+            "/api/sessions/{session_id}/revert",
+            self._handle_session_revert,
+            methods=["POST"],
+            tag="sessions",
+            summary="Write a session revert marker",
+        )
+        route(
+            "/api/sessions/{session_id}/unrevert",
+            self._handle_session_unrevert,
+            methods=["POST"],
+            tag="sessions",
+            summary="Clear the session revert marker",
+        )
+        route(
+            "/api/sessions/{session_id}/cancel",
+            self._handle_cancel_session,
+            methods=["POST"],
+            tag="sessions",
+            summary="Cancel the session's active run",
+        )
+        route(
+            "/api/sessions/{session_id}/resume",
+            self._handle_resume,
+            methods=["POST"],
+            tag="sessions",
+            summary="Explicitly resume an interrupted session",
+        )
+        route(
+            "/api/sessions/{session_id}/steer",
+            self._handle_steer_session,
+            methods=["POST"],
+            tag="sessions",
+            summary="Queue a steering message for the session",
+        )
+        route(
+            "/api/providers/{provider_name}/models",
+            self._handle_provider_models,
+            methods=["GET"],
+            tag="providers",
+            summary="List a provider's models",
+        )
+        route(
+            "/api/providers/{provider_name}/inspect",
+            self._handle_provider_inspect,
+            methods=["GET"],
+            tag="providers",
+            summary="Inspect a provider's endpoint and configuration",
+        )
+        route(
+            "/api/providers/{provider_name}/validate",
+            self._handle_provider_validation,
+            methods=["POST"],
+            tag="providers",
+            summary="Validate a provider's credentials",
+        )
+
+    # ------------------------------------------------------------------ plumbing
 
     @staticmethod
     def _close_runtime(
@@ -497,735 +687,720 @@ class RuntimeTransportApp:
         if callable(exit_method):
             exit_method(None, None, None)
 
-    @staticmethod
-    def _show_thinking_from_scope(scope: dict[str, object]) -> bool:
-        raw_query = scope.get("query_string", b"")
-        if isinstance(raw_query, bytes):
-            query = raw_query.decode("utf-8", errors="ignore")
-        elif isinstance(raw_query, str):
-            query = raw_query
-        else:
-            return False
-        values = parse_qs(query, keep_blank_values=True).get("show_thinking", ())
-        if not values:
-            values = parse_qs(query, keep_blank_values=True).get("showThinking", ())
-        return any(value.strip().lower() in {"1", "true", "yes", "on"} for value in values)
-
     @contextmanager
     def _active_request_scope(self) -> Iterator[None]:
         request_scope = self._workspace_coordinator.active_request() if self._workspace_coordinator is not None else nullcontext()
         with request_scope:
             yield
 
-    async def __call__(
-        self,
-        scope: dict[str, object],
-        receive: Receive,
-        send: Send,
-    ) -> None:
-        scope_type = scope.get("type")
-        if scope_type == "lifespan":
-            await self._handle_lifespan(receive, send)
-            return
-        if scope_type != "http":
-            raise RuntimeError(f"unsupported scope type: {scope_type!r}")
+    @contextmanager
+    def _runtime_lease(self) -> Iterator[RuntimeTransport]:
+        """One request's runtime, owned for as long as the response lives.
 
-        method = cast(str, scope.get("method", "GET"))
-        path = cast(str, scope.get("path", "/"))
-        show_thinking = self._show_thinking_from_scope(scope)
+        The coordinator's active-request slot and the runtime instance are held
+        together: a request-scoped runtime is closed on the way out, while a
+        coordinator-owned one survives.
+        """
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                yield runtime
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
 
-        if await self._dispatch_api_route(
-            method=method,
-            path=path,
-            scope=scope,
-            receive=receive,
-            send=send,
-            show_thinking=show_thinking,
-        ):
-            return
-        await self._handle_static_file(path, send)
-
-    async def _dispatch_api_route(
-        self,
-        *,
-        method: str,
-        path: str,
-        scope: dict[str, object],
-        receive: Receive,
-        send: Send,
-        show_thinking: bool,
-    ) -> bool:
-        if await self._route_api_exact_paths(
-            method=method,
-            path=path,
-            receive=receive,
-            send=send,
-            show_thinking=show_thinking,
-        ):
-            return True
-        if await self._route_notification_paths(method=method, path=path, send=send):
-            return True
-        if await self._route_task_paths(
-            method=method,
-            path=path,
-            receive=receive,
-            send=send,
-            show_thinking=show_thinking,
-        ):
-            return True
-        if await self._route_session_paths(
-            method=method,
-            path=path,
-            scope=scope,
-            receive=receive,
-            send=send,
-            show_thinking=show_thinking,
-        ):
-            return True
-        if await self._route_provider_paths(method=method, path=path, send=send):
-            return True
-        if await self._route_review_diff_paths(method=method, path=path, send=send):
-            return True
-        if path == "/api" or path.startswith("/api/"):
-            await self._json_response(send, status=404, payload={"error": "not found"})
-            return True
-        return False
-
-    async def _route_api_exact_paths(
-        self,
-        *,
-        method: str,
-        path: str,
-        receive: Receive,
-        send: Send,
-        show_thinking: bool,
-    ) -> bool:
-        if path == "/api/runtime/run/stream":
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_run_stream(receive, send, show_thinking=show_thinking)
-            return True
-
-        if path == "/api/sessions":
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_list_sessions(send)
-            return True
-
-        if path == "/api/tasks":
-            if method == "GET":
-                await self._handle_list_background_tasks(send)
-                return True
-            if method == "POST":
-                await self._handle_start_background_task(receive, send)
-                return True
-            await self._json_response(
-                send,
-                status=405,
-                payload={"error": "method not allowed"},
-            )
-            return True
-
-        if path == "/api/notifications":
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_list_notifications(send)
-            return True
-
-        if path == "/api/settings":
-            if method == "GET":
-                await self._handle_get_settings(send)
-                return True
-            if method == "POST":
-                await self._handle_update_settings(receive, send)
-                return True
-            await self._json_response(
-                send,
-                status=405,
-                payload={"error": "method not allowed"},
-            )
-            return True
-
-        if path == "/api/workspaces":
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_list_workspaces(send)
-            return True
-
-        if path == "/api/workspaces/open":
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_open_workspace(receive, send)
-            return True
-
-        if path == "/api/providers":
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_list_providers(send)
-            return True
-
-        if path == "/api/agents":
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_list_agents(send)
-            return True
-
-        if path == "/api/skills":
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_list_skills(send)
-            return True
-
-        if path == "/api/commands":
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_list_commands(send)
-            return True
-
-        if path == "/api/status":
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_get_status(send)
-            return True
-
-        if path == "/api/status/mcp/retry":
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_retry_mcp(send)
-            return True
-
-        if path == "/api/review":
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_get_review(send)
-            return True
-
-        return False
-
-    async def _route_notification_paths(self, *, method: str, path: str, send: Send) -> bool:
-        notification_prefix = "/api/notifications/"
-        if not path.startswith(notification_prefix):
-            return False
-        notification_path = path.removeprefix(notification_prefix)
-        if not notification_path.endswith("/ack"):
-            await self._json_response(send, status=404, payload={"error": "not found"})
-            return True
-        notification_id = notification_path.removesuffix("/ack")
-        if not notification_id:
-            await self._json_response(send, status=404, payload={"error": "not found"})
-            return True
-        if method != "POST":
-            await self._json_response(
-                send,
-                status=405,
-                payload={"error": "method not allowed"},
-            )
-            return True
-        await self._handle_acknowledge_notification(
-            notification_id=notification_id,
-            send=send,
-        )
-        return True
-
-    async def _route_task_paths(
-        self,
-        *,
-        method: str,
-        path: str,
-        receive: Receive,
-        send: Send,
-        show_thinking: bool,
-    ) -> bool:
-        task_prefix = "/api/tasks/"
-        if not path.startswith(task_prefix):
-            return False
-        task_path = path.removeprefix(task_prefix)
-        is_cancel_route = task_path.endswith("/cancel")
-        is_output_route = task_path.endswith("/output")
-        is_retry_route = task_path.endswith("/retry")
-        is_steer_route = task_path.endswith("/steer")
-        task_id = (
-            task_path.removesuffix("/cancel")
-            if is_cancel_route
-            else task_path.removesuffix("/output")
-            if is_output_route
-            else task_path.removesuffix("/retry")
-            if is_retry_route
-            else task_path.removesuffix("/steer")
-            if is_steer_route
-            else task_path
-        )
-        try:
-            validate_background_task_id(task_id)
-        except ValueError:
-            await self._json_response(
-                send,
-                status=404,
-                payload={"error": "not found"},
-            )
-            return True
-        if is_cancel_route:
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_cancel_background_task(task_id=task_id, send=send)
-            return True
-        if is_retry_route:
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_retry_background_task(task_id=task_id, send=send)
-            return True
-        if is_steer_route:
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_steer_background_task(task_id=task_id, receive=receive, send=send)
-            return True
-        if is_output_route:
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_background_task_output(
-                task_id=task_id,
-                send=send,
-                show_thinking=show_thinking,
-            )
-            return True
-        if method != "GET":
-            await self._json_response(
-                send,
-                status=405,
-                payload={"error": "method not allowed"},
-            )
-            return True
-        await self._handle_background_task_status(task_id=task_id, send=send)
-        return True
-
-    async def _route_session_paths(
-        self,
-        *,
-        method: str,
-        path: str,
-        scope: dict[str, object],
-        receive: Receive,
-        send: Send,
-        show_thinking: bool,
-    ) -> bool:
-        session_prefix = "/api/sessions/"
-        if not path.startswith(session_prefix):
-            return False
-        session_path = path.removeprefix(session_prefix)
-        is_events_route = session_path.endswith("/events")
-        is_task_list_route = session_path.endswith("/tasks")
-        is_approval_route = session_path.endswith("/approval")
-        is_question_route = session_path.endswith("/question")
-        is_delegated_context_route = session_path.endswith("/delegated-context")
-        is_result_route = session_path.endswith("/result")
-        is_debug_route = session_path.endswith("/debug")
-        is_undo_route = session_path.endswith("/undo")
-        is_revert_route = session_path.endswith("/revert")
-        is_unrevert_route = session_path.endswith("/unrevert")
-        is_cancel_route = session_path.endswith("/cancel") or session_path.endswith("/interrupt")
-        is_resume_route = session_path.endswith("/resume")
-        is_steer_route = session_path.endswith("/steer")
-        session_id = (
-            session_path.removesuffix("/events")
-            if is_events_route
-            else session_path.removesuffix("/tasks")
-            if is_task_list_route
-            else session_path.removesuffix("/approval")
-            if is_approval_route
-            else session_path.removesuffix("/question")
-            if is_question_route
-            else session_path.removesuffix("/delegated-context")
-            if is_delegated_context_route
-            else session_path.removesuffix("/result")
-            if is_result_route
-            else session_path.removesuffix("/debug")
-            if is_debug_route
-            else session_path.removesuffix("/undo")
-            if is_undo_route
-            else session_path.removesuffix("/revert")
-            if is_revert_route
-            else session_path.removesuffix("/unrevert")
-            if is_unrevert_route
-            else session_path.removesuffix("/cancel")
-            if session_path.endswith("/cancel")
-            else session_path.removesuffix("/interrupt")
-            if session_path.endswith("/interrupt")
-            else session_path.removesuffix("/resume")
-            if is_resume_route
-            else session_path.removesuffix("/steer")
-            if is_steer_route
-            else session_path
-        )
+    @staticmethod
+    def _validated_session_id(session_id: str) -> str:
         try:
             validate_session_id(session_id)
         except ValueError:
-            await self._json_response(
-                send,
-                status=404,
-                payload={"error": "not found"},
-            )
+            # An invalid session id stays a 404, exactly as before: it is
+            # indistinguishable from an unknown session on this surface.
+            raise HttpError(404, "not found") from None
+        return session_id
+
+    @staticmethod
+    def _validated_task_id(task_id: str) -> str:
+        try:
+            validate_background_task_id(task_id)
+        except ValueError:
+            raise HttpError(404, "not found") from None
+        return task_id
+
+    # ------------------------------------------------------------------- streaming
+
+    async def _stream_runtime_chunks(
+        self,
+        runtime: RuntimeTransport,
+        request: RuntimeRequest,
+    ) -> AsyncGenerator[RuntimeStreamChunk]:
+        """Bridge the runtime's blocking stream generator onto the event loop.
+
+        ``run_stream`` is synchronous and must not run on the loop, so a worker
+        thread drives it and posts chunks back through an ``asyncio.Queue``.
+        Posting is done from the loop's own thread-safe callback rather than
+        through ``asyncio.to_thread``, which keeps every live stream off the
+        shared default executor the resume/approval/question calls also use.
+
+        When the response goes away the worker is told to stop, so a dropped
+        client cannot leave a thread draining a run nobody is reading. The
+        runtime's stream has no cancellation seam, so a chunk already in flight
+        still completes; the stop lands at the next chunk boundary.
+        """
+        loop = asyncio.get_running_loop()
+        chunk_queue: asyncio.Queue[object] = asyncio.Queue()
+        stop_event = threading.Event()
+        sentinel = object()
+
+        def _deliver(item: object) -> bool:
+            try:
+                loop.call_soon_threadsafe(chunk_queue.put_nowait, item)
+            except RuntimeError:
+                # The loop is gone: nothing can consume this stream any more.
+                return False
             return True
-        if is_task_list_route:
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_list_background_tasks_by_parent_session(
-                parent_session_id=session_id,
-                send=send,
-            )
-            return True
-        if is_delegated_context_route:
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_child_session_context(
-                session_id=session_id,
-                send=send,
+
+        def _produce() -> None:
+            try:
+                for chunk in runtime.run_stream(request):
+                    if stop_event.is_set():
+                        break
+                    if not _deliver(chunk):
+                        break
+            except Exception as exc:
+                _deliver(exc)
+            finally:
+                _deliver(sentinel)
+
+        worker = threading.Thread(target=_produce, name="runtime-stream-worker", daemon=True)
+        worker.start()
+        try:
+            while True:
+                item = await chunk_queue.get()
+                if item is sentinel:
+                    return
+                if isinstance(item, Exception):
+                    raise item
+                yield cast(RuntimeStreamChunk, item)
+        finally:
+            stop_event.set()
+            worker.join(timeout=_STREAM_WORKER_JOIN_SECONDS)
+
+    async def _run_stream_frames(
+        self,
+        stream: AsyncIterator[RuntimeStreamChunk],
+        first_chunk: RuntimeStreamChunk,
+        *,
+        completion: StreamCompletion,
+        show_thinking: bool,
+    ) -> AsyncGenerator[bytes]:
+        """Frames for ``POST /api/runtime/run/stream``.
+
+        The first chunk is pulled by the endpoint before the response starts so
+        that a pre-stream failure is still a JSON error; everything after it is
+        streamed here. ``completion`` records whether the last frame was reached
+        so the response can tell a finished stream from a dropped client.
+        """
+        session_emitter = _SessionStateEmitter()
+        emitted_failed_chunk = False
+        try:
+            emitted_failed_chunk = _chunk_reports_failure(first_chunk)
+            yield self._runtime_chunk_frame(first_chunk, session_emitter=session_emitter, show_thinking=show_thinking)
+            async for chunk in stream:
+                emitted_failed_chunk = _chunk_reports_failure(chunk) or emitted_failed_chunk
+                yield self._runtime_chunk_frame(chunk, session_emitter=session_emitter, show_thinking=show_thinking)
+            completion.finished = True
+        except Exception:
+            if not emitted_failed_chunk:
+                logger.exception("unexpected transport streaming failure")
+            # A failing runtime is not a dropped client: the client stays
+            # connected to a stream that ended, so the run is not cancelled.
+            completion.finished = True
+        finally:
+            await _aclose_async_iterator(stream)
+
+    def _runtime_chunk_frame(
+        self,
+        chunk: RuntimeStreamChunk,
+        *,
+        session_emitter: _SessionStateEmitter,
+        show_thinking: bool,
+    ) -> bytes:
+        return sse_frame(
+            self._serialize_runtime_stream_chunk(
+                chunk,
+                session=session_emitter.serialize(chunk.session),
                 show_thinking=show_thinking,
             )
-            return True
-        session_id = (
-            session_path.removesuffix("/events")
-            if is_events_route
-            else session_path.removesuffix("/approval")
-            if is_approval_route
-            else session_path.removesuffix("/question")
-            if is_question_route
-            else session_path.removesuffix("/result")
-            if is_result_route
-            else session_path.removesuffix("/debug")
-            if is_debug_route
-            else session_path.removesuffix("/undo")
-            if is_undo_route
-            else session_path.removesuffix("/revert")
-            if is_revert_route
-            else session_path.removesuffix("/unrevert")
-            if is_unrevert_route
-            else session_path.removesuffix("/cancel")
-            if session_path.endswith("/cancel")
-            else session_path.removesuffix("/interrupt")
-            if session_path.endswith("/interrupt")
-            else session_path.removesuffix("/resume")
-            if is_resume_route
-            else session_path.removesuffix("/steer")
-            if is_steer_route
-            else session_path
         )
-        if is_cancel_route:
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
+
+    async def _session_event_frames(
+        self,
+        runtime: RuntimeTransport,
+        *,
+        session_id: str,
+        replay: RuntimeResponse,
+        after_sequence: int,
+        follow: bool,
+        show_thinking: bool,
+    ) -> AsyncGenerator[bytes]:
+        """Frames for ``GET /api/sessions/{id}/events``."""
+        yield sse_frame(
+            {
+                "kind": "session",
+                "session": self._serialize_session_state(replay.session),
+                "event": None,
+                "output": None,
+            }
+        )
+
+        cursor = after_sequence
+        pending_events: tuple[EventEnvelope, ...] = replay.events
+        session_status = replay.session.status
+        while True:
+            for event in pending_events:
+                if event.sequence <= cursor:
+                    continue
+                yield sse_frame(
+                    {
+                        "kind": "event",
+                        "session": None,
+                        "event": self._serialize_event(event, show_thinking=show_thinking),
+                        "output": None,
+                    }
                 )
-                return True
-            await self._handle_cancel_session(session_id=session_id, receive=receive, send=send)
-            return True
-        if is_steer_route:
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_steer_session(session_id=session_id, receive=receive, send=send)
-            return True
-        if is_events_route:
-            if method != "GET":
-                await self._json_response(send, status=405, payload={"error": "method not allowed"})
-                return True
-            raw_query = scope.get("query_string", b"")
-            query_string = raw_query.decode("utf-8") if isinstance(raw_query, bytes) else str(raw_query)
-            query = parse_qs(query_string)
-            raw_after = query.get("after_sequence", ["0"])[0]
-            try:
-                after_sequence = int(raw_after)
-            except ValueError:
-                await self._json_response(send, status=400, payload={"error": "after_sequence must be an integer"})
-                return True
-            if after_sequence < 0:
-                await self._json_response(send, status=400, payload={"error": "after_sequence must be non-negative"})
-                return True
-            follow = query.get("follow", ["false"])[0].lower() == "true"
-            await self._handle_session_events(
+                cursor = event.sequence
+            if not follow or session_status in _SESSION_TERMINAL_STATUSES:
+                return
+            # Idle tick: read only the events past the cursor and the persisted
+            # status. Re-replaying the whole transcript here ran a full-log scan
+            # plus policy projection on the event loop once per second for every
+            # open follow stream.
+            await asyncio.sleep(_SESSION_EVENT_FOLLOW_POLL_SECONDS)
+            batch = runtime.session_events_after(
                 session_id=session_id,
+                after_sequence=cursor,
+            )
+            pending_events = batch.events
+            session_status = batch.status
+
+    # ------------------------------------------------------------------- handlers
+
+    async def _handle_run_stream(
+        self,
+        payload: _RunStreamRequestPayload,
+        show_thinking: ShowThinkingQuery = False,
+    ) -> Response:
+        try:
+            runtime_request = _runtime_request_from(payload)
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+
+        lease = ExitStack()
+        try:
+            try:
+                runtime = lease.enter_context(self._runtime_lease())
+            except Exception:
+                logger.exception("unexpected transport streaming failure")
+                raise HttpError(500, "internal server error") from None
+            stream = self._stream_runtime_chunks(runtime, runtime_request)
+            try:
+                first_chunk = await anext(stream)
+            except StopAsyncIteration:
+                logger.error("runtime stream emitted no chunks before response start")
+                raise HttpError(500, "internal server error") from None
+            except RuntimeRequestError as exc:
+                raise HttpError(400, str(exc)) from None
+            except Exception:
+                logger.exception("unexpected transport streaming failure")
+                raise HttpError(500, "internal server error") from None
+            on_client_disconnect = _ClientDisconnectCancellation(runtime, first_chunk.session.session.id)
+            completion = StreamCompletion()
+            frames = self._run_stream_frames(
+                stream,
+                first_chunk,
+                completion=completion,
+                show_thinking=show_thinking,
+            )
+        except BaseException:
+            lease.close()
+            raise
+        return EventStreamResponse(
+            frames,
+            completion=completion,
+            on_client_disconnect=on_client_disconnect,
+            on_close=lease.close,
+        )
+
+    async def _handle_session_events(
+        self,
+        session_id: str,
+        after_sequence: AfterSequenceQuery = 0,
+        follow: FollowQuery = False,
+        show_thinking: ShowThinkingQuery = False,
+    ) -> Response:
+        session_id = self._validated_session_id(session_id)
+        lease = ExitStack()
+        try:
+            runtime = lease.enter_context(self._runtime_lease())
+            try:
+                replay = runtime.replay_session(session_id=session_id)
+            except ValueError as exc:
+                raise HttpError(404, str(exc)) from None
+            except Exception as exc:
+                logger.exception("session event replay failed for %s", session_id)
+                raise HttpError(500, f"session event replay failed: {exc}") from None
+            frames = self._session_event_frames(
+                runtime,
+                session_id=session_id,
+                replay=replay,
                 after_sequence=after_sequence,
                 follow=follow,
-                receive=receive,
-                send=send,
                 show_thinking=show_thinking,
             )
-            return True
-        if is_approval_route:
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_approval_resolution(
-                session_id=session_id,
-                receive=receive,
-                send=send,
-                show_thinking=show_thinking,
-            )
-            return True
-        if is_question_route:
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_question_answer(
-                session_id=session_id,
-                receive=receive,
-                send=send,
-                show_thinking=show_thinking,
-            )
-            return True
-        if is_result_route:
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_session_result(
-                session_id=session_id,
-                send=send,
-                show_thinking=show_thinking,
-            )
-            return True
-        if is_debug_route:
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_session_debug(
-                session_id=session_id,
-                send=send,
-                show_thinking=show_thinking,
-            )
-            return True
-        if is_undo_route:
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_session_undo(session_id=session_id, send=send)
-            return True
-        if is_revert_route:
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_session_revert(
-                session_id=session_id,
-                receive=receive,
-                send=send,
-            )
-            return True
-        if is_unrevert_route:
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_session_unrevert(session_id=session_id, send=send)
-            return True
-        if is_resume_route:
-            # Explicit resume of an interrupted/failed-retryable session is
-            # a POST-only surface. It re-enters the graph loop (provider
-            # re-execution) and must never be triggered by a read.
-            if method != "POST":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_resume(
-                session_id=session_id,
-                send=send,
-                show_thinking=show_thinking,
-            )
-            return True
-        if method != "GET":
-            await self._json_response(
-                send,
-                status=405,
-                payload={"error": "method not allowed"},
-            )
-            return True
-        # Session replay (frontend getSessionReplay) is READ-ONLY: it must
-        # never route into runtime.resume, which would re-execute the model
-        # for any row whose persisted checkpoint is 'interrupted' (which
-        # includes every session while it is running).
-        await self._handle_session_replay(
-            session_id=session_id,
-            send=send,
-            show_thinking=show_thinking,
-        )
-        return True
+        except BaseException:
+            lease.close()
+            raise
+        return EventStreamResponse(frames, on_close=lease.close)
 
-    async def _route_provider_paths(self, *, method: str, path: str, send: Send) -> bool:
-        provider_prefix = "/api/providers/"
-        if not path.startswith(provider_prefix):
-            return False
-        provider_path = path.removeprefix(provider_prefix)
-        is_models_route = provider_path.endswith("/models")
-        is_inspect_route = provider_path.endswith("/inspect")
-        is_validate_route = provider_path.endswith("/validate")
-        if not is_models_route and not is_inspect_route and not is_validate_route:
-            await self._json_response(send, status=404, payload={"error": "not found"})
-            return True
-        provider_name = (
-            provider_path.removesuffix("/models")
-            if is_models_route
-            else provider_path.removesuffix("/inspect")
-            if is_inspect_route
-            else provider_path.removesuffix("/validate")
-        )
-        if not provider_name:
-            await self._json_response(send, status=404, payload={"error": "not found"})
-            return True
-        expected_method = "POST" if is_validate_route else "GET"
-        if method != expected_method:
-            await self._json_response(
-                send,
-                status=405,
-                payload={"error": "method not allowed"},
-            )
-            return True
-        if is_models_route:
-            await self._handle_provider_models(provider_name=provider_name, send=send)
-        elif is_inspect_route:
-            await self._handle_provider_inspect(provider_name=provider_name, send=send)
-        else:
-            await self._handle_provider_validation(provider_name=provider_name, send=send)
-        return True
+    async def _handle_openapi_document(self) -> Response:
+        """Serve the API surface document the transport itself renders."""
+        return json_response(self.openapi())
 
-    async def _route_review_diff_paths(self, *, method: str, path: str, send: Send) -> bool:
-        review_diff_prefix = "/api/review/diff/"
-        if not path.startswith(review_diff_prefix):
-            return False
-        diff_path = path.removeprefix(review_diff_prefix)
-        if not diff_path:
-            await self._json_response(send, status=404, payload={"error": "not found"})
-            return True
-        if method != "GET":
-            await self._json_response(
-                send,
-                status=405,
-                payload={"error": "method not allowed"},
+    async def _handle_list_sessions(self) -> Response:
+        with self._runtime_lease() as runtime:
+            # The flat session list is the main-session surface: delegated child
+            # sessions belong only to the child-session view and are reachable
+            # through the task/delegated-context endpoints, so exclude them here.
+            payload = [self._serialize_stored_session_summary(item) for item in runtime.list_sessions() if item.session.parent_id is None]
+        return json_response(payload)
+
+    async def _handle_start_background_task(self, payload: _RunStreamRequestPayload) -> Response:
+        try:
+            runtime_request = _runtime_request_from(payload)
+        except ValueError as exc:
+            raise HttpError(400, str(exc)) from None
+
+        with self._runtime_lease() as runtime:
+            try:
+                task = runtime.start_background_task(runtime_request)
+            except RuntimeRequestError as exc:
+                raise HttpError(400, str(exc)) from None
+        return json_response(self._serialize_background_task_state(task), status=201)
+
+    async def _handle_list_background_tasks(self) -> Response:
+        with self._runtime_lease() as runtime:
+            payload = [self._serialize_background_task_summary(item) for item in runtime.list_background_tasks()]
+        return json_response(payload)
+
+    async def _handle_list_background_tasks_by_parent_session(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            payload = [
+                self._serialize_background_task_summary(item)
+                for item in runtime.list_background_tasks_by_parent_session(parent_session_id=session_id)
+            ]
+        return json_response(payload)
+
+    async def _handle_background_task_status(self, task_id: str) -> Response:
+        task_id = self._validated_task_id(task_id)
+        with self._runtime_lease() as runtime:
+            try:
+                task = runtime.load_background_task(task_id)
+            except ValueError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response(self._serialize_background_task_state(task))
+
+    async def _handle_background_task_output(self, task_id: str, show_thinking: ShowThinkingQuery = False) -> Response:
+        task_id = self._validated_task_id(task_id)
+        with self._runtime_lease() as runtime:
+            try:
+                task_result = runtime.load_background_task_result(task_id)
+                child_session_result: RuntimeSessionResult | None = None
+                if task_result.child_session_id is not None:
+                    try:
+                        child_session_result = runtime.session_result(session_id=task_result.child_session_id)
+                    except ValueError:
+                        child_session_result = None
+            except ValueError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response(
+            {
+                "task": self._serialize_background_task_result(task_result),
+                "session_result": self._serialize_session_result(
+                    child_session_result,
+                    show_thinking=show_thinking,
+                )
+                if child_session_result is not None
+                else None,
+                "output": _resolved_task_output(task_result, child_session_result),
+            }
+        )
+
+    async def _handle_child_session_context(self, session_id: str, show_thinking: ShowThinkingQuery = False) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            task_result = runtime.load_background_task_result_by_child_session(
+                child_session_id=session_id,
             )
-            return True
-        await self._handle_get_review_diff(path=diff_path, send=send)
-        return True
+            if task_result is None:
+                # The miss is a routing signal for clients (ordinary session
+                # replay vs. delegated child context), so it carries a stable
+                # code instead of leaving them to match on the message.
+                raise HttpError(
+                    404,
+                    f"no delegated child context for session: {session_id}",
+                    code="delegated_context_missing",
+                )
+            child_session_result: RuntimeSessionResult | None = None
+            if task_result.child_session_id is not None:
+                try:
+                    child_session_result = runtime.session_result(
+                        session_id=task_result.child_session_id,
+                    )
+                except ValueError:
+                    child_session_result = None
+
+        return json_response(
+            {
+                "task": self._serialize_background_task_result(task_result),
+                "session_result": self._serialize_session_result(
+                    child_session_result,
+                    show_thinking=show_thinking,
+                )
+                if child_session_result is not None
+                else None,
+                "output": _resolved_task_output(task_result, child_session_result),
+            }
+        )
+
+    async def _handle_cancel_background_task(self, task_id: str) -> Response:
+        task_id = self._validated_task_id(task_id)
+        with self._runtime_lease() as runtime:
+            try:
+                task = runtime.cancel_background_task(task_id)
+            except ValueError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response(self._serialize_background_task_state(task))
+
+    async def _handle_retry_background_task(self, task_id: str) -> Response:
+        task_id = self._validated_task_id(task_id)
+        with self._runtime_lease() as runtime:
+            try:
+                task = runtime.retry_background_task(task_id)
+            except ValueError as exc:
+                raise HttpError(400, str(exc)) from None
+        return json_response(
+            {
+                "retry_of_task_id": task_id,
+                "task": self._serialize_background_task_state(task),
+            },
+            status=201,
+        )
+
+    async def _handle_steer_background_task(self, task_id: str, payload: _TaskSteerRequestPayload) -> Response:
+        task_id = self._validated_task_id(task_id)
+        prompt = cast(str, payload.prompt)
+        with self._runtime_lease() as runtime:
+            try:
+                task = runtime.steer_background_task(task_id, prompt)
+            except ValueError as exc:
+                raise HttpError(400, str(exc)) from None
+        return json_response(
+            {
+                "steer_prompt": prompt,
+                "task": self._serialize_background_task_state(task),
+            }
+        )
+
+    async def _handle_cancel_session(self, session_id: str, payload: _SessionCancelRequestPayload | None = None) -> Response:
+        session_id = self._validated_session_id(session_id)
+        cancel_request = payload if payload is not None else _SessionCancelRequestPayload()
+        with self._runtime_lease() as runtime:
+            result = runtime.cancel_session(
+                session_id,
+                run_id=cancel_request.run_id,
+                reason=cancel_request.reason,
+            )
+        return json_response(result.as_payload())
+
+    async def _handle_list_notifications(self) -> Response:
+        with self._runtime_lease() as runtime:
+            payload = [self._serialize_notification(item) for item in runtime.list_notifications()]
+        return json_response(payload)
+
+    async def _handle_get_settings(self) -> Response:
+        with self._runtime_lease() as runtime:
+            payload = runtime.web_settings()
+        return json_response(payload)
+
+    async def _handle_list_workspaces(self) -> Response:
+        if self._workspace_coordinator is None:
+            raise HttpError(404, "not found")
+        return json_response(self._serialize_workspace_registry_snapshot(self._workspace_coordinator.snapshot()))
+
+    async def _handle_open_workspace(self, payload: _WorkspaceOpenRequestPayload) -> Response:
+        if self._workspace_coordinator is None:
+            raise HttpError(404, "not found")
+        try:
+            snapshot = self._workspace_coordinator.open_workspace(cast(str, payload.path))
+        except WorkspaceOpenError as exc:
+            raise HttpError(exc.status_code, str(exc), code=error_code(exc)) from None
+        return json_response(self._serialize_workspace_registry_snapshot(snapshot))
+
+    async def _handle_list_providers(self) -> Response:
+        with self._runtime_lease() as runtime:
+            payload = [self._serialize_provider_summary(provider) for provider in runtime.list_provider_summaries()]
+        return json_response(payload)
+
+    async def _handle_provider_models(self, provider_name: str) -> Response:
+        with self._runtime_lease() as runtime:
+            result = runtime.provider_models_result(provider_name)
+        status = 200 if result.configured else 409
+        return json_response(self._serialize_provider_models_result(result), status=status)
+
+    async def _handle_provider_inspect(self, provider_name: str) -> Response:
+        with self._runtime_lease() as runtime:
+            try:
+                result = runtime.inspect_provider(provider_name)
+            except ValueError as exc:
+                raise HttpError(400, str(exc)) from None
+        status = 200 if result.summary.configured else 409
+        return json_response(self._serialize_provider_inspect_result(result), status=status)
+
+    async def _handle_provider_validation(self, provider_name: str) -> Response:
+        with self._runtime_lease() as runtime:
+            try:
+                result = runtime.validate_provider_credentials(provider_name)
+            except ValueError as exc:
+                raise HttpError(400, str(exc)) from None
+        status = 200 if result.ok else 409
+        return json_response(self._serialize_provider_validation_result(result), status=status)
+
+    async def _handle_list_agents(self) -> Response:
+        with self._runtime_lease() as runtime:
+            payload = [self._serialize_agent_summary(agent) for agent in runtime.list_agent_summaries()]
+        return json_response(payload)
+
+    async def _handle_list_skills(self) -> Response:
+        with self._runtime_lease() as runtime:
+            payload = [self._serialize_skill_summary(skill) for skill in runtime.list_skill_summaries()]
+        return json_response(payload)
+
+    async def _handle_list_commands(self) -> Response:
+        with self._runtime_lease() as runtime:
+            payload = [self._serialize_command_summary(command) for command in runtime.list_command_summaries()]
+        return json_response(payload)
+
+    async def _handle_get_status(self) -> Response:
+        with self._runtime_lease() as runtime:
+            payload = self._serialize_runtime_status_snapshot(runtime.current_status())
+        return json_response(payload)
+
+    async def _handle_retry_mcp(self) -> Response:
+        with self._runtime_lease() as runtime:
+            try:
+                payload = self._serialize_runtime_status_snapshot(runtime.retry_mcp_connections())
+            except ValueError as exc:
+                raise HttpError(400, str(exc)) from None
+        return json_response(payload)
+
+    async def _handle_get_review(self) -> Response:
+        with self._runtime_lease() as runtime:
+            payload = self._serialize_workspace_review_snapshot(runtime.review_snapshot())
+        return json_response(payload)
+
+    async def _handle_get_review_diff(self, path: str) -> Response:
+        if not path:
+            raise HttpError(404, "not found")
+        with self._runtime_lease() as runtime:
+            try:
+                payload = self._serialize_review_file_diff(runtime.review_diff(path))
+            except ValueError as exc:
+                raise HttpError(400, str(exc)) from None
+        return json_response(payload)
+
+    async def _handle_update_settings(self, payload: _SettingsRequestPayload) -> Response:
+        with self._runtime_lease() as runtime:
+            try:
+                result = runtime.update_web_settings(
+                    provider=payload.provider,
+                    provider_api_key=payload.provider_api_key,
+                    model=payload.model,
+                )
+            except ValueError as exc:
+                raise HttpError(400, str(exc)) from None
+        return json_response(result)
+
+    def _resume_session(
+        self,
+        session_id: str,
+        *,
+        approval_request_id: str | None = None,
+        approval_decision: PermissionResolution | None = None,
+    ) -> RuntimeResponse:
+        # Keep runtime ownership in the worker even if the HTTP request disconnects.
+        with self._runtime_lease() as runtime:
+            if approval_request_id is None and approval_decision is None:
+                return runtime.resume(session_id)
+            return runtime.resume(
+                session_id,
+                approval_request_id=approval_request_id,
+                approval_decision=approval_decision,
+            )
+
+    def _answer_question(
+        self,
+        session_id: str,
+        *,
+        question_request_id: str,
+        responses: tuple[QuestionResponse, ...],
+    ) -> RuntimeResponse:
+        with self._runtime_lease() as runtime:
+            return runtime.answer_question(
+                session_id,
+                question_request_id=question_request_id,
+                responses=responses,
+            )
+
+    async def _handle_resume(self, session_id: str, show_thinking: ShowThinkingQuery = False) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            response = await asyncio.to_thread(self._resume_session, session_id)
+        except ValueError as exc:
+            raise HttpError(404, str(exc)) from None
+        return json_response(self._serialize_runtime_response(response, show_thinking=show_thinking))
+
+    async def _handle_session_replay(self, session_id: str, show_thinking: ShowThinkingQuery = False) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                response = runtime.replay_session(session_id=session_id)
+            except ValueError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response(self._serialize_runtime_response(response, show_thinking=show_thinking))
+
+    async def _handle_session_result(self, session_id: str, show_thinking: ShowThinkingQuery = False) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                result = runtime.session_result(session_id=session_id)
+            except ValueError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response(self._serialize_session_result(result, show_thinking=show_thinking))
+
+    async def _handle_session_debug(self, session_id: str, show_thinking: ShowThinkingQuery = False) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                snapshot = runtime.session_debug_snapshot(session_id=session_id)
+            except ValueError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response(
+            serialize_session_debug_snapshot(
+                snapshot,
+                show_thinking=show_thinking,
+            )
+        )
+
+    async def _handle_session_undo(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                marker = runtime.undo_session(session_id=session_id)
+            except ValueError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response({"revert_marker": serialize_revert_marker(marker)})
+
+    async def _handle_session_revert(self, session_id: str, payload: _SessionRevertRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                marker = runtime.revert_session(
+                    session_id=session_id,
+                    sequence=cast(int, payload.sequence),
+                )
+            except ValueError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response({"revert_marker": serialize_revert_marker(marker)})
+
+    async def _handle_steer_session(self, session_id: str, payload: _SteerSessionRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        content = cast(str, payload.content)
+        with self._runtime_lease() as runtime:
+            try:
+                queued = runtime.queue_steering(
+                    session_id=session_id,
+                    content=content,
+                )
+            except SessionSealedError as exc:
+                raise HttpError(409, str(exc), code=error_code(exc)) from None
+            except ValueError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response({"session_id": session_id, "queued": len(queued)})
+
+    async def _handle_session_unrevert(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                marker = runtime.unrevert_session(session_id=session_id)
+            except ValueError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response({"revert_marker": serialize_revert_marker(marker)})
+
+    async def _handle_approval_resolution(
+        self,
+        session_id: str,
+        payload: _ApprovalResolutionRequestPayload,
+        show_thinking: ShowThinkingQuery = False,
+    ) -> Response:
+        session_id = self._validated_session_id(session_id)
+        try:
+            response = await asyncio.to_thread(
+                self._resume_session,
+                session_id,
+                approval_request_id=cast(str, payload.request_id),
+                approval_decision=cast(PermissionResolution, payload.decision),
+            )
+        except ValueError as exc:
+            raise HttpError(409, str(exc), code=error_code(exc)) from None
+        return json_response(self._serialize_runtime_response(response, show_thinking=show_thinking))
+
+    async def _handle_question_answer(
+        self,
+        session_id: str,
+        payload: _QuestionAnswerRequestPayload,
+        show_thinking: ShowThinkingQuery = False,
+    ) -> Response:
+        session_id = self._validated_session_id(session_id)
+        responses = tuple(
+            QuestionResponse(
+                header=cast(str, item.header),
+                answers=cast(tuple[str, ...], item.answers),
+            )
+            for item in (payload.responses if payload.responses is not None else ())
+        )
+        try:
+            response = await asyncio.to_thread(
+                self._answer_question,
+                session_id,
+                question_request_id=cast(str, payload.request_id),
+                responses=responses,
+            )
+        except (ValueError, NoPendingQuestionError) as exc:
+            raise HttpError(404, str(exc)) from None
+        return json_response(self._serialize_runtime_response(response, show_thinking=show_thinking))
+
+    async def _handle_acknowledge_notification(self, notification_id: str) -> Response:
+        if not notification_id:
+            raise HttpError(404, "not found")
+        with self._runtime_lease() as runtime:
+            try:
+                notification = runtime.acknowledge_notification(notification_id=notification_id)
+            except ValueError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response(self._serialize_notification(notification))
+
+    # --------------------------------------------------------------------- static
 
     @staticmethod
     def _content_type_for_suffix(suffix: str) -> str:
@@ -1247,10 +1422,21 @@ class RuntimeTransportApp:
         }
         return _CONTENT_TYPES.get(suffix.lower(), "application/octet-stream")
 
-    async def _handle_static_file(self, path: str, send: Send) -> None:
+    async def _serve_unmatched_path(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Last-resort handler for paths no API route claimed.
+
+        Unknown ``/api`` paths stay JSON 404s; everything else is served from the
+        frontend dist, with the SPA fallback for client-side routes.
+        """
+        path = cast(str, scope.get("path", "/"))
+        if is_api_path(path):
+            raise HttpError(404, "not found")
+        response = self._static_file_response(path, cast(str, scope.get("method", "GET")))
+        await response(scope, receive, send)
+
+    def _static_file_response(self, path: str, method: str) -> Response:
         if self._frontend_dist is None:
-            await self._json_response(send, status=404, payload={"error": "not found"})
-            return
+            raise HttpError(404, "not found")
 
         normalized_path = path.lstrip("/")
         if not normalized_path:
@@ -1263,1249 +1449,27 @@ class RuntimeTransportApp:
             resolved = file_path.resolve()
             resolved.relative_to(self._frontend_dist.resolve())
         except ValueError:
-            await self._json_response(send, status=404, payload={"error": "not found"})
-            return
+            raise HttpError(404, "not found") from None
 
         if resolved.is_file():
             content_type = self._content_type_for_suffix(resolved.suffix)
-            body = resolved.read_bytes()
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [(b"content-type", content_type.encode("utf-8"))],
-                }
-            )
-            await send({"type": "http.response.body", "body": body, "more_body": False})
-            return
+            return Response(resolved.read_bytes(), media_type=content_type)
 
         # SPA fallback is only for route-like paths. Missing assets should
         # stay 404 so browsers do not try to parse index.html as JS/CSS/etc.
         if resolved.suffix:
-            await self._json_response(send, status=404, payload={"error": "not found"})
-            return
+            raise HttpError(404, "not found")
 
-        # SPA fallback — serve index.html for client-side routing
+        # SPA fallback — serve index.html for client-side routing, which only
+        # ever happens for a navigation (GET/HEAD); a write to an unknown path
+        # must not be answered with a rendered page.
+        if method not in ("GET", "HEAD"):
+            raise HttpError(404, "not found")
         index_path = (self._frontend_dist / "index.html").resolve()
         if index_path.is_file():
-            body = index_path.read_bytes()
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [(b"content-type", b"text/html; charset=utf-8")],
-                }
-            )
-            await send({"type": "http.response.body", "body": body, "more_body": False})
-            return
+            return Response(index_path.read_bytes(), media_type="text/html; charset=utf-8")
 
-        await self._json_response(send, status=404, payload={"error": "not found"})
-
-    async def _handle_lifespan(self, receive: Receive, send: Send) -> None:
-        while True:
-            message = await receive()
-            message_type = message.get("type")
-            if message_type == "lifespan.startup":
-                await send({"type": "lifespan.startup.complete"})
-                continue
-            if message_type == "lifespan.shutdown":
-                if self._workspace_coordinator is not None:
-                    self._workspace_coordinator.close()
-                await send({"type": "lifespan.shutdown.complete"})
-                return
-            if message_type == "lifespan.disconnect":
-                return
-            raise RuntimeError(f"unsupported lifespan message type: {message_type!r}")
-
-    @staticmethod
-    async def _await_client_disconnect(receive: Receive) -> None:
-        while True:
-            message = await receive()
-            if message.get("type") in {"http.disconnect", "websocket.disconnect"}:
-                return
-
-    async def _handle_run_stream(
-        self,
-        receive: Receive,
-        send: Send,
-        *,
-        show_thinking: bool = False,
-    ) -> None:
-        runtime: RuntimeTransport | None = None
-        try:
-            body = await self._read_body(receive)
-            request = self._parse_runtime_request(body)
-        except ValueError as exc:
-            await self._json_response(send, status=400, payload={"error": str(exc)})
-            return
-
-        try:
-            with self._active_request_scope():
-                try:
-                    runtime = self._runtime_factory()
-                except Exception:
-                    logger.exception("unexpected transport streaming failure")
-                    await self._json_response(send, status=500, payload={"error": "internal server error"})
-                    return
-                stream = self._stream_runtime_chunks(runtime, request)
-                try:
-                    first_chunk = await anext(stream)
-                except StopAsyncIteration:
-                    logger.exception("runtime stream emitted no chunks before response start")
-                    await self._json_response(send, status=500, payload={"error": "internal server error"})
-                    return
-                except RuntimeRequestError as exc:
-                    await self._json_response(send, status=400, payload={"error": str(exc)})
-                    return
-                except Exception:
-                    logger.exception("unexpected transport streaming failure")
-                    await self._json_response(send, status=500, payload={"error": "internal server error"})
-                    return
-
-                await self._send_stream_start(send)
-
-                session_emitter = _SessionStateEmitter()
-                emitted_failed_chunk = await self._send_runtime_stream_chunk(
-                    send,
-                    first_chunk,
-                    session_emitter=session_emitter,
-                    show_thinking=show_thinking,
-                )
-
-                session_id = first_chunk.session.session.id
-                disconnect_task = asyncio.ensure_future(self._await_client_disconnect(receive))
-                try:
-                    while True:
-                        next_chunk_task = asyncio.ensure_future(anext(stream))
-                        done, _ = await asyncio.wait(
-                            (next_chunk_task, disconnect_task),
-                            return_when=asyncio.FIRST_COMPLETED,
-                        )
-                        if disconnect_task in done:
-                            next_chunk_task.cancel()
-                            try:
-                                runtime.cancel_session(session_id, reason="client_disconnected")
-                            except Exception:
-                                logger.exception("failed to cancel run after client disconnect")
-                            break
-                        try:
-                            chunk = next_chunk_task.result()
-                        except StopAsyncIteration:
-                            break
-                        try:
-                            chunk_failed = await self._send_runtime_stream_chunk(
-                                send,
-                                chunk,
-                                session_emitter=session_emitter,
-                                show_thinking=show_thinking,
-                            )
-                        except BrokenPipeError, ConnectionError, OSError, RuntimeError:
-                            # Client went away mid-stream (e.g. navigated away or
-                            # dropped the connection). Stop streaming immediately
-                            # instead of pushing bytes into a dead socket; this is
-                            # a normal disconnect, not a server failure.
-                            logger.debug(
-                                "client disconnected while streaming run chunks for session %s",
-                                session_id,
-                            )
-                            try:
-                                runtime.cancel_session(session_id, reason="client_disconnected")
-                            except Exception:
-                                logger.exception("failed to cancel run after client disconnect")
-                            break
-                        emitted_failed_chunk = emitted_failed_chunk or chunk_failed
-                except Exception:
-                    if not emitted_failed_chunk:
-                        logger.exception("unexpected transport streaming failure")
-                    try:
-                        await send({"type": "http.response.body", "body": b"", "more_body": False})
-                    except BrokenPipeError, ConnectionError, OSError, RuntimeError:
-                        pass
-                    return
-                finally:
-                    if not disconnect_task.done():
-                        disconnect_task.cancel()
-
-                try:
-                    await send({"type": "http.response.body", "body": b"", "more_body": False})
-                except BrokenPipeError, ConnectionError, OSError, RuntimeError:
-                    pass
-        finally:
-            if runtime is not None:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-
-    async def _handle_session_events(
-        self,
-        *,
-        session_id: str,
-        after_sequence: int,
-        follow: bool,
-        receive: Receive,
-        send: Send,
-        show_thinking: bool = False,
-    ) -> None:
-        runtime = self._runtime_factory()
-        try:
-            replay = runtime.replay_session(session_id=session_id)
-        except ValueError as exc:
-            self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-            await self._json_response(send, status=404, payload={"error": str(exc)})
-            return
-        except Exception as exc:
-            logger.exception("session event replay failed for %s", session_id)
-            self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-            await self._json_response(
-                send,
-                status=500,
-                payload={"error": "session event replay failed", "detail": str(exc)},
-            )
-            return
-        await self._send_stream_start(send)
-        await self._send_session_snapshot_chunk(send, replay.session)
-
-        cursor = after_sequence
-        pending_events: tuple[EventEnvelope, ...] = replay.events
-        session_status = replay.session.status
-        # Watch for client disconnects while we write the replay so a burst of
-        # events is not pushed into a dead socket (which the ASGI server then
-        # reports as repeated send failures).
-        disconnect_task = asyncio.ensure_future(self._await_client_disconnect(receive))
-        try:
-            while True:
-                for event in pending_events:
-                    if event.sequence <= cursor:
-                        continue
-                    send_task = asyncio.ensure_future(self._send_session_event_chunk(send, event, show_thinking=show_thinking))
-                    done, _ = await asyncio.wait(
-                        (send_task, disconnect_task),
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    if disconnect_task in done:
-                        send_task.cancel()
-                        logger.debug(
-                            "client disconnected during session event replay for %s",
-                            session_id,
-                        )
-                        return
-                    send_task.result()
-                    cursor = event.sequence
-                if not follow or session_status in _SESSION_TERMINAL_STATUSES:
-                    break
-                try:
-                    message = await asyncio.wait_for(receive(), timeout=_SESSION_EVENT_FOLLOW_POLL_SECONDS)
-                except TimeoutError:
-                    # Idle tick: read only the events past the cursor and the
-                    # persisted status. Re-replaying the whole transcript here
-                    # ran a full-log scan plus policy projection on the event
-                    # loop once per second for every open follow stream.
-                    batch = runtime.session_events_after(
-                        session_id=session_id,
-                        after_sequence=cursor,
-                    )
-                    pending_events = batch.events
-                    session_status = batch.status
-                    continue
-                if message.get("type") in {"http.disconnect", "websocket.disconnect"}:
-                    logger.debug(
-                        "client disconnected during session event follow for %s",
-                        session_id,
-                    )
-                    return
-        except BrokenPipeError, ConnectionError, OSError, RuntimeError:
-            logger.debug(
-                "client disconnected while streaming session events for %s",
-                session_id,
-            )
-            return
-        finally:
-            if not disconnect_task.done():
-                disconnect_task.cancel()
-            self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        try:
-            await send({"type": "http.response.body", "body": b"", "more_body": False})
-        except BrokenPipeError, ConnectionError, OSError, RuntimeError:
-            logger.debug(
-                "client disconnected before session event stream close for %s",
-                session_id,
-            )
-            return
-
-    async def _send_stream_start(self, send: Send) -> None:
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 200,
-                "headers": [
-                    (b"content-type", b"text/event-stream; charset=utf-8"),
-                    (b"cache-control", b"no-cache"),
-                ],
-            }
-        )
-
-    async def _send_runtime_stream_chunk(
-        self,
-        send: Send,
-        chunk: RuntimeStreamChunk,
-        *,
-        session_emitter: _SessionStateEmitter,
-        show_thinking: bool = False,
-    ) -> bool:
-        payload = self._serialize_runtime_stream_chunk(
-            chunk,
-            session=session_emitter.serialize(chunk.session),
-            show_thinking=show_thinking,
-        )
-        data = json.dumps(payload, sort_keys=True).encode("utf-8")
-        await send(
-            {
-                "type": "http.response.body",
-                "body": b"data: " + data + b"\n\n",
-                "more_body": True,
-            }
-        )
-        return chunk.event is not None and chunk.event.event_type == "runtime.failed"
-
-    async def _send_session_snapshot_chunk(self, send: Send, session: SessionState) -> None:
-        payload = {
-            "kind": "session",
-            "session": self._serialize_session_state(session),
-            "event": None,
-            "output": None,
-        }
-        data = json.dumps(payload, sort_keys=True).encode("utf-8")
-        await send(
-            {
-                "type": "http.response.body",
-                "body": b"data: " + data + b"\n\n",
-                "more_body": True,
-            }
-        )
-
-    async def _send_session_event_chunk(
-        self,
-        send: Send,
-        event: EventEnvelope,
-        *,
-        show_thinking: bool = False,
-    ) -> None:
-        payload = {
-            "kind": "event",
-            "session": None,
-            "event": self._serialize_event(event, show_thinking=show_thinking),
-            "output": None,
-        }
-        data = json.dumps(payload, sort_keys=True).encode("utf-8")
-        await send(
-            {
-                "type": "http.response.body",
-                "body": b"data: " + data + b"\n\n",
-                "more_body": True,
-            }
-        )
-
-    async def _handle_list_sessions(self, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                # The flat session list is the main-session surface: delegated
-                # child sessions belong only to the child-session view and are
-                # reachable through the task/delegated-context endpoints, so
-                # exclude them here.
-                payload = [self._serialize_stored_session_summary(item) for item in runtime.list_sessions() if item.session.parent_id is None]
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(send, status=200, payload=payload)
-
-    async def _handle_start_background_task(self, receive: Receive, send: Send) -> None:
-        try:
-            body = await self._read_body(receive)
-            request = self._parse_runtime_request(body)
-        except ValueError as exc:
-            await self._json_response(send, status=400, payload={"error": str(exc)})
-            return
-
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                task = runtime.start_background_task(request)
-            except RuntimeRequestError as exc:
-                await self._json_response(send, status=400, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(
-            send,
-            status=201,
-            payload=self._serialize_background_task_state(task),
-        )
-
-    async def _handle_list_background_tasks(self, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                payload = [self._serialize_background_task_summary(item) for item in runtime.list_background_tasks()]
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(send, status=200, payload=payload)
-
-    async def _handle_list_background_tasks_by_parent_session(
-        self,
-        *,
-        parent_session_id: str,
-        send: Send,
-    ) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                payload = [
-                    self._serialize_background_task_summary(item)
-                    for item in runtime.list_background_tasks_by_parent_session(parent_session_id=parent_session_id)
-                ]
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(send, status=200, payload=payload)
-
-    async def _handle_background_task_status(self, *, task_id: str, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                task = runtime.load_background_task(task_id)
-            except ValueError as exc:
-                await self._json_response(send, status=404, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(
-            send,
-            status=200,
-            payload=self._serialize_background_task_state(task),
-        )
-
-    async def _handle_background_task_output(
-        self,
-        *,
-        task_id: str,
-        send: Send,
-        show_thinking: bool = False,
-    ) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                task_result = runtime.load_background_task_result(task_id)
-                child_session_result: RuntimeSessionResult | None = None
-                if task_result.child_session_id is not None:
-                    try:
-                        child_session_result = runtime.session_result(session_id=task_result.child_session_id)
-                    except ValueError:
-                        child_session_result = None
-            except ValueError as exc:
-                await self._json_response(send, status=404, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        resolved_output = (
-            child_session_result.output
-            if child_session_result is not None and child_session_result.output is not None
-            else task_result.summary_output
-            if task_result.summary_output is not None
-            else task_result.error
-        )
-        await self._json_response(
-            send,
-            status=200,
-            payload={
-                "task": self._serialize_background_task_result(task_result),
-                "session_result": self._serialize_session_result(
-                    child_session_result,
-                    show_thinking=show_thinking,
-                )
-                if child_session_result is not None
-                else None,
-                "output": resolved_output,
-            },
-        )
-
-    async def _handle_child_session_context(
-        self,
-        *,
-        session_id: str,
-        send: Send,
-        show_thinking: bool = False,
-    ) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                task_result = runtime.load_background_task_result_by_child_session(
-                    child_session_id=session_id,
-                )
-                if task_result is None:
-                    await self._json_response(
-                        send,
-                        status=404,
-                        payload={"error": f"no delegated child context for session: {session_id}"},
-                    )
-                    return
-                child_session_result: RuntimeSessionResult | None = None
-                if task_result.child_session_id is not None:
-                    try:
-                        child_session_result = runtime.session_result(
-                            session_id=task_result.child_session_id,
-                        )
-                    except ValueError:
-                        child_session_result = None
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-
-        resolved_output = (
-            child_session_result.output
-            if child_session_result is not None and child_session_result.output is not None
-            else task_result.summary_output
-            if task_result.summary_output is not None
-            else task_result.error
-        )
-        await self._json_response(
-            send,
-            status=200,
-            payload={
-                "task": self._serialize_background_task_result(task_result),
-                "session_result": self._serialize_session_result(
-                    child_session_result,
-                    show_thinking=show_thinking,
-                )
-                if child_session_result is not None
-                else None,
-                "output": resolved_output,
-            },
-        )
-
-    async def _handle_cancel_background_task(self, *, task_id: str, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                task = runtime.cancel_background_task(task_id)
-            except ValueError as exc:
-                await self._json_response(send, status=404, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(
-            send,
-            status=200,
-            payload=self._serialize_background_task_state(task),
-        )
-
-    async def _handle_retry_background_task(self, *, task_id: str, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                task = runtime.retry_background_task(task_id)
-            except ValueError as exc:
-                await self._json_response(send, status=400, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(
-            send,
-            status=201,
-            payload={
-                "retry_of_task_id": task_id,
-                "task": self._serialize_background_task_state(task),
-            },
-        )
-
-    async def _handle_steer_background_task(self, *, task_id: str, receive: Receive, send: Send) -> None:
-        try:
-            body = await self._read_body(receive)
-            raw_payload = _parse_json_body(body)
-        except ValueError as exc:
-            await self._json_response(send, status=400, payload={"error": str(exc)})
-            return
-        if not isinstance(raw_payload, dict):
-            await self._json_response(
-                send,
-                status=400,
-                payload={"error": "request body must be a JSON object with a 'prompt' field"},
-            )
-            return
-        prompt = raw_payload.get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip():
-            await self._json_response(
-                send,
-                status=400,
-                payload={"error": "request body 'prompt' must be a non-empty string"},
-            )
-            return
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                task = runtime.steer_background_task(task_id, prompt)
-            except ValueError as exc:
-                await self._json_response(send, status=400, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(
-            send,
-            status=200,
-            payload={
-                "steer_prompt": prompt,
-                "task": self._serialize_background_task_state(task),
-            },
-        )
-
-    async def _handle_cancel_session(
-        self,
-        *,
-        session_id: str,
-        receive: Receive,
-        send: Send,
-    ) -> None:
-        try:
-            body = await self._read_body(receive)
-            payload = self._parse_session_cancel_request(body)
-        except ValueError as exc:
-            await self._json_response(send, status=400, payload={"error": str(exc)})
-            return
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                result = runtime.cancel_session(
-                    session_id,
-                    run_id=payload.run_id,
-                    reason=payload.reason,
-                )
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(send, status=200, payload=result.as_payload())
-
-    async def _handle_list_notifications(self, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                payload = [self._serialize_notification(item) for item in runtime.list_notifications()]
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(send, status=200, payload=payload)
-
-    async def _handle_get_settings(self, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                payload = runtime.web_settings()
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(send, status=200, payload=payload)
-
-    async def _handle_list_workspaces(self, send: Send) -> None:
-        if self._workspace_coordinator is None:
-            await self._json_response(send, status=404, payload={"error": "not found"})
-            return
-        payload = self._serialize_workspace_registry_snapshot(self._workspace_coordinator.snapshot())
-        await self._json_response(send, status=200, payload=payload)
-
-    async def _handle_open_workspace(self, receive: Receive, send: Send) -> None:
-        if self._workspace_coordinator is None:
-            await self._json_response(send, status=404, payload={"error": "not found"})
-            return
-        try:
-            body = await self._read_body(receive)
-            raw_payload = json.loads(body.decode("utf-8"))
-            if not isinstance(raw_payload, dict):
-                raise ValueError("request body must be a JSON object")
-            payload = cast(dict[str, object], raw_payload)
-            path = payload.get("path")
-            if not isinstance(path, str) or not path.strip():
-                raise ValueError("path must be a non-empty string")
-            snapshot = self._workspace_coordinator.open_workspace(path)
-        except WorkspaceOpenError as exc:
-            await self._json_response(
-                send,
-                status=exc.status_code,
-                payload={"error": str(exc), "code": exc.code},
-            )
-            return
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-            await self._json_response(send, status=400, payload={"error": str(exc)})
-            return
-        await self._json_response(
-            send,
-            status=200,
-            payload=self._serialize_workspace_registry_snapshot(snapshot),
-        )
-
-    async def _handle_list_providers(self, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                payload = [self._serialize_provider_summary(provider) for provider in runtime.list_provider_summaries()]
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(send, status=200, payload=payload)
-
-    async def _handle_provider_models(self, *, provider_name: str, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                result = runtime.provider_models_result(provider_name)
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        status = 200 if result.configured else 409
-        await self._json_response(send, status=status, payload=self._serialize_provider_models_result(result))
-
-    async def _handle_provider_inspect(self, *, provider_name: str, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                result = runtime.inspect_provider(provider_name)
-            except ValueError as exc:
-                await self._json_response(send, status=400, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        status = 200 if result.summary.configured else 409
-        await self._json_response(send, status=status, payload=self._serialize_provider_inspect_result(result))
-
-    async def _handle_provider_validation(self, *, provider_name: str, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                result = runtime.validate_provider_credentials(provider_name)
-            except ValueError as exc:
-                await self._json_response(send, status=400, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        status = 200 if result.ok else 409
-        await self._json_response(send, status=status, payload=self._serialize_provider_validation_result(result))
-
-    async def _handle_list_agents(self, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                payload = [self._serialize_agent_summary(agent) for agent in runtime.list_agent_summaries()]
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(send, status=200, payload=payload)
-
-    async def _handle_list_skills(self, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                payload = [self._serialize_skill_summary(skill) for skill in runtime.list_skill_summaries()]
-            finally:
-                self._close_runtime(
-                    runtime,
-                    workspace_coordinator=self._workspace_coordinator,
-                )
-        await self._json_response(send, status=200, payload=payload)
-
-    async def _handle_list_commands(self, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                payload = [self._serialize_command_summary(command) for command in runtime.list_command_summaries()]
-            finally:
-                self._close_runtime(
-                    runtime,
-                    workspace_coordinator=self._workspace_coordinator,
-                )
-        await self._json_response(send, status=200, payload=payload)
-
-    async def _handle_get_status(self, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                payload = self._serialize_runtime_status_snapshot(runtime.current_status())
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(send, status=200, payload=payload)
-
-    async def _handle_retry_mcp(self, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                payload = self._serialize_runtime_status_snapshot(runtime.retry_mcp_connections())
-            except ValueError as exc:
-                await self._json_response(send, status=400, payload={"error": str(exc)})
-            else:
-                await self._json_response(send, status=200, payload=payload)
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-
-    async def _handle_get_review(self, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                payload = self._serialize_workspace_review_snapshot(runtime.review_snapshot())
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(send, status=200, payload=payload)
-
-    async def _handle_get_review_diff(self, *, path: str, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                payload = self._serialize_review_file_diff(runtime.review_diff(path))
-            except ValueError as exc:
-                await self._json_response(send, status=400, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(send, status=200, payload=payload)
-
-    async def _handle_update_settings(self, receive: Receive, send: Send) -> None:
-        try:
-            body = await self._read_body(receive)
-            payload = self._parse_settings_request(body)
-        except ValueError as exc:
-            await self._json_response(send, status=400, payload={"error": str(exc)})
-            return
-
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                result = runtime.update_web_settings(**payload)
-            except ValueError as exc:
-                await self._json_response(send, status=400, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(send, status=200, payload=result)
-
-    def _resume_session(
-        self,
-        session_id: str,
-        *,
-        approval_request_id: str | None = None,
-        approval_decision: PermissionResolution | None = None,
-    ) -> RuntimeResponse:
-        # Keep runtime ownership in the worker even if the HTTP request disconnects.
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                if approval_request_id is None and approval_decision is None:
-                    return runtime.resume(session_id)
-                return runtime.resume(
-                    session_id,
-                    approval_request_id=approval_request_id,
-                    approval_decision=approval_decision,
-                )
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-
-    def _answer_question(
-        self,
-        session_id: str,
-        *,
-        question_request_id: str,
-        responses: tuple[QuestionResponse, ...],
-    ) -> RuntimeResponse:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                return runtime.answer_question(
-                    session_id,
-                    question_request_id=question_request_id,
-                    responses=responses,
-                )
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-
-    async def _handle_resume(
-        self,
-        *,
-        session_id: str,
-        send: Send,
-        show_thinking: bool = False,
-    ) -> None:
-        try:
-            response = await asyncio.to_thread(self._resume_session, session_id)
-        except ValueError as exc:
-            await self._json_response(send, status=404, payload={"error": str(exc)})
-            return
-        await self._json_response(
-            send,
-            status=200,
-            payload=self._serialize_runtime_response(response, show_thinking=show_thinking),
-        )
-
-    async def _handle_session_replay(
-        self,
-        *,
-        session_id: str,
-        send: Send,
-        show_thinking: bool = False,
-    ) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                response = runtime.replay_session(session_id=session_id)
-            except ValueError as exc:
-                await self._json_response(send, status=404, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(
-            send,
-            status=200,
-            payload=self._serialize_runtime_response(response, show_thinking=show_thinking),
-        )
-
-    async def _handle_session_result(
-        self,
-        *,
-        session_id: str,
-        send: Send,
-        show_thinking: bool = False,
-    ) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                result = runtime.session_result(session_id=session_id)
-            except ValueError as exc:
-                await self._json_response(send, status=404, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(
-            send,
-            status=200,
-            payload=self._serialize_session_result(result, show_thinking=show_thinking),
-        )
-
-    async def _handle_session_debug(
-        self,
-        *,
-        session_id: str,
-        send: Send,
-        show_thinking: bool = False,
-    ) -> None:
-        runtime = self._runtime_factory()
-        try:
-            snapshot = runtime.session_debug_snapshot(session_id=session_id)
-        except ValueError as exc:
-            await self._json_response(send, status=404, payload={"error": str(exc)})
-            return
-        finally:
-            self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(
-            send,
-            status=200,
-            payload=serialize_session_debug_snapshot(
-                snapshot,
-                show_thinking=show_thinking,
-            ),
-        )
-
-    async def _handle_session_undo(self, *, session_id: str, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                marker = runtime.undo_session(session_id=session_id)
-            except ValueError as exc:
-                await self._json_response(send, status=404, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(
-            send,
-            status=200,
-            payload={"revert_marker": serialize_revert_marker(marker)},
-        )
-
-    async def _handle_session_revert(
-        self,
-        *,
-        session_id: str,
-        receive: Receive,
-        send: Send,
-    ) -> None:
-        try:
-            payload = _SessionRevertRequestPayload.model_validate_json(await self._read_body(receive))
-        except (ValidationError, ValueError) as exc:
-            await self._json_response(send, status=400, payload={"error": str(exc)})
-            return
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                marker = runtime.revert_session(
-                    session_id=session_id,
-                    sequence=cast(int, payload.sequence),
-                )
-            except ValueError as exc:
-                await self._json_response(send, status=404, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(
-            send,
-            status=200,
-            payload={"revert_marker": serialize_revert_marker(marker)},
-        )
-
-    async def _handle_steer_session(
-        self,
-        *,
-        session_id: str,
-        receive: Receive,
-        send: Send,
-    ) -> None:
-        try:
-            content = self._parse_steer_session_request(await self._read_body(receive))
-        except ValueError as exc:
-            await self._json_response(send, status=400, payload={"error": str(exc)})
-            return
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                queued = runtime.queue_steering(
-                    session_id=session_id,
-                    content=content,
-                )
-            except SessionSealedError as exc:
-                await self._json_response(send, status=409, payload={"error": str(exc)})
-                return
-            except ValueError as exc:
-                await self._json_response(send, status=404, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(
-            send,
-            status=200,
-            payload={"session_id": session_id, "queued": len(queued)},
-        )
-
-    async def _handle_session_unrevert(self, *, session_id: str, send: Send) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                marker = runtime.unrevert_session(session_id=session_id)
-            except ValueError as exc:
-                await self._json_response(send, status=404, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(
-            send,
-            status=200,
-            payload={"revert_marker": serialize_revert_marker(marker)},
-        )
-
-    async def _handle_approval_resolution(
-        self,
-        *,
-        session_id: str,
-        receive: Receive,
-        send: Send,
-        show_thinking: bool = False,
-    ) -> None:
-        try:
-            body = await self._read_body(receive)
-            approval_request_id, approval_decision = self._parse_approval_resolution_request(body)
-        except ValueError as exc:
-            await self._json_response(send, status=400, payload={"error": str(exc)})
-            return
-
-        try:
-            response = await asyncio.to_thread(
-                self._resume_session,
-                session_id,
-                approval_request_id=approval_request_id,
-                approval_decision=approval_decision,
-            )
-        except ValueError as exc:
-            await self._json_response(send, status=409, payload={"error": str(exc)})
-            return
-        await self._json_response(
-            send,
-            status=200,
-            payload=self._serialize_runtime_response(response, show_thinking=show_thinking),
-        )
-
-    async def _handle_question_answer(
-        self,
-        *,
-        session_id: str,
-        receive: Receive,
-        send: Send,
-        show_thinking: bool = False,
-    ) -> None:
-        try:
-            body = await self._read_body(receive)
-            question_request_id, responses = self._parse_question_answer_request(body)
-        except ValueError as exc:
-            await self._json_response(send, status=400, payload={"error": str(exc)})
-            return
-
-        try:
-            response = await asyncio.to_thread(
-                self._answer_question,
-                session_id,
-                question_request_id=question_request_id,
-                responses=responses,
-            )
-        except (ValueError, NoPendingQuestionError) as exc:
-            await self._json_response(send, status=404, payload={"error": str(exc)})
-            return
-        await self._json_response(
-            send,
-            status=200,
-            payload=self._serialize_runtime_response(response, show_thinking=show_thinking),
-        )
-
-    async def _handle_acknowledge_notification(
-        self,
-        *,
-        notification_id: str,
-        send: Send,
-    ) -> None:
-        with self._active_request_scope():
-            runtime = self._runtime_factory()
-            try:
-                notification = runtime.acknowledge_notification(notification_id=notification_id)
-            except ValueError as exc:
-                await self._json_response(send, status=404, payload={"error": str(exc)})
-                return
-            finally:
-                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
-        await self._json_response(
-            send,
-            status=200,
-            payload=self._serialize_notification(notification),
-        )
-
-    async def _json_response(self, send: Send, *, status: int, payload: object) -> None:
-        body = json.dumps(payload, sort_keys=True).encode("utf-8")
-        await send(
-            {
-                "type": "http.response.start",
-                "status": status,
-                "headers": [(b"content-type", b"application/json; charset=utf-8")],
-            }
-        )
-        await send({"type": "http.response.body", "body": body, "more_body": False})
-
-    async def _read_body(self, receive: Receive) -> bytes:
-        body_parts: list[bytes] = []
-        more_body = True
-
-        while more_body:
-            message = await receive()
-            body = message.get("body", b"")
-            if not isinstance(body, bytes):
-                raise ValueError("request body must be bytes")
-            body_parts.append(body)
-            more_body = bool(message.get("more_body", False))
-
-        return b"".join(body_parts)
-
-    def _parse_runtime_request(self, body: bytes) -> RuntimeRequest:
-        raw_payload = _parse_json_body(body)
-        if not isinstance(raw_payload, dict):
-            raise ValueError("request body must be a JSON object")
-        try:
-            payload = _RunStreamRequestPayload.model_validate(raw_payload)
-        except ValidationError as exc:
-            error = cast(dict[str, object], exc.errors(include_url=False)[0])
-            raise ValueError(_format_http_validation_error(error)) from exc
-
-        session_id = payload.session_id
-        if session_id is not None:
-            validate_session_id(session_id)
-
-        parent_session_id = payload.parent_session_id
-        if parent_session_id is not None:
-            validate_session_reference_id(
-                parent_session_id,
-                field_name="parent_session_id",
-            )
-
-        normalized_metadata = validate_runtime_request_metadata(payload.metadata)
-
-        return RuntimeRequest(
-            prompt=cast(str, payload.prompt),
-            session_id=session_id,
-            parent_session_id=parent_session_id,
-            metadata=normalized_metadata,
-            allocate_session_id=session_id is None,
-        )
-
-    def _parse_approval_resolution_request(
-        self,
-        body: bytes,
-    ) -> tuple[str, PermissionResolution]:
-        raw_payload = _parse_json_body(body)
-        if not isinstance(raw_payload, dict):
-            raise ValueError("request body must be a JSON object")
-        try:
-            payload = _ApprovalResolutionRequestPayload.model_validate(raw_payload)
-        except ValidationError as exc:
-            error = cast(dict[str, object], exc.errors(include_url=False)[0])
-            raise ValueError(_format_http_validation_error(error)) from exc
-
-        return cast(str, payload.request_id), cast(PermissionResolution, payload.decision)
-
-    def _parse_steer_session_request(self, body: bytes) -> str:
-        raw_payload = _parse_json_body(body)
-        if not isinstance(raw_payload, dict):
-            raise ValueError("request body must be a JSON object")
-        try:
-            payload = _SteerSessionRequestPayload.model_validate(raw_payload)
-        except ValidationError as exc:
-            error = cast(dict[str, object], exc.errors(include_url=False)[0])
-            raise ValueError(_format_http_validation_error(error)) from exc
-        return cast(str, payload.content)
-
-    def _parse_session_cancel_request(self, body: bytes) -> _SessionCancelRequestPayload:
-        if not body.strip():
-            return _SessionCancelRequestPayload()
-        raw_payload = _parse_json_body(body)
-        if not isinstance(raw_payload, dict):
-            raise ValueError("request body must be a JSON object")
-        try:
-            return _SessionCancelRequestPayload.model_validate(raw_payload)
-        except ValidationError as exc:
-            error = cast(dict[str, object], exc.errors(include_url=False)[0])
-            raise ValueError(_format_http_validation_error(error)) from exc
-
-    def _parse_settings_request(self, body: bytes) -> dict[str, str | None]:
-        raw_payload = _parse_json_body(body)
-        if not isinstance(raw_payload, dict):
-            raise ValueError("request body must be a JSON object")
-        try:
-            payload = _SettingsRequestPayload.model_validate(raw_payload)
-        except ValidationError as exc:
-            error = cast(dict[str, object], exc.errors(include_url=False)[0])
-            raise ValueError(_format_http_validation_error(error)) from exc
-        return {
-            "provider": payload.provider,
-            "provider_api_key": payload.provider_api_key,
-            "model": payload.model,
-        }
-
-    def _parse_question_answer_request(
-        self,
-        body: bytes,
-    ) -> tuple[str, tuple[QuestionResponse, ...]]:
-        raw_payload = _parse_json_body(body)
-        if not isinstance(raw_payload, dict):
-            raise ValueError("request body must be a JSON object")
-        try:
-            payload = _QuestionAnswerRequestPayload.model_validate(raw_payload)
-        except ValidationError as exc:
-            error = cast(dict[str, object], exc.errors(include_url=False)[0])
-            raise ValueError(_format_http_validation_error(error)) from exc
-
-        responses = payload.responses if payload.responses is not None else ()
-        parsed = tuple(
-            QuestionResponse(
-                header=cast(str, item.header),
-                answers=cast(tuple[str, ...], item.answers),
-            )
-            for item in responses
-        )
-        return cast(str, payload.request_id), parsed
+        raise HttpError(404, "not found")
 
     @staticmethod
     def _serialize_runtime_stream_chunk(
@@ -2987,36 +1951,6 @@ class RuntimeTransportApp:
         delegated: DelegatedLifecycleEventPayload,
     ) -> dict[str, object]:
         return delegated.as_payload()
-
-    async def _stream_runtime_chunks(
-        self,
-        runtime: RuntimeTransport,
-        request: RuntimeRequest,
-    ) -> AsyncIterator[RuntimeStreamChunk]:
-        chunk_queue: queue.Queue[object] = queue.Queue()
-        sentinel = object()
-
-        def _produce() -> None:
-            try:
-                for chunk in runtime.run_stream(request):
-                    chunk_queue.put(chunk)
-            except Exception as exc:
-                chunk_queue.put(exc)
-            finally:
-                chunk_queue.put(sentinel)
-
-        worker = threading.Thread(target=_produce, name="runtime-stream-worker", daemon=True)
-        worker.start()
-
-        while True:
-            item = await asyncio.to_thread(chunk_queue.get)
-            if item is sentinel:
-                break
-            if isinstance(item, Exception):
-                raise item
-            yield cast(RuntimeStreamChunk, item)
-
-        worker.join(timeout=0)
 
 
 def create_runtime_app(

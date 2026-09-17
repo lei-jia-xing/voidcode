@@ -49,6 +49,17 @@ class NoPendingQuestionError(ValueError):
     """Raised when a session has no pending question to answer."""
 
 
+class NoPendingApprovalError(ValueError):
+    """Raised when a session has no pending approval to resolve.
+
+    ``code`` is the stable machine-readable reason the HTTP transport carries on
+    its error envelope, so a client can tell "nothing is waiting for approval"
+    apart from every other rejection without matching on message text.
+    """
+
+    code = "no_pending_approval"
+
+
 class RuntimeCommandMetadata(TypedDict, total=False):
     name: str
     source: str

@@ -270,6 +270,7 @@ def _run_app(
         "type": "http",
         "method": method,
         "path": path,
+        "query_string": b"",
     }
     app_type = type(app)
     original_stream = getattr(app_type, "_stream_runtime_chunks", None)
