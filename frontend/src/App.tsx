@@ -34,6 +34,19 @@ import { errorMessage } from "./lib/errorMessage";
 // bottom; scrolled-up readers are never yanked back down.
 const SCROLL_FOLLOW_THRESHOLD_PX = 80;
 
+// Keys that scroll the transcript on their own. Any of them means the reader is
+// driving the viewport, which is what stops the follow (see the scroll-intent
+// effect in App).
+const SCROLL_FOLLOW_KEYS: Record<string, true> = {
+  ArrowUp: true,
+  ArrowDown: true,
+  PageUp: true,
+  PageDown: true,
+  Home: true,
+  End: true,
+  " ": true,
+};
+
 function SubsessionTimelineHeader({
   childPrompt,
   onReturn,
@@ -223,6 +236,18 @@ function App() {
   const hydratedInitialSessionRef = useRef(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const lastMessageSignatureRef = useRef("");
+  const scrollFollowFrameRef = useRef<number | null>(null);
+  // Whether the reader is still following the tail of the transcript. It is
+  // seeded "following" and only a reader gesture clears it: re-deriving intent
+  // from the post-commit gap let one trip (a short viewport plus a fast stream)
+  // stick for the rest of the run, because nothing ever pulled it back under
+  // the threshold.
+  const scrollFollowRef = useRef(true);
+  // The scrollTop this follow last wrote (how its own scroll events are told
+  // apart from the reader's) and the reader's previous position (how the
+  // direction of their scroll is told).
+  const scrollFollowPinnedTopRef = useRef<number | null>(null);
+  const scrollFollowReaderTopRef = useRef<number | null>(null);
   const sessionEventCursorRef = useRef(0);
   // Mirrors selectedBackgroundTaskOutputId for the follow-stream effect. The
   // effect must NOT depend on that state directly: its own body refreshes the
@@ -243,15 +268,22 @@ function App() {
   const isApprovalSubmitting = approvalStatus === "submitting";
   const isWaitingApproval = currentSessionState?.status === "waiting";
   const isQuestionSubmitting = questionStatus === "submitting";
-  const latestWaitingEvent = [...currentSessionEvents]
-    .reverse()
-    .find(
-      (event) =>
+  const latestWaitingEvent = useMemo(() => {
+    for (let index = currentSessionEvents.length - 1; index >= 0; index -= 1) {
+      const event = currentSessionEvents[index];
+      if (
         event.event_type === "runtime.approval_requested" ||
-        event.event_type === "runtime.question_requested",
-    );
-  const pendingNotifications = notifications.filter(
-    (notification) => notification.status === "unread",
+        event.event_type === "runtime.question_requested"
+      ) {
+        return event;
+      }
+    }
+    return undefined;
+  }, [currentSessionEvents]);
+  const pendingNotifications = useMemo(
+    () =>
+      notifications.filter((notification) => notification.status === "unread"),
+    [notifications],
   );
   const currentSessionResumable =
     currentSessionState?.status === "interrupted" ||
@@ -540,20 +572,110 @@ function App() {
   }, [currentSessionId, isRunning, selectSession, sessionsStatus]);
 
   useEffect(() => {
-    const signature = displayedMessages
-      .map((message) => `${message.id}:${message.content.length}`)
-      .join("|");
+    // A reader gesture hands them the viewport: stop following straight away so
+    // the next content frame cannot yank the scroll back. Coming back to the
+    // tail re-engages the follow, decided by the direction of the scroll rather
+    // than by a single re-check — one wheel gesture arrives as many scroll
+    // events, and a mid-gesture step is still close to the bottom it left.
+    const handleReaderGesture = (event: Event) => {
+      const scroller = chatScrollRef.current;
+      if (
+        !scroller ||
+        !(event.target instanceof Node) ||
+        !scroller.contains(event.target)
+      ) {
+        return;
+      }
+      scrollFollowRef.current = false;
+    };
+
+    const handleScrollKeyDown = (event: KeyboardEvent) => {
+      if (SCROLL_FOLLOW_KEYS[event.key] !== true) return;
+      handleReaderGesture(event);
+    };
+
+    // Our own pins also produce scroll events; the position this follow pinned
+    // tells them apart, so a gap that only opened because content arrived can
+    // never read as "the reader scrolled away" and abandon the follow.
+    const handleReaderScroll = (event: Event) => {
+      const scroller = chatScrollRef.current;
+      if (!scroller || event.target !== scroller) return;
+      const top = scroller.scrollTop;
+      if (top === scrollFollowPinnedTopRef.current) return;
+      // The reader owns the viewport from here; a later pin re-records it.
+      scrollFollowPinnedTopRef.current = null;
+      const previousTop = scrollFollowReaderTopRef.current;
+      scrollFollowReaderTopRef.current = top;
+      const gap = scroller.scrollHeight - top - scroller.clientHeight;
+      if (previousTop !== null && top < previousTop) {
+        // Moving away from the tail, however little: the follow gives way
+        // instead of pulling the reader back down.
+        scrollFollowRef.current = false;
+        return;
+      }
+      if (gap < SCROLL_FOLLOW_THRESHOLD_PX) {
+        // Back at the tail: follow again, from the tail.
+        scrollFollowRef.current = true;
+        scroller.scrollTop = scroller.scrollHeight;
+        scrollFollowPinnedTopRef.current = scroller.scrollTop;
+      }
+    };
+
+    window.addEventListener("wheel", handleReaderGesture, { passive: true });
+    window.addEventListener("touchmove", handleReaderGesture, {
+      passive: true,
+    });
+    window.addEventListener("keydown", handleScrollKeyDown);
+    // Scroll events do not bubble, so listen on the capture phase.
+    document.addEventListener("scroll", handleReaderScroll, {
+      capture: true,
+      passive: true,
+    });
+    return () => {
+      window.removeEventListener("wheel", handleReaderGesture);
+      window.removeEventListener("touchmove", handleReaderGesture);
+      window.removeEventListener("keydown", handleScrollKeyDown);
+      document.removeEventListener("scroll", handleReaderScroll, {
+        capture: true,
+      });
+    };
+  }, []);
+
+  // Switching transcripts starts following the new tail again; inside one
+  // transcript only a reader gesture can stop the follow.
+  useEffect(() => {
+    scrollFollowRef.current = true;
+  }, [currentSessionId]);
+
+  useEffect(() => {
+    // Only the tail of the transcript grows while a run streams, so a
+    // last-message signature is enough to know that the scroller needs a look —
+    // without rebuilding an O(messages) string on every streamed frame.
+    const last = displayedMessages[displayedMessages.length - 1];
+    const signature = last ? `${last.id}:${last.content.length}` : "";
     if (signature === lastMessageSignatureRef.current) return;
     lastMessageSignatureRef.current = signature;
-    const el = chatScrollRef.current;
-    if (
-      el &&
-      el.scrollHeight - el.scrollTop - el.clientHeight <
-        SCROLL_FOLLOW_THRESHOLD_PX
-    ) {
-      el.scrollTop = el.scrollHeight;
-    }
+    if (scrollFollowFrameRef.current !== null) return;
+    // Writing scrollTop forces a layout; coalesce every frame of a fast delta
+    // stream into a single write on the next frame. The follow intent is read at
+    // frame time, so a gesture that lands in between wins.
+    scrollFollowFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFollowFrameRef.current = null;
+      const el = chatScrollRef.current;
+      if (el && scrollFollowRef.current) {
+        el.scrollTop = el.scrollHeight;
+        scrollFollowPinnedTopRef.current = el.scrollTop;
+      }
+    });
   }, [displayedMessages]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollFollowFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFollowFrameRef.current);
+      }
+    };
+  }, []);
 
   const handleSendMessage = async (
     message: string,
@@ -624,6 +746,59 @@ function App() {
     },
     [loadBackgroundTaskOutput, loadBackgroundTasks],
   );
+  const currentSessionTitle = useMemo(() => {
+    if (!currentSessionId) return null;
+    if (currentSessionSummary?.prompt) {
+      return buildSessionDisplayTitle(
+        currentSessionSummary.prompt,
+        currentSessionId,
+      );
+    }
+    let latestPrompt: string | undefined;
+    for (let index = currentSessionEvents.length - 1; index >= 0; index -= 1) {
+      const event = currentSessionEvents[index];
+      if (event.event_type !== "runtime.request_received") continue;
+      if (typeof event.payload?.prompt === "string") {
+        latestPrompt = event.payload.prompt;
+      }
+      break;
+    }
+    return buildSessionDisplayTitle(latestPrompt, currentSessionId);
+  }, [currentSessionId, currentSessionSummary, currentSessionEvents]);
+
+  const handleResolveApproval = useCallback(
+    (decision: "allow" | "deny") => {
+      void resolveApproval(decision);
+    },
+    [resolveApproval],
+  );
+  // Stable identity so the memoized ChatThread's shallow props comparison can
+  // skip re-renders when nothing chat-related changed.
+  const handleSelectSession = useCallback(
+    (sessionId: string) => {
+      void selectSession(sessionId);
+    },
+    [selectSession],
+  );
+  const handleFileTreePathSelect = useCallback(
+    (path: string) => {
+      void selectReviewPath(path);
+      setShowCodeReview(true);
+    },
+    [selectReviewPath],
+  );
+  const handleSelectBackgroundTaskOutput = useCallback(
+    (taskId: string) => {
+      void loadBackgroundTaskOutput(taskId);
+    },
+    [loadBackgroundTaskOutput],
+  );
+  const handleRefreshBackgroundTasks = useCallback(() => {
+    void loadBackgroundTasks();
+  }, [loadBackgroundTasks]);
+  const handleRetryMcpConnections = useCallback(() => {
+    void retryMcpConnections();
+  }, [retryMcpConnections]);
   const cancelBackgroundTask = useCallback(
     (taskId: string) =>
       runBackgroundTaskAction(taskId, RuntimeClient.cancelBackgroundTask),
@@ -641,45 +816,6 @@ function App() {
       ),
     [runBackgroundTaskAction],
   );
-  const currentSessionTitle = useMemo(() => {
-    if (!currentSessionId) return null;
-    if (currentSessionSummary?.prompt) {
-      return buildSessionDisplayTitle(
-        currentSessionSummary.prompt,
-        currentSessionId,
-      );
-    }
-    const latestReq = [...currentSessionEvents]
-      .reverse()
-      .find((e) => e.event_type === "runtime.request_received");
-    return buildSessionDisplayTitle(
-      typeof latestReq?.payload?.prompt === "string"
-        ? latestReq.payload.prompt
-        : undefined,
-      currentSessionId,
-    );
-  }, [currentSessionId, currentSessionSummary, currentSessionEvents]);
-
-  const handleResolveApproval = useCallback(
-    (decision: "allow" | "deny") => {
-      void resolveApproval(decision);
-    },
-    [resolveApproval],
-  );
-  // Stable identity so the memoized ChatThread's shallow props comparison can
-  // skip re-renders when nothing chat-related changed.
-  const handleSelectSession = useCallback(
-    (sessionId: string) => {
-      void selectSession(sessionId);
-    },
-    [selectSession],
-  );
-
-  const handleFileTreePathSelect = (path: string) => {
-    void selectReviewPath(path);
-    setShowCodeReview(true);
-  };
-
   const composerDisabled =
     isReplayLoading ||
     isWaitingApproval ||
@@ -706,9 +842,7 @@ function App() {
         isRunning={isRunning}
         isReplayLoading={isReplayLoading}
         onSidebarWidthChange={setSessionSidebarWidth}
-        onSelectSession={(sessionId) => {
-          void selectSession(sessionId);
-        }}
+        onSelectSession={handleSelectSession}
         onOpenProjects={() => setShowProjects(true)}
         onOpenSettings={() => setShowSettings(true)}
         onRefreshSessions={loadSessions}
@@ -764,9 +898,7 @@ function App() {
                   error={statusError}
                   mcpRetryStatus={mcpRetryStatus}
                   mcpRetryError={mcpRetryError}
-                  onRetryMcp={() => {
-                    void retryMcpConnections();
-                  }}
+                  onRetryMcp={handleRetryMcpConnections}
                 />
 
                 <ControlButton
@@ -988,8 +1120,8 @@ function App() {
                 taskOutputStatus={backgroundTaskOutputStatus}
                 taskOutputError={backgroundTaskOutputError}
                 onSelectParent={returnToParentSession}
-                onSelectTask={(taskId) => void loadBackgroundTaskOutput(taskId)}
-                onRefresh={() => void loadBackgroundTasks()}
+                onSelectTask={handleSelectBackgroundTaskOutput}
+                onRefresh={handleRefreshBackgroundTasks}
                 onCancelTask={cancelBackgroundTask}
                 onRetryTask={retryBackgroundTask}
                 onSteerTask={steerBackgroundTask}
@@ -1100,9 +1232,7 @@ function App() {
         diffError={reviewDiffError}
         onClose={() => setShowCodeReview(false)}
         onRefresh={loadReview}
-        onSelectPath={(path) => {
-          void selectReviewPath(path);
-        }}
+        onSelectPath={handleFileTreePathSelect}
       />
 
       <ContextPanel

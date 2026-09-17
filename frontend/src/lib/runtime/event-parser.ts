@@ -234,7 +234,8 @@ function findApprovalBlockedTool(
   );
 }
 
-function deeplyEqual(left: unknown, right: unknown): boolean {
+/** Structural equality for the plain-data shapes the transcript fold produces. */
+export function deeplyEqual(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (
     typeof left !== "object" ||
@@ -709,8 +710,12 @@ type ShellProgressState = {
   degraded: boolean;
 };
 
+// One encoder for the whole transcript fold: allocating a TextEncoder per
+// `runtime.tool_progress` frame shows up on the streaming hot path.
+const UTF8_ENCODER = new TextEncoder();
+
 function utf8ByteLength(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
+  return UTF8_ENCODER.encode(value).byteLength;
 }
 function applyToolProgress(
   currentAssistant: ChatMessage | null,

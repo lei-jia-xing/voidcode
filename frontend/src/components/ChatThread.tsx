@@ -37,7 +37,11 @@ import {
   Timer,
   Wrench,
 } from "lucide-react";
-import { ChatMessage, MessagePart } from "../lib/runtime/event-parser";
+import {
+  ChatMessage,
+  MessagePart,
+  deeplyEqual,
+} from "../lib/runtime/event-parser";
 import type {
   BackgroundTaskSummary,
   QuestionAnswer,
@@ -70,6 +74,77 @@ interface ChatThreadProps {
     toolCallCount: number | null;
   } | null;
 }
+
+// remarkPlugins is passed straight through to react-markdown, so a literal
+// array would hand it a fresh prop identity on every render.
+const REMARK_PLUGINS = [remarkGfm];
+
+// The provider streams one frame per delta (roughly 30-100/s) and every frame
+// grows the in-progress text part. Re-parsing that growing markdown plus
+// estimating its height costs up to ~130ms + ~17ms at 30KB, so cap how often
+// the streamed value reaches the DOM. 100ms keeps streaming visually
+// continuous (~10 updates/s) while never paying the parse per delta.
+const STREAM_TEXT_RENDER_INTERVAL_MS = 100;
+
+/**
+ * Cap the cadence at which a growing streamed text value reaches the DOM.
+ *
+ * While the part is `active` the returned value advances at most once per
+ * STREAM_TEXT_RENDER_INTERVAL_MS; deltas arriving in between are collapsed into
+ * the next update. As soon as the part stops streaming (`active === false`) the
+ * exact latest value is returned immediately, so the final content is never
+ * truncated and no stale tail survives the run.
+ */
+function useThrottledStreamText(text: string, active: boolean): string {
+  const [rendered, setRendered] = useState(text);
+  const lastRenderAtRef = useRef(0);
+
+  useEffect(() => {
+    if (!active || text === rendered) return;
+    // Re-armed on every delta but always against the same deadline, so a fast
+    // delta stream can neither starve the update (a trailing debounce would
+    // never fire) nor push it past the interval.
+    const delay = Math.max(
+      0,
+      lastRenderAtRef.current + STREAM_TEXT_RENDER_INTERVAL_MS - Date.now(),
+    );
+    const id = window.setTimeout(() => {
+      lastRenderAtRef.current = Date.now();
+      setRendered(text);
+    }, delay);
+    return () => window.clearTimeout(id);
+  }, [active, text, rendered]);
+
+  if (active) return rendered;
+
+  // Flushing during render (the documented "adjust state when a prop changes"
+  // pattern) discards this pass and re-renders before anything is committed, so
+  // the completed content is parsed exactly once and never painted stale.
+  if (rendered !== text) setRendered(text);
+  return text;
+}
+
+// Text parts are the streaming hot path. The throttle sits here, above the
+// memoized StreamingMarkdown, so a throttled delta leaves its `content` prop
+// untouched and the markdown parse is skipped entirely.
+const StreamingTextPart = memo(
+  function StreamingTextPart({
+    text,
+    active,
+  }: {
+    text: string;
+    active: boolean;
+  }) {
+    const streamedText = useThrottledStreamText(text, active);
+    const visible = useMemo(
+      () => visibleAssistantContent(streamedText),
+      [streamedText],
+    );
+    if (!visible) return null;
+    return <StreamingMarkdown content={visible} active={active} />;
+  },
+  (prev, next) => prev.text === next.text && prev.active === next.active,
+);
 
 // react-markdown v10 re-parses its `children` on EVERY render (its Markdown
 // component has no internal memoization), and a full unified parse costs
@@ -119,7 +194,7 @@ const StreamingMarkdown = memo(
         data-pretext-estimated-height={estimatedHeight || undefined}
         style={estimatedHeight > 0 ? { minHeight: estimatedHeight } : undefined}
       >
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>{content}</ReactMarkdown>
       </div>
     );
   },
@@ -298,7 +373,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
       onClick={handleCopy}
       aria-label={t("tool.copyAria", { label })}
       title={copied ? t("tool.copied") : t("tool.copy")}
-      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--vc-radius-control)] text-[var(--vc-text-subtle)] transition-colors hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--vc-radius-control)] text-[var(--vc-text-subtle)] transition-colors hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
     >
       {copied ? (
         <Check className="h-3.5 w-3.5" />
@@ -430,8 +505,10 @@ function DiffDetailBlock({
   label: string;
   diff: string | null;
 }) {
+  // Rows are a pure function of the diff text; recomputing them on unrelated
+  // re-renders of an expanded write tool is wasted work.
+  const rows = useMemo(() => (diff ? buildDiffRows(diff) : []), [diff]);
   if (!diff) return null;
-  const rows = buildDiffRows(diff);
 
   return (
     <div className="mt-2 text-xs text-[var(--vc-text-muted)]">
@@ -627,7 +704,7 @@ function ToolDisclosureRow({
           <button
             type="button"
             onClick={() => setExpanded((value) => !value)}
-            className="group shrink-0 rounded-[var(--vc-radius-control)] text-[var(--vc-text-subtle)] transition-colors hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+            className="group shrink-0 rounded-[var(--vc-radius-control)] text-[var(--vc-text-subtle)] transition-colors hover:text-[var(--vc-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
             aria-expanded={expanded}
             aria-controls={panelId}
             aria-label={t(
@@ -650,7 +727,7 @@ function ToolDisclosureRow({
                 ? primaryAction
                 : () => setExpanded((value) => !value)
             }
-            className="group flex min-w-0 flex-1 items-center gap-2 rounded-[var(--vc-radius-control)] transition-colors hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+            className="group flex min-w-0 flex-1 items-center gap-2 rounded-[var(--vc-radius-control)] transition-colors hover:text-[var(--vc-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
             aria-label={
               hasPrimaryAction
                 ? (primaryActionLabel ?? title)
@@ -950,15 +1027,21 @@ function ShellTerminalBlock({
   degraded?: boolean;
 }) {
   const { t } = useTranslation();
-  const transcript = [
-    `$ ${command}`,
-    stdout,
-    stderr,
-    error,
-    exitCode && exitCode !== "0" ? `exit ${exitCode}` : null,
-  ]
-    .filter((value): value is string => Boolean(value))
-    .join("\n");
+  // Joining the whole stdout/stderr transcript is O(output); keep it tied to
+  // its inputs instead of to every re-render of the row.
+  const transcript = useMemo(
+    () =>
+      [
+        `$ ${command}`,
+        stdout,
+        stderr,
+        error,
+        exitCode && exitCode !== "0" ? `exit ${exitCode}` : null,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join("\n"),
+    [command, stdout, stderr, error, exitCode],
+  );
 
   return (
     <div
@@ -1842,11 +1925,13 @@ function ToolActivities({
 
 function OrderedMessageParts({
   message,
+  language,
   onSelectSession,
   backgroundTasksById,
   selectedBackgroundTaskOutput,
 }: {
   message: ChatMessage;
+  language: string;
   onSelectSession?: (sessionId: string) => void;
   backgroundTasksById?: Record<string, BackgroundTaskSummary>;
   selectedBackgroundTaskOutput?: {
@@ -1863,6 +1948,12 @@ function OrderedMessageParts({
     }
     return -1;
   })();
+  // One index per message render instead of a `tools.find` per tool part.
+  const toolsByKey = new Map<string, ChatTool>();
+  for (const tool of message.tools) {
+    const key = tool.partKey ?? tool.id;
+    if (key) toolsByKey.set(key, tool);
+  }
 
   return (
     <>
@@ -1870,7 +1961,10 @@ function OrderedMessageParts({
         <MessagePartView
           key={partKey(part, idx)}
           part={part}
-          tools={message.tools}
+          tool={
+            part.kind === "tool" ? (toolsByKey.get(part.toolKey) ?? null) : null
+          }
+          language={language}
           active={isStreaming && idx === lastTextPartIndex}
           onSelectSession={onSelectSession}
           backgroundTasksById={backgroundTasksById}
@@ -1889,19 +1983,24 @@ function partKey(part: MessagePart, idx: number): string {
 // Text parts are the streaming hot path: completed text parts keep the same
 // text value across store updates (only the in-progress part grows), so skip
 // re-rendering them (and the markdown parse inside) via value comparison.
-// Reasoning/tool parts are cheap to render and delegate to memoized
-// children (ThinkingBlock/ToolActivity), so always re-render those.
+// Reasoning and tool parts are skipped the same way, on the values their row
+// actually renders: a tool row repaints whenever any field of the tool it
+// displays changes (status, arguments, result, output, diff, hooks, ...), and
+// never just because the store rebuilt an equal tool object.
 const MessagePartView = memo(
   function MessagePartView({
     part,
-    tools,
+    tool,
     active,
     onSelectSession,
     backgroundTasksById,
     selectedBackgroundTaskOutput,
   }: {
     part: MessagePart;
-    tools: ChatTool[];
+    tool: ChatTool | null;
+    // Only meaningful for repainting: tool rows render translated copy, so the
+    // comparator below invalidates every part when it changes.
+    language: string;
     active: boolean;
     onSelectSession?: (sessionId: string) => void;
     backgroundTasksById?: Record<string, BackgroundTaskSummary>;
@@ -1912,15 +2011,12 @@ const MessagePartView = memo(
     } | null;
   }) {
     if (part.kind === "text") {
-      const visible = visibleAssistantContent(part.text);
-      if (!visible) return null;
-      return <StreamingMarkdown content={visible} active={active} />;
+      return <StreamingTextPart text={part.text} active={active} />;
     }
     if (part.kind === "reasoning") {
       if (!part.text.trim()) return null;
       return <ThinkingBlock thinking={[part.text]} />;
     }
-    const tool = tools.find((t) => (t.partKey ?? t.id) === part.toolKey);
     if (!tool) return null;
     return (
       <ToolActivity
@@ -1932,8 +2028,26 @@ const MessagePartView = memo(
     );
   },
   (prev, next) => {
-    if (prev.part.kind !== "text" || next.part.kind !== "text") return false;
-    return prev.part.text === next.part.text && prev.active === next.active;
+    if (prev.active !== next.active) return false;
+    // Tool rows render translated copy, so a language switch must repaint them.
+    if (prev.language !== next.language) return false;
+    if (prev.onSelectSession !== next.onSelectSession) return false;
+    if (prev.backgroundTasksById !== next.backgroundTasksById) return false;
+    if (
+      prev.selectedBackgroundTaskOutput !== next.selectedBackgroundTaskOutput
+    ) {
+      return false;
+    }
+    if (prev.part.kind !== next.part.kind) return false;
+    if (prev.part.kind === "text" && next.part.kind === "text") {
+      return prev.part.text === next.part.text;
+    }
+    if (prev.part.kind === "reasoning" && next.part.kind === "reasoning") {
+      return prev.part.text === next.part.text;
+    }
+    // Structural comparison: `deriveChatMessages` rebuilds every tool object on
+    // every store update, so identity cannot be used to detect "unchanged".
+    return deeplyEqual(prev.tool, next.tool);
   },
 );
 
@@ -2161,10 +2275,10 @@ function StatusIndicator({
 
 // The chat subtree is the most expensive part of the app (markdown parsing of
 // every message). ChatThread itself is memoized with the default shallow
-// comparison so that unrelated store updates (status polling, session list
-// refreshes, background-task loads) do not re-render the whole transcript:
-// App derives `messages` via useMemo, so the array reference is stable unless
-// the underlying events actually changed. Callers must pass stable callback
+// comparison so that unrelated store updates (session list refreshes,
+// background-task loads) do not re-render the whole transcript: App derives
+// `messages` via useMemo, so the array reference is stable unless the
+// underlying events actually changed. Callers must pass stable callback
 // props (App wraps them in useCallback) for the shallow comparison to work.
 export const ChatThread = memo(function ChatThread({
   messages,
@@ -2181,7 +2295,7 @@ export const ChatThread = memo(function ChatThread({
   backgroundTasksById,
   selectedBackgroundTaskOutput,
 }: ChatThreadProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
 
   const hasMessages = messages.length > 0;
 
@@ -2198,10 +2312,6 @@ export const ChatThread = memo(function ChatThread({
         )}
 
         {messages.map((message) => {
-          const assistantContent =
-            message.role === "assistant"
-              ? visibleAssistantContent(message.content)
-              : "";
           if (message.role === "user") {
             return (
               <div
@@ -2234,6 +2344,7 @@ export const ChatThread = memo(function ChatThread({
                   {message.parts !== undefined ? (
                     <OrderedMessageParts
                       message={message}
+                      language={i18n.language}
                       onSelectSession={onSelectSession}
                       backgroundTasksById={backgroundTasksById}
                       selectedBackgroundTaskOutput={
@@ -2253,12 +2364,15 @@ export const ChatThread = memo(function ChatThread({
                       {message.thinking.length > 0 && (
                         <ThinkingBlock thinking={message.thinking} />
                       )}
-                      {assistantContent && (
-                        <StreamingMarkdown
-                          content={assistantContent}
-                          active={message.status === "in_progress"}
-                        />
-                      )}
+                      {/* `parts` is optional in the ChatMessage contract, so
+                          this fallback stays reachable for callers that build
+                          messages without it; the visible-text derivation and
+                          the markdown parse stay inside the part component so
+                          they never run for the normal (parts-bearing) path. */}
+                      <StreamingTextPart
+                        text={message.content}
+                        active={message.status === "in_progress"}
+                      />
                     </>
                   )}
                   {message.error && message.status !== "failed" && (

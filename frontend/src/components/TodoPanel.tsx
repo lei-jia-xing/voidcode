@@ -51,7 +51,7 @@ export function TodoPanel({
           aria-expanded={expanded}
           aria-label={t(expanded ? "todo.panel.hide" : "todo.panel.show")}
           onClick={() => setExpanded((open) => !open)}
-          className="flex w-full items-center gap-2 py-1 text-left text-xs font-semibold text-[var(--vc-text-muted)] transition-colors hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+          className="flex w-full items-center gap-2 py-1 text-left text-xs font-semibold text-[var(--vc-text-muted)] transition-colors hover:text-[var(--vc-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
         >
           {expanded ? (
             <ChevronDown className="h-3 w-3 shrink-0 text-[var(--vc-text-subtle)]" />

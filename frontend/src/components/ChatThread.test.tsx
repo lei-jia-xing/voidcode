@@ -1,5 +1,11 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi, type Mock } from "vitest";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from "@testing-library/react";
+import { afterEach, describe, it, expect, vi, type Mock } from "vitest";
 import ReactMarkdown from "react-markdown";
 import { ChatThread } from "./ChatThread";
 import { estimateStreamedTextHeight } from "../lib/runtime/text-layout";
@@ -41,6 +47,11 @@ function getDisclosureToggle(name: RegExp | string) {
 }
 
 describe("ChatThread", () => {
+  // Tests that install fake timers to drive the streaming throttle.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("renders welcome state without avatar graphics", () => {
     render(<ChatThread {...baseProps} />);
 
@@ -568,70 +579,282 @@ describe("ChatThread", () => {
     );
     expect(screen.getByText("read")).toBeInTheDocument();
   });
-  it("re-parses markdown only for the active streaming message when a delta arrives", () => {
-    const markdownMock = ReactMarkdown as unknown as Mock;
-    markdownMock.mockClear();
-
-    const completed: ChatMessage = {
-      id: "assistant-completed",
-      role: "assistant",
-      content: "Completed **text** one",
-      thinking: [],
-      tools: [],
-      parts: [{ kind: "text", sequence: 1, text: "Completed **text** one" }],
-      approval: null,
-      question: null,
-      status: "completed",
-      sequence: 1,
+  it("repaints a streaming tool row when its status and output change", () => {
+    const shellRun = (tail: EventEnvelope[]): EventEnvelope[] => [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "run the tests" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "graph.tool_call_start",
+        source: "graph",
+        payload: {
+          tool_call_id: "call-1",
+          tool_name: "shell_exec",
+          args: { command: "bun test" },
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 3,
+        event_type: "runtime.tool_started",
+        source: "runtime",
+        payload: {
+          arguments: { command: "bun test" },
+          tool_status: {
+            invocation_id: "call-1",
+            tool_name: "shell_exec",
+            status: "running",
+          },
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 4,
+        event_type: "runtime.tool_progress",
+        source: "runtime",
+        payload: {
+          invocation_id: "call-1",
+          stream: "stdout",
+          ordinal: 0,
+          offset: 0,
+          chunk: "STREAMED_CHUNK\n",
+        },
+      },
+      ...tail,
+    ];
+    const toolCompleted: EventEnvelope = {
+      session_id: "session-1",
+      sequence: 5,
+      event_type: "runtime.tool_completed",
+      source: "runtime",
+      payload: {
+        arguments: { command: "bun test" },
+        data: { stdout: "FINAL_OUTPUT\n", exit_code: 0 },
+        tool_status: {
+          invocation_id: "call-1",
+          tool_name: "shell_exec",
+          status: "completed",
+        },
+      },
     };
-    const active: ChatMessage = {
-      id: "assistant-active",
-      role: "assistant",
-      content: "Streaming **text**",
-      thinking: [],
-      tools: [],
-      parts: [{ kind: "text", sequence: 2, text: "Streaming **text**" }],
-      approval: null,
-      question: null,
-      status: "in_progress",
-      sequence: 2,
-    };
+    const rowText = () =>
+      document.querySelector('[data-tool-row="shell_exec"]')?.textContent ?? "";
 
     const { rerender } = render(
-      <ChatThread {...baseProps} messages={[completed, active]} />,
+      <ChatThread
+        {...baseProps}
+        isRunning
+        messages={deriveChatMessages(shellRun([]), null)}
+      />,
     );
-    expect(markdownMock).toHaveBeenCalledTimes(2);
+    expect(rowText()).toContain("running");
+    expect(rowText()).toContain("STREAMED_CHUNK");
 
-    // A new delta only grows the in-progress message.
+    // Only the tool's status and output changed: the row must repaint.
     rerender(
       <ChatThread
         {...baseProps}
-        messages={[
-          completed,
-          {
-            ...active,
-            content: "Streaming **text** more",
-            parts: [
-              { kind: "text", sequence: 2, text: "Streaming **text** more" },
-            ],
-          },
-        ]}
+        isRunning
+        messages={deriveChatMessages(shellRun([toolCompleted]), null)}
       />,
     );
+    expect(rowText()).not.toContain("running");
+    expect(rowText()).toContain("FINAL_OUTPUT");
+    expect(rowText()).not.toContain("STREAMED_CHUNK");
+  });
 
-    // Only the active message re-parsed; the completed message's markdown was
-    // not re-parsed even though ChatThread re-rendered.
-    expect(markdownMock).toHaveBeenCalledTimes(3);
-    expect(
-      markdownMock.mock.calls.filter(
-        (call) => call[0]?.children === "Completed **text** one",
-      ),
-    ).toHaveLength(1);
-    expect(
-      markdownMock.mock.calls.filter(
-        (call) => call[0]?.children === "Streaming **text** more",
-      ),
-    ).toHaveLength(1);
+  it("re-parses markdown only for the active streaming message, at the throttled rate", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const markdownMock = ReactMarkdown as unknown as Mock;
+      markdownMock.mockClear();
+
+      const completed: ChatMessage = {
+        id: "assistant-completed",
+        role: "assistant",
+        content: "Completed **text** one",
+        thinking: [],
+        tools: [],
+        parts: [{ kind: "text", sequence: 1, text: "Completed **text** one" }],
+        approval: null,
+        question: null,
+        status: "completed",
+        sequence: 1,
+      };
+      const active: ChatMessage = {
+        id: "assistant-active",
+        role: "assistant",
+        content: "Streaming **text**",
+        thinking: [],
+        tools: [],
+        parts: [{ kind: "text", sequence: 2, text: "Streaming **text**" }],
+        approval: null,
+        question: null,
+        status: "in_progress",
+        sequence: 2,
+      };
+
+      const { rerender } = render(
+        <ChatThread {...baseProps} messages={[completed, active]} />,
+      );
+      expect(markdownMock).toHaveBeenCalledTimes(2);
+
+      // A new delta only grows the in-progress message.
+      rerender(
+        <ChatThread
+          {...baseProps}
+          messages={[
+            completed,
+            {
+              ...active,
+              content: "Streaming **text** more",
+              parts: [
+                { kind: "text", sequence: 2, text: "Streaming **text** more" },
+              ],
+            },
+          ]}
+        />,
+      );
+
+      // The delta is throttled: the in-progress part keeps its previously parsed
+      // content instead of re-parsing the whole accumulated markdown per frame.
+      expect(markdownMock).toHaveBeenCalledTimes(2);
+
+      // The completed message's markdown was never re-parsed even though
+      // ChatThread re-rendered.
+      expect(
+        markdownMock.mock.calls.filter(
+          (call) => call[0]?.children === "Completed **text** one",
+        ),
+      ).toHaveLength(1);
+
+      // The throttled update still lands, carrying the newest content.
+      await act(async () => {
+        vi.advanceTimersByTime(150);
+      });
+      expect(markdownMock).toHaveBeenCalledTimes(3);
+      expect(
+        markdownMock.mock.calls.filter(
+          (call) => call[0]?.children === "Streaming **text** more",
+        ),
+      ).toHaveLength(1);
+      expect(
+        markdownMock.mock.calls.filter(
+          (call) => call[0]?.children === "Completed **text** one",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renders the exact final markdown as soon as the streaming part completes", () => {
+    const markdownMock = ReactMarkdown as unknown as Mock;
+    markdownMock.mockClear();
+
+    const streaming = (text: string, status: ChatMessage["status"]) =>
+      ({
+        id: "assistant-1",
+        role: "assistant",
+        content: text,
+        thinking: [],
+        tools: [],
+        parts: [{ kind: "text", sequence: 2, text }],
+        approval: null,
+        question: null,
+        status,
+        sequence: 2,
+      }) as ChatMessage;
+    const parsedContent = () => {
+      const calls = markdownMock.mock.calls;
+      return calls[calls.length - 1]?.[0]?.children;
+    };
+
+    const { rerender } = render(
+      <ChatThread
+        {...baseProps}
+        messages={[streaming("First part.", "in_progress")]}
+      />,
+    );
+    expect(parsedContent()).toBe("First part.");
+
+    // Two rapid deltas arrive inside one throttle window.
+    rerender(
+      <ChatThread
+        {...baseProps}
+        messages={[streaming("First part. Second", "in_progress")]}
+      />,
+    );
+    rerender(
+      <ChatThread
+        {...baseProps}
+        messages={[streaming("First part. Second part.", "in_progress")]}
+      />,
+    );
+    expect(parsedContent()).toBe("First part.");
+
+    // The message completes: the very next render must carry the full markdown,
+    // with no stale tail and nothing truncating the final content.
+    rerender(
+      <ChatThread
+        {...baseProps}
+        messages={[streaming("First part. Second part.", "completed")]}
+      />,
+    );
+    expect(parsedContent()).toBe("First part. Second part.");
+  });
+
+  it("bounds the streaming markdown parse rate under a fast delta stream", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const markdownMock = ReactMarkdown as unknown as Mock;
+      markdownMock.mockClear();
+
+      const streaming = (text: string) =>
+        ({
+          id: "assistant-1",
+          role: "assistant",
+          content: text,
+          thinking: [],
+          tools: [],
+          parts: [{ kind: "text", sequence: 2, text }],
+          approval: null,
+          question: null,
+          status: "in_progress",
+          sequence: 2,
+        }) as ChatMessage;
+
+      const { rerender } = render(
+        <ChatThread {...baseProps} messages={[streaming("")]} />,
+      );
+
+      // 100 deltas, 10 ms apart: 100 frames/s for one second of stream time.
+      for (let delta = 1; delta <= 100; delta += 1) {
+        rerender(
+          <ChatThread
+            {...baseProps}
+            messages={[streaming("delta ".repeat(delta))]}
+          />,
+        );
+        await act(async () => {
+          vi.advanceTimersByTime(10);
+        });
+      }
+
+      const parses = markdownMock.mock.calls.length;
+      // Bounded by the throttle interval (~10/s), not one parse per delta.
+      expect(parses).toBeLessThanOrEqual(12);
+      // ...and the streaming part still repaints while the provider streams.
+      expect(parses).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not duplicate thinking when the persisted aggregated reasoning_part follows streamed deltas", () => {

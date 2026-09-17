@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import App from "./App";
 import {
@@ -19,6 +19,48 @@ vi.mock("./components/SettingsPanel", () => ({
 }));
 
 describe("App", () => {
+  // Scroll-follow coalesces its viewport write into an animation frame, and
+  // this suite runs on fake timers, so assertions on scrollTop have to advance
+  // past that frame first.
+  async function flushScrollFrame() {
+    await act(async () => {
+      vi.advanceTimersByTime(32);
+    });
+  }
+
+  // jsdom has no layout and does not clamp `scrollTop`, so a real scroll range
+  // is mocked: `scrollHeight` can grow (a streaming answer) and `scrollTop`
+  // behaves like the browser's (clamped to 0..scrollHeight - clientHeight), so
+  // "pinned to the tail" is `scrollTop === scrollHeight - clientHeight`.
+  function installScrollerMetrics(
+    scroller: HTMLDivElement,
+    contentHeight: number,
+    clientHeight: number,
+  ) {
+    let scrollTop = 0;
+    let content = contentHeight;
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      get: () => content,
+    });
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      get: () => clientHeight,
+    });
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = Math.min(Math.max(value, 0), content - clientHeight);
+      },
+    });
+    return {
+      grow: (delta: number) => {
+        content += delta;
+      },
+    };
+  }
+
   const mockStore = {
     language: "en",
     setLanguage: vi.fn(),
@@ -823,7 +865,7 @@ describe("App", () => {
     expect(screen.getByText("Here is the README content.")).toBeInTheDocument();
   });
 
-  it("does not yank the chat viewport down when a scrolled-up user gets a new message", () => {
+  it("does not yank the chat viewport down when a scrolled-up user gets a new message", async () => {
     const workspace = {
       current: {
         path: "/workspace",
@@ -854,7 +896,8 @@ describe("App", () => {
       ".min-h-0.min-w-0.flex-1.overflow-y-auto",
     ) as HTMLDivElement;
     expect(scroller).not.toBeNull();
-    // Simulate a tall transcript the user scrolled away from.
+    // Simulate a tall transcript the user scrolled away from: the gesture (not
+    // just the position) is what stops the follow.
     Object.defineProperty(scroller, "scrollHeight", {
       configurable: true,
       value: 2000,
@@ -864,6 +907,8 @@ describe("App", () => {
       value: 400,
     });
     scroller.scrollTop = 800;
+    fireEvent.wheel(scroller, { deltaY: -400 });
+    await flushScrollFrame();
 
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
@@ -874,12 +919,13 @@ describe("App", () => {
       ],
     });
     rerender(<App />);
+    await flushScrollFrame();
 
     // The new message must not steal the viewport from the reader.
     expect(scroller.scrollTop).toBe(800);
   });
 
-  it("keeps following to the bottom when the user is at the bottom", () => {
+  it("keeps following to the bottom when the user is at the bottom", async () => {
     const workspace = {
       current: {
         path: "/workspace",
@@ -930,8 +976,149 @@ describe("App", () => {
       ],
     });
     rerender(<App />);
+    await flushScrollFrame();
 
     expect(scroller.scrollTop).toBe(2000);
+  });
+
+  it("keeps following the tail through a long stream in a short viewport", async () => {
+    const workspace = {
+      current: {
+        path: "/workspace",
+        label: "workspace",
+        available: true,
+        current: true,
+        last_opened_at: 1,
+      },
+      recent: [],
+      candidates: [],
+    };
+    const streamEvents = (answer: string) => [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "write an essay" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: { channel: "text", text: answer },
+      },
+    ];
+    const renderFrame = (answer: string) =>
+      (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+        ...mockStore,
+        workspaces: workspace,
+        currentSessionEvents: streamEvents(answer),
+      });
+
+    renderFrame("first delta ");
+    const { rerender } = render(<App />);
+
+    const scroller = document.querySelector(
+      ".min-h-0.min-w-0.flex-1.overflow-y-auto",
+    ) as HTMLDivElement;
+    expect(scroller).not.toBeNull();
+    // A 190px transcript viewport while the answer streams: every delta is
+    // taller than the viewport, so a follow that re-checks its distance to the
+    // bottom after each commit trips on the first delta and is abandoned for the
+    // rest of the run (measured live at scrollTop 0 with a ~1000px gap).
+    const metrics = installScrollerMetrics(scroller, 190, 190);
+
+    for (let delta = 1; delta <= 8; delta += 1) {
+      metrics.grow(130);
+      renderFrame("delta ".repeat(delta * 40));
+      rerender(<App />);
+      await flushScrollFrame();
+    }
+
+    // No reader gesture ever happened, so the follow must still own the tail.
+    expect(scroller.scrollHeight).toBe(190 + 8 * 130);
+    expect(scroller.scrollTop).toBe(
+      scroller.scrollHeight - scroller.clientHeight,
+    );
+  });
+
+  it("stops following when the reader scrolls up and resumes at the bottom", async () => {
+    const workspace = {
+      current: {
+        path: "/workspace",
+        label: "workspace",
+        available: true,
+        current: true,
+        last_opened_at: 1,
+      },
+      recent: [],
+      candidates: [],
+    };
+    const streamEvents = (answer: string) => [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "write an essay" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: { channel: "text", text: answer },
+      },
+    ];
+    const renderFrame = (answer: string) =>
+      (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+        ...mockStore,
+        workspaces: workspace,
+        currentSessionEvents: streamEvents(answer),
+      });
+    renderFrame("first delta ");
+    const { rerender } = render(<App />);
+
+    const scroller = document.querySelector(
+      ".min-h-0.min-w-0.flex-1.overflow-y-auto",
+    ) as HTMLDivElement;
+    expect(scroller).not.toBeNull();
+    const metrics = installScrollerMetrics(scroller, 190, 190);
+    const pinned = () =>
+      scroller.scrollTop === scroller.scrollHeight - scroller.clientHeight;
+
+    let delta = 1;
+    const streamNextDelta = async () => {
+      delta += 1;
+      metrics.grow(130);
+      renderFrame("delta ".repeat(delta * 40));
+      rerender(<App />);
+      await flushScrollFrame();
+    };
+
+    await streamNextDelta();
+    await streamNextDelta();
+    expect(pinned()).toBe(true);
+
+    // The reader scrolls up. Their gesture stops the follow straight away.
+    scroller.scrollTop = 0;
+    fireEvent.wheel(scroller, { deltaY: -400 });
+    await flushScrollFrame();
+
+    // It stays stopped for the rest of the run...
+    await streamNextDelta();
+    await streamNextDelta();
+    expect(scroller.scrollTop).toBe(0);
+
+    // ...until they scroll back to the bottom, which re-engages it.
+    scroller.scrollTop = scroller.scrollHeight;
+    fireEvent.scroll(scroller);
+    await flushScrollFrame();
+    expect(pinned()).toBe(true);
+
+    await streamNextDelta();
+    expect(pinned()).toBe(true);
   });
 
   it("renders thinking block for reasoning events", () => {

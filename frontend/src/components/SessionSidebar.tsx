@@ -1,13 +1,14 @@
 import {
   type CSSProperties,
   type KeyboardEvent,
+  memo,
   useCallback,
   useEffect,
   useMemo,
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Code2, FolderOpen, Plus, Settings } from "lucide-react";
+import { CodeXml, FolderOpen, Plus, Settings } from "lucide-react";
 import type {
   StoredSessionSummary,
   WorkspaceRegistrySnapshot,
@@ -188,7 +189,7 @@ export function SessionSidebar({
         />
         <div className="flex-1 overflow-hidden flex flex-col">
           <div className="h-14 flex items-center justify-center md:justify-start md:px-4 border-b border-[color:var(--vc-border-subtle)] text-[var(--vc-text-primary)] font-bold tracking-tight">
-            <Code2 className="w-6 h-6 md:mr-3" />
+            <CodeXml className="w-6 h-6 md:mr-3" />
             <span className="text-lg">{t("app.title")}</span>
           </div>
 
@@ -295,7 +296,7 @@ export function SessionSidebar({
   );
 }
 
-function SessionListItem({
+const SessionListItem = memo(function SessionListItem({
   sessionSummary,
   isActive,
   isDisabled,
@@ -332,7 +333,7 @@ function SessionListItem({
       <span className="font-medium text-sm truncate">{displayTitle}</span>
     </button>
   );
-}
+});
 function statusTone(status: StoredSessionSummary["status"]): string {
   if (status === "running") return "bg-[var(--vc-accent)] animate-pulse";
   if (status === "waiting") return "bg-[var(--vc-warning-text)]";

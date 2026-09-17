@@ -83,21 +83,31 @@ export function Composer({
     };
   }, []);
 
-  const configuredProviders = (providers ?? []).filter(
-    (provider) => provider.configured,
+  const configuredProviders = useMemo(
+    () => (providers ?? []).filter((provider) => provider.configured),
+    [providers],
   );
   const selectedModel = providerModel?.trim() ?? "";
-  const availableModelGroups = configuredProviders
-    .map((provider) => ({
-      provider,
-      models: providerModels?.[provider.name]?.models ?? [],
-    }))
-    .filter((group) => group.models.length > 0);
-  const selectedModelAvailable = availableModelGroups.some((group) =>
-    group.models.some(
-      (model) =>
-        canonicalModelReference(group.provider.name, model) === selectedModel,
-    ),
+  const availableModelGroups = useMemo(
+    () =>
+      configuredProviders
+        .map((provider) => ({
+          provider,
+          models: providerModels?.[provider.name]?.models ?? [],
+        }))
+        .filter((group) => group.models.length > 0),
+    [configuredProviders, providerModels],
+  );
+  const selectedModelAvailable = useMemo(
+    () =>
+      availableModelGroups.some((group) =>
+        group.models.some(
+          (model) =>
+            canonicalModelReference(group.provider.name, model) ===
+            selectedModel,
+        ),
+      ),
+    [availableModelGroups, selectedModel],
   );
   const selectedModelMetadata = useMemo(() => {
     for (const { provider, models } of availableModelGroups) {
@@ -384,7 +394,7 @@ export function Composer({
               type="button"
               aria-label={isRunning ? t("chat.stop") : t("chat.send")}
               onClick={handleAction}
-              className="flex-shrink-0 w-8 h-8 flex cursor-pointer items-center justify-center rounded-lg border border-[color:var(--vc-text-primary)] bg-[var(--vc-text-primary)] text-[var(--vc-bg)] hover:opacity-90 transition-opacity mb-0.5 focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+              className="shrink-0 w-8 h-8 flex cursor-pointer items-center justify-center rounded-lg border border-[color:var(--vc-text-primary)] bg-[var(--vc-text-primary)] text-[var(--vc-bg)] hover:opacity-90 transition-opacity mb-0.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
             >
               {isRunning ? (
                 <Square className="w-3.5 h-3.5 fill-current" />
@@ -407,7 +417,7 @@ export function Composer({
                     setShowAgentMenu((open) => !open);
                   }}
                   disabled={disabled}
-                  className="max-w-[180px] truncate rounded-md px-1.5 py-1 text-left text-[var(--vc-text-muted)] transition-colors disabled:opacity-50 hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+                  className="max-w-[180px] truncate rounded-md px-1.5 py-1 text-left text-[var(--vc-text-muted)] transition-colors disabled:opacity-50 hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
                 >
                   {selectedAgentLabel}
                 </button>
@@ -451,7 +461,7 @@ export function Composer({
                       setShowModelMenu((open) => !open);
                     }}
                     disabled={disabled}
-                    className="w-full truncate rounded-md px-1.5 py-1 text-left text-[var(--vc-text-muted)] transition-colors disabled:opacity-50 hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+                    className="w-full truncate rounded-md px-1.5 py-1 text-left text-[var(--vc-text-muted)] transition-colors disabled:opacity-50 hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
                   >
                     {selectedModelAvailable
                       ? selectedModelLabel
