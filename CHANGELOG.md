@@ -95,6 +95,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 
+- **frontend:** stop re-rendering the whole app shell, sidebar and composer on every streamed chunk by subscribing to the store fields each of them reads and memoizing the components; a 506-frame stream went from ~505 re-renders per panel to 3-4
+
 - **frontend:** frame SSE streams with `eventsource-parser` instead of the hand-rolled line splitter; the tolerant wire contract (multi-line `data:`, comments, CRLF frames, trailing payload on close) is unchanged
 
 - **runtime:** exit background task shutdown busy loop

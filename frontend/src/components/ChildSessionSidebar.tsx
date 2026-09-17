@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import {
   LoaderCircle,
   RefreshCw,
@@ -34,7 +34,7 @@ interface ChildSessionSidebarProps {
   actionStatus?: AsyncStatus;
   actionError?: string | null;
 }
-export function ChildSessionSidebar({
+export const ChildSessionSidebar = memo(function ChildSessionSidebar({
   parentSessionId,
   tasks,
   status,
@@ -283,4 +283,4 @@ export function ChildSessionSidebar({
       </div>
     </aside>
   );
-}
+});

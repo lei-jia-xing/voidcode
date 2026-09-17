@@ -1145,62 +1145,76 @@ export const useAppStore = create<AppState>()(
           childSessionParentId: null,
         });
 
+        // The runtime's flat session list is the main-session surface: it
+        // filters every delegated child out. A session found in it therefore
+        // has no parent, so the delegated-context lookup can only answer 404 —
+        // skip the guaranteed miss and replay directly. A child session is
+        // absent from the list, so it keeps the lookup-then-fallback path.
+        const selectedSummary = get().sessions.find(
+          (item) => item.session.id === sessionId,
+        );
+        const knownMainSession =
+          selectedSummary !== undefined &&
+          (selectedSummary.session.parent_id ?? null) === null;
+
         try {
-          try {
-            const childContext =
-              await RuntimeClient.getChildSessionContext(sessionId);
-            if (
-              get().replayRequestId !== requestId ||
-              get().currentSessionId !== sessionId
-            ) {
+          if (!knownMainSession) {
+            try {
+              const childContext =
+                await RuntimeClient.getChildSessionContext(sessionId);
+              if (
+                get().replayRequestId !== requestId ||
+                get().currentSessionId !== sessionId
+              ) {
+                return;
+              }
+              const parentSessionId =
+                childContext.task.parent_session_id ??
+                childContext.session_result?.session.session.parent_id ??
+                previousSessionId;
+              set({
+                backgroundTaskOutput: childContext,
+                backgroundTaskOutputStatus: "success",
+                backgroundTaskOutputError: null,
+                selectedBackgroundTaskOutputId: childContext.task.task_id,
+                childSessionParentId: parentSessionId,
+                currentSessionState:
+                  childContext.session_result?.session ??
+                  get().currentSessionState,
+                currentSessionEvents:
+                  childContext.session_result?.transcript ??
+                  get().currentSessionEvents,
+                currentSessionOutput:
+                  childContext.session_result?.output ?? childContext.output,
+                runStatus: childContext.session_result?.session
+                  ? runStatusForReplay(childContext.session_result.session)
+                  : "idle",
+                runOrigin:
+                  childContext.session_result?.session?.status === "running"
+                    ? "external"
+                    : null,
+                replayStatus: "success",
+                replayError: null,
+              });
+              await Promise.all([
+                get().loadBackgroundTasks(),
+                get().loadNotifications(),
+              ]);
               return;
+            } catch (error) {
+              const status =
+                typeof error === "object" && error !== null && "status" in error
+                  ? error.status
+                  : undefined;
+              const code =
+                typeof error === "object" && error !== null && "code" in error
+                  ? error.code
+                  : undefined;
+              if (status !== 404 || code !== "delegated_context_missing") {
+                throw error;
+              }
+              // A recognised missing delegated context means ordinary session replay.
             }
-            const parentSessionId =
-              childContext.task.parent_session_id ??
-              childContext.session_result?.session.session.parent_id ??
-              previousSessionId;
-            set({
-              backgroundTaskOutput: childContext,
-              backgroundTaskOutputStatus: "success",
-              backgroundTaskOutputError: null,
-              selectedBackgroundTaskOutputId: childContext.task.task_id,
-              childSessionParentId: parentSessionId,
-              currentSessionState:
-                childContext.session_result?.session ??
-                get().currentSessionState,
-              currentSessionEvents:
-                childContext.session_result?.transcript ??
-                get().currentSessionEvents,
-              currentSessionOutput:
-                childContext.session_result?.output ?? childContext.output,
-              runStatus: childContext.session_result?.session
-                ? runStatusForReplay(childContext.session_result.session)
-                : "idle",
-              runOrigin:
-                childContext.session_result?.session?.status === "running"
-                  ? "external"
-                  : null,
-              replayStatus: "success",
-              replayError: null,
-            });
-            await Promise.all([
-              get().loadBackgroundTasks(),
-              get().loadNotifications(),
-            ]);
-            return;
-          } catch (error) {
-            const status =
-              typeof error === "object" && error !== null && "status" in error
-                ? error.status
-                : undefined;
-            const code =
-              typeof error === "object" && error !== null && "code" in error
-                ? error.code
-                : undefined;
-            if (status !== 404 || code !== "delegated_context_missing") {
-              throw error;
-            }
-            // A recognised missing delegated context means ordinary session replay.
           }
 
           const replay = await RuntimeClient.getSessionReplay(sessionId);

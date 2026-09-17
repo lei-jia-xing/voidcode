@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Send, Sparkles, Square } from "lucide-react";
 import type {
@@ -47,7 +47,7 @@ export interface SessionContextUsage {
   cacheHitRate: number | null;
 }
 
-export function Composer({
+export const Composer = memo(function Composer({
   disabled,
   isRunning,
   agentPreset,
@@ -585,7 +585,7 @@ export function Composer({
       </div>
     </div>
   );
-}
+});
 
 function truncateSlashDescription(description: string): string {
   const normalized = description.trim();

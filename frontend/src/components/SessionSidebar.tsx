@@ -60,7 +60,7 @@ function clampSessionSidebarWidth(
   return Math.min(maxWidth, Math.max(MIN_SESSION_SIDEBAR_WIDTH, safeWidth));
 }
 
-export function SessionSidebar({
+export const SessionSidebar = memo(function SessionSidebar({
   workspaces,
   sessions,
   currentSessionId,
@@ -294,7 +294,7 @@ export function SessionSidebar({
       </aside>
     </>
   );
-}
+});
 
 const SessionListItem = memo(function SessionListItem({
   sessionSummary,

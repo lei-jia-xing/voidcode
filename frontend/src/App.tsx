@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "./store";
+import { useShallow } from "zustand/react/shallow";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { ChildSessionSidebar } from "./components/ChildSessionSidebar";
 import { ChatThread } from "./components/ChatThread";
@@ -221,7 +222,112 @@ function App() {
     sessionDebugStatus,
     sessionDebugError,
     loadSessionDebug,
-  } = useAppStore();
+  } = useAppStore(
+    // The store is the single source of truth and this shell reads most of it,
+    // so the subscription is exactly the fields it renders: a write to a slice
+    // the shell does not use (skills, agents, review mode, ...) can then never
+    // re-render the whole app, and `useShallow` keeps the object identity stable
+    // while none of them changed.
+    useShallow((state) => ({
+      language: state.language,
+      setLanguage: state.setLanguage,
+      agentPreset: state.agentPreset,
+      setAgentPreset: state.setAgentPreset,
+      providerModel: state.providerModel,
+      setProviderModel: state.setProviderModel,
+      reasoningEffort: state.reasoningEffort,
+      setReasoningEffort: state.setReasoningEffort,
+      workspaces: state.workspaces,
+      workspacesStatus: state.workspacesStatus,
+      workspacesError: state.workspacesError,
+      workspaceSwitchStatus: state.workspaceSwitchStatus,
+      workspaceSwitchError: state.workspaceSwitchError,
+      providers: state.providers,
+      providersStatus: state.providersStatus,
+      providersError: state.providersError,
+      providerModels: state.providerModels,
+      providerValidationResults: state.providerValidationResults,
+      providerValidationStatus: state.providerValidationStatus,
+      providerValidationError: state.providerValidationError,
+      agentPresets: state.agentPresets,
+      commands: state.commands,
+      loadWorkspaces: state.loadWorkspaces,
+      switchWorkspace: state.switchWorkspace,
+      loadProviders: state.loadProviders,
+      validateProviderCredentials: state.validateProviderCredentials,
+      loadAgents: state.loadAgents,
+      loadSkills: state.loadSkills,
+      loadCommands: state.loadCommands,
+      statusSnapshot: state.statusSnapshot,
+      statusStatus: state.statusStatus,
+      statusError: state.statusError,
+      mcpRetryStatus: state.mcpRetryStatus,
+      mcpRetryError: state.mcpRetryError,
+      loadStatus: state.loadStatus,
+      retryMcpConnections: state.retryMcpConnections,
+      reviewSnapshot: state.reviewSnapshot,
+      reviewStatus: state.reviewStatus,
+      reviewError: state.reviewError,
+      reviewSelectedPath: state.reviewSelectedPath,
+      reviewDiff: state.reviewDiff,
+      reviewDiffStatus: state.reviewDiffStatus,
+      reviewDiffError: state.reviewDiffError,
+      loadReview: state.loadReview,
+      selectReviewPath: state.selectReviewPath,
+      sessions: state.sessions,
+      currentSessionId: state.currentSessionId,
+      childSessionParentId: state.childSessionParentId,
+      sessionSidebarWidth: state.sessionSidebarWidth,
+      setSessionSidebarWidth: state.setSessionSidebarWidth,
+      currentSessionEvents: state.currentSessionEvents,
+      currentSessionOutput: state.currentSessionOutput,
+      currentSessionState: state.currentSessionState,
+      loadSessions: state.loadSessions,
+      loadNotifications: state.loadNotifications,
+      notifications: state.notifications,
+      notificationsStatus: state.notificationsStatus,
+      notificationsError: state.notificationsError,
+      ackNotification: state.ackNotification,
+      resumeSession: state.resumeSession,
+      resumeStatus: state.resumeStatus,
+      resumeError: state.resumeError,
+      sessionsStatus: state.sessionsStatus,
+      sessionsError: state.sessionsError,
+      selectSession: state.selectSession,
+      replayTargetSessionId: state.replayTargetSessionId,
+      runTask: state.runTask,
+      cancelCurrentRun: state.cancelCurrentRun,
+      resolveApproval: state.resolveApproval,
+      replayStatus: state.replayStatus,
+      replayError: state.replayError,
+      runStatus: state.runStatus,
+      runOrigin: state.runOrigin,
+      runError: state.runError,
+      approvalStatus: state.approvalStatus,
+      approvalError: state.approvalError,
+      questionStatus: state.questionStatus,
+      questionError: state.questionError,
+      answerQuestion: state.answerQuestion,
+      backgroundTasks: state.backgroundTasks,
+      backgroundTasksStatus: state.backgroundTasksStatus,
+      backgroundTasksError: state.backgroundTasksError,
+      selectedBackgroundTaskOutputId: state.selectedBackgroundTaskOutputId,
+      backgroundTaskOutput: state.backgroundTaskOutput,
+      backgroundTaskOutputStatus: state.backgroundTaskOutputStatus,
+      backgroundTaskOutputError: state.backgroundTaskOutputError,
+      loadBackgroundTasks: state.loadBackgroundTasks,
+      loadBackgroundTaskOutput: state.loadBackgroundTaskOutput,
+      settings: state.settings,
+      settingsStatus: state.settingsStatus,
+      settingsError: state.settingsError,
+      loadSettings: state.loadSettings,
+      updateSettings: state.updateSettings,
+      sessionDebug: state.sessionDebug,
+      sessionDebugStatus: state.sessionDebugStatus,
+      sessionDebugError: state.sessionDebugError,
+      loadSessionDebug: state.loadSessionDebug,
+    })),
+  );
   const { t, i18n } = useTranslation();
 
   const [showSettings, setShowSettings] = useState(false);
@@ -737,23 +843,28 @@ function App() {
     };
   }, []);
 
-  const handleSendMessage = async (
-    message: string,
-    options?: { skills?: string[] },
-  ) => {
-    await runTask(message, {
-      metadata: options?.skills?.length
-        ? { skills: options.skills }
-        : undefined,
-    });
-  };
+  // Stable identities: the memoized Composer and the side panels compare props
+  // shallowly, so a callback rebuilt on every render would defeat them.
+  const handleSendMessage = useCallback(
+    async (message: string, options?: { skills?: string[] }) => {
+      await runTask(message, {
+        metadata: options?.skills?.length
+          ? { skills: options.skills }
+          : undefined,
+      });
+    },
+    [runTask],
+  );
 
-  const handleSteer = async (content: string) => {
-    if (!currentSessionId) {
-      throw new Error(t("chat.steerNoSession"));
-    }
-    return RuntimeClient.steerSession(currentSessionId, content);
-  };
+  const handleSteer = useCallback(
+    async (content: string) => {
+      if (!currentSessionId) {
+        throw new Error(t("chat.steerNoSession"));
+      }
+      return RuntimeClient.steerSession(currentSessionId, content);
+    },
+    [currentSessionId, t],
+  );
 
   const currentSessionSummary = useMemo(
     () => sessions.find((s) => s.session.id === currentSessionId),
@@ -859,6 +970,23 @@ function App() {
   const handleRetryMcpConnections = useCallback(() => {
     void retryMcpConnections();
   }, [retryMcpConnections]);
+  // Panel open/close handlers are props of memoized children, so they must keep
+  // their identity across the stream: an inline arrow would be a new prop on
+  // every streamed frame and re-render the panel it points at.
+  const handleOpenProjects = useCallback(() => setShowProjects(true), []);
+  const handleCloseProjects = useCallback(() => setShowProjects(false), []);
+  const handleOpenSettings = useCallback(() => setShowSettings(true), []);
+  const handleCloseSettings = useCallback(() => setShowSettings(false), []);
+  const handleCloseFileTree = useCallback(() => setShowFileTree(false), []);
+  const handleCloseCodeReview = useCallback(() => setShowCodeReview(false), []);
+  const handleCloseContext = useCallback(() => setShowContext(false), []);
+  const handleRefreshContext = useCallback(() => {
+    if (currentSessionId) void loadSessionDebug(currentSessionId);
+  }, [currentSessionId, loadSessionDebug]);
+  const handleToggleLanguage = useCallback(
+    () => setLanguage(language === "en" ? "zh-CN" : "en"),
+    [language, setLanguage],
+  );
   const cancelBackgroundTask = useCallback(
     (taskId: string) =>
       runBackgroundTaskAction(taskId, RuntimeClient.cancelBackgroundTask),
@@ -903,8 +1031,8 @@ function App() {
         isReplayLoading={isReplayLoading}
         onSidebarWidthChange={setSessionSidebarWidth}
         onSelectSession={handleSelectSession}
-        onOpenProjects={() => setShowProjects(true)}
-        onOpenSettings={() => setShowSettings(true)}
+        onOpenProjects={handleOpenProjects}
+        onOpenSettings={handleOpenSettings}
         onRefreshSessions={loadSessions}
       />
 
@@ -1275,7 +1403,7 @@ function App() {
         diff={reviewDiff}
         diffStatus={reviewDiffStatus}
         diffError={reviewDiffError}
-        onClose={() => setShowFileTree(false)}
+        onClose={handleCloseFileTree}
         onRefresh={loadReview}
         onSelectPath={handleFileTreePathSelect}
       />
@@ -1290,7 +1418,7 @@ function App() {
         diff={reviewDiff}
         diffStatus={reviewDiffStatus}
         diffError={reviewDiffError}
-        onClose={() => setShowCodeReview(false)}
+        onClose={handleCloseCodeReview}
         onRefresh={loadReview}
         onSelectPath={handleFileTreePathSelect}
       />
@@ -1300,10 +1428,8 @@ function App() {
         debug={sessionDebug}
         status={sessionDebugStatus}
         error={sessionDebugError}
-        onClose={() => setShowContext(false)}
-        onRefresh={() => {
-          if (currentSessionId) void loadSessionDebug(currentSessionId);
-        }}
+        onClose={handleCloseContext}
+        onRefresh={handleRefreshContext}
       />
 
       <SettingsPanel
@@ -1319,8 +1445,8 @@ function App() {
         providerValidationStatus={providerValidationStatus}
         providerValidationError={providerValidationError}
         language={language}
-        onToggleLanguage={() => setLanguage(language === "en" ? "zh-CN" : "en")}
-        onClose={() => setShowSettings(false)}
+        onToggleLanguage={handleToggleLanguage}
+        onClose={handleCloseSettings}
         onLoad={loadSettings}
         onLoadProviders={loadProviders}
         onValidateProvider={validateProviderCredentials}
@@ -1329,7 +1455,7 @@ function App() {
 
       <OpenProjectModal
         isOpen={showProjects}
-        onClose={() => setShowProjects(false)}
+        onClose={handleCloseProjects}
         recentWorkspaces={workspaces?.recent ?? []}
         candidateWorkspaces={workspaces?.candidates ?? []}
         workspacesStatus={workspacesStatus}

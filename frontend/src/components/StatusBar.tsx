@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from "react";
+import { memo, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Activity,
@@ -418,7 +418,7 @@ function McpSection({
   );
 }
 
-export function StatusBar({
+export const StatusBar = memo(function StatusBar({
   snapshot,
   status,
   error,
@@ -563,6 +563,6 @@ export function StatusBar({
       )}
     </div>
   );
-}
+});
 
 export type { CapabilityStateKey };

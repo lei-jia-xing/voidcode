@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronDown,
@@ -10,6 +10,7 @@ import {
   CircleX,
   ListTodo,
 } from "lucide-react";
+import { deeplyEqual } from "../lib/runtime/event-parser";
 import type { TodoPanelSnapshot } from "./todoPanelModel";
 
 function TodoStatusIcon({ status }: { status: string }) {
@@ -30,7 +31,17 @@ function TodoStatusIcon({ status }: { status: string }) {
   return <Circle className="h-3.5 w-3.5 text-[var(--vc-text-subtle)]" />;
 }
 
-export function TodoPanel({
+// `deriveLatestTodoSnapshot` rebuilds the snapshot object on every store update
+// (the transcript is re-derived per streamed frame), so identity says nothing
+// about change; the memo compares the values the panel actually renders.
+function todoSnapshotEqual(
+  prev: { snapshot: TodoPanelSnapshot | null },
+  next: { snapshot: TodoPanelSnapshot | null },
+): boolean {
+  return deeplyEqual(prev.snapshot, next.snapshot);
+}
+
+export const TodoPanel = memo(function TodoPanel({
   snapshot,
 }: {
   snapshot: TodoPanelSnapshot | null;
@@ -109,4 +120,4 @@ export function TodoPanel({
       </div>
     </section>
   );
-}
+}, todoSnapshotEqual);

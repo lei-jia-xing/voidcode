@@ -1917,6 +1917,55 @@ describe("useAppStore integration flow", () => {
     expect(useAppStore.getState().currentSessionId).toBeNull();
   });
 
+  it("replays a listed main session without probing for a delegated context", async () => {
+    // The runtime's flat session list is the main-session surface (delegated
+    // children are filtered out of it), so a session found there has no parent
+    // and the delegated-context lookup could only answer 404. Selecting such a
+    // session must go straight to the replay.
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary("session-parent", "completed", "parent prompt"),
+    ]);
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValueOnce(
+      makeRuntimeResponse(
+        "session-parent",
+        "completed",
+        [
+          makeEvent(
+            1,
+            "runtime.request_received",
+            { prompt: "parent prompt" },
+            "runtime",
+            "session-parent",
+          ),
+          makeEvent(
+            2,
+            "graph.response_ready",
+            { output: "parent output" },
+            "graph",
+            "session-parent",
+          ),
+        ],
+        "parent output",
+      ),
+    );
+    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
+
+    await useAppStore.getState().loadSessions();
+    await useAppStore.getState().selectSession("session-parent");
+
+    expect(
+      runtimeClientMocks.getChildSessionContextMock,
+    ).not.toHaveBeenCalled();
+    expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(
+      "session-parent",
+    );
+    const state = useAppStore.getState();
+    expect(state.currentSessionId).toBe("session-parent");
+    expect(state.currentSessionOutput).toBe("parent output");
+    expect(state.childSessionParentId).toBeNull();
+    expect(state.replayStatus).toBe("success");
+  });
+
   it("keeps delegated child replay run status in sync while the child is still running", async () => {
     runtimeClientMocks.getChildSessionContextMock.mockResolvedValueOnce({
       task: {
