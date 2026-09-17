@@ -207,6 +207,7 @@ from .contracts import (
     RuntimeSessionRevertMarker,
     RuntimeStatusSnapshot,
     RuntimeStreamChunk,
+    SessionEventBatch,
     SkillSummary,
     UnknownSessionError,
     WorkspaceReviewSnapshot,
@@ -322,6 +323,7 @@ from .session import (
     SessionStatus,
     StoredSessionSummary,
     is_session_status_terminal,
+    normalize_persisted_session_metadata,
     reload_persisted_session,
     session_metadata_for_replay,
     validate_session_workspace,
@@ -418,6 +420,12 @@ _SKILL_BINDING_SCOPE_KEYS = (
     "lsp",
     "mcp",
 )
+
+# Event types whose payload the runtime policy projection annotates. Kept as the
+# single source of truth so the incremental follow read
+# (``session_events_after``) can skip the persisted-metadata parse when a batch
+# has no event that the projection would rewrite.
+_POLICY_PROJECTED_EVENT_TYPES = frozenset({"runtime.request_received"})
 
 
 def _provider_target_label(target: ResolvedProviderModel) -> str:
@@ -2913,6 +2921,30 @@ class VoidCodeRuntime(RuntimeSurface):
             ),
             output=response.output,
         )
+
+    def session_events_after(self, *, session_id: str, after_sequence: int) -> SessionEventBatch:
+        """Read only the persisted events after ``after_sequence`` plus the row status.
+
+        Follow-stream poll used after an initial ``replay_session``: it must be
+        cheap for sessions that are merely waiting, so it reads one bounded
+        transcript slice (never the whole log, the todo state, or the session
+        row snapshot). The returned events carry the same runtime policy
+        projection as a full replay, and the projection is only computed when
+        the batch actually contains a policy-annotated event.
+        """
+        validate_session_id(session_id)
+        stored = self._session_store.read_session_events_after(
+            workspace=self._workspace,
+            session_id=session_id,
+            after_sequence=after_sequence,
+        )
+        events = stored.events
+        if any(event.event_type in _POLICY_PROJECTED_EVENT_TYPES for event in events):
+            events = self._events_with_runtime_policy_projection(
+                events,
+                metadata=session_metadata_for_replay(normalize_persisted_session_metadata(stored.metadata)),
+            )
+        return SessionEventBatch(status=stored.status, events=events)
 
     def revert_session(self, *, session_id: str, sequence: int) -> RuntimeSessionRevertMarker:
         validate_session_id(session_id)
@@ -6144,7 +6176,7 @@ class VoidCodeRuntime(RuntimeSurface):
             return events
         projected: list[EventEnvelope] = []
         for event in events:
-            if event.event_type != "runtime.request_received":
+            if event.event_type not in _POLICY_PROJECTED_EVENT_TYPES:
                 projected.append(event)
                 continue
             projected.append(

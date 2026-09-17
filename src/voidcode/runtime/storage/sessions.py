@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, cast
@@ -32,6 +33,20 @@ if TYPE_CHECKING:
     _MixinBase = _StorageMixinBase
 else:
     _MixinBase = object
+
+
+@dataclass(frozen=True, slots=True)
+class SessionEventsAfter:
+    """Bounded transcript slice plus the row state a follow client needs.
+
+    ``status`` is the persisted row status and ``metadata`` the raw persisted
+    session metadata at read time; ``events`` are the replay-visible events
+    with ``sequence > after_sequence`` in ascending ``sequence`` order.
+    """
+
+    status: SessionStatus
+    metadata: dict[str, object]
+    events: tuple[EventEnvelope, ...]
 
 
 class _SessionStorageMixin(_MixinBase):
@@ -770,6 +785,69 @@ class _SessionStorageMixin(_MixinBase):
         if row is None:
             raise UnknownSessionError(f"unknown session: {session_id}")
         return self._parse_session_status(cast(str, row["status"]))
+
+    def read_session_events_after(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        after_sequence: int,
+    ) -> SessionEventsAfter:
+        """Return a bounded, replay-visible slice of a session transcript.
+
+        Incremental read for follow-style clients that already replayed the
+        session: one connection reads the row state (status + raw metadata) and
+        one range scan on the ``(workspace_id, session_id, sequence)`` primary
+        key returns the events after ``after_sequence``, so an idle poll never
+        materializes the transcript again. The active-revert cutoff that
+        ``load_session`` applies is honored too, so an incremental follow never
+        observes events a replay hides. Events come back undecorated; the
+        runtime applies its policy projection afterwards.
+        """
+        with self._connect(workspace) as connection:
+            session_row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT status, metadata_json
+                    FROM sessions
+                    WHERE workspace_id = ? AND session_id = ?
+                    """,
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+            if session_row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            metadata = cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"])))
+            marker = self._revert_marker_from_metadata(metadata)
+            revert_cutoff = marker.sequence if marker is not None and marker.active else None
+            event_rows = cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    """
+                    SELECT sequence, event_type, source, payload_json
+                    FROM session_events
+                    WHERE workspace_id = ? AND session_id = ? AND sequence > ?
+                      AND (? IS NULL OR sequence < ?)
+                    ORDER BY sequence ASC
+                    """,
+                    (str(workspace), session_id, after_sequence, revert_cutoff, revert_cutoff),
+                ).fetchall(),
+            )
+        return SessionEventsAfter(
+            status=self._parse_session_status(cast(str, session_row["status"])),
+            metadata=metadata,
+            events=tuple(
+                EventEnvelope(
+                    session_id=session_id,
+                    sequence=cast(int, row["sequence"]),
+                    event_type=cast(str, row["event_type"]),
+                    source=self._parse_event_source(cast(str, row["source"])),
+                    payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
+                )
+                for row in event_rows
+            ),
+        )
 
     def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None:
         """Persist bounded runtime metadata without fabricating a new response."""

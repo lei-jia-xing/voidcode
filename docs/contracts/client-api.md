@@ -170,10 +170,10 @@ MVP 生命周期：
 
 当前已交付的本地 HTTP routes 包括：
 
-- `POST /api/runtime/run/stream`
+- `POST /api/runtime/run/stream`（SSE 帧信封与 `session` 字段交付规则见 `stream-transport.md`）
 - `GET /api/sessions`
 - `GET /api/sessions/{id}`
-- `GET /api/sessions/{id}/events`（支持 `after_sequence` / `follow` 查询参数）
+- `GET /api/sessions/{id}/events`（支持 `after_sequence` / `follow` 查询参数；SSE 帧信封、`session` 字段交付规则与 `follow` 增量读取语义见 `stream-transport.md`）
 - `GET /api/sessions/{id}/result`
 - `GET /api/sessions/{id}/debug`
 - `GET /api/sessions/{id}/delegated-context`

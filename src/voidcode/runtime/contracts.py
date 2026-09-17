@@ -30,7 +30,7 @@ from .events import (
     EventEnvelope,
 )
 from .question import QuestionResponse
-from .session import SessionRef, SessionState
+from .session import SessionRef, SessionState, SessionStatus
 
 
 class RuntimeRequestError(ValueError):
@@ -701,6 +701,22 @@ class RuntimeResponse:
     session: SessionState
     events: tuple[EventEnvelope, ...] = ()
     output: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionEventBatch:
+    """Bounded incremental slice of one session transcript for follow clients.
+
+    Produced by ``VoidCodeRuntime.session_events_after`` for transports that
+    poll a session they already replayed: ``events`` holds only the persisted
+    events after the client cursor (ascending ``sequence``, same runtime policy
+    projection as a full replay) and ``status`` is the persisted row status at
+    read time, so a follow loop can detect a terminal session without
+    re-loading the whole log.
+    """
+
+    status: SessionStatus
+    events: tuple[EventEnvelope, ...] = ()
 
 
 type GitStatusState = Literal["git_ready", "not_git_repo", "git_error"]

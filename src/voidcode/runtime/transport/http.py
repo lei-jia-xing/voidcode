@@ -8,6 +8,7 @@ import sys
 import threading
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager, nullcontext
+from copy import deepcopy
 from pathlib import Path
 from typing import Protocol, cast, final
 from urllib.parse import parse_qs
@@ -50,6 +51,7 @@ from ..contracts import (
     RuntimeSessionRevertMarker,
     RuntimeStatusSnapshot,
     RuntimeStreamChunk,
+    SessionEventBatch,
     SkillSummary,
     WorkspaceRegistrySnapshot,
     WorkspaceReviewSnapshot,
@@ -92,6 +94,65 @@ def _default_runtime_class() -> type[VoidCodeRuntime]:
 # runs seal as ``interrupted`` with the ``runtime.failed{cancelled: true}``
 # event), so the follow stream must close on it exactly like completed/failed.
 _SESSION_TERMINAL_STATUSES = frozenset({"completed", "failed", "interrupted"})
+
+# Idle poll interval for the session-event follow stream. The tick itself only
+# reads events past the client cursor plus the session status, so the interval
+# bounds follow latency without loading the transcript again.
+_SESSION_EVENT_FOLLOW_POLL_SECONDS = 1.0
+
+
+@final
+class _SessionStateEmitter:
+    """Emit run-stream session state only when it actually changes.
+
+    The run stream emits one frame per provider delta, and the session metadata
+    blob (``context_window``, ``agent_capability_snapshot``, ``runtime_config``,
+    ``pending_messages``, ...) is tens of kilobytes. Re-serializing and
+    re-sending it on every delta multiplied wire traffic and client-side parsing
+    by the metadata size while the value was unchanged.
+
+    The wire field keeps its shape: a frame carries the full serialized session
+    state on the first emission of a response and whenever it changes, and
+    ``null`` otherwise. Consumers already treat ``null`` as "keep the state you
+    have".
+    """
+
+    __slots__ = ("_emitted",)
+
+    def __init__(self) -> None:
+        self._emitted: SessionState | None = None
+
+    def serialize(self, session: SessionState) -> dict[str, object] | None:
+        if self._emitted is not None and _session_states_serialize_identically(self._emitted, session):
+            return None
+        payload = RuntimeTransportApp._serialize_session_state(session)
+        # Snapshot what was emitted instead of holding the caller's live state:
+        # an in-place metadata update must be visible on the next frame, and the
+        # copy is paid once per emission rather than once per frame.
+        self._emitted = SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata=deepcopy(session.metadata),
+        )
+        return payload
+
+
+def _session_states_serialize_identically(previous: SessionState, current: SessionState) -> bool:
+    """Whether two session states produce the same serialized payload.
+
+    Mirrors ``_serialize_session_state`` field for field, so a changed session
+    ref, status, turn, or metadata always re-emits the full state. The metadata
+    comparison is by value (not identity) so an in-place metadata update still
+    re-emits, and it stays an order of magnitude cheaper than re-serializing the
+    metadata blob it skips.
+    """
+    return (
+        previous.session == current.session
+        and previous.status == current.status
+        and previous.turn == current.turn
+        and previous.metadata == current.metadata
+    )
 
 
 class RuntimeTransport(Protocol):
@@ -164,6 +225,8 @@ class RuntimeTransport(Protocol):
     def session_result(self, *, session_id: str) -> RuntimeSessionResult: ...
 
     def replay_session(self, *, session_id: str) -> RuntimeResponse: ...
+
+    def session_events_after(self, *, session_id: str, after_sequence: int) -> SessionEventBatch: ...
 
     def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot: ...
 
@@ -1301,9 +1364,11 @@ class RuntimeTransportApp:
 
                 await self._send_stream_start(send)
 
+                session_emitter = _SessionStateEmitter()
                 emitted_failed_chunk = await self._send_runtime_stream_chunk(
                     send,
                     first_chunk,
+                    session_emitter=session_emitter,
                     show_thinking=show_thinking,
                 )
 
@@ -1331,6 +1396,7 @@ class RuntimeTransportApp:
                             chunk_failed = await self._send_runtime_stream_chunk(
                                 send,
                                 chunk,
+                                session_emitter=session_emitter,
                                 show_thinking=show_thinking,
                             )
                         except BrokenPipeError, ConnectionError, OSError, RuntimeError:
@@ -1398,13 +1464,15 @@ class RuntimeTransportApp:
         await self._send_session_snapshot_chunk(send, replay.session)
 
         cursor = after_sequence
+        pending_events: tuple[EventEnvelope, ...] = replay.events
+        session_status = replay.session.status
         # Watch for client disconnects while we write the replay so a burst of
         # events is not pushed into a dead socket (which the ASGI server then
         # reports as repeated send failures).
         disconnect_task = asyncio.ensure_future(self._await_client_disconnect(receive))
         try:
             while True:
-                for event in replay.events:
+                for event in pending_events:
                     if event.sequence <= cursor:
                         continue
                     send_task = asyncio.ensure_future(self._send_session_event_chunk(send, event, show_thinking=show_thinking))
@@ -1421,12 +1489,21 @@ class RuntimeTransportApp:
                         return
                     send_task.result()
                     cursor = event.sequence
-                if not follow or replay.session.status in _SESSION_TERMINAL_STATUSES:
+                if not follow or session_status in _SESSION_TERMINAL_STATUSES:
                     break
                 try:
-                    message = await asyncio.wait_for(receive(), timeout=1.0)
+                    message = await asyncio.wait_for(receive(), timeout=_SESSION_EVENT_FOLLOW_POLL_SECONDS)
                 except TimeoutError:
-                    replay = runtime.replay_session(session_id=session_id)
+                    # Idle tick: read only the events past the cursor and the
+                    # persisted status. Re-replaying the whole transcript here
+                    # ran a full-log scan plus policy projection on the event
+                    # loop once per second for every open follow stream.
+                    batch = runtime.session_events_after(
+                        session_id=session_id,
+                        after_sequence=cursor,
+                    )
+                    pending_events = batch.events
+                    session_status = batch.status
                     continue
                 if message.get("type") in {"http.disconnect", "websocket.disconnect"}:
                     logger.debug(
@@ -1470,9 +1547,14 @@ class RuntimeTransportApp:
         send: Send,
         chunk: RuntimeStreamChunk,
         *,
+        session_emitter: _SessionStateEmitter,
         show_thinking: bool = False,
     ) -> bool:
-        payload = self._serialize_runtime_stream_chunk(chunk, show_thinking=show_thinking)
+        payload = self._serialize_runtime_stream_chunk(
+            chunk,
+            session=session_emitter.serialize(chunk.session),
+            show_thinking=show_thinking,
+        )
         data = json.dumps(payload, sort_keys=True).encode("utf-8")
         await send(
             {
@@ -2429,11 +2511,12 @@ class RuntimeTransportApp:
     def _serialize_runtime_stream_chunk(
         chunk: RuntimeStreamChunk,
         *,
+        session: dict[str, object] | None,
         show_thinking: bool = False,
     ) -> dict[str, object]:
         return {
             "kind": chunk.kind,
-            "session": RuntimeTransportApp._serialize_session_state(chunk.session),
+            "session": session,
             "event": RuntimeTransportApp._serialize_event(
                 chunk.event,
                 show_thinking=show_thinking,

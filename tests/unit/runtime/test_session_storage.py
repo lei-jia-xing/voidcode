@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import threading
 from contextlib import closing
@@ -351,6 +352,66 @@ def test_session_storage_revert_marker_filters_active_view_only(tmp_path: Path) 
     assert restored is not None
     assert restored.sequence == 2
     assert [event.sequence for event in store.load_session(workspace=tmp_path, session_id="undo-session").events] == [1, 2, 3]
+
+
+def test_session_storage_reads_events_after_cursor_once_and_honors_active_revert(tmp_path: Path) -> None:
+    """The incremental read is the replay-visible transcript after a cursor.
+
+    A follow client already replayed the session, so later reads return each
+    event after the cursor exactly once, in order, together with the row status
+    — and the active-revert cutoff keeps them identical to ``load_session``.
+    """
+    store = SqliteSessionStore()
+    request = RuntimeRequest(prompt="follow me", session_id="events-after-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="events-after-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=tuple(
+            EventEnvelope(
+                session_id="events-after-session",
+                sequence=sequence,
+                event_type="graph.provider_stream",
+                source="graph",
+                payload={"sequence": sequence},
+            )
+            for sequence in (1, 2, 3)
+        ),
+        output="done",
+    )
+    _run_session(store, tmp_path, request, response)
+
+    tail = store.read_session_events_after(workspace=tmp_path, session_id="events-after-session", after_sequence=1)
+    assert tail.status == "completed"
+    assert [event.sequence for event in tail.events] == [2, 3]
+    assert store.read_session_events_after(workspace=tmp_path, session_id="events-after-session", after_sequence=3).events == ()
+    assert store.read_session_events_after(workspace=tmp_path, session_id="events-after-session", after_sequence=0).events == response.events
+
+    store.revert_session(workspace=tmp_path, session_id="events-after-session", sequence=2)
+    reverted_replay = store.load_session(workspace=tmp_path, session_id="events-after-session")
+    reverted_tail = store.read_session_events_after(workspace=tmp_path, session_id="events-after-session", after_sequence=0)
+    assert [event.sequence for event in reverted_replay.events] == [1]
+    assert [event.sequence for event in reverted_tail.events] == [1]
+
+    store.unrevert_session(workspace=tmp_path, session_id="events-after-session")
+    assert [
+        event.sequence
+        for event in store.read_session_events_after(
+            workspace=tmp_path,
+            session_id="events-after-session",
+            after_sequence=0,
+        ).events
+    ] == [1, 2, 3]
+
+
+def test_session_storage_reads_events_after_unknown_session(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+
+    with pytest.raises(UnknownSessionError):
+        store.read_session_events_after(workspace=tmp_path, session_id="missing-session", after_sequence=0)
 
 
 def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
@@ -754,6 +815,105 @@ def test_session_storage_bootstraps_sequences_from_existing_timestamps(tmp_path:
     ]
     assert new_session_row == (41, 51)
     assert new_task_row == (71, 71)
+
+
+def test_session_storage_bootstraps_schema_once_per_database_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the first connection to a database file runs the schema bootstrap.
+
+    Regression guard: ``_connect`` used to run ``_ensure_schema`` (canonical
+    shape verification, storage-sequence floors, and one ``CREATE TABLE IF NOT
+    EXISTS`` per table) for every connection it opened, i.e. on every storage
+    read — including every API request on the asyncio event loop. Warm
+    connections must only pay the cheap sentinel reads that prove the file is
+    still the verified one.
+    """
+    database_path = tmp_path / "bootstrap-once.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    original_ensure_schema = SqliteSessionStore._ensure_schema
+    bootstrapped: list[Path] = []
+
+    def _counting_ensure_schema(self: Any, *, connection: sqlite3.Connection, database_path: Path) -> None:
+        bootstrapped.append(database_path)
+        return original_ensure_schema(self, connection=connection, database_path=database_path)
+
+    monkeypatch.setattr(SqliteSessionStore, "_ensure_schema", _counting_ensure_schema)
+
+    store.list_sessions(workspace=tmp_path)
+    assert bootstrapped == [database_path]
+
+    store.list_sessions(workspace=tmp_path)
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="once-task"),
+            request=BackgroundTaskRequestSnapshot(prompt="once"),
+        ),
+    )
+    store.list_sessions(workspace=tmp_path)
+
+    assert bootstrapped == [database_path]
+
+
+def test_session_storage_reverifies_schema_after_version_change_with_warm_cache(
+    tmp_path: Path,
+) -> None:
+    """A warm bootstrap cache must never mask a real schema mismatch.
+
+    ``user_version`` is the connection-level authority: bumping it out of band
+    (a migration by another process, or a downgrade) must re-enter the fail-fast
+    path even though this process already verified the file.
+    """
+    database_path = tmp_path / "warm-version-mismatch.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    store.list_sessions(workspace=tmp_path)
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute("PRAGMA user_version = 12")
+        connection.commit()
+
+    with pytest.raises(RuntimeError, match="schema version mismatch"):
+        store.list_sessions(workspace=tmp_path)
+
+
+def test_session_storage_reverifies_replaced_database_file_with_warm_cache(tmp_path: Path) -> None:
+    """A replaced database file must not inherit the previous file's verification.
+
+    Both paths keep the file's inode (``shutil.copyfile`` truncates in place, like
+    ``cp``), so only the connection's own sentinel reads — the reported
+    ``user_version``, the schema cookie, and the sequence rows — can catch the
+    swap. Either way the next read must fail fast instead of trusting the cache.
+    """
+    database_path = tmp_path / "replaced-database.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    store.list_sessions(workspace=tmp_path)
+
+    def _replace_with(source: Path) -> None:
+        for suffix in ("-wal", "-shm"):
+            Path(f"{database_path}{suffix}").unlink(missing_ok=True)
+        shutil.copyfile(source, database_path)
+
+    foreign_version = tmp_path / "foreign-version.sqlite3"
+    with closing(sqlite3.connect(foreign_version)) as connection:
+        connection.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, workspace TEXT NOT NULL)")
+        connection.execute("PRAGMA user_version = 12")
+        connection.commit()
+    _replace_with(foreign_version)
+
+    with pytest.raises(RuntimeError, match="schema version mismatch"):
+        store.list_sessions(workspace=tmp_path)
+
+    foreign_same_version = tmp_path / "foreign-same-version.sqlite3"
+    with closing(sqlite3.connect(foreign_same_version)) as connection:
+        connection.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, workspace TEXT NOT NULL)")
+        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        connection.commit()
+    _replace_with(foreign_same_version)
+
+    with pytest.raises(RuntimeError, match=r"table 'sessions' missing columns"):
+        store.list_sessions(workspace=tmp_path)
 
 
 def test_session_storage_configures_sqlite_operability_pragmas(tmp_path: Path) -> None:

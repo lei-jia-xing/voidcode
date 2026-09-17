@@ -3113,6 +3113,273 @@ def test_transport_session_events_stops_cleanly_when_send_raises_during_replay()
     assert len(data_parts) == 2  # snapshot + first chunk only
 
 
+def test_transport_session_events_follow_reads_incrementally_after_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Follow ticks must read only the events past the client cursor.
+
+    The full transcript is replayed once when the stream opens; every later
+    tick asks the runtime for the events after the advancing cursor plus the
+    session status, delivers each event exactly once in order, and closes on a
+    terminal status.
+    """
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_transport = importlib.import_module("voidcode.runtime.transport.http")
+    runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
+    runtime_events = importlib.import_module("voidcode.runtime.events")
+    runtime_session = importlib.import_module("voidcode.runtime.session")
+
+    # The follow stream reads the interval from its defining module.
+    monkeypatch.setattr(runtime_transport, "_SESSION_EVENT_FOLLOW_POLL_SECONDS", 0.01)
+
+    replay_calls: list[str] = []
+    follow_cursors: list[int] = []
+
+    def _event(session_id: str, sequence: int) -> object:
+        return runtime_events.EventEnvelope(
+            session_id=session_id,
+            sequence=sequence,
+            event_type="graph.provider_stream",
+            source="graph",
+            payload={"sequence": sequence},
+        )
+
+    class _IncrementalFollowRuntime:
+        def replay_session(self, *, session_id: str) -> object:
+            replay_calls.append(session_id)
+            return runtime_contracts.RuntimeResponse(
+                session=runtime_session.SessionState(
+                    session=runtime_session.SessionRef(id=session_id),
+                    status="running",
+                    turn=1,
+                    metadata={},
+                ),
+                events=(_event(session_id, 1), _event(session_id, 2)),
+                output=None,
+            )
+
+        def session_events_after(self, *, session_id: str, after_sequence: int) -> object:
+            follow_cursors.append(after_sequence)
+            if after_sequence < 4:
+                return runtime_contracts.SessionEventBatch(
+                    status="running",
+                    events=(_event(session_id, 3), _event(session_id, 4)),
+                )
+            return runtime_contracts.SessionEventBatch(status="completed", events=())
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    app = runtime_http.RuntimeTransportApp(runtime_factory=cast(Any, _IncrementalFollowRuntime))
+
+    response = _run_app(
+        app,
+        method="GET",
+        path="/api/sessions/incremental-follow-session/events",
+        query_string=b"after_sequence=0&follow=true",
+    )
+
+    assert response.status == 200
+    payloads = _parse_sse_payloads(response)
+    assert [payload["kind"] for payload in payloads] == ["session", "event", "event", "event", "event"]
+    assert [cast(dict[str, object], payload["event"])["sequence"] for payload in payloads[1:]] == [1, 2, 3, 4]
+    # One full replay when the stream opens; ticks never replay the transcript.
+    assert replay_calls == ["incremental-follow-session"]
+    # Each tick asks only for the events past the cursor, which advances
+    # monotonically with the delivered batches (1/2 replayed, then 3/4).
+    assert follow_cursors == [2, 4]
+
+
+def test_transport_run_stream_sends_session_state_only_when_it_changes() -> None:
+    """Run-stream frames must not re-send unchanged session state.
+
+    The run stream emits one frame per provider delta; repeating the (tens of
+    kilobytes) session metadata on every frame multiplied wire traffic and
+    client parsing by the metadata size. The first frame of a response carries
+    the full state, later frames carry ``null`` until the state really changes.
+    """
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
+    runtime_events = importlib.import_module("voidcode.runtime.events")
+    runtime_session = importlib.import_module("voidcode.runtime.session")
+
+    session_id = "session-state-session"
+    metadata: dict[str, object] = {"context_window": {"tokens": 1024}, "pending_messages": []}
+    running_session = runtime_session.SessionState(
+        session=runtime_session.SessionRef(id=session_id),
+        status="running",
+        turn=1,
+        metadata=metadata,
+    )
+    # Equal-but-distinct metadata must not re-emit the whole state.
+    equal_session = runtime_session.SessionState(
+        session=runtime_session.SessionRef(id=session_id),
+        status="running",
+        turn=1,
+        metadata=dict(metadata),
+    )
+    # A later frame keeps the same object but updates its metadata in place.
+    in_place_session = runtime_session.SessionState(
+        session=runtime_session.SessionRef(id=session_id),
+        status="running",
+        turn=1,
+        metadata={"context_window": {"tokens": 4096}},
+    )
+    completed_session = runtime_session.SessionState(
+        session=runtime_session.SessionRef(id=session_id),
+        status="completed",
+        turn=2,
+        metadata=metadata,
+    )
+
+    def _event(sequence: int) -> object:
+        return runtime_events.EventEnvelope(
+            session_id=session_id,
+            sequence=sequence,
+            event_type="graph.provider_stream",
+            source="graph",
+            payload={"sequence": sequence},
+        )
+
+    class _SessionStateRunRuntime:
+        def run_stream(self, request: object) -> Iterator[object]:
+            yield runtime_contracts.RuntimeStreamChunk(kind="event", session=running_session, event=_event(1))
+            yield runtime_contracts.RuntimeStreamChunk(kind="event", session=running_session, event=_event(2))
+            yield runtime_contracts.RuntimeStreamChunk(kind="event", session=equal_session, event=_event(3))
+            yield runtime_contracts.RuntimeStreamChunk(kind="event", session=completed_session, event=_event(4))
+            yield runtime_contracts.RuntimeStreamChunk(kind="event", session=in_place_session, event=_event(5))
+            in_place_session.metadata["context_window"] = {"tokens": 8192}
+            yield runtime_contracts.RuntimeStreamChunk(kind="event", session=in_place_session, event=_event(6))
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    app = runtime_http.RuntimeTransportApp(runtime_factory=cast(Any, _SessionStateRunRuntime))
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "stream state"}).encode("utf-8"),
+    )
+
+    assert response.status == 200
+    payloads = _parse_sse_payloads(response)
+    assert [cast(dict[str, object], payload["event"])["sequence"] for payload in payloads] == [1, 2, 3, 4, 5, 6]
+    first_session = cast(dict[str, object], payloads[0]["session"])
+    assert first_session["status"] == "running"
+    assert first_session["metadata"] == {"context_window": {"tokens": 1024}, "pending_messages": []}
+    assert payloads[1]["session"] is None
+    assert payloads[2]["session"] is None
+    changed_session = cast(dict[str, object], payloads[3]["session"])
+    assert changed_session["status"] == "completed"
+    assert changed_session["turn"] == 2
+    assert changed_session["metadata"] == metadata
+    # The in-place frame is a new state, so it is emitted in full ...
+    assert cast(dict[str, object], payloads[4]["session"])["metadata"] == {"context_window": {"tokens": 4096}}
+    # ... and a mutation of the same object re-emits instead of going stale.
+    assert cast(dict[str, object], payloads[5]["session"])["metadata"] == {"context_window": {"tokens": 8192}}
+
+
+def test_transport_session_events_follow_tick_does_not_reload_transcript(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A follow tick must not re-run the full replay on real storage.
+
+    Regression guard for the follow loop re-reading the whole event log (plus
+    the runtime policy projection) once per idle second: only the opening
+    replay may load the transcript, every later tick reads incrementally.
+    """
+    runtime_transport = importlib.import_module("voidcode.runtime.transport.http")
+    runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
+    storage_module = importlib.import_module("voidcode.runtime.storage")
+    runtime_session = importlib.import_module("voidcode.runtime.session")
+    runtime_request, _runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+
+    # The follow stream reads the interval from its defining module.
+    monkeypatch.setattr(runtime_transport, "_SESSION_EVENT_FOLLOW_POLL_SECONDS", 0.02)
+
+    store_type = cast(Any, storage_module.SqliteSessionStore)
+    session_id = "follow-tick-session"
+    store = store_type()
+    store.save_run(
+        workspace=tmp_path,
+        request=runtime_request(prompt="follow me", session_id=session_id),
+        response=runtime_contracts.RuntimeResponse(
+            session=runtime_session.SessionState(
+                session=runtime_session.SessionRef(id=session_id),
+                status="running",
+                turn=1,
+                metadata={},
+            ),
+            events=(),
+            output=None,
+        ),
+    )
+    store.append_session_events(
+        workspace=tmp_path,
+        session_id=session_id,
+        events=tuple(("graph.provider_stream", "graph", {"sequence": sequence}, None) for sequence in (1, 2, 3)),
+    )
+
+    full_loads: list[str] = []
+    ticks: list[int] = []
+    original_load_session = store_type.load_session
+    original_events_after = store_type.read_session_events_after
+
+    def _counting_load_session(self: object, *, workspace: Path, session_id: str) -> object:
+        full_loads.append(session_id)
+        return original_load_session(self, workspace=workspace, session_id=session_id)
+
+    def _counting_events_after(self: object, *, workspace: Path, session_id: str, after_sequence: int) -> object:
+        ticks.append(after_sequence)
+        return original_events_after(self, workspace=workspace, session_id=session_id, after_sequence=after_sequence)
+
+    monkeypatch.setattr(store_type, "load_session", _counting_load_session)
+    monkeypatch.setattr(store_type, "read_session_events_after", _counting_events_after)
+
+    app = create_runtime_app(workspace=tmp_path)
+    sent: list[dict[str, object]] = []
+    receive_calls = 0
+    client_gone_at = time.monotonic() + 0.2
+
+    async def _receive() -> dict[str, object]:
+        nonlocal receive_calls
+        receive_calls += 1
+        if receive_calls <= 2:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        if time.monotonic() < client_gone_at:
+            # Outlast the poll interval so the loop runs idle ticks.
+            await asyncio.sleep(0.05)
+            return {"type": "http.request", "body": b"", "more_body": False}
+        # A dropped socket reports http.disconnect on every later receive.
+        return {"type": "http.disconnect"}
+
+    async def _send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    scope: dict[str, object] = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/api/sessions/{session_id}/events",
+        "query_string": b"after_sequence=1&follow=true",
+    }
+    asyncio.run(asyncio.wait_for(app(scope, _receive, _send), timeout=10.0))
+
+    payloads = [
+        json.loads(part.removeprefix(b"data: ").strip())
+        for part in (cast(bytes, message.get("body", b"")) for message in sent if message["type"] == "http.response.body")
+        if part.startswith(b"data: ")
+    ]
+    assert [payload["kind"] for payload in payloads] == ["session", "event", "event"]
+    assert [cast(dict[str, object], payload["event"])["sequence"] for payload in payloads[1:]] == [2, 3]
+    # The transcript is loaded once, when the stream opens.
+    assert full_loads == [session_id]
+    # Meanwhile the idle ticks kept reading incrementally past the cursor.
+    assert len(ticks) >= 2
+    assert set(ticks) == {3}
+
+
 def test_transport_run_stream_accepts_metadata_passthrough_for_skills() -> None:
     create_runtime_app = _load_transport_app_factory()
     runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
