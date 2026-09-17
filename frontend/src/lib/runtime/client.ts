@@ -20,7 +20,6 @@ import {
   ProviderSummary,
   ProviderValidationResult,
   RuntimeSessionDebugSnapshot,
-  RuntimeSessionResult,
   RuntimeSettings,
   RuntimeSettingsUpdate,
   RuntimeStatusSnapshot,
@@ -36,42 +35,60 @@ export class RuntimeClientError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: string,
   ) {
     super(message);
     this.name = "RuntimeClientError";
   }
 }
 
-async function runtimeErrorMessage(
+interface RuntimeErrorPayload {
+  /** Rendered `<fallback>: <error> (<code>)` text, for display. */
+  message: string;
+  /** The stable backend error code, when the envelope carried one. */
+  code?: string;
+}
+
+/**
+ * Read the transport's `{error, code}` envelope once.
+ *
+ * The rendered message keeps the historical shape for UI text; the structured
+ * `code` is what callers route on, so a reworded backend message can no longer
+ * change client behaviour.
+ */
+async function runtimeErrorPayload(
   res: Response,
   fallback: string,
-): Promise<string> {
+): Promise<RuntimeErrorPayload> {
   let payload: unknown;
   try {
     payload = await res.clone().json();
   } catch {
-    return `${fallback}: ${res.statusText || res.status}`;
+    return { message: `${fallback}: ${res.statusText || res.status}` };
   }
 
-  if (payload && typeof payload === "object") {
-    const error = (payload as { error?: unknown }).error;
-    const code = (payload as { code?: unknown }).code;
+  if (payload !== null && typeof payload === "object") {
+    const error = "error" in payload ? payload.error : undefined;
+    const code = "code" in payload ? payload.code : undefined;
+    const stableCode =
+      typeof code === "string" && code.length > 0 ? code : undefined;
     if (typeof error === "string" && error.length > 0) {
-      return typeof code === "string" && code.length > 0
-        ? `${fallback}: ${error} (${code})`
-        : `${fallback}: ${error}`;
+      return {
+        message: stableCode
+          ? `${fallback}: ${error} (${stableCode})`
+          : `${fallback}: ${error}`,
+        code: stableCode,
+      };
     }
   }
 
-  return `${fallback}: ${res.statusText || res.status}`;
+  return { message: `${fallback}: ${res.statusText || res.status}` };
 }
 
 async function expectOk(res: Response, fallback: string): Promise<void> {
   if (!res.ok) {
-    throw new RuntimeClientError(
-      await runtimeErrorMessage(res, fallback),
-      res.status,
-    );
+    const { message, code } = await runtimeErrorPayload(res, fallback);
+    throw new RuntimeClientError(message, res.status, code);
   }
 }
 
@@ -176,7 +193,8 @@ export class RuntimeClient {
     );
     if (!res.ok && res.status !== 409) {
       throw new Error(
-        await runtimeErrorMessage(res, "Failed to load provider models"),
+        (await runtimeErrorPayload(res, "Failed to load provider models"))
+          .message,
       );
     }
     return res.json();
@@ -191,7 +209,7 @@ export class RuntimeClient {
     );
     if (!res.ok && res.status !== 409) {
       throw new Error(
-        await runtimeErrorMessage(res, "Failed to validate provider"),
+        (await runtimeErrorPayload(res, "Failed to validate provider")).message,
       );
     }
     return res.json();
@@ -257,16 +275,6 @@ export class RuntimeClient {
       withShowThinking(`/api/sessions/${encodeURIComponent(sessionId)}`),
     );
     await expectOk(res, "Failed to replay session");
-    return res.json();
-  }
-
-  static async getSessionResult(
-    sessionId: string,
-  ): Promise<RuntimeSessionResult> {
-    const res = await fetch(
-      withShowThinking(`/api/sessions/${encodeURIComponent(sessionId)}/result`),
-    );
-    await expectOk(res, "Failed to load session result");
     return res.json();
   }
 

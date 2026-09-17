@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { RuntimeClient } from "./client";
+import { RuntimeClient, RuntimeClientError } from "./client";
 
 describe("RuntimeClient integration contract", () => {
   afterEach(() => {
@@ -254,6 +254,34 @@ describe("RuntimeClient integration contract", () => {
 
     await expect(RuntimeClient.listSessions()).rejects.toThrow(
       "Failed to list sessions: prompt must be a non-empty string",
+    );
+  });
+
+  it("carries the backend error code so callers can route on it", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      clone() {
+        return this;
+      },
+      json: async () => ({
+        error: "no delegated child context for session: child-1",
+        code: "delegated_context_missing",
+      }),
+    } as Response);
+
+    const failure: unknown = await RuntimeClient.getChildSessionContext(
+      "child-1",
+    ).catch((error: unknown) => error);
+
+    if (!(failure instanceof RuntimeClientError)) {
+      throw new Error(`expected a RuntimeClientError, got ${String(failure)}`);
+    }
+    expect(failure.status).toBe(404);
+    expect(failure.code).toBe("delegated_context_missing");
+    expect(failure.message).toBe(
+      "Failed to load delegated child session context: no delegated child context for session: child-1 (delegated_context_missing)",
     );
   });
 

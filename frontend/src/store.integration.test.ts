@@ -284,6 +284,12 @@ vi.mock("./lib/runtime/client", () => ({
   },
 }));
 
+const NO_DELEGATED_CONTEXT = {
+  status: 404,
+  code: "delegated_context_missing",
+  message: "no delegated child context",
+};
+
 describe("useAppStore integration flow", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -291,10 +297,9 @@ describe("useAppStore integration flow", () => {
     vi.resetModules();
     runtimeClientMocks.listNotificationsMock.mockResolvedValue([]);
     runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
-    runtimeClientMocks.getChildSessionContextMock.mockRejectedValue({
-      status: 404,
-      message: "not a delegated child",
-    });
+    runtimeClientMocks.getChildSessionContextMock.mockRejectedValue(
+      NO_DELEGATED_CONTEXT,
+    );
     ({ useAppStore } = await import("./store"));
     useAppStore.setState({
       language: "en",
@@ -1895,6 +1900,21 @@ describe("useAppStore integration flow", () => {
     expect(state.childSessionParentId).toBeNull();
     expect(state.currentSessionOutput).toBe("parent output");
     expect(state.selectedBackgroundTaskOutputId).toBeNull();
+  });
+
+  it("does not fall back to plain replay for a failure without the missing-context code", async () => {
+    // The ordinary-replay fallback is gated on the transport's stable code, not
+    // on the message text: a 404 that does not carry the code stays visible even
+    // when its message reads exactly like the missing-context sentence.
+    runtimeClientMocks.getChildSessionContextMock.mockRejectedValueOnce({
+      status: 404,
+      message: "no delegated child context for session: session-parent",
+    });
+
+    await useAppStore.getState().selectSession("session-parent");
+
+    expect(runtimeClientMocks.getSessionReplayMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().currentSessionId).toBeNull();
   });
 
   it("keeps delegated child replay run status in sync while the child is still running", async () => {
@@ -3960,6 +3980,7 @@ describe("useAppStore integration flow", () => {
     ]);
     runtimeClientMocks.resolveApprovalMock.mockRejectedValue({
       status: 409,
+      code: "no_pending_approval",
       message: "no pending approval for session",
     });
 

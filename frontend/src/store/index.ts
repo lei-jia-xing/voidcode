@@ -1189,18 +1189,18 @@ export const useAppStore = create<AppState>()(
             ]);
             return;
           } catch (error) {
-            const message = errorMessage(error).toLowerCase();
             const status =
               typeof error === "object" && error !== null && "status" in error
                 ? error.status
                 : undefined;
-            if (
-              status !== 404 ||
-              !/(child|delegated|not found)/.test(message)
-            ) {
+            const code =
+              typeof error === "object" && error !== null && "code" in error
+                ? error.code
+                : undefined;
+            if (status !== 404 || code !== "delegated_context_missing") {
               throw error;
             }
-            // A recognized missing delegated context means ordinary session replay.
+            // A recognised missing delegated context means ordinary session replay.
           }
 
           const replay = await RuntimeClient.getSessionReplay(sessionId);

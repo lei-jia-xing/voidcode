@@ -218,6 +218,12 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
+const NO_DELEGATED_CONTEXT = {
+  status: 404,
+  code: "delegated_context_missing",
+  message: "no delegated child context",
+};
+
 function childContextCalls(): number {
   return runtimeClientMocks.getChildSessionContextMock.mock.calls.filter(
     ([sessionId]) => sessionId === "child-session",
@@ -323,11 +329,8 @@ async function flushAsync() {
 async function browseParentSession() {
   // The parent is a plain (non-child) session: delegated-context lookup fails
   // and it falls through to plain replay, which succeeds.
-  runtimeClientMocks.getChildSessionContextMock.mockImplementation(
-    (sessionId: string) =>
-      sessionId === "session-parent"
-        ? Promise.reject({ status: 404, message: "not a delegated child" })
-        : Promise.reject({ status: 404, message: "not found" }),
+  runtimeClientMocks.getChildSessionContextMock.mockRejectedValue(
+    NO_DELEGATED_CONTEXT,
   );
   runtimeClientMocks.getSessionReplayMock.mockResolvedValue(
     makeRuntimeResponse(
@@ -447,7 +450,7 @@ describe("App follow stream with delegated child sessions", () => {
       (sessionId: string) =>
         sessionId === "child-session"
           ? Promise.resolve(makeChildOutput("interrupted"))
-          : Promise.reject({ status: 404, message: "not a delegated child" }),
+          : Promise.reject(NO_DELEGATED_CONTEXT),
     );
 
     await act(async () => {
@@ -498,7 +501,7 @@ describe("App follow stream with delegated child sessions", () => {
       (sessionId: string) =>
         sessionId === "child-session"
           ? childContextDeferred.promise
-          : Promise.reject({ status: 404, message: "not a delegated child" }),
+          : Promise.reject(NO_DELEGATED_CONTEXT),
     );
 
     let selectPromise!: Promise<void>;
@@ -764,10 +767,9 @@ describe("App follow stream with delegated child sessions", () => {
   });
   it("consumes replay after a terminal snapshot before refreshing an external run", async () => {
     let replayConsumed = false;
-    runtimeClientMocks.getChildSessionContextMock.mockRejectedValue({
-      status: 404,
-      message: "not a delegated child",
-    });
+    runtimeClientMocks.getChildSessionContextMock.mockRejectedValue(
+      NO_DELEGATED_CONTEXT,
+    );
     const event = makeEvent(
       2,
       "graph.response_ready",
@@ -860,10 +862,9 @@ describe("App session-event follow stream (push contract)", () => {
     localStorage.clear();
     resetStore();
     installDefaultRuntimeClientMocks();
-    runtimeClientMocks.getChildSessionContextMock.mockRejectedValue({
-      status: 404,
-      message: "not a delegated child",
-    });
+    runtimeClientMocks.getChildSessionContextMock.mockRejectedValue(
+      NO_DELEGATED_CONTEXT,
+    );
   });
 
   it("renders pushed events while the stream is open and reconciles once at close", async () => {
@@ -1123,7 +1124,7 @@ describe("App session-event follow stream (push contract)", () => {
       (sessionId: string) =>
         sessionId === "child-session"
           ? Promise.resolve(makeChildOutput("running"))
-          : Promise.reject({ status: 404, message: "not a delegated child" }),
+          : Promise.reject(NO_DELEGATED_CONTEXT),
     );
     const parentReplayCalls =
       runtimeClientMocks.getSessionReplayMock.mock.calls.length;
