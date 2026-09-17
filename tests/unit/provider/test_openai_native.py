@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, replace
 from typing import Any, cast
 
-import httpx
+import httpx2
 import openai
 import pytest
 
@@ -74,11 +74,11 @@ def _request(*, transport: object | None, abort_signal: object | None = None, se
 def test_native_non_stream_uses_chat_completions_wire_and_auth_headers() -> None:
     seen: dict[str, object] = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         seen["url"] = str(request.url)
         seen["headers"] = dict(request.headers)
         seen["payload"] = json.loads(request.content)
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={
                 "id": "chatcmpl-1",
@@ -92,7 +92,7 @@ def test_native_non_stream_uses_chat_completions_wire_and_auth_headers() -> None
         api_key="sk-test",
         organization="org-test",
         project="proj-test",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        http_client=httpx2.Client(transport=httpx2.MockTransport(handler)),
     )
     result = (
         OpenAIModelProvider(config=OpenAIProviderConfig(api_key="sk-test"), transport=transport)
@@ -128,10 +128,10 @@ def test_native_stream_emits_text_tool_lifecycle_and_trailing_usage() -> None:
         ]
     )
 
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"}, text=body)
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     events = list(OpenAIModelProvider(transport=transport).turn_provider().stream_turn(_request(transport=transport)))
     assert [(event.kind, event.channel) for event in events] == [
         ("delta", "text"),
@@ -162,10 +162,10 @@ def test_native_stream_abort_before_first_event_never_calls_transport() -> None:
 
 
 def test_native_http_error_is_typed_and_redacted() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(429, json={"error": {"message": "slow down", "code": "rate_limit"}, "token": "sk-secret"})
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(429, json={"error": {"message": "slow down", "code": "rate_limit"}, "token": "sk-secret"})
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     with pytest.raises(ProviderExecutionError) as raised:
         OpenAIModelProvider(transport=transport).turn_provider().propose_turn(_request(transport=transport))
     assert raised.value.kind == "rate_limit"
@@ -175,11 +175,11 @@ def test_native_http_error_is_typed_and_redacted() -> None:
 def _captured_request_headers(**transport_kwargs: object) -> dict[str, str]:
     seen: dict[str, object] = {}
 
-    def handler(http_request: httpx.Request) -> httpx.Response:
+    def handler(http_request: httpx2.Request) -> httpx2.Response:
         seen["headers"] = dict(http_request.headers)
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)), **cast(Any, transport_kwargs))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)), **cast(Any, transport_kwargs))
     transport.request({"model": "gpt-4o", "messages": [], "stream": False}, timeout_seconds=5.0)
     return {key.lower(): value for key, value in cast(dict[str, str], seen["headers"]).items()}
 
@@ -231,14 +231,14 @@ def test_openai_transport_auth_headers_follow_the_scheme_contract(
 def test_openai_transport_respects_request_scoped_authorization_override() -> None:
     seen: dict[str, object] = {}
 
-    def handler(http_request: httpx.Request) -> httpx.Response:
+    def handler(http_request: httpx2.Request) -> httpx2.Response:
         seen["headers"] = dict(http_request.headers)
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
     transport = OpenAIChatCompletionsTransport(
         base_url="https://gateway.test/v1",
         auth_scheme="none",
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        http_client=httpx2.Client(transport=httpx2.MockTransport(handler)),
     )
     transport.request(
         {"model": "gpt-4o", "messages": [], "stream": False, "extra_headers": {"Authorization": "Token per-request"}},
@@ -253,15 +253,15 @@ def test_openai_transport_respects_request_scoped_authorization_override() -> No
 def _sdk_over_mock_transport(seen: dict[str, object]) -> Any:
     """Real SDK over a recording MockTransport, so the wire itself is observable."""
 
-    def handler(http_request: httpx.Request) -> httpx.Response:
+    def handler(http_request: httpx2.Request) -> httpx2.Response:
         seen["url"] = str(http_request.url)
         seen["headers"] = dict(http_request.headers)
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
     real_openai = openai.OpenAI
 
     def build(**kwargs: object) -> object:
-        kwargs["http_client"] = httpx.Client(transport=httpx.MockTransport(handler))
+        kwargs["http_client"] = httpx2.Client(transport=httpx2.MockTransport(handler))
         return real_openai(**cast(Any, kwargs))
 
     return build
@@ -280,12 +280,12 @@ def test_declared_request_headers_reach_the_wire_resolved_per_request() -> None:
     """
     seen: dict[str, object] = {}
 
-    def handler(http_request: httpx.Request) -> httpx.Response:
+    def handler(http_request: httpx2.Request) -> httpx2.Response:
         seen["headers"] = dict(http_request.headers)
         seen["body"] = json.loads(http_request.content or b"{}")
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     provider = OpenAIChatCompletionsProvider(
         name="gateway",
         config=ProviderEndpointConfig(base_url="https://gateway.test/v1"),
@@ -407,10 +407,10 @@ def test_provider_without_an_endpoint_fails_typed_instead_of_borrowing_a_host() 
 def test_not_configured_check_is_skipped_when_a_transport_is_injected() -> None:
     """An injected transport owns its own endpoint, so no config resolution happens."""
 
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     provider = OpenAIChatCompletionsProvider(name="acme-gateway", transport=transport)
 
     result = provider.propose_turn(replace(_request(transport=None), provider_name="acme-gateway"))
@@ -466,8 +466,8 @@ def test_native_stream_first_event_timeout_is_typed_and_closes_stream() -> None:
 
 
 def test_native_usage_never_reports_negative_uncached_tokens() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             200,
             json={
                 "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
@@ -475,7 +475,7 @@ def test_native_usage_never_reports_negative_uncached_tokens() -> None:
             },
         )
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     result = OpenAIModelProvider(transport=transport).turn_provider().propose_turn(_request(transport=transport))
     assert result.usage is not None and result.usage.uncached_input_tokens == 0
 
@@ -529,11 +529,11 @@ def _captured_messages(
 ) -> list[dict[str, object]]:
     seen: dict[str, object] = {}
 
-    def handler(http_request: httpx.Request) -> httpx.Response:
+    def handler(http_request: httpx2.Request) -> httpx2.Response:
         seen["payload"] = json.loads(http_request.content)
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     provider = OpenAIChatCompletionsProvider(
         name=provider_name,
         config=config,
@@ -594,11 +594,11 @@ def test_native_deepseek_reasoning_replay_follows_model_map_alias() -> None:
     config = ProviderEndpointConfig(base_url="https://gateway.test/v1", model_map={"ds-alias": "deepseek-chat"})
     seen: dict[str, object] = {}
 
-    def handler(http_request: httpx.Request) -> httpx.Response:
+    def handler(http_request: httpx2.Request) -> httpx2.Response:
         seen["payload"] = json.loads(http_request.content)
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     OpenAIChatCompletionsProvider(name="endpoint", config=config, transport=transport).propose_turn(request)
 
     payload = cast(dict[str, object], seen["payload"])
@@ -649,11 +649,11 @@ def _captured_reasoning_body(
 ) -> dict[str, object]:
     seen: dict[str, object] = {}
 
-    def handler(http_request: httpx.Request) -> httpx.Response:
+    def handler(http_request: httpx2.Request) -> httpx2.Response:
         seen["payload"] = json.loads(http_request.content)
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     provider = OpenAIChatCompletionsProvider(
         name=provider_name,
         config=ProviderEndpointConfig(base_url=base_url),
@@ -816,11 +816,11 @@ def test_native_sanitizes_mcp_tool_names_and_decodes_runtime_names() -> None:
 
     seen: dict[str, object] = {}
 
-    def handler(http_request: httpx.Request) -> httpx.Response:
+    def handler(http_request: httpx2.Request) -> httpx2.Response:
         payload = json.loads(http_request.content)
         seen["payload"] = payload
         wire_name = _wire_tool_names(payload)[0]
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={
                 "choices": [
@@ -835,7 +835,7 @@ def test_native_sanitizes_mcp_tool_names_and_decodes_runtime_names() -> None:
             },
         )
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     result = OpenAIChatCompletionsProvider(name="deepseek", config=provider.config, transport=transport).propose_turn(request)
 
     payload = cast(dict[str, object], seen["payload"])
@@ -866,10 +866,10 @@ def test_native_rejects_cached_turns_without_anthropic_messages() -> None:
     assert raised.value.fallback_allowed is True
 
     # A turn without cache retention is served normally.
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     result = OpenAIChatCompletionsProvider(name="openai", config=config, transport=transport).propose_turn(_request(transport=transport))
     assert result.output == "ok"
 
@@ -890,10 +890,10 @@ def test_native_stream_keeps_parallel_tool_call_fragments_isolated() -> None:
         ]
     )
 
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"}, text=body)
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     events = list(OpenAIModelProvider(transport=transport).turn_provider().stream_turn(_request(transport=transport)))
 
     ends = {event.tool_call_id: event.parsed_arguments for event in events if event.kind == "tool_call_end"}
@@ -901,10 +901,10 @@ def test_native_stream_keeps_parallel_tool_call_fragments_isolated() -> None:
 
 
 def _stream_events(body: str) -> list[ProviderStreamEvent]:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"}, text=body)
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     return list(OpenAIModelProvider(transport=transport).turn_provider().stream_turn(_request(transport=transport)))
 
 
@@ -959,10 +959,10 @@ def _proposed_turn(finish_reason: object, *, usage: bool = False) -> ProviderTur
     if usage:
         payload["usage"] = {"prompt_tokens": 3, "completion_tokens": 1}
 
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=payload)
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json=payload)
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     provider = OpenAIChatCompletionsProvider(name="deepseek", config=ProviderEndpointConfig(base_url="https://api.deepseek.com"), transport=transport)
     return provider.propose_turn(_request(transport=transport))
 
@@ -987,10 +987,10 @@ def test_native_unrecognized_finish_reason_keeps_the_provider_token() -> None:
 
 def test_native_non_stream_finish_reason_reporting_follows_the_wire() -> None:
     def propose(choice: dict[str, object]) -> ProviderTurnResult:
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"choices": [choice]})
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json={"choices": [choice]})
 
-        transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+        transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
         provider = OpenAIChatCompletionsProvider(
             name="deepseek", config=ProviderEndpointConfig(base_url="https://api.deepseek.com"), transport=transport
         )
@@ -1034,8 +1034,8 @@ def test_native_trailing_usage_chunk_keeps_the_latched_finish_reason() -> None:
 
 
 def test_native_usage_metadata_payload_reports_cache_read_and_hit_rate() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
             200,
             json={
                 "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
@@ -1043,7 +1043,7 @@ def test_native_usage_metadata_payload_reports_cache_read_and_hit_rate() -> None
             },
         )
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     result = OpenAIModelProvider(transport=transport).turn_provider().propose_turn(_request(transport=transport))
 
     usage = result.usage
@@ -1110,12 +1110,12 @@ def test_wire_prefix_descriptor_is_a_final_materialization_seam() -> None:
 def test_wire_prefix_materialized_message_count_matches_emitted_payload() -> None:
     seen: dict[str, object] = {}
 
-    def handler(http_request: httpx.Request) -> httpx.Response:
+    def handler(http_request: httpx2.Request) -> httpx2.Response:
         seen["payload"] = json.loads(http_request.content)
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
     request = _wire_request(user_text="first")
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     provider = OpenAIChatCompletionsProvider(name="openai", config=ProviderEndpointConfig(base_url="https://api.openai.com/v1"), transport=transport)
     wire = provider._wire(request)
     provider.propose_turn(request)
@@ -1152,11 +1152,11 @@ def test_native_tool_name_cap_truncates_to_64_and_preserves_hash_suffix() -> Non
 def _captured_tool_payload(tool_names: tuple[str, ...]) -> dict[str, object]:
     seen: dict[str, object] = {}
 
-    def handler(http_request: httpx.Request) -> httpx.Response:
+    def handler(http_request: httpx2.Request) -> httpx2.Response:
         seen["payload"] = json.loads(http_request.content)
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+        return httpx2.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     provider = OpenAIChatCompletionsProvider(name="deepseek", config=ProviderEndpointConfig(base_url="https://api.deepseek.com"), transport=transport)
     provider.propose_turn(_wire_request(user_text="search", tool_names=tool_names))
     return cast(dict[str, object], seen["payload"])
@@ -1191,10 +1191,10 @@ def test_native_capped_tool_name_round_trips_through_transport_payload() -> None
     provider = OpenAIChatCompletionsProvider(name="deepseek", config=ProviderEndpointConfig(base_url="https://api.deepseek.com"))
     seen: dict[str, object] = {}
 
-    def handler(http_request: httpx.Request) -> httpx.Response:
+    def handler(http_request: httpx2.Request) -> httpx2.Response:
         payload = json.loads(http_request.content)
         seen["payload"] = payload
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={
                 "choices": [
@@ -1211,7 +1211,7 @@ def test_native_capped_tool_name_round_trips_through_transport_payload() -> None
             },
         )
 
-    transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     turn = OpenAIChatCompletionsProvider(name="deepseek", config=provider.config, transport=transport).propose_turn(request)
 
     payload = cast(dict[str, object], seen["payload"])
@@ -1248,15 +1248,15 @@ def _recording_sdk(observed: dict[str, object]) -> Any:
 
 
 def test_openai_transport_forwards_ssl_verify_false_to_constructed_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_client = httpx.Client
+    real_client = httpx2.Client
     client_kwargs: dict[str, object] = {}
     observed_sdk: dict[str, object] = {}
 
-    def recording_client(*args: object, **kwargs: object) -> httpx.Client:
+    def recording_client(*args: object, **kwargs: object) -> httpx2.Client:
         client_kwargs.update(kwargs)
         return real_client(*args, **kwargs)
 
-    monkeypatch.setattr(httpx, "Client", recording_client)
+    monkeypatch.setattr(httpx2, "Client", recording_client)
     monkeypatch.setattr("voidcode.provider.openai_native.OpenAI", _recording_sdk(observed_sdk))
 
     transport = OpenAIChatCompletionsTransport(base_url="https://gateway.test/v1", ssl_verify=False)
@@ -1269,11 +1269,11 @@ def test_openai_transport_forwards_ssl_verify_false_to_constructed_client(monkey
 def test_openai_transport_keeps_default_verification_when_ssl_verify_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     observed_sdk: dict[str, object] = {}
 
-    def forbidden_client(*args: object, **kwargs: object) -> httpx.Client:
+    def forbidden_client(*args: object, **kwargs: object) -> httpx2.Client:
         _ = args, kwargs
         raise AssertionError("transport must not build a custom HTTP client when ssl_verify is unset")
 
-    monkeypatch.setattr(httpx, "Client", forbidden_client)
+    monkeypatch.setattr(httpx2, "Client", forbidden_client)
     monkeypatch.setattr("voidcode.provider.openai_native.OpenAI", _recording_sdk(observed_sdk))
 
     transport = OpenAIChatCompletionsTransport(base_url="https://gateway.test/v1")

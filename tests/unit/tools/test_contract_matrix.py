@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-import httpx
+import httpx2
 import jsonschema
 import pytest
 
@@ -118,9 +118,9 @@ def _provider_tool_parameters(definitions: tuple[ToolDefinition, ...]) -> dict[s
     """Return the ``parameters`` envelope a real provider turn emits per tool name."""
     seen: dict[str, object] = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         seen["payload"] = json.loads(request.content)
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={
                 "id": "chatcmpl-contract",
@@ -130,7 +130,7 @@ def _provider_tool_parameters(definitions: tuple[ToolDefinition, ...]) -> dict[s
             },
         )
 
-    transport = OpenAIChatCompletionsTransport(api_key="sk-test", http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    transport = OpenAIChatCompletionsTransport(api_key="sk-test", http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     OpenAIModelProvider(config=OpenAIProviderConfig(api_key="sk-test"), transport=transport).turn_provider().propose_turn(
         _provider_request(definitions)
     )

@@ -98,6 +98,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Build
 
+- **deps:** upgrade the toolchain (`uv` 0.12.15, `bun` 1.4.2) and 24 Python / 19 frontend dependencies, including `openai` 2.54.0 → 3.14.1, whose HTTPX2 default moves the OpenAI transport from `httpx` to `httpx2`; `typescript` stays at 6.0.3 (typescript-eslint cannot run against TS 7) and `vitest` / `@vitest/coverage-v8` at 4.1.11 (the jest-dom matcher augmentation)
+
 - **release:** add git-cliff changelog generation
 
 ### Fixed

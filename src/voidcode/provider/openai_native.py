@@ -9,7 +9,7 @@ from queue import Empty, Full, Queue
 from threading import Event, Thread
 from typing import Any, Protocol, cast
 
-import httpx
+import httpx2
 from openai import APIError as OpenAIAPIError
 from openai import OpenAI, omit
 
@@ -207,7 +207,7 @@ class OpenAIChatCompletionsTransport:
         auth_header: str | None = None,
         auth_scheme: str = "bearer",
         ssl_verify: bool | None = None,
-        http_client: httpx.Client | None = None,
+        http_client: httpx2.Client | None = None,
     ) -> None:
         self.base_url = normalize_openai_base_url(base_url)
         self.api_key = api_key
@@ -258,7 +258,7 @@ class OpenAIChatCompletionsTransport:
         if self._sdk_client is None:
             http_client = self.http_client
             if http_client is None and self.ssl_verify is not None:
-                http_client = httpx.Client(verify=self.ssl_verify)
+                http_client = httpx2.Client(verify=self.ssl_verify)
             # ``default_headers`` wins over the SDK's own auth header, so the
             # configured scheme stays authoritative. ``max_retries=0`` keeps
             # retry/fallback owned by the runtime instead of the SDK.
