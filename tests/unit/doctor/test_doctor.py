@@ -235,7 +235,8 @@ class TestCreateDoctorForConfig:
         assert readiness.details["status"] == "missing_model"
         assert readiness.details["auth_present"] is None
         assert readiness.error_message is not None
-        assert "provider/model" in readiness.error_message
+        assert '"model": "<provider>/<model>"' in readiness.error_message
+        assert ".voidcode.json" in readiness.error_message
 
     def test_provider_readiness_runtime_error_is_structured_result(self, tmp_path: Path) -> None:
         config = RuntimeConfig(
@@ -282,4 +283,4 @@ class TestCreateDoctorForConfig:
         assert readiness.status == CapabilityCheckStatus.ERROR
         assert readiness.details["status"] == "unconfigured"
         assert readiness.error_message is not None
-        assert "provider credentials" in readiness.error_message
+        assert "providers.openai.api_key" in readiness.error_message

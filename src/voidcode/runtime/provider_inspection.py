@@ -256,7 +256,7 @@ class RuntimeProviderReadinessProjector:
         if facts.provider is None or facts.model is None:
             status = "missing_model"
             ok = False
-            guidance = "Configure a provider/model, for example model: 'openai/gpt-4o'."
+            guidance = missing_model_guidance()
         elif facts.auth_present is False and facts.auth_failure_kind == "invalid_model":
             status = facts.auth_failure_kind
             ok = False
@@ -264,11 +264,11 @@ class RuntimeProviderReadinessProjector:
         elif not facts.configured:
             status = "unconfigured"
             ok = False
-            guidance = "Add provider credentials in environment variables or .voidcode.json."
+            guidance = unconfigured_provider_guidance(facts.provider)
         elif facts.auth_present is False:
             status = facts.auth_failure_kind or "missing_auth"
             ok = False
-            guidance = facts.auth_message or guidance_for_provider_error_kind("missing_auth")
+            guidance = facts.auth_message or missing_credentials_guidance(facts.provider)
         elif facts.streaming_supported is False:
             status = "streaming_unsupported"
             ok = False
@@ -317,7 +317,7 @@ class RuntimeProviderValidationProjector:
                 last_error=None if models is None else models.last_error,
                 discovery_mode=None if models is None else models.discovery_mode,
                 failure_kind="missing_auth",
-                guidance="Add provider credentials in environment variables or .voidcode.json.",
+                guidance=unconfigured_provider_guidance(facts.provider),
             )
         if facts.auth_present is False:
             return ProviderValidationResult(
@@ -327,7 +327,7 @@ class RuntimeProviderValidationProjector:
                 status=facts.auth_failure_kind or "missing_auth",
                 message=facts.auth_message or "Provider authentication is missing.",
                 failure_kind=facts.auth_failure_kind or "missing_auth",
-                guidance=facts.auth_message or guidance_for_provider_error_kind("missing_auth"),
+                guidance=facts.auth_message or missing_credentials_guidance(facts.provider),
             )
         if models is None:
             raise ValueError("provider validation requires model discovery facts")

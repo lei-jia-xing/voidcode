@@ -103,3 +103,38 @@ def test_provider_readiness_projector_prefers_auth_message() -> None:
     )
 
     assert result.guidance == "custom auth guidance"
+
+
+def test_missing_model_guidance_names_the_config_file_and_key() -> None:
+    result = RuntimeProviderReadinessProjector.project(ProviderReadinessFacts(provider=None, model=None, configured=False, auth_present=None))
+
+    assert result.status == "missing_model"
+    assert ".voidcode.json" in result.guidance
+    assert '"model": "<provider>/<model>"' in result.guidance
+    assert "VOIDCODE_MODEL" in result.guidance
+
+
+def test_unconfigured_guidance_names_the_provider_credentials_path() -> None:
+    result = RuntimeProviderReadinessProjector.project(ProviderReadinessFacts(provider="openai", model="gpt-4o", configured=False, auth_present=None))
+
+    assert result.status == "unconfigured"
+    assert "providers.openai.api_key" in result.guidance
+    assert ".voidcode.json" in result.guidance
+
+
+def test_unconfigured_guidance_names_custom_provider_credentials_path() -> None:
+    result = RuntimeProviderReadinessProjector.project(
+        ProviderReadinessFacts(provider="my-gateway", model="model-a", configured=False, auth_present=None)
+    )
+
+    assert result.guidance.startswith("Provider 'my-gateway' has no credentials.")
+    assert "providers.custom.my-gateway.api_key" in result.guidance
+
+
+def test_missing_auth_guidance_names_the_provider_credentials_path() -> None:
+    result = RuntimeProviderReadinessProjector.project(
+        ProviderReadinessFacts(provider="anthropic", model="claude", configured=True, auth_present=False)
+    )
+
+    assert result.status == "missing_auth"
+    assert "providers.anthropic.api_key" in result.guidance

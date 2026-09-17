@@ -10,6 +10,8 @@ from ...graph.provider_graph import ProviderGraph
 from ...provider.errors import ProviderExecutionError
 from ...provider.models import ResolvedProviderChain, ResolvedProviderModel
 from ..config import (
+    MODEL_ENV_VAR,
+    RUNTIME_CONFIG_FILE_NAME,
     ExecutionEngineName,
     serialize_runtime_agent_config,
 )
@@ -37,7 +39,8 @@ class RuntimeSessionRouting:
 def provider_model_required_message() -> str:
     return (
         "provider execution requires a configured provider/model. "
-        "Run 'voidcode config init --model provider/model' or set VOIDCODE_MODEL. "
+        f'Set "model": "<provider>/<model>" in {RUNTIME_CONFIG_FILE_NAME} (or {MODEL_ENV_VAR}), '
+        "for example \"openai/gpt-4o\", or run 'voidcode config init --model <provider>/<model>'. "
         "For test/dev workflows without a provider, use the deterministic test harness env var."
     )
 

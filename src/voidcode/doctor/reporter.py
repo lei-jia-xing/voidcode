@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from ..runtime.config import RUNTIME_CONFIG_FILE_NAME
+from ..runtime.provider_inspection import provider_credentials_config_path
 from .checker import CapabilityCheckResult, CapabilityCheckStatus
 
 
@@ -130,7 +132,8 @@ def _create_first_task_readiness(results: list[CapabilityCheckResult], workspace
             status="not_ready",
             summary="No provider-backed readiness check ran for the first coding task.",
             next_step=(
-                f"Run `voidcode config init --model provider/model{workspace_arg}` with a real provider/model, then run `{doctor_command}` again."
+                f'Set "model": "<provider>/<model>" in {RUNTIME_CONFIG_FILE_NAME} (or run '
+                f"`voidcode config init --model <provider>/<model>{workspace_arg}`), then run `{doctor_command}` again."
             ),
             blockers=["provider.readiness check is missing"],
             details={
@@ -146,7 +149,11 @@ def _create_first_task_readiness(results: list[CapabilityCheckResult], workspace
         return FirstTaskReadiness(
             status="not_ready",
             summary=f"First provider-backed coding task is blocked: {provider_status}.",
-            next_step=_next_step_for_provider_status(provider_status, workspace_arg),
+            next_step=_next_step_for_provider_status(
+                provider_status,
+                workspace_arg,
+                provider=cast(str | None, provider_details.get("provider")),
+            ),
             blockers=[blocker],
             details=_first_task_details(provider_result, results),
         )
@@ -199,11 +206,20 @@ def _local_tool_availability(results: list[CapabilityCheckResult]) -> list[dict[
     ]
 
 
-def _next_step_for_provider_status(provider_status: str, workspace_arg: str) -> str:
+def _next_step_for_provider_status(provider_status: str, workspace_arg: str, provider: str | None = None) -> str:
     if provider_status == "missing_model":
-        return f"Run `voidcode config init --model provider/model{workspace_arg}` with a real provider/model, then rerun doctor."
+        return (
+            f'Set "model": "<provider>/<model>" in {RUNTIME_CONFIG_FILE_NAME} (or run '
+            f"`voidcode config init --model <provider>/<model>{workspace_arg}`), then run "
+            f"`voidcode doctor{workspace_arg}` again."
+        )
     if provider_status in {"missing_auth", "unconfigured"}:
-        return f"Set the provider API key in your environment or user config, then run `voidcode doctor{workspace_arg}` again."
+        if provider:
+            return (
+                f"Set {provider_credentials_config_path(provider)} in {RUNTIME_CONFIG_FILE_NAME} "
+                f"(or the provider's credentials environment variable), then run `voidcode doctor{workspace_arg}` again."
+            )
+        return f"Set the provider credentials in {RUNTIME_CONFIG_FILE_NAME} or the environment, then run `voidcode doctor{workspace_arg}` again."
     if provider_status == "invalid_model":
         return f"Choose a supported provider/model with `voidcode provider models <provider>`, then run `voidcode doctor{workspace_arg}` again."
     return f"Follow the provider guidance above, then run `voidcode doctor{workspace_arg}` again."

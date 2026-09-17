@@ -48,6 +48,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 ### Changed
 
 
+- **runtime:** name the concrete remediation for an unconfigured or under-credentialed provider in readiness, validation, and doctor output — the config file, the exact `providers.<name>.api_key` path (or `providers.custom.<name>.api_key` for a custom provider), and a runnable command — instead of placeholder text such as `configure a provider/model`; the exit codes (`11` for a blocked `run`, `12` for `doctor`) and the default execution engine are unchanged
+
 - **runtime:** connect to MCP servers only when a run needs them: a run whose configured servers are all covered by the persisted discovered-tool catalog connects to nothing (measured run-start latency 1.53 s / 6.9 s → 0), while an uncovered or reconfigured server set still discovers once at run start and persists the surface, so the first turn sees the MCP tools; disabled configs never connect, and a failed server is never cached
 
 - **cli:** split `cli/app.py` (124 KB) into one module per command plus shared plumbing, replace the monolithic smoke suite with a per-command contract suite, print the discarded-attempt notice in the CLI transcript, and derive the first-run provider remediation actions from the runtime's own guidance (breaking for importers of `voidcode.cli.app` internals)

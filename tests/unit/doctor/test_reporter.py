@@ -123,7 +123,7 @@ class TestCreateReport:
                 name="provider.readiness",
                 check_type="provider_readiness",
                 details={"status": "missing_model", "auth_present": None},
-                error_message="Configure a provider/model, for example model: 'openai/gpt-4o'.",
+                error_message='No model is configured. Set "model": "<provider>/<model>" in .voidcode.json.',
             ),
         ]
 
@@ -133,8 +133,29 @@ class TestCreateReport:
         assert report.first_task_readiness.status == "not_ready"
         assert report.first_task_readiness.details["workspace_config_valid"] is True
         assert report.first_task_readiness.details["local_tools"] == []
-        assert report.first_task_readiness.blockers == ["Configure a provider/model, for example model: 'openai/gpt-4o'."]
-        assert "config init --model provider/model" in report.first_task_readiness.next_step
+        assert report.first_task_readiness.blockers == ['No model is configured. Set "model": "<provider>/<model>" in .voidcode.json.']
+        next_step = report.first_task_readiness.next_step
+        assert ".voidcode.json" in next_step
+        assert '"model": "<provider>/<model>"' in next_step
+        assert "config init --model <provider>/<model>" in next_step
+
+    def test_create_report_names_provider_credentials_for_unconfigured_provider(self) -> None:
+        results = [
+            CapabilityCheckResult(
+                status=CapabilityCheckStatus.ERROR,
+                name="provider.readiness",
+                check_type="provider_readiness",
+                details={"status": "unconfigured", "provider": "openai", "auth_present": None},
+                error_message="Provider 'openai' has no credentials.",
+            ),
+        ]
+
+        report = create_report(results)
+
+        assert report.first_task_readiness is not None
+        next_step = report.first_task_readiness.next_step
+        assert "providers.openai.api_key" in next_step
+        assert ".voidcode.json" in next_step
 
     def test_create_report_marks_ready_provider_with_missing_tool_degraded(self) -> None:
         results = [
