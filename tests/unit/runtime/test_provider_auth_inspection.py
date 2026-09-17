@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from voidcode.provider.auth import ProviderAuthResolver
 from voidcode.provider.config import (
     CopilotProviderAuthConfig,
@@ -176,9 +178,10 @@ def test_not_configured_provider_error_is_recoverable_by_fallback_only() -> None
     assert decision.to_model == "gpt-4o"
 
 
-def test_provider_inspect_command_reports_the_resolved_endpoint(tmp_path: Path) -> None:
+def test_provider_inspect_command_reports_the_resolved_endpoint(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """``provider inspect`` publishes the endpoint the provider would call, and its origin."""
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     contracts = importlib.import_module("voidcode.runtime.contracts")
     (tmp_path / ".voidcode.json").write_text(
         json.dumps(
@@ -195,13 +198,12 @@ def test_provider_inspect_command_reports_the_resolved_endpoint(tmp_path: Path) 
         validation=contracts.ProviderValidationResult(provider="deepseek", configured=True, ok=True, status="ok", message="ok"),
     )
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.inspect_provider.return_value = inspect_result
-        with patch.object(cli, "print") as print_fn:
-            exit_code = cli.main(["provider", "inspect", "deepseek", "--workspace", str(tmp_path)])
+        exit_code = cli.main(["provider", "inspect", "deepseek", "--workspace", str(tmp_path)])
 
     assert exit_code == 0
-    payload = json.loads(print_fn.call_args.args[0])
+    payload = json.loads(capsys.readouterr().out)
     assert payload["endpoint"] == {
         "base_url": "https://deepseek-proxy.example.test/v1",
         "source": "config",

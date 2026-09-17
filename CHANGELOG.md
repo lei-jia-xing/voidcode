@@ -48,6 +48,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 ### Changed
 
 
+- **cli:** split `cli/app.py` (124 KB) into one module per command plus shared plumbing, replace the monolithic smoke suite with a per-command contract suite, print the discarded-attempt notice in the CLI transcript, and derive the first-run provider remediation actions from the runtime's own guidance (breaking for importers of `voidcode.cli.app` internals)
+
 - **runtime:** answer a question on a session with nothing pending as `409` with `code=no_pending_question` instead of an indistinguishable `404`, run the served process with uvicorn lifecycle handling enabled so shutdown releases the workspace coordinator, and delete the `voidcode.runtime.http` compatibility facade (breaking for importers of that module)
 
 - **agent:** parse custom agent manifests, slash commands, and skill manifests as real YAML through one shared, safe frontmatter entry point (`voidcode/frontmatter.py`) instead of three hand-rolled YAML-subset parsers; duplicate keys, non-string keys, malformed YAML, and oversized frontmatter now fail fast for every domain, and a command that declares frontmatter without a template body is rejected (breaking for inputs that relied on simplified-parser semantics: an unquoted ` #` now starts a comment, `: ` and leading indicator characters must be quoted, and implicitly typed scalars such as `yes` or `2024-01-01` are no longer accepted where a string is required)

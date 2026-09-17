@@ -597,6 +597,7 @@ def test_invalid_protocol_inputs_return_json_rpc_errors() -> None:
 
 def test_cli_acp_loads_config_constructs_runtime_and_keeps_stdout_protocol_clean() -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     stdout = io.StringIO()
     stderr = io.StringIO()
     stdin = io.StringIO(_request("initialize", 1) + "\n")
@@ -604,12 +605,12 @@ def test_cli_acp_loads_config_constructs_runtime_and_keeps_stdout_protocol_clean
     config = SimpleNamespace(approval_mode="deny")
     runtime = _StubRuntime()
 
-    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config) as config_mock:
-        with patch.object(cli, "VoidCodeRuntime", autospec=True, return_value=runtime) as runtime_mock:
+    with patch.object(runtime_gateway, "load_runtime_config", autospec=True, return_value=config) as config_mock:
+        with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True, return_value=runtime) as runtime_mock:
             with (
-                patch.object(cli.sys, "stdin", stdin),
-                patch.object(cli.sys, "stdout", stdout),
-                patch.object(cli.sys, "stderr", stderr),
+                patch.object(runtime_gateway.sys, "stdin", stdin),
+                patch.object(runtime_gateway.sys, "stdout", stdout),
+                patch.object(runtime_gateway.sys, "stderr", stderr),
             ):
                 result = cli.main(
                     [

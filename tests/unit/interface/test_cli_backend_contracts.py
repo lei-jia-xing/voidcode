@@ -6,6 +6,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from voidcode.cli.commands import sessions as sessions_command
+from voidcode.cli.tasks_view import background_task_next_steps
+from voidcode.cli_support import EXIT_PROVIDER_ERROR, EXIT_RUNTIME_ERROR
 from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.contracts import (
     ProviderInspectResult,
@@ -61,7 +64,7 @@ class _Chunk:
 
 
 def test_interactive_question_uses_answer_question_stream(capsys: pytest.CaptureFixture[str]) -> None:
-    from voidcode.cli import app
+    from voidcode.cli import app, runtime_gateway
 
     waiting = _Session("question-session", "waiting")
     completed = _Session("question-session", "completed")
@@ -80,9 +83,9 @@ def test_interactive_question_uses_answer_question_stream(capsys: pytest.Capture
     config = RuntimeConfig(approval_mode="ask", execution_engine="deterministic")
     stdin = _Tty("yes\n")
     stderr = _Tty()
-    with patch.object(app, "load_runtime_config", return_value=config):
-        with patch.object(app, "VoidCodeRuntime", return_value=runtime):
-            with patch.object(app.sys, "stdin", stdin), patch.object(app.sys, "stderr", stderr):
+    with patch.object(runtime_gateway, "load_runtime_config", return_value=config):
+        with patch.object(runtime_gateway, "VoidCodeRuntime", return_value=runtime):
+            with patch.object(runtime_gateway.sys, "stdin", stdin), patch.object(runtime_gateway.sys, "stderr", stderr):
                 assert app.main(["run", "ask", "--workspace", "/tmp/question-workspace"]) == 0
     runtime.answer_question_stream.assert_called_once()
     assert runtime.answer_question_stream.call_args.kwargs["question_request_id"] == "question-1"
@@ -93,19 +96,19 @@ def test_interactive_question_uses_answer_question_stream(capsys: pytest.Capture
 
 
 def test_sessions_answer_uses_stream_and_returns_failed_status() -> None:
-    from voidcode.cli import app
+    from voidcode.cli import app, runtime_gateway
 
     runtime = MagicMock()
     runtime.answer_question_stream.return_value = iter([_Chunk(_Session("s", "failed"), output="failed")])
-    with patch.object(app, "VoidCodeRuntime", return_value=runtime):
+    with patch.object(runtime_gateway, "VoidCodeRuntime", return_value=runtime):
         result = app.main(["sessions", "answer", "s", "--question-request-id", "q", "--response", "no", "--workspace", "/tmp/ws"])
-    assert result == app.EXIT_RUNTIME_ERROR
+    assert result == EXIT_RUNTIME_ERROR
     runtime.answer_question.assert_not_called()
     runtime.answer_question_stream.assert_called_once()
 
 
 def test_provider_inspect_unready_returns_provider_exit() -> None:
-    from voidcode.cli import app
+    from voidcode.cli import app, runtime_gateway
 
     inspect = ProviderInspectResult(
         summary=ProviderSummary(name="openai", label="OpenAI", configured=True),
@@ -122,25 +125,26 @@ def test_provider_inspect_unready_returns_provider_exit() -> None:
     )
     runtime = MagicMock()
     runtime.inspect_provider.return_value = inspect
-    with patch.object(app, "VoidCodeRuntime", return_value=runtime), patch.object(app, "print"):
+    with patch.object(runtime_gateway, "VoidCodeRuntime", return_value=runtime):
         result = app.main(["provider", "inspect", "openai", "--workspace", "/tmp/ws"])
-    assert result == app.EXIT_PROVIDER_ERROR
+    assert result == EXIT_PROVIDER_ERROR
 
 
 def test_export_oserror_is_stable_cli_error(tmp_path: Path) -> None:
-    from voidcode.cli import app
+    from voidcode.cli import app, runtime_gateway
 
     runtime = MagicMock()
     runtime.export_session_bundle.return_value = SimpleNamespace(to_payload=lambda: {"schema": "x", "manifest": {}})
-    with patch.object(app, "VoidCodeRuntime", return_value=runtime), patch.object(app, "write_session_bundle", side_effect=OSError("read-only")):
+    with (
+        patch.object(runtime_gateway, "VoidCodeRuntime", return_value=runtime),
+        patch.object(sessions_command, "write_session_bundle", side_effect=OSError("read-only")),
+    ):
         result = app.main(["sessions", "export", "s", "--workspace", str(tmp_path), "--output", str(tmp_path / "out.zip")])
-    assert result == app.EXIT_RUNTIME_ERROR
+    assert result == EXIT_RUNTIME_ERROR
 
 
 def test_task_question_guidance_has_copyable_answer_command(tmp_path: Path) -> None:
-    from voidcode.cli import app
-
-    steps = app._background_task_next_steps(
+    steps = background_task_next_steps(
         task_id="task-1",
         status="running",
         workspace=tmp_path,

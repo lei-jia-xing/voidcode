@@ -191,6 +191,7 @@ def test_cli_parser_has_serve_subcommand() -> None:
 
 def test_cli_run_delegates_task_via_task_tool_in_graph(tmp_path: Path) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = tmp_path
     config = SimpleNamespace(approval_mode="allow", execution_engine="deterministic")
 
@@ -234,8 +235,8 @@ def test_cli_run_delegates_task_via_task_tool_in_graph(tmp_path: Path) -> None:
         ),
     )
 
-    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
-        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.run_stream.return_value = iter(chunks)
             result = cli.main(["run", "delegate this", "--workspace", str(workspace), "--approval-mode", "allow"])
 
@@ -251,6 +252,7 @@ def test_cli_run_delegates_task_via_task_tool_in_graph(tmp_path: Path) -> None:
 def test_cli_sessions_resume_resolves_approval_allow() -> None:
     """Approval resume uses the runtime stream API and reports completion."""
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     response = SimpleNamespace(
         session=SimpleNamespace(
@@ -277,7 +279,7 @@ def test_cli_sessions_resume_resolves_approval_allow() -> None:
         ),
         output="done\n",
     )
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.resume_stream.return_value = _stream_for_response(response)
         result = cli.main(
             [
@@ -299,6 +301,7 @@ def test_cli_sessions_resume_resolves_approval_allow() -> None:
 def test_cli_sessions_resume_resolves_approval_deny() -> None:
     """A supplied deny is distinct from an unsupplied approval requirement."""
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     response = SimpleNamespace(
         session=SimpleNamespace(
@@ -325,7 +328,7 @@ def test_cli_sessions_resume_resolves_approval_deny() -> None:
         ),
         output=None,
     )
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.resume_stream.return_value = _stream_for_response(response)
         result = cli.main(
             [
@@ -340,13 +343,14 @@ def test_cli_sessions_resume_resolves_approval_deny() -> None:
                 "deny",
             ]
         )
-    assert result == cli.EXIT_APPROVAL_DENIED
+    assert result == importlib.import_module("voidcode.cli_support").EXIT_APPROVAL_DENIED
     assert runtime_class.return_value.resume_stream.call_args.kwargs["approval_decision"] == "deny"
 
 
 def test_cli_sessions_answer_resolves_pending_question() -> None:
     """Question answer uses the runtime stream API."""
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     response = SimpleNamespace(
         session=SimpleNamespace(
@@ -366,7 +370,7 @@ def test_cli_sessions_answer_resolves_pending_question() -> None:
         ),
         output="answered\n",
     )
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.answer_question_stream.return_value = _stream_for_response(response)
         result = cli.main(
             [
@@ -394,6 +398,7 @@ def test_cli_sessions_answer_resolves_pending_question() -> None:
 
 def test_cli_sessions_answer_accepts_json_responses() -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     response = SimpleNamespace(
         session=SimpleNamespace(
@@ -405,7 +410,7 @@ def test_cli_sessions_answer_accepts_json_responses() -> None:
         events=(),
         output=None,
     )
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.answer_question_stream.return_value = _stream_for_response(response)
         result = cli.main(
             [
@@ -428,6 +433,7 @@ def test_cli_sessions_answer_accepts_json_responses() -> None:
 
 def test_cli_sessions_answer_completes_real_question_wait(tmp_path: Path) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     runtime_module = importlib.import_module("voidcode.runtime")
     config_module = importlib.import_module("voidcode.runtime.config")
 
@@ -447,7 +453,7 @@ def test_cli_sessions_answer_completes_real_question_wait(tmp_path: Path) -> Non
             config=config_module.RuntimeConfig(approval_mode="ask"),
         )
 
-    with patch.object(cli, "VoidCodeRuntime", side_effect=_runtime_factory):
+    with patch.object(runtime_gateway, "VoidCodeRuntime", side_effect=_runtime_factory):
         result = cli.main(
             [
                 "sessions",
@@ -554,6 +560,7 @@ def test_cli_run_inline_approval_loop_emits_events(capsys: Any) -> None:
     """Interactive ``voidcode run`` must emit approval_requested events and
     wait for user input before resuming."""
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     config = SimpleNamespace(approval_mode="ask", execution_engine="deterministic")
 
     class _StubSession:
@@ -654,13 +661,13 @@ def test_cli_run_inline_approval_loop_emits_events(capsys: Any) -> None:
         def flush(self) -> None:
             pass
 
-    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
-        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime = runtime_class.return_value
             runtime.run_stream.return_value = iter(first_stream)
             runtime.resume_stream.return_value = iter(resume_stream)
-            with patch.object(cli.sys, "stdin", _StubStdin()):
-                with patch.object(cli.sys, "stderr", _StubStderr()):
+            with patch.object(runtime_gateway.sys, "stdin", _StubStdin()):
+                with patch.object(runtime_gateway.sys, "stderr", _StubStderr()):
                     result = cli.main(["run", "write x.txt hi", "--workspace", "/tmp/demo-workspace"])
 
     assert result == 0
@@ -678,6 +685,7 @@ def test_cli_run_non_interactive_skips_approval_loop(capsys: Any) -> None:
     """Non-interactive ``voidcode run`` must NOT enter the approval loop and
     must return immediately after the initial stream ends."""
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     config = SimpleNamespace(approval_mode="ask", execution_engine="deterministic")
 
     class _StubSession:
@@ -746,12 +754,12 @@ def test_cli_run_non_interactive_skips_approval_loop(capsys: Any) -> None:
         def flush(self) -> None:
             pass
 
-    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
-        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime = runtime_class.return_value
             runtime.run_stream.return_value = iter(first_stream)
-            with patch.object(cli.sys, "stdin", _StubStdin()):
-                with patch.object(cli.sys, "stderr", _StubStderr()):
+            with patch.object(runtime_gateway.sys, "stdin", _StubStdin()):
+                with patch.object(runtime_gateway.sys, "stderr", _StubStderr()):
                     result = cli.main(["run", "write x.txt hi", "--workspace", "/tmp/demo-workspace"])
 
     assert result == 17
@@ -778,6 +786,7 @@ def test_cli_parser_has_tasks_lifecycle_subcommands() -> None:
 
 def test_cli_tasks_status_delegates_to_runtime_load_background_task(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     task_state = SimpleNamespace(
         task=SimpleNamespace(id="task-1"),
@@ -800,7 +809,7 @@ def test_cli_tasks_status_delegates_to_runtime_load_background_task(capsys: Any)
         ),
     )
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.load_background_task.return_value = task_state
         result = cli.main(["tasks", "status", "task-1", "--workspace", str(workspace)])
 
@@ -822,6 +831,7 @@ def test_cli_tasks_status_delegates_to_runtime_load_background_task(capsys: Any)
 
 def test_cli_tasks_status_supports_json_guidance(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     task_state = SimpleNamespace(
         task=SimpleNamespace(id="task-json"),
@@ -844,7 +854,7 @@ def test_cli_tasks_status_supports_json_guidance(capsys: Any) -> None:
         ),
     )
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.load_background_task.return_value = task_state
         result = cli.main(["tasks", "status", "task-json", "--workspace", str(workspace), "--json"])
 
@@ -863,6 +873,7 @@ def test_cli_tasks_status_supports_json_guidance(capsys: Any) -> None:
 
 def test_cli_tasks_guidance_quotes_workspace_with_spaces(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo workspace")
     task_state = SimpleNamespace(
         task=SimpleNamespace(id="task-spaces"),
@@ -880,7 +891,7 @@ def test_cli_tasks_guidance_quotes_workspace_with_spaces(capsys: Any) -> None:
         routing_identity=None,
     )
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.load_background_task.return_value = task_state
         result = cli.main(["tasks", "status", "task-spaces", "--workspace", str(workspace)])
 
@@ -893,6 +904,7 @@ def test_cli_tasks_json_guidance_quotes_workspace_with_shell_metacharacters(
     capsys: Any,
 ) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo repo; rm -rf no")
     task_state = SimpleNamespace(
         task=SimpleNamespace(id="task-shell"),
@@ -910,7 +922,7 @@ def test_cli_tasks_json_guidance_quotes_workspace_with_shell_metacharacters(
         routing_identity=None,
     )
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.load_background_task.return_value = task_state
         result = cli.main(["tasks", "status", "task-shell", "--workspace", str(workspace), "--json"])
 
@@ -977,6 +989,7 @@ def test_cli_tasks_surfaces_real_runtime_completed_delegated_lifecycle(tmp_path:
 
 def test_cli_tasks_output_delegates_to_runtime_and_prints_child_result(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     task_result = SimpleNamespace(
         task_id="task-1",
@@ -999,7 +1012,7 @@ def test_cli_tasks_output_delegates_to_runtime_and_prints_child_result(capsys: A
     )
     session_result = SimpleNamespace(output="child output\n")
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime = runtime_class.return_value
         runtime.load_background_task_result.return_value = task_result
         runtime.session_result.return_value = session_result
@@ -1018,6 +1031,7 @@ def test_cli_tasks_output_delegates_to_runtime_and_prints_child_result(capsys: A
 
 def test_cli_tasks_output_supports_json_failure_guidance(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     task_result = SimpleNamespace(
         task_id="task-failed-json",
@@ -1036,7 +1050,7 @@ def test_cli_tasks_output_supports_json_failure_guidance(capsys: Any) -> None:
     )
     session_result = SimpleNamespace(output="tool failure details\n")
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime = runtime_class.return_value
         runtime.load_background_task_result.return_value = task_result
         runtime.session_result.return_value = session_result
@@ -1105,6 +1119,7 @@ def test_cli_tasks_surfaces_real_runtime_waiting_approval_and_cancel(tmp_path: P
 
 def test_cli_tasks_output_falls_back_to_summary_without_child_result(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     task_result = SimpleNamespace(
         task_id="task-2",
@@ -1121,7 +1136,7 @@ def test_cli_tasks_output_falls_back_to_summary_without_child_result(capsys: Any
         routing=None,
     )
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime = runtime_class.return_value
         runtime.load_background_task_result.return_value = task_result
         result = cli.main(["tasks", "output", "task-2", "--workspace", str(workspace)])
@@ -1137,6 +1152,7 @@ def test_cli_tasks_output_falls_back_to_summary_without_child_result(capsys: Any
 
 def test_cli_tasks_output_falls_back_when_child_session_lookup_fails(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     task_result = SimpleNamespace(
         task_id="task-3",
@@ -1153,7 +1169,7 @@ def test_cli_tasks_output_falls_back_when_child_session_lookup_fails(capsys: Any
         routing=None,
     )
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime = runtime_class.return_value
         runtime.load_background_task_result.return_value = task_result
         runtime.session_result.side_effect = ValueError("unknown session: child-missing")
@@ -1171,6 +1187,7 @@ def test_cli_tasks_output_falls_back_when_child_session_lookup_fails(capsys: Any
 
 def test_cli_tasks_output_preserves_empty_child_session_output(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     task_result = SimpleNamespace(
         task_id="task-empty",
@@ -1188,7 +1205,7 @@ def test_cli_tasks_output_preserves_empty_child_session_output(capsys: Any) -> N
     )
     session_result = SimpleNamespace(output="")
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime = runtime_class.return_value
         runtime.load_background_task_result.return_value = task_result
         runtime.session_result.return_value = session_result
@@ -1207,6 +1224,7 @@ def test_cli_tasks_output_preserves_empty_child_session_output(capsys: Any) -> N
 
 def test_cli_tasks_cancel_delegates_to_runtime_cancel_background_task(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     task_state = SimpleNamespace(
         task=SimpleNamespace(id="task-1"),
@@ -1224,7 +1242,7 @@ def test_cli_tasks_cancel_delegates_to_runtime_cancel_background_task(capsys: An
         routing_identity=None,
     )
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.cancel_background_task.return_value = task_state
         result = cli.main(["tasks", "cancel", "task-1", "--workspace", str(workspace)])
 
@@ -1238,6 +1256,7 @@ def test_cli_tasks_cancel_delegates_to_runtime_cancel_background_task(capsys: An
 
 def test_cli_tasks_retry_delegates_to_runtime_retry_background_task(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     task_state = SimpleNamespace(
         task=SimpleNamespace(id="task-retried"),
@@ -1255,7 +1274,7 @@ def test_cli_tasks_retry_delegates_to_runtime_retry_background_task(capsys: Any)
         routing_identity=None,
     )
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.retry_background_task.return_value = task_state
         result = cli.main(["tasks", "retry", "task-1", "--workspace", str(workspace)])
 
@@ -1268,6 +1287,7 @@ def test_cli_tasks_retry_delegates_to_runtime_retry_background_task(capsys: Any)
 
 def test_cli_tasks_list_lists_all_background_tasks(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     tasks = (
         SimpleNamespace(
@@ -1292,7 +1312,7 @@ def test_cli_tasks_list_lists_all_background_tasks(capsys: Any) -> None:
         ),
     )
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.list_background_tasks.return_value = tasks
         result = cli.main(["tasks", "list", "--workspace", str(workspace)])
 
@@ -1307,6 +1327,7 @@ def test_cli_tasks_list_lists_all_background_tasks(capsys: Any) -> None:
 
 def test_cli_tasks_list_supports_json(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     tasks = (
         SimpleNamespace(
@@ -1333,7 +1354,7 @@ def test_cli_tasks_list_supports_json(capsys: Any) -> None:
         ),
     )
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.list_background_tasks.return_value = tasks
         result = cli.main(["tasks", "list", "--workspace", str(workspace), "--json"])
 
@@ -1349,6 +1370,7 @@ def test_cli_tasks_list_supports_json(capsys: Any) -> None:
 
 def test_cli_tasks_list_filters_by_parent_session(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
+    runtime_gateway = importlib.import_module("voidcode.cli.runtime_gateway")
     workspace = Path("/tmp/demo-workspace")
     tasks = (
         SimpleNamespace(
@@ -1363,7 +1385,7 @@ def test_cli_tasks_list_filters_by_parent_session(capsys: Any) -> None:
         ),
     )
 
-    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+    with patch.object(runtime_gateway, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.list_background_tasks_by_parent_session.return_value = tasks
         result = cli.main(
             [

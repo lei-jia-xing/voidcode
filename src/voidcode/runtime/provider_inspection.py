@@ -14,6 +14,7 @@ from ..provider.errors import guidance_for_provider_error_kind
 from ..provider.openai_native import normalize_openai_base_url
 from ..provider.provider_config import DEFAULT_ENDPOINT_BASE_URL
 from ..provider.registry import ModelProviderRegistry
+from .config import MODEL_ENV_VAR, RUNTIME_CONFIG_FILE_NAME
 from .contracts import (
     ProviderModelsResult,
     ProviderReadinessResult,
@@ -54,6 +55,44 @@ def provider_config_entry(providers: ProviderConfigs | None, provider_name: str)
     if field_name is not None:
         return getattr(providers, field_name)
     return providers.custom.get(provider_name)
+
+
+def provider_credentials_config_path(provider_name: str) -> str:
+    """Runtime config path that holds one provider's credentials."""
+    field_name = _PROVIDER_CONFIG_FIELDS.get(provider_name)
+    if field_name is None:
+        return f"providers.custom.{provider_name}.api_key"
+    return f"providers.{field_name}.api_key"
+
+
+def missing_model_guidance() -> str:
+    """First-run remediation for a workspace with no model configured."""
+    return (
+        "No model is configured. Set "
+        f'"model": "<provider>/<model>" in {RUNTIME_CONFIG_FILE_NAME} '
+        f"(or the {MODEL_ENV_VAR} environment variable), for example "
+        '"model": "openai/gpt-4o".'
+    )
+
+
+def unconfigured_provider_guidance(provider_name: str | None) -> str:
+    """First-run remediation for a provider that has no credentials at all."""
+    if provider_name is None:
+        return f'No provider is configured. Add a providers entry in {RUNTIME_CONFIG_FILE_NAME} or set {MODEL_ENV_VAR} to "<provider>/<model>".'
+    return (
+        f"Provider '{provider_name}' has no credentials. Set {provider_credentials_config_path(provider_name)} "
+        f"in {RUNTIME_CONFIG_FILE_NAME} (or the provider's credentials environment variable), then rerun."
+    )
+
+
+def missing_credentials_guidance(provider_name: str | None) -> str:
+    """First-run remediation for a provider whose credentials are incomplete."""
+    if provider_name is None:
+        return guidance_for_provider_error_kind("missing_auth")
+    return (
+        f"Provider '{provider_name}' is missing credentials. Set {provider_credentials_config_path(provider_name)} "
+        f"in {RUNTIME_CONFIG_FILE_NAME} (or the provider's credentials environment variable), then rerun."
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,5 +411,9 @@ __all__ = [
     "RuntimeProviderEndpointInspector",
     "RuntimeProviderReadinessProjector",
     "RuntimeProviderValidationProjector",
+    "missing_credentials_guidance",
+    "missing_model_guidance",
     "provider_config_entry",
+    "provider_credentials_config_path",
+    "unconfigured_provider_guidance",
 ]

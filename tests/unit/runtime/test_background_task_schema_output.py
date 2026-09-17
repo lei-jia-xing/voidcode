@@ -415,7 +415,7 @@ def test_storage_fresh_database_has_output_schema_columns(tmp_path: Path) -> Non
 
 
 def test_cli_tasks_output_json_payload_carries_schema_fields(tmp_path: Path) -> None:
-    cli = importlib.import_module("voidcode.cli.app")
+    cli = importlib.import_module("voidcode.cli.tasks_view")
     result = BackgroundTaskResult(
         task_id="task-schema-cli",
         parent_session_id="leader-session",
@@ -432,7 +432,7 @@ def test_cli_tasks_output_json_payload_carries_schema_fields(tmp_path: Path) -> 
         ),
     )
 
-    payload = cli._background_task_result_payload(result, workspace=tmp_path)
+    payload = cli.background_task_result_payload(result, workspace=tmp_path)
 
     assert payload["structured_output"] == {"answer": "42"}
     assert payload["schema_validation"] == {

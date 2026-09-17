@@ -84,6 +84,54 @@ The JSON preflight payload has stable `status`, `error`, `actions`, and
 `first_task_readiness` fields. Credentials and secret-like configuration values
 are not included.
 
+## CLI reference
+
+`voidcode --help` lists the full surface, and every command supports `--help`.
+
+| Command | Purpose |
+| --- | --- |
+| `voidcode run REQUEST` | Run one request through the configured provider, or through the deterministic harness when `VOIDCODE_EXECUTION_ENGINE=deterministic`. |
+| `voidcode tui` | Run the interactive Textual client. |
+| `voidcode serve` | Serve the local HTTP runtime transport. |
+| `voidcode web` | Start the web launcher (auto-assigned port; opens a browser unless `--no-open`). |
+| `voidcode acp` | Run the minimal external-facing ACP stdio JSON-RPC facade. |
+| `voidcode sessions` | `list`, `resume`, `answer`, `export`, `import`, `debug`, `undo`, `revert`, and `unrevert` persisted sessions. |
+| `voidcode tasks` | `list`, `status`, `output`, `cancel`, `retry`, and `steer` delegated background tasks. |
+| `voidcode storage` | `diagnostics`, `prune`, and `reset` the local runtime SQLite store. |
+| `voidcode stats tools` | Summarize persisted tool success, errors, retries, and output pressure. |
+| `voidcode config` | `show` effective configuration, print the `schema`, or `init` a starter `.voidcode.json`. |
+| `voidcode provider` | `models` (optionally `--refresh`) and `inspect` provider metadata. |
+| `voidcode commands` | `list` and `show` discovered prompt commands. |
+| `voidcode agents` | `list` built-in and local custom agent manifests. |
+| `voidcode mcp` | `list` configured MCP servers and passive runtime status. |
+| `voidcode doctor` | Check capability readiness (external tools, formatters, LSP, MCP). |
+
+Shared plumbing: `--workspace PATH` (default `.`) resolves the workspace for every command, and the
+root-level `--db-path FILE` pins the SQLite store for one invocation (equivalent to exporting
+`VOIDCODE_DB_PATH`).
+
+Machine-readable output: `--json` is available on `run`, `sessions list`, `sessions answer`,
+`tasks *`, `stats tools`, `commands *`, `agents list`, `mcp list`, and `doctor`. The commands whose
+whole purpose is a payload always print JSON: `provider models`, `provider inspect`,
+`sessions debug`, `sessions resume --dry-run`, `sessions export --format json`, `sessions import`,
+`sessions undo|revert|unrevert`, `storage diagnostics`, `storage prune`, `storage reset`,
+`config show`, `config schema`, and `config init`.
+
+`run --trace` streams a human-readable transcript (model turns, one block per tool call with its
+output, TODO updates, and reasoning behind `--show-thinking`) for manual QA; `--json` and `--trace`
+are mutually exclusive. Live provider output is client-only: when a provider attempt is retried or
+falls back after streaming text, the transcript announces it once
+(`↻ Provider retry: the failed attempt's partial output was discarded; restarting the turn.`, or the
+fallback variant naming the new provider) so the restarted attempt's text never reads as a duplicated
+reply.
+
+Exit codes are part of the contract: `0` success, `1` general error, `2` usage error,
+`10` invalid runtime config, `11` provider not ready, `12` runtime error, `13` approval denied,
+`14` cancelled, `15` unknown prompt command, `16` invalid resource (missing workspace, missing
+pending question), `17` approval required in a non-interactive run, and `130` for Ctrl-C during
+`run`. Errors are reported on stderr as a single `error: ...` line, and payloads never mix with
+diagnostics on stdout.
+
 ## Configuration
 
 Workspace-local runtime config lives in `.voidcode.json` at the workspace root (not `.voidcode/config.json`). To enable IDE auto-completion and validation, point `$schema` at the published JSON Schema:
