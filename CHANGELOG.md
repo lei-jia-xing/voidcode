@@ -48,6 +48,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 ### Changed
 
 
+- **agent:** parse custom agent manifests, slash commands, and skill manifests as real YAML through one shared, safe frontmatter entry point (`voidcode/frontmatter.py`) instead of three hand-rolled YAML-subset parsers; duplicate keys, non-string keys, malformed YAML, and oversized frontmatter now fail fast for every domain, and a command that declares frontmatter without a template body is rejected (breaking for inputs that relied on simplified-parser semantics: an unquoted ` #` now starts a comment, `: ` and leading indicator characters must be quoted, and implicitly typed scalars such as `yes` or `2024-01-01` are no longer accepted where a string is required)
+
 - **tools:** render `web_fetch` HTML responses as Markdown with markdownify instead of regex line heuristics, so heading levels, link targets, code fence languages, and GFM tables survive the conversion; `format=text` output is unchanged
 
 - **runtime:** enable LSP and MCP tooling by default

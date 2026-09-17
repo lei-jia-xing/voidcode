@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+from ..frontmatter import load_frontmatter_mapping, split_frontmatter
 from ..hook.presets import validate_hook_preset_refs
 from .builtin import get_builtin_agent_manifest, list_builtin_agent_manifests
 from .models import (
@@ -130,8 +131,8 @@ def manifest_from_markdown_file(path: Path, *, scope: AgentSourceScope) -> Agent
     except OSError as exc:
         raise ValueError(f"failed to read custom agent manifest {path}: {exc}") from exc
     try:
-        frontmatter, body = _split_frontmatter(content)
-        payload = _parse_frontmatter(frontmatter, path=path)
+        frontmatter, body = split_frontmatter(content, require_body=True)
+        payload = _validate_frontmatter_fields(load_frontmatter_mapping(frontmatter))
         return _manifest_from_payload(payload, body=body, path=path, scope=scope)
     except ValueError as exc:
         raise ValueError(f"invalid custom agent manifest {path}: {exc}") from exc
@@ -158,128 +159,17 @@ def _discover_custom_agent_manifests(
     return tuple(manifests)
 
 
-def _split_frontmatter(content: str) -> tuple[str, str]:
-    if not content.startswith("---\n"):
-        raise ValueError("markdown manifest must start with YAML frontmatter delimiter '---'")
-    closing_index = content.find("\n---", 4)
-    if closing_index == -1:
-        raise ValueError("markdown manifest must close YAML frontmatter with '---'")
-    frontmatter = content[4:closing_index]
-    body = content[closing_index + 4 :]
-    if body.startswith("\n"):
-        body = body[1:]
-    if not body.strip():
-        raise ValueError("markdown manifest body prompt must be non-empty")
-    return frontmatter, body.strip()
+def _validate_frontmatter_fields(payload: Mapping[str, object]) -> dict[str, object]:
+    """Enforce the agent manifest field whitelist and required fields."""
 
-
-def _parse_frontmatter(frontmatter: str, *, path: Path) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    lines = frontmatter.splitlines()
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        index += 1
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if line.startswith((" ", "\t")):
-            raise ValueError(f"unexpected indented frontmatter line: {line!r}")
-        key, separator, raw_value = line.partition(":")
-        if separator != ":" or not key.strip():
-            raise ValueError(f"frontmatter line must use 'key: value' syntax: {line!r}")
-        normalized_key = key.strip()
-        if normalized_key not in _SUPPORTED_FRONTMATTER_FIELDS:
+    for field in payload:
+        if field not in _SUPPORTED_FRONTMATTER_FIELDS:
             supported = ", ".join(sorted(_SUPPORTED_FRONTMATTER_FIELDS))
-            raise ValueError(f"unsupported frontmatter field '{normalized_key}'; supported fields are: {supported}")
-        if normalized_key in payload:
-            raise ValueError(f"duplicate frontmatter field '{normalized_key}'")
-        value_text = raw_value.strip()
-        if value_text in {"|", ">"}:
-            collected: list[str] = []
-            while index < len(lines) and lines[index].startswith((" ", "\t")):
-                collected.append(lines[index])
-                index += 1
-            if not collected:
-                raise ValueError(f"frontmatter field '{normalized_key}' must declare a value")
-            payload[normalized_key] = _parse_scalar_block(collected, folded=value_text == ">")
-            continue
-        if not value_text:
-            collected: list[str] = []
-            while index < len(lines) and lines[index].startswith((" ", "\t")):
-                collected.append(lines[index])
-                index += 1
-            if not collected:
-                raise ValueError(f"frontmatter field '{normalized_key}' must declare a value")
-            payload[normalized_key] = _parse_block_value(collected, field=normalized_key, path=path)
-        else:
-            payload[normalized_key] = _parse_inline_value(value_text)
+            raise ValueError(f"unsupported frontmatter field '{field}'; supported fields are: {supported}")
     missing = sorted(field for field in _REQUIRED_FRONTMATTER_FIELDS if field not in payload)
     if missing:
         raise ValueError(f"missing required frontmatter field(s): {', '.join(missing)}")
-    return payload
-
-
-def _parse_inline_value(value_text: str) -> object:
-    if value_text.startswith("[") and value_text.endswith("]"):
-        inner = value_text[1:-1].strip()
-        if not inner:
-            return []
-        return [_strip_quotes(item.strip()) for item in inner.split(",")]
-    return _strip_quotes(value_text)
-
-
-def _parse_scalar_block(lines: list[str], *, folded: bool) -> str:
-    non_empty_lines = [line for line in lines if line.strip()]
-    if not non_empty_lines:
-        return ""
-    min_indent = min(len(line) - len(line.lstrip(" \t")) for line in non_empty_lines)
-    normalized = [line[min_indent:] if len(line) >= min_indent else "" for line in lines]
-    if folded:
-        return " ".join(line.strip() for line in normalized if line.strip()).strip()
-    return "\n".join(normalized).strip()
-
-
-def _parse_block_value(lines: list[str], *, field: str, path: Path) -> object:
-    items: list[str] = []
-    mapping: dict[str, object] = {}
-    active_mapping_key: str | None = None
-    active_mapping_indent: int | None = None
-    for raw_line in lines:
-        stripped = raw_line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        indent = len(raw_line) - len(raw_line.lstrip(" \t"))
-        if active_mapping_key is not None and active_mapping_indent is not None and indent > active_mapping_indent and stripped.startswith("-"):
-            cast(list[str], mapping[active_mapping_key]).append(_strip_quotes(stripped[1:].strip()))
-            continue
-        if stripped.startswith("-"):
-            items.append(_strip_quotes(stripped[1:].strip()))
-            active_mapping_key = None
-            active_mapping_indent = None
-            continue
-        key, separator, value = stripped.partition(":")
-        if separator == ":":
-            normalized_key = key.strip()
-            raw_value = value.strip()
-            if raw_value:
-                mapping[normalized_key] = _parse_inline_value(raw_value)
-                active_mapping_key = None
-                active_mapping_indent = None
-            else:
-                mapping[normalized_key] = []
-                active_mapping_key = normalized_key
-                active_mapping_indent = indent
-            continue
-        raise ValueError(f"frontmatter field '{field}' has unsupported block syntax in {path}")
-    if items and mapping:
-        raise ValueError(f"frontmatter field '{field}' cannot mix list and object syntax")
-    return items if items else mapping
-
-
-def _strip_quotes(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-        return value[1:-1]
-    return value
+    return dict(payload)
 
 
 def _manifest_from_payload(

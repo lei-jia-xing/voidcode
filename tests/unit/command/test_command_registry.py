@@ -51,6 +51,156 @@ def test_load_markdown_commands_rejects_invalid_frontmatter(tmp_path: Path) -> N
         _ = load_markdown_commands(commands_dir, source="project")
 
 
+def test_markdown_command_preserves_quoted_value_with_comma_and_colon(tmp_path: Path) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "quoted.md").write_text(
+        '---\ndescription: "Review a target, with a colon: kept"\n---\nReview $ARGUMENTS\n',
+        encoding="utf-8",
+    )
+
+    command = load_markdown_commands(commands_dir, source="project")[0]
+
+    assert command.description == "Review a target, with a colon: kept"
+
+
+def test_markdown_command_accepts_standard_yaml_boolean_spellings(tmp_path: Path) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "on.md").write_text(
+        "---\ndescription: Enabled command\nenabled: yes\nsubtask: on\n---\nDo $ARGUMENTS\n",
+        encoding="utf-8",
+    )
+    (commands_dir / "off.md").write_text(
+        "---\ndescription: Disabled command\nenabled: no\nhidden: true\n---\nHide $ARGUMENTS\n",
+        encoding="utf-8",
+    )
+
+    commands = {command.name: command for command in load_markdown_commands(commands_dir, source="project")}
+
+    assert commands["on"].enabled is True
+    assert commands["on"].subtask is True
+    assert commands["off"].enabled is False
+    assert commands["off"].hidden is True
+
+
+def test_markdown_command_with_closing_delimiter_at_eof_and_no_body_is_rejected(tmp_path: Path) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "bodyless.md").write_text(
+        "---\ndescription: No body\n---",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        _ = load_markdown_commands(commands_dir, source="project")
+
+    assert "bodyless.md" in str(excinfo.value)
+    assert "declares frontmatter but has no template body" in str(excinfo.value)
+
+
+def test_markdown_command_treats_unquoted_hash_as_comment(tmp_path: Path) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "comment.md").write_text(
+        "---\ndescription: Fix bug #42\n---\nReview $ARGUMENTS\n",
+        encoding="utf-8",
+    )
+    (commands_dir / "quoted.md").write_text(
+        '---\ndescription: "Fix bug #42"\n---\nReview $ARGUMENTS\n',
+        encoding="utf-8",
+    )
+
+    commands = {command.name: command for command in load_markdown_commands(commands_dir, source="project")}
+
+    assert commands["comment"].description == "Fix bug"
+    assert commands["quoted"].description == "Fix bug #42"
+
+
+def test_markdown_command_with_unterminated_block_is_plain_markdown(tmp_path: Path) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "plain.md").write_text(
+        "---\ndescription: Not frontmatter\n",
+        encoding="utf-8",
+    )
+
+    command = load_markdown_commands(commands_dir, source="project")[0]
+
+    assert command.name == "plain"
+    assert command.description == "plain"
+    assert command.template.startswith("---\ndescription: Not frontmatter")
+
+
+def test_load_markdown_commands_rejects_duplicate_frontmatter_key(tmp_path: Path) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "duplicate.md").write_text(
+        "---\ndescription: First\ndescription: Second\n---\nBody\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        _ = load_markdown_commands(commands_dir, source="project")
+
+    assert "duplicate frontmatter key 'description'" in str(excinfo.value)
+    assert "duplicate.md" in str(excinfo.value)
+
+
+def test_load_markdown_commands_reports_invalid_yaml_with_file_and_position(tmp_path: Path) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "broken.md").write_text(
+        "---\ndescription: a: b\n---\nBody\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        _ = load_markdown_commands(commands_dir, source="project")
+
+    assert "broken.md" in str(excinfo.value)
+    assert "invalid YAML frontmatter on line 1, column" in str(excinfo.value)
+
+
+def test_markdown_command_template_preserves_trailing_whitespace(tmp_path: Path) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "review.md").write_text(
+        "---\ndescription: Review a target\n---\nReview $ARGUMENTS\n\n",
+        encoding="utf-8",
+    )
+
+    command = load_markdown_commands(commands_dir, source="project")[0]
+
+    assert command.template == "Review $ARGUMENTS\n\n"
+
+
+def test_markdown_command_keeps_ignoring_unlisted_frontmatter_keys(tmp_path: Path) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "extra.md").write_text(
+        "---\ndescription: Command with extra keys\nfuture_field: ignored\n---\nDo $ARGUMENTS\n",
+        encoding="utf-8",
+    )
+
+    command = load_markdown_commands(commands_dir, source="project")[0]
+
+    assert command.description == "Command with extra keys"
+    assert not hasattr(command, "future_field")
+
+
+def test_markdown_command_rejects_empty_optional_string_value(tmp_path: Path) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "empty.md").write_text(
+        "---\ndescription: Command with empty agent\nagent: ''\n---\nDo $ARGUMENTS\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must be non-empty strings"):
+        _ = load_markdown_commands(commands_dir, source="project")
+
+
 def test_prompt_command_rejects_unknown_command() -> None:
     registry = CommandRegistry((CommandDefinition("known", "Known command", "Do $ARGUMENTS"),))
 

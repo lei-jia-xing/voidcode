@@ -360,7 +360,7 @@ MVP 支持 true local manifest，而不是 marketplace / plugin distribution。�
 - project scope：`<workspace>/.voidcode/agents/*.md`
 - user scope：Linux/macOS 使用 `$XDG_CONFIG_HOME/voidcode/agents/*.md`，未设置 `XDG_CONFIG_HOME` 时为 `~/.config/voidcode/agents/*.md`；Windows 使用 `%APPDATA%\voidcode\agents`，缺失时回退到 `%LOCALAPPDATA%\voidcode\agents`。
 
-每个 markdown 文件必须以 YAML-like frontmatter 开头，随后正文作为 prompt material：
+每个 markdown 文件必须以 YAML frontmatter 开头（共享实现见 `src/voidcode/frontmatter.py`，使用标准 YAML 语义：隐式类型、引号、flow sequence/mapping、`|`/`>` block scalar；重复 key、非字符串 key、非法 YAML 与超过 64 KiB 的 frontmatter 都会 fail-fast），随后正文作为 prompt material：
 
 ```markdown
 ---
@@ -376,9 +376,11 @@ prompt_append: |
 You are a focused reviewer. Stay within the runtime-provided tools and report risks clearly.
 ```
 
-必需字段：`name`、`description`、`mode`（`primary` 或 `subagent`）。支持字段：`id`、`name`、`description`、`mode`、`model`、`fallback_models`、`tool_allowlist`、`skill_refs`、`preset_hook_refs`、`mcp_binding`、`prompt_append`。正文是 primary prompt；`prompt_append` 会作为附加本地 guidance 单独持久化，并在 provider context 中追加一次。未声明 `id` 时，runtime 使用 `name` 的 lowercase-kebab 形式作为稳定 id；显式 / 派生 id 必须匹配现有 agents key 风格 `^[a-z][a-z0-9_-]*$`。
+必需字段：`name`、`description`、`mode`（`primary` 或 `subagent`）。支持字段：`id`、`name`、`description`、`mode`、`model`、`fallback_models`、`tool_allowlist`、`skill_refs`、`preset_hook_refs`、`mcp_binding`、`prompt_append`。字段类型仍是 manifest 校验职责：字符串字段必须是非空字符串（YAML 隐式类型如未加引号的 `yes`、日期会被拒绝，不会被静默 `str()`），`fallback_models` / `tool_allowlist` / `skill_refs` / `preset_hook_refs` 必须是字符串数组，`mcp_binding` 必须是只含 `profile` / `servers` 的对象。正文是 primary prompt；`prompt_append` 会作为附加本地 guidance 单独持久化，并在 provider context 中追加一次。未声明 `id` 时，runtime 使用 `name` 的 lowercase-kebab 形式作为稳定 id；显式 / 派生 id 必须匹配现有 agents key 风格 `^[a-z][a-z0-9_-]*$`。
 
 发现优先级：同一 custom id 下 project scope 覆盖 user scope；同一 scope 内重复 id 会 fail-fast；custom manifest 不允许使用 builtin id（例如 `leader` 或 `worker`）替换 builtin preset。错误会包含具体文件路径，便于修复。
+
+frontmatter 是标准 YAML：未加引号的标量中 ` #` 会开始注释（`description: Fix bug #42` 实际读作 `Fix bug`），需要保留字面文本时必须加引号（`description: "Fix bug #42"`）；值中间出现 `: ` 或以 YAML 指示符（`&`、`*`、`!`、`%`、`@`、反引号）开头时同样要加引号。声明了 frontmatter 的 manifest 必须同时提供非空的正文 prompt。
 
 本地 manifest 只声明 prompt 和默认 capability intent。它不会绕过 runtime tool allowlist、approval、MCP lifecycle、hook execution、skill loading 或 delegated child session contract。正文 prompt 与可选 `prompt_append` 仅作为 runtime-owned 的 `runtime_internal` persisted structure 写入 session metadata（不属于 public runtime config 或 provider-visible contract），用于 resume / replay 固定历史 session 的解释上下文；manifest 文件后续变更不会静默改变历史 session。
 

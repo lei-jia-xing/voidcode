@@ -11,7 +11,6 @@ from .discovery import (
     resolve_workspace_relative_path,
 )
 from .manifest import (
-    FRONTMATTER_DELIMITER,
     SUPPORTED_FRONTMATTER_KEYS,
     SkillManifestParseError,
     parse_skill_body,
@@ -23,7 +22,6 @@ from .registry import SkillRegistry
 
 __all__ = [
     "DEFAULT_SKILL_SEARCH_PATHS",
-    "FRONTMATTER_DELIMITER",
     "LocalSkillMetadataLoader",
     "SKILL_ENTRY_FILE_NAME",
     "SkillLoadError",

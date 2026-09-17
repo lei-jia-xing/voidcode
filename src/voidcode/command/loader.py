@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
+from ..frontmatter import load_frontmatter_mapping, split_frontmatter
 from .models import CommandDefinition, CommandSource
 from .registry import CommandRegistry
 
@@ -100,7 +101,16 @@ def load_markdown_commands(directory: Path, *, source: CommandSource) -> tuple[C
 
 def _load_markdown_command(path: Path, *, root: Path, source: CommandSource) -> CommandDefinition:
     text = path.read_text(encoding="utf-8")
-    metadata, template = _split_frontmatter(text)
+    raw_frontmatter, template = split_frontmatter(
+        text,
+        require_delimiter=False,
+        require_closing=False,
+        strip_body=False,
+        source=str(path),
+    )
+    metadata = load_frontmatter_mapping(raw_frontmatter, source=str(path))
+    if raw_frontmatter is not None and not template.strip():
+        raise ValueError(f"command {path} declares frontmatter but has no template body")
     relative_name = path.relative_to(root).with_suffix("").as_posix()
     raw_name = metadata.get("name", relative_name)
     description = metadata.get("description")
@@ -121,43 +131,6 @@ def _load_markdown_command(path: Path, *, root: Path, source: CommandSource) -> 
         hidden=_metadata_bool(metadata.get("hidden"), default=False),
         path=path,
     )
-
-
-def _split_frontmatter(text: str) -> tuple[dict[str, object], str]:
-    if not text.startswith("---\n"):
-        return {}, text
-    end = text.find("\n---\n", 4)
-    if end < 0:
-        return {}, text
-    raw_frontmatter = text[4:end]
-    body = text[end + len("\n---\n") :]
-    return _parse_simple_frontmatter(raw_frontmatter), body
-
-
-def _parse_simple_frontmatter(raw_frontmatter: str) -> dict[str, object]:
-    metadata: dict[str, object] = {}
-    for line_number, line in enumerate(raw_frontmatter.splitlines(), start=1):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        key, separator, value = stripped.partition(":")
-        if not separator:
-            raise ValueError(f"invalid command frontmatter line {line_number}: {line}")
-        normalized_key = key.strip()
-        if not normalized_key:
-            raise ValueError(f"invalid command frontmatter line {line_number}: {line}")
-        metadata[normalized_key] = _parse_scalar(value.strip())
-    return metadata
-
-
-def _parse_scalar(value: str) -> object:
-    if value in {"true", "True"}:
-        return True
-    if value in {"false", "False"}:
-        return False
-    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-        return value[1:-1]
-    return value
 
 
 def _optional_string(value: object) -> str | None:

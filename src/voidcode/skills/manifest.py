@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..frontmatter import load_frontmatter_mapping, split_frontmatter
 from .models import SkillManifest, SkillManifestFrontmatter
 
-FRONTMATTER_DELIMITER = "---"
 SUPPORTED_FRONTMATTER_KEYS = frozenset({"name", "description"})
 
 
@@ -20,29 +20,21 @@ class SkillManifestParseError(ValueError):
 
 
 def _parse_skill_frontmatter_fields(contents: str) -> dict[str, str]:
-    lines = contents.splitlines()
-    if not lines or lines[0].strip() != FRONTMATTER_DELIMITER:
-        raise SkillManifestParseError("skill file must begin with a simplified frontmatter block")
+    raw_frontmatter, _body = split_frontmatter(contents)
+    payload = load_frontmatter_mapping(raw_frontmatter)
+
+    for key in payload:
+        if key not in SUPPORTED_FRONTMATTER_KEYS:
+            raise SkillManifestParseError(f"unsupported skill frontmatter key: {key}")
 
     parsed: dict[str, str] = {}
-    for index, raw_line in enumerate(lines[1:], start=2):
-        line = raw_line.strip()
-        if line == FRONTMATTER_DELIMITER:
-            break
-        if not line:
+    for key in sorted(SUPPORTED_FRONTMATTER_KEYS):
+        if key not in payload:
             continue
-        key, separator, value = raw_line.partition(":")
-        if separator != ":":
-            raise SkillManifestParseError(f"skill frontmatter line {index} must use 'key: value' syntax")
-        normalized_key = key.strip()
-        if normalized_key not in SUPPORTED_FRONTMATTER_KEYS:
-            raise SkillManifestParseError(f"unsupported skill frontmatter key: {normalized_key}")
-        normalized_value = value.strip()
-        if not normalized_value:
-            raise SkillManifestParseError(f"skill frontmatter field '{normalized_key}' must not be empty")
-        parsed[normalized_key] = normalized_value
-    else:
-        raise SkillManifestParseError("skill frontmatter must terminate with a closing '---' line")
+        value = payload[key]
+        if not isinstance(value, str) or not value.strip():
+            raise SkillManifestParseError(f"skill frontmatter field '{key}' must be a non-empty string")
+        parsed[key] = value.strip()
 
     missing_keys = SUPPORTED_FRONTMATTER_KEYS.difference(parsed)
     if missing_keys:
@@ -69,21 +61,11 @@ def parse_skill_frontmatter(
 
 
 def parse_skill_body(contents: str, *, path: str | None = None) -> str:
-    lines = contents.splitlines()
-    if not lines or lines[0].strip() != FRONTMATTER_DELIMITER:
-        raise SkillManifestParseError(
-            "skill file must begin with a simplified frontmatter block",
-            path=path,
-        )
-
-    for index, raw_line in enumerate(lines[1:], start=2):
-        if raw_line.strip() == FRONTMATTER_DELIMITER:
-            return "\n".join(lines[index:]).strip()
-
-    raise SkillManifestParseError(
-        "skill frontmatter must terminate with a closing '---' line",
-        path=path,
-    )
+    try:
+        _raw_frontmatter, body = split_frontmatter(contents)
+    except ValueError as exc:
+        raise SkillManifestParseError(str(exc), path=path) from exc
+    return body
 
 
 def parse_skill_manifest(contents: str, *, path: str | None = None) -> SkillManifest:

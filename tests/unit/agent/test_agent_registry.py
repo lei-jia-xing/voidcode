@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from voidcode.agent import (
+    AgentMcpBindingIntent,
     agent_manifest_id_from_name,
     load_agent_manifest_registry,
     manifest_from_markdown_file,
@@ -119,6 +120,114 @@ def test_manifest_from_markdown_file_rejects_missing_required_fields(tmp_path: P
     _write_agent(path, "name: Missing Mode\ndescription: nope")
 
     with pytest.raises(ValueError, match="bad.md.*missing required.*mode"):
+        _ = manifest_from_markdown_file(path, scope="project")
+
+
+def test_manifest_from_markdown_file_supports_flow_sequence_with_quoted_comma(tmp_path: Path) -> None:
+    path = tmp_path / "flow.md"
+    _write_agent(
+        path,
+        "\n".join(
+            (
+                "name: Flow Reviewer",
+                "description: Reviews with a quoted comma",
+                "mode: subagent",
+                'tool_allowlist: [read, "grep, ripgrep"]',
+            )
+        ),
+    )
+
+    manifest = manifest_from_markdown_file(path, scope="project")
+
+    assert manifest.tool_allowlist == ("read", "grep, ripgrep")
+
+
+def test_manifest_from_markdown_file_supports_flow_mapping_binding(tmp_path: Path) -> None:
+    path = tmp_path / "flow-binding.md"
+    _write_agent(
+        path,
+        "name: Flow Binding\ndescription: Reviews with MCP context\nmode: subagent\nmcp_binding: {profile: docs, servers: [repo, context7]}",
+    )
+
+    manifest = manifest_from_markdown_file(path, scope="project")
+
+    assert manifest.mcp_binding == AgentMcpBindingIntent(profile="docs", servers=("repo", "context7"))
+
+
+def test_manifest_from_markdown_file_supports_folded_block_scalar(tmp_path: Path) -> None:
+    path = tmp_path / "folded.md"
+    _write_agent(
+        path,
+        "\n".join(
+            (
+                "name: Folded Reviewer",
+                "description: Reviews with folded guidance",
+                "mode: subagent",
+                "prompt_append: >",
+                "  Always include severity",
+                "  and exact file paths.",
+            )
+        ),
+    )
+
+    manifest = manifest_from_markdown_file(path, scope="project")
+
+    assert manifest.prompt_materialization is not None
+    assert manifest.prompt_materialization.prompt_append == "Always include severity and exact file paths."
+
+
+def test_manifest_from_markdown_file_treats_unquoted_hash_as_comment(tmp_path: Path) -> None:
+    unquoted = tmp_path / "comment.md"
+    quoted = tmp_path / "quoted.md"
+    _write_agent(unquoted, "name: Comment Reviewer\ndescription: Fix bug #42\nmode: subagent")
+    _write_agent(quoted, 'name: Quoted Reviewer\ndescription: "Fix bug #42"\nmode: subagent')
+
+    assert manifest_from_markdown_file(unquoted, scope="project").description == "Fix bug"
+    assert manifest_from_markdown_file(quoted, scope="project").description == "Fix bug #42"
+
+
+def test_manifest_from_markdown_file_rejects_duplicate_frontmatter_key(tmp_path: Path) -> None:
+    path = tmp_path / "duplicate.md"
+    _write_agent(path, "name: Duplicate\ndescription: first\ndescription: second\nmode: subagent")
+
+    with pytest.raises(ValueError, match="duplicate frontmatter key 'description'"):
+        _ = manifest_from_markdown_file(path, scope="project")
+
+
+def test_manifest_from_markdown_file_rejects_unknown_frontmatter_field(tmp_path: Path) -> None:
+    path = tmp_path / "unknown.md"
+    _write_agent(path, "name: Unknown\ndescription: nope\nmode: subagent\nrouting_hints: [fast]")
+
+    with pytest.raises(ValueError, match="unsupported frontmatter field 'routing_hints'"):
+        _ = manifest_from_markdown_file(path, scope="project")
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    ("name: 2024-01-01", "name: yes", "name: ''", "name:"),
+    ids=("date-typed-string", "boolean-typed-string", "empty-string", "null-value"),
+)
+def test_manifest_from_markdown_file_rejects_invalid_required_values(tmp_path: Path, frontmatter: str) -> None:
+    path = tmp_path / "typed.md"
+    _write_agent(path, f"{frontmatter}\ndescription: nope\nmode: subagent")
+
+    with pytest.raises(ValueError, match="frontmatter field 'name' must be a non-empty string"):
+        _ = manifest_from_markdown_file(path, scope="project")
+
+
+def test_manifest_from_markdown_file_rejects_missing_closing_delimiter(tmp_path: Path) -> None:
+    path = tmp_path / "unterminated.md"
+    path.write_text("---\nname: Unterminated\ndescription: nope\nmode: subagent\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must close the YAML frontmatter block"):
+        _ = manifest_from_markdown_file(path, scope="project")
+
+
+def test_manifest_from_markdown_file_rejects_empty_body(tmp_path: Path) -> None:
+    path = tmp_path / "empty-body.md"
+    path.write_text("---\nname: Empty Body\ndescription: nope\nmode: subagent\n---\n\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must not have an empty markdown body"):
         _ = manifest_from_markdown_file(path, scope="project")
 
 

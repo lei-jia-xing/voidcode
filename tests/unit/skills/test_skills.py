@@ -15,6 +15,7 @@ from voidcode.skills import (
     SkillMetadata,
     SkillRegistry,
     load_builtin_skill_registry,
+    parse_skill_body,
     parse_skill_frontmatter,
     parse_skill_manifest,
     skill_registry_with_builtins,
@@ -33,6 +34,72 @@ def test_parse_skill_frontmatter_returns_required_metadata() -> None:
 def test_parse_skill_frontmatter_rejects_missing_required_fields() -> None:
     with pytest.raises(SkillManifestParseError, match="missing required fields: description"):
         _ = parse_skill_frontmatter("---\nname: summarize\n---\n")
+
+
+def test_parse_skill_frontmatter_supports_folded_block_description() -> None:
+    metadata = parse_skill_frontmatter("---\nname: summarize\ndescription: >\n  Summarize selected\n  files.\n---\n# Summarize\n")
+
+    assert metadata == SkillManifestFrontmatter(
+        name="summarize",
+        description="Summarize selected files.",
+    )
+
+
+def test_parse_skill_frontmatter_strips_quotes_and_keeps_colons_and_commas() -> None:
+    metadata = parse_skill_frontmatter('---\nname: "review, deep"\ndescription: "Review: a target, carefully"\n---\n# Review\n')
+
+    assert metadata == SkillManifestFrontmatter(
+        name="review, deep",
+        description="Review: a target, carefully",
+    )
+
+
+def test_parse_skill_frontmatter_treats_unquoted_hash_as_comment() -> None:
+    unquoted = parse_skill_frontmatter("---\nname: demo\ndescription: Fix bug #42\n---\n# Demo\n")
+    quoted = parse_skill_frontmatter('---\nname: demo\ndescription: "Fix bug #42"\n---\n# Demo\n')
+
+    assert unquoted.description == "Fix bug"
+    assert quoted.description == "Fix bug #42"
+
+
+def test_parse_skill_body_returns_markdown_after_closing_delimiter() -> None:
+    assert parse_skill_body("---\nname: demo\ndescription: Demo\n---\n\n# Demo\nBody\n") == "# Demo\nBody"
+
+
+def test_parse_skill_frontmatter_rejects_duplicate_key() -> None:
+    with pytest.raises(SkillManifestParseError, match="duplicate frontmatter key 'name'"):
+        _ = parse_skill_frontmatter("---\nname: one\nname: two\ndescription: Demo\n---\n# Demo\n")
+
+
+def test_parse_skill_frontmatter_rejects_unknown_key() -> None:
+    with pytest.raises(SkillManifestParseError, match="unsupported skill frontmatter key: license"):
+        _ = parse_skill_frontmatter("---\nname: demo\ndescription: Demo\nlicense: MIT\n---\n# Demo\n")
+
+
+def test_parse_skill_frontmatter_rejects_non_string_values() -> None:
+    with pytest.raises(SkillManifestParseError, match="skill frontmatter field 'name' must be a non-empty string"):
+        _ = parse_skill_frontmatter("---\nname: 2024-01-01\ndescription: Demo\n---\n# Demo\n")
+
+    with pytest.raises(SkillManifestParseError, match="skill frontmatter field 'name' must be a non-empty string"):
+        _ = parse_skill_frontmatter("---\nname: yes\ndescription: Demo\n---\n# Demo\n")
+
+
+def test_parse_skill_frontmatter_rejects_empty_values() -> None:
+    with pytest.raises(SkillManifestParseError, match="skill frontmatter field 'description' must be a non-empty string"):
+        _ = parse_skill_frontmatter("---\nname: demo\ndescription: ''\n---\n# Demo\n")
+
+    with pytest.raises(SkillManifestParseError, match="skill frontmatter field 'description' must be a non-empty string"):
+        _ = parse_skill_frontmatter("---\nname: demo\ndescription:\n---\n# Demo\n")
+
+
+def test_parse_skill_frontmatter_rejects_missing_closing_delimiter() -> None:
+    with pytest.raises(SkillManifestParseError, match="must close the YAML frontmatter block"):
+        _ = parse_skill_frontmatter("---\nname: demo\ndescription: Demo\n", path="SKILL.md")
+
+
+def test_parse_skill_frontmatter_reports_path_and_position_on_invalid_yaml() -> None:
+    with pytest.raises(SkillManifestParseError, match=r"^SKILL\.md: invalid YAML frontmatter on line 2, column"):
+        _ = parse_skill_frontmatter("---\nname: demo\ndescription: a: b\n---\n# Demo\n", path="SKILL.md")
 
 
 def test_parse_skill_manifest_rejects_empty_body() -> None:
