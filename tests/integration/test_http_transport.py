@@ -32,7 +32,7 @@ def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None
         lambda: config_module.RuntimeMcpConfig(enabled=False),
     )
     monkeypatch.setattr(config_module, "_default_runtime_mcp_servers", lambda: {})
-    http_module = importlib.import_module("voidcode.runtime.http")
+    http_module = importlib.import_module("voidcode.runtime.transport.http")
 
     async def _direct_stream(_self: object, runtime: object, request: object) -> Any:
         for chunk in cast(Any, runtime).run_stream(request):
@@ -314,7 +314,7 @@ def _run_app(
 
 
 def test_transport_agents_endpoint_serializes_stable_summary_fields() -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
 
     AgentSummary = runtime_contracts.AgentSummary
@@ -363,7 +363,7 @@ def test_transport_agents_endpoint_serializes_stable_summary_fields() -> None:
 
 
 def test_transport_session_cancel_endpoint_calls_runtime_cancel_session() -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     RuntimeTransportApp = runtime_http.RuntimeTransportApp
     ActiveRunInterruptResult = runtime_http.ActiveRunInterruptResult
 
@@ -410,7 +410,7 @@ def test_transport_session_cancel_endpoint_calls_runtime_cancel_session() -> Non
 
 
 def test_transport_session_cancel_endpoint_rejects_non_post() -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     RuntimeTransportApp = runtime_http.RuntimeTransportApp
 
     class SessionCancelRuntime:
@@ -425,7 +425,7 @@ def test_transport_session_cancel_endpoint_rejects_non_post() -> None:
 
 
 def test_transport_steer_session_endpoint_calls_runtime_queue_steering() -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     RuntimeTransportApp = runtime_http.RuntimeTransportApp
 
     class SteerSessionRuntime:
@@ -450,7 +450,7 @@ def test_transport_steer_session_endpoint_calls_runtime_queue_steering() -> None
 
 
 def test_transport_steer_session_rejects_empty_content() -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     RuntimeTransportApp = runtime_http.RuntimeTransportApp
 
     class SteerSessionRuntime:
@@ -634,7 +634,7 @@ def test_transport_lists_sessions_as_json(tmp_path: Path) -> None:
 
 
 def test_transport_list_sessions_excludes_delegated_child_sessions(tmp_path: Path) -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     runtime_session = importlib.import_module("voidcode.runtime.session")
 
     class _ParentChildListRuntime:
@@ -874,7 +874,7 @@ def test_transport_rejects_invalid_settings_payload(
 
 
 def test_create_runtime_app_forwards_config_to_default_runtime_factory(tmp_path: Path) -> None:
-    runtime_module = importlib.import_module("voidcode.runtime.http")
+    runtime_module = importlib.import_module("voidcode.runtime.transport.http")
     config = object()
     captured: list[tuple[Path, object | None]] = []
 
@@ -1236,7 +1236,7 @@ def test_transport_streams_session_events_after_sequence(tmp_path: Path) -> None
 
 
 def test_transport_session_result_redacts_reasoning_until_query_opt_in() -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
     runtime_events = importlib.import_module("voidcode.runtime.events")
     runtime_session = importlib.import_module("voidcode.runtime.session")
@@ -1302,7 +1302,7 @@ def test_transport_session_result_redacts_reasoning_until_query_opt_in() -> None
 
 
 def test_transport_replay_response_redacts_reasoning_until_query_opt_in() -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
     runtime_events = importlib.import_module("voidcode.runtime.events")
     runtime_session = importlib.import_module("voidcode.runtime.session")
@@ -1364,7 +1364,7 @@ def test_transport_replay_response_redacts_reasoning_until_query_opt_in() -> Non
 
 
 def test_transport_run_stream_ignores_show_thinking_request_metadata() -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
     runtime_events = importlib.import_module("voidcode.runtime.events")
     runtime_session = importlib.import_module("voidcode.runtime.session")
@@ -1438,7 +1438,7 @@ def test_transport_run_stream_ignores_show_thinking_request_metadata() -> None:
 
 
 def test_transport_background_task_output_redacts_reasoning_until_query_opt_in() -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
     runtime_events = importlib.import_module("voidcode.runtime.events")
     runtime_session = importlib.import_module("voidcode.runtime.session")
@@ -1581,7 +1581,7 @@ def test_transport_returns_not_found_for_missing_session_debug_snapshot(tmp_path
 def test_transport_debug_endpoint_does_not_shut_down_shared_runtime_background_tasks(
     tmp_path: Path,
 ) -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     workspace_module = importlib.import_module("voidcode.runtime.workspace")
     runtime_request, runtime_class = _load_runtime_types()
 
@@ -2704,7 +2704,7 @@ def test_transport_answers_pending_question_over_http(tmp_path: Path) -> None:
     assert payload["output"] == "done"
 
 
-def test_transport_returns_not_found_for_missing_pending_question(tmp_path: Path) -> None:
+def test_transport_returns_conflict_for_missing_pending_question(tmp_path: Path) -> None:
     create_runtime_app = _load_transport_app_factory()
     contracts_module = importlib.import_module("voidcode.runtime.contracts")
 
@@ -2758,8 +2758,11 @@ def test_transport_returns_not_found_for_missing_pending_question(tmp_path: Path
         ).encode("utf-8"),
     )
 
-    assert response.status == 404
-    assert response.json() == _error_body("no pending question for session: question-session")
+    assert response.status == 409
+    assert response.json() == _error_body(
+        "no pending question for session: question-session",
+        code="no_pending_question",
+    )
 
 
 def test_transport_streams_runtime_chunks_in_sse_order() -> None:
@@ -2945,7 +2948,7 @@ def test_transport_run_stream_cancels_run_on_client_disconnect() -> None:
 
 
 def test_transport_session_events_stops_replay_burst_on_client_disconnect() -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     runtime_events = importlib.import_module("voidcode.runtime.events")
     runtime_session = importlib.import_module("voidcode.runtime.session")
     contracts_module = importlib.import_module("voidcode.runtime.contracts")
@@ -3019,7 +3022,7 @@ def test_transport_session_events_follow_closes_on_interrupted_session() -> None
     stream must close on ``interrupted`` exactly like ``completed``/``failed``
     instead of polling the replayed snapshot forever.
     """
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     runtime_session = importlib.import_module("voidcode.runtime.session")
     contracts_module = importlib.import_module("voidcode.runtime.contracts")
 
@@ -3068,7 +3071,7 @@ def test_transport_session_events_follow_closes_on_interrupted_session() -> None
 
 
 def test_transport_session_events_stops_cleanly_when_send_raises_during_replay() -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     runtime_events = importlib.import_module("voidcode.runtime.events")
     runtime_session = importlib.import_module("voidcode.runtime.session")
     contracts_module = importlib.import_module("voidcode.runtime.contracts")
@@ -3136,7 +3139,6 @@ def test_transport_session_events_follow_reads_incrementally_after_cursor(monkey
     session status, delivers each event exactly once in order, and closes on a
     terminal status.
     """
-    runtime_http = importlib.import_module("voidcode.runtime.http")
     runtime_transport = importlib.import_module("voidcode.runtime.transport.http")
     runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
     runtime_events = importlib.import_module("voidcode.runtime.events")
@@ -3183,7 +3185,7 @@ def test_transport_session_events_follow_reads_incrementally_after_cursor(monkey
         def __exit__(self, *_: object) -> None:
             return None
 
-    app = runtime_http.RuntimeTransportApp(runtime_factory=cast(Any, _IncrementalFollowRuntime))
+    app = runtime_transport.RuntimeTransportApp(runtime_factory=cast(Any, _IncrementalFollowRuntime))
 
     response = _run_app(
         app,
@@ -3211,7 +3213,7 @@ def test_transport_run_stream_sends_session_state_only_when_it_changes() -> None
     client parsing by the metadata size. The first frame of a response carries
     the full state, later frames carry ``null`` until the state really changes.
     """
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
     runtime_events = importlib.import_module("voidcode.runtime.events")
     runtime_session = importlib.import_module("voidcode.runtime.session")
@@ -4369,7 +4371,7 @@ def test_transport_retry_mcp_value_error_returns_http_400_and_closes_runtime_onc
 def test_transport_marks_review_request_active_for_workspace_switch_conflict(
     tmp_path: Path,
 ) -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
     workspace_module = importlib.import_module("voidcode.runtime.workspace")
 

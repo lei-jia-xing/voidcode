@@ -115,16 +115,13 @@ logger = logging.getLogger(__name__)
 
 
 def _default_runtime_class() -> type[VoidCodeRuntime]:
-    """Resolve patched runtime classes across supported import facades."""
-    default = VoidCodeRuntime
-    for module_name in ("voidcode.runtime.http", "voidcode.runtime"):
-        module = sys.modules.get(module_name)
-        if module is None:
-            continue
-        patched = module.__dict__.get("VoidCodeRuntime")
-        if patched is not None and patched is not default:
+    """Resolve the runtime class, honouring a patch on the runtime package facade."""
+    runtime_module = sys.modules.get("voidcode.runtime")
+    if runtime_module is not None:
+        patched = runtime_module.__dict__.get("VoidCodeRuntime")
+        if patched is not None:
             return cast(type[VoidCodeRuntime], patched)
-    return default
+    return VoidCodeRuntime
 
 
 # Statuses after which the session-event follow stream closes instead of
@@ -455,9 +452,9 @@ class RuntimeTransportApp(FastAPI):
     async def _lifespan(self, _app: FastAPI) -> AsyncIterator[None]:
         """Release the workspace coordinator on server shutdown.
 
-        ``server.py`` still runs uvicorn with ``lifespan="off"``, so the served
-        process never reaches this path; it preserves the transport's previous
-        behaviour for embedders and tests that drive a lifespan scope.
+        ``server.py`` starts uvicorn with lifecycle handling enabled, so the
+        served process runs this hook and the coordinator is released exactly
+        once. Embedders and tests that drive a lifespan scope reach it too.
         """
         yield
         if self._workspace_coordinator is not None:
@@ -1386,8 +1383,11 @@ class RuntimeTransportApp(FastAPI):
                 question_request_id=cast(str, payload.request_id),
                 responses=responses,
             )
-        except (ValueError, NoPendingQuestionError) as exc:
-            raise HttpError(404, str(exc)) from None
+        # 409 separates "nothing pending" from this route's 404 session errors (unknown session / mismatched request id).
+        except NoPendingQuestionError as exc:
+            raise HttpError(409, str(exc), code=error_code(exc)) from None
+        except ValueError as exc:
+            raise HttpError(404, str(exc), code=error_code(exc)) from None
         return json_response(self._serialize_runtime_response(response, show_thinking=show_thinking))
 
     async def _handle_acknowledge_notification(self, notification_id: str) -> Response:

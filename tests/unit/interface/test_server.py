@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import socket
 from contextlib import contextmanager
@@ -248,6 +249,60 @@ def test_run_runtime_server_skips_fd_mode_on_windows(monkeypatch: Any) -> None:
     finally:
         if listener_socket.fileno() != -1:
             listener_socket.close()
+
+
+def test_run_runtime_server_enables_lifespan_and_releases_coordinator_once() -> None:
+    """The launcher must let uvicorn run the app lifespan so shutdown releases state.
+
+    ``create_runtime_app`` wires the workspace coordinator into the transport's
+    lifespan hook. If the launcher disabled lifespan, the served process would
+    never run that hook and leak the coordinator; this pins that it is enabled
+    and that the shutdown half closes the coordinator exactly once.
+    """
+    server = importlib.import_module("voidcode.server")
+    runtime_transport = importlib.import_module("voidcode.runtime.transport.http")
+    workspace = Path("/tmp/server-workspace")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
+    closed: list[str] = []
+
+    class _Coordinator:
+        def close(self) -> None:
+            closed.append("closed")
+
+    app = runtime_transport.RuntimeTransportApp(
+        runtime_factory=cast(Any, lambda: object()),
+        workspace_coordinator=cast(Any, _Coordinator()),
+    )
+    run_kwargs: list[dict[str, object]] = []
+
+    def _uvicorn_run(app_obj: object, *, host: str, port: int, lifespan: str, fd: int | None = None) -> None:
+        run_kwargs.append({"host": host, "port": port, "lifespan": lifespan, "fd": fd})
+        if lifespan == "off":
+            return
+        # Emulate what uvicorn does when lifecycle handling is on: drive the
+        # app through a lifespan scope whose shutdown half releases the hook.
+        messages: list[dict[str, object]] = [
+            {"type": "lifespan.startup"},
+            {"type": "lifespan.shutdown"},
+        ]
+
+        async def _receive() -> dict[str, object]:
+            if messages:
+                return messages.pop(0)
+            return {"type": "lifespan.disconnect"}
+
+        async def _send(_message: dict[str, object]) -> None:
+            return None
+
+        asyncio.run(app_obj({"type": "lifespan"}, _receive, _send))
+
+    with patch.object(server, "create_runtime_app", autospec=True, return_value=app) as app_mock:
+        with patch("importlib.import_module", autospec=True, return_value=SimpleNamespace(run=_uvicorn_run)):
+            server._run_runtime_server(workspace=workspace, host="127.0.0.1", port=8123, config=config)
+
+    app_mock.assert_called_once_with(workspace=workspace, config=config, frontend_dist=None)
+    assert run_kwargs == [{"host": "127.0.0.1", "port": 8123, "lifespan": "auto", "fd": None}]
+    assert closed == ["closed"]
 
 
 def test_web_closes_reserved_listener_when_frontend_setup_fails() -> None:

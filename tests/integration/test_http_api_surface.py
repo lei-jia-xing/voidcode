@@ -258,7 +258,7 @@ def test_retired_interrupt_alias_is_not_routed() -> None:
 
 def test_only_show_thinking_is_honoured_not_the_camel_case_twin() -> None:
     """The documented spelling is ``show_thinking``; ``showThinking`` is gone."""
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
     runtime_events = importlib.import_module("voidcode.runtime.events")
     runtime_session = importlib.import_module("voidcode.runtime.session")
@@ -367,6 +367,33 @@ def test_missing_pending_approval_carries_a_stable_code(tmp_path: Path) -> None:
     )
 
 
+def test_missing_pending_question_carries_a_stable_code(tmp_path: Path) -> None:
+    _write_sample(tmp_path)
+    runtime_request, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+    runtime = runtime_class(workspace=tmp_path)
+    _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="completed-session"))
+
+    app = create_runtime_app(workspace=tmp_path)
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/completed-session/question",
+        body=json.dumps(
+            {
+                "request_id": "missing-request",
+                "responses": [{"header": "Runtime path", "answers": ["Reuse existing"]}],
+            }
+        ).encode("utf-8"),
+    )
+
+    assert response.status == 409
+    assert response.json() == _error_body(
+        "no pending question for session: completed-session",
+        code="no_pending_question",
+    )
+
+
 def test_plain_validation_failures_keep_a_null_code(tmp_path: Path) -> None:
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path)
@@ -399,7 +426,7 @@ def test_unhandled_api_failure_uses_the_error_envelope() -> None:
         def __exit__(self, *_: object) -> None:
             return None
 
-    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     app = runtime_http.RuntimeTransportApp(runtime_factory=cast(Any, _CrashRuntime))
 
     response, error = _drive(app, method="GET", path="/api/sessions")

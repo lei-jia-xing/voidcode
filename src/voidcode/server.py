@@ -38,15 +38,15 @@ def _run_runtime_server(
     app = create_runtime_app(workspace=workspace, config=config, frontend_dist=frontend_dist)
     uvicorn = cast(UvicornModule, importlib.import_module("uvicorn"))
     if listener_socket is None:
-        uvicorn.run(app, host=host, port=port, lifespan="off")
+        uvicorn.run(app, host=host, port=port, lifespan="auto")
         return
     if os.name == "nt":
         with closing(listener_socket):
             pass
-        uvicorn.run(app, host=host, port=port, lifespan="off")
+        uvicorn.run(app, host=host, port=port, lifespan="auto")
         return
     with closing(listener_socket):
-        uvicorn.run(app, host=host, port=port, lifespan="off", fd=listener_socket.fileno())
+        uvicorn.run(app, host=host, port=port, lifespan="auto", fd=listener_socket.fileno())
 
 
 def serve(

@@ -21,8 +21,8 @@ from typing import Any, cast
 
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeStreamChunk
 from voidcode.runtime.events import EventEnvelope
-from voidcode.runtime.http import RuntimeTransport, RuntimeTransportApp
 from voidcode.runtime.session import SessionRef, SessionState
+from voidcode.runtime.transport.http import RuntimeTransport, RuntimeTransportApp
 
 _WORKER_THREAD_NAME = "runtime-stream-worker"
 

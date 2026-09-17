@@ -16,9 +16,9 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from voidcode.runtime.contracts import RuntimeResponse
-from voidcode.runtime.http import RuntimeTransport, RuntimeTransportApp
 from voidcode.runtime.question import QuestionResponse
 from voidcode.runtime.session import SessionRef, SessionState
+from voidcode.runtime.transport.http import RuntimeTransport, RuntimeTransportApp
 
 pytestmark = pytest.mark.filterwarnings("ignore:unclosed database in <sqlite3.Connection object.*:ResourceWarning")
 

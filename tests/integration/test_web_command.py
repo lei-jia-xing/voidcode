@@ -264,7 +264,7 @@ def test_serve_remains_headless_and_uses_shared_runtime_server() -> None:
 
 def test_frontend_root_returns_html_when_dist_configured(tmp_path: Path) -> None:
     """Verify that GET / returns the frontend HTML when frontend_dist is set."""
-    http_module = importlib.import_module("voidcode.runtime.http")
+    http_module = importlib.import_module("voidcode.runtime.transport.http")
     rt_app = http_module.RuntimeTransportApp(
         runtime_factory=Mock(),
         frontend_dist=write_frontend_dist_fixture(tmp_path),
@@ -297,7 +297,7 @@ def test_frontend_root_returns_html_when_dist_configured(tmp_path: Path) -> None
 
 def test_frontend_serves_static_assets_when_dist_configured(tmp_path: Path) -> None:
     """Verify that static assets under /assets/ are served correctly."""
-    http_module = importlib.import_module("voidcode.runtime.http")
+    http_module = importlib.import_module("voidcode.runtime.transport.http")
     rt_app = http_module.RuntimeTransportApp(
         runtime_factory=Mock(),
         frontend_dist=write_frontend_dist_fixture(tmp_path),
@@ -327,7 +327,7 @@ def test_frontend_serves_static_assets_when_dist_configured(tmp_path: Path) -> N
 
 def test_frontend_does_not_spa_fallback_unknown_api_routes(tmp_path: Path) -> None:
     """Verify unknown API paths keep JSON 404 semantics with frontend_dist set."""
-    http_module = importlib.import_module("voidcode.runtime.http")
+    http_module = importlib.import_module("voidcode.runtime.transport.http")
     rt_app = http_module.RuntimeTransportApp(
         runtime_factory=Mock(),
         frontend_dist=write_frontend_dist_fixture(tmp_path),
@@ -359,7 +359,7 @@ def test_frontend_does_not_spa_fallback_unknown_api_routes(tmp_path: Path) -> No
 
 def test_frontend_returns_404_for_missing_static_asset(tmp_path: Path) -> None:
     """Verify missing assets do not receive the SPA index fallback."""
-    http_module = importlib.import_module("voidcode.runtime.http")
+    http_module = importlib.import_module("voidcode.runtime.transport.http")
     rt_app = http_module.RuntimeTransportApp(
         runtime_factory=Mock(),
         frontend_dist=write_frontend_dist_fixture(tmp_path),
@@ -391,7 +391,7 @@ def test_frontend_returns_404_for_missing_static_asset(tmp_path: Path) -> None:
 
 def test_frontend_returns_404_when_no_dist_configured() -> None:
     """Verify that GET / returns 404 when frontend_dist is None."""
-    http_module = importlib.import_module("voidcode.runtime.http")
+    http_module = importlib.import_module("voidcode.runtime.transport.http")
     rt_app = http_module.RuntimeTransportApp(
         runtime_factory=Mock(),
         frontend_dist=None,

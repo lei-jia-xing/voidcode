@@ -178,7 +178,7 @@ MVP 生命周期：
 - `GET /api/sessions/{id}/debug` — 读取会话调试快照；成功 `200`；错误 `404`、`405`
 - `GET /api/sessions/{id}/delegated-context` — 读取 delegated 子会话上下文；成功 `200`；错误 `404`（`code=delegated_context_missing`）、`405`
 - `POST /api/sessions/{id}/approval` — 提交审批决策并继续执行，返回下一次暂停或执行结束时的会话快照；成功 `200`；错误 `400`、`409`（`code=no_pending_approval`）、`405`
-- `POST /api/sessions/{id}/question` — 回答等待中的问题，返回恢复后的 `RuntimeResponse`；成功 `200`；错误 `400`、`404`、`405`
+- `POST /api/sessions/{id}/question` — 回答等待中的问题，返回恢复后的 `RuntimeResponse`；成功 `200`；错误 `400`、`404`、`409`（`code=no_pending_question`）、`405`
 - `POST /api/sessions/{id}/cancel` — 按 run identity 取消/中断会话；成功 `200`；错误 `400`、`405`
 - `POST /api/sessions/{id}/steer` — 向会话排队一条 steer 消息；成功 `200`；错误 `400`、`404`、`409`（`code=session_sealed`）、`405`
 - `POST /api/sessions/{id}/resume` — 显式恢复 interrupted / failed-retryable 会话（会重新进入 graph loop 并重新执行 provider）；成功 `200`；错误 `404`、`405`
@@ -228,6 +228,10 @@ MVP 生命周期：
 
 本文档仍然有意地将契约定义与具体框架实现细节解耦；但这些路由边界与 delegated/task surfaces 本身已经属于当前 shipped API，而不是 future work。
 
+### 重复的标量查询参数
+
+当同一个标量查询参数（例如 `show_thinking=true&show_thinking=false`）重复出现时，传输层采用**最后一个取值生效（last-wins）**：FastAPI/Starlette 的查询解析按此约定处理，与 HTTP 客户端（浏览器 `URLSearchParams`、`requests` 等）的普遍行为一致。这是有意选择的契约，而不是偶然行为：迁移前的手写传输层取的是第一个取值，与 HTTP 惯例相悖，现已统一为 last-wins。需要保留多个取值的语义时，路由 MUST 使用显式的重复参数/列表形状，而不是依赖单值参数的多次出现。
+
 ## HTTP 错误信封
 
 本地 HTTP 层的所有错误响应共用同一个信封：
@@ -258,6 +262,7 @@ MVP 生命周期：
 | `invalid_workspace` | workspace 路径不存在/不可用 | `400` | `WorkspaceOpenError` |
 | `session_sealed` | 对已封印（terminal 且无活跃 run）的会话 steer | `409` | `SessionSealedError`（`runtime/storage/shared.py`） |
 | `no_pending_approval` | 对没有待审批请求的会话提交审批决策 | `409` | `NoPendingApprovalError`（`runtime/contracts.py`） |
+| `no_pending_question` | 对没有待回答问题的会话提交回答 | `409` | `NoPendingQuestionError`（`runtime/contracts.py`） |
 | `delegated_context_missing` | 该会话没有 delegated 子会话上下文（`/api/sessions/{id}/delegated-context`） | `404` | 传输层（runtime 返回 `None` 即该语义） |
 
 `null` 覆盖其余全部错误：未知会话/task/通知（`404`）、方法不允许（`405`）、未匹配路径

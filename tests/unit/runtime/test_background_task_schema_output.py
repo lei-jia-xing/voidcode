@@ -26,8 +26,8 @@ from voidcode.runtime.background.models import (
 )
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import BackgroundTaskResult
-from voidcode.runtime.http import RuntimeTransportApp
 from voidcode.runtime.storage import SCHEMA_VERSION, SqliteSessionStore
+from voidcode.runtime.transport.http import RuntimeTransportApp
 
 DECLARED_SCHEMA: dict[str, object] = {
     "type": "object",

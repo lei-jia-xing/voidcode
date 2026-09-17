@@ -46,7 +46,14 @@ class UnknownBackgroundTaskError(ValueError):
 
 
 class NoPendingQuestionError(ValueError):
-    """Raised when a session has no pending question to answer."""
+    """Raised when a session has no pending question to answer.
+
+    ``code`` is the stable machine-readable reason the HTTP transport carries on
+    its error envelope, so a client can tell "nothing is waiting for an answer"
+    apart from every other rejection without matching on message text.
+    """
+
+    code = "no_pending_question"
 
 
 class NoPendingApprovalError(ValueError):
