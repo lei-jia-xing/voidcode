@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 
@@ -762,7 +763,11 @@ def test_provider_provider_graph_finalizes_after_tool_result() -> None:
         "prompt": "read sample.txt",
     }
     assert step.events[2].payload == {"step": 3, "phase": "finalize"}
-    assert step.events[3].payload == {"output_preview": "alpha\n"}
+    assert step.events[3].payload == {
+        "output_preview": "alpha\n",
+        "finish_reason": "unknown",
+        "finish_reason_reported": False,
+    }
 
 
 def test_provider_provider_graph_prefers_nonstream_tool_call_over_text() -> None:
@@ -822,7 +827,7 @@ def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() ->
     assert exc_info.value.kind == "transient_failure"
 
 
-def test_provider_graph_names_the_raw_finish_reason_on_nonstream_failure() -> None:
+def test_provider_graph_treats_unrecognized_nonstream_finish_reason_as_completed() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
@@ -842,31 +847,25 @@ def test_provider_graph_names_the_raw_finish_reason_on_nonstream_failure() -> No
 
     graph = ProviderGraph(provider=_UnknownDoneReasonTurnProvider(), provider_model=provider_model)
 
-    with pytest.raises(ProviderExecutionError) as exc_info:
-        _ = graph.step(
-            request=GraphRunRequest(
-                session=_session(),
-                prompt="read sample.txt",
-                available_tools=_tool_definitions(),
-                context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
-            ),
-            tool_results=(),
+    step = graph.step(
+        request=GraphRunRequest(
             session=_session(),
-        )
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
+        ),
+        tool_results=(),
+        session=_session(),
+    )
 
-    # The provider's own token is what makes this failure diagnosable.
-    assert exc_info.value.kind == "transient_failure"
-    assert exc_info.value.message == "provider turn ended with unsupported finish reason: eos_token"
-    assert exc_info.value.details == {
-        "source": "graph_nonstream",
-        "reason": "unknown_done_reason",
-        "done_reason": "unknown",
-        "finish_reason_raw": "eos_token",
-    }
+    # The upstream declared a terminal outcome; an unrecognized reason token is a
+    # completed (stop-equivalent) turn, not a user-visible failure.
+    assert step.is_finished is True
+    assert step.output == "done"
 
 
-def test_provider_graph_names_the_raw_finish_reason_on_stream_failure() -> None:
+def test_provider_graph_treats_unrecognized_stream_finish_reason_as_completed() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
@@ -881,35 +880,33 @@ def test_provider_graph_names_the_raw_finish_reason_on_stream_failure() -> None:
 
         def stream_turn(self, request: ProviderTurnRequest):
             _ = request
-            return iter((ProviderStreamEvent(kind="done", done_reason="unknown", metadata={"finish_reason_raw": "eos_token"}),))
+            return iter(
+                (
+                    ProviderStreamEvent(kind="delta", channel="text", text="done"),
+                    ProviderStreamEvent(kind="done", done_reason="unknown", metadata={"finish_reason_raw": "eos_token"}),
+                )
+            )
 
     graph = ProviderGraph(provider=_UnknownDoneReasonStreamTurnProvider(), provider_model=provider_model)
 
-    with pytest.raises(ProviderExecutionError) as exc_info:
-        _ = graph.step(
-            request=GraphRunRequest(
-                session=_session(),
-                prompt="read sample.txt",
-                available_tools=_tool_definitions(),
-                context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
-                metadata={"provider_stream": True},
-            ),
-            tool_results=(),
+    step = graph.step(
+        request=GraphRunRequest(
             session=_session(),
-        )
+            prompt="read sample.txt",
+            available_tools=_tool_definitions(),
+            context_window=RuntimeContextWindow(prompt="read sample.txt"),
+            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
+            metadata={"provider_stream": True},
+        ),
+        tool_results=(),
+        session=_session(),
+    )
 
-    assert exc_info.value.kind == "transient_failure"
-    assert exc_info.value.message == "provider stream ended with unsupported finish reason: eos_token"
-    assert exc_info.value.details == {
-        "source": "graph_stream",
-        "reason": "unknown_done_reason",
-        "done_reason": "unknown",
-        "finish_reason_raw": "eos_token",
-    }
+    assert step.is_finished is True
+    assert step.output == "done"
 
 
-def test_provider_graph_falls_back_to_the_mapped_reason_without_a_raw_token() -> None:
+def test_provider_graph_treats_omitted_finish_reason_as_completed() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
@@ -920,7 +917,7 @@ def test_provider_graph_falls_back_to_the_mapped_reason_without_a_raw_token() ->
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
-            # No metadata: the mapped reason is all the graph has to report.
+            # No metadata: the mapped reason is all the graph has to go on.
             return ProviderTurnResult(output="done", done_reason="unknown", finish_reason_reported=True)
 
     class _UnknownStreamingTurnProvider:
@@ -932,27 +929,102 @@ def test_provider_graph_falls_back_to_the_mapped_reason_without_a_raw_token() ->
 
         def stream_turn(self, request: ProviderTurnRequest):
             _ = request
-            return iter((ProviderStreamEvent(kind="done", done_reason="unknown"),))
+            return iter(
+                (
+                    ProviderStreamEvent(kind="delta", channel="text", text="done"),
+                    ProviderStreamEvent(kind="done", done_reason="unknown"),
+                )
+            )
 
     cases = ((_UnknownNonStreamingTurnProvider(), {}), (_UnknownStreamingTurnProvider(), {"provider_stream": True}))
     for provider, metadata in cases:
         graph = ProviderGraph(provider=provider, provider_model=provider_model)
-        with pytest.raises(ProviderExecutionError) as exc_info:
-            _ = graph.step(
-                request=GraphRunRequest(
-                    session=_session(),
-                    prompt="read sample.txt",
-                    available_tools=_tool_definitions(),
-                    context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                    assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
-                    metadata=metadata,
-                ),
-                tool_results=(),
+        step = graph.step(
+            request=GraphRunRequest(
                 session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
+                metadata=metadata,
+            ),
+            tool_results=(),
+            session=_session(),
+        )
+
+        assert step.is_finished is True
+        assert step.output == "done"
+
+
+def test_provider_graph_warns_when_a_terminal_turn_reported_no_finish_reason(caplog: pytest.LogCaptureFixture) -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+
+    class _AbsentFinishReasonTurnProvider:
+        name = "opencode"
+
+        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+            _ = request
+            return ProviderTurnResult(output="done", done_reason="unknown", finish_reason_reported=False)
+
+    graph = ProviderGraph(provider=_AbsentFinishReasonTurnProvider(), provider_model=provider_model)
+
+    with caplog.at_level(logging.WARNING, logger="voidcode.graph.provider_graph"):
+        step = graph.step(
+            request=GraphRunRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
+            ),
+            tool_results=(),
+            session=_session(),
+        )
+
+    assert step.is_finished is True
+    assert "without reporting a finish reason" in caplog.text
+
+
+def test_provider_graph_logs_an_unrecognized_finish_reason_at_debug(caplog: pytest.LogCaptureFixture) -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+
+    class _UnrecognizedFinishReasonTurnProvider:
+        name = "opencode"
+
+        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+            _ = request
+            return ProviderTurnResult(
+                output="done",
+                done_reason="unknown",
+                finish_reason_reported=True,
+                metadata={"finish_reason_raw": "eos_token"},
             )
 
-        assert str(exc_info.value.message).endswith("unsupported finish reason: unknown")
-        assert "finish_reason_raw" not in dict(exc_info.value.details or {})
+    graph = ProviderGraph(provider=_UnrecognizedFinishReasonTurnProvider(), provider_model=provider_model)
+
+    with caplog.at_level(logging.DEBUG, logger="voidcode.graph.provider_graph"):
+        step = graph.step(
+            request=GraphRunRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
+            ),
+            tool_results=(),
+            session=_session(),
+        )
+
+    assert step.is_finished is True
+    # A reported-but-unrecognized token is diagnosable but not a truncation warning.
+    assert "unrecognized finish reason" in caplog.text
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
 
 def test_provider_provider_graph_preserves_stream_error_details() -> None:

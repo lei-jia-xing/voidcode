@@ -39,8 +39,6 @@ def _resolve_ips(hostname: str) -> tuple[str, ...]:
         return ()
     addresses: list[str] = []
     for info in infos:
-        if not info[4]:
-            continue
         address = info[4][0]
         if not isinstance(address, str):
             continue

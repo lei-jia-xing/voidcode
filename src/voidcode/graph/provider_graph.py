@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
-from typing import Any, Literal, cast
+from typing import Any, Final, Literal, cast
 
 from ..provider.errors import parse_provider_stream_error
 from ..provider.models import ResolvedProviderModel
@@ -55,6 +56,58 @@ def _run_id_from_graph_metadata(
 _PREVIEW_ARGUMENT_MAX_CHARS = 64 * 1024
 
 _WRITE_PREVIEW_TOOLS = frozenset({"write", "edit", "multi_edit", "apply_patch"})
+
+logger = logging.getLogger(__name__)
+
+# A provider turn that declared a terminal outcome without a finish reason we
+# recognize — or omitted the reason entirely — is still a well-formed response:
+# the upstream ended the turn, so it maps to a stop-equivalent completed state
+# rather than a user-visible provider failure. The provider's own raw token stays
+# on the event/turn-result metadata for debug diagnostics. Only a genuinely
+# non-completed reason (``error`` / ``cancelled``) still fails the turn.
+_COMPLETED_DONE_REASONS: Final[frozenset[str]] = frozenset(
+    {"stop", "tool_calls", "function_call", "length", "content_filter", "completed", "unknown"}
+)
+
+
+def _finish_reason_diagnostics(*, done_reason: str, reported: bool) -> dict[str, object]:
+    """Persisted terminal-reason diagnostics for a completed provider turn.
+
+    ``finish_reason_reported`` is false only when the provider declared a terminal
+    outcome without a reason we could read. The turn still completes (see
+    ``_COMPLETED_DONE_REASONS``), but the transcript records the missing reason so
+    a silently truncated stream stays visible to session inspection.
+    """
+    return {
+        "finish_reason": done_reason,
+        "finish_reason_reported": done_reason != "unknown" or reported,
+    }
+
+
+def _log_unrecognized_finish_reason(
+    *,
+    source: str,
+    provider_name: str,
+    model_name: str | None,
+    reported: bool,
+    raw_finish_reason: str | None,
+) -> None:
+    """Record how a terminal reason we could not map was resolved."""
+    if reported and raw_finish_reason is not None:
+        logger.debug(
+            "provider %s/%s reported an unrecognized finish reason %r (source=%s); treating the turn as completed",
+            provider_name,
+            model_name or "unknown",
+            raw_finish_reason,
+            source,
+        )
+        return
+    logger.warning(
+        "provider %s/%s ended the turn without reporting a finish reason (source=%s); the response is treated as completed and may be truncated",
+        provider_name,
+        model_name or "unknown",
+        source,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,16 +298,13 @@ class ProviderGraph:
             )
 
         turn_result = self._provider.propose_turn(turn_request)
-        supported_done_reasons = {"stop", "tool_calls", "function_call", "length", "content_filter", "completed"}
-        if (turn_result.done_reason == "unknown" and turn_result.finish_reason_reported) or (
-            turn_result.done_reason != "unknown" and turn_result.done_reason not in supported_done_reasons
-        ):
+        if turn_result.done_reason not in _COMPLETED_DONE_REASONS:
             # The provider's own token survives on metadata; the mapped reason alone
-            # ("unknown") is not diagnosable.
+            # is not diagnosable.
             raw_finish_reason = (turn_result.metadata or {}).get("finish_reason_raw")
             details: dict[str, object] = {
                 "source": "graph_nonstream",
-                "reason": "unknown_done_reason",
+                "reason": "unsupported_done_reason",
                 "done_reason": turn_result.done_reason,
             }
             if isinstance(raw_finish_reason, str) and raw_finish_reason:
@@ -264,6 +314,15 @@ class ProviderGraph:
                 model_name=turn_request.model_name,
                 message=f"provider turn ended with unsupported finish reason: {raw_finish_reason or turn_result.done_reason}",
                 details=details,
+            )
+        if turn_result.done_reason == "unknown":
+            raw_finish_reason = (turn_result.metadata or {}).get("finish_reason_raw")
+            _log_unrecognized_finish_reason(
+                source="graph_nonstream",
+                provider_name=self._provider.name,
+                model_name=turn_request.model_name,
+                reported=turn_result.finish_reason_reported,
+                raw_finish_reason=raw_finish_reason if isinstance(raw_finish_reason, str) else None,
             )
         if turn_result.tool_calls:
             tool_calls = list(turn_result.tool_calls)
@@ -287,7 +346,16 @@ class ProviderGraph:
                     GRAPH_LOOP_STEP,
                     {"step": current_turn + 1, "phase": "finalize"},
                 ),
-                self._graph_event(GRAPH_RESPONSE_READY, {"output_preview": turn_result.output}),
+                self._graph_event(
+                    GRAPH_RESPONSE_READY,
+                    {
+                        "output_preview": turn_result.output,
+                        **_finish_reason_diagnostics(
+                            done_reason=turn_result.done_reason,
+                            reported=turn_result.finish_reason_reported,
+                        ),
+                    },
+                ),
             )
             return ProviderStep(
                 events=finalize_events,
@@ -519,8 +587,15 @@ class ProviderGraph:
                 message="provider stream cancelled",
                 details={"source": "graph_stream", "reason": "done_cancelled"},
             )
-        if done_reason not in {"stop", "tool_calls", "function_call", "length", "content_filter", "error", "completed"}:
-            details: dict[str, object] = {"source": "graph_stream", "reason": "unknown_done_reason", "done_reason": done_reason}
+        if done_reason == "error":
+            raise self._provider_execution_error(
+                kind="transient_failure",
+                model_name=turn_request.model_name,
+                message="provider stream ended with error",
+                details={"source": "graph_stream", "reason": "done_error"},
+            )
+        if done_reason not in _COMPLETED_DONE_REASONS:
+            details: dict[str, object] = {"source": "graph_stream", "reason": "unsupported_done_reason", "done_reason": done_reason}
             if raw_finish_reason is not None:
                 details["finish_reason_raw"] = raw_finish_reason
             raise self._provider_execution_error(
@@ -529,12 +604,13 @@ class ProviderGraph:
                 message=f"provider stream ended with unsupported finish reason: {raw_finish_reason or done_reason}",
                 details=details,
             )
-        if done_reason == "error":
-            raise self._provider_execution_error(
-                kind="transient_failure",
+        if done_reason == "unknown":
+            _log_unrecognized_finish_reason(
+                source="graph_stream",
+                provider_name=self._provider.name,
                 model_name=turn_request.model_name,
-                message="provider stream ended with error",
-                details={"source": "graph_stream", "reason": "done_error"},
+                reported=raw_finish_reason is not None,
+                raw_finish_reason=raw_finish_reason,
             )
 
         ordered_tool_calls: list[tuple[tuple[int, int, int], ToolCall]] = []
@@ -618,7 +694,16 @@ class ProviderGraph:
                         "phase": "finalize",
                     },
                 ),
-                self._graph_event(GRAPH_RESPONSE_READY, {"output_preview": output}),
+                self._graph_event(
+                    GRAPH_RESPONSE_READY,
+                    {
+                        "output_preview": output,
+                        **_finish_reason_diagnostics(
+                            done_reason=done_reason,
+                            reported=raw_finish_reason is not None,
+                        ),
+                    },
+                ),
             )
         )
         return ProviderStep(

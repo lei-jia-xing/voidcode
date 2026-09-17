@@ -97,6 +97,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 
+- **runtime:** treat an unrecognized or absent provider finish reason as a completed, stop-equivalent terminal state instead of a user-visible failure (`error` / `cancelled` still fail, and an empty stream still fails at the graph), record `finish_reason` / `finish_reason_reported` on `graph.response_ready` so a silently truncated turn stays diagnosable, and keep the provider's raw token in metadata
+
 - **frontend:** stop re-rendering the whole app shell, sidebar and composer on every streamed chunk by subscribing to the store fields each of them reads and memoizing the components; a 506-frame stream went from ~505 re-renders per panel to 3-4
 
 - **frontend:** frame SSE streams with `eventsource-parser` instead of the hand-rolled line splitter; the tolerant wire contract (multi-line `data:`, comments, CRLF frames, trailing payload on close) is unchanged

@@ -393,7 +393,12 @@ class GoogleGenAIProvider:
             )
             text = getattr(response, "text", "") or ""
             candidates = getattr(response, "candidates", None)
-            finish = self._finish_reason(getattr(candidates[0], "finish_reason", None)) if isinstance(candidates, list) and candidates else "unknown"
+            raw_finish = getattr(candidates[0], "finish_reason", None) if isinstance(candidates, list) and candidates else None
+            finish = self._finish_reason(raw_finish)
+            # Reported only when the candidate carried a finish reason: an omitted
+            # one is the silent-truncation case, while an unrecognized enum value is
+            # still a reported token.
+            finish_reason_reported = raw_finish is not None
             tool_calls: list[ToolCall] = []
             reasoning_parts: list[str] = []
             ordinal = 0
@@ -416,7 +421,10 @@ class GoogleGenAIProvider:
                 reasoning="".join(reasoning_parts) or None,
                 usage=self._usage(response),
                 done_reason=cast(Any, finish),
-                finish_reason_reported=finish != "unknown",
+                finish_reason_reported=finish_reason_reported,
+                metadata=(
+                    {"finish_reason_raw": str(getattr(raw_finish, "name", raw_finish))} if finish == "unknown" and finish_reason_reported else None
+                ),
             )
         except ProviderExecutionError:
             raise
@@ -462,18 +470,18 @@ class GoogleGenAIProvider:
                 yield from self._events_from_response(chunk, request)
             candidates = getattr(last, "candidates", None)
             raw_finish = getattr(candidates[0], "finish_reason", None) if isinstance(candidates, list) and candidates else None
+            # An unrecognized/omitted finish reason is still a terminal response: it
+            # resolves to the canonical ``unknown`` reason, which the graph treats as
+            # a completed, stop-equivalent state (never a user-visible failure).
             done_reason = self._finish_reason(raw_finish)
-            if done_reason == "unknown":
-                raise ProviderExecutionError(
-                    kind="transient_failure",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="provider stream ended without finish reason",
-                    retryable=False,
-                    fallback_allowed=True,
-                    details={"source": "stream", "reason": "missing_finish_reason"},
-                )
-            yield ProviderStreamEvent(kind="done", done_reason=cast(Any, done_reason), usage=self._usage(last) if last is not None else None)
+            stream_metadata: dict[str, object] | None = None
+            if done_reason == "unknown" and raw_finish is not None:
+                # Reported but unrecognized: carry the token so the graph's
+                # finish_reason_reported diagnostics read it as reported.
+                stream_metadata = {"finish_reason_raw": str(getattr(raw_finish, "name", raw_finish))}
+            yield ProviderStreamEvent(
+                kind="done", done_reason=cast(Any, done_reason), metadata=stream_metadata, usage=self._usage(last) if last is not None else None
+            )
         except ProviderExecutionError:
             raise
         except Exception as exc:

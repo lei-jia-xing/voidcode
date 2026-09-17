@@ -48,6 +48,8 @@ EventEnvelope(
 
 - 请求与技能：`runtime.request_received`、`runtime.skills_loaded`、`runtime.skills_applied`、`runtime.hook_presets_loaded`
 - provider 治理：`runtime.provider_fallback`、`runtime.provider_transient_retry`
+- provider 终态语义：无法识别的 `done_reason`（含缺失原因）按已完成的 stop 等价终态处理；`error` / `cancelled` 仍为失败终态
+- provider 终态诊断：`graph.response_ready` payload 记录 `finish_reason`（规范终态）与 `finish_reason_reported`。`finish_reason_reported` 为 `false` 表示上游声明终态但未给出可读取的原因，此时运行时以 `warning` 记录，使被截断但仍"正常结束"的流可被 `sessions debug` 之类检查发现；正常 `stop` 为 `true`
 - ACP：`runtime.acp_connected`、`runtime.acp_disconnected`、`runtime.acp_failed`、`runtime.acp_delegated_lifecycle`
 - LSP：`runtime.lsp_server_started`、`runtime.lsp_server_reused`、`runtime.lsp_server_startup_rejected`、`runtime.lsp_server_stopped`、`runtime.lsp_server_failed`
 - MCP：`runtime.mcp_server_started`、`runtime.mcp_server_reused`、`runtime.mcp_server_acquired`、`runtime.mcp_server_released`、`runtime.mcp_server_stopped`、`runtime.mcp_server_idle_cleaned`、`runtime.mcp_server_failed`

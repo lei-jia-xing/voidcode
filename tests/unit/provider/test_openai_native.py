@@ -418,14 +418,17 @@ def test_not_configured_check_is_skipped_when_a_transport_is_injected() -> None:
     assert result.output == "ok"
 
 
-def test_native_stream_eof_without_finish_reason_is_not_success() -> None:
+def test_native_stream_eof_without_finish_reason_yields_terminal_unknown() -> None:
     class _Transport:
         def request(self, _payload: dict[str, object], *, timeout_seconds: float) -> object:
             return iter(({"choices": [{"delta": {"content": "partial"}, "finish_reason": None}]},))
 
-    with pytest.raises(ProviderExecutionError, match="without finish_reason") as raised:
-        list(OpenAIModelProvider(transport=cast(object, _Transport())).turn_provider().stream_turn(_request(transport=None)))
-    assert raised.value.kind == "transient_failure"
+    events = list(OpenAIModelProvider(transport=cast(object, _Transport())).turn_provider().stream_turn(_request(transport=None)))
+
+    # The stream ended without a recognized finish reason. The adapter reports the
+    # canonical terminal reason; the graph treats it as a completed turn.
+    assert [(event.kind, event.channel) for event in events] == [("delta", "text"), ("done", "text")]
+    assert events[-1].done_reason == "unknown"
 
 
 def test_native_stream_first_event_timeout_is_typed_and_closes_stream() -> None:
@@ -928,12 +931,13 @@ def test_native_undecodable_stream_events_are_typed_and_bounded(event: str) -> N
 
 
 def test_native_stream_requires_spec_compliant_event_framing() -> None:
-    """SSE events must be blank-line terminated; lenient framing fails loudly.
+    """SSE events must be blank-line terminated; lenient framing loses the event.
 
     The SDK's decoder dispatches an event only on the blank line that ends it, so a
     stream that separates events with a single newline delivers nothing, and a final
-    event without its terminating blank line is dropped. Both must end the turn with
-    the missing-finish_reason error rather than a silently truncated answer.
+    event without its terminating blank line is dropped. The adapter no longer raises
+    for these: the turn resolves to a terminal ``unknown`` reason with no text, and
+    the empty response still fails at the graph ("neither output nor tool calls").
     """
     payload = '{"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}'
 
@@ -943,10 +947,11 @@ def test_native_stream_requires_spec_compliant_event_framing() -> None:
         assert events[-1].done_reason == "stop"
 
     for lenient_body in (f"data: {payload}\ndata: [DONE]\n", f"data: {payload}"):
-        with pytest.raises(ProviderExecutionError, match="without finish_reason") as raised:
-            _stream_events(lenient_body)
-        assert raised.value.kind == "transient_failure"
-        assert raised.value.retryable is False
+        events = _stream_events(lenient_body)
+        # No text survived the dropped event framing, so there is no partial answer
+        # to report — only the terminal, unrecognized reason.
+        assert [event.kind for event in events] == ["done"]
+        assert events[-1].done_reason == "unknown"
 
 
 def _proposed_turn(finish_reason: object, *, usage: bool = False) -> ProviderTurnResult:
@@ -967,8 +972,9 @@ def test_native_unrecognized_finish_reason_keeps_the_provider_token() -> None:
 
     assert result.done_reason == "unknown"
     assert result.finish_reason_reported is True
-    # The turn fails on this reason, so the provider's own token is what makes it
-    # diagnosable instead of a bare "unknown".
+    # The graph treats an unrecognized reason as a completed turn; the provider's own
+    # token stays on metadata so the resolution stays diagnosable instead of a bare
+    # "unknown".
     assert cast(dict[str, object], result.metadata)["finish_reason_raw"] == "eos_token"
 
     # A recognized reason carries no raw token, even when usage rides along in the
@@ -977,6 +983,30 @@ def test_native_unrecognized_finish_reason_keeps_the_provider_token() -> None:
     assert recognized.done_reason == "stop"
     assert recognized.usage is not None and recognized.usage.output_tokens == 1
     assert "finish_reason_raw" not in cast(dict[str, object], recognized.metadata)
+
+
+def test_native_non_stream_finish_reason_reporting_follows_the_wire() -> None:
+    def propose(choice: dict[str, object]) -> ProviderTurnResult:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"choices": [choice]})
+
+        transport = OpenAIChatCompletionsTransport(http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+        provider = OpenAIChatCompletionsProvider(
+            name="deepseek", config=ProviderEndpointConfig(base_url="https://api.deepseek.com"), transport=transport
+        )
+        return provider.propose_turn(_request(transport=transport))
+
+    # An absent key or an explicit null is the silent-truncation case: the turn
+    # completes on the canonical "unknown" reason but was not actually reported.
+    absent = propose({"message": {"content": "ok"}})
+    assert (absent.done_reason, absent.finish_reason_reported) == ("unknown", False)
+    null = propose({"message": {"content": "ok"}, "finish_reason": None})
+    assert (null.done_reason, null.finish_reason_reported) == ("unknown", False)
+    # A reported but unrecognized token is still reported.
+    unrecognized = propose({"message": {"content": "ok"}, "finish_reason": "eos_token"})
+    assert (unrecognized.done_reason, unrecognized.finish_reason_reported) == ("unknown", True)
+    recognized = propose({"message": {"content": "ok"}, "finish_reason": "stop"})
+    assert (recognized.done_reason, recognized.finish_reason_reported) == ("stop", True)
 
 
 def test_native_trailing_usage_chunk_keeps_the_latched_finish_reason() -> None:

@@ -654,16 +654,10 @@ class AnthropicMessagesProvider:
             if response.get("type") == "error" or response.get("error") is not None:
                 raise AnthropicTransportError(response)
             stop_reason = response.get("stop_reason")
-            if not isinstance(stop_reason, str) or not stop_reason:
-                raise ProviderExecutionError(
-                    kind="transient_failure",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="provider response omitted stop_reason",
-                    retryable=False,
-                    fallback_allowed=True,
-                    details={"source": "response", "reason": "missing_stop_reason"},
-                )
+            # An omitted/empty stop_reason on an otherwise well-formed response is a
+            # completed turn (the graph maps ``unknown`` to a stop-equivalent state);
+            # it is recorded as not-reported so silent truncation stays visible.
+            finish_reason_reported = isinstance(stop_reason, str) and stop_reason != ""
             text, reasoning, calls = self._blocks(response)
             _original_to_provider, reverse = self._tool_maps(request)
             calls = tuple(
@@ -675,6 +669,11 @@ class AnthropicMessagesProvider:
                 for call in calls
             )
             metadata = _response_metadata(response)
+            done_reason = cast(Any, _done_reason(stop_reason))
+            if done_reason == "unknown" and finish_reason_reported:
+                # The token was reported but is not one we map; keep it for the
+                # graph's debug resolution.
+                metadata["finish_reason_raw"] = cast(str, stop_reason)
             write_provider_trace(
                 request=payload,
                 response=response,
@@ -692,8 +691,8 @@ class AnthropicMessagesProvider:
                 output=text,
                 reasoning=reasoning,
                 usage=_usage(response),
-                done_reason=cast(Any, _done_reason(stop_reason)),
-                finish_reason_reported=True,
+                done_reason=done_reason,
+                finish_reason_reported=finish_reason_reported,
                 metadata=metadata,
             )
         except Exception as exc:
@@ -793,16 +792,19 @@ class AnthropicMessagesProvider:
                     continue
                 elif event_type in {"content_block_stop", "message_start"}:
                     continue
-            if not message_stopped or stop_reason is None:
+            if not message_stopped:
                 raise ProviderExecutionError(
                     kind="transient_failure",
                     provider_name=provider_name,
                     model_name=model_name,
-                    message="provider stream ended without terminal message_stop/stop_reason",
+                    message="provider stream ended without terminal message_stop",
                     retryable=False,
                     fallback_allowed=True,
                     details={"source": "stream", "reason": "missing_terminal_event"},
                 )
+            # ``message_stop`` is the terminal transport event. An omitted stop_reason
+            # on that terminal event still resolves to the canonical ``unknown`` reason,
+            # which the graph treats as a completed, stop-equivalent state.
             reverse = self._tool_maps(request)[1]
             for index, accumulator in sorted(accumulators.items()):
                 if accumulator.tool_name is None:
@@ -828,6 +830,10 @@ class AnthropicMessagesProvider:
                     parsed_arguments=self._visible_arguments(reverse.get(accumulator.tool_name, accumulator.tool_name), parsed),
                 )
             done_reason = cast(Any, _done_reason(stop_reason))
+            if done_reason == "unknown" and isinstance(stop_reason, str) and stop_reason:
+                # Reported but unrecognized: carry the token so the graph's
+                # finish_reason_reported diagnostics read it as reported.
+                metadata["finish_reason_raw"] = stop_reason
             yield ProviderStreamEvent(kind="done", done_reason=done_reason, metadata=metadata or None, usage=latest_usage)
             write_provider_trace(
                 request=payload,

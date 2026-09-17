@@ -184,10 +184,12 @@ class OpenAIChatCompletionsTransport:
     Stream framing must be spec-compliant: the SDK's SSE decoder dispatches an
     event only on the blank line that terminates it, so events separated by a
     single newline are never delivered and a final event without its
-    terminating blank line is discarded. Either case ends the turn with the
-    "stream ended without finish_reason" error instead of silently truncating
-    output. Events the decoder does emit but cannot decode as a JSON object are
-    reported as a bounded, non-leaking stream error payload.
+    terminating blank line is discarded. A stream that ends without a
+    recognized finish reason is still a terminal response: the turn resolves to
+    the canonical ``unknown`` reason and the graph treats it as a completed,
+    stop-equivalent state (see ``_done_reason``). Events the decoder does emit
+    but cannot decode as a JSON object are reported as a bounded, non-leaking
+    stream error payload.
 
     Auth headers reproduce the configured ``auth_scheme``/``auth_header``
     contract exactly (see ``_auth_headers``): ``none`` -- or no key -- sends no
@@ -875,16 +877,6 @@ class OpenAIChatCompletionsProvider:
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
                 return ProviderTurnResult(output="", usage=usage, metadata=metadata)
             choice = cast(Mapping[str, object], choices[0])
-            if "finish_reason" not in choice:
-                raise ProviderExecutionError(
-                    kind="transient_failure",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="provider response omitted finish_reason",
-                    retryable=False,
-                    fallback_allowed=True,
-                    details={"source": "response", "reason": "missing_finish_reason"},
-                )
             message = choice.get("message")
             message_mapping = cast(Mapping[str, object], message) if isinstance(message, Mapping) else {}
             content = message_mapping.get("content")
@@ -892,8 +884,8 @@ class OpenAIChatCompletionsProvider:
             done_reason = _done_reason(raw_finish_reason)
             raw_token = _raw_finish_reason(raw_finish_reason)
             if done_reason == "unknown" and raw_token is not None:
-                # Keep the provider's own token: it is what makes an
-                # "unsupported finish reason" failure diagnosable downstream.
+                # Keep the provider's own token so an unrecognized reason stays
+                # diagnosable in the graph's debug resolution.
                 metadata["finish_reason_raw"] = raw_token
             return ProviderTurnResult(
                 tool_calls=self._tool_calls(message_mapping, self._tool_maps(request)[1]),
@@ -901,7 +893,9 @@ class OpenAIChatCompletionsProvider:
                 reasoning=_reasoning(message_mapping),
                 usage=usage,
                 done_reason=cast(Any, done_reason),
-                finish_reason_reported=True,
+                # Reported only when the provider carried a usable value: an absent
+                # key or an explicit null is the silent-truncation case.
+                finish_reason_reported=raw_finish_reason is not None and raw_finish_reason != "",
                 metadata=metadata,
             )
         except Exception as exc:
@@ -924,7 +918,6 @@ class OpenAIChatCompletionsProvider:
             latest_usage: ProviderTokenUsage | None = None
             metadata: dict[str, object] = {}
             done_reason = "unknown"
-            finish_reason_reported = False
             raw_finish_reason_token: str | None = None
             accumulators: dict[int, _ToolAccumulator] = {}
             for raw_chunk in _iter_stream_with_timeout(
@@ -949,7 +942,6 @@ class OpenAIChatCompletionsProvider:
                 raw_finish_reason = choice.get("finish_reason")
                 if isinstance(raw_finish_reason, str) and raw_finish_reason:
                     done_reason = _done_reason(raw_finish_reason)
-                    finish_reason_reported = True
                     # Latched with the reason (a trailing usage-only chunk must not clear
                     # either), and cleared when the latched reason is recognized.
                     raw_token = _raw_finish_reason(raw_finish_reason)
@@ -1012,16 +1004,6 @@ class OpenAIChatCompletionsProvider:
                         explicit,
                         started,
                     )
-            if not finish_reason_reported:
-                raise ProviderExecutionError(
-                    kind="transient_failure",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="provider stream ended without finish_reason",
-                    retryable=False,
-                    fallback_allowed=True,
-                    details={"source": "stream", "reason": "missing_finish_reason"},
-                )
         except Exception as exc:
             raise self._map_exception(exc, provider_name=provider_name, model_name=model_name, source="stream") from exc
         reverse = self._tool_maps(request)[1]

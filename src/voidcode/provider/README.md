@@ -297,7 +297,8 @@ SDK 负责 HTTP、SSE 解码与异常类型；adapter 只把 SDK 事件投影成
 - `text`: 流片段文本（仅 `delta` / `content`）。
 - `error`: 已脱敏的错误描述（仅 `error`）。
 - `error_kind`: 错误分类（包括 `missing_auth`, `invalid_model`, `not_configured`, `rate_limit`, `context_limit`, `transient_failure`, `unsupported_feature`, `stream_tool_feedback_shape`, `cancelled`）。
-- `done_reason`: 上游终态原因；成功终态必须是 `stop`、`tool_calls`、`function_call`、`length` 或 `content_filter`。缺失或未知终态不会被视为成功。
+- `done_reason`: 上游终态原因。成功终态为 `stop`、`tool_calls`、`function_call`、`length`、`content_filter`；`unknown` 表示上游未给出可识别的原因，仍被视为已完成（等价于 `stop`）的终态，不会作为面向用户的失败。`error` / `cancelled` 仍是失败终态。
+- `finish_reason_reported`: 仅当上游确实携带了可用的 finish reason 值（键存在且非 null/空）时为 `true`。`done_reason` 为 `unknown` 且该值为 `false` 时属于"无原因即结束"，运行时以 `warning` 记录（可能是被截断的流），并在持久化的 `graph.response_ready` 中写入 `finish_reason` / `finish_reason_reported` 供 `sessions debug` 之类检查；可识别但未映射的 token 仍为 `true`，只记录 `debug`。
 
 ### 错误边界
 

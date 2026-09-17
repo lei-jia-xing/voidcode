@@ -16,7 +16,8 @@ type ProviderStreamEventKind = Literal["delta", "content", "tool_call_start", "t
 type ProviderStreamChannel = Literal["text", "tool", "reasoning", "error"]
 type ProviderCacheRetention = Literal["none", "short", "long"]
 # Provider-native finish reasons are intentionally preserved at the adapter boundary.
-# ``unknown`` means the upstream omitted a reason; it is not a successful ``stop``.
+# ``unknown`` means the upstream omitted or used an unrecognized reason; the graph maps
+# it to a completed, stop-equivalent terminal state rather than a failure.
 type ProviderDoneReason = Literal["stop", "tool_calls", "length", "content_filter", "function_call", "cancelled", "error", "unknown"]
 type ProviderErrorKind = Literal[
     "missing_auth",

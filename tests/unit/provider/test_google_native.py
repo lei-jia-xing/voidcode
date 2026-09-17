@@ -141,6 +141,23 @@ def test_non_stream_tool_calls_get_distinct_ids_and_keep_response_order() -> Non
     assert len(set(ids)) == len(ids)
 
 
+@pytest.mark.parametrize(
+    ("finish_reason", "expected_done_reason", "expected_reported"),
+    [
+        (None, "unknown", False),
+        ("PAUSE_TURN", "unknown", True),
+        ("STOP", "stop", True),
+    ],
+)
+def test_non_stream_finish_reason_reporting_follows_the_wire(finish_reason: object, expected_done_reason: str, expected_reported: bool) -> None:
+    provider, _client = _provider(_Response(candidates=[_Candidate(content=_Content(parts=[_Part(text="ok")]), finish_reason=finish_reason)]))
+
+    result = provider.propose_turn(_request())
+
+    assert result.done_reason == expected_done_reason
+    assert result.finish_reason_reported is expected_reported
+
+
 def test_stream_and_non_stream_agree_on_tool_call_ids_names_and_arguments() -> None:
     provider, client = _provider(_response_with_repeated_function_names())
 

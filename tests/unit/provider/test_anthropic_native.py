@@ -231,6 +231,32 @@ def test_nonstream_text_thinking_tool_usage_and_stop_reason() -> None:
 
 
 @pytest.mark.parametrize(
+    ("stop_reason", "expected_done_reason", "expected_reported"),
+    [
+        (None, "unknown", False),
+        ("", "unknown", False),
+        ("pause_turn", "unknown", True),
+        ("end_turn", "stop", True),
+    ],
+)
+def test_nonstream_stop_reason_reporting_follows_the_wire(stop_reason: object, expected_done_reason: str, expected_reported: bool) -> None:
+    fake = _FakeTransport(
+        response={
+            "id": "msg_2",
+            "type": "message",
+            "model": "claude-test",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": stop_reason,
+        }
+    )
+
+    result = AnthropicMessagesProvider(transport=fake).propose_turn(_request(segments=(ProviderContextSegment(role="user", content="answer"),)))
+
+    assert result.done_reason == expected_done_reason
+    assert result.finish_reason_reported is expected_reported
+
+
+@pytest.mark.parametrize(
     ("usage_payload", "expected"),
     [
         ({"input_tokens": 4, "cache_read_input_tokens": 0}, ProviderTokenUsage(input_tokens=4, cache_read_tokens=0, uncached_input_tokens=4)),
@@ -275,13 +301,23 @@ def test_stream_emits_thinking_text_tool_lifecycle_usage_and_message_stop() -> N
     assert events[-1].usage == ProviderTokenUsage(input_tokens=9, output_tokens=5, cache_read_tokens=2, uncached_input_tokens=7)
 
 
-@pytest.mark.parametrize(
-    "events", [({"type": "message_start", "message": {}},), ({"type": "message_start", "message": {}}, {"type": "message_stop"})]
-)
-def test_stream_requires_stop_reason_and_message_stop(events: tuple[dict[str, object], ...]) -> None:
+def test_stream_without_message_stop_is_a_missing_terminal_event() -> None:
+    events = ({"type": "message_start", "message": {}},)
     provider = AnthropicMessagesProvider(transport=_FakeTransport(events=events))
-    with pytest.raises(ProviderExecutionError, match="terminal message_stop/stop_reason"):
+    with pytest.raises(ProviderExecutionError, match="without terminal message_stop"):
         list(provider.stream_turn(_request(segments=(ProviderContextSegment(role="user", content="answer"),))))
+
+
+def test_stream_message_stop_without_stop_reason_yields_terminal_unknown() -> None:
+    events = ({"type": "message_start", "message": {}}, {"type": "message_stop"})
+    provider = AnthropicMessagesProvider(transport=_FakeTransport(events=events))
+
+    streamed = list(provider.stream_turn(_request(segments=(ProviderContextSegment(role="user", content="answer"),))))
+
+    # ``message_stop`` is the terminal transport event; its omitted stop_reason still
+    # resolves to the canonical ``unknown`` reason, which the graph treats as completed.
+    assert [event.kind for event in streamed] == ["done"]
+    assert streamed[-1].done_reason == "unknown"
 
 
 def test_stream_rejects_incomplete_tool_json_and_provider_errors() -> None:
@@ -562,7 +598,7 @@ def test_sdk_stream_drops_data_frames_without_a_recognized_event_name() -> None:
     body = 'data: {"type":"message_stop"}\n\n'
     provider = AnthropicMessagesProvider(transport=_sse_transport(body, seen))
 
-    with pytest.raises(ProviderExecutionError, match="terminal message_stop/stop_reason"):
+    with pytest.raises(ProviderExecutionError, match="without terminal message_stop"):
         list(provider.stream_turn(_request(segments=(ProviderContextSegment(role="user", content="answer"),))))
 
 
