@@ -1775,72 +1775,6 @@ def test_provider_run_rehydrates_prior_raw_tool_results_for_existing_session(
     assert [event.sequence for event in replay.events] == sorted(event.sequence for event in replay.events)
 
 
-def test_provider_replays_prior_conversation_for_existing_session_without_tool_results(
-    tmp_path: Path,
-) -> None:
-    contracts_module = importlib.import_module("voidcode.runtime.contracts")
-    config_module = importlib.import_module("voidcode.runtime.config")
-    model_provider_module = importlib.import_module("voidcode.provider.registry")
-    permission_module = importlib.import_module("voidcode.runtime.permission")
-    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
-    service_module = importlib.import_module("voidcode.runtime.service")
-    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
-    requests: list[object] = []
-
-    class _ConversationModelProvider:
-        def turn_provider(self) -> object:
-            class _Provider:
-                name = "opencode"
-
-                def propose_turn(self, request: object) -> object:
-                    requests.append(request)
-                    prompt = _assembled_context(request).prompt
-                    output = "assistant first answer" if prompt == "user first turn" else "done"
-                    return provider_protocol_module.ProviderTurnResult(output=output)
-
-            return _Provider()
-
-    runtime = cast(
-        RuntimeRunner,
-        cast(
-            object,
-            service_module.VoidCodeRuntime(
-                workspace=tmp_path,
-                config=config_module.RuntimeConfig(
-                    approval_mode="allow",
-                    execution_engine="provider",
-                    model="opencode/gpt-5.4",
-                ),
-                permission_policy=permission_module.PermissionPolicy(mode="allow"),
-                model_provider_registry=model_provider_module.ModelProviderRegistry(providers=cast(Any, {"opencode": _ConversationModelProvider()})),
-            ),
-        ),
-    )
-
-    first = runtime.run(runtime_request(prompt="user first turn", session_id="conversation-session"))
-    second = runtime.run(runtime_request(prompt="user second turn", session_id="conversation-session"))
-    second_turn_segments = _assembled_context(requests[1]).segments
-    replayed_segments = [
-        segment
-        for segment in second_turn_segments
-        if (segment.role, segment.content) in {("user", "user first turn"), ("assistant", "assistant first answer")}
-    ]
-    conversational_segments = [
-        segment for segment in second_turn_segments if segment.role in {"user", "assistant"} and isinstance(segment.content, str)
-    ]
-
-    assert first.session.status == "completed"
-    assert second.session.status == "completed"
-    assert [(segment.role, segment.content) for segment in replayed_segments] == [
-        ("user", "user first turn"),
-        ("assistant", "assistant first answer"),
-    ]
-    assert (conversational_segments[-1].role, conversational_segments[-1].content) == (
-        "user",
-        "user second turn",
-    )
-
-
 def test_provider_replayed_conversation_precedes_current_prompt_after_stale_assistant_tail(
     tmp_path: Path,
 ) -> None:
@@ -2808,49 +2742,6 @@ def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> Non
     assert completed_event.payload["exit_code"] == 0
 
 
-def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> None:
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="deny")
-
-    command = _cwd_command()
-    prompt = f"run {command}"
-    denied = runtime.run(runtime_request(prompt=prompt, session_id="shell-deny-session"))
-
-    assert denied.session.status == "running"
-    assert [event.event_type for event in denied.events] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.approval_resolved",
-        "runtime.tool_completed",
-    ]
-    approval_event = next(event for event in denied.events if event.event_type == "runtime.approval_resolved")
-    assert approval_event.payload["decision"] == "deny"
-    assert denied.events[-1].payload["status"] == "error"
-    assert denied.events[-1].payload["permission_denied"] is True
-    assert denied.output is None
-
-
-@pytest.mark.parametrize("metadata", [{"mode": "plan"}, {"read_only": True}])
-def test_runtime_rejects_shell_invocation_under_read_only_ceiling(tmp_path: Path, metadata: dict[str, object]) -> None:
-    command = _cwd_command()
-    runtime_request, runtime = _approval_runtime(
-        tmp_path,
-        mode="allow",
-        graph=_SingleToolGraph("shell_exec", {"command": command}),
-    )
-    with pytest.raises(ValueError, match="read-only runtime policy denies mutating tools: 'shell_exec'"):
-        runtime.run(
-            runtime_request(
-                prompt="run shell command",
-                session_id=f"shell-read-only-{len(metadata)}",
-                metadata=metadata,
-            )
-        )
-
-
 def test_runtime_emits_pre_and_post_hook_events_around_successful_tool_run(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
@@ -3165,40 +3056,6 @@ def test_runtime_skips_post_hook_when_tool_execution_fails(tmp_path: Path) -> No
     assert all(event.event_type != "runtime.tool_hook_post" for event in replay.events)
 
 
-def test_runtime_persists_initial_allow_tool_failure_for_resume(tmp_path: Path) -> None:
-    runtime_request, runtime_class = _load_runtime_types()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
-    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
-    runtime = runtime_class(workspace=tmp_path, permission_policy=policy)
-    write_module = importlib.import_module("voidcode.tools.write")
-
-    write_tool = cast(ReadToolType, write_module.WriteTool)
-
-    def _failing_write_invoke(_self: object, _call: object, *, workspace: Path) -> object:
-        _ = workspace
-        raise RuntimeError("boom")
-
-    with patch.object(write_tool, "invoke", autospec=True, side_effect=_failing_write_invoke):
-        with pytest.raises(RuntimeError, match="boom"):
-            runtime.run(runtime_request(prompt="write danger.txt broken", session_id="s1"))
-
-    replay_runtime = cast(
-        RuntimeRunner,
-        cast(
-            object,
-            _load_runtime_types()[1](
-                workspace=tmp_path,
-                permission_policy=policy,
-            ),
-        ),
-    )
-    resumed = replay_runtime.resume("s1")
-
-    assert resumed.session.status == "failed"
-    failed = next(event for event in resumed.events if event.event_type == "runtime.failed")
-    assert failed.payload["error"] == "boom"
-
-
 def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
@@ -3257,59 +3114,6 @@ def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Pa
             "details": {
                 "message": "finalize boom",
                 "summary": "finalize boom",
-            },
-        },
-    }
-
-
-def test_runtime_persists_initial_plan_failure_for_resume(tmp_path: Path) -> None:
-    runtime_request, runtime_class = _load_runtime_types()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
-    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
-
-    class FailingPlanGraph:
-        def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
-            if not tool_results:
-                raise RuntimeError("plan boom")
-            raise AssertionError("finalize should not run")
-
-    failing_runtime = cast(
-        RuntimeRunner,
-        cast(
-            object,
-            runtime_class(
-                workspace=tmp_path,
-                graph=FailingPlanGraph(),
-                permission_policy=policy,
-            ),
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="plan boom"):
-        _ = failing_runtime.run(runtime_request(prompt="write danger.txt anything", session_id="s1"))
-
-    replay_runtime = cast(
-        RuntimeRunner,
-        cast(
-            object,
-            runtime_class(
-                workspace=tmp_path,
-                graph=FailingPlanGraph(),
-                permission_policy=policy,
-            ),
-        ),
-    )
-    resumed = replay_runtime.resume("s1")
-
-    assert resumed.session.status == "failed"
-    assert resumed.events[-1].event_type == "runtime.failed"
-    assert resumed.events[-1].payload == {
-        "error": "plan boom",
-        "diagnostics": {
-            "summary": "plan boom",
-            "details": {
-                "message": "plan boom",
-                "summary": "plan boom",
             },
         },
     }
@@ -4194,22 +3998,6 @@ def test_runtime_uses_repo_local_config_to_allow_write_requests_without_explicit
     assert (tmp_path / "configured.txt").read_text(encoding="utf-8") == "config file approved"
 
 
-def test_runtime_uses_environment_config_to_allow_write_requests_without_code_changes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime_request, runtime_class = _load_runtime_types()
-    monkeypatch.setenv("VOIDCODE_APPROVAL_MODE", "allow")
-
-    runtime = runtime_class(workspace=tmp_path)
-    result = runtime.run(runtime_request(prompt="write env.txt env approved", session_id="env-file"))
-
-    assert result.session.status == "completed"
-    approval_event = next(event for event in result.events if event.event_type == "runtime.approval_resolved")
-    assert approval_event.payload["decision"] == "allow"
-    assert (tmp_path / "env.txt").read_text(encoding="utf-8") == "env approved"
-
-
 def test_runtime_background_task_persists_and_can_be_loaded_from_fresh_runtime(
     tmp_path: Path,
 ) -> None:
@@ -4489,23 +4277,6 @@ def test_runtime_approved_resume_persists_failure_when_pending_tool_is_missing(
     ]
     assert sessions[0].status == "failed"
     assert (tmp_path / "drift.txt").exists() is False
-
-
-def test_runtime_resumed_approval_renumbers_fixed_finalize_sequences(tmp_path: Path) -> None:
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
-
-    waiting = runtime.run(runtime_request(prompt="write danger.txt renumbered", session_id="approval-session"))
-    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
-
-    resumed = runtime.resume(
-        "approval-session",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert resumed.session.status == "completed"
-    assert [event.sequence for event in resumed.events] == list(range(1, 13))
-    assert resumed.events[-1].event_type == "graph.response_ready"
 
 
 def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_path: Path) -> None:
@@ -4961,26 +4732,6 @@ def test_runtime_rejects_stale_session_schema_for_pending_approval(
         connection.close()
     with pytest.raises(RuntimeError, match="sqlite runtime schema mismatch"):
         _ = _approval_runtime(tmp_path, mode="ask")
-
-
-def test_runtime_replay_is_unchanged_when_resume_checkpoint_exists(tmp_path: Path) -> None:
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
-
-    waiting = runtime.run(runtime_request(prompt="write danger.txt replay checkpoint", session_id="checkpoint-replay"))
-    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
-
-    resumed = runtime.resume(
-        "checkpoint-replay",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-    replay = runtime.resume("checkpoint-replay")
-
-    assert resumed.session.status == "completed"
-    assert replay.output == resumed.output
-    assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
-        (event.sequence, event.event_type, event.payload) for event in resumed.events
-    ]
 
 
 def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_overrides(

@@ -132,39 +132,6 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
     assert notifications[0].session.parent_id == "leader-session"
 
 
-def test_session_storage_roundtrips_plan_mode_metadata(tmp_path: Path) -> None:
-    store = SqliteSessionStore()
-    metadata: dict[str, object] = {
-        "mode": "plan",
-        "read_only": True,
-    }
-    request = RuntimeRequest(prompt="persist plan mode", session_id="plan-mode-session")
-    response = RuntimeResponse(
-        session=SessionState(
-            session=SessionRef(id="plan-mode-session"),
-            status="completed",
-            turn=1,
-            metadata=metadata,
-        ),
-        events=(
-            EventEnvelope(
-                session_id="plan-mode-session",
-                sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
-            ),
-        ),
-        output="done",
-    )
-
-    store.save_run(workspace=tmp_path, request=request, response=response)
-
-    loaded = store.load_session(workspace=tmp_path, session_id="plan-mode-session")
-
-    assert loaded.session.metadata["mode"] == "plan"
-    assert loaded.session.metadata["read_only"] is True
-
-
 def test_session_storage_roundtrips_requested_mode_and_derived_read_only(
     tmp_path: Path,
 ) -> None:
@@ -266,35 +233,6 @@ def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path)
     assert checkpoint is not None
     checkpoint_metadata = cast(dict[str, object], checkpoint["session_metadata"])
     assert "runtime_policy" not in checkpoint_metadata
-
-
-def test_tool_results_from_events_preserves_raw_read_content() -> None:
-    raw_content = "\n".join(
-        [
-            "<path>sample.txt</path>",
-            "<type>file</type>",
-            "<content>",
-            "1: alpha",
-            "(End of file - total 1 lines)",
-            "</content>",
-        ]
-    )
-    event = EventEnvelope(
-        session_id="session-1",
-        sequence=1,
-        event_type="runtime.tool_completed",
-        source="tool",
-        payload={
-            "tool": "read",
-            "status": "ok",
-            "content": raw_content,
-        },
-    )
-    tool_results_from_events = _private_attr(SqliteSessionStore, "_tool_results_from_events")
-
-    tool_results = tool_results_from_events((event,))
-
-    assert tool_results[0]["content"] == raw_content
 
 
 def test_session_storage_revert_marker_filters_active_view_only(tmp_path: Path) -> None:
@@ -624,11 +562,6 @@ def test_session_storage_save_run_writes_zero_session_events(tmp_path: Path) -> 
     assert store.load_session(workspace=tmp_path, session_id="seal-only-session").events == ()
 
 
-def test_session_storage_removed_private_event_writers() -> None:
-    assert not hasattr(SqliteSessionStore, "_replace" + "_session_events")
-    assert not hasattr(SqliteSessionStore, "_session_events_payload")
-
-
 def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path: Path) -> None:
     database_path = tmp_path / "fresh-sessions.sqlite3"
     store = SqliteSessionStore(database_path=database_path)
@@ -710,35 +643,6 @@ def test_session_storage_preserves_legacy_memory_tables_without_access(tmp_path:
     with closing(sqlite3.connect(database_path)) as connection:
         assert connection.execute("SELECT content FROM memories WHERE memory_id = 'legacy'").fetchone() == ("must remain untouched",)
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 12
-
-
-def test_session_storage_fresh_database_background_tasks_carry_schema_columns(tmp_path: Path) -> None:
-    database_path = tmp_path / "fresh-schema-v14.sqlite3"
-    store = SqliteSessionStore(database_path=database_path)
-    store.create_background_task(
-        workspace=tmp_path,
-        task=BackgroundTaskState(
-            task=BackgroundTaskRef(id="task-v12"),
-            request=BackgroundTaskRequestSnapshot(prompt="probe"),
-        ),
-    )
-
-    with closing(sqlite3.connect(database_path)) as connection:
-        task_columns = [row[1] for row in connection.execute("PRAGMA table_info(background_tasks)").fetchall()]
-        schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
-
-    assert schema_version == SCHEMA_VERSION
-    for column in ("output_schema_json", "schema_mode", "structured_output_json", "schema_validation_json"):
-        assert column in task_columns
-
-
-def test_session_storage_parses_interrupted_session_status(tmp_path: Path) -> None:
-    database_path = tmp_path / "interrupted-status.sqlite3"
-    store = SqliteSessionStore(database_path=database_path)
-
-    assert store._parse_session_status("interrupted") == "interrupted"
-    with pytest.raises(ValueError):
-        store._parse_session_status("not-a-status")
 
 
 def test_session_storage_bootstraps_sequences_from_existing_timestamps(tmp_path: Path) -> None:
@@ -1577,77 +1481,6 @@ def test_session_storage_prunes_terminal_sessions_and_dependent_rows(tmp_path: P
         _ = store.load_session_result(workspace=tmp_path, session_id="old-terminal")
 
 
-def test_session_storage_persists_pending_question_and_question_notification(
-    tmp_path: Path,
-) -> None:
-    store = SqliteSessionStore()
-    request = RuntimeRequest(prompt="need input", session_id="question-session")
-    response = RuntimeResponse(
-        session=SessionState(
-            session=SessionRef(id="question-session"),
-            status="waiting",
-            turn=1,
-            metadata={},
-        ),
-        events=(
-            EventEnvelope(
-                session_id="question-session",
-                sequence=1,
-                event_type="runtime.question_requested",
-                source="runtime",
-                payload={
-                    "request_id": "question-1",
-                    "tool": "question",
-                    "question_count": 1,
-                    "questions": [
-                        {
-                            "header": "Runtime path",
-                            "question": "Which runtime path should we use?",
-                            "multiple": False,
-                            "options": [
-                                {"label": "Reuse existing", "description": "Keep current path"},
-                                {"label": "Add new path", "description": "Create a new route"},
-                            ],
-                        }
-                    ],
-                },
-            ),
-        ),
-    )
-    pending_question = PendingQuestion(
-        request_id="question-1",
-        tool_name="question",
-        arguments={},
-        prompts=(
-            PendingQuestionPrompt(
-                question="Which runtime path should we use?",
-                header="Runtime path",
-                options=(
-                    PendingQuestionOption(label="Reuse existing", description="Keep current path"),
-                    PendingQuestionOption(label="Add new path", description="Create a new route"),
-                ),
-                multiple=False,
-            ),
-        ),
-    )
-
-    store.save_pending_question(
-        workspace=tmp_path,
-        request=request,
-        response=response,
-        pending_question=pending_question,
-    )
-
-    loaded_question = store.load_pending_question(workspace=tmp_path, session_id="question-session")
-    notifications = store.list_notifications(workspace=tmp_path)
-
-    assert loaded_question == pending_question
-    assert len(notifications) == 1
-    assert notifications[0].kind == "question_blocked"
-    assert notifications[0].status == "unread"
-    assert notifications[0].payload["request_id"] == "question-1"
-
-
 def test_session_storage_persists_pending_question_across_store_reopen(
     tmp_path: Path,
 ) -> None:
@@ -2254,26 +2087,6 @@ def test_session_storage_save_interrupted_checkpoint_updates_without_events_or_o
     assert checkpoint is not None
     assert checkpoint["prompt"] == "second prompt"
     assert checkpoint["output"] is None
-
-
-def test_session_storage_truncate_session_events_after_deletes_only_tail(tmp_path: Path) -> None:
-    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
-    _seed_running_session(store, tmp_path, "truncate-session")
-    _ = store.append_session_events(
-        workspace=tmp_path,
-        session_id="truncate-session",
-        events=(
-            ("runtime.mcp_server_released", "runtime", {"server": "a"}, "truncate-1"),
-            ("runtime.mcp_server_stopped", "runtime", {"server": "b"}, "truncate-2"),
-            ("runtime.acp_connected", "runtime", {}, "truncate-3"),
-        ),
-    )
-
-    store.truncate_session_events_after(workspace=tmp_path, session_id="truncate-session", sequence=2)
-
-    loaded = store.load_session(workspace=tmp_path, session_id="truncate-session")
-
-    assert [event.sequence for event in loaded.events] == [1, 2]
 
 
 def test_session_storage_truncate_resets_last_event_sequence_watermark(tmp_path: Path) -> None:

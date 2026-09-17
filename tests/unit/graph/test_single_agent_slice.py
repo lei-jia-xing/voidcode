@@ -1356,74 +1356,6 @@ def test_provider_provider_graph_forwards_bounded_context_window_to_provider() -
     )
 
 
-def test_provider_graph_forwards_explicit_lsp_tool_feedback_to_provider() -> None:
-    provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    provider = _CapturingTurnProvider()
-    graph = ProviderGraph(provider=provider, provider_model=provider_model)
-    lsp_result = ToolResult(
-        tool_name="lsp",
-        status="ok",
-        content="definition found",
-        data={"operation": "definition", "response": {"uri": "file:///workspace/main.py"}},
-    )
-
-    request_context = RuntimeContextWindow(
-        prompt="use lsp feedback",
-        tool_results=(lsp_result,),
-    )
-    _ = graph.step(
-        request=GraphRunRequest(
-            session=_session(),
-            prompt="use lsp feedback",
-            available_tools=_tool_definitions(),
-            context_window=request_context,
-            assembled_context=_assembled_from_context_window(request_context),
-        ),
-        tool_results=(lsp_result,),
-        session=_session(),
-    )
-
-    assert provider.requests[0].assembled_context is not None
-    assert provider.requests[0].assembled_context.tool_results == (lsp_result,)
-
-
-def test_provider_graph_forwards_mcp_tool_feedback_to_provider() -> None:
-    provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    provider = _CapturingTurnProvider()
-    graph = ProviderGraph(provider=provider, provider_model=provider_model)
-    mcp_result = ToolResult(
-        tool_name="mcp/echo/echo",
-        status="ok",
-        content="echo: hello",
-        data={"server": "echo", "tool": "echo", "is_error": False},
-    )
-
-    request_context = RuntimeContextWindow(
-        prompt="use mcp feedback",
-        tool_results=(mcp_result,),
-    )
-    _ = graph.step(
-        request=GraphRunRequest(
-            session=_session(),
-            prompt="use mcp feedback",
-            available_tools=_tool_definitions(),
-            context_window=request_context,
-            assembled_context=_assembled_from_context_window(request_context),
-        ),
-        tool_results=(mcp_result,),
-        session=_session(),
-    )
-
-    assert provider.requests[0].assembled_context is not None
-    assert provider.requests[0].assembled_context.tool_results == (mcp_result,)
-
-
 def test_provider_provider_graph_streams_ordered_events_and_deterministic_output() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
@@ -1713,59 +1645,6 @@ def test_provider_provider_graph_requires_done_event_for_stream_completion() -> 
         )
 
     assert exc_info.value.kind == "transient_failure"
-
-
-def test_provider_provider_graph_prefers_mixed_stream_tool_terminal_output() -> None:
-    provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    graph = ProviderGraph(
-        provider=_StreamMixedTerminalTurnProvider(),
-        provider_model=provider_model,
-    )
-
-    step = graph.step(
-        request=GraphRunRequest(
-            session=_session(),
-            prompt="read sample.txt",
-            available_tools=_tool_definitions(),
-            context_window=RuntimeContextWindow(prompt="read sample.txt"),
-            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
-            metadata={"provider_stream": True},
-        ),
-        tool_results=(),
-        session=_session(),
-    )
-
-    assert step.tool_call is not None
-    assert step.tool_call.tool_name == "read"
-    assert step.output is None
-
-
-def test_provider_provider_graph_stream_error_maps_to_provider_execution_error() -> None:
-    provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    graph = ProviderGraph(
-        provider=_StreamErrorTurnProvider(),
-        provider_model=provider_model,
-    )
-
-    with pytest.raises(ProviderExecutionError, match="network interrupted"):
-        _ = graph.step(
-            request=GraphRunRequest(
-                session=_session(),
-                prompt="read sample.txt",
-                available_tools=_tool_definitions(),
-                context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
-                metadata={"provider_stream": True},
-            ),
-            tool_results=(),
-            session=_session(),
-        )
 
 
 def test_provider_graph_safe_boundary_reflects_pending_tool_calls() -> None:

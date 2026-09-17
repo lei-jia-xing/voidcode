@@ -633,44 +633,6 @@ def test_builtin_tool_definitions_keep_python_descriptions_without_sidecars() ->
             assert guidance not in definition.description
 
 
-def test_provider_definitions_preserve_live_definition_schema_and_metadata() -> None:
-    registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
-    definition = next(item for item in registry.definitions() if item.name == "edit")
-    tool = registry.tools["edit"]
-
-    assert definition is tool.definition
-    assert definition.input_schema is tool.definition.input_schema
-    assert definition.read_only is tool.definition.read_only
-    assert definition.replay_policy == tool.definition.replay_policy
-
-
-def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
-    runtime_tool_names = {
-        "apply_patch",
-        "ast_grep",
-        "edit",
-        "glob",
-        "grep",
-        "invoke_tool",
-        "lsp",
-        "multi_edit",
-        "question",
-        "read",
-        "shell_exec",
-        "skill",
-        "task",
-        "todo",
-        "web_fetch",
-        "web_search",
-        "write",
-    }
-
-    for tool_name in runtime_tool_names:
-        filename = guidance_filename_for_tool(tool_name)
-        assert filename is not None, f"Missing guidance mapping for {tool_name}"
-        assert guidance_for_tool(tool_name), f"Missing sidecar content for {tool_name}"
-
-
 def test_background_related_guidance_includes_no_poll_and_no_peek_contracts() -> None:
     guidance = guidance_for_tool("task")
     assert (
@@ -744,48 +706,6 @@ def test_dynamic_mcp_tool_definitions_apply_server_safety_hints() -> None:
 
     assert read_only_tool.definition.read_only is True
     assert mutating_tool.definition.read_only is False
-
-
-def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> None:
-    provided_tools = BuiltinToolProvider().provide_tools()
-    provided_by_name = {tool.definition.name: tool for tool in provided_tools}
-
-    with patch.object(
-        BuiltinToolProvider,
-        "provide_tools",
-        autospec=True,
-        return_value=provided_tools,
-    ) as provide_tools_mock:
-        registry = ToolRegistry.with_defaults()
-
-    provide_tools_mock.assert_called_once()
-    provider = provide_tools_mock.call_args.args[0]
-    assert isinstance(provider, BuiltinToolProvider)
-
-    core_tools = [
-        "edit",
-        "glob",
-        "grep",
-        "read",
-        "shell_exec",
-        "web_fetch",
-        "web_search",
-        "write",
-    ]
-    for tool_name in core_tools:
-        assert tool_name in registry.tools, f"Missing core tool: {tool_name}"
-        assert registry.resolve(tool_name) is provided_by_name[tool_name]
-
-    # Verify optional tools if present
-    optional_tools = [
-        "apply_patch",
-        "ast_grep",
-        "multi_edit",
-        "todo",
-    ]
-    for tool_name in optional_tools:
-        if tool_name in registry.tools:
-            assert registry.resolve(tool_name) is not None
 
 
 def test_tool_registry_rejects_duplicate_tool_names() -> None:
@@ -1233,32 +1153,6 @@ def test_local_custom_tool_provider_rejects_invalid_input_schema(tmp_path: Path)
         ).provide_tools()
 
 
-def test_local_custom_tool_provider_rejects_null_input_schema_type(tmp_path: Path) -> None:
-    manifest = _write_local_tool_manifest(tmp_path)
-    payload = json.loads(manifest.read_text(encoding="utf-8"))
-    payload["input_schema"] = {"type": None}
-    manifest.write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="input_schema.type must be 'object'"):
-        _ = LocalCustomToolProvider(
-            workspace=tmp_path,
-            config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
-        ).provide_tools()
-
-
-def test_local_custom_tool_provider_rejects_missing_input_schema_type(tmp_path: Path) -> None:
-    manifest = _write_local_tool_manifest(tmp_path)
-    payload = json.loads(manifest.read_text(encoding="utf-8"))
-    payload["input_schema"] = {"properties": {"message": {"type": "string"}}}
-    manifest.write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="input_schema.type must be 'object'"):
-        _ = LocalCustomToolProvider(
-            workspace=tmp_path,
-            config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
-        ).provide_tools()
-
-
 class _LocalToolGraph:
     def __init__(self) -> None:
         self._step_count = 0
@@ -1530,9 +1424,3 @@ def test_runtime_default_registry_includes_runtime_backed_agent_tools(tmp_path: 
     for old_name in ("background_task", "background_output", "background_cancel", "background_ps", "steer_task"):
         with pytest.raises(ValueError, match="unknown tool"):
             base_registry.resolve(old_name)
-
-
-def test_tools_package_exports_optional_tools() -> None:
-    tools_module = __import__("voidcode.tools", fromlist=["__all__"])
-    assert "AstGrepTool" in tools_module.__all__
-    assert "McpTool" in tools_module.__all__

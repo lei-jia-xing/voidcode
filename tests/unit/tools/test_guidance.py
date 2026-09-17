@@ -14,10 +14,14 @@ def test_guidance_loader_returns_complete_builtin_sidecar() -> None:
     assert "Internal documentation URLs:" in guidance
 
 
-def test_guidance_loader_maps_dynamic_mcp_tools_to_shared_sidecar() -> None:
-    assert guidance_filename_for_tool("mcp/server/tool") == "mcp.txt"
-    guidance = guidance_for_tool("mcp/server/tool")
-    assert guidance
+def test_guidance_loader_resolves_lsp_sidecar_for_tool_outside_default_registry() -> None:
+    """`lsp` ships a guidance sidecar but is not a default-registry tool.
+
+    The live-registry sweep in test_contract_matrix.py therefore never reaches it,
+    so this sidecar mapping needs its own assertion.
+    """
+    assert guidance_filename_for_tool("lsp") == "lsp.txt"
+    assert guidance_for_tool("lsp")
 
 
 def test_yield_guidance_describes_terminal_child_handoff() -> None:

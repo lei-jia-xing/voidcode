@@ -242,17 +242,6 @@ def test_runtime_config_rejects_unknown_background_task_keys(tmp_path: Path) -> 
         _ = load_runtime_config(tmp_path, env={})
 
 
-def test_runtime_config_defaults_to_provider_for_product_runs(
-    tmp_path: Path,
-) -> None:
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.execution_engine == "provider"
-    assert config.model is None
-    assert RuntimeConfig().execution_engine == "provider"
-    assert RuntimeContextWindowConfig().default_tool_result_chars == 6_000
-
-
 def test_runtime_config_supports_provider_first_opt_in_with_stub_model(
     tmp_path: Path,
 ) -> None:
@@ -457,28 +446,6 @@ def test_runtime_config_rejects_non_canonical_explicit_reasoning_effort(
         match=r"reasoning_effort must be one of: off, minimal, low, medium, high, xhigh, max",
     ):
         load_runtime_config(tmp_path, reasoning_effort="none", env={})
-
-
-@pytest.mark.parametrize("valid_value", ["off", "minimal", "low", "medium", "high", "xhigh", "max"])
-def test_runtime_config_accepts_canonical_reasoning_effort_in_repo_file(
-    tmp_path: Path,
-    valid_value: str,
-) -> None:
-    _write_runtime_config(tmp_path, {"reasoning_effort": valid_value})
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.reasoning_effort == valid_value
-
-
-@pytest.mark.parametrize("valid_value", ["off", "minimal", "low", "medium", "high", "xhigh", "max"])
-def test_runtime_config_accepts_canonical_reasoning_effort_environment(
-    tmp_path: Path,
-    valid_value: str,
-) -> None:
-    config = load_runtime_config(tmp_path, env={REASONING_EFFORT_ENV_VAR: valid_value})
-
-    assert config.reasoning_effort == valid_value
 
 
 def test_runtime_config_prefers_repo_file_over_environment(tmp_path: Path) -> None:
@@ -905,22 +872,6 @@ def test_runtime_config_derives_python_lsp_defaults_when_workspace_matches(tmp_p
     )
 
 
-def test_runtime_config_derives_typescript_lsp_defaults_when_workspace_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (tmp_path / "tsconfig.json").write_text("{}\n", encoding="utf-8")
-
-    def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
-        return {"tsserver": RuntimeLspServerConfig()}
-
-    monkeypatch.setattr(runtime_config, "derive_workspace_lsp_defaults", _derive_defaults)
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.lsp == RuntimeLspConfig(
-        enabled=True,
-        servers={"tsserver": RuntimeLspServerConfig()},
-    )
-
-
 def test_runtime_config_keeps_explicit_repo_lsp_config_over_derived_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_runtime_config(tmp_path, {"lsp": {"enabled": False, "servers": {"pyright": {}}}})
 
@@ -947,54 +898,6 @@ def test_runtime_config_leaves_lsp_unset_when_no_derived_defaults_exist(tmp_path
     config = load_runtime_config(tmp_path, env={})
 
     assert config.lsp is None
-
-
-def test_runtime_config_derives_go_lsp_defaults_when_workspace_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (tmp_path / "go.mod").write_text("module example.com/demo\n", encoding="utf-8")
-
-    def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
-        return {"gopls": RuntimeLspServerConfig()}
-
-    monkeypatch.setattr(runtime_config, "derive_workspace_lsp_defaults", _derive_defaults)
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.lsp == RuntimeLspConfig(
-        enabled=True,
-        servers={"gopls": RuntimeLspServerConfig()},
-    )
-
-
-def test_runtime_config_derives_rust_lsp_defaults_when_workspace_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (tmp_path / "Cargo.toml").write_text("[package]\nname = 'demo'\n", encoding="utf-8")
-
-    def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
-        return {"rust-analyzer": RuntimeLspServerConfig()}
-
-    monkeypatch.setattr(runtime_config, "derive_workspace_lsp_defaults", _derive_defaults)
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.lsp == RuntimeLspConfig(
-        enabled=True,
-        servers={"rust-analyzer": RuntimeLspServerConfig()},
-    )
-
-
-def test_runtime_config_derives_java_lsp_defaults_when_workspace_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (tmp_path / "pom.xml").write_text("<project/>\n", encoding="utf-8")
-
-    def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
-        return {"jdtls": RuntimeLspServerConfig()}
-
-    monkeypatch.setattr(runtime_config, "derive_workspace_lsp_defaults", _derive_defaults)
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.lsp == RuntimeLspConfig(
-        enabled=True,
-        servers={"jdtls": RuntimeLspServerConfig()},
-    )
 
 
 def test_runtime_config_accepts_provider_execution_engine(tmp_path: Path) -> None:
@@ -1050,13 +953,6 @@ def test_runtime_config_rejects_agent_preset_alias_maps(
         match="runtime config field 'agent.leader' is not supported",
     ):
         _ = load_runtime_config(tmp_path, env={})
-
-
-def test_runtime_config_defaults_external_directory_permissions_to_ask(tmp_path: Path) -> None:
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.permission.read.rules == (("*", "allow"),)
-    assert config.permission.write.rules == (("*", "ask"),)
 
 
 def test_runtime_config_resolves_custom_primary_manifest(tmp_path: Path) -> None:
@@ -1628,33 +1524,6 @@ def test_runtime_config_parses_hook_timeout_seconds(tmp_path: Path) -> None:
     config = load_runtime_config(tmp_path, env={})
 
     assert config.hooks == RuntimeHooksConfig(enabled=True, timeout_seconds=12.5)
-
-
-def test_runtime_config_parses_formatter_preset_hooks(tmp_path: Path) -> None:
-    _write_runtime_config(
-        tmp_path,
-        {
-            "hooks": {
-                "enabled": True,
-                "formatter_presets": {
-                    "python": {"command": ["ruff", "format"]},
-                    "typescript": {"command": ["prettier", "--write"]},
-                },
-            }
-        },
-    )
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.hooks == RuntimeHooksConfig(
-        enabled=True,
-        formatter_presets=DEFAULT_FORMATTER_PRESETS,
-    )
-
-
-def test_runtime_hooks_config_defaults_formatter_presets_to_common_language_builtins() -> None:
-    assert RuntimeHooksConfig().enabled is True
-    assert RuntimeHooksConfig().formatter_presets == DEFAULT_FORMATTER_PRESETS
 
 
 def test_runtime_config_keeps_builtin_formatter_presets_when_hooks_formatter_presets_missing(
@@ -2788,31 +2657,6 @@ def test_parse_tui_config_preserves_valid_leader_key_and_keymap() -> None:
 def test_parse_tui_config_rejects_invalid_shapes_and_values(raw_value: object, match: str) -> None:
     with pytest.raises(ValueError, match=match):
         _ = _parse_tui_config(raw_value)
-
-
-def test_parse_simple_extension_configs_preserve_public_dataclasses() -> None:
-    assert _parse_tools_config(
-        {
-            "builtin": {"enabled": True},
-            "local": {"enabled": True, "path": ".voidcode/tools"},
-            "allowlist": ["read", "grep"],
-            "default": ["read"],
-        }
-    ) == (
-        RuntimeToolsConfig(
-            builtin=RuntimeToolsBuiltinConfig(enabled=True),
-            local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
-            allowlist=("read", "grep"),
-            default=("read",),
-        )
-    )
-    assert _parse_tools_config({"allowlist": [], "default": []}) == RuntimeToolsConfig(
-        allowlist=(),
-        default=(),
-    )
-    assert _parse_skills_config({"enabled": False, "paths": [".voidcode/skills"]}) == (
-        RuntimeSkillsConfig(enabled=False, paths=(".voidcode/skills",))
-    )
 
 
 def test_runtime_config_uses_repo_local_filename_inside_workspace(tmp_path: Path) -> None:

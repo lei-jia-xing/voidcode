@@ -6,7 +6,6 @@ from typing import Any
 import pytest
 
 from voidcode.acp import (
-    AcpConfigState,
     AcpDelegatedExecution,
     AcpEventEnvelope,
     AcpRequestEnvelope,
@@ -32,18 +31,6 @@ build_acp_adapter: Any
     ManagedAcpAdapter,
     build_acp_adapter,
 ) = _load_acp_symbols()
-
-
-def test_acp_config_state_defaults_to_disabled() -> None:
-    state = AcpConfigState.from_enabled(None)
-
-    assert state.configured_enabled is False
-
-
-def test_acp_config_state_wraps_runtime_acp_config() -> None:
-    state = AcpConfigState.from_enabled(RuntimeAcpConfig(enabled=True).enabled)
-
-    assert state.configured_enabled is True
 
 
 def test_disabled_acp_adapter_reports_disabled_unavailable_state() -> None:

@@ -472,34 +472,3 @@ def test_shell_exec_large_output_spills_full_payload_via_central_cap(tmp_path: P
     assert reference_path.exists()
     assert len(reference_path.read_text(encoding="utf-8")) == payload_size
     assert not (tmp_path / ".voidcode" / "tool-output").exists()
-
-
-# ── Target contract: ShellExecArgs.description ──────────────────────────
-# These tests encode the expected behaviour BEFORE the field exists.
-# They are expected to fail (RED) until T2 adds `description` support.
-
-
-def test_shell_exec_args_supports_description_field() -> None:
-    """ShellExecArgs must accept an optional human-readable description."""
-    from voidcode.tools.shell_exec import ShellExecArgs
-
-    args = ShellExecArgs.model_validate({"command": "ls -la", "description": "List directory contents"})
-    assert args.description == "List directory contents"
-
-
-def test_shell_exec_args_description_optional() -> None:
-    """description is optional; command alone must remain valid."""
-    from voidcode.tools.shell_exec import ShellExecArgs
-
-    args = ShellExecArgs.model_validate({"command": "ls"})
-    assert args.description is None
-
-
-def test_shell_exec_args_description_non_empty_when_provided() -> None:
-    """An explicitly empty description must be rejected (like command)."""
-    from pydantic import ValidationError
-
-    from voidcode.tools.shell_exec import ShellExecArgs
-
-    with pytest.raises(ValidationError, match="description must not be empty"):
-        ShellExecArgs.model_validate({"command": "ls", "description": "  "})

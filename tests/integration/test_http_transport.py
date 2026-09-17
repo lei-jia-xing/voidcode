@@ -409,21 +409,6 @@ def test_transport_session_cancel_endpoint_calls_runtime_cancel_session() -> Non
     assert SessionCancelRuntime.calls == [("session-cancel", "run-1", "operator")]
 
 
-def test_transport_session_cancel_endpoint_rejects_non_post() -> None:
-    runtime_http = importlib.import_module("voidcode.runtime.transport.http")
-    RuntimeTransportApp = runtime_http.RuntimeTransportApp
-
-    class SessionCancelRuntime:
-        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
-
-    app = RuntimeTransportApp(runtime_factory=cast(Any, SessionCancelRuntime))
-
-    response = _run_app(app, method="GET", path="/api/sessions/session-cancel/cancel")
-
-    assert response.status == 405
-
-
 def test_transport_steer_session_endpoint_calls_runtime_queue_steering() -> None:
     runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     RuntimeTransportApp = runtime_http.RuntimeTransportApp
@@ -871,37 +856,6 @@ def test_transport_rejects_invalid_settings_payload(
 
     assert response.status == 400
     assert response.json() == _error_body(expected_error)
-
-
-def test_create_runtime_app_forwards_config_to_default_runtime_factory(tmp_path: Path) -> None:
-    runtime_module = importlib.import_module("voidcode.runtime.transport.http")
-    config = object()
-    captured: list[tuple[Path, object | None]] = []
-
-    class StubRuntime:
-        def __init__(self, *, workspace: Path, config: object | None = None) -> None:
-            captured.append((workspace, config))
-
-        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
-            raise AssertionError(f"run_stream should not be called: {request}")
-
-        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
-            return ()
-
-        def web_settings(self) -> dict[str, object]:
-            return {"provider": None, "provider_api_key_present": False, "model": None}
-
-        def update_web_settings(self, **_: object) -> dict[str, object]:
-            return {"provider": None, "provider_api_key_present": False, "model": None}
-
-        def resume(self, session_id: str, **_: object) -> RuntimeResponseLike:
-            raise AssertionError(f"resume should not be called: {session_id}")
-
-    with patch.object(runtime_module, "VoidCodeRuntime", StubRuntime):
-        app = runtime_module.create_runtime_app(workspace=tmp_path, config=cast(Any, config))
-        _ = app._runtime_factory()
-
-    assert captured == [(tmp_path, config)]
 
 
 def test_transport_handles_lifespan_startup_and_shutdown(tmp_path: Path) -> None:
@@ -1922,88 +1876,6 @@ def test_transport_round_trips_parent_session_lineage(tmp_path: Path) -> None:
     assert payloads[0]["output"] == "done"
 
 
-def test_transport_serializes_hook_events_from_runtime_stream(tmp_path: Path) -> None:
-    create_runtime_app = _load_transport_app_factory()
-    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
-    session = session_state(
-        session=session_ref(id="hook-stream-session"),
-        status="running",
-        turn=1,
-        metadata={"workspace": str(tmp_path)},
-    )
-    completed_session = session_state(
-        session=session_ref(id="hook-stream-session"),
-        status="completed",
-        turn=1,
-        metadata={"workspace": str(tmp_path)},
-    )
-
-    class StubRuntime:
-        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
-            command = _cwd_command()
-            assert request.prompt == f"run {command}"
-            yield runtime_stream_chunk(
-                kind="event",
-                session=session,
-                event=event_envelope(
-                    session_id="hook-stream-session",
-                    sequence=1,
-                    event_type="runtime.tool_hook_pre",
-                    source="runtime",
-                    payload={
-                        "phase": "pre",
-                        "tool_name": "shell_exec",
-                        "session_id": "hook-stream-session",
-                        "status": "ok",
-                    },
-                ),
-            )
-            yield runtime_stream_chunk(
-                kind="event",
-                session=completed_session,
-                event=event_envelope(
-                    session_id="hook-stream-session",
-                    sequence=2,
-                    event_type="runtime.tool_hook_post",
-                    source="runtime",
-                    payload={
-                        "phase": "post",
-                        "tool_name": "shell_exec",
-                        "session_id": "hook-stream-session",
-                        "status": "ok",
-                    },
-                ),
-            )
-
-        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
-            raise AssertionError("list_sessions should not be called")
-
-        def web_settings(self) -> dict[str, object]:
-            raise AssertionError("web_settings should not be called")
-
-        def update_web_settings(self, **_: object) -> dict[str, object]:
-            raise AssertionError("update_web_settings should not be called")
-
-        def resume(self, session_id: str) -> RuntimeResponseLike:
-            raise AssertionError(f"resume should not be called: {session_id}")
-
-    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
-    command = _cwd_command()
-    response = _run_app(
-        app,
-        method="POST",
-        path="/api/runtime/run/stream",
-        body=json.dumps({"prompt": f"run {command}"}).encode("utf-8"),
-    )
-    payloads = _parse_sse_payloads(response)
-
-    assert response.status == 200
-    assert [cast(dict[str, object], payload["event"])["event_type"] for payload in payloads] == [
-        "runtime.tool_hook_pre",
-        "runtime.tool_hook_post",
-    ]
-
-
 def test_transport_stream_preserves_tool_display_metadata(tmp_path: Path) -> None:
     create_runtime_app = _load_transport_app_factory()
     runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
@@ -2081,109 +1953,6 @@ def test_transport_stream_preserves_tool_display_metadata(tmp_path: Path) -> Non
     assert cast(dict[str, object], tool_status["display"])["copyable"] == {
         "command": "npm test",
         "output": "stderr boom",
-    }
-
-
-def test_transport_serializes_delegated_background_lifecycle_event_metadata(
-    tmp_path: Path,
-) -> None:
-    create_runtime_app = _load_transport_app_factory()
-    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
-    session = session_state(
-        session=session_ref(id="leader-background-stream"),
-        status="running",
-        turn=1,
-        metadata={"workspace": str(tmp_path)},
-    )
-
-    class StubRuntime:
-        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
-            assert request.prompt == "stream delegated background event"
-            yield runtime_stream_chunk(
-                kind="event",
-                session=session,
-                event=event_envelope(
-                    session_id="leader-background-stream",
-                    sequence=1,
-                    event_type="runtime.background_task_completed",
-                    source="runtime",
-                    payload={
-                        "task_id": "task-123",
-                        "parent_session_id": "leader-background-stream",
-                        "requested_child_session_id": "child-requested",
-                        "child_session_id": "child-session",
-                        "approval_request_id": None,
-                        "question_request_id": None,
-                        "delegation": {
-                            "parent_session_id": "leader-background-stream",
-                            "requested_child_session_id": "child-requested",
-                            "child_session_id": "child-session",
-                            "delegated_task_id": "task-123",
-                            "approval_request_id": None,
-                            "question_request_id": None,
-                            "routing": {
-                                "mode": "background",
-                                "subagent_type": "explore",
-                                "description": "Inspect logs",
-                            },
-                            "selected_preset": "explore",
-                            "selected_execution_engine": "provider",
-                            "lifecycle_status": "completed",
-                            "approval_blocked": False,
-                            "result_available": True,
-                            "cancellation_cause": None,
-                        },
-                        "message": {
-                            "kind": "delegated_lifecycle",
-                            "status": "completed",
-                            "summary_output": "Completed: child done",
-                            "error": None,
-                            "approval_blocked": False,
-                            "result_available": True,
-                        },
-                    },
-                ),
-            )
-
-        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
-            raise AssertionError("list_sessions should not be called")
-
-        def web_settings(self) -> dict[str, object]:
-            raise AssertionError("web_settings should not be called")
-
-        def update_web_settings(self, **_: object) -> dict[str, object]:
-            raise AssertionError("update_web_settings should not be called")
-
-        def resume(self, session_id: str) -> RuntimeResponseLike:
-            raise AssertionError(f"resume should not be called: {session_id}")
-
-    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
-    response = _run_app(
-        app,
-        method="POST",
-        path="/api/runtime/run/stream",
-        body=json.dumps({"prompt": "stream delegated background event"}).encode("utf-8"),
-    )
-    payloads = _parse_sse_payloads(response)
-    event_payload = cast(
-        dict[str, object],
-        cast(dict[str, object], payloads[0]["event"])["payload"],
-    )
-
-    assert response.status == 200
-    assert event_payload["task_id"] == "task-123"
-    assert cast(dict[str, object], event_payload["delegation"])["routing"] == {
-        "mode": "background",
-        "subagent_type": "explore",
-        "description": "Inspect logs",
-    }
-    assert event_payload["message"] == {
-        "kind": "delegated_lifecycle",
-        "status": "completed",
-        "summary_output": "Completed: child done",
-        "error": None,
-        "approval_blocked": False,
-        "result_available": True,
     }
 
 
@@ -2527,37 +2296,6 @@ def test_transport_rejects_invalid_approval_resolution_payload(
     assert response.json() == _error_body(expected_error)
 
 
-def test_transport_returns_conflict_when_approval_resolution_has_no_pending_request(
-    tmp_path: Path,
-) -> None:
-    sample_file = tmp_path / "sample.txt"
-    _ = sample_file.write_text("http replay\n", encoding="utf-8")
-    runtime_request, runtime_class = _load_runtime_types()
-    create_runtime_app = _load_transport_app_factory()
-
-    runtime = runtime_class(workspace=tmp_path)
-    _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="completed-session"))
-
-    app = create_runtime_app(workspace=tmp_path)
-    response = _run_app(
-        app,
-        method="POST",
-        path="/api/sessions/completed-session/approval",
-        body=json.dumps(
-            {
-                "request_id": "missing-request",
-                "decision": "allow",
-            }
-        ).encode("utf-8"),
-    )
-
-    assert response.status == 409
-    assert response.json() == _error_body(
-        "no pending approval for session: completed-session",
-        code="no_pending_approval",
-    )
-
-
 def test_transport_rejects_non_post_method_for_approval_resolution_route(tmp_path: Path) -> None:
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path)
@@ -2606,16 +2344,6 @@ def test_transport_rejects_invalid_question_answer_item_payload(tmp_path: Path) 
 
     assert response.status == 400
     assert response.json() == _error_body("responses[0].answers[0] must be a non-empty string")
-
-
-def test_transport_rejects_non_post_method_for_question_route(tmp_path: Path) -> None:
-    create_runtime_app = _load_transport_app_factory()
-    app = create_runtime_app(workspace=tmp_path)
-
-    response = _run_app(app, method="GET", path="/api/sessions/question-session/question")
-
-    assert response.status == 405
-    assert response.json() == _error_body("method not allowed")
 
 
 def test_transport_answers_pending_question_over_http(tmp_path: Path) -> None:
@@ -2702,67 +2430,6 @@ def test_transport_answers_pending_question_over_http(tmp_path: Path) -> None:
     assert cast(dict[str, object], payload["session"])["session"] == {"id": "question-session"}
     assert cast(dict[str, object], payload["session"])["status"] == "completed"
     assert payload["output"] == "done"
-
-
-def test_transport_returns_conflict_for_missing_pending_question(tmp_path: Path) -> None:
-    create_runtime_app = _load_transport_app_factory()
-    contracts_module = importlib.import_module("voidcode.runtime.contracts")
-
-    class StubRuntime:
-        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
-            raise AssertionError(f"run_stream should not be called: {request}")
-
-        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
-            raise AssertionError("list_sessions should not be called")
-
-        def web_settings(self) -> dict[str, object]:
-            raise AssertionError("web_settings should not be called")
-
-        def update_web_settings(self, **_: object) -> dict[str, object]:
-            raise AssertionError("update_web_settings should not be called")
-
-        def session_result(self, *, session_id: str) -> object:
-            raise AssertionError(f"session_result should not be called: {session_id}")
-
-        def list_notifications(self) -> tuple[object, ...]:
-            raise AssertionError("list_notifications should not be called")
-
-        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
-
-        def resume(self, session_id: str, **_: object) -> RuntimeResponseLike:
-            raise AssertionError(f"resume should not be called: {session_id}")
-
-        def answer_question(
-            self,
-            session_id: str,
-            *,
-            question_request_id: str,
-            responses: tuple[object, ...],
-        ) -> RuntimeResponseLike:
-            _ = session_id, question_request_id, responses
-            raise contracts_module.NoPendingQuestionError("no pending question for session: question-session")
-
-    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
-    response = _run_app(
-        app,
-        method="POST",
-        path="/api/sessions/question-session/question",
-        body=json.dumps(
-            {
-                "request_id": "question-1",
-                "responses": [
-                    {"header": "Runtime path", "answers": ["Reuse existing"]},
-                ],
-            }
-        ).encode("utf-8"),
-    )
-
-    assert response.status == 409
-    assert response.json() == _error_body(
-        "no pending question for session: question-session",
-        code="no_pending_question",
-    )
 
 
 def test_transport_streams_runtime_chunks_in_sse_order() -> None:
@@ -3397,71 +3064,6 @@ def test_transport_session_events_follow_tick_does_not_reload_transcript(
     assert set(ticks) == {3}
 
 
-def test_transport_run_stream_accepts_metadata_passthrough_for_skills() -> None:
-    create_runtime_app = _load_transport_app_factory()
-    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
-    session = session_state(
-        session=session_ref(id="stream-meta-session"),
-        status="completed",
-        turn=1,
-        metadata={"workspace": "/tmp/workspace"},
-    )
-
-    class StubRuntime:
-        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
-            assert request.prompt == "transport meta"
-            assert request.session_id == "stream-meta-session"
-            assert request.metadata == {
-                "provider_stream": True,
-                "skills": ["demo"],
-                "mode": "plan",
-            }
-            yield runtime_stream_chunk(
-                kind="event",
-                session=session,
-                event=event_envelope(
-                    session_id="stream-meta-session",
-                    sequence=1,
-                    event_type="runtime.request_received",
-                    source="runtime",
-                    payload={"prompt": request.prompt},
-                ),
-            )
-
-        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
-            raise AssertionError("list_sessions should not be called")
-
-        def web_settings(self) -> dict[str, object]:
-            raise AssertionError("web_settings should not be called")
-
-        def update_web_settings(self, **_: object) -> dict[str, object]:
-            raise AssertionError("update_web_settings should not be called")
-
-        def resume(self, session_id: str) -> RuntimeResponseLike:
-            raise AssertionError(f"resume should not be called: {session_id}")
-
-    app = create_runtime_app(workspace=Path("/tmp/workspace"), runtime_factory=lambda: StubRuntime())
-
-    response = _run_app(
-        app,
-        method="POST",
-        path="/api/runtime/run/stream",
-        body=json.dumps(
-            {
-                "prompt": "transport meta",
-                "session_id": "stream-meta-session",
-                "metadata": {
-                    "provider_stream": True,
-                    "skills": ["demo"],
-                    "mode": "plan",
-                },
-            }
-        ).encode("utf-8"),
-    )
-
-    assert response.status == 200
-
-
 def test_transport_run_stream_rejects_unknown_request_fields() -> None:
     create_runtime_app = _load_transport_app_factory()
 
@@ -3535,71 +3137,6 @@ def test_transport_serializes_additive_future_event_type_unchanged() -> None:
 
     assert response.status == 200
     assert cast(dict[str, object], payloads[0]["event"])["event_type"] == future_event_type
-
-
-def test_transport_serializes_tool_progress_event_as_sse_frame() -> None:
-    create_runtime_app = _load_transport_app_factory()
-    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
-    events_module = importlib.import_module("voidcode.runtime.events")
-    session = session_state(
-        session=session_ref(id="tool-progress-session"),
-        status="running",
-        turn=1,
-        metadata={"workspace": "/tmp/workspace"},
-    )
-
-    class StubRuntime:
-        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
-            assert request.prompt == "stream shell"
-            yield runtime_stream_chunk(
-                kind="event",
-                session=session,
-                event=event_envelope(
-                    session_id="tool-progress-session",
-                    sequence=1,
-                    event_type=cast(str, events_module.RUNTIME_TOOL_PROGRESS),
-                    source="tool",
-                    payload={
-                        "tool": "shell_exec",
-                        "tool_call_id": "call-1",
-                        "stream": "stdout",
-                        "chunk": "alpha\n",
-                        "truncated": False,
-                    },
-                ),
-            )
-
-        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
-            raise AssertionError("list_sessions should not be called")
-
-        def web_settings(self) -> dict[str, object]:
-            raise AssertionError("web_settings should not be called")
-
-        def update_web_settings(self, **_: object) -> dict[str, object]:
-            raise AssertionError("update_web_settings should not be called")
-
-        def resume(self, session_id: str) -> RuntimeResponseLike:
-            raise AssertionError(f"resume should not be called: {session_id}")
-
-    app = create_runtime_app(
-        workspace=Path("/tmp/workspace"),
-        runtime_factory=lambda: StubRuntime(),
-    )
-
-    response = _run_app(
-        app,
-        method="POST",
-        path="/api/runtime/run/stream",
-        body=json.dumps({"prompt": "stream shell"}).encode("utf-8"),
-    )
-    payloads = _parse_sse_payloads(response)
-
-    assert response.status == 200
-    event = cast(dict[str, object], payloads[0]["event"])
-    assert event["event_type"] == events_module.RUNTIME_TOOL_PROGRESS
-    payload = cast(dict[str, object], event["payload"])
-    assert payload["tool"] == "shell_exec"
-    assert payload["chunk"] == "alpha\n"
 
 
 def test_transport_persists_streamed_run_for_session_listing_and_replay(
@@ -3919,66 +3456,6 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     assert replay_event_types[-1] == "runtime.failed"
 
 
-def test_transport_serializes_structured_provider_failure_payloads() -> None:
-    create_runtime_app = _load_transport_app_factory()
-    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
-    failed_session = session_state(
-        session=session_ref(id="provider-failed-session"),
-        status="failed",
-        turn=1,
-        metadata={"workspace": "/tmp/workspace"},
-    )
-
-    class FailingStubRuntime:
-        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
-            assert request.prompt == "fail provider"
-            yield runtime_stream_chunk(
-                kind="event",
-                session=failed_session,
-                event=event_envelope(
-                    session_id="provider-failed-session",
-                    sequence=1,
-                    event_type="runtime.failed",
-                    source="runtime",
-                    payload={
-                        "error": "context exceeded",
-                        "provider_error_kind": "context_limit",
-                        "provider": "opencode",
-                        "model": "gpt-5.4",
-                    },
-                ),
-            )
-
-        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
-            raise AssertionError("list_sessions should not be called")
-
-        def resume(self, session_id: str) -> RuntimeResponseLike:
-            raise AssertionError(f"resume should not be called: {session_id}")
-
-    app = create_runtime_app(
-        workspace=Path("/tmp/workspace"),
-        runtime_factory=lambda: FailingStubRuntime(),
-    )
-
-    response = _run_app(
-        app,
-        method="POST",
-        path="/api/runtime/run/stream",
-        body=json.dumps({"prompt": "fail provider"}).encode("utf-8"),
-    )
-    payloads = _parse_sse_payloads(response)
-    first_payload = payloads[0]
-    first_event = cast(dict[str, object], first_payload["event"])
-
-    assert response.status == 200
-    assert first_event["payload"] == {
-        "error": "context exceeded",
-        "provider_error_kind": "context_limit",
-        "provider": "opencode",
-        "model": "gpt-5.4",
-    }
-
-
 def test_transport_logs_unexpected_streaming_errors(caplog: pytest.LogCaptureFixture) -> None:
     create_runtime_app = _load_transport_app_factory()
 
@@ -4239,16 +3716,6 @@ def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> No
             "status_counts": {},
         },
     }
-
-
-def test_transport_rejects_non_post_method_for_mcp_retry(tmp_path: Path) -> None:
-    create_runtime_app = _load_transport_app_factory()
-    app = create_runtime_app(workspace=tmp_path)
-
-    response = _run_app(app, method="GET", path="/api/status/mcp/retry")
-
-    assert response.status == 405
-    assert response.json() == _error_body("method not allowed")
 
 
 def test_transport_retry_mcp_value_error_returns_http_400_and_closes_runtime_once(

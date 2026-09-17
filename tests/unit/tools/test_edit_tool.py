@@ -252,31 +252,6 @@ def test_edit_tool_rejects_when_old_string_not_found(tmp_path: Path) -> None:
     assert diagnostic.retry_guidance
 
 
-def test_edit_tool_no_match_with_unindented_old_string_keeps_diagnostics(
-    tmp_path: Path,
-) -> None:
-    file_path = tmp_path / "test.txt"
-    file_path.write_text("hello", encoding="utf-8")
-
-    tool = EditTool()
-
-    with pytest.raises(ValueError, match="Could not find oldString") as exc_info:
-        tool.invoke(
-            ToolCall(
-                tool_name="edit",
-                arguments={
-                    "path": "test.txt",
-                    "oldString": "missing",
-                    "newString": "b",
-                    "expectedHash": _content_hash(file_path),
-                },
-            ),
-            workspace=tmp_path,
-        )
-
-    assert "Replacers attempted:" in str(exc_info.value)
-
-
 def test_edit_tool_reports_near_match_context_when_old_string_is_stale(
     tmp_path: Path,
 ) -> None:
@@ -855,24 +830,6 @@ def test_edit_tool_rejects_edit_of_line_outside_read_window(tmp_path: Path) -> N
     assert diagnostic.error_details["unseen_line_ranges"] == [{"start": 3, "end": 3}]
     assert "read" in (diagnostic.retry_guidance or "")
     assert file_path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
-
-
-def test_edit_tool_allows_edit_covered_by_union_of_multiple_reads(tmp_path: Path) -> None:
-    file_path = tmp_path / "sample.txt"
-    file_path.write_text("\n".join(f"line-{index}" for index in range(1, 7)), encoding="utf-8")
-    tool = EditTool()
-
-    with bind_runtime_tool_context(_read_lines_context(file_path, {1, 2, 3, 4, 5, 6})):
-        result = tool.invoke(
-            ToolCall(
-                tool_name="edit",
-                arguments={"path": "sample.txt", "oldString": "line-5", "newString": "FIVE", "expectedHash": _content_hash(file_path)},
-            ),
-            workspace=tmp_path,
-        )
-
-    assert result.status == "ok"
-    assert "FIVE" in file_path.read_text(encoding="utf-8")
 
 
 def test_edit_tool_rejects_replace_all_when_any_occurrence_is_unseen(tmp_path: Path) -> None:

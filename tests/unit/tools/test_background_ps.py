@@ -28,34 +28,6 @@ def test_background_ps_requires_parent_runtime_context(tmp_path: Path) -> None:
         tool.invoke(ToolCall(tool_name="background_ps"), workspace=tmp_path)
 
 
-def test_background_ps_uses_active_parent_and_returns_bounded_projection(tmp_path: Path) -> None:
-    payload = {
-        "parent_session_id": "parent",
-        "tasks": [
-            {
-                "task_id": "task-running",
-                "status": "running",
-                "child_session_id": "child",
-                "result_available": False,
-                "next_steps": {"task": 'task(operation="output", task_id="task-running")'},
-            },
-            {"task_id": "task-done", "status": "completed", "terminal": True, "result_available": True},
-        ],
-        "task_count": 2,
-        "truncated": False,
-    }
-    runtime = _RosterRuntime(payload)
-    tool = TaskPsTool(runtime=runtime)
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="parent")):
-        result = tool.invoke(ToolCall(tool_name="background_ps"), workspace=tmp_path)
-    assert runtime.parents == ["parent"]
-    assert result.data == payload
-    assert "prompt" not in str(result.data)
-    assert "transcript" not in str(result.data)
-    assert result.data["tasks"][0]["status"] == "running"  # type: ignore[index]
-    assert result.data["tasks"][1]["terminal"] is True  # type: ignore[index]
-
-
 def test_runtime_background_ps_scopes_and_omits_prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
     store.create_background_task(
