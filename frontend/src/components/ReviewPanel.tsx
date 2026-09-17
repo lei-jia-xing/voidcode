@@ -5,7 +5,7 @@ import {
   FileText,
   FolderTree,
   GitBranch,
-  Loader2,
+  LoaderCircle,
   X,
 } from "lucide-react";
 import type {
@@ -159,7 +159,7 @@ function TreeList({
             }`}
             style={{ paddingLeft: `${depth * 12 + 8}px` }}
           >
-            <FileText className="h-3.5 w-3.5 flex-shrink-0 text-[var(--vc-text-subtle)]" />
+            <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--vc-text-subtle)]" />
             <span className="truncate">{node.name}</span>
             {node.changed && (
               <span className="ml-auto text-[10px] font-semibold text-[var(--vc-text-muted)]">
@@ -267,7 +267,7 @@ export function ReviewPanel({
   return (
     <aside
       aria-label={title}
-      className="fixed inset-y-0 right-0 z-30 w-full max-w-[100vw] border-l border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] flex-shrink-0 flex flex-col min-w-0 md:relative md:z-auto md:w-auto"
+      className="fixed inset-y-0 right-0 z-30 w-full max-w-[100vw] border-l border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] shrink-0 flex flex-col min-w-0 md:relative md:z-auto md:w-auto"
       style={{ width: `${panelWidth}px` }}
     >
       <div
@@ -319,7 +319,7 @@ export function ReviewPanel({
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
           {status === "loading" && (
             <div className="flex items-center gap-2 px-2 text-xs text-[var(--vc-text-subtle)]">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
               {t("review.loading")}
             </div>
           )}
@@ -357,10 +357,10 @@ export function ReviewPanel({
         </div>
       ) : (
         <div className="flex min-h-0 flex-1">
-          <div className="w-[13rem] flex-shrink-0 border-r border-[color:var(--vc-border-subtle)] overflow-y-auto px-2 py-3">
+          <div className="w-[13rem] shrink-0 border-r border-[color:var(--vc-border-subtle)] overflow-y-auto px-2 py-3">
             {status === "loading" && (
               <div className="flex items-center gap-2 px-2 text-xs text-[var(--vc-text-subtle)]">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
                 {t("review.loading")}
               </div>
             )}
@@ -454,7 +454,7 @@ export function ReviewPanel({
 
                 {diffStatus === "loading" && (
                   <div className="flex items-center gap-2 text-xs text-[var(--vc-text-subtle)]">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
                     {t("review.diffLoading")}
                   </div>
                 )}

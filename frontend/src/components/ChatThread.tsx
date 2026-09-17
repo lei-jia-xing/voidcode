@@ -12,23 +12,23 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Activity,
-  AlertCircle,
+  CircleAlert,
   Bot,
   Check,
   ChevronDown,
   CircleSlash,
   ChevronRight,
-  Code2,
+  CodeXml,
   Copy,
   Diff,
   FileSearch,
   FileText,
   FolderTree,
   Globe,
-  HelpCircle,
+  CircleQuestionMark,
   ListTodo,
-  Loader2,
-  PauseCircle,
+  LoaderCircle,
+  CirclePause,
   Pencil,
   Plug,
   Search,
@@ -743,13 +743,13 @@ function toolIcon(tool: ChatTool) {
     return <Globe className={className} />;
   }
   if (tool.name === "lsp") {
-    return <Code2 className={className} />;
+    return <CodeXml className={className} />;
   }
   if (tool.name === "mcp") {
     return <Plug className={className} />;
   }
   if (tool.name === "question") {
-    return <HelpCircle className={className} />;
+    return <CircleQuestionMark className={className} />;
   }
   if (
     tool.name === "background_task" ||
@@ -1725,7 +1725,7 @@ function QuestionCard({
   return (
     <div className="mt-3 rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-4">
       <div className="flex items-center gap-2 mb-3">
-        <PauseCircle className="w-5 h-5 text-[var(--vc-text-subtle)] flex-shrink-0" />
+        <CirclePause className="w-5 h-5 text-[var(--vc-text-subtle)] shrink-0" />
         <div>
           <p className="text-sm font-medium text-[var(--vc-text-primary)]">
             {t("question.heading")}
@@ -2033,7 +2033,7 @@ function ApprovalCard({
     <div className="mt-3 rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-4">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-2">
-          <PauseCircle className="w-5 h-5 text-[var(--vc-text-subtle)] flex-shrink-0" />
+          <CirclePause className="w-5 h-5 text-[var(--vc-text-subtle)] shrink-0" />
           <div>
             <p className="text-sm font-medium text-[var(--vc-text-primary)]">
               {t("approval.heading")}
@@ -2127,7 +2127,7 @@ function StatusIndicator({
   if (status === "in_progress") {
     return (
       <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-text-muted)]">
-        <Loader2 className="w-3 h-3 animate-spin" />
+        <LoaderCircle className="w-3 h-3 animate-spin" />
         {t("chat.responding")}
       </span>
     );
@@ -2135,7 +2135,7 @@ function StatusIndicator({
   if (status === "waiting") {
     return (
       <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-text-muted)]">
-        <PauseCircle className="w-3 h-3" />
+        <CirclePause className="w-3 h-3" />
         {t("chat.waiting")}
       </span>
     );
@@ -2143,7 +2143,7 @@ function StatusIndicator({
   if (status === "failed") {
     return (
       <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-danger-text)]">
-        <AlertCircle className="w-3 h-3" />
+        <CircleAlert className="w-3 h-3" />
         {error || t("task.status.failed")}
       </span>
     );
@@ -2295,7 +2295,7 @@ export const ChatThread = memo(function ChatThread({
                   <StatusIndicator status="in_progress" />
                 </div>
                 <div className="flex items-center gap-2 text-sm text-[var(--vc-text-muted)]">
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <LoaderCircle className="w-4 h-4 animate-spin" />
                   {t("chat.thinking")}
                 </div>
               </div>

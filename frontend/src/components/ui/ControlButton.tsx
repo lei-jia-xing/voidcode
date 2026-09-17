@@ -4,8 +4,6 @@ import {
   type ControlButtonVariant,
 } from "./controlButtonClassName";
 
-export type { ControlButtonVariant } from "./controlButtonClassName";
-
 export interface ControlButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ControlButtonVariant;
   compact?: boolean;

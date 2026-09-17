@@ -14,7 +14,7 @@ Bun/Vite/React frontend shell. The app now has a minimal live runtime transport 
 | Main shell | `src/App.tsx` | primary layout, task list, activity panel |
 | Local state | `src/store/index.ts` | Zustand + persisted local state |
 | i18n setup | `src/i18n/index.ts` | `en` and `zh-CN` resources |
-| Types | `src/types/index.ts` | frontend-only data shapes |
+| Types | `src/lib/runtime/types.ts` | shared runtime data shapes |
 | Tooling | `package.json` | `bun run` command surface |
 | Vite wiring | `vite.config.ts` | dev/build config, future proxy surface |
 
@@ -25,7 +25,7 @@ frontend/
 ├── src/main.tsx         # React entry
 ├── src/store/index.ts   # persisted Zustand store
 ├── src/i18n/            # translations + i18n init
-├── src/types/           # shared TS types
+├── src/lib/             # runtime client, parsers, shared TS types
 └── public/              # static assets
 ```
 

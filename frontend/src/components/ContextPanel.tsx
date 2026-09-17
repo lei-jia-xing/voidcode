@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { ChevronRight, FileCode2, Loader2, X } from "lucide-react";
+import { ChevronRight, FileCodeCorner, LoaderCircle, X } from "lucide-react";
 import { useState } from "react";
 import type {
   ProviderContextSegmentSnapshot,
@@ -30,10 +30,10 @@ export function ContextPanel({
   const providerContext = debug?.provider_context ?? null;
 
   return (
-    <aside className="fixed inset-y-0 right-0 z-30 flex h-full w-[min(100vw,420px)] flex-shrink-0 flex-col border-l border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] md:relative md:z-auto md:w-[420px]">
-      <header className="flex flex-shrink-0 items-center justify-between border-b border-[color:var(--vc-border-subtle)] px-4 py-2.5">
+    <aside className="fixed inset-y-0 right-0 z-30 flex h-full w-[min(100vw,420px)] shrink-0 flex-col border-l border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] md:relative md:z-auto md:w-[420px]">
+      <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--vc-border-subtle)] px-4 py-2.5">
         <span className="flex items-center gap-2 text-sm font-medium text-[var(--vc-text-primary)]">
-          <FileCode2 className="h-4 w-4" />
+          <FileCodeCorner className="h-4 w-4" />
           {t("context.title")}
         </span>
         <div className="flex items-center gap-1">
@@ -43,7 +43,7 @@ export function ContextPanel({
             onClick={onRefresh}
             aria-label={t("context.refresh")}
           >
-            <Loader2
+            <LoaderCircle
               className={`h-4 w-4 ${status === "loading" ? "animate-spin" : ""}`}
             />
           </ControlButton>

@@ -4,7 +4,7 @@ import {
   Activity,
   Boxes,
   ChevronDown,
-  Loader2,
+  LoaderCircle,
   Network,
   RefreshCw,
   Server,
@@ -403,7 +403,7 @@ function McpSection({
         >
           {retry.status === "loading" ? (
             <>
-              <Loader2 className="h-3 w-3 animate-spin" />
+              <LoaderCircle className="h-3 w-3 animate-spin" />
               {t("status.retrying")}
             </>
           ) : (

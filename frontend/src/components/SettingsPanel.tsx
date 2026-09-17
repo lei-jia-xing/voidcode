@@ -1,17 +1,17 @@
 import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  AlertCircle,
-  CheckCircle2,
+  CircleAlert,
+  CircleCheck,
+  CircleX,
   Cog,
   Globe,
   KeyRound,
   Layers,
-  Loader2,
+  LoaderCircle,
   Save,
   Sparkles,
   X,
-  XCircle,
 } from "lucide-react";
 import {
   AsyncStatus,
@@ -115,7 +115,7 @@ function SectionHeader({
 }) {
   return (
     <div className="flex items-start gap-3 border-b border-[color:var(--vc-border-subtle)] pb-4">
-      <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--vc-surface-1)] text-[var(--vc-text-primary)]">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--vc-surface-1)] text-[var(--vc-text-primary)]">
         {icon}
       </span>
       <div className="min-w-0">
@@ -302,13 +302,13 @@ function ProviderSection({
 
       {settingsError && (
         <div className="flex items-start gap-2 rounded-lg border border-[color:var(--vc-danger-border)] bg-[var(--vc-danger-bg)] p-3 text-sm text-[var(--vc-danger-text)]">
-          <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+          <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
           {settingsError}
         </div>
       )}
       {providersError && (
         <div className="flex items-start gap-2 rounded-lg border border-[color:var(--vc-danger-border)] bg-[var(--vc-danger-bg)] p-3 text-sm text-[var(--vc-danger-text)]">
-          <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+          <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
           {providersError}
         </div>
       )}
@@ -398,7 +398,7 @@ function ProviderSection({
             value={model}
             onChange={(event) => setModel(event.target.value)}
             disabled={isLoading || !provider || selectedModels.length === 0}
-            className="w-full rounded-lg border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] py-2.5 pl-9 pr-3 text-sm text-[var(--vc-text-primary)] transition-colors focus:border-[color:var(--vc-border-strong)] focus:outline-none focus:ring-1 focus:ring-[color:var(--vc-border-strong)] disabled:opacity-50"
+            className="w-full rounded-lg border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] py-2.5 pl-9 pr-3 text-sm text-[var(--vc-text-primary)] transition-colors focus:border-[color:var(--vc-border-strong)] focus:outline-hidden focus:ring-1 focus:ring-[color:var(--vc-border-strong)] disabled:opacity-50"
           >
             <option value="">{t("settings.modelPlaceholder")}</option>
             {selectedModels.map((modelId) => {
@@ -435,11 +435,11 @@ function ProviderSection({
               disabled={isLoading || validationStatus === "loading"}
             >
               {validationStatus === "loading" ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <LoaderCircle className="h-4 w-4 animate-spin" />
               ) : validationStatus === "success" ? (
-                <CheckCircle2 className="h-4 w-4 text-[var(--vc-confirm-text)]" />
+                <CircleCheck className="h-4 w-4 text-[var(--vc-confirm-text)]" />
               ) : validationStatus === "error" ? (
-                <XCircle className="h-4 w-4 text-[var(--vc-danger-text)]" />
+                <CircleX className="h-4 w-4 text-[var(--vc-danger-text)]" />
               ) : null}
               {t("settings.testCredentials")}
             </ControlButton>
@@ -487,7 +487,7 @@ function ProviderSection({
             }
             disabled={isLoading}
             spellCheck={false}
-            className="w-full rounded-lg border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] py-2.5 pl-9 pr-3 text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] transition-colors focus:border-[color:var(--vc-border-strong)] focus:outline-none focus:ring-1 focus:ring-[color:var(--vc-border-strong)] disabled:opacity-50"
+            className="w-full rounded-lg border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] py-2.5 pl-9 pr-3 text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] transition-colors focus:border-[color:var(--vc-border-strong)] focus:outline-hidden focus:ring-1 focus:ring-[color:var(--vc-border-strong)] disabled:opacity-50"
           />
         </div>
       </FieldGroup>
@@ -559,7 +559,7 @@ export function SettingsPanel({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <button
         type="button"
-        className="absolute inset-0 bg-[var(--vc-overlay-bg)] backdrop-blur-sm"
+        className="absolute inset-0 bg-[var(--vc-overlay-bg)] backdrop-blur-xs"
         onClick={onClose}
         aria-label={t("common.close")}
       />
@@ -594,7 +594,7 @@ export function SettingsPanel({
         </div>
 
         <div className="flex min-h-0 flex-1">
-          <nav className="hidden w-56 flex-shrink-0 flex-col gap-1 border-r border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-3 sm:flex">
+          <nav className="hidden w-56 shrink-0 flex-col gap-1 border-r border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-3 sm:flex">
             <NavItem
               active={activeSection === "general"}
               icon={<Globe className="h-4 w-4" />}
@@ -687,7 +687,7 @@ export function SettingsPanel({
             variant="primary"
           >
             {isLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <LoaderCircle className="h-4 w-4 animate-spin" />
             ) : (
               <Save className="h-4 w-4" />
             )}

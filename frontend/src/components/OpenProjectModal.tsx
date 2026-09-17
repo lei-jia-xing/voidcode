@@ -3,11 +3,11 @@ import { useTranslation } from "react-i18next";
 import {
   X,
   Search,
-  Loader2,
-  AlertCircle,
+  LoaderCircle,
+  CircleAlert,
   FolderOpen,
   Clock,
-  CheckCircle2,
+  CircleCheck,
 } from "lucide-react";
 import { WorkspaceSummary } from "../lib/runtime/types";
 import { ControlButton } from "./ui";
@@ -122,7 +122,7 @@ export function OpenProjectModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <button
         type="button"
-        className="absolute inset-0 bg-[var(--vc-overlay-bg)] backdrop-blur-sm"
+        className="absolute inset-0 bg-[var(--vc-overlay-bg)] backdrop-blur-xs"
         onClick={onClose}
         aria-label={t("common.close")}
       />
@@ -135,7 +135,7 @@ export function OpenProjectModal({
         tabIndex={-1}
         className="relative w-full max-w-lg bg-[var(--vc-bg)] border border-[color:var(--vc-border-subtle)] rounded-xl shadow-2xl flex flex-col max-h-[80vh]"
       >
-        <div className="flex items-center justify-between px-5 h-14 border-b border-[color:var(--vc-border-subtle)] flex-shrink-0">
+        <div className="flex items-center justify-between px-5 h-14 border-b border-[color:var(--vc-border-subtle)] shrink-0">
           <h2
             id="project-dialog-title"
             className="text-base font-semibold text-[var(--vc-text-primary)]"
@@ -153,7 +153,7 @@ export function OpenProjectModal({
           </ControlButton>
         </div>
 
-        <div className="px-5 pt-4 pb-2 flex-shrink-0">
+        <div className="px-5 pt-4 pb-2 shrink-0">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--vc-text-subtle)]" />
             <input
@@ -161,7 +161,7 @@ export function OpenProjectModal({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={t("project.searchPlaceholder")}
-              className="w-full bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-subtle)] rounded-lg pl-9 pr-3 py-2 text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] focus:outline-none focus:border-[color:var(--vc-border-strong)] focus:ring-1 focus:ring-[color:var(--vc-border-strong)] transition-colors"
+              className="w-full bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-subtle)] rounded-lg pl-9 pr-3 py-2 text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] focus:outline-hidden focus:border-[color:var(--vc-border-strong)] focus:ring-1 focus:ring-[color:var(--vc-border-strong)] transition-colors"
             />
           </div>
           <div className="mt-3 flex gap-2">
@@ -170,7 +170,7 @@ export function OpenProjectModal({
               value={manualPath}
               onChange={(e) => setManualPath(e.target.value)}
               placeholder={t("project.pathPlaceholder")}
-              className="flex-1 bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-subtle)] rounded-lg px-3 py-2 text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] focus:outline-none focus:border-[color:var(--vc-border-strong)] focus:ring-1 focus:ring-[color:var(--vc-border-strong)] transition-colors"
+              className="flex-1 bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-subtle)] rounded-lg px-3 py-2 text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] focus:outline-hidden focus:border-[color:var(--vc-border-strong)] focus:ring-1 focus:ring-[color:var(--vc-border-strong)] transition-colors"
             />
             <ControlButton
               variant="secondary"
@@ -187,21 +187,21 @@ export function OpenProjectModal({
         <div className="flex-1 overflow-y-auto px-5 pb-5 min-h-0">
           {workspacesError && (
             <div className="mt-3 flex items-start gap-2 rounded-lg bg-[var(--vc-danger-bg)] border border-[color:var(--vc-danger-border)] p-3 text-sm text-[var(--vc-danger-text)]">
-              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <CircleAlert className="w-4 h-4 shrink-0 mt-0.5" />
               {t("project.loadError", { message: workspacesError })}
             </div>
           )}
 
           {workspaceSwitchError && (
             <div className="mt-3 flex items-start gap-2 rounded-lg bg-[var(--vc-danger-bg)] border border-[color:var(--vc-danger-border)] p-3 text-sm text-[var(--vc-danger-text)]">
-              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <CircleAlert className="w-4 h-4 shrink-0 mt-0.5" />
               {t("project.switchError", { message: workspaceSwitchError })}
             </div>
           )}
 
           {isLoading && (
             <div className="mt-6 flex items-center justify-center gap-2 text-sm text-[var(--vc-text-subtle)]">
-              <Loader2 className="w-4 h-4 animate-spin" />
+              <LoaderCircle className="w-4 h-4 animate-spin" />
               {t("project.loading")}
             </div>
           )}
@@ -288,9 +288,9 @@ function WorkspaceItem({
           : "border border-transparent text-[var(--vc-text-muted)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
       } disabled:opacity-60`}
     >
-      <div className="flex-shrink-0">
+      <div className="shrink-0">
         {isCurrent ? (
-          <CheckCircle2 className="w-4 h-4 text-[var(--vc-confirm-text)]" />
+          <CircleCheck className="w-4 h-4 text-[var(--vc-confirm-text)]" />
         ) : (
           <FolderOpen className="w-4 h-4 text-[var(--vc-text-subtle)]" />
         )}
@@ -304,10 +304,10 @@ function WorkspaceItem({
         </div>
       </div>
       {isSwitching && (
-        <Loader2 className="w-4 h-4 animate-spin text-[var(--vc-text-muted)] flex-shrink-0" />
+        <LoaderCircle className="w-4 h-4 animate-spin text-[var(--vc-text-muted)] shrink-0" />
       )}
       {isCurrent && !isSwitching && (
-        <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md bg-[var(--vc-confirm-bg)] text-[var(--vc-confirm-text)] border border-[color:var(--vc-confirm-border)] font-medium">
+        <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-md bg-[var(--vc-confirm-bg)] text-[var(--vc-confirm-text)] border border-[color:var(--vc-confirm-border)] font-medium">
           {t("project.currentBadge")}
         </span>
       )}

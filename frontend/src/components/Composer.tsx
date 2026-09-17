@@ -378,7 +378,7 @@ export function Composer({
               placeholder={placeholder || t("chat.placeholder")}
               disabled={disabled}
               rows={1}
-              className="flex-1 bg-transparent text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] resize-none outline-none py-1.5 max-h-[200px] disabled:opacity-50"
+              className="flex-1 bg-transparent text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] resize-none outline-hidden py-1.5 max-h-[200px] disabled:opacity-50"
             />
             <button
               type="button"

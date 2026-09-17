@@ -20,10 +20,10 @@ import {
 } from "./lib/runtime/providerUsage";
 import { RuntimeClient } from "./lib/runtime/client";
 import {
-  FileCode2,
+  FileCodeCorner,
   FolderTree,
   GitCompare,
-  Loader2,
+  LoaderCircle,
   MoveLeft,
 } from "lucide-react";
 import { StatusBar } from "./components/StatusBar";
@@ -98,7 +98,7 @@ function SubsessionLiveStatus({
   return (
     <div className="mx-auto mt-4 max-w-[var(--vc-chat-content-width)] px-4">
       <div className="flex items-center gap-2 rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-3 py-2 text-sm text-[var(--vc-text-primary)]">
-        <Loader2 className="h-4 w-4 animate-spin" />
+        <LoaderCircle className="h-4 w-4 animate-spin" />
         <span>{t("subsession.liveWorking")}</span>
       </div>
     </div>
@@ -717,10 +717,10 @@ function App() {
       <div className="flex-1 flex flex-col min-w-0">
         {hasCurrentWorkspace ? (
           <>
-            <header className="relative z-20 h-14 flex items-center justify-between px-4 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] flex-shrink-0">
+            <header className="relative z-20 h-14 flex items-center justify-between px-4 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] shrink-0">
               <div className="flex items-center gap-2 min-w-0">
                 {isReplayLoading && (
-                  <Loader2 className="w-4 h-4 animate-spin text-[var(--vc-text-muted)] flex-shrink-0" />
+                  <LoaderCircle className="w-4 h-4 animate-spin text-[var(--vc-text-muted)] shrink-0" />
                 )}
                 {displayedIsChildSession && (
                   <ControlButton
@@ -757,7 +757,7 @@ function App() {
                 )}
               </div>
 
-              <div className="flex items-center gap-2 flex-shrink-0">
+              <div className="flex items-center gap-2 shrink-0">
                 <StatusBar
                   snapshot={statusSnapshot}
                   status={statusStatus}
@@ -801,7 +801,7 @@ function App() {
                   aria-expanded={showContext}
                   aria-pressed={showContext}
                 >
-                  <FileCode2 className="w-4 h-4" />
+                  <FileCodeCorner className="w-4 h-4" />
                   <span>{t("context.title")}</span>
                 </ControlButton>
               </div>
@@ -809,7 +809,7 @@ function App() {
             {isRunning && (
               <output
                 aria-label={t("session.modelWorking")}
-                className="relative h-0.5 flex-shrink-0 overflow-hidden bg-transparent"
+                className="relative h-0.5 shrink-0 overflow-hidden bg-transparent"
               >
                 <div className="vc-model-working-bar" />
               </output>
@@ -818,7 +818,7 @@ function App() {
               pendingNotifications.length > 0) && (
               <section
                 aria-label={t("runtimeOps.notifications")}
-                className="flex-shrink-0 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-2"
+                className="shrink-0 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-2"
               >
                 <div className="mx-auto flex max-w-[var(--vc-chat-content-width)] flex-col gap-2 text-xs">
                   {notificationsStatus === "loading" ? (
@@ -890,13 +890,13 @@ function App() {
               </div>
             ) : null}
             {resumeError ? (
-              <div className="flex-shrink-0 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">
+              <div className="shrink-0 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">
                 {t("session.resumeError", { message: resumeError })}
               </div>
             ) : null}
 
             {replayError && (
-              <div className="flex flex-wrap items-center justify-between gap-3 flex-shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">
+              <div className="flex flex-wrap items-center justify-between gap-3 shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">
                 <span>
                   {t("session.replayError", { message: replayError })}
                 </span>
@@ -913,7 +913,7 @@ function App() {
               </div>
             )}
             {sessionEventError && (
-              <div className="flex flex-wrap items-center justify-between gap-3 flex-shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">
+              <div className="flex flex-wrap items-center justify-between gap-3 shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">
                 <span>
                   {t("session.eventsFollowError", {
                     message: sessionEventError,
@@ -929,7 +929,7 @@ function App() {
               </div>
             )}
             {runError && (
-              <div className="flex-shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">
+              <div className="shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">
                 {t("common.errorWithMessage", { message: runError })}
               </div>
             )}
@@ -1046,7 +1046,7 @@ function App() {
         ) : isWorkspaceBootLoading ? (
           <div className="flex flex-1 items-center justify-center p-6">
             <div className="flex items-center gap-3 rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-3 text-sm text-[var(--vc-text-muted)]">
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <LoaderCircle className="h-4 w-4 animate-spin" />
               {t("project.loading")}
             </div>
           </div>

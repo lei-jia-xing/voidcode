@@ -163,7 +163,7 @@ export function SessionSidebar({
   return (
     <>
       <aside
-        className="relative z-40 border-r border-[var(--vc-border-subtle)] bg-[var(--vc-bg)] flex flex-col justify-between flex-shrink-0 w-[min(88vw,344px)] md:w-[var(--session-sidebar-width)]"
+        className="relative z-40 border-r border-[var(--vc-border-subtle)] bg-[var(--vc-bg)] flex flex-col justify-between shrink-0 w-[min(88vw,344px)] md:w-[var(--session-sidebar-width)]"
         style={sidebarStyle}
       >
         <div

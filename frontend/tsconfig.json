@@ -15,13 +15,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "baseUrl": ".",
-    "ignoreDeprecations": "6.0",
-    "types": ["vitest/globals", "@testing-library/jest-dom", "node"],
-    "paths": {
-      "@/*": ["src/*"]
-    }
+    "types": ["vitest/globals", "@testing-library/jest-dom", "node"]
   },
-  "include": ["src", "e2e", "playwright.config.ts"],
-  "references": [{ "path": "./tsconfig.node.json" }]
+  "include": ["src", "e2e", "playwright.config.ts", "vite.config.ts"]
 }

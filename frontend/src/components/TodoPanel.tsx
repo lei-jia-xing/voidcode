@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  AlertCircle,
   ChevronDown,
   ChevronRight,
   Circle,
+  CircleAlert,
   CircleCheck,
   CircleDot,
   CircleX,
@@ -25,7 +25,7 @@ function TodoStatusIcon({ status }: { status: string }) {
     return <CircleX className="h-3.5 w-3.5 text-[var(--vc-danger-text)]" />;
   }
   if (status === "blocked") {
-    return <AlertCircle className="h-3.5 w-3.5 text-[var(--vc-danger-text)]" />;
+    return <CircleAlert className="h-3.5 w-3.5 text-[var(--vc-danger-text)]" />;
   }
   return <Circle className="h-3.5 w-3.5 text-[var(--vc-text-subtle)]" />;
 }
@@ -44,7 +44,7 @@ export function TodoPanel({
   ).length;
 
   return (
-    <section className="flex-shrink-0 border-t border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] px-4 py-2">
+    <section className="shrink-0 border-t border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] px-4 py-2">
       <div className="mx-auto max-w-[var(--vc-chat-content-width)]">
         <button
           type="button"

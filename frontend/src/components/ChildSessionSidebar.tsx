@@ -1,10 +1,10 @@
 import { useState } from "react";
 import {
-  Loader2,
+  LoaderCircle,
   RefreshCw,
   RotateCcw,
   Send,
-  SplitSquareHorizontal,
+  SquareSplitHorizontal,
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -79,7 +79,7 @@ export function ChildSessionSidebar({
           aria-label={t("childSessions.refresh")}
         >
           {status === "loading" ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
           ) : (
             <RefreshCw className="h-3.5 w-3.5" />
           )}
@@ -96,7 +96,7 @@ export function ChildSessionSidebar({
               : "border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] text-[var(--vc-text-muted)] hover:text-[var(--vc-text-primary)]"
           }`}
         >
-          <SplitSquareHorizontal className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--vc-text-subtle)]" />
+          <SquareSplitHorizontal className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--vc-text-subtle)]" />
           <span className="min-w-0">
             <span className="block font-medium">
               {t("childSessions.parent")}
@@ -181,7 +181,7 @@ export function ChildSessionSidebar({
                         aria-label={t("childSessions.cancel")}
                       >
                         {actionLoading ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
+                          <LoaderCircle className="h-3 w-3 animate-spin" />
                         ) : (
                           <X className="h-3 w-3" />
                         )}
@@ -200,7 +200,7 @@ export function ChildSessionSidebar({
                         aria-label={t("childSessions.retry")}
                       >
                         {actionLoading ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
+                          <LoaderCircle className="h-3 w-3 animate-spin" />
                         ) : (
                           <RotateCcw className="h-3 w-3" />
                         )}
@@ -246,7 +246,7 @@ export function ChildSessionSidebar({
                           aria-label={t("childSessions.steer")}
                         >
                           {actionLoading ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
+                            <LoaderCircle className="h-3 w-3 animate-spin" />
                           ) : (
                             <Send className="h-3 w-3" />
                           )}
@@ -262,7 +262,7 @@ export function ChildSessionSidebar({
 
         {selectedTaskId && taskOutputStatus === "loading" && (
           <div className="mt-3 flex items-center gap-2 text-xs text-[var(--vc-text-subtle)]">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
             {t("childSessions.loading")}
           </div>
         )}

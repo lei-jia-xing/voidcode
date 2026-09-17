@@ -1,9 +1,10 @@
 import js from "@eslint/js";
+import { defineConfig } from "eslint/config";
 import tseslint from "typescript-eslint";
 import reactHooksPlugin from "eslint-plugin-react-hooks";
 import reactRefreshPlugin from "eslint-plugin-react-refresh";
 
-export default tseslint.config(
+export default defineConfig(
   { ignores: ["dist/**", "coverage/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
