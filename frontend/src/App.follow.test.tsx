@@ -46,6 +46,7 @@ const runtimeClientMocks = vi.hoisted(() => ({
   answerQuestionMock: vi.fn(),
   listBackgroundTasksMock: vi.fn(),
   listSessionBackgroundTasksMock: vi.fn(),
+  listNotificationsMock: vi.fn(),
   cancelSessionMock: vi.fn(),
   getBackgroundTaskOutputMock: vi.fn(),
   getChildSessionContextMock: vi.fn(),
@@ -78,6 +79,7 @@ vi.mock("./lib/runtime/client", () => ({
     listBackgroundTasks: runtimeClientMocks.listBackgroundTasksMock,
     listSessionBackgroundTasks:
       runtimeClientMocks.listSessionBackgroundTasksMock,
+    listNotifications: runtimeClientMocks.listNotificationsMock,
     cancelSession: runtimeClientMocks.cancelSessionMock,
     getBackgroundTaskOutput: runtimeClientMocks.getBackgroundTaskOutputMock,
     getChildSessionContext: runtimeClientMocks.getChildSessionContextMock,
@@ -369,65 +371,70 @@ async function browseParentSession() {
   expect(useAppStore.getState().currentSessionId).toBe("session-parent");
 }
 
+function installDefaultRuntimeClientMocks() {
+  runtimeClientMocks.listWorkspacesMock.mockResolvedValue({
+    current: {
+      path: "/workspace",
+      label: "workspace",
+      available: true,
+      current: true,
+      last_opened_at: 1,
+    },
+    recent: [],
+    candidates: [],
+  });
+  runtimeClientMocks.listProvidersMock.mockResolvedValue([]);
+  runtimeClientMocks.listAgentsMock.mockResolvedValue([]);
+  runtimeClientMocks.listSkillsMock.mockResolvedValue([]);
+  runtimeClientMocks.listCommandsMock.mockResolvedValue([]);
+  runtimeClientMocks.listSessionsMock.mockResolvedValue([
+    {
+      session: { id: "session-parent" },
+      status: "completed",
+      turn: 1,
+      prompt: "parent prompt",
+      updated_at: 1,
+    },
+  ]);
+  runtimeClientMocks.getStatusMock.mockResolvedValue({
+    git: { state: "git_ready", root: "/workspace", error: null },
+    lsp: { state: "stopped", error: null, details: {} },
+    mcp: { state: "stopped", error: null, details: {} },
+    acp: { state: "unconfigured", error: null, details: {} },
+    background_tasks: {
+      active_worker_slots: 0,
+      queued_count: 0,
+      running_count: 0,
+      terminal_count: 0,
+      default_concurrency: 1,
+      provider_concurrency: {},
+      model_concurrency: {},
+      status_counts: {},
+    },
+  });
+  runtimeClientMocks.getReviewMock.mockResolvedValue({
+    root: "/workspace",
+    git: { state: "git_ready", root: "/workspace" },
+    changed_files: [],
+    tree: [],
+  });
+  runtimeClientMocks.getSettingsMock.mockResolvedValue({
+    model: "",
+  });
+  runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([]);
+  runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
+  runtimeClientMocks.listNotificationsMock.mockResolvedValue([]);
+  runtimeClientMocks.getBackgroundTaskOutputMock.mockResolvedValue(
+    makeChildOutput("interrupted"),
+  );
+}
+
 describe("App follow stream with delegated child sessions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
     resetStore();
-    runtimeClientMocks.listWorkspacesMock.mockResolvedValue({
-      current: {
-        path: "/workspace",
-        label: "workspace",
-        available: true,
-        current: true,
-        last_opened_at: 1,
-      },
-      recent: [],
-      candidates: [],
-    });
-    runtimeClientMocks.listProvidersMock.mockResolvedValue([]);
-    runtimeClientMocks.listAgentsMock.mockResolvedValue([]);
-    runtimeClientMocks.listSkillsMock.mockResolvedValue([]);
-    runtimeClientMocks.listCommandsMock.mockResolvedValue([]);
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([
-      {
-        session: { id: "session-parent" },
-        status: "completed",
-        turn: 1,
-        prompt: "parent prompt",
-        updated_at: 1,
-      },
-    ]);
-    runtimeClientMocks.getStatusMock.mockResolvedValue({
-      git: { state: "git_ready", root: "/workspace", error: null },
-      lsp: { state: "stopped", error: null, details: {} },
-      mcp: { state: "stopped", error: null, details: {} },
-      acp: { state: "unconfigured", error: null, details: {} },
-      background_tasks: {
-        active_worker_slots: 0,
-        queued_count: 0,
-        running_count: 0,
-        terminal_count: 0,
-        default_concurrency: 1,
-        provider_concurrency: {},
-        model_concurrency: {},
-        status_counts: {},
-      },
-    });
-    runtimeClientMocks.getReviewMock.mockResolvedValue({
-      root: "/workspace",
-      git: { state: "git_ready", root: "/workspace" },
-      changed_files: [],
-      tree: [],
-    });
-    runtimeClientMocks.getSettingsMock.mockResolvedValue({
-      model: "",
-    });
-    runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([]);
-    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
-    runtimeClientMocks.getBackgroundTaskOutputMock.mockResolvedValue(
-      makeChildOutput("interrupted"),
-    );
+    installDefaultRuntimeClientMocks();
   });
 
   it("shows an interrupted child once without opening a redundant follow stream", async () => {
@@ -805,5 +812,352 @@ describe("App follow stream with delegated child sessions", () => {
     expect(useAppStore.getState().currentSessionOutput).toBe(
       "completed externally",
     );
+  });
+});
+
+function sequenceList(): number[] {
+  return useAppStore
+    .getState()
+    .currentSessionEvents.map((event) => event.sequence);
+}
+
+function delegatedRequestCount(): number {
+  return (
+    runtimeClientMocks.listBackgroundTasksMock.mock.calls.length +
+    runtimeClientMocks.listSessionBackgroundTasksMock.mock.calls.length +
+    runtimeClientMocks.getBackgroundTaskOutputMock.mock.calls.length
+  );
+}
+
+/**
+ * Put the app in the state an externally started run leaves the client in:
+ * selected session, non-terminal status, no local run in flight.
+ */
+async function startExternalRunSession(
+  sessionId: string,
+  events: EventEnvelope[],
+) {
+  // Settle mount effects (their own task/notification refreshes) so a test can
+  // count only the requests the follow stream itself causes.
+  await flushAsync();
+  runtimeClientMocks.listBackgroundTasksMock.mockClear();
+  runtimeClientMocks.listSessionBackgroundTasksMock.mockClear();
+  runtimeClientMocks.getBackgroundTaskOutputMock.mockClear();
+  useAppStore.setState({
+    currentSessionId: sessionId,
+    currentSessionState: makeSessionState(sessionId, "running"),
+    currentSessionEvents: events,
+    currentSessionOutput: null,
+    runStatus: "running",
+    runOrigin: "external",
+    replayStatus: "success",
+  });
+}
+
+describe("App session-event follow stream (push contract)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    resetStore();
+    installDefaultRuntimeClientMocks();
+    runtimeClientMocks.getChildSessionContextMock.mockRejectedValue({
+      status: 404,
+      message: "not a delegated child",
+    });
+  });
+
+  it("renders pushed events while the stream is open and reconciles once at close", async () => {
+    const held = createDeferred<void>();
+    runtimeClientMocks.sessionEventsMock.mockImplementation(async function* () {
+      yield makeSnapshotChunk("session-1", "running");
+      yield {
+        kind: "event",
+        session: null,
+        event: makeEvent(
+          2,
+          "graph.provider_stream",
+          { channel: "text", text: "first pushed chunk" },
+          "graph",
+        ),
+        output: null,
+      };
+      await held.promise;
+      yield {
+        kind: "event",
+        session: null,
+        event: makeEvent(
+          3,
+          "graph.provider_stream",
+          { channel: "text", text: " second pushed chunk" },
+          "graph",
+        ),
+        output: null,
+      };
+    });
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValue(
+      makeRuntimeResponse(
+        "session-1",
+        "completed",
+        [
+          makeEvent(
+            1,
+            "runtime.request_received",
+            { prompt: "do it" },
+            "runtime",
+          ),
+          makeEvent(
+            2,
+            "graph.provider_stream",
+            { channel: "text", text: "first pushed chunk" },
+            "graph",
+          ),
+          makeEvent(
+            3,
+            "graph.provider_stream",
+            { channel: "text", text: " second pushed chunk" },
+            "graph",
+          ),
+          makeEvent(
+            4,
+            "runtime.completed",
+            { output: "final output" },
+            "runtime",
+          ),
+        ],
+        "final output",
+      ),
+    );
+
+    render(<App />);
+    await startExternalRunSession("session-1", [
+      makeEvent(1, "runtime.request_received", { prompt: "do it" }, "runtime"),
+    ]);
+
+    // The pushed frame is rendered while the stream is still open: seeing it
+    // needs no transcript refetch.
+    await waitFor(() => {
+      expect(screen.getByText(/first pushed chunk/)).toBeInTheDocument();
+    });
+    expect(runtimeClientMocks.getSessionReplayMock).not.toHaveBeenCalled();
+    expect(sequenceList()).toEqual([1, 2]);
+    expect(useAppStore.getState().currentSessionState?.status).toBe("running");
+
+    // The stream closes: exactly one authoritative reconciliation follows.
+    held.resolve();
+    await waitFor(() => {
+      expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledTimes(1);
+    });
+    await flushAsync();
+    expect(useAppStore.getState().currentSessionState?.status).toBe(
+      "completed",
+    );
+    expect(useAppStore.getState().currentSessionOutput).toBe("final output");
+    expect(sequenceList()).toEqual([1, 2, 3, 4]);
+    // The authoritative transcript replaced the incremental view.
+    await waitFor(() => {
+      expect(screen.getByText(/final output/)).toBeInTheDocument();
+    });
+  });
+
+  it("does not append an event the transcript already holds", async () => {
+    const held = createDeferred<void>();
+    runtimeClientMocks.sessionEventsMock.mockImplementation(async function* () {
+      yield makeSnapshotChunk("session-1", "running");
+      // The cursor the stream resumes from can race a `selectSession` that
+      // already delivered this exact event.
+      yield {
+        kind: "event",
+        session: null,
+        event: makeEvent(
+          2,
+          "graph.provider_stream",
+          { channel: "text", text: "ALPHA" },
+          "graph",
+        ),
+        output: null,
+      };
+      yield {
+        kind: "event",
+        session: null,
+        event: makeEvent(
+          3,
+          "graph.provider_stream",
+          { channel: "text", text: "BETA" },
+          "graph",
+        ),
+        output: null,
+      };
+      await held.promise;
+    });
+
+    render(<App />);
+    await startExternalRunSession("session-1", [
+      makeEvent(1, "runtime.request_received", { prompt: "do it" }, "runtime"),
+      makeEvent(
+        2,
+        "graph.provider_stream",
+        { channel: "text", text: "ALPHA" },
+        "graph",
+      ),
+    ]);
+
+    await waitFor(() => {
+      expect(sequenceList()).toEqual([1, 2, 3]);
+    });
+    // Delivered once, not twice: the re-pushed event neither grew the
+    // transcript nor duplicated its text.
+    await waitFor(() => {
+      expect(screen.getByText(/ALPHABETA/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/ALPHAALPHA/)).toBeNull();
+    held.resolve();
+  });
+
+  it("coalesces a burst of delegated frames into one task refresh", async () => {
+    const held = createDeferred<void>();
+    const delegatedEvents = Array.from({ length: 20 }, (_, index) =>
+      makeEvent(
+        index + 2,
+        "runtime.background_task_progress",
+        { task_id: "task-child", chunk: `chunk ${index}` },
+        "runtime",
+      ),
+    );
+    runtimeClientMocks.sessionEventsMock.mockImplementation(async function* () {
+      yield makeSnapshotChunk("session-1", "running");
+      for (const event of delegatedEvents) {
+        yield { kind: "event", session: null, event, output: null };
+      }
+      await held.promise;
+    });
+
+    render(<App />);
+    await startExternalRunSession("session-1", [
+      makeEvent(1, "runtime.request_received", { prompt: "do it" }, "runtime"),
+    ]);
+
+    await waitFor(() => {
+      expect(sequenceList()).toHaveLength(1 + delegatedEvents.length);
+    });
+    // The whole burst coalesces instead of firing a request pair per frame.
+    expect(delegatedRequestCount()).toBeLessThanOrEqual(2);
+
+    // ...and the coalesced refresh lands while the stream stays open.
+    await waitFor(() => {
+      expect(
+        runtimeClientMocks.listSessionBackgroundTasksMock,
+      ).toHaveBeenCalled();
+    });
+    expect(delegatedRequestCount()).toBeLessThanOrEqual(2);
+    held.resolve();
+  });
+
+  it("refreshes notifications once when a pushed frame enqueues one", async () => {
+    const held = createDeferred<void>();
+    runtimeClientMocks.sessionEventsMock.mockImplementation(async function* () {
+      yield makeSnapshotChunk("session-1", "running");
+      yield {
+        kind: "event",
+        session: null,
+        event: makeEvent(
+          2,
+          "runtime.background_task_progress",
+          { task_id: "task-child", chunk: "chunk" },
+          "runtime",
+        ),
+        output: null,
+      };
+      yield {
+        kind: "event",
+        session: null,
+        event: makeEvent(
+          3,
+          "runtime.background_task_notification_enqueued",
+          { task_id: "task-child", notification_id: "notification-1" },
+          "runtime",
+        ),
+        output: null,
+      };
+      await held.promise;
+    });
+
+    render(<App />);
+    await startExternalRunSession("session-1", [
+      makeEvent(1, "runtime.request_received", { prompt: "do it" }, "runtime"),
+    ]);
+    runtimeClientMocks.listNotificationsMock.mockClear();
+
+    // The notification list follows the pushed frame (it used to only refresh
+    // when the run ended), inside the same coalesced window as the task list.
+    await waitFor(() => {
+      expect(runtimeClientMocks.listNotificationsMock).toHaveBeenCalledTimes(1);
+    });
+    expect(delegatedRequestCount()).toBeLessThanOrEqual(2);
+    held.resolve();
+  });
+
+  it("keeps the delegated child view when frames are pushed for it", async () => {
+    runtimeClientMocks.sessionEventsMock.mockImplementation(async function* (
+      sessionId: string,
+    ) {
+      yield makeSnapshotChunk(sessionId, "running");
+      yield {
+        kind: "event",
+        session: null,
+        event: makeEvent(
+          3,
+          "graph.provider_stream",
+          { channel: "text", text: "live child chunk" },
+          "graph",
+          sessionId,
+        ),
+        output: null,
+      };
+    });
+
+    render(<App />);
+    await browseParentSession();
+    // Override the child behavior after browsing the parent
+    // (browseParentSession owns the parent-side implementation).
+    runtimeClientMocks.getChildSessionContextMock.mockImplementation(
+      (sessionId: string) =>
+        sessionId === "child-session"
+          ? Promise.resolve(makeChildOutput("running"))
+          : Promise.reject({ status: 404, message: "not a delegated child" }),
+    );
+    const parentReplayCalls =
+      runtimeClientMocks.getSessionReplayMock.mock.calls.length;
+
+    await act(async () => {
+      await useAppStore.getState().selectSession("child-session");
+    });
+    await waitFor(() => {
+      expect(useAppStore.getState().selectedBackgroundTaskOutputId).toBe(
+        "task-child",
+      );
+    });
+    await flushAsync();
+
+    // Pushed frames for the child never overwrite the child context view, and
+    // the stream settling never yanks the user back to the parent session.
+    expect(useAppStore.getState().currentSessionId).toBe("child-session");
+    expect(useAppStore.getState().childSessionParentId).toBe("session-parent");
+    expect(useAppStore.getState().selectedBackgroundTaskOutputId).toBe(
+      "task-child",
+    );
+    expect(useAppStore.getState().backgroundTaskOutput?.output).toBe(
+      "child output",
+    );
+    // The pushed child frame (sequence 3) never entered the transcript held by
+    // the child context view.
+    expect(sequenceList()).toEqual([1, 2]);
+    expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledTimes(
+      parentReplayCalls,
+    );
+    // The child view is refreshed in place instead.
+    expect(runtimeClientMocks.getBackgroundTaskOutputMock).toHaveBeenCalledWith(
+      "task-child",
+    );
+    expect(screen.getByText(/child output/)).toBeInTheDocument();
   });
 });

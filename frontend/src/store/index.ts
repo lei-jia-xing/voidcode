@@ -151,6 +151,10 @@ interface AppState {
   setReviewMode: (mode: "changes" | "files") => void;
   setSessionSidebarWidth: (width: number) => void;
   loadSessions: () => Promise<void>;
+  /** Merge one pushed session-event frame; false when it was already stored. */
+  mergeSessionEvent: (event: EventEnvelope) => boolean;
+  /** Adopt the session row pushed by a stream; false when nothing moved. */
+  mergeSessionState: (session: SessionState) => boolean;
   selectSession: (sessionId: string) => Promise<void>;
   runTask: (
     prompt: string,
@@ -1010,6 +1014,49 @@ export const useAppStore = create<AppState>()(
             notificationsError: errorMessage(err),
           });
         }
+      },
+
+      mergeSessionEvent: (event) => {
+        const state = get();
+        if (
+          state.childSessionParentId !== null ||
+          state.currentSessionId !== event.session_id
+        ) {
+          return false;
+        }
+        // Value-based dedupe. The follow stream resumes from the cursor the
+        // client already replayed, so a pushed frame can legitimately repeat an
+        // event `selectSession` delivered; (session_id, sequence) is the
+        // runtime's per-session identity for an event.
+        const alreadyDelivered = state.currentSessionEvents.some(
+          (existing) =>
+            existing.session_id === event.session_id &&
+            existing.sequence === event.sequence,
+        );
+        if (alreadyDelivered) return false;
+        set({ currentSessionEvents: [...state.currentSessionEvents, event] });
+        return true;
+      },
+
+      mergeSessionState: (session) => {
+        const state = get();
+        if (
+          state.childSessionParentId !== null ||
+          state.currentSessionId !== session.session.id
+        ) {
+          return false;
+        }
+        const previous = state.currentSessionState;
+        // The row is always adopted — it is the runtime's own state — while the
+        // return value reports whether the view moved (the stream only pushes a
+        // row on open and on real change).
+        const moved =
+          previous === null ||
+          previous.status !== session.status ||
+          previous.turn !== session.turn ||
+          previous.session.parent_id !== session.session.parent_id;
+        set({ currentSessionState: session });
+        return moved;
       },
 
       selectSession: async (sessionId: string) => {

@@ -47,6 +47,10 @@ const SCROLL_FOLLOW_KEYS: Record<string, true> = {
   " ": true,
 };
 
+// Pushed delegated-task frames are coalesced into a single background-task (and
+// notification) refresh per window, instead of one request pair per frame.
+const DELEGATED_REFRESH_INTERVAL_MS = 250;
+
 function SubsessionTimelineHeader({
   childPrompt,
   onReturn,
@@ -260,6 +264,15 @@ function App() {
     selectedBackgroundTaskOutputIdRef.current = selectedBackgroundTaskOutputId;
   }, [selectedBackgroundTaskOutputId]);
 
+  // Mirrors currentSessionState.status for the follow-stream effect. The effect
+  // must NOT depend on that status directly: it applies the session row the
+  // stream pushes, which would change the dependency and abort the stream
+  // before its remaining replayed frames were consumed.
+  const currentSessionStatusRef = useRef(currentSessionState?.status);
+  useEffect(() => {
+    currentSessionStatusRef.current = currentSessionState?.status;
+  }, [currentSessionState?.status]);
+
   const isRunning =
     runStatus === "running" ||
     runStatus === "cancelling" ||
@@ -446,21 +459,53 @@ function App() {
     // follow. Opening a follow stream here would immediately receive the
     // terminal snapshot and then re-select the session, causing a redundant
     // full reload right after every completed run.
+    const sessionStatus = currentSessionStatusRef.current;
     if (
       !currentSessionId ||
       replayStatus === "loading" ||
       (runStatus === "running" && runOrigin !== "external") ||
       runStatus === "cancelling" ||
-      (currentSessionState?.status != null &&
-        TERMINAL_DISPLAY_SESSION_STATUSES[currentSessionState.status] === true)
+      (sessionStatus != null &&
+        TERMINAL_DISPLAY_SESSION_STATUSES[sessionStatus] === true)
     ) {
       return;
     }
     const controller = new AbortController();
     const afterSequence = sessionEventCursorRef.current;
-    // A terminal snapshot may be newer than the selected running session.
-    // Consume its replay before refreshing the authoritative transcript.
-    let sawNewData = false;
+    let appliedEvents = 0;
+    let appliedSessionState = false;
+    let refreshTimer: number | undefined;
+    let notificationsDirty = false;
+    let lastDelegatedRefreshAt = 0;
+
+    // Delegated task/notification state is refreshed once per window no matter
+    // how many background-task frames the run pushes (a delegated child emits
+    // progress continuously). The refresh is fire-and-forget and never awaited
+    // inside the SSE loop, so a slow request cannot stall event delivery; the
+    // child output is allowed to lag by this window.
+    const scheduleDelegatedRefresh = (notifications: boolean) => {
+      notificationsDirty = notificationsDirty || notifications;
+      if (controller.signal.aborted) return;
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(
+        () => {
+          lastDelegatedRefreshAt = Date.now();
+          if (controller.signal.aborted) return;
+          void loadBackgroundTasks();
+          const outputId = selectedBackgroundTaskOutputIdRef.current;
+          if (outputId) void loadBackgroundTaskOutput(outputId);
+          if (notificationsDirty) {
+            notificationsDirty = false;
+            void loadNotifications?.();
+          }
+        },
+        Math.max(
+          0,
+          lastDelegatedRefreshAt + DELEGATED_REFRESH_INTERVAL_MS - Date.now(),
+        ),
+      );
+    };
+
     void (async () => {
       try {
         for await (const chunk of RuntimeClient.sessionEvents(
@@ -469,22 +514,22 @@ function App() {
           controller.signal,
         )) {
           if (controller.signal.aborted) return;
-          // Snapshots precede replay events, even for an already finished run.
-          if (
-            chunk.kind === "session" &&
-            chunk.session &&
-            TERMINAL_DISPLAY_SESSION_STATUSES[chunk.session.status] === true
-          ) {
-            sawNewData = true;
+          // The frames are the delivery path: apply them in arrival order, and
+          // let the store reject anything the initial replay already holds.
+          if (chunk.session !== null) {
+            appliedSessionState =
+              useAppStore.getState().mergeSessionState(chunk.session) ||
+              appliedSessionState;
           }
-          if (chunk.event) {
-            sawNewData = true;
+          if (chunk.event !== null) {
+            if (useAppStore.getState().mergeSessionEvent(chunk.event)) {
+              appliedEvents += 1;
+            }
             if (chunk.event.event_type.startsWith("runtime.background_task_")) {
-              await loadBackgroundTasks();
-              const outputId = selectedBackgroundTaskOutputIdRef.current;
-              if (outputId) {
-                await loadBackgroundTaskOutput(outputId);
-              }
+              scheduleDelegatedRefresh(
+                chunk.event.event_type ===
+                  "runtime.background_task_notification_enqueued",
+              );
             }
           }
         }
@@ -499,13 +544,25 @@ function App() {
           // in place. Re-selecting the underlying session here would clear the
           // child view state and flip the transcript back to the parent.
           await loadBackgroundTaskOutput(outputId);
-        } else if (
-          sawNewData &&
-          useAppStore.getState().replayStatus !== "loading"
-        ) {
+          return;
+        }
+        if (useAppStore.getState().replayStatus === "loading") {
           // A selectSession for this session is already in flight (its fetch
           // has not resolved yet). Re-selecting now would clear the view and
           // discard the in-flight result, flashing the transcript.
+          return;
+        }
+        // The stream closing is how the runtime reports that the session no
+        // longer needs a follower: it closes on a terminal state, or the
+        // transport dropped. Either way the replay is the authoritative
+        // transcript/output, so reconcile exactly once — unless the frames
+        // already told us everything and the session is terminal, in which case
+        // a reload would only repeat what is on screen.
+        const storeStatus = useAppStore.getState().currentSessionState?.status;
+        const sessionMayStillBeLive =
+          storeStatus === undefined ||
+          TERMINAL_DISPLAY_SESSION_STATUSES[storeStatus] !== true;
+        if (appliedEvents > 0 || appliedSessionState || sessionMayStillBeLive) {
           await selectSession(currentSessionId);
         }
       } catch (error) {
@@ -514,15 +571,18 @@ function App() {
         }
       }
     })();
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      window.clearTimeout(refreshTimer);
+    };
   }, [
     currentSessionId,
-    currentSessionState,
     runOrigin,
     runStatus,
     replayStatus,
     loadBackgroundTaskOutput,
     loadBackgroundTasks,
+    loadNotifications,
     selectSession,
   ]);
 
