@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+from ..provider.naming import canonical_model_reference
 from .config import (
     APPROVAL_MODE_ENV_VAR,
     MODEL_ENV_VAR,
@@ -282,11 +283,16 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "custom": {
                         "type": "object",
                         "additionalProperties": {"$ref": "#/$defs/endpointProviderConfig"},
+                        # A custom provider id is canonicalised the same way as a
+                        # built-in one (trimmed, lowercased) before it is stored, so
+                        # padding is accepted here and the reserved-name collision is
+                        # enforced by the parser, which can compare case-insensitively
+                        # (ECMA-262 `pattern` has no case-insensitive flag).
                         "propertyNames": {
                             "pattern": (
                                 r"^(?!(?:openai|anthropic|google|copilot|endpoint|opencode|openrouter|"
                                 r"deepseek|zai|zhipuai|grok|minimax|kimi|opencode-go|qwen|groq|together|"
-                                r"fireworks|mistral)$)(?!\s)(?!.*\s$)(?!.*[/]).+$"
+                                r"fireworks|mistral)$)(?!.*[/]).+$"
                             )
                         },
                     },
@@ -790,7 +796,9 @@ def generate_starter_runtime_config(
     if approval_mode not in {"allow", "deny", "ask"}:
         raise ValueError(f"approval_mode must be one of: allow, deny, ask; received {approval_mode!r}")
     if model is not None:
-        _validate_model_reference(model)
+        # The starter config stores the canonical provider id, so `config init
+        # --model MiniMax/...` and `--model minimax/...` write the same file.
+        model = canonical_model_reference(model)
 
     payload: dict[str, object] = {}
     if include_schema_reference:
@@ -805,12 +813,6 @@ def generate_starter_runtime_config(
         payload["tools"] = {"builtin": {"enabled": True}}
         payload["skills"] = {"enabled": True}
     return payload
-
-
-def _validate_model_reference(model: str) -> None:
-    provider_name, separator, model_name = model.partition("/")
-    if separator != "/" or not provider_name or not model_name:
-        raise ValueError("model must use provider/model format")
 
 
 def format_starter_runtime_config_json(payload: Mapping[str, object]) -> str:

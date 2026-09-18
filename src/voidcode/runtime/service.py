@@ -43,6 +43,7 @@ from ..provider.models import (
     ResolvedProviderConfig,
     ResolvedProviderModel,
 )
+from ..provider.naming import provider_label, split_provider_model_reference
 from ..provider.protocol import (
     ProviderAbortSignal,
 )
@@ -3606,11 +3607,21 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         return agents or {}, base_model, base_provider_fallback
 
-    def refresh_provider_models(self, provider_name: str) -> tuple[str, ...]:
+    def _canonical_known_provider_name(self, provider_name: str) -> str:
+        """Canonical id for a provider this runtime knows, or a loud error.
+
+        ``provider_name`` is user input from the CLI, HTTP, or config. An id that
+        is neither a built-in nor a declared ``providers.custom`` provider must
+        not degrade into the generic endpoint provider, so the registry answers
+        this question once and raises otherwise.
+        """
         if not provider_name or "/" in provider_name:
             raise ValueError("provider_name must be a non-empty provider id without '/'")
-        _ = self._model_provider_registry.resolve(provider_name)
-        models = self._model_provider_registry.refresh_available_models(provider_name)
+        return self._model_provider_registry.resolve_with_metadata(provider_name).provider_name
+
+    def refresh_provider_models(self, provider_name: str) -> tuple[str, ...]:
+        canonical_name = self._canonical_known_provider_name(provider_name)
+        models = self._model_provider_registry.refresh_available_models(canonical_name)
         self._persist_provider_model_catalog_cache()
         return models
 
@@ -3664,17 +3675,18 @@ class VoidCodeRuntime(RuntimeSurface):
         return self._provider_summary_projector.project_all(
             self._model_provider_registry.providers,
             current_provider=self._current_provider_name(),
-            label_for=self._provider_label,
+            label_for=provider_label,
             is_configured=self._provider_is_configured,
         )
 
     def provider_models_result(self, provider_name: str) -> ProviderModelsResult:
-        configured = self._provider_is_configured(provider_name)
-        catalog = self.provider_model_catalog(provider_name)
+        canonical_name = self._canonical_known_provider_name(provider_name)
+        configured = self._provider_is_configured(canonical_name)
+        catalog = self.provider_model_catalog(canonical_name)
         if configured and catalog is None:
-            _ = self.refresh_provider_models(provider_name)
+            _ = self.refresh_provider_models(canonical_name)
         return self._provider_catalog_query.models_result(
-            provider_name,
+            canonical_name,
             configured=configured,
         )
 
@@ -3795,14 +3807,13 @@ class VoidCodeRuntime(RuntimeSurface):
         }
 
     def inspect_provider(self, provider_name: str) -> ProviderInspectResult:
-        if not provider_name or "/" in provider_name:
-            raise ValueError("provider_name must be a non-empty provider id without '/'")
+        canonical_name = self._canonical_known_provider_name(provider_name)
         summary = next(
-            (provider for provider in self.list_provider_summaries() if provider.name == provider_name),
+            (provider for provider in self.list_provider_summaries() if provider.name == canonical_name),
             self._provider_summary_projector.project_one(
-                provider_name,
+                canonical_name,
                 current_provider=self._current_provider_name(),
-                label_for=self._provider_label,
+                label_for=provider_label,
                 is_configured=self._provider_is_configured,
             ),
         )
@@ -3820,8 +3831,8 @@ class VoidCodeRuntime(RuntimeSurface):
         )
 
     def validate_provider_credentials(self, provider_name: str) -> ProviderValidationResult:
-        if not provider_name or "/" in provider_name:
-            raise ValueError("provider_name must be a non-empty provider id without '/'")
+        canonical_name = self._canonical_known_provider_name(provider_name)
+        provider_name = canonical_name
         configured = self._provider_is_configured(provider_name)
         if not configured:
             return RuntimeProviderValidationProjector.project(
@@ -4162,29 +4173,6 @@ class VoidCodeRuntime(RuntimeSurface):
         selection = active_target.selection
         return selection.provider
 
-    @staticmethod
-    def _provider_label(provider_name: str) -> str:
-        return {
-            "opencode": "OpenCode",
-            "opencode-go": "OpenCode Go",
-            "openai": "OpenAI",
-            "anthropic": "Anthropic",
-            "google": "Google",
-            "copilot": "Copilot",
-            "endpoint": "Endpoint",
-            "deepseek": "DeepSeek",
-            "zai": "Z.AI",
-            "zhipuai": "ZhipuAI",
-            "grok": "Grok",
-            "minimax": "MiniMax",
-            "kimi": "Kimi",
-            "qwen": "Qwen",
-            "groq": "Groq",
-            "together": "Together",
-            "fireworks": "Fireworks",
-            "mistral": "Mistral",
-        }.get(provider_name, provider_name)
-
     def _provider_is_configured(self, provider_name: str) -> bool:
         return self._provider_auth_inspector.is_configured(provider_name)
 
@@ -4211,9 +4199,12 @@ class VoidCodeRuntime(RuntimeSurface):
             )
         )
         if model is not None:
+            provider_name, model_name = split_provider_model_reference(model)
+            _ = self._canonical_known_provider_name(provider_name)
             config_path = self._workspace / ".voidcode.json"
             payload = self._read_json_object(config_path)
-            payload["model"] = model
+            # Store the canonical provider id; the model id is the vendor's own.
+            payload["model"] = f"{provider_name}/{model_name}"
             config_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         self._reload_runtime_config_state()
         return self.web_settings()

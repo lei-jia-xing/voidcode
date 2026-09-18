@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from ..provider.naming import provider_label
 from ..runtime.config import RUNTIME_CONFIG_FILE_NAME
 from ..runtime.provider_inspection import provider_credentials_config_path
 from .checker import CapabilityCheckResult, CapabilityCheckStatus
@@ -180,11 +181,20 @@ def _create_first_task_readiness(results: list[CapabilityCheckResult], workspace
     )
 
 
+def _provider_name_for_display(provider: object) -> object:
+    """Human label for a provider id; absent values pass through unchanged."""
+    return provider_label(provider) if isinstance(provider, str) and provider else provider
+
+
 def _first_task_details(result: CapabilityCheckResult, results: list[CapabilityCheckResult]) -> dict[str, Any]:
     details = dict(result.details)
+    provider = details.get("provider")
     return {
         "workspace_config_valid": True,
-        "provider": details.get("provider"),
+        # The machine id stays the config/CLI reference; the label is the name a
+        # human reads, exactly as `/api/providers` reports them.
+        "provider": provider,
+        "provider_label": _provider_name_for_display(provider),
         "model": details.get("model"),
         "provider_status": details.get("status"),
         "auth_present": details.get("auth_present"),
@@ -270,7 +280,7 @@ def format_report(report: CapabilityReport, *, verbose: bool = False) -> str:
         if "workspace_config_valid" in details:
             lines.append(f"  workspace_config_valid: {details['workspace_config_valid']}")
         if "provider" in details:
-            lines.append(f"  provider: {details['provider']}")
+            lines.append(f"  provider: {_provider_name_for_display(details['provider'])}")
         if "model" in details:
             lines.append(f"  model: {details['model']}")
         if "auth_present" in details:
@@ -393,7 +403,7 @@ def _format_details(result: CapabilityCheckResult) -> list[str]:
     if "version_info" in d and d["version_info"]:
         details.append(f"version: {d['version_info']}")
     if "provider" in d:
-        details.append(f"provider: {d['provider']}")
+        details.append(f"provider: {_provider_name_for_display(d['provider'])}")
     if "model" in d:
         details.append(f"model: {d['model']}")
     if "auth_present" in d:

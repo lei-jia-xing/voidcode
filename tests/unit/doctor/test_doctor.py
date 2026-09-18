@@ -267,9 +267,10 @@ class TestCreateDoctorForConfig:
 
         readiness = next(result for result in doctor.results if result.name == "provider.readiness")
         assert readiness.status == CapabilityCheckStatus.ERROR
-        assert readiness.details["status"] == "invalid_model"
+        assert readiness.details["status"] == "invalid_config"
         assert readiness.error_message is not None
-        assert "unknown-provider" in readiness.error_message
+        assert "unknown provider id 'unknown-provider'" in readiness.error_message
+        assert "providers.custom.unknown-provider" in readiness.error_message
 
     def test_provider_readiness_unconfigured_provider_is_error(self, tmp_path: Path) -> None:
         config = RuntimeConfig(

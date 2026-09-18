@@ -27,6 +27,7 @@ from voidcode.provider.kimi import KimiModelProvider
 from voidcode.provider.minimax import MiniMaxModelProvider
 from voidcode.provider.mistral import MistralModelProvider
 from voidcode.provider.model_catalog import ProviderModelCatalog, ProviderModelMetadata
+from voidcode.provider.naming import UnknownProviderIdError
 from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.openai_native import OpenAIChatCompletionsProvider
 from voidcode.provider.opencode import OpenCodeModelProvider
@@ -49,26 +50,46 @@ def test_registry_registers_concrete_provider_adapters() -> None:
     assert isinstance(registry.resolve("endpoint"), OpenAIEndpointProvider)
 
 
-def test_registry_resolves_unknown_provider_to_endpoint_adapter() -> None:
+def test_registry_canonicalises_provider_id_case() -> None:
     registry = ModelProviderRegistry.with_defaults()
 
-    resolved = registry.resolve("custom")
+    resolved = registry.resolve_with_metadata("MiniMax")
+
+    assert isinstance(resolved.provider, MiniMaxModelProvider)
+    assert resolved.provider_name == "minimax"
+    assert resolved.source == "builtin"
+
+
+def test_registry_declared_custom_provider_resolves_to_endpoint_adapter() -> None:
+    custom_config = ProviderEndpointConfig(
+        api_key="token",
+        base_url="http://localhost:11434/v1",
+    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(custom={"llama-local": custom_config}))
+
+    resolved = registry.resolve("llama-local")
 
     assert isinstance(resolved, OpenAIEndpointProvider)
-    assert resolved.name == "custom"
+    assert resolved.name == "llama-local"
+    assert resolved.config == custom_config
 
 
-def test_registry_unknown_provider_reuses_default_endpoint_config() -> None:
+def test_registry_rejects_undeclared_provider_even_with_endpoint_config() -> None:
+    # A declared `providers.endpoint` is reached through the `endpoint` id; it does
+    # not make an unknown prefix resolve. This is the fallthrough that used to send
+    # an undeclared provider's traffic to a host the user never named.
     endpoint_config = ProviderEndpointConfig(
         api_key="token",
         base_url="http://localhost:4000",
     )
     registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(endpoint=endpoint_config))
 
-    resolved = registry.resolve("custom")
+    with pytest.raises(UnknownProviderIdError) as excinfo:
+        _ = registry.resolve("custom")
 
-    assert isinstance(resolved, OpenAIEndpointProvider)
-    assert resolved.config == endpoint_config
+    assert "unknown provider id 'custom'" in str(excinfo.value)
+    assert "providers.custom.custom" in str(excinfo.value)
+    assert isinstance(registry.resolve("endpoint"), OpenAIEndpointProvider)
 
 
 def test_registry_unknown_provider_prefers_custom_provider_config() -> None:
@@ -121,7 +142,7 @@ def test_registry_openai_compatible_provider_config_preserves_ssl_verify() -> No
     assert config.ssl_verify is False
 
 
-def test_registry_resolve_with_metadata_distinguishes_builtin_custom_and_default_sources() -> None:
+def test_registry_resolve_with_metadata_distinguishes_builtin_and_custom_sources() -> None:
     default_config = ProviderEndpointConfig(api_key="default")
     custom_config = ProviderEndpointConfig(api_key="custom", base_url="http://localhost:11434/v1")
     registry = ModelProviderRegistry.with_defaults(
@@ -133,16 +154,15 @@ def test_registry_resolve_with_metadata_distinguishes_builtin_custom_and_default
 
     builtin = registry.resolve_with_metadata("openai")
     custom = registry.resolve_with_metadata("llama-local")
-    fallback = registry.resolve_with_metadata("typo-provider")
 
     assert builtin.source == "builtin"
     assert builtin.configured is True
     assert custom.source == "custom"
     assert custom.configured is True
     assert custom.provider.name == "llama-local"
-    assert fallback.source == "default_endpoint"
-    assert fallback.configured is True
-    assert fallback.provider.name == "typo-provider"
+
+    with pytest.raises(UnknownProviderIdError):
+        _ = registry.resolve_with_metadata("typo-provider")
 
 
 def test_registry_registers_opencode_zen_provider_with_model_discovery() -> None:

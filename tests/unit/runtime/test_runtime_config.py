@@ -37,6 +37,7 @@ from voidcode.runtime.config import (
     RuntimeLspConfig,
     RuntimeLspServerConfig,
     RuntimeProviderFallbackConfig,
+    RuntimeProvidersConfig,
     RuntimeSkillsConfig,
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
@@ -2549,6 +2550,55 @@ def test_save_global_web_settings_writes_openai_compatible_provider_api_keys(tmp
     assert settings == RuntimeWebSettings(provider=provider, provider_api_key_present=True)
 
 
+def test_save_global_web_settings_canonicalises_the_provider_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # `MiniMax` is a spelling of the `minimax` provider, not a second provider: the
+    # web save path stores it under `providers.minimax` (the config-file key) instead
+    # of inventing `providers.custom.MiniMax`, which the file parser rejects.
+    global_config_dir = tmp_path / "global-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
+
+    save_global_web_settings(RuntimeWebSettings(provider="MiniMax", provider_api_key="sk-minimax"))
+
+    payload = json.loads(user_runtime_config_path().read_text(encoding="utf-8"))
+    assert payload["web"] == {"provider": "minimax"}
+    assert payload["providers"]["minimax"] == {"api_key": "sk-minimax"}
+    assert "custom" not in payload["providers"]
+    assert load_global_web_settings(env={"XDG_CONFIG_HOME": str(global_config_dir)}) == RuntimeWebSettings(
+        provider="minimax",
+        provider_api_key_present=True,
+    )
+    # The written file parses as runtime config: one input, one meaning.
+    config = load_runtime_config(tmp_path, env={"XDG_CONFIG_HOME": str(global_config_dir)})
+    assert config.providers is not None
+    assert config.providers.minimax is not None
+    assert config.providers.minimax.api_key == "sk-minimax"
+
+
+def test_save_global_web_settings_rejects_an_undeclared_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    global_config_dir = tmp_path / "global-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
+
+    with pytest.raises(ValueError, match=r"unknown provider id 'nope'.*providers\.custom\.nope"):
+        save_global_web_settings(RuntimeWebSettings(provider="nope", provider_api_key="sk-nope"))
+
+    assert not user_runtime_config_path().exists()
+
+
+def test_load_global_web_settings_canonicalises_a_stored_provider_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    global_config_dir = tmp_path / "global-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
+    user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
+    user_runtime_config_path().write_text(
+        json.dumps({"web": {"provider": "MiniMax"}, "providers": {"minimax": {"api_key": "sk-minimax"}}}),
+        encoding="utf-8",
+    )
+
+    settings = load_global_web_settings(env={"XDG_CONFIG_HOME": str(global_config_dir)})
+
+    assert settings.provider == "minimax"
+    assert settings.provider_api_key_present is True
+
+
 @pytest.mark.parametrize(
     ("provider", "env"),
     [
@@ -2709,9 +2759,13 @@ def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defau
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("resume precedence\n", encoding="utf-8")
 
+    # `session`/`fresh` are stand-in provider ids marking config precedence; the
+    # runtime resolves only ids it knows, so declare them as custom providers.
+    standin_providers = RuntimeProvidersConfig(custom={"session": ProviderEndpointConfig(), "fresh": ProviderEndpointConfig()})
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=standin_providers,
             approval_mode="allow",
             model="session/model",
             execution_engine="deterministic",
@@ -2722,6 +2776,7 @@ def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defau
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=standin_providers,
             approval_mode="deny",
             model="fresh/model",
             execution_engine="deterministic",

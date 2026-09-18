@@ -32,6 +32,11 @@ from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
 from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
 from ..mcp.builtin import get_builtin_mcp_descriptor, list_builtin_mcp_descriptors
 from ..provider import config as provider_config
+from ..provider.naming import (
+    BUILTIN_PROVIDER_IDS,
+    UnknownProviderIdError,
+    canonical_provider_id,
+)
 from ..provider.reasoning_effort import normalize_reasoning_effort
 from .context.transforms import validate_runtime_context_transform_refs
 from .permission import (
@@ -570,7 +575,10 @@ def load_global_web_settings(env: Mapping[str, str] | None = None) -> RuntimeWeb
     if isinstance(raw_web, dict):
         raw_provider = cast(dict[str, object], raw_web).get("provider")
         if isinstance(raw_provider, str):
-            configured_provider = raw_provider
+            # A value written before provider ids were canonicalised (`MiniMax`)
+            # names the same provider as `minimax`; report the canonical id so the
+            # settings surface and `/api/providers` agree.
+            configured_provider = canonical_provider_id(raw_provider)
     provider = configured_provider or _first_configured_provider_name(providers)
     return RuntimeWebSettings(
         provider=provider,
@@ -2906,7 +2914,7 @@ def save_global_tui_preferences(preferences: RuntimeTuiPreferences) -> None:
 
 
 def save_global_web_settings(settings: RuntimeWebSettings) -> None:
-    provider = settings.provider.strip() if isinstance(settings.provider, str) else ""
+    provider = canonical_provider_id(settings.provider) if isinstance(settings.provider, str) else ""
     if settings.provider_api_key is not None and not provider:
         raise ValueError("provider is required when saving a provider API key")
     config_path = user_runtime_config_path()
@@ -2938,8 +2946,16 @@ def _save_tui_preferences(config_path: Path, preferences: RuntimeTuiPreferences)
 
 
 def _validate_runtime_web_provider(provider: str) -> None:
-    if not provider or provider != provider.strip() or "/" in provider:
+    """Accept the provider ids the runtime lists, by canonical id.
+
+    The settings form offers ``/api/providers`` entries; an id that is not a
+    built-in provider must fail here rather than be written as a
+    ``providers.custom`` declaration the user never made.
+    """
+    if not provider or "/" in provider:
         raise ValueError("provider must be a non-empty provider id without '/'")
+    if provider not in BUILTIN_PROVIDER_IDS:
+        raise ValueError(UnknownProviderIdError(provider).message)
 
 
 def _first_configured_provider_name(providers: RuntimeProvidersConfig | None) -> str | None:
@@ -3057,14 +3073,7 @@ def _set_provider_api_key_payload(*, raw_providers: object, provider: str, api_k
         nested_payload["auth"] = auth_payload
         providers_payload[provider] = nested_payload
         return providers_payload
-    custom = providers_payload.get("custom")
-    custom_payload = dict(cast(dict[str, object], custom)) if isinstance(custom, dict) else {}
-    nested = custom_payload.get(provider)
-    nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
-    nested_payload["api_key"] = api_key
-    custom_payload[provider] = nested_payload
-    providers_payload["custom"] = custom_payload
-    return providers_payload
+    raise ValueError(f"provider '{provider}' has no writable credentials field in {RUNTIME_CONFIG_FILE_NAME}")
 
 
 def _read_json_object(config_path: Path) -> dict[str, object]:

@@ -12,6 +12,7 @@ from .config import (
     ProviderConfigs,
     ProviderEndpointConfig,
 )
+from .naming import canonical_provider_id
 
 type ProviderAuthProvider = str
 type ProviderErrorKind = Literal[
@@ -57,6 +58,11 @@ class ProviderAuthAuthorizeRequest:
     method: str | None = None
     payload: Mapping[str, object] | None = None
 
+    def __post_init__(self) -> None:
+        # ``MiniMax`` and ``minimax`` are the same provider id: canonicalise once,
+        # at the boundary, so every branch below compares one spelling.
+        object.__setattr__(self, "provider", canonical_provider_id(self.provider))
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderAuthAuthorizeResult:
@@ -73,6 +79,9 @@ class ProviderAuthCallbackRequest:
     method: str
     state: str
     payload: Mapping[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "provider", canonical_provider_id(self.provider))
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +136,12 @@ class ProviderAuthResolver:
         return self._providers.custom.get(provider)
 
     def _openai_compatible_provider_config(self, provider: str) -> OpenAICompatibleProviderConfig | None:
+        """Config for a known OpenAI-compatible provider, empty when unconfigured.
+
+        ``None`` means "not one of these provider ids": a built-in provider whose
+        config block is absent still answers here, with an empty config, so it is
+        reported as missing credentials instead of as an unsupported provider.
+        """
         provider_map = {
             "deepseek": self._providers.deepseek,
             "zai": self._providers.zai,
@@ -141,9 +156,12 @@ class ProviderAuthResolver:
             "fireworks": self._providers.fireworks,
             "mistral": self._providers.mistral,
         }
-        return provider_map.get(provider)
+        if provider not in provider_map:
+            return None
+        return provider_map[provider] or OpenAICompatibleProviderConfig()
 
     def methods(self, provider: ProviderAuthProvider) -> ProviderAuthMethodsResponse:
+        provider = canonical_provider_id(provider)
         if provider == "openai":
             return ProviderAuthMethodsResponse(
                 provider=provider,

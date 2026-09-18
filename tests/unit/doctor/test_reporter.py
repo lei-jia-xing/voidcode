@@ -276,8 +276,13 @@ class TestFormatReport:
         assert "First task readiness:" in output
         assert "status: not_ready" in output
         assert "workspace_config_valid: True" in output
-        assert "provider: openai" in output
+        # The report names the provider the way `/api/providers` does: label first,
+        # with the canonical id kept in `details` for config paths and commands.
+        assert "provider: OpenAI" in output
         assert "model: gpt-4o" in output
+        assert report.first_task_readiness is not None
+        assert report.first_task_readiness.details["provider"] == "openai"
+        assert report.first_task_readiness.details["provider_label"] == "OpenAI"
         assert "local_tools:" in output
         assert "ast-grep: not_found" in output
         assert "Add provider credentials." in output

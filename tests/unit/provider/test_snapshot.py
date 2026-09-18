@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import pytest
 
+from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_config
 from voidcode.provider.snapshot import parse_resolved_provider_snapshot, resolved_provider_snapshot
 from voidcode.runtime.config import RuntimeProviderFallbackConfig
 
+_CUSTOM_CONFIG = ProviderEndpointConfig(base_url="http://localhost:11434/v1")
+
 
 def test_resolved_provider_snapshot_round_trip_with_fallback_chain() -> None:
-    registry = ModelProviderRegistry.with_defaults()
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(custom={"llama-local": _CUSTOM_CONFIG}))
     resolved = resolve_provider_config(
         model="opencode/gpt-5.4",
         provider_fallback=RuntimeProviderFallbackConfig(
             preferred_model="opencode/gpt-5.4",
-            fallback_models=("custom/demo",),
+            fallback_models=("llama-local/demo",),
         ),
         registry=registry,
     )
@@ -79,12 +82,14 @@ def test_resolved_provider_snapshot_sanitizes_mapping_payload_to_minimal_shape()
 
 
 def test_parse_resolved_provider_snapshot_rejects_active_target_outside_target_chain() -> None:
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(custom={"llama-local": _CUSTOM_CONFIG}))
+
     with pytest.raises(ValueError, match="must reference one of the resolved provider targets"):
         _ = parse_resolved_provider_snapshot(
             {
                 "active_target": {
-                    "raw_model": "custom/other",
-                    "provider": "custom",
+                    "raw_model": "llama-local/other",
+                    "provider": "llama-local",
                     "model": "other",
                 },
                 "targets": [
@@ -94,10 +99,34 @@ def test_parse_resolved_provider_snapshot_rejects_active_target_outside_target_c
                         "model": "gpt-5.4",
                     },
                     {
-                        "raw_model": "custom/demo",
-                        "provider": "custom",
+                        "raw_model": "llama-local/demo",
+                        "provider": "llama-local",
                         "model": "demo",
                     },
+                ],
+            },
+            source="persisted runtime_config.resolved_provider",
+            registry=registry,
+        )
+
+
+def test_parse_resolved_provider_snapshot_rejects_undeclared_provider_target() -> None:
+    # A session persisted with an id nothing declares fails loudly on resume
+    # instead of silently resolving to the generic endpoint provider.
+    with pytest.raises(ValueError, match=r"providers\.custom\.ghost"):
+        _ = parse_resolved_provider_snapshot(
+            {
+                "active_target": {
+                    "raw_model": "ghost/model",
+                    "provider": "ghost",
+                    "model": "model",
+                },
+                "targets": [
+                    {
+                        "raw_model": "ghost/model",
+                        "provider": "ghost",
+                        "model": "model",
+                    }
                 ],
             },
             source="persisted runtime_config.resolved_provider",

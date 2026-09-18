@@ -8,6 +8,7 @@ from .models import (
     ResolvedProviderConfig,
     ResolvedProviderModel,
 )
+from .naming import split_provider_model_reference
 from .registry import ModelProviderRegistry
 
 
@@ -29,12 +30,14 @@ def resolve_provider_model(
     if raw_model is None:
         return ResolvedProviderModel()
 
-    provider_name, model_name = _parse_model_reference(raw_model)
+    provider_name, model_name = split_provider_model_reference(raw_model)
     provider_resolution = registry.resolve_with_metadata(provider_name)
     return ResolvedProviderModel(
         selection=ProviderModelSelection(
             raw_model=raw_model,
-            provider=provider_name,
+            # The provider segment is canonicalised; the model segment is the
+            # vendor's own wire value and keeps its case.
+            provider=provider_resolution.provider_name,
             model=model_name,
         ),
         provider=provider_resolution.provider,
@@ -100,13 +103,12 @@ def resolve_provider_config(
     )
 
 
-def _parse_model_reference(raw_model: str) -> tuple[str, str]:
-    provider_name, separator, model_name = raw_model.partition("/")
-    if separator != "/" or not provider_name or not model_name:
-        raise ValueError("model must use provider/model format")
-    return provider_name, model_name
-
-
 def _validate_unique_model_references(raw_models: tuple[str, ...]) -> None:
-    if len(set(raw_models)) != len(raw_models):
+    """Reject a fallback chain that targets one provider/model twice.
+
+    Comparison is case-insensitive on both halves: ``MiniMax/x`` and ``minimax/X``
+    are the same target even though the wire keeps the model id's own casing.
+    """
+    identities = [tuple(part.casefold() for part in split_provider_model_reference(raw_model)) for raw_model in raw_models]
+    if len(set(identities)) != len(identities):
         raise ValueError("provider fallback chain must not contain duplicate models")

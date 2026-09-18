@@ -255,9 +255,47 @@ def test_parse_provider_configs_payload_rejects_invalid_transient_retry_delay_or
 
 
 def test_parse_provider_configs_payload_rejects_unknown_provider_block() -> None:
-    with pytest.raises(ValueError, match="runtime config field 'providers.unknown' is not supported"):
+    # An undeclared provider id in the config names the canonical ids and the one
+    # supported way to add a custom OpenAI-compatible endpoint.
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"runtime config field 'providers.unknown': unknown provider id 'unknown': "
+            r"known provider ids are .*minimax.*; "
+            r"declare a custom OpenAI-compatible endpoint as providers\.custom\.unknown"
+        ),
+    ):
         _ = parse_provider_configs_payload(
             {"unknown": {}},
+            source="runtime config field 'providers'",
+        )
+
+
+def test_parse_provider_configs_payload_canonicalises_builtin_provider_keys() -> None:
+    # `providers.MiniMax` and `providers.minimax` are one entry: the id is
+    # case-insensitive at the config boundary.
+    canonical = parse_provider_configs_payload(
+        {"minimax": {"api_key": "sk-canonical"}},
+        source="runtime config field 'providers'",
+    )
+    variant = parse_provider_configs_payload(
+        {"MiniMax": {"api_key": "sk-canonical"}},
+        source="runtime config field 'providers'",
+    )
+
+    assert variant == canonical
+    assert variant is not None
+    assert variant.minimax is not None
+    assert variant.minimax.api_key == "sk-canonical"
+
+
+def test_parse_provider_configs_payload_rejects_duplicate_case_variant_provider_blocks() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"providers\.minimax' duplicates runtime config field 'providers\.MiniMax'",
+    ):
+        _ = parse_provider_configs_payload(
+            {"MiniMax": {"api_key": "a"}, "minimax": {"api_key": "b"}},
             source="runtime config field 'providers'",
         )
 
@@ -446,11 +484,13 @@ def test_parse_provider_configs_payload_rejects_custom_provider_name_colliding_w
 
 
 def test_parse_provider_configs_payload_rejects_case_or_whitespace_variant_of_builtin_name() -> None:
+    # Padded and mixed-case input canonicalises first, so the collision check sees
+    # the built-in name it would otherwise shadow.
     with pytest.raises(
         ValueError,
         match=(
             r"runtime config field 'providers.custom\. OpenAI ' "
-            r"must not have leading or trailing whitespace"
+            r"must not collide with built-in provider names \(conflicts with 'openai'\)"
         ),
     ):
         _ = parse_provider_configs_payload(
@@ -465,24 +505,36 @@ def test_parse_provider_configs_payload_rejects_case_or_whitespace_variant_of_bu
         )
 
 
-def test_custom_provider_name_with_surrounding_whitespace_rejected() -> None:
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"runtime config field 'providers.custom\. llama-local ' "
-            r"must not have leading or trailing whitespace"
-        ),
-    ):
-        _ = parse_provider_configs_payload(
-            {
-                "custom": {
-                    " llama-local ": {
-                        "base_url": "http://localhost:11434/v1",
-                    }
+def test_custom_provider_name_with_surrounding_whitespace_is_trimmed() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "custom": {
+                " llama-local ": {
+                    "base_url": "http://localhost:11434/v1",
                 }
-            },
-            source="runtime config field 'providers'",
-        )
+            }
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed is not None
+    assert list(parsed.custom) == ["llama-local"]
+
+
+def test_custom_provider_name_is_canonicalised_to_lowercase() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "custom": {
+                "Local-GW": {
+                    "base_url": "http://localhost:11434/v1",
+                }
+            }
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed is not None
+    assert "local-gw" in parsed.custom
 
 
 def test_parse_provider_fallback_payload_parses_chain_directly() -> None:
@@ -784,7 +836,7 @@ def test_parse_openai_compatible_provider_with_api_key_env_var_override() -> Non
 
 
 def test_reject_unknown_openai_compatible_provider() -> None:
-    with pytest.raises(ValueError, match="runtime config field 'providers.unknown_cn' is not supported"):
+    with pytest.raises(ValueError, match=r"runtime config field 'providers.unknown_cn': unknown provider id 'unknown_cn'"):
         _ = parse_provider_configs_payload(
             {"unknown_cn": {"api_key": "key"}},
             source="runtime config field 'providers'",

@@ -4737,9 +4737,15 @@ def test_runtime_rejects_stale_session_schema_for_pending_approval(
 def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_overrides(
     tmp_path: Path,
 ) -> None:
+    provider_config_module = importlib.import_module("voidcode.provider.config")
+    # `repo`/`session`/`fresh` are stand-in provider ids marking config precedence; the
+    # runtime resolves only ids it knows, so declare them as custom providers.
+    standin_providers = provider_config_module.ProviderConfigs(
+        custom={provider_name: provider_config_module.ProviderEndpointConfig() for provider_name in ("repo", "session", "fresh")}
+    )
     config_path = tmp_path / ".voidcode.json"
     config_path.write_text(
-        json.dumps({"approval_mode": "deny", "model": "repo/model"}),
+        json.dumps({"approval_mode": "deny", "model": "repo/model", "providers": {"custom": {"repo": {}, "session": {}, "fresh": {}}}}),
         encoding="utf-8",
     )
     runtime_request, runtime_class = _load_runtime_types()
@@ -4769,7 +4775,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
             object,
             runtime_class(
                 workspace=tmp_path,
-                config=runtime_config(approval_mode="deny", model="fresh/model"),
+                config=runtime_config(approval_mode="deny", model="fresh/model", providers=standin_providers),
                 permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(mode="deny"),
             ),
         ),

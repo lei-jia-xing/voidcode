@@ -395,7 +395,7 @@
             "$ref": "#/$defs/endpointProviderConfig"
           },
           "propertyNames": {
-            "pattern": "^(?!(?:openai|anthropic|google|copilot|endpoint|opencode|openrouter|deepseek|zai|zhipuai|grok|minimax|kimi|opencode-go|qwen|groq|together|fireworks|mistral)$)(?!\\s)(?!.*\\s$)(?!.*[/]).+$"
+            "pattern": "^(?!(?:openai|anthropic|google|copilot|endpoint|opencode|openrouter|deepseek|zai|zhipuai|grok|minimax|kimi|opencode-go|qwen|groq|together|fireworks|mistral)$)(?!.*[/]).+$"
           }
         }
       }

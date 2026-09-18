@@ -587,7 +587,6 @@ def test_provider_schema_and_parser_reject_same_invalid_values() -> None:
         {"providers": {"google": {"auth": {"method": "invalid"}}}},
         {"providers": {"copilot": {"auth": {"method": "invalid"}}}},
         {"providers": {"endpoint": {"model_map": {"alias": ""}}}},
-        {"providers": {"custom": {" custom ": {}}}},
     )
     for payload in invalid_payloads:
         with pytest.raises(jsonschema.ValidationError):
@@ -601,11 +600,14 @@ def test_provider_schema_and_parser_accept_valid_dynamic_provider_shapes() -> No
     providers = {
         "providers": {
             "openrouter": {"auth_scheme": "bearer", "model_map": {"alias": "provider/model"}},
-            "custom": {"team-gateway": {"base_url": "https://gateway.example"}},
+            "custom": {"team-gateway": {"base_url": "https://gateway.example"}, " padded-gateway ": {}},
         }
     }
     jsonschema.validate(providers, schema)
-    assert parse_provider_configs_payload(providers["providers"], source="runtime config field 'providers'") is not None
+    parsed = parse_provider_configs_payload(providers["providers"], source="runtime config field 'providers'")
+    assert parsed is not None
+    # A custom provider id is trimmed and lowercased the same way a built-in id is.
+    assert set(parsed.custom) == {"team-gateway", "padded-gateway"}
 
 
 def test_provider_schema_and_parser_accept_explicit_null_as_unset() -> None:

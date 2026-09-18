@@ -7,6 +7,12 @@ from typing import Annotated, Literal, cast
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic.functional_validators import BeforeValidator
 
+from .naming import (
+    BUILTIN_PROVIDER_IDS,
+    UnknownProviderIdError,
+    canonical_provider_id,
+)
+
 
 def _parse_optional_boundary_string(value: object) -> str | None:
     if value is None:
@@ -223,6 +229,68 @@ class _ProviderConfigsPayload(_ProviderPayloadModel):
 class _ProviderFallbackPayload(_ProviderPayloadModel):
     preferred_model: BoundaryRequiredString
     fallback_models: BoundaryStringList = ()
+
+
+def _provider_config_payload_keys() -> dict[str, str]:
+    """Canonical provider id -> the ``providers`` payload key that carries it."""
+    keys: dict[str, str] = {}
+    for field_name, model_field in _ProviderConfigsPayload.model_fields.items():
+        if field_name == "custom":
+            continue
+        payload_key = model_field.validation_alias if isinstance(model_field.validation_alias, str) else field_name
+        keys[canonical_provider_id(payload_key)] = payload_key
+    return keys
+
+
+_PROVIDER_CONFIG_PAYLOAD_KEYS: Mapping[str, str] = _provider_config_payload_keys()
+
+# Provider keys renamed after a session was persisted. The persisted parsing
+# boundary migrates these; live config still rejects them, pointing at the new key.
+_RENAMED_PROVIDER_KEY_REPLACEMENTS: Mapping[str, str] = {"litellm": "providers.endpoint"}
+
+
+def _canonicalize_provider_config_payload_keys(
+    raw_value: object,
+    *,
+    field_path: str,
+) -> object:
+    """Accept ``providers.<id>`` keys case-insensitively and canonicalise them.
+
+    ``providers.MiniMax`` and ``providers.minimax`` are one entry, spelled either
+    way. A key that is neither a built-in provider id nor ``custom`` fails loudly
+    instead of being read as something else.
+    """
+    if not isinstance(raw_value, dict):
+        # Not an object: leave the object-ness error to the payload model.
+        return raw_value
+    canonicalized: dict[str, object] = {}
+    spelled: dict[str, str] = {}
+    for raw_key, value in cast(dict[object, object], raw_value).items():
+        if not isinstance(raw_key, str) or not raw_key:
+            raise ValueError(f"{field_path} keys must be non-empty strings")
+        payload_key = _canonical_provider_config_key(raw_key, field_path=field_path)
+        previous = spelled.get(payload_key)
+        if previous is not None and previous != raw_key:
+            raise ValueError(
+                f"{_nested_config_field(field_path, raw_key)} duplicates "
+                f"{_nested_config_field(field_path, previous)}: provider ids are case-insensitive"
+            )
+        spelled[payload_key] = raw_key
+        canonicalized[payload_key] = value
+    return canonicalized
+
+
+def _canonical_provider_config_key(raw_key: str, *, field_path: str) -> str:
+    canonical_key = canonical_provider_id(raw_key)
+    if canonical_key == "custom":
+        return "custom"
+    payload_key = _PROVIDER_CONFIG_PAYLOAD_KEYS.get(canonical_key)
+    if payload_key is None:
+        replacement = _RENAMED_PROVIDER_KEY_REPLACEMENTS.get(canonical_key)
+        if replacement is not None:
+            raise ValueError(f"{_nested_config_field(field_path, raw_key)} is not supported; use '{replacement}' instead")
+        raise ValueError(f"{_nested_config_field(field_path, raw_key)}: {UnknownProviderIdError(raw_key).message}")
+    return payload_key
 
 
 # =============================================================================
@@ -569,31 +637,6 @@ def _parse_endpoint_auth_scheme(raw_scheme: str, *, field_path: str) -> Endpoint
     raise ValueError(f"{_nested_config_field(field_path, 'auth_scheme')} must be one of: {allowed}")
 
 
-_BUILTIN_PROVIDER_NAMES: frozenset[str] = frozenset(
-    {
-        "openai",
-        "anthropic",
-        "google",
-        "endpoint",
-        "opencode",
-        "openrouter",
-        "copilot",
-        "deepseek",
-        "zai",
-        "zhipuai",
-        "grok",
-        "minimax",
-        "kimi",
-        "opencode-go",
-        "qwen",
-        "groq",
-        "together",
-        "fireworks",
-        "mistral",
-    }
-)
-
-
 @dataclass(frozen=True, slots=True)
 class ProviderFallbackConfig:
     preferred_model: str
@@ -883,11 +926,6 @@ def _validation_reason_from_error(error: dict[str, object]) -> str:
     return cast(str, error.get("msg", "is invalid"))
 
 
-# Provider keys renamed after a session was persisted. The persisted parsing
-# boundary migrates these; live config still rejects them, pointing at the new key.
-_RENAMED_PROVIDER_KEY_REPLACEMENTS: dict[str, str] = {"litellm": "providers.endpoint"}
-
-
 def _format_provider_payload_validation_error(
     *,
     field_path: str,
@@ -901,9 +939,6 @@ def _format_provider_payload_validation_error(
         suffix = " when provided" if object_when_provided else ""
         return f"{target} must be an object{suffix}"
     if error_type == "extra_forbidden":
-        replacement = _RENAMED_PROVIDER_KEY_REPLACEMENTS.get(str(loc[-1])) if len(loc) == 1 else None
-        if replacement is not None:
-            return f"{target} is not supported; use '{replacement}' instead"
         return f"{target} is not supported"
     reason = _validation_reason_from_error(error)
     if reason.startswith("[") or reason.startswith("."):
@@ -938,7 +973,7 @@ def parse_provider_configs_payload(
     if raw_providers is None:
         return None
     payload = _validate_provider_payload_model(
-        raw_providers,
+        _canonicalize_provider_config_payload_keys(raw_providers, field_path=source),
         field_path=source,
         model_type=_ProviderConfigsPayload,
     )
@@ -1801,20 +1836,30 @@ def _parse_custom_endpoint_provider_configs(
 
     payload = cast(dict[object, object], raw_value)
     parsed: dict[str, ProviderEndpointConfig] = {}
+    spelled: dict[str, str] = {}
     for raw_provider_name, provider_payload in payload.items():
         if not isinstance(raw_provider_name, str) or not raw_provider_name:
             raise ValueError(f"{field_path} keys must be non-empty strings")
-        if raw_provider_name != raw_provider_name.strip():
-            raise ValueError(f"{_nested_config_field(field_path, raw_provider_name)} must not have leading or trailing whitespace")
         if "/" in raw_provider_name:
             raise ValueError(f"{_nested_config_field(field_path, raw_provider_name)} must not contain '/'")
-        normalized_provider_name = raw_provider_name.strip().lower()
-        if normalized_provider_name in _BUILTIN_PROVIDER_NAMES:
+        # A custom provider id is a provider id: it is trimmed, canonicalised to
+        # lowercase, and may not shadow a built-in provider.
+        normalized_provider_name = canonical_provider_id(raw_provider_name)
+        if not normalized_provider_name:
+            raise ValueError(f"{field_path} keys must be non-empty strings")
+        if normalized_provider_name in BUILTIN_PROVIDER_IDS:
             raise ValueError(
                 f"{_nested_config_field(field_path, raw_provider_name)} "
                 "must not collide with built-in provider names "
                 f"(conflicts with '{normalized_provider_name}')"
             )
+        previous = spelled.get(normalized_provider_name)
+        if previous is not None and previous != raw_provider_name:
+            raise ValueError(
+                f"{_nested_config_field(field_path, raw_provider_name)} duplicates "
+                f"{_nested_config_field(field_path, previous)}: provider ids are case-insensitive"
+            )
+        spelled[normalized_provider_name] = raw_provider_name
 
         parsed_config = _parse_endpoint_provider_config(
             provider_payload,
@@ -1823,7 +1868,7 @@ def _parse_custom_endpoint_provider_configs(
         )
         if parsed_config is None:
             continue
-        parsed[raw_provider_name] = parsed_config
+        parsed[normalized_provider_name] = parsed_config
     return parsed
 
 

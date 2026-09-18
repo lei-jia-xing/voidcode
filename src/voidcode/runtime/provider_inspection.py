@@ -11,6 +11,7 @@ from ..provider.auth import (
 )
 from ..provider.config import ProviderConfigs, ProviderEndpointConfig
 from ..provider.errors import guidance_for_provider_error_kind
+from ..provider.naming import canonical_provider_id
 from ..provider.openai_native import normalize_openai_base_url
 from ..provider.provider_config import DEFAULT_ENDPOINT_BASE_URL
 from ..provider.registry import ModelProviderRegistry
@@ -48,20 +49,25 @@ _PROVIDER_CONFIG_FIELDS: dict[str, str] = {
 
 
 def provider_config_entry(providers: ProviderConfigs | None, provider_name: str) -> object | None:
-    """Return the raw ``provider_name`` config entry, or ``None`` when unconfigured."""
+    """Return the raw ``provider_name`` config entry, or ``None`` when unconfigured.
+
+    Provider ids are case-insensitive: ``MiniMax`` reads the ``minimax`` entry.
+    """
     if providers is None:
         return None
-    field_name = _PROVIDER_CONFIG_FIELDS.get(provider_name)
+    canonical_name = canonical_provider_id(provider_name)
+    field_name = _PROVIDER_CONFIG_FIELDS.get(canonical_name)
     if field_name is not None:
         return getattr(providers, field_name)
-    return providers.custom.get(provider_name)
+    return providers.custom.get(canonical_name)
 
 
 def provider_credentials_config_path(provider_name: str) -> str:
     """Runtime config path that holds one provider's credentials."""
-    field_name = _PROVIDER_CONFIG_FIELDS.get(provider_name)
+    canonical_name = canonical_provider_id(provider_name)
+    field_name = _PROVIDER_CONFIG_FIELDS.get(canonical_name)
     if field_name is None:
-        return f"providers.custom.{provider_name}.api_key"
+        return f"providers.custom.{canonical_name}.api_key"
     return f"providers.{field_name}.api_key"
 
 

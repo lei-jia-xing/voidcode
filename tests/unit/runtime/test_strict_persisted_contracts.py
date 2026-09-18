@@ -265,7 +265,12 @@ def test_persisted_runtime_config_reports_unknown_provider_key_once() -> None:
     with pytest.raises(ValueError) as excinfo:
         parse_persisted_runtime_config(payload)
 
-    assert str(excinfo.value) == "invalid provider config: persisted runtime_config.providers.team-gateway is not supported"
+    assert str(excinfo.value) == (
+        "invalid provider config: persisted runtime_config.providers.team-gateway: unknown provider id 'team-gateway': "
+        "known provider ids are anthropic, copilot, deepseek, endpoint, fireworks, google, grok, groq, kimi, minimax, "
+        "mistral, openai, opencode, opencode-go, openrouter, qwen, together, zai, zhipuai; "
+        "declare a custom OpenAI-compatible endpoint as providers.custom.team-gateway and reference it as 'team-gateway/<model>'"
+    )
 
 
 def test_new_runtime_config_still_rejects_legacy_litellm_provider_key(tmp_path: Path) -> None:

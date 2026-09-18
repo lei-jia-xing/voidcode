@@ -380,6 +380,15 @@ def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session"
     )
 
 
+# The runtime resolves only provider ids it knows: a built-in provider, or one
+# declared under `providers.custom`. Tests below use stand-in provider prefixes
+# (`session/`, `fresh/`, `custom/`, `other/`) as markers for config precedence, so
+# they declare those ids instead of relying on an undeclared prefix resolving.
+_STANDIN_PROVIDER_IDS = ("custom", "session", "fresh", "other")
+_STANDIN_PROVIDERS = RuntimeProvidersConfig(custom={provider_name: ProviderEndpointConfig() for provider_name in _STANDIN_PROVIDER_IDS})
+_STANDIN_CUSTOM_CONFIGS = {provider_name: ProviderEndpointConfig() for provider_name in _STANDIN_PROVIDER_IDS}
+
+
 def _provider_runtime_config() -> RuntimeConfig:
     return RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4")
 
@@ -6627,6 +6636,7 @@ def test_runtime_delegated_child_preserves_preset_fallback_chain(
         workspace=tmp_path,
         graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             model="openai/global-model",
             agents={
                 "worker": RuntimeAgentConfig(
@@ -6669,6 +6679,7 @@ def test_runtime_delegated_child_rebases_duplicate_fallback_model(
         workspace=tmp_path,
         graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             agents={
                 "worker": RuntimeAgentConfig(
                     preset="worker",
@@ -6938,7 +6949,9 @@ def test_runtime_fails_fast_when_opencode_go_reasoning_effort_is_unsupported(
 
 
 def test_runtime_allows_reasoning_effort_when_metadata_unknown(tmp_path: Path) -> None:
-    registry = ModelProviderRegistry.with_defaults()
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=_STANDIN_PROVIDERS,
+    )
     registry.model_catalog = {
         "custom": ProviderModelCatalog(
             provider="custom",
@@ -12868,6 +12881,7 @@ def test_runtime_effective_runtime_config_prefers_persisted_session_values(tmp_p
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="deterministic",
             model="session/model",
@@ -12878,6 +12892,7 @@ def test_runtime_effective_runtime_config_prefers_persisted_session_values(tmp_p
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="deny",
             execution_engine="deterministic",
             model="fresh/model",
@@ -12899,6 +12914,7 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_external_wri
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="deterministic",
             model="session/model",
@@ -12943,6 +12959,7 @@ def test_runtime_effective_runtime_config_recovers_persisted_tool_timeout(tmp_pa
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             model="session/model",
             tool_timeout_seconds=7,
@@ -12956,6 +12973,7 @@ def test_runtime_effective_runtime_config_recovers_persisted_tool_timeout(tmp_pa
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="deny",
             model="fresh/model",
             tool_timeout_seconds=3,
@@ -12976,7 +12994,7 @@ def test_runtime_effective_runtime_config_preserves_explicit_persisted_none_tool
 
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(approval_mode="allow", model="session/model"),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, approval_mode="allow", model="session/model"),
     )
     response = initial_runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="tool-timeout-none-session"))
     runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
@@ -12986,6 +13004,7 @@ def test_runtime_effective_runtime_config_preserves_explicit_persisted_none_tool
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="deny",
             model="fresh/model",
             tool_timeout_seconds=9,
@@ -13006,7 +13025,7 @@ def test_runtime_effective_runtime_config_rejects_invalid_persisted_tool_timeout
 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(approval_mode="allow", model="session/model", tool_timeout_seconds=7),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, approval_mode="allow", model="session/model", tool_timeout_seconds=7),
     )
     _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="invalid-tool-timeout"))
 
@@ -13033,7 +13052,7 @@ def test_runtime_effective_runtime_config_rejects_invalid_persisted_tool_timeout
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(tool_timeout_seconds=3),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, tool_timeout_seconds=3),
     )
 
     with pytest.raises(
@@ -13052,6 +13071,7 @@ def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_invalid(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             model="session/model",
             reasoning_effort="high",
@@ -13082,7 +13102,7 @@ def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_invalid(
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(reasoning_effort="low"),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, reasoning_effort="low"),
     )
 
     with pytest.raises(
@@ -13101,6 +13121,7 @@ def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_cle
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="deterministic",
             model="session/model",
@@ -13111,6 +13132,7 @@ def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_cle
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             model="fresh/model",
             agent=RuntimeAgentConfig(
                 preset="leader",
@@ -13460,7 +13482,7 @@ def test_runtime_effective_runtime_config_restores_persisted_config_without_plan
 
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="deterministic", model="session/model"),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, execution_engine="deterministic", model="session/model"),
     )
     response = initial_runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="config-session-without-plan"))
     runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
@@ -13469,7 +13491,7 @@ def test_runtime_effective_runtime_config_restores_persisted_config_without_plan
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="deterministic", model="fresh/model"),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, execution_engine="deterministic", model="fresh/model"),
     )
 
     effective = resumed_runtime.effective_runtime_config(session_id="config-session-without-plan")
@@ -14340,6 +14362,7 @@ def test_runtime_effective_runtime_config_recovers_provider_engine(tmp_path: Pat
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="provider",
             model="opencode/gpt-5.4",
@@ -14349,7 +14372,7 @@ def test_runtime_effective_runtime_config_recovers_provider_engine(tmp_path: Pat
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(approval_mode="deny", model="fresh/model"),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, approval_mode="deny", model="fresh/model"),
     )
     effective = resumed_runtime.effective_runtime_config(session_id="single-agent-config")
 
@@ -14468,17 +14491,18 @@ def test_runtime_request_metadata_agent_override_persists_and_restores_agent_con
     (tmp_path / "sample.txt").write_text("leader override\n", encoding="utf-8")
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
+        custom_provider_configs=_STANDIN_CUSTOM_CONFIGS,
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(ProviderTurnResult(output="override complete"),),
                 created_providers=created_providers,
             )
-        }
+        },
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(model="fresh/model"),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, model="fresh/model"),
         model_provider_registry=registry,
     )
 
@@ -14492,7 +14516,7 @@ def test_runtime_request_metadata_agent_override_persists_and_restores_agent_con
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(model="other/model"),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, model="other/model"),
         model_provider_registry=registry,
     )
     effective = resumed_runtime.effective_runtime_config(session_id="leader-agent-request")
@@ -14852,13 +14876,14 @@ def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields
     (tmp_path / "sample.txt").write_text("leader partial override\n", encoding="utf-8")
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
+        custom_provider_configs=_STANDIN_CUSTOM_CONFIGS,
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(ProviderTurnResult(output="partial override complete"),),
                 created_providers=created_providers,
             )
-        }
+        },
     )
     fallback = RuntimeProviderFallbackConfig(
         preferred_model="opencode/gpt-5.4",
@@ -14867,6 +14892,7 @@ def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             model="opencode/gpt-5.4",
             provider_fallback=fallback,
         ),
@@ -14883,7 +14909,7 @@ def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(model="other/model"),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, model="other/model"),
         model_provider_registry=registry,
     )
     effective = resumed_runtime.effective_runtime_config(session_id="leader-agent-partial-request")
@@ -15786,6 +15812,7 @@ def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_p
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="provider",
             model="opencode/gpt-5.4",
@@ -15797,7 +15824,12 @@ def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_p
     )
     _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="fallback-config"))
 
-    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
+        ),
+    )
     effective = resumed_runtime.effective_runtime_config(session_id="fallback-config")
 
     assert effective.provider_fallback == RuntimeProviderFallbackConfig(
@@ -15814,6 +15846,7 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_fallback_mod
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="provider",
             model="opencode/gpt-5.4",
@@ -15852,6 +15885,7 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_fallback_mod
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             execution_engine="provider",
             model="fresh/model",
             provider_fallback=RuntimeProviderFallbackConfig(
@@ -15871,6 +15905,7 @@ def test_runtime_persists_resolved_provider_snapshot_in_runtime_metadata(tmp_pat
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="provider",
             model="opencode/gpt-5.4",
@@ -15914,6 +15949,7 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_provider_f
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="provider",
             model="opencode/gpt-5.4",
@@ -15946,7 +15982,12 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_provider_f
     finally:
         connection.close()
 
-    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
+        ),
+    )
 
     with pytest.raises(ValueError, match="invalid provider config"):
         _ = resumed_runtime.effective_runtime_config(session_id="malformed-provider-fallback")
@@ -16075,6 +16116,7 @@ def test_runtime_effective_runtime_config_accepts_non_first_active_target_in_sna
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="provider",
             model="opencode/gpt-5.4",
@@ -16109,7 +16151,12 @@ def test_runtime_effective_runtime_config_accepts_non_first_active_target_in_sna
     finally:
         connection.close()
 
-    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
+        ),
+    )
     effective = resumed_runtime.effective_runtime_config(session_id="active-target-fallback")
 
     assert effective.model == "opencode/gpt-5.4"
@@ -16128,6 +16175,7 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_resolved_p
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="provider",
             model="opencode/gpt-5.4",
@@ -16173,7 +16221,12 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_resolved_p
     finally:
         connection.close()
 
-    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig())
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            providers=_STANDIN_PROVIDERS,
+        ),
+    )
 
     with pytest.raises(
         ValueError,
@@ -18552,6 +18605,7 @@ def test_runtime_provider_stream_cancelled_maps_to_interrupted_without_fallback(
 
 def test_runtime_fails_without_downgrade_on_context_limit(tmp_path: Path) -> None:
     registry = ModelProviderRegistry(
+        custom_provider_configs=_STANDIN_CUSTOM_CONFIGS,
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
@@ -18564,7 +18618,7 @@ def test_runtime_fails_without_downgrade_on_context_limit(tmp_path: Path) -> Non
                     ),
                 ),
             )
-        }
+        },
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,

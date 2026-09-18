@@ -56,6 +56,30 @@ VoidCode 遵循严格的优先级阶梯来确定最终生效的模型和供应�
 }
 ```
 
+### Provider 命名（id 与 label）
+
+Provider 只有**一个机器标识**和一个**人类标签**，两者各有出处：
+
+- **机器标识**：小写 vendor id（`minimax`）。它是 registry key、`providers.<id>` 配置键、
+  `provider/model` 前缀、`<ID>_API_KEY` 环境变量前缀、模型 catalog 的 key、`/api/providers` 的
+  `name`，以及所有内部查表使用的值。
+- **人类标签**：`provider_label`（`MiniMax`，唯一定义在 `provider/naming.py`）。`/api/providers`
+  的 `label`、`voidcode provider inspect` 的 `provider.label` 与 `voidcode doctor` 的 provider 行
+  都读它；没有显式标签的 provider 退化为它的 canonical id。
+- **输入大小写不敏感且会 trim**：`MiniMax/MiniMax-M2.5`、`MINIMAX/minimax-m2.5`、
+  ` minimax /minimax-m2.5 ` 解析为同一个 provider、同一个 endpoint、同一份能力元数据；
+  `providers.MiniMax` 与 `providers.minimax` 是同一个配置块；`providers.custom.<name>` 的 key
+  同样按 canonical id 归一（因此 `custom.MiniMax` 会因与内置名冲突而报错）。
+  被接受输入写回配置时（`config init --model`、web settings save）存的是 canonical id。
+- **未声明的 id 会明确失败**：既不是内置 id、也没有在 `providers.custom.<name>` 声明的 provider
+  不再静默复用 `providers.endpoint` 的配置，而是报错并列出全部 canonical id 与自定义 provider
+  的声明方式。需要通用 OpenAI-compatible endpoint 时用内置 id `endpoint`（`endpoint/<model>`），
+  或按下方「自定义 Provider」声明 `providers.custom.<name>`。
+- **model id 不归一**：`provider/model` 的 model 段按原样发给上游（大小写保留，仅 trim），
+  catalog/能力表/fallback 链比较按大小写不敏感匹配。catalog 里的 model id 一律小写
+  （`minimax-m2.5`），vendor 自身的 id 可能是混合大小写（`MiniMax-M2.5`）：用 `model_map`
+  做别名/大小写映射，例如 `{"m2.5": "MiniMax-M2.5"}`。不要依赖 provider 侧做大小写折叠。
+
 ## 认证方式与机密管理
 
 ### 推荐做法
@@ -130,7 +154,7 @@ VoidCode 遵循严格的优先级阶梯来确定最终生效的模型和供应�
 | **Z.AI** | `/v4/models` endpoint | OpenAI-compatible，自动发现 |
 | **智谱 AI** | `/v4/models` endpoint | OpenAI-compatible，自动发现 |
 | **OpenRouter** | `/api/v1/models` endpoint | 自动发现真实模型 ID；模型引用保留 provider/model 中的全部 slash，也包含 API 返回的 `:free` 模型 |
-| **MiniMax** | 无公开 discovery endpoint | 默认禁用远端发现；配置 `discovery_base_url` 或 `model_map` 后可用 |
+| **MiniMax** | 无公开 discovery endpoint | 默认禁用远端发现；配置 `discovery_base_url` 或 `model_map` 后可用。catalog 中的 `minimax` 条目由 models.dev 的 `minimax` 与 `minimax-cn` 两个来源键合并生成（区域变体并入同一 canonical id，生成期 `strip().lower()`）；没有运行时的 `minimax-cn` provider id |
 | **Kimi** | `/v1/models` endpoint | OpenAI-compatible，自动发现 |
 | **OpenCode Zen** | `/zen/v1/models` endpoint | OpenAI-compatible，自动发现；模型引用为 `opencode/<model-id>` |
 | **OpenCode Go** | 无公开 discovery endpoint | 默认禁用远端发现；配置 `discovery_base_url` 或 `model_map` 后可用 |
@@ -327,7 +351,10 @@ SDK 负责 HTTP、SSE 解码与异常类型；adapter 只把 SDK 事件投影成
 - `ResolvedProviderModel` 会显式记录 provider resolution 来源：
   - `builtin`：内置 provider adapter
   - `custom`：`providers.custom.<name>` 显式配置的 OpenAI-compatible endpoint
-  - `default_endpoint`：未声明 provider 时回退到 `providers.endpoint` 配置
+  - 未声明的 provider id 不再产生 resolution：`provider/model` 的 provider 段必须是内置 id
+    或 `providers.custom.<name>`，否则抛 `UnknownProviderIdError`（见上「Provider 命名」）。
+    `OpenAIEndpointProvider` 只服务两类已声明的目标：内置 `endpoint` id 与
+    `providers.custom.<name>`。
 - fallback chain 不允许重复 target；即使绕过原始 config parser，`resolution.py` / `snapshot.py`
   仍会在 provider 模块内拒绝重复链路。
 - model discovery 会显式区分：

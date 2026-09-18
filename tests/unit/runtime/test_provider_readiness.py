@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from voidcode.provider.config import (
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
     OpenAIProviderConfig,
     ProviderConfigs,
+    ProviderEndpointConfig,
     ProviderFallbackConfig,
 )
 from voidcode.provider.model_catalog import ProviderModelCatalog, ProviderModelMetadata
+from voidcode.provider.naming import UnknownProviderIdError
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.service import VoidCodeRuntime
@@ -38,26 +42,21 @@ def test_provider_readiness_reports_missing_auth(tmp_path: Path) -> None:
     assert "openai.api_key" in readiness.guidance
 
 
-def test_provider_readiness_preserves_invalid_provider_status(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            model="unknown-provider/demo",
-            execution_engine="provider",
-        ),
-    )
-    try:
-        readiness = runtime.provider_readiness()
-    finally:
-        runtime.__exit__(None, None, None)
+def test_provider_readiness_rejects_an_undeclared_provider(tmp_path: Path) -> None:
+    # An undeclared provider id is not "unconfigured": it must fail loudly at
+    # resolution, naming the canonical ids and the custom-declaration path.
+    with pytest.raises(UnknownProviderIdError) as excinfo:
+        _ = VoidCodeRuntime(
+            workspace=tmp_path,
+            config=RuntimeConfig(
+                model="unknown-provider/demo",
+                execution_engine="provider",
+            ),
+        )
 
-    assert readiness.provider == "unknown-provider"
-    assert readiness.model == "demo"
-    assert readiness.configured is False
-    assert readiness.ok is False
-    assert readiness.auth_present is False
-    assert readiness.status == "invalid_model"
-    assert "not supported" in readiness.guidance
+    message = str(excinfo.value)
+    assert "unknown provider id 'unknown-provider'" in message
+    assert "providers.custom.unknown-provider" in message
 
 
 def test_provider_readiness_includes_fallback_and_context_metadata(tmp_path: Path) -> None:
@@ -174,6 +173,7 @@ def test_provider_readiness_reports_unverified_forward_when_capability_is_unknow
             model="custom-provider/some-model",
             execution_engine="provider",
             reasoning_effort="high",
+            providers=ProviderConfigs(custom={"custom-provider": ProviderEndpointConfig(base_url="http://localhost:11434/v1")}),
         ),
     )
     try:

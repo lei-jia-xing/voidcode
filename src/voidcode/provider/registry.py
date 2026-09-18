@@ -29,6 +29,7 @@ from .model_catalog import (
     static_catalog_metadata,
 )
 from .models import ProviderResolutionSource
+from .naming import UnknownProviderIdError, canonical_provider_id
 from .openai import OpenAIModelProvider
 from .opencode import OpenCodeModelProvider
 from .opencode_go import OpenCodeGoModelProvider
@@ -80,7 +81,6 @@ def _discovery_config(config: object) -> ProviderEndpointConfig | None:
 @dataclass(slots=True)
 class ModelProviderRegistry:
     providers: dict[str, ModelTurnProvider]
-    default_endpoint_config: ProviderEndpointConfig | None = None
     custom_provider_configs: Mapping[str, ProviderEndpointConfig] | None = None
     model_catalog: dict[str, ProviderModelCatalog] | None = None
 
@@ -109,62 +109,67 @@ class ModelProviderRegistry:
                 "fireworks": FireworksModelProvider(config=configs.fireworks),
                 "mistral": MistralModelProvider(config=configs.mistral),
             },
-            default_endpoint_config=configs.endpoint,
             custom_provider_configs=configs.custom,
             model_catalog={},
         )
 
     def resolve_with_metadata(self, provider_name: str) -> ProviderResolution:
-        provider = self.providers.get(provider_name)
+        """Resolve one provider id, rejecting ids nothing declares.
+
+        The id is canonicalised first, so ``MiniMax`` resolves exactly like
+        ``minimax``. An id that is neither a built-in nor declared under
+        ``providers.custom`` raises instead of borrowing the generic endpoint
+        provider: an undeclared prefix must not silently reach a host the user
+        did not name.
+        """
+        canonical_name = canonical_provider_id(provider_name)
+        provider = self.providers.get(canonical_name)
         if provider is not None:
             return ProviderResolution(
-                provider_name=provider_name,
+                provider_name=canonical_name,
                 provider=provider,
                 source="builtin",
                 configured=True,
             )
         if self.custom_provider_configs is not None:
-            custom_config = self.custom_provider_configs.get(provider_name)
+            custom_config = self.custom_provider_configs.get(canonical_name)
             if custom_config is not None:
                 return ProviderResolution(
-                    provider_name=provider_name,
-                    provider=OpenAIEndpointProvider(name=provider_name, config=custom_config),
+                    provider_name=canonical_name,
+                    provider=OpenAIEndpointProvider(name=canonical_name, config=custom_config),
                     source="custom",
                     configured=True,
                 )
-        return ProviderResolution(
-            provider_name=provider_name,
-            provider=OpenAIEndpointProvider(name=provider_name, config=self.default_endpoint_config),
-            source="default_endpoint",
-            configured=self.default_endpoint_config is not None,
-        )
+        raise UnknownProviderIdError(canonical_name)
 
     def resolve(self, provider_name: str) -> ModelTurnProvider:
         return self.resolve_with_metadata(provider_name).provider
 
     def provider_config(self, provider_name: str) -> ProviderEndpointConfig | None:
-        provider = self.providers.get(provider_name)
+        canonical_name = canonical_provider_id(provider_name)
+        provider = self.providers.get(canonical_name)
         if provider is not None:
             provider_config = getattr(provider, "provider_config", None)
             if callable(provider_config):
                 return _discovery_config(provider_config())
-        if self.custom_provider_configs is not None and provider_name in self.custom_provider_configs:
-            return self.custom_provider_configs[provider_name]
-        return self.default_endpoint_config
+        if self.custom_provider_configs is not None:
+            return self.custom_provider_configs.get(canonical_name)
+        return None
 
     def available_models(self, provider_name: str) -> tuple[str, ...]:
         if self.model_catalog is None:
             return ()
-        entry = self.model_catalog.get(provider_name)
+        entry = self.model_catalog.get(canonical_provider_id(provider_name))
         if entry is None:
             return ()
         return entry.models
 
     def refresh_available_models(self, provider_name: str) -> tuple[str, ...]:
-        discovery = discover_available_models(provider_name, self.provider_config(provider_name))
+        canonical_name = canonical_provider_id(provider_name)
+        discovery = discover_available_models(canonical_name, self.provider_config(canonical_name))
         if self.model_catalog is not None:
-            self.model_catalog[provider_name] = ProviderModelCatalog(
-                provider=provider_name,
+            self.model_catalog[canonical_name] = ProviderModelCatalog(
+                provider=canonical_name,
                 models=discovery.models,
                 refreshed=True,
                 model_metadata=discovery.model_metadata,
@@ -176,11 +181,12 @@ class ModelProviderRegistry:
         return discovery.models
 
     def model_metadata_for_model(self, provider_name: str, model_name: str) -> ProviderModelMetadata | None:
-        catalog = self.model_catalog.get(provider_name) if self.model_catalog is not None else None
+        canonical_name = canonical_provider_id(provider_name)
+        catalog = self.model_catalog.get(canonical_name) if self.model_catalog is not None else None
         discovered = catalog.model_metadata.get(model_name) if catalog is not None else None
         if discovered is not None and (discovered.supports_reasoning_effort is not None or discovered.supported_effort_levels is not None):
             return discovered
-        shipped = static_catalog_metadata(provider_name, model_name)
+        shipped = static_catalog_metadata(canonical_name, model_name)
         if shipped is None or discovered is None:
             return shipped if discovered is None else discovered
         # A discovered entry - including one hydrated from a catalog cache written by
@@ -204,4 +210,4 @@ class ModelProviderRegistry:
     def provider_catalog(self, provider_name: str) -> ProviderModelCatalog | None:
         if self.model_catalog is None:
             return None
-        return self.model_catalog.get(provider_name)
+        return self.model_catalog.get(canonical_provider_id(provider_name))
