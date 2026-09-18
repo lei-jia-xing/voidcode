@@ -1,3 +1,5 @@
+import type { ProviderModelMetadata } from "./runtime/types";
+
 /**
  * Canonical reasoning-effort levels accepted by the runtime backend.
  * The backend strictly rejects any value outside this list; keep this
@@ -26,12 +28,19 @@ const REASONING_EFFORT_DISABLE = "off";
 const CANONICAL_REASONING_EFFORT_LEVELS: readonly string[] =
   REASONING_EFFORT_LEVELS.filter((level) => level !== REASONING_EFFORT_DISABLE);
 
-/** Catalog capability fields the effort selector needs, as served by `/models` or `provider inspect`. */
-export interface ReasoningEffortCapabilityMetadata {
-  supports_reasoning_effort?: boolean | null;
-  default_reasoning_effort?: string | null;
-  supported_effort_levels?: readonly string[] | null;
-}
+/**
+ * Catalog capability fields the effort selector needs, as served by `/models` or
+ * `provider inspect`.
+ *
+ * Taken from the generated model-metadata record instead of restated: both
+ * surfaces carry the same fields, and the selector only reads this slice.
+ */
+type ReasoningEffortCapabilityMetadata = Pick<
+  ProviderModelMetadata,
+  | "supports_reasoning_effort"
+  | "default_reasoning_effort"
+  | "supported_effort_levels"
+>;
 
 /**
  * Levels to offer for a model: the model's own catalog levels when it has them,

@@ -50,3 +50,15 @@ repos:
         language: system
         pass_filenames: false
         files: ^frontend/src/.*\.(ts|tsx|css)$
+
+      # Scoped to the paths that can move the document or the artifact it
+      # generates from: a backend change can rename a field, and an artifact or
+      # generator change can desynchronise them. Measured at ~5.5s when it runs
+      # (the checker imports the transport and runs openapi-typescript), and it
+      # does not run for commits that touch neither side.
+      - id: frontend-api-types
+        name: frontend API types are current
+        entry: bash -lc 'uv run python -X utf8 scripts/generate_frontend_api_types.py --check'
+        language: system
+        pass_filenames: false
+        files: ^(src/voidcode/|frontend/src/lib/runtime/|scripts/generate_frontend_api_types\.py|frontend/package\.json|frontend/bun\.lock)

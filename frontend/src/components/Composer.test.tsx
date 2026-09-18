@@ -8,7 +8,16 @@ const baseProps = {
   isRunning: false,
   agentPreset: "leader" as const,
   providerModel: "deepseek/deepseek-v4-pro",
-  agentPresets: [{ id: "leader", label: "Leader", description: null }],
+  agentPresets: [
+    {
+      id: "leader",
+      label: "Leader",
+      description: null,
+      selectable: true,
+      configured: true,
+      fallback_chain: [],
+    },
+  ],
   providers: [
     {
       name: "deepseek",
@@ -22,6 +31,7 @@ const baseProps = {
       provider: "deepseek",
       configured: true,
       models: ["deepseek-v4-pro", "deepseek-v4-flash"],
+      model_metadata: {},
       source: null,
       last_refresh_status: null,
       last_error: null,
@@ -45,6 +55,7 @@ const baseProps = {
       source: "builtin",
       enabled: true,
       hidden: false,
+      subtask: false,
     },
     {
       name: "start-work",
@@ -53,6 +64,7 @@ const baseProps = {
       source: "builtin",
       enabled: true,
       hidden: false,
+      subtask: true,
     },
   ],
 };
@@ -296,6 +308,7 @@ describe("Composer", () => {
             provider: "deepseek",
             configured: true,
             models: ["deepseek-v4-pro"],
+            model_metadata: {},
             source: null,
             last_refresh_status: null,
             last_error: null,
@@ -337,6 +350,8 @@ describe("Composer", () => {
             description: null,
             mode: "primary",
             selectable: true,
+            configured: true,
+            fallback_chain: [],
           },
           {
             id: "worker",
@@ -344,6 +359,8 @@ describe("Composer", () => {
             description: null,
             mode: "subagent",
             selectable: false,
+            configured: true,
+            fallback_chain: [],
           },
         ]}
       />,
@@ -369,6 +386,8 @@ describe("Composer", () => {
             description: null,
             mode: "primary",
             selectable: true,
+            configured: true,
+            fallback_chain: [],
           },
         ]}
       />,
@@ -412,6 +431,7 @@ describe("Composer", () => {
             provider: "deepseek",
             configured: true,
             models: [],
+            model_metadata: {},
             source: null,
             last_refresh_status: null,
             last_error: null,
@@ -437,6 +457,7 @@ describe("Composer", () => {
             provider: "deepseek",
             configured: true,
             models: [],
+            model_metadata: {},
             source: null,
             last_refresh_status: null,
             last_error: null,
@@ -656,6 +677,7 @@ describe("Composer", () => {
             provider: "deepseek",
             configured: true,
             models: ["deepseek-v4-pro"],
+            model_metadata: {},
             source: null,
             last_refresh_status: null,
             last_error: null,
@@ -665,6 +687,7 @@ describe("Composer", () => {
             provider: "zai",
             configured: true,
             models: ["zai/glm-5"],
+            model_metadata: {},
             source: null,
             last_refresh_status: null,
             last_error: null,

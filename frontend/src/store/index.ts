@@ -24,6 +24,7 @@ import {
   ProviderModelsResult,
   ProviderSummary,
   QuestionAnswer,
+  RuntimeRequest,
   RuntimeSessionDebugSnapshot,
   SessionState,
   StoredSessionSummary,
@@ -149,11 +150,16 @@ interface AppState {
     workspaceScope: WorkspaceScope,
     options?: {
       sessionId?: string | null;
-      metadata?: {
-        skills?: string[];
-        provider_stream?: boolean;
-        [key: string]: unknown;
-      };
+      /**
+       * The metadata the request is built with. The two named keys are bound to
+       * the generated request type (there is one definition of the metadata
+       * shape); the index signature keeps the pass-through open, because the
+       * runtime owns the rest of the blob.
+       */
+      metadata?: Pick<
+        NonNullable<RuntimeRequest["metadata"]>,
+        "skills" | "provider_stream"
+      > & { [key: string]: unknown };
     },
   ) => Promise<void>;
   cancelCurrentRun: () => Promise<void>;

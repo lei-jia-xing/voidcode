@@ -67,6 +67,7 @@ describe("SettingsPanel", () => {
             provider: "zai",
             configured: true,
             models: ["glm-5", "nested/model"],
+            model_metadata: {},
             last_refresh_status: "ok",
             discovery_mode: "configured_endpoint",
           },
@@ -74,6 +75,7 @@ describe("SettingsPanel", () => {
             provider: "openai",
             configured: false,
             models: ["gpt-5"],
+            model_metadata: {},
           },
         }}
         onSave={onSave}
@@ -99,7 +101,11 @@ describe("SettingsPanel", () => {
     render(
       <SettingsPanel
         {...baseProps}
-        settings={{ provider: "deepseek", model: "" }}
+        settings={{
+          provider: "deepseek",
+          model: "",
+          provider_api_key_present: false,
+        }}
         providers={[
           { name: "zai", label: "Z.AI", configured: true, current: false },
           {
@@ -114,11 +120,13 @@ describe("SettingsPanel", () => {
             provider: "zai",
             configured: true,
             models: ["glm-5"],
+            model_metadata: {},
           },
           deepseek: {
             provider: "deepseek",
             configured: true,
             models: ["deepseek-chat", "deepseek-reasoner"],
+            model_metadata: {},
           },
         }}
       />,
@@ -144,17 +152,23 @@ describe("SettingsPanel", () => {
     render(
       <SettingsPanel
         {...baseProps}
-        settings={{ provider: "zai", model: "zai/glm-5" }}
+        settings={{
+          provider: "zai",
+          model: "zai/glm-5",
+          provider_api_key_present: false,
+        }}
         providerModels={{
           zai: {
             provider: "zai",
             configured: true,
             models: ["glm-5"],
+            model_metadata: {},
           },
           openai: {
             provider: "openai",
             configured: false,
             models: ["gpt-5"],
+            model_metadata: {},
           },
         }}
         onSave={onSave}
@@ -177,12 +191,17 @@ describe("SettingsPanel", () => {
     render(
       <SettingsPanel
         {...baseProps}
-        settings={{ provider: "zai", model: "zai/glm-5" }}
+        settings={{
+          provider: "zai",
+          model: "zai/glm-5",
+          provider_api_key_present: false,
+        }}
         providerModels={{
           zai: {
             provider: "zai",
             configured: true,
             models: ["glm-5"],
+            model_metadata: {},
             last_refresh_status: "failed",
             last_error: "remote model discovery failed",
             discovery_mode: "configured_endpoint",

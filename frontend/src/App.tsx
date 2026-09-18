@@ -485,7 +485,9 @@ function App() {
     }
     return deriveChatMessages(
       childResult.transcript,
-      childResult.output ?? backgroundTaskOutput.output,
+      // The document types an optional field as possibly absent; the resolved
+      // child output falls back to the task's own output when unset.
+      childResult.output ?? backgroundTaskOutput.output ?? null,
       childResult.session.session.id,
     );
   }, [backgroundTaskOutput, selectedBackgroundTaskOutputId]);

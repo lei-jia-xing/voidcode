@@ -8,11 +8,13 @@ const baseProps = {
   tasks: [
     {
       task: { id: "task-1" },
-      status: "completed",
+      status: "completed" as const,
       prompt: "Inspect the parser",
       session_id: "child-session",
       created_at: 1,
       updated_at: 2,
+      keep_alive: false,
+      schema_mode: "permissive" as const,
     },
   ],
   status: "success" as const,

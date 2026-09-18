@@ -4,6 +4,7 @@ import { Send, Sparkles, Square } from "lucide-react";
 import type {
   AgentSummary,
   CommandSummary,
+  ProviderModelMetadata,
   ProviderModelsResult,
   ProviderSummary,
 } from "../lib/runtime/types";
@@ -35,10 +36,6 @@ interface ComposerProps {
   onSteer?: (content: string) => Promise<{ queued: number }>;
   onCancel?: () => void;
 }
-
-type ProviderModelMetadata = NonNullable<
-  ProviderModelsResult["model_metadata"]
->[string];
 
 export interface SessionContextUsage {
   usedTokens: number | null;

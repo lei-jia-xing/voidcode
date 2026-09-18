@@ -15,11 +15,13 @@ import { useAppStore } from "./store";
 import { currentWorkspaceScope, queryClient, queryKeys } from "./lib/queries";
 import type {
   BackgroundTaskOutput,
+  BackgroundTaskResultPayload,
   BackgroundTaskSummary,
   EventEnvelope,
   RuntimeResponse,
   RuntimeStreamChunk,
   SessionState,
+  TranscriptEvent,
 } from "./lib/runtime/types";
 import "./i18n";
 
@@ -141,6 +143,47 @@ function makeEvent(
   };
 }
 
+/** A transcript entry: the ordered event plus its revert-marker state. */
+function makeTranscriptEvent(
+  sequence: number,
+  eventType: string,
+  payload: Record<string, unknown>,
+  source: EventEnvelope["source"] = "runtime",
+  sessionId = "session-1",
+): TranscriptEvent {
+  return {
+    ...makeEvent(sequence, eventType, payload, source, sessionId),
+    reverted: false,
+  };
+}
+
+/**
+ * One delegated task result as `GET /api/tasks/{id}/output` reports it.
+ *
+ * The transport always writes the task's delegated view, its lifecycle message
+ * and its tool-call count, so the fixture does too; only the lineage varies
+ * between cases.
+ */
+function makeTaskResult(
+  taskId: string,
+  fields: Partial<BackgroundTaskResultPayload> = {},
+): BackgroundTaskResultPayload {
+  return {
+    task_id: taskId,
+    status: "completed",
+    approval_blocked: false,
+    result_available: true,
+    tool_call_count: 0,
+    delegation: { approval_blocked: false, result_available: true },
+    message: {
+      kind: "delegated_lifecycle",
+      approval_blocked: false,
+      result_available: true,
+    },
+    ...fields,
+  };
+}
+
 function makeRuntimeResponse(
   sessionId: string,
   status: SessionState["status"],
@@ -162,12 +205,13 @@ const parentTaskSummary: BackgroundTaskSummary = {
   error: null,
   created_at: 1,
   updated_at: 1,
+  keep_alive: false,
+  schema_mode: "permissive",
 };
 
 function makeChildOutput(status: SessionState["status"]): BackgroundTaskOutput {
   return {
-    task: {
-      task_id: "task-child",
+    task: makeTaskResult("task-child", {
       status: "completed",
       parent_session_id: "session-parent",
       requested_child_session_id: "requested-child",
@@ -180,8 +224,8 @@ function makeChildOutput(status: SessionState["status"]): BackgroundTaskOutput {
       error: null,
       result_available: true,
       cancellation_cause: null,
-      routing: { mode: "subagent", subagent_type: "explore" },
-    },
+      routing: { mode: "background", subagent_type: "explore" },
+    }),
     session_result: {
       session: {
         ...makeSessionState("child-session", status),
@@ -194,14 +238,14 @@ function makeChildOutput(status: SessionState["status"]): BackgroundTaskOutput {
       error: null,
       last_event_sequence: 2,
       transcript: [
-        makeEvent(
+        makeTranscriptEvent(
           1,
           "runtime.request_received",
           { prompt: "child prompt" },
           "runtime",
           "child-session",
         ),
-        makeEvent(
+        makeTranscriptEvent(
           2,
           "graph.response_ready",
           { output: "child output" },

@@ -5,6 +5,7 @@ import { deriveChatMessages } from "./lib/runtime/event-parser";
 import type {
   ApprovalDecision,
   BackgroundTaskOutput,
+  BackgroundTaskResultPayload,
   BackgroundTaskSummary,
   EventEnvelope,
   ProviderModelsResult,
@@ -19,6 +20,7 @@ import type {
   RuntimeSettings,
   SessionState,
   StoredSessionSummary,
+  TranscriptEvent,
   WorkspaceReviewSnapshot,
 } from "./lib/runtime/types";
 
@@ -127,6 +129,60 @@ function makeStoredSessionSummary(
   };
 }
 
+/** A transcript entry: the ordered event plus its revert-marker state. */
+function makeTranscriptEvent(
+  sequence: number,
+  eventType: string,
+  payload: Record<string, unknown>,
+  source: EventEnvelope["source"] = "runtime",
+  sessionId = "session-1",
+): TranscriptEvent {
+  return {
+    ...makeEvent(sequence, eventType, payload, source, sessionId),
+    reverted: false,
+  };
+}
+
+/**
+ * One delegated task result as `GET /api/tasks/{id}/output` reports it.
+ *
+ * The transport always writes the task's delegated view, its lifecycle message
+ * and its tool-call count, so the fixture does too; only the lineage varies
+ * between cases.
+ */
+function makeTaskResult(
+  taskId: string,
+  fields: Partial<BackgroundTaskResultPayload> = {},
+): BackgroundTaskResultPayload {
+  return {
+    task_id: taskId,
+    status: "completed",
+    approval_blocked: false,
+    result_available: true,
+    tool_call_count: 0,
+    delegation: { approval_blocked: false, result_available: true },
+    message: {
+      kind: "delegated_lifecycle",
+      approval_blocked: false,
+      result_available: true,
+    },
+    ...fields,
+  };
+}
+
+/** One provider's model catalog as `GET /api/providers/{name}/models` reports it. */
+function makeProviderModels(
+  provider: string,
+  models: string[],
+): ProviderModelsResult {
+  return {
+    provider,
+    configured: true,
+    models,
+    model_metadata: {},
+  };
+}
+
 function makeBackgroundTaskSummary(
   taskId: string,
   prompt: string,
@@ -139,6 +195,8 @@ function makeBackgroundTaskSummary(
     error: null,
     created_at: 1,
     updated_at: 1,
+    keep_alive: false,
+    schema_mode: "permissive",
   };
 }
 
@@ -186,10 +244,7 @@ const runtimeClientMocks = vi.hoisted(() => ({
   openWorkspaceMock:
     vi.fn<() => Promise<{ current: null; recent: []; candidates: [] }>>(),
   listProvidersMock: vi.fn<() => Promise<[]>>(),
-  listProviderModelsMock:
-    vi.fn<
-      () => Promise<{ provider: string; configured: boolean; models: [] }>
-    >(),
+  listProviderModelsMock: vi.fn<() => Promise<ProviderModelsResult>>(),
   listAgentsMock: vi.fn<() => Promise<[]>>(),
   listSkillsMock: vi.fn<() => Promise<[]>>(),
   listCommandsMock: vi.fn<() => Promise<[]>>(),
@@ -366,8 +421,9 @@ function makeDebugSnapshot(sessionId: string): RuntimeSessionDebugSnapshot {
     last_failure_event: null,
     failure: null,
     last_tool: null,
-    suggested_operator_action: null,
-    operator_guidance: null,
+    last_event_sequence: 2,
+    suggested_operator_action: "replay",
+    operator_guidance: "Replay the session.",
   };
 }
 
@@ -469,6 +525,7 @@ async function resetStoreForTest() {
     provider: "opencode-go",
     configured: true,
     models: [],
+    model_metadata: {},
   });
   runtimeClientMocks.listAgentsMock.mockResolvedValue([]);
   runtimeClientMocks.listCommandsMock.mockResolvedValue([]);
@@ -489,8 +546,12 @@ async function resetStoreForTest() {
     state: "clean",
     diff: null,
   });
-  runtimeClientMocks.getSettingsMock.mockResolvedValue({});
-  runtimeClientMocks.updateSettingsMock.mockResolvedValue({});
+  runtimeClientMocks.getSettingsMock.mockResolvedValue({
+    provider_api_key_present: false,
+  });
+  runtimeClientMocks.updateSettingsMock.mockResolvedValue({
+    provider_api_key_present: false,
+  });
   runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([]);
   runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
   runtimeClientMocks.cancelSessionMock.mockResolvedValue({
@@ -502,21 +563,14 @@ async function resetStoreForTest() {
     reason: "web user interrupt",
   });
   runtimeClientMocks.getBackgroundTaskOutputMock.mockResolvedValue({
-    task: {
-      task_id: "task-1",
-      status: "completed",
+    task: makeTaskResult("task-1", {
       parent_session_id: "session-1",
-      requested_child_session_id: null,
       child_session_id: "child-session-1",
       approval_request_id: null,
       question_request_id: null,
-      approval_blocked: false,
       summary_output: "summary",
-      error: null,
-      result_available: true,
-      cancellation_cause: null,
-      routing: { mode: "subagent", subagent_type: "explore" },
-    },
+      routing: { mode: "background", subagent_type: "explore" },
+    }),
     session_result: null,
     output: "output",
   });
@@ -535,8 +589,9 @@ async function resetStoreForTest() {
     last_failure_event: null,
     failure: null,
     last_tool: null,
-    suggested_operator_action: null,
-    operator_guidance: null,
+    last_event_sequence: 2,
+    suggested_operator_action: "replay",
+    operator_guidance: "Replay the session.",
   });
   runtimeClientMocks.validateProviderCredentialsMock.mockResolvedValue({
     provider: "deepseek",
@@ -563,7 +618,7 @@ describe("useAppStore integration flow", () => {
     });
     seedBackgroundTaskList(null, []);
     seedDebugSnapshot(sessionId, makeDebugSnapshot(sessionId));
-    seedSettings({});
+    seedSettings({ provider_api_key_present: false });
 
     const { refreshAfterMutation } = await import("./lib/queries");
     await refreshAfterMutation({ sessions: true, status: true, review: true });
@@ -1809,8 +1864,7 @@ describe("useAppStore integration flow", () => {
   it("keeps delegated child output selected while refreshing session-scoped task lists", async () => {
     const childTask = makeBackgroundTaskSummary("task-child", "child task");
     const childOutput: BackgroundTaskOutput = {
-      task: {
-        task_id: "task-child",
+      task: makeTaskResult("task-child", {
         status: "completed",
         parent_session_id: "session-parent",
         requested_child_session_id: "requested-child",
@@ -1823,8 +1877,8 @@ describe("useAppStore integration flow", () => {
         error: null,
         result_available: true,
         cancellation_cause: null,
-        routing: { mode: "subagent", subagent_type: "explore" },
-      },
+        routing: { mode: "background", subagent_type: "explore" },
+      }),
       session_result: {
         session: makeSessionState("child-session", "completed"),
         prompt: "child prompt",
@@ -1834,14 +1888,14 @@ describe("useAppStore integration flow", () => {
         error: null,
         last_event_sequence: 2,
         transcript: [
-          makeEvent(
+          makeTranscriptEvent(
             1,
             "runtime.request_received",
             { prompt: "child prompt" },
             "runtime",
             "child-session",
           ),
-          makeEvent(
+          makeTranscriptEvent(
             2,
             "graph.response_ready",
             { output: "child output" },
@@ -1883,8 +1937,7 @@ describe("useAppStore integration flow", () => {
       makeEvent(1, "runtime.request_received", { prompt: "parent prompt" }),
     ];
     const childOutput: BackgroundTaskOutput = {
-      task: {
-        task_id: "task-child",
+      task: makeTaskResult("task-child", {
         status: "completed",
         parent_session_id: "session-parent",
         requested_child_session_id: "requested-child",
@@ -1897,8 +1950,8 @@ describe("useAppStore integration flow", () => {
         error: null,
         result_available: true,
         cancellation_cause: null,
-        routing: { mode: "subagent", subagent_type: "explore" },
-      },
+        routing: { mode: "background", subagent_type: "explore" },
+      }),
       session_result: {
         session: {
           ...makeSessionState("child-session", "completed"),
@@ -1911,7 +1964,7 @@ describe("useAppStore integration flow", () => {
         error: null,
         last_event_sequence: 2,
         transcript: [
-          makeEvent(
+          makeTranscriptEvent(
             1,
             "runtime.request_received",
             { prompt: "child prompt" },
@@ -2033,8 +2086,7 @@ describe("useAppStore integration flow", () => {
 
   it("keeps delegated child replay run status in sync while the child is still running", async () => {
     runtimeClientMocks.getChildSessionContextMock.mockResolvedValueOnce({
-      task: {
-        task_id: "task-child-running",
+      task: makeTaskResult("task-child-running", {
         status: "running",
         parent_session_id: "session-parent",
         requested_child_session_id: "child-session",
@@ -2047,7 +2099,7 @@ describe("useAppStore integration flow", () => {
         error: null,
         result_available: false,
         cancellation_cause: null,
-      },
+      }),
       session_result: {
         session: {
           session: { id: "child-session", parent_id: "session-parent" },
@@ -2057,12 +2109,13 @@ describe("useAppStore integration flow", () => {
         },
         prompt: "inspect child",
         status: "running",
-        summary: null,
+        // A session result always carries a summary string; a running child has none yet.
+        summary: "",
         output: null,
         error: null,
         last_event_sequence: 1,
         transcript: [
-          makeEvent(
+          makeTranscriptEvent(
             1,
             "runtime.request_received",
             { prompt: "inspect child" },
@@ -2103,8 +2156,7 @@ describe("useAppStore integration flow", () => {
     ];
 
     runtimeClientMocks.getChildSessionContextMock.mockResolvedValueOnce({
-      task: {
-        task_id: "task-child-running",
+      task: makeTaskResult("task-child-running", {
         status: "running",
         parent_session_id: "session-parent",
         requested_child_session_id: "child-session",
@@ -2117,7 +2169,7 @@ describe("useAppStore integration flow", () => {
         error: null,
         result_available: false,
         cancellation_cause: null,
-      },
+      }),
       session_result: {
         session: {
           session: { id: "child-session", parent_id: "session-parent" },
@@ -2127,12 +2179,13 @@ describe("useAppStore integration flow", () => {
         },
         prompt: "inspect child",
         status: "running",
-        summary: null,
+        // A session result always carries a summary string; a running child has none yet.
+        summary: "",
         output: "child output",
         error: null,
         last_event_sequence: 1,
         transcript: [
-          makeEvent(
+          makeTranscriptEvent(
             1,
             "runtime.request_received",
             { prompt: "inspect child" },
@@ -2171,8 +2224,7 @@ describe("useAppStore integration flow", () => {
 
   it("refreshes an already-browsed delegated child session in place without clearing the child view", async () => {
     const childOutput: BackgroundTaskOutput = {
-      task: {
-        task_id: "task-child",
+      task: makeTaskResult("task-child", {
         status: "completed",
         parent_session_id: "session-parent",
         requested_child_session_id: "requested-child",
@@ -2185,8 +2237,8 @@ describe("useAppStore integration flow", () => {
         error: null,
         result_available: true,
         cancellation_cause: null,
-        routing: { mode: "subagent", subagent_type: "explore" },
-      },
+        routing: { mode: "background", subagent_type: "explore" },
+      }),
       session_result: {
         session: {
           ...makeSessionState("child-session", "completed"),
@@ -2199,7 +2251,7 @@ describe("useAppStore integration flow", () => {
         error: null,
         last_event_sequence: 2,
         transcript: [
-          makeEvent(
+          makeTranscriptEvent(
             1,
             "runtime.request_received",
             { prompt: "child prompt" },
@@ -2225,6 +2277,8 @@ describe("useAppStore integration flow", () => {
         error: null,
         created_at: 1,
         updated_at: 1,
+        keep_alive: false,
+        schema_mode: "permissive",
       },
     ]);
 
@@ -2261,8 +2315,7 @@ describe("useAppStore integration flow", () => {
 
   it("keeps the delegated child view when the flat session list omits child sessions", async () => {
     const childOutput: BackgroundTaskOutput = {
-      task: {
-        task_id: "task-child",
+      task: makeTaskResult("task-child", {
         status: "completed",
         parent_session_id: "session-parent",
         requested_child_session_id: "requested-child",
@@ -2275,8 +2328,8 @@ describe("useAppStore integration flow", () => {
         error: null,
         result_available: true,
         cancellation_cause: null,
-        routing: { mode: "subagent", subagent_type: "explore" },
-      },
+        routing: { mode: "background", subagent_type: "explore" },
+      }),
       session_result: {
         session: {
           ...makeSessionState("child-session", "completed"),
@@ -2289,7 +2342,7 @@ describe("useAppStore integration flow", () => {
         error: null,
         last_event_sequence: 2,
         transcript: [
-          makeEvent(
+          makeTranscriptEvent(
             1,
             "runtime.request_received",
             { prompt: "child prompt" },
@@ -2312,6 +2365,8 @@ describe("useAppStore integration flow", () => {
         error: null,
         created_at: 1,
         updated_at: 1,
+        keep_alive: false,
+        schema_mode: "permissive",
       },
     ]);
     runtimeClientMocks.listSessionsMock.mockResolvedValue([
@@ -2337,8 +2392,7 @@ describe("useAppStore integration flow", () => {
 
   it("shows an interrupted delegated child session once and refreshes it in place", async () => {
     const interruptedChildOutput: BackgroundTaskOutput = {
-      task: {
-        task_id: "task-child",
+      task: makeTaskResult("task-child", {
         status: "completed",
         parent_session_id: "session-parent",
         requested_child_session_id: "requested-child",
@@ -2351,8 +2405,8 @@ describe("useAppStore integration flow", () => {
         error: null,
         result_available: true,
         cancellation_cause: null,
-        routing: { mode: "subagent", subagent_type: "explore" },
-      },
+        routing: { mode: "background", subagent_type: "explore" },
+      }),
       session_result: {
         session: {
           ...makeSessionState("child-session", "interrupted"),
@@ -2365,14 +2419,14 @@ describe("useAppStore integration flow", () => {
         error: null,
         last_event_sequence: 2,
         transcript: [
-          makeEvent(
+          makeTranscriptEvent(
             1,
             "runtime.request_received",
             { prompt: "child prompt" },
             "runtime",
             "child-session",
           ),
-          makeEvent(
+          makeTranscriptEvent(
             2,
             "graph.response_ready",
             { output: "child output" },
@@ -2398,6 +2452,8 @@ describe("useAppStore integration flow", () => {
         error: null,
         created_at: 1,
         updated_at: 1,
+        keep_alive: false,
+        schema_mode: "permissive",
       },
     ]);
 
@@ -3263,16 +3319,8 @@ describe("useAppStore integration flow", () => {
         { name: "kimi", label: "Kimi", configured: true, current: false },
       ],
       {
-        "opencode-go": {
-          provider: "opencode-go",
-          configured: true,
-          models: ["kimi-k2.6"],
-        },
-        kimi: {
-          provider: "kimi",
-          configured: true,
-          models: ["kimi-k2.6"],
-        },
+        "opencode-go": makeProviderModels("opencode-go", ["kimi-k2.6"]),
+        kimi: makeProviderModels("kimi", ["kimi-k2.6"]),
       },
     );
     useAppStore.setState({
@@ -3325,16 +3373,8 @@ describe("useAppStore integration flow", () => {
         { name: "kimi", label: "Kimi", configured: true, current: false },
       ],
       {
-        "opencode-go": {
-          provider: "opencode-go",
-          configured: true,
-          models: ["glm-5.1"],
-        },
-        kimi: {
-          provider: "kimi",
-          configured: true,
-          models: ["kimi-k2.6"],
-        },
+        "opencode-go": makeProviderModels("opencode-go", ["glm-5.1"]),
+        kimi: makeProviderModels("kimi", ["kimi-k2.6"]),
       },
     );
     useAppStore.setState({
@@ -3385,16 +3425,8 @@ describe("useAppStore integration flow", () => {
         { name: "kimi", label: "Kimi", configured: true, current: false },
       ],
       {
-        "opencode-go": {
-          provider: "opencode-go",
-          configured: true,
-          models: ["glm-5.1"],
-        },
-        kimi: {
-          provider: "kimi",
-          configured: true,
-          models: ["kimi-k2.6"],
-        },
+        "opencode-go": makeProviderModels("opencode-go", ["glm-5.1"]),
+        kimi: makeProviderModels("kimi", ["kimi-k2.6"]),
       },
     );
     useAppStore.setState({
@@ -3446,21 +3478,9 @@ describe("useAppStore integration flow", () => {
         { name: "zai", label: "Z.AI", configured: true, current: false },
       ],
       {
-        "opencode-go": {
-          provider: "opencode-go",
-          configured: true,
-          models: ["glm-5.1"],
-        },
-        kimi: {
-          provider: "kimi",
-          configured: true,
-          models: ["kimi-k2.6"],
-        },
-        zai: {
-          provider: "zai",
-          configured: true,
-          models: ["kimi-k2.6"],
-        },
+        "opencode-go": makeProviderModels("opencode-go", ["glm-5.1"]),
+        kimi: makeProviderModels("kimi", ["kimi-k2.6"]),
+        zai: makeProviderModels("zai", ["kimi-k2.6"]),
       },
     );
     useAppStore.setState({
@@ -3511,16 +3531,8 @@ describe("useAppStore integration flow", () => {
         { name: "kimi", label: "Kimi", configured: true, current: false },
       ],
       {
-        "opencode-go": {
-          provider: "opencode-go",
-          configured: true,
-          models: ["glm-5.1"],
-        },
-        kimi: {
-          provider: "kimi",
-          configured: true,
-          models: ["kimi-k2.6"],
-        },
+        "opencode-go": makeProviderModels("opencode-go", ["glm-5.1"]),
+        kimi: makeProviderModels("kimi", ["kimi-k2.6"]),
       },
     );
     useAppStore.setState({
@@ -3661,11 +3673,7 @@ describe("useAppStore integration flow", () => {
         },
       ],
       {
-        "opencode-go": {
-          provider: "opencode-go",
-          configured: true,
-          models: [],
-        },
+        "opencode-go": makeProviderModels("opencode-go", []),
       },
     );
     useAppStore.setState({

@@ -1,187 +1,145 @@
-export type SessionStatus =
-  "idle" | "running" | "waiting" | "completed" | "failed" | "interrupted";
-export type EventSource = "runtime" | "graph" | "tool";
-export type ApprovalDecision = "allow" | "deny";
-export type GitStatusState = "git_ready" | "not_git_repo" | "git_error";
-export type CapabilityState = "running" | "stopped" | "failed" | "unconfigured";
-export type AsyncStatus = "idle" | "loading" | "success" | "error";
+/**
+ * The frontend's runtime data vocabulary.
+ *
+ * Two ownership classes live in this file and each block says which one it is:
+ *
+ * 1. **Backend-owned wire shapes** are bindings to `./generated/api`, which is
+ *    generated from the document the transport serves at `GET /api/openapi.json`
+ *    (`mise run frontend:api:generate`; `mise run frontend:api:check` fails when
+ *    the committed file is stale). No shape below is restated by hand: change the
+ *    pydantic model in `src/voidcode/runtime/transport/http_models.py`, or the
+ *    runtime contract behind it, and regenerate. The short names exist because
+ *    the app reads better without the transport's `...Body` suffix — they are
+ *    bindings, not definitions.
+ * 2. **Frontend-owned shapes** are the ones the backend does not describe: local
+ *    UI state, request bodies narrowed to what the shell actually sends, and the
+ *    event *payload* shapes the transport deliberately leaves dynamic. They are
+ *    hand-written and marked as such.
+ *
+ * Where the document is weaker than the wire, the refinement is a documented
+ * intersection or an explicit local type rather than a rewrite of the generated
+ * shape — `EventEnvelope` (the frontend's own receive-time stamp),
+ * `ReviewChangedFile` (an enum the transport declares as a plain string),
+ * `RuntimeRequest` (a body the route narrows in a validator), `QuestionAnswer`
+ * and `ApprovalDecision`. Every one of them narrows; none may widen.
+ *
+ * One property of the generated shapes is worth stating because it shows up at
+ * every read site: an optional field is `field?: T | null`. Pydantic marks a
+ * field with a default as *not required* in JSON Schema, so the document cannot
+ * distinguish "the serializer always writes this key, sometimes with `null`"
+ * from "the serializer drops the key when unset". Read sites therefore treat
+ * every optional field as possibly absent (`??`/`?.`), which is what the
+ * transport's own `null`-vs-absent contract allows. Making those fields required
+ * would be wrong in the other direction: the models that omit unset keys
+ * (`_absent_when_none`) really do drop them.
+ *
+ * This module is compile-time only. Nothing here validates a response body, and
+ * no runtime check may be derived from it: the transport's bodies are pinned by
+ * `tests/integration/test_http_response_schema.py`.
+ */
+import type { components } from "./generated/api";
 
-export interface SessionRef {
-  id: string;
-  parent_id?: string | null;
-}
+/** The generated schema map, keyed by the transport's model names. */
+type Schemas = components["schemas"];
 
-export interface SessionState {
-  session: SessionRef;
-  status: SessionStatus;
-  turn: number;
-  metadata: Record<string, unknown>;
-}
+// ------------------------------------------------------- backend-owned wire shapes
 
-export interface StoredSessionSummary {
-  session: SessionRef;
-  status: SessionStatus;
-  turn: number;
-  prompt: string;
-  updated_at: number;
-}
+export type SessionStatus = Schemas["SessionStatus"];
+export type EventSource = Schemas["EventSource"];
+export type GitStatusState = Schemas["GitStatusState"];
+export type CapabilityState = Schemas["CapabilityState"];
+export type ReviewTreeNodeKind = Schemas["ReviewTreeNodeKind"];
+export type RuntimeNotificationKind = Schemas["RuntimeNotificationKind"];
+export type RuntimeNotificationStatus = Schemas["RuntimeNotificationStatus"];
+export type BackgroundTaskStatus = Schemas["BackgroundTaskStatus"];
 
-export interface WorkspaceSummary {
-  path: string;
-  label: string;
-  available: boolean;
-  current: boolean;
-  last_opened_at?: number | null;
-}
+export type SessionRef = Schemas["SessionRefBody"];
+export type SessionState = Schemas["SessionStateBody"];
+export type StoredSessionSummary = Schemas["SessionSummaryBody"];
+export type WorkspaceSummary = Schemas["WorkspaceSummaryBody"];
+export type WorkspaceRegistrySnapshot = Schemas["WorkspaceRegistryBody"];
+export type ProviderSummary = Schemas["ProviderSummaryBody"];
+export type ProviderModelsResult = Schemas["ProviderModelsBody"];
+/** One model's capability record inside `ProviderModelsResult.model_metadata`. */
+export type ProviderModelMetadata = Schemas["ProviderModelMetadataBody"];
+export type ProviderValidationResult = Schemas["ProviderValidationBody"];
+export type AgentSummary = Schemas["AgentSummaryBody"];
+export type SkillSummary = Schemas["SkillSummaryBody"];
+export type CommandSummary = Schemas["CommandSummaryBody"];
+export type GitStatusSnapshot = Schemas["GitStatusBody"];
+export type CapabilityStatusSnapshot = Schemas["CapabilityStatusBody"];
+export type RuntimeBackgroundTaskStatusSnapshot =
+  Schemas["RuntimeBackgroundTaskStatusBody"];
+export type RuntimeStatusSnapshot = Schemas["RuntimeStatusBody"];
+export type ReviewTreeNode = Schemas["ReviewTreeNodeBody"];
+export type ReviewFileDiff = Schemas["ReviewFileDiffBody"];
+export type RuntimeResponse = Schemas["RuntimeResponseBody"];
+export type RuntimeInterruptResult = Schemas["SessionCancelBody"];
+/** `POST /api/sessions/{id}/steer`: how many messages the queue accepted. */
+export type SessionSteerResult = Schemas["SessionSteerBody"];
+export type RuntimeNotification = Schemas["NotificationBody"];
+export type BackgroundTaskRequestSnapshot =
+  Schemas["BackgroundTaskRequestSnapshotBody"];
+export type BackgroundTaskRouting = Schemas["SubagentRoutingBody"];
+export type BackgroundTaskSummary = Schemas["BackgroundTaskSummaryBody"];
+export type BackgroundTaskState = Schemas["BackgroundTaskStateBody"];
+export type BackgroundTaskResultPayload = Schemas["BackgroundTaskResultBody"];
+export type BackgroundTaskOutput = Schemas["BackgroundTaskOutputBody"];
+export type BackgroundTaskRetryResponse = Schemas["BackgroundTaskRetryBody"];
+export type BackgroundTaskSteerResponse = Schemas["BackgroundTaskSteerBody"];
+export type RuntimeSessionResult = Schemas["SessionResultBody"];
+/** One entry of a session result's transcript: an event plus its revert-marker state. */
+export type TranscriptEvent = Schemas["TranscriptEventBody"];
+export type RuntimeSessionDebugEvent = Schemas["SessionDebugEventBody"];
+export type RuntimeSessionDebugSnapshot = Schemas["SessionDebugBody"];
+export type ProviderContextSegmentSnapshot =
+  Schemas["ProviderContextSegmentBody"];
+export type ProviderContextSnapshot = Schemas["ProviderContextBody"];
+/** `GET /api/settings`: the effective provider/model, never the API key itself. */
+export type RuntimeSettings = Schemas["WebSettingsBody"];
+/** `POST /api/settings`: the fields the client may set. */
+export type RuntimeSettingsUpdate = Schemas["_SettingsRequestPayload"];
+/** One request item inside `_QuestionAnswerRequestPayload.responses`. */
+type QuestionAnswerItem = NonNullable<
+  Schemas["_QuestionAnswerRequestPayload"]["responses"]
+>[number];
 
-export interface WorkspaceRegistrySnapshot {
-  current: WorkspaceSummary | null;
-  recent: WorkspaceSummary[];
-  candidates: WorkspaceSummary[];
-}
+/**
+ * One entry of the `responses` array `POST /api/sessions/{id}/question` accepts.
+ *
+ * Refinement: the document types both fields of the request item as optional and
+ * nullable (the route checks them in validators), so the generated item admits
+ * `{}`. The shell builds these entries, so `header` and `answers` are required
+ * here: exactly the two fields the route rejects when they are missing or blank.
+ * Emptiness of an individual answer string is still the route's own 400.
+ */
+export type QuestionAnswer = QuestionAnswerItem & {
+  header: string;
+  answers: string[];
+};
 
-export interface ProviderSummary {
-  name: string;
-  label: string;
-  configured: boolean;
-  current: boolean;
-}
+/**
+ * One ordered runtime event, as the shell carries it.
+ *
+ * Backend-owned except for `received_at`: the transport sends the envelope and
+ * the frontend stamps its own receive time on top (the reasoning-duration
+ * projection reads it), so the stamp is an addition to the generated shape.
+ */
+export type EventEnvelope = Schemas["EventBody"] & { received_at?: number };
 
-export interface ProviderModelsResult {
-  provider: string;
-  configured: boolean;
-  models: string[];
-  model_metadata?: Record<
-    string,
-    {
-      context_window?: number | null;
-      max_input_tokens?: number | null;
-      max_output_tokens?: number | null;
-      supports_reasoning?: boolean | null;
-      supports_reasoning_effort?: boolean | null;
-      default_reasoning_effort?: string | null;
-      supported_effort_levels?: string[] | null;
-      supports_tools?: boolean | null;
-      supports_vision?: boolean | null;
-      supports_streaming?: boolean | null;
-      supports_json_mode?: boolean | null;
-      supports_reasoning_summary?: boolean | null;
-      supports_thinking_budget?: boolean | null;
-      supports_interleaved_reasoning?: boolean | null;
-      reasoning_visibility?: string | null;
-      model_status?: string | null;
-      tool_feedback_mode?: string | null;
-      modalities_input?: string[] | null;
-      modalities_output?: string[] | null;
-    }
-  >;
-  source?: string | null;
-  last_refresh_status?: string | null;
-  last_error?: string | null;
-  discovery_mode?: string | null;
-}
-
-export interface ProviderValidationResult {
-  provider: string;
-  configured: boolean;
-  ok: boolean;
-  status: string;
-  message: string;
-  source?: string | null;
-  last_error?: string | null;
-  discovery_mode?: string | null;
-}
-
-export interface AgentSummary {
-  id: string;
-  label: string;
-  description?: string | null;
-  mode?: string | null;
-  selectable?: boolean;
-  configured?: boolean;
-  execution_engine?: string | null;
-  model?: string | null;
-  model_label?: string | null;
-  model_source?: string | null;
-  provider?: string | null;
-  fallback_chain?: string[];
-  source_scope?: string | null;
-  source_path?: string | null;
-}
-
-export interface SkillSummary {
-  name: string;
-  description: string;
-  origin: string;
-  source_path?: string | null;
-}
-
-export interface CommandSummary {
-  name: string;
-  description: string;
-  source: string;
-  enabled: boolean;
-  hidden: boolean;
-  agent?: string | null;
-  model?: string | null;
-  subtask?: boolean;
-  path?: string | null;
-}
-
-export interface GitStatusSnapshot {
-  state: GitStatusState;
-  root?: string | null;
-  branch?: string | null;
-  error?: string | null;
-}
-
-export interface CapabilityStatusSnapshot {
-  state: CapabilityState;
-  error?: string | null;
-  details?: Record<string, unknown>;
-}
-
-export interface McpServerStatusDetail {
-  server: string;
-  status: "running" | "stopped" | "failed";
-  workspace_root?: string | null;
-  stage?: string | null;
-  error?: string | null;
-  command?: string[];
-  retry_available?: boolean;
-  scope?: string | null;
-  transport?: string | null;
-}
-
-export interface LspServerStatusDetail {
-  server: string;
-  status: "running" | "stopped" | "starting" | "failed" | "disabled";
-  available?: boolean;
-  command?: string[];
-  error?: string | null;
-}
-
-export interface RuntimeBackgroundTaskStatusSnapshot {
-  active_worker_slots: number;
-  queued_count: number;
-  running_count: number;
-  terminal_count: number;
-  default_concurrency: number;
-  provider_concurrency: Record<string, number>;
-  model_concurrency: Record<string, number>;
-  status_counts: Record<string, number>;
-}
-
-export interface RuntimeStatusSnapshot {
-  git: GitStatusSnapshot;
-  lsp: CapabilityStatusSnapshot;
-  mcp: CapabilityStatusSnapshot;
-  acp?: CapabilityStatusSnapshot;
-  background_tasks: RuntimeBackgroundTaskStatusSnapshot;
-}
-
-export interface ReviewChangedFile {
-  path: string;
+/**
+ * One changed path from `GET /api/review`.
+ *
+ * Refinement: `ReviewChangedFile.change_type` is a `Literal` in
+ * `runtime/review.py`, but the transport's `ReviewChangedFileBody` declares it as
+ * a plain `str`, so the document publishes `string`. The frontend keeps the
+ * union the runtime can actually emit — every value is produced by
+ * `ReviewParser._map_change_type`.
+ */
+export type ReviewChangedFile = Omit<
+  Schemas["ReviewChangedFileBody"],
+  "change_type"
+> & {
   change_type:
     | "added"
     | "modified"
@@ -191,40 +149,83 @@ export interface ReviewChangedFile {
     | "copied"
     | "type_changed"
     | "unknown";
-  old_path?: string | null;
-}
+};
 
-export interface ReviewTreeNode {
-  path: string;
-  name: string;
-  kind: "file" | "directory";
-  changed: boolean;
-  children: ReviewTreeNode[];
-}
+/**
+ * `GET /api/review`: the workspace review surface.
+ *
+ * Refinement: `changed_files` carries the narrowed {@link ReviewChangedFile}, for
+ * the reason stated there.
+ */
+export type WorkspaceReviewSnapshot = Omit<
+  Schemas["WorkspaceReviewBody"],
+  "changed_files"
+> & { changed_files: ReviewChangedFile[] };
 
-export interface ReviewFileDiff {
-  root: string;
-  path: string;
-  state: "changed" | "clean" | "not_git_repo";
-  diff?: string | null;
-}
+/**
+ * The body of `POST /api/runtime/run/stream`.
+ *
+ * Refinement: the document describes the transport's boundary model
+ * (`_RunStreamRequestPayload`), which declares `prompt` optional and nullable and
+ * leaves `metadata` a free object, because the route enforces the rest in field
+ * validators. The shell builds these bodies, so the intersection states what the
+ * shell must send: `prompt` is present, and `metadata` names the keys the shell
+ * sets. What it does *not* enforce at compile time is emptiness — `prompt: string`
+ * admits `""`, and a blank prompt is still the route's own 400 to report.
+ */
+export type RuntimeRequest = Schemas["_RunStreamRequestPayload"] & {
+  prompt: string;
+  metadata?: {
+    agent?: Record<string, unknown>;
+    mode?: "normal" | "plan";
+    read_only?: boolean;
+    skills?: string[];
+    force_load_skills?: string[];
+    context_transform_refs?: string[];
+    delegation?: Record<string, unknown>;
+    provider_stream?: boolean;
+    reasoning_effort?: string;
+    [key: string]: unknown;
+  };
+};
 
-export interface WorkspaceReviewSnapshot {
-  root: string;
-  git: GitStatusSnapshot;
-  changed_files: ReviewChangedFile[];
-  tree: ReviewTreeNode[];
-}
+/**
+ * One decoded server-sent-events frame.
+ *
+ * Refinement of the two frame schemas the document publishes
+ * (`RunStreamFrameBody` for `POST /api/runtime/run/stream`, `SessionEventFrameBody`
+ * for `GET /api/sessions/{id}/events`): the transport writes all four keys on
+ * every frame with an explicit `null` for the slots the kind does not use
+ * (`_serialize_runtime_stream_chunk`, `_session_event_frames`), so the payload
+ * slots are present-or-null here instead of optional, and `event` is the
+ * `EventEnvelope` refinement that carries the receive-time stamp. `kind` is the
+ * generated union of both frame kinds.
+ */
+type GeneratedStreamFrame =
+  Schemas["RunStreamFrameBody"] | Schemas["SessionEventFrameBody"];
 
-export interface EventEnvelope {
-  session_id: string;
-  sequence: number;
-  event_type: string;
-  source: EventSource;
-  payload: Record<string, unknown>;
-  received_at?: number;
-}
+export type RuntimeStreamChunk = {
+  kind: GeneratedStreamFrame["kind"];
+  session: NonNullable<GeneratedStreamFrame["session"]> | null;
+  event: EventEnvelope | null;
+  output: NonNullable<GeneratedStreamFrame["output"]> | null;
+};
 
+// --------------------------------------------------------------- frontend-owned
+
+/** The shell's view of an asynchronous panel: local state, not a wire shape. */
+export type AsyncStatus = "idle" | "loading" | "success" | "error";
+
+/**
+ * The two decisions the approval route accepts.
+ *
+ * Backend-owned in spirit — `_ApprovalResolutionRequestPayload` validates
+ * `decision` against exactly these two words — but the document publishes the
+ * field as a nullable string, so the union is stated here instead of derived.
+ */
+export type ApprovalDecision = "allow" | "deny";
+
+/** One render instruction the shell derives from a tool event's payload. */
 export interface ToolDisplay {
   kind: string;
   title: string;
@@ -245,6 +246,12 @@ export interface ToolDiffPreview {
   error?: string;
 }
 
+/**
+ * A tool event's `tool_status` payload, as the shell reads it.
+ *
+ * Frontend-owned: the transport keeps event payloads dynamic
+ * (`EventBody.payload: dict[str, object]`), so no schema describes this shape.
+ */
 export interface ToolStatusPayload {
   invocation_id: string;
   tool_name: string;
@@ -254,47 +261,43 @@ export interface ToolStatusPayload {
   display: ToolDisplay;
 }
 
-export interface RuntimeRequest {
-  prompt: string;
-  session_id?: string | null;
-  parent_session_id?: string | null;
-  metadata?: {
-    agent?: Record<string, unknown>;
-    mode?: "normal" | "plan";
-    read_only?: boolean;
-    skills?: string[];
-    force_load_skills?: string[];
-    context_transform_refs?: string[];
-    delegation?: Record<string, unknown>;
-    provider_stream?: boolean;
-    reasoning_effort?: string;
-    [key: string]: unknown;
-  };
+/**
+ * The runtime's status details for one MCP server.
+ *
+ * Frontend-owned: `CapabilityStatusBody.details` is the capability manager's own
+ * dynamic map, and this is the MCP manager's slice of it.
+ */
+export interface McpServerStatusDetail {
+  server: string;
+  status: "running" | "stopped" | "failed";
+  workspace_root?: string | null;
+  stage?: string | null;
+  error?: string | null;
+  command?: string[];
+  retry_available?: boolean;
+  scope?: string | null;
+  transport?: string | null;
 }
 
-export interface RuntimeResponse {
-  session: SessionState;
-  events: EventEnvelope[];
-  output: string | null;
+/**
+ * The runtime's status details for one language server.
+ *
+ * Frontend-owned: the LSP manager's slice of `CapabilityStatusBody.details`.
+ */
+export interface LspServerStatusDetail {
+  server: string;
+  status: "running" | "stopped" | "starting" | "failed" | "disabled";
+  available?: boolean;
+  command?: string[];
+  error?: string | null;
 }
 
-/** The explicit resume endpoint returns the same authoritative snapshot shape. */
-export type RuntimeResumeResponse = RuntimeResponse;
-
-export interface RuntimeInterruptResult {
-  session_id: string;
-  status: "interrupted" | "not_active" | "stale";
-  interrupted: boolean;
-  cancelled: boolean;
-  run_id?: string | null;
-  reason?: string | null;
-}
-
-export interface ApiErrorPayload {
-  error?: string;
-  code?: string;
-}
-
+/**
+ * One question prompt the shell renders from a question event's payload.
+ *
+ * Frontend-owned: the prompt arrives inside a dynamic event payload, so no
+ * schema describes it.
+ */
 export interface QuestionOption {
   label: string;
   description?: string | null;
@@ -306,229 +309,3 @@ export interface QuestionPrompt {
   multiple: boolean;
   options: QuestionOption[];
 }
-
-export interface QuestionAnswer {
-  header: string;
-  answers: string[];
-}
-
-export interface RuntimeNotification {
-  id: string;
-  session: SessionRef;
-  kind:
-    | "completion"
-    | "failure"
-    | "cancellation"
-    | "approval_blocked"
-    | "question_blocked";
-  status: "unread" | "acknowledged";
-  summary: string;
-  event_sequence: number;
-  created_at: number;
-  acknowledged_at: number | null;
-  payload: Record<string, unknown>;
-}
-
-export interface BackgroundTaskRequestSnapshot {
-  prompt: string;
-  session_id?: string | null;
-  parent_session_id?: string | null;
-  metadata: Record<string, unknown>;
-  allocate_session_id?: boolean;
-}
-
-export interface BackgroundTaskRouting {
-  mode: string;
-  category?: string | null;
-  subagent_type?: string | null;
-  description?: string | null;
-  command?: string | null;
-}
-
-export interface BackgroundTaskSummary {
-  task: { id: string };
-  status: string;
-  prompt: string;
-  session_id?: string | null;
-  error?: string | null;
-  created_at: number;
-  updated_at: number;
-  created_at_unix_ms?: number | null;
-  keep_alive?: boolean;
-  steer_prompt?: string | null;
-}
-
-export interface BackgroundTaskControlResponse {
-  task: BackgroundTaskState;
-}
-
-export interface BackgroundTaskRetryResponse extends BackgroundTaskControlResponse {
-  retry_of_task_id: string;
-}
-
-export interface BackgroundTaskSteerResponse extends BackgroundTaskControlResponse {
-  steer_prompt: string;
-}
-
-export interface BackgroundTaskState {
-  task: { id: string };
-  status: string;
-  request: BackgroundTaskRequestSnapshot;
-  parent_session_id?: string | null;
-  requested_child_session_id?: string | null;
-  child_session_id?: string | null;
-  approval_request_id?: string | null;
-  question_request_id?: string | null;
-  result_available: boolean;
-  cancellation_cause?: string | null;
-  error?: string | null;
-  created_at: number;
-  updated_at: number;
-  started_at?: number | null;
-  finished_at?: number | null;
-  cancel_requested_at?: number | null;
-  routing?: BackgroundTaskRouting | null;
-}
-
-export interface BackgroundTaskResultPayload {
-  task_id: string;
-  status: string;
-  parent_session_id?: string | null;
-  requested_child_session_id?: string | null;
-  delegated_prompt?: string | null;
-  child_session_id?: string | null;
-  approval_request_id?: string | null;
-  question_request_id?: string | null;
-  approval_blocked: boolean;
-  summary_output?: string | null;
-  error?: string | null;
-  result_available: boolean;
-  cancellation_cause?: string | null;
-  duration_seconds?: number | null;
-  tool_call_count?: number;
-  hook_reminder?: {
-    active?: boolean;
-    task_status?: string;
-    child_status?: string;
-    lifecycle_status?: string;
-    approval_blocked?: boolean;
-    result_available?: boolean;
-    approval_request_id?: string;
-    question_request_id?: string;
-    message?: string;
-  } | null;
-  routing?: BackgroundTaskRouting | null;
-  delegation?: Record<string, unknown>;
-  message?: Record<string, unknown>;
-}
-
-export interface BackgroundTaskOutput {
-  task: BackgroundTaskResultPayload;
-  session_result: RuntimeSessionResult | null;
-  output: string | null;
-}
-
-export type ChildSessionContextResult = BackgroundTaskOutput;
-
-export interface RuntimeSessionResult {
-  session: SessionState;
-  prompt: string;
-  status: string;
-  summary?: string | null;
-  output?: string | null;
-  error?: string | null;
-  last_event_sequence?: number | null;
-  transcript: EventEnvelope[];
-}
-
-export interface RuntimeSessionDebugEvent {
-  sequence: number;
-  event_type: string;
-  source: EventSource | string;
-  payload: Record<string, unknown>;
-}
-
-export interface RuntimeSessionDebugSnapshot {
-  session: SessionState;
-  prompt: string;
-  persisted_status: string;
-  current_status: string;
-  active: boolean;
-  resumable: boolean;
-  replayable: boolean;
-  terminal: boolean;
-  resume_checkpoint_kind?: string | null;
-  pending_approval?: {
-    request_id: string;
-    tool_name: string;
-    target_summary: string;
-    reason: string;
-    policy_mode: string;
-    arguments: Record<string, unknown>;
-    owner_session_id?: string | null;
-    owner_parent_session_id?: string | null;
-    delegated_task_id?: string | null;
-  } | null;
-  pending_question?: {
-    request_id: string;
-    tool_name: string;
-    question_count: number;
-    headers: string[];
-  } | null;
-  last_event_sequence?: number | null;
-  last_relevant_event?: RuntimeSessionDebugEvent | null;
-  last_failure_event?: RuntimeSessionDebugEvent | null;
-  failure?: { classification: string; message: string } | null;
-  last_tool?: {
-    tool_name: string;
-    status: string;
-    summary: string;
-    arguments: Record<string, unknown>;
-    sequence?: number | null;
-  } | null;
-  suggested_operator_action?: string | null;
-  operator_guidance?: string | null;
-  provider_context?: ProviderContextSnapshot | null;
-}
-
-export interface ProviderContextSegmentSnapshot {
-  index: number;
-  role: string;
-  source: string;
-  content: string | null;
-  content_truncated: boolean;
-  tool_call_id?: string | null;
-  tool_name?: string | null;
-  tool_arguments?: Record<string, unknown> | null;
-  metadata?: Record<string, unknown> | null;
-}
-
-export interface ProviderContextSnapshot {
-  provider: string;
-  model: string;
-  segment_count: number;
-  message_count: number;
-  context_window: Record<string, unknown>;
-  segments: ProviderContextSegmentSnapshot[];
-  provider_messages: Record<string, unknown>[];
-  policy_decision: Record<string, unknown> | null;
-  diagnostics: Record<string, unknown>[];
-}
-
-export type RuntimeStreamChunkKind = "session" | "event" | "output";
-
-export interface RuntimeStreamChunk {
-  kind: RuntimeStreamChunkKind;
-  session: SessionState | null;
-  event: EventEnvelope | null;
-  output: string | null;
-}
-
-export interface RuntimeSettings {
-  provider?: string;
-  provider_api_key_present?: boolean;
-  provider_api_key?: string;
-  model?: string;
-}
-
-export type RuntimeSettingsUpdate = RuntimeSettings;

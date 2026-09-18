@@ -12,6 +12,7 @@ import { RuntimeClientError } from "../runtime/client";
 import type * as RuntimeClientModule from "../runtime/client";
 import type {
   BackgroundTaskOutput,
+  BackgroundTaskResultPayload,
   BackgroundTaskSummary,
   ProviderModelsResult,
   ProviderSummary,
@@ -142,6 +143,33 @@ function storedSession(id: string, prompt: string): StoredSessionSummary {
   };
 }
 
+/**
+ * One delegated task result as `GET /api/tasks/{id}/output` reports it.
+ *
+ * The transport always writes the task's delegated view, its lifecycle message
+ * and its tool-call count, so the fixture does too; only the lineage varies
+ * between cases.
+ */
+function makeTaskResult(
+  taskId: string,
+  fields: Partial<BackgroundTaskResultPayload> = {},
+): BackgroundTaskResultPayload {
+  return {
+    task_id: taskId,
+    status: "completed",
+    approval_blocked: false,
+    result_available: true,
+    tool_call_count: 0,
+    delegation: { approval_blocked: false, result_available: true },
+    message: {
+      kind: "delegated_lifecycle",
+      approval_blocked: false,
+      result_available: true,
+    },
+    ...fields,
+  };
+}
+
 function taskSummary(
   id: string,
   sessionId: string | null,
@@ -154,26 +182,22 @@ function taskSummary(
     error: null,
     created_at: 1,
     updated_at: 1,
+    keep_alive: false,
+    schema_mode: "permissive",
   };
 }
 
 function taskOutput(id: string, output: string): BackgroundTaskOutput {
   return {
-    task: {
-      task_id: id,
-      status: "completed",
+    task: makeTaskResult(id, {
       parent_session_id: "session-1",
       requested_child_session_id: null,
       child_session_id: null,
       approval_request_id: null,
       question_request_id: null,
-      approval_blocked: false,
       summary_output: null,
-      error: null,
-      result_available: true,
-      cancellation_cause: null,
-      routing: { mode: "subagent", subagent_type: "explore" },
-    },
+      routing: { mode: "background", subagent_type: "explore" },
+    }),
     session_result: null,
     output,
   };
@@ -223,6 +247,7 @@ function installDefaultMocks() {
     provider: "opencode-go",
     configured: true,
     models: [],
+    model_metadata: {},
   });
   runtimeClientMocks.listAgentsMock.mockResolvedValue([]);
   runtimeClientMocks.listSkillsMock.mockResolvedValue([]);
@@ -477,6 +502,7 @@ describe("query layer", () => {
           provider: "opencode-go",
           configured: true,
           models: ["original-model"],
+          model_metadata: {},
         },
       };
       runtimeClientMocks.listProvidersMock.mockResolvedValue(providers);
@@ -504,6 +530,7 @@ describe("query layer", () => {
         provider: "opencode-go",
         configured: true,
         models: ["reloaded-model"],
+        model_metadata: {},
       });
       runtimeClientMocks.getStatusMock.mockResolvedValue(retriedStatusSnapshot);
       runtimeClientMocks.updateSettingsMock.mockResolvedValue({
@@ -576,6 +603,7 @@ describe("query layer", () => {
         provider: "opencode-go",
         configured: true,
         models: ["kimi-k2.6"],
+        model_metadata: {},
       });
       runtimeClientMocks.validateProviderCredentialsMock.mockResolvedValue({
         provider: "opencode-go",

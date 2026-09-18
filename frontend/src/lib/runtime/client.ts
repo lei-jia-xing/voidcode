@@ -1,35 +1,80 @@
+import type { paths } from "./generated/api";
+
 import {
   AgentSummary,
-  CommandSummary,
-  SkillSummary,
   BackgroundTaskOutput,
-  ChildSessionContextResult,
-  BackgroundTaskSummary,
-  BackgroundTaskState,
   BackgroundTaskRetryResponse,
+  BackgroundTaskState,
   BackgroundTaskSteerResponse,
-  RuntimeRequest,
-  StoredSessionSummary,
-  RuntimeResponse,
-  RuntimeResumeResponse,
-  RuntimeInterruptResult,
-  RuntimeStreamChunk,
-  ApprovalDecision,
-  QuestionAnswer,
+  BackgroundTaskSummary,
+  CommandSummary,
   ProviderModelsResult,
   ProviderSummary,
   ProviderValidationResult,
+  QuestionAnswer,
+  ReviewFileDiff,
+  RuntimeInterruptResult,
+  RuntimeNotification,
+  RuntimeRequest,
+  RuntimeResponse,
   RuntimeSessionDebugSnapshot,
   RuntimeSettings,
   RuntimeSettingsUpdate,
   RuntimeStatusSnapshot,
-  ReviewFileDiff,
+  RuntimeStreamChunk,
+  SessionSteerResult,
+  SkillSummary,
+  StoredSessionSummary,
   WorkspaceRegistrySnapshot,
   WorkspaceReviewSnapshot,
-  RuntimeNotification,
+  ApprovalDecision,
 } from "./types";
 
 import { SseFrameParser, parseSseDataPayload } from "./sse-parser";
+
+/**
+ * The routes this client calls, spelled as the document's own path templates.
+ *
+ * `satisfies Record<string, keyof paths>` is the guard that keeps them honest:
+ * `paths` is generated from the transport's route table, so a route that is
+ * renamed, moved to another method group or dropped on the backend fails
+ * `bun run typecheck` here instead of becoming a 404 at runtime. Placeholders are
+ * filled by `apiPath`.
+ */
+const ROUTES = {
+  runStream: "/api/runtime/run/stream",
+  sessions: "/api/sessions",
+  sessionReplay: "/api/sessions/{session_id}",
+  sessionEvents: "/api/sessions/{session_id}/events",
+  sessionDebug: "/api/sessions/{session_id}/debug",
+  sessionResume: "/api/sessions/{session_id}/resume",
+  sessionSteer: "/api/sessions/{session_id}/steer",
+  sessionCancel: "/api/sessions/{session_id}/cancel",
+  sessionApproval: "/api/sessions/{session_id}/approval",
+  sessionQuestion: "/api/sessions/{session_id}/question",
+  sessionTasks: "/api/sessions/{session_id}/tasks",
+  delegatedContext: "/api/sessions/{session_id}/delegated-context",
+  workspaces: "/api/workspaces",
+  workspacesOpen: "/api/workspaces/open",
+  notifications: "/api/notifications",
+  notificationAck: "/api/notifications/{notification_id}/ack",
+  providers: "/api/providers",
+  providerModels: "/api/providers/{provider_name}/models",
+  providerValidate: "/api/providers/{provider_name}/validate",
+  agents: "/api/agents",
+  skills: "/api/skills",
+  commands: "/api/commands",
+  status: "/api/status",
+  statusMcpRetry: "/api/status/mcp/retry",
+  review: "/api/review",
+  reviewDiff: "/api/review/diff/{path}",
+  tasks: "/api/tasks",
+  taskOutput: "/api/tasks/{task_id}/output",
+  taskCancel: "/api/tasks/{task_id}/cancel",
+  taskRetry: "/api/tasks/{task_id}/retry",
+  taskSteer: "/api/tasks/{task_id}/steer",
+  settings: "/api/settings",
+} as const satisfies Record<string, keyof paths>;
 
 export class RuntimeClientError extends Error {
   constructor(
@@ -105,6 +150,30 @@ function fetchQuery(url: string, signal?: AbortSignal): Promise<Response> {
   return signal === undefined ? fetch(url) : fetch(url, { signal });
 }
 
+/**
+ * Fill one route template with already-encoded parameter values.
+ *
+ * Encoding stays at the call site because the two kinds of parameter differ: a
+ * session id is one path segment (`encodeURIComponent`) while the review diff
+ * path may contain separators and is encoded per segment (`encodePathSegments`).
+ * A template whose placeholder is left unfilled is a programming error, not a
+ * recoverable request, so it throws before the request is issued.
+ */
+function apiPath(
+  template: keyof paths,
+  params: Record<string, string> = {},
+): string {
+  return template.replace(/\{(\w+)\}/g, (_match, name: string) => {
+    const value = params[name];
+    if (value === undefined) {
+      throw new Error(
+        `route template ${template} requires a ${name} parameter`,
+      );
+    }
+    return value;
+  });
+}
+
 function encodePathSegments(path: string): string {
   return path.split("/").map(encodeURIComponent).join("/");
 }
@@ -146,7 +215,7 @@ export class RuntimeClient {
   ): AsyncGenerator<RuntimeStreamChunk, void, unknown> {
     const res = await fetchQuery(
       withShowThinking(
-        `/api/sessions/${encodeURIComponent(sessionId)}/events?after_sequence=${afterSequence}&follow=true`,
+        `${apiPath(ROUTES.sessionEvents, { session_id: encodeURIComponent(sessionId) })}?after_sequence=${afterSequence}&follow=true`,
       ),
       signal,
     );
@@ -156,13 +225,13 @@ export class RuntimeClient {
   static async listWorkspaces(
     signal?: AbortSignal,
   ): Promise<WorkspaceRegistrySnapshot> {
-    const res = await fetchQuery(`/api/workspaces`, signal);
+    const res = await fetchQuery(ROUTES.workspaces, signal);
     await expectOk(res, "Failed to load workspaces");
     return res.json();
   }
 
   static async openWorkspace(path: string): Promise<WorkspaceRegistrySnapshot> {
-    const res = await fetch(`/api/workspaces/open`, {
+    const res = await fetch(ROUTES.workspacesOpen, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path }),
@@ -174,7 +243,7 @@ export class RuntimeClient {
   static async listNotifications(
     signal?: AbortSignal,
   ): Promise<RuntimeNotification[]> {
-    const res = await fetchQuery(`/api/notifications`, signal);
+    const res = await fetchQuery(ROUTES.notifications, signal);
     await expectOk(res, "Failed to load notifications");
     return res.json();
   }
@@ -183,7 +252,9 @@ export class RuntimeClient {
     notificationId: string,
   ): Promise<RuntimeNotification> {
     const res = await fetch(
-      `/api/notifications/${encodeURIComponent(notificationId)}/ack`,
+      apiPath(ROUTES.notificationAck, {
+        notification_id: encodeURIComponent(notificationId),
+      }),
       { method: "POST" },
     );
     await expectOk(res, "Failed to acknowledge notification");
@@ -193,13 +264,13 @@ export class RuntimeClient {
   static async listSessions(
     signal?: AbortSignal,
   ): Promise<StoredSessionSummary[]> {
-    const res = await fetchQuery(`/api/sessions`, signal);
+    const res = await fetchQuery(ROUTES.sessions, signal);
     await expectOk(res, "Failed to list sessions");
     return res.json();
   }
 
   static async listProviders(signal?: AbortSignal): Promise<ProviderSummary[]> {
-    const res = await fetchQuery(`/api/providers`, signal);
+    const res = await fetchQuery(ROUTES.providers, signal);
     await expectOk(res, "Failed to load providers");
     return res.json();
   }
@@ -209,7 +280,9 @@ export class RuntimeClient {
     signal?: AbortSignal,
   ): Promise<ProviderModelsResult> {
     const res = await fetchQuery(
-      `/api/providers/${encodeURIComponent(providerName)}/models`,
+      apiPath(ROUTES.providerModels, {
+        provider_name: encodeURIComponent(providerName),
+      }),
       signal,
     );
     if (!res.ok && res.status !== 409) {
@@ -225,7 +298,9 @@ export class RuntimeClient {
     providerName: string,
   ): Promise<ProviderValidationResult> {
     const res = await fetch(
-      `/api/providers/${encodeURIComponent(providerName)}/validate`,
+      apiPath(ROUTES.providerValidate, {
+        provider_name: encodeURIComponent(providerName),
+      }),
       { method: "POST" },
     );
     if (!res.ok && res.status !== 409) {
@@ -237,31 +312,31 @@ export class RuntimeClient {
   }
 
   static async listAgents(signal?: AbortSignal): Promise<AgentSummary[]> {
-    const res = await fetchQuery(`/api/agents`, signal);
+    const res = await fetchQuery(ROUTES.agents, signal);
     await expectOk(res, "Failed to load agents");
     return res.json();
   }
 
   static async listSkills(signal?: AbortSignal): Promise<SkillSummary[]> {
-    const res = await fetchQuery(`/api/skills`, signal);
+    const res = await fetchQuery(ROUTES.skills, signal);
     await expectOk(res, "Failed to load skills");
     return res.json();
   }
 
   static async listCommands(signal?: AbortSignal): Promise<CommandSummary[]> {
-    const res = await fetchQuery(`/api/commands`, signal);
+    const res = await fetchQuery(ROUTES.commands, signal);
     await expectOk(res, "Failed to load commands");
     return res.json();
   }
 
   static async getStatus(signal?: AbortSignal): Promise<RuntimeStatusSnapshot> {
-    const res = await fetchQuery(`/api/status`, signal);
+    const res = await fetchQuery(ROUTES.status, signal);
     await expectOk(res, "Failed to load status");
     return res.json();
   }
 
   static async retryMcpConnections(): Promise<RuntimeStatusSnapshot> {
-    const res = await fetch(`/api/status/mcp/retry`, {
+    const res = await fetch(ROUTES.statusMcpRetry, {
       method: "POST",
     });
     await expectOk(res, "Failed to retry MCP connections");
@@ -271,7 +346,7 @@ export class RuntimeClient {
   static async getReview(
     signal?: AbortSignal,
   ): Promise<WorkspaceReviewSnapshot> {
-    const res = await fetchQuery(`/api/review`, signal);
+    const res = await fetchQuery(ROUTES.review, signal);
     await expectOk(res, "Failed to load review");
     return res.json();
   }
@@ -281,18 +356,20 @@ export class RuntimeClient {
     signal?: AbortSignal,
   ): Promise<ReviewFileDiff> {
     const res = await fetchQuery(
-      `/api/review/diff/${encodePathSegments(path)}`,
+      apiPath(ROUTES.reviewDiff, { path: encodePathSegments(path) }),
       signal,
     );
     await expectOk(res, "Failed to load review diff");
     return res.json();
   }
 
-  static async resumeSession(
-    sessionId: string,
-  ): Promise<RuntimeResumeResponse> {
+  static async resumeSession(sessionId: string): Promise<RuntimeResponse> {
     const res = await fetch(
-      withShowThinking(`/api/sessions/${encodeURIComponent(sessionId)}/resume`),
+      withShowThinking(
+        apiPath(ROUTES.sessionResume, {
+          session_id: encodeURIComponent(sessionId),
+        }),
+      ),
       { method: "POST" },
     );
     await expectOk(res, "Failed to resume session");
@@ -304,7 +381,11 @@ export class RuntimeClient {
     signal?: AbortSignal,
   ): Promise<RuntimeResponse> {
     const res = await fetchQuery(
-      withShowThinking(`/api/sessions/${encodeURIComponent(sessionId)}`),
+      withShowThinking(
+        apiPath(ROUTES.sessionReplay, {
+          session_id: encodeURIComponent(sessionId),
+        }),
+      ),
       signal,
     );
     await expectOk(res, "Failed to replay session");
@@ -316,7 +397,11 @@ export class RuntimeClient {
     signal?: AbortSignal,
   ): Promise<RuntimeSessionDebugSnapshot> {
     const res = await fetchQuery(
-      withShowThinking(`/api/sessions/${encodeURIComponent(sessionId)}/debug`),
+      withShowThinking(
+        apiPath(ROUTES.sessionDebug, {
+          session_id: encodeURIComponent(sessionId),
+        }),
+      ),
       signal,
     );
     await expectOk(res, "Failed to load session debug");
@@ -326,9 +411,13 @@ export class RuntimeClient {
   static async steerSession(
     sessionId: string,
     content: string,
-  ): Promise<{ session_id: string; queued: number }> {
+  ): Promise<SessionSteerResult> {
     const res = await fetch(
-      withShowThinking(`/api/sessions/${encodeURIComponent(sessionId)}/steer`),
+      withShowThinking(
+        apiPath(ROUTES.sessionSteer, {
+          session_id: encodeURIComponent(sessionId),
+        }),
+      ),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -345,7 +434,9 @@ export class RuntimeClient {
     reason = "web user interrupt",
   ): Promise<RuntimeInterruptResult> {
     const res = await fetch(
-      `/api/sessions/${encodeURIComponent(sessionId)}/cancel`,
+      apiPath(ROUTES.sessionCancel, {
+        session_id: encodeURIComponent(sessionId),
+      }),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -363,7 +454,9 @@ export class RuntimeClient {
   ): Promise<RuntimeResponse> {
     const res = await fetch(
       withShowThinking(
-        `/api/sessions/${encodeURIComponent(sessionId)}/approval`,
+        apiPath(ROUTES.sessionApproval, {
+          session_id: encodeURIComponent(sessionId),
+        }),
       ),
       {
         method: "POST",
@@ -383,7 +476,9 @@ export class RuntimeClient {
   ): Promise<RuntimeResponse> {
     const res = await fetch(
       withShowThinking(
-        `/api/sessions/${encodeURIComponent(sessionId)}/question`,
+        apiPath(ROUTES.sessionQuestion, {
+          session_id: encodeURIComponent(sessionId),
+        }),
       ),
       {
         method: "POST",
@@ -399,7 +494,7 @@ export class RuntimeClient {
   static async listBackgroundTasks(
     signal?: AbortSignal,
   ): Promise<BackgroundTaskSummary[]> {
-    const res = await fetchQuery(`/api/tasks`, signal);
+    const res = await fetchQuery(ROUTES.tasks, signal);
     await expectOk(res, "Failed to load background tasks");
     return res.json();
   }
@@ -409,7 +504,9 @@ export class RuntimeClient {
     signal?: AbortSignal,
   ): Promise<BackgroundTaskSummary[]> {
     const res = await fetchQuery(
-      `/api/sessions/${encodeURIComponent(sessionId)}/tasks`,
+      apiPath(ROUTES.sessionTasks, {
+        session_id: encodeURIComponent(sessionId),
+      }),
       signal,
     );
     await expectOk(res, "Failed to load session background tasks");
@@ -421,7 +518,9 @@ export class RuntimeClient {
     signal?: AbortSignal,
   ): Promise<BackgroundTaskOutput> {
     const res = await fetchQuery(
-      withShowThinking(`/api/tasks/${encodeURIComponent(taskId)}/output`),
+      withShowThinking(
+        apiPath(ROUTES.taskOutput, { task_id: encodeURIComponent(taskId) }),
+      ),
       signal,
     );
     await expectOk(res, "Failed to load background task output");
@@ -431,9 +530,12 @@ export class RuntimeClient {
   static async cancelBackgroundTask(
     taskId: string,
   ): Promise<BackgroundTaskState> {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
-      method: "POST",
-    });
+    const res = await fetch(
+      apiPath(ROUTES.taskCancel, { task_id: encodeURIComponent(taskId) }),
+      {
+        method: "POST",
+      },
+    );
     await expectOk(res, "Failed to cancel background task");
     return res.json();
   }
@@ -441,9 +543,12 @@ export class RuntimeClient {
   static async retryBackgroundTask(
     taskId: string,
   ): Promise<BackgroundTaskRetryResponse> {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/retry`, {
-      method: "POST",
-    });
+    const res = await fetch(
+      apiPath(ROUTES.taskRetry, { task_id: encodeURIComponent(taskId) }),
+      {
+        method: "POST",
+      },
+    );
     await expectOk(res, "Failed to retry background task");
     return res.json();
   }
@@ -452,11 +557,14 @@ export class RuntimeClient {
     taskId: string,
     prompt: string,
   ): Promise<BackgroundTaskSteerResponse> {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/steer`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt }),
-    });
+    const res = await fetch(
+      apiPath(ROUTES.taskSteer, { task_id: encodeURIComponent(taskId) }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      },
+    );
     await expectOk(res, "Failed to steer background task");
     return res.json();
   }
@@ -464,10 +572,12 @@ export class RuntimeClient {
   static async getChildSessionContext(
     sessionId: string,
     signal?: AbortSignal,
-  ): Promise<ChildSessionContextResult> {
+  ): Promise<BackgroundTaskOutput> {
     const res = await fetchQuery(
       withShowThinking(
-        `/api/sessions/${encodeURIComponent(sessionId)}/delegated-context`,
+        apiPath(ROUTES.delegatedContext, {
+          session_id: encodeURIComponent(sessionId),
+        }),
       ),
       signal,
     );
@@ -476,7 +586,7 @@ export class RuntimeClient {
   }
 
   static async getSettings(signal?: AbortSignal): Promise<RuntimeSettings> {
-    const res = await fetchQuery(`/api/settings`, signal);
+    const res = await fetchQuery(ROUTES.settings, signal);
     await expectOk(res, "Failed to load settings");
     return res.json();
   }
@@ -484,7 +594,7 @@ export class RuntimeClient {
   static async updateSettings(
     settings: RuntimeSettingsUpdate,
   ): Promise<RuntimeSettings> {
-    const res = await fetch(`/api/settings`, {
+    const res = await fetch(ROUTES.settings, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(settings),
@@ -497,7 +607,7 @@ export class RuntimeClient {
     request: RuntimeRequest,
     signal?: AbortSignal,
   ): AsyncGenerator<RuntimeStreamChunk, void, unknown> {
-    const res = await fetch(withShowThinking(`/api/runtime/run/stream`), {
+    const res = await fetch(withShowThinking(ROUTES.runStream), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request),

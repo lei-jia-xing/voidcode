@@ -43,6 +43,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 - **cli:** expose the resolved provider endpoint (`endpoint.base_url`, `endpoint.source`, `endpoint.discovery_base_url`) in `voidcode provider inspect`
 
+- **frontend:** generate the runtime API types from the backend schema instead of hand-maintaining them: `scripts/generate_frontend_api_types.py` drives `GET /api/openapi.json` through the transport's ASGI interface (no server, no port) and writes `frontend/src/lib/runtime/generated/api.d.ts` atomically, deterministically (sha256-stable across runs and working directories) and with the pinned `openapi-typescript`; 93 schemas / 38 paths / 40 operations, the hand-written duplicates are removed and what remains are bindings plus four documented narrowings (`EventEnvelope` receive stamp, `ReviewChangedFile` enum, `RuntimeRequest` / `QuestionAnswer` / `ApprovalDecision` request bodies, `RuntimeStreamChunk`); the generated `.d.ts` is compile-time only with zero bundle cost, and the drift gate runs in `mise run check`, CI and a `frontend-api-types` pre-commit hook (~5.5 s)
+
 
 
 ### Changed
