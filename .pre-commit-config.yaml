@@ -30,6 +30,13 @@ repos:
         pass_filenames: false
         types_or: [python, pyi]
 
+      - id: config-schema
+        name: config schema check
+        entry: uv run python scripts/generate_config_schema.py --check
+        language: system
+        pass_filenames: false
+        files: ^(schema/voidcode\.config\.schema\.json|scripts/generate_config_schema\.py|src/voidcode/(runtime/config(_models|_schema)?\.py|runtime/policy\.py|provider/config\.py))$
+
       - id: frontend-lint
         name: frontend lint
         entry: bash -lc 'cd frontend && bun run lint'

@@ -6,6 +6,33 @@
 
 定义使 MVP 运行时具备可配置性所需的最小配置界面，同时确保系统是受控的而非过于宽泛。
 
+## 配置数据边界的单一来源
+
+### 用户级配置不在发布 schema 内（已接受的限制）
+
+用户级 `~/.config/voidcode/config.json`（`UserConfigPayload`）不属于随包发布的 `schema/voidcode.config.schema.json`，因此它没有对应的 artifact，也没有 loader-vs-artifact 语料行；这是**已接受的限制而非遗漏**。它的 loader 行为由 `tests/unit/runtime/test_config_loader_parity.py`（`$schema` 容忍、`web` 容忍、providers 解析先于模型）与 `tests/unit/runtime/test_runtime_config.py` 中的 XDG/用户配置用例固定。若将来需要用户级 schema，应单独决策并单独生成 artifact。
+
+
+配置输入的**形状**只在一个模块中定义：`src/voidcode/runtime/config_models.py`（payload 模型 + 共享的取值校验器）。仓库本地 `.voidcode.json`、用户级 `config.json`、环境变量、请求 metadata 覆盖与持久化的 `runtime_config` 快照都通过这些模型校验与类型化。
+
+维护者须知：**模型拥有形状，不拥有策略。** 优先级（environment → user → repo → request → persisted session metadata）、合并规则、默认值与“未设置”的解析、哪些值属于 recovery-critical 必须写入会话快照，以及 provider / policy 语义，全部留在原有 owner：
+
+- `src/voidcode/runtime/config.py`：加载顺序、优先级、合并、默认应用与文件读写
+- `src/voidcode/runtime/config_materializer.py`：持久化快照的序列化/解析边界
+- `src/voidcode/runtime/policy.py`：policy 语义与错误消息
+- `src/voidcode/provider/config.py`：provider payload 边界模型与解析
+
+因此，如果需要新增“在多个来源之间选择”或“解释某个值含义”的规则，它不属于 `config_models.py`。
+
+随包发布的编辑器 schema `schema/voidcode.config.schema.json` 由上述模型生成，不再是手写产物：
+
+```bash
+uv run python scripts/generate_config_schema.py          # 重新生成
+uv run python scripts/generate_config_schema.py --check  # 校验是否过期（mise run schema:check）
+```
+
+给模型新增字段后必须重新生成该 artifact；`mise run check` 会通过 `schema:check` 与 `tests/unit/runtime/test_config_schema.py` 阻断漂移。
+
 ## 状态
 
 当前运行时从仓库本地的 `.voidcode.json` 中加载以下已实现领域的配置：

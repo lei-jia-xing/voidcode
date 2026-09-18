@@ -1,4 +1,17 @@
-"""Schema-backed config UX for the VoidCode runtime."""
+"""Schema-backed config UX for the VoidCode runtime.
+
+``runtime_config_json_schema()`` is generated from the payload models in
+``runtime/config_models.py`` (plus the provider boundary models in
+``provider/config.py``), so ``schema/voidcode.config.schema.json`` cannot drift
+from the boundary the runtime actually accepts. Regenerate the artifact with
+``uv run python scripts/generate_config_schema.py`` and gate it with
+``mise run schema:check`` or the test in
+``tests/unit/runtime/test_config_schema.py``.
+
+The models own shape; they do not own policy. Precedence, merge rules and
+persistence decisions stay in ``runtime/config.py``; this module only publishes
+the input contract.
+"""
 
 from __future__ import annotations
 
@@ -7,34 +20,320 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
+from pydantic_core import core_schema
+
+from ..agent import list_builtin_agent_manifests
 from ..provider.naming import canonical_model_reference
-from .config import (
+from .config import RUNTIME_CONFIG_FILE_NAME, runtime_config_path
+from .config_models import (
+    AGENT_PRESET_ID_PATTERN,
     APPROVAL_MODE_ENV_VAR,
     MODEL_ENV_VAR,
     REASONING_EFFORT_ENV_VAR,
-    RUNTIME_CONFIG_FILE_NAME,
+    SCHEMA_DEFINITION_NAMES,
+    SHARED_SCHEMA_DEFINITIONS,
     TOOL_TIMEOUT_ENV_VAR,
-    runtime_config_path,
+    RuntimeConfigPayload,
+    config_model_keys,
 )
-
-__all__ = [
-    "RUNTIME_CONFIG_SCHEMA_ID",
-    "RUNTIME_CONFIG_SCHEMA_TITLE",
-    "RUNTIME_CONFIG_SCHEMA_URI",
-    "format_starter_runtime_config_json",
-    "generate_starter_runtime_config",
-    "read_runtime_config_payload",
-    "runtime_config_json_schema",
-    "write_runtime_config_payload",
-]
 
 RUNTIME_CONFIG_SCHEMA_ID = "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json"
 RUNTIME_CONFIG_SCHEMA_URI = RUNTIME_CONFIG_SCHEMA_ID
 RUNTIME_CONFIG_SCHEMA_TITLE = "VoidCode runtime config"
 _JSON_SCHEMA_DRAFT = "https://json-schema.org/draft/2020-12/schema"
 
+#: Name of the published definition for one agent-map entry that must carry an
+#: explicit ``preset`` (a built-in key may omit it and inherits the key).
+_CUSTOM_AGENT_DEFINITION_NAME = "customAgentConfig"
+_AGENT_CONFIG_DEFINITION_NAME = "agentConfig"
+
+
+class _RuntimeConfigSchemaGenerator(GenerateJsonSchema):
+    """Pydantic's generator, tuned to the published artifact's conventions."""
+
+    def field_title_should_be_set(self, schema: object) -> bool:  # noqa: ARG002 - pydantic hook signature
+        """Field titles are generated names; the artifact never carried them."""
+        return False
+
+    def default_schema(self, schema: core_schema.WithDefaultSchema) -> JsonSchemaValue:
+        """Emit the accepted shape only.
+
+        Defaults belong to the resolution path in ``runtime/config.py`` (and to
+        ``config_models``), not to the published input contract.
+        """
+        return self.generate_inner(schema["schema"])
+
+
+def _strip_titles(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _strip_titles(item) for key, item in value.items() if key != "title"}
+    if isinstance(value, list):
+        return [_strip_titles(item) for item in value]
+    return value
+
+
+def _rewrite_refs(value: object, mapping: Mapping[str, str]) -> object:
+    if isinstance(value, dict):
+        rewritten: dict[str, object] = {}
+        for key, item in value.items():
+            if key == "$ref" and isinstance(item, str) and item in mapping:
+                rewritten[key] = mapping[item]
+            else:
+                rewritten[key] = _rewrite_refs(item, mapping)
+        return rewritten
+    if isinstance(value, list):
+        return [_rewrite_refs(item, mapping) for item in value]
+    return value
+
+
+def _is_scalar_definition(definition: Mapping[str, object]) -> bool:
+    """A leaf definition (enum/value alias) rather than an object shape."""
+    return "properties" not in definition and "additionalProperties" not in definition and "allOf" not in definition
+
+
+def _inline_scalar_definitions(value: object, scalar_definitions: Mapping[str, Mapping[str, object]]) -> object:
+    """Inline published value-type aliases; the artifact has never had enum defs."""
+    if isinstance(value, dict):
+        reference = value.get("$ref")
+        if isinstance(reference, str):
+            definition = scalar_definitions.get(reference)
+            if definition is not None:
+                siblings = {key: item for key, item in value.items() if key != "$ref"}
+                return {**siblings, **definition}
+        return {key: _inline_scalar_definitions(item, scalar_definitions) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_inline_scalar_definitions(item, scalar_definitions) for item in value]
+    return value
+
+
+def _collapse_nullable_unions(value: object) -> object:
+    """Express ``X | null`` the way the artifact always has: ``type`` gains null.
+
+    A payload model types an optional value as ``X | None`` because the loader
+    treats an explicit ``null`` as unset, so the published contract must accept
+    ``null`` as well. Where the value has no ``type`` of its own (a ``$ref``),
+    the union stays an ``anyOf``.
+    """
+    if isinstance(value, list):
+        return [_collapse_nullable_unions(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    collapsed = {key: _collapse_nullable_unions(item) for key, item in value.items() if key != "anyOf"}
+    branches = value.get("anyOf")
+    if isinstance(branches, list) and len(branches) == 2:
+        nullable_branch = next((branch for branch in branches if branch == {"type": "null"}), None)
+        non_nullable = [branch for branch in branches if branch != nullable_branch]
+        other_branch = non_nullable[0] if len(non_nullable) == 1 and isinstance(non_nullable[0], dict) else None
+        if nullable_branch is not None and other_branch is not None:
+            branch_type = other_branch.get("type")
+            # ``enum``/``const`` cannot absorb ``null``: the union must stay
+            # explicit so that ``null`` remains valid alongside the fixed set.
+            enumerated = "enum" in other_branch or "const" in other_branch
+            if isinstance(branch_type, str) and not enumerated:
+                return {**collapsed, **other_branch, "type": [branch_type, "null"]}
+            return {**collapsed, "anyOf": [other_branch, {"type": "null"}]}
+    if branches is not None:
+        collapsed["anyOf"] = branches
+    return collapsed
+
+
+def _fold_shared_shapes(value: object) -> object:
+    """Reuse one ``$defs`` entry for shapes that repeat verbatim.
+
+    Every hook command slot accepts the same command list and both
+    external-directory permission maps accept the same decision map, so the
+    artifact publishes each once (``$defs.commandList`` / ``$defs.permissionRules``).
+    """
+    if isinstance(value, list):
+        return [_fold_shared_shapes(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if "$ref" in value:
+        return value
+    for definition_name, (shared_shape, _description) in SHARED_SCHEMA_DEFINITIONS.items():
+        if value == shared_shape:
+            return {"$ref": f"#/$defs/{definition_name}"}
+        # a field that also accepts an explicit null publishes the same shape with
+        # null merged into its type; fold that back to the shared definition too
+        shared_type = cast(dict[str, object], shared_shape).get("type")
+        if isinstance(shared_type, str) and value == {**cast(dict[str, object], shared_shape), "type": [shared_type, "null"]}:
+            return {"anyOf": [{"$ref": f"#/$defs/{definition_name}"}, {"type": "null"}]}
+    return {key: _fold_shared_shapes(item) for key, item in value.items()}
+
+
+def _shared_definition_entries() -> dict[str, dict[str, object]]:
+    entries: dict[str, dict[str, object]] = {}
+    for definition_name, (shared_shape, description) in SHARED_SCHEMA_DEFINITIONS.items():
+        entry = dict(cast(dict[str, object], shared_shape))
+        if description is not None:
+            entry["description"] = description
+        entries[definition_name] = entry
+    return entries
+
+
+#: Policy keys whose loader rejects an explicit ``null`` while the payload model
+#: keeps it nullable for the other surfaces. The published contract drops the
+#: ``null`` branch for exactly these keys.
+_NON_NULLABLE_POLICY_KEYS: dict[str, tuple[str, ...]] = {
+    "runtimePolicyConfig": ("enabled", "tool_policy", "delegation_policy", "hook_policy", "prompt_activation"),
+    "runtimePolicyToolPolicyConfig": ("default",),
+    "runtimePolicyDelegationPolicyConfig": ("default",),
+    "runtimePolicyPromptActivationConfig": ("enabled",),
+    # the loader rejects an explicit null for a formatter preset command
+    # (an empty argv is not a formatter invocation)
+    "formatterPresetConfig": ("command",),
+}
+
+
+def _enforce_policy_strictness(definitions: dict[str, object]) -> None:
+    for definition_name, field_names in _NON_NULLABLE_POLICY_KEYS.items():
+        definition = definitions.get(definition_name)
+        if not isinstance(definition, dict):
+            continue
+        properties = definition.get("properties")
+        if not isinstance(properties, dict):
+            continue
+        for field_name in field_names:
+            field = properties.get(field_name)
+            if not isinstance(field, dict):
+                continue
+            branches = field.get("anyOf")
+            if isinstance(branches, list):
+                non_null = [branch for branch in branches if branch != {"type": "null"}]
+                if len(non_null) == 1 and isinstance(non_null[0], dict):
+                    properties[field_name] = {**{k: v for k, v in field.items() if k != "anyOf"}, **non_null[0]}
+            elif isinstance(field.get("type"), list):
+                types = [item for item in field["type"] if item != "null"]
+                if len(types) == 1:
+                    properties[field_name] = {**field, "type": types[0]}
+
+
+def _custom_agent_definition(properties: dict[str, object]) -> dict[str, object]:
+    """The agent-map entry that must name its preset explicitly.
+
+    A built-in map key may omit ``preset`` (the loader derives it from the key),
+    so every built-in preset is published as a named property and only the
+    *additional* entries require ``preset``. The preset list comes from the
+    built-in manifest registry, the same source the loader resolves against.
+    """
+    agents = cast(dict[str, object], properties.get("agents"))
+    if agents is not None:
+        agents["properties"] = {manifest.id: {"$ref": f"#/$defs/{_AGENT_CONFIG_DEFINITION_NAME}"} for manifest in list_builtin_agent_manifests()}
+        agents["additionalProperties"] = {"$ref": f"#/$defs/{_CUSTOM_AGENT_DEFINITION_NAME}"}
+    return {
+        "allOf": [{"$ref": f"#/$defs/{_AGENT_CONFIG_DEFINITION_NAME}"}],
+        "required": ["preset"],
+    }
+
+
+def _publish_definitions(
+    generated_definitions: dict[str, dict[str, object]],
+) -> tuple[dict[str, dict[str, object]], dict[str, str]]:
+    """Rename generated definitions to their published names.
+
+    An unmapped generated definition is a hard error: a new payload model must
+    be published under an explicit name so the artifact's external contract
+    (``#/$defs/<name>``) stays stable.
+    """
+    unmapped = sorted(name for name in generated_definitions if name not in SCHEMA_DEFINITION_NAMES)
+    if unmapped:
+        raise ValueError(
+            f"config schema definition(s) missing a published name in runtime/config_models.py SCHEMA_DEFINITION_NAMES: {', '.join(unmapped)}"
+        )
+    reference_map = {f"#/$defs/{name}": f"#/$defs/{SCHEMA_DEFINITION_NAMES[name]}" for name in generated_definitions}
+    published = {SCHEMA_DEFINITION_NAMES[name]: definition for name, definition in generated_definitions.items()}
+    return published, reference_map
+
+
+def _normalize_schema(value: object, reference_map: Mapping[str, str], scalar_definitions: Mapping[str, Mapping[str, object]]) -> object:
+    normalized = _rewrite_refs(value, reference_map)
+    normalized = _strip_titles(normalized)
+    normalized = _inline_scalar_definitions(normalized, scalar_definitions)
+    normalized = _collapse_nullable_unions(normalized)
+    return _fold_shared_shapes(normalized)
+
+
+def _is_shared_definition_shape(definition: Mapping[str, object], name: str) -> bool:
+    """A payload-model alias that is exactly the shared shape it publishes under."""
+    shared = SHARED_SCHEMA_DEFINITIONS.get(name)
+    return shared is not None and definition == shared[0]
+
+
+def _fallback_chain_requires_model(target: dict[str, object]) -> None:
+    """A fallback chain without a primary model is rejected by the loader.
+
+    ``provider/config.py`` needs a non-empty ``model`` whenever a
+    ``fallback_models`` array is present, which ``if``/``then`` can express.
+    """
+    target["allOf"] = [
+        *cast(list[dict[str, object]], target.get("allOf", [])),
+        {
+            "if": {
+                "properties": {"fallback_models": {"type": "array"}},
+                "required": ["fallback_models"],
+            },
+            "then": {"required": ["model"]},
+        },
+    ]
+
+
+def _require_agent_preset(properties: dict[str, object]) -> None:
+    """The singular ``agent`` block must name a string preset.
+
+    ``agents.<builtin>`` may omit it (the loader derives it from the key), so the
+    requirement lives on the top-level property rather than on ``agentConfig``.
+    """
+    agent = properties.get("agent")
+    if not isinstance(agent, dict):
+        return
+    branches = agent.get("anyOf")
+    if not isinstance(branches, list):
+        return
+    for index, branch in enumerate(branches):
+        if isinstance(branch, dict) and "$ref" in branch:
+            branches[index] = {
+                "allOf": [
+                    {"$ref": branch["$ref"]},
+                    {"required": ["preset"]},
+                    {"properties": {"preset": {"type": "string", "pattern": AGENT_PRESET_ID_PATTERN}}},
+                ]
+            }
+
+
+def _runtime_config_schema_body() -> dict[str, object]:
+    generated = RuntimeConfigPayload.model_json_schema(schema_generator=_RuntimeConfigSchemaGenerator)
+    published_defs, reference_map = _publish_definitions(cast(dict[str, dict[str, object]], generated.pop("$defs")))
+    scalar_names = {
+        name for name, definition in published_defs.items() if _is_scalar_definition(definition) and name not in SHARED_SCHEMA_DEFINITIONS
+    }
+    scalar_definitions = {f"#/$defs/{name}": published_defs[name] for name in scalar_names}
+    definitions: dict[str, object] = {
+        name: _normalize_schema(definition, reference_map, scalar_definitions)
+        for name, definition in published_defs.items()
+        if name not in scalar_names and not _is_shared_definition_shape(definition, name)
+    }
+    properties = cast(dict[str, object], _normalize_schema(generated.pop("properties"), reference_map, scalar_definitions))
+    definitions.update(_shared_definition_entries())
+    definitions[_CUSTOM_AGENT_DEFINITION_NAME] = _custom_agent_definition(properties)
+    _require_agent_preset(properties)
+    _enforce_policy_strictness(definitions)
+    agent_config = definitions.get(_AGENT_CONFIG_DEFINITION_NAME)
+    if isinstance(agent_config, dict):
+        _fallback_chain_requires_model(agent_config)
+    body: dict[str, object] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "$defs": definitions,
+    }
+    _fallback_chain_requires_model(body)
+    return body
+
 
 def runtime_config_json_schema() -> dict[str, object]:
+    body = _runtime_config_schema_body()
     return {
         "$schema": _JSON_SCHEMA_DRAFT,
         "$id": RUNTIME_CONFIG_SCHEMA_ID,
@@ -47,743 +346,33 @@ def runtime_config_json_schema() -> dict[str, object]:
             f"{TOOL_TIMEOUT_ENV_VAR}, {REASONING_EFFORT_ENV_VAR}) and the user-level "
             "`~/.config/voidcode/config.json`."
         ),
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "$schema": {
-                "type": "string",
-                "description": "JSON Schema reference for editor support.",
-            },
-            "approval_mode": {
-                "type": "string",
-                "enum": ["allow", "deny", "ask"],
-                "description": "Default approval policy for tool execution.",
-            },
-            "permission": {"$ref": "#/$defs/permissionConfig"},
-            "policy": {"$ref": "#/$defs/runtimePolicyConfig"},
-            "model": {
-                "type": "string",
-                "minLength": 1,
-                "description": "Provider/model identifier in `provider/model` form.",
-            },
-            "execution_engine": {
-                "type": "string",
-                "enum": ["deterministic", "provider"],
-                "description": "Execution engine used when no request or environment override is set.",
-            },
-            "fallback_models": {
-                "type": "array",
-                "items": {"type": "string", "minLength": 1},
-                "description": "Ordered fallback models tried after the primary model.",
-            },
-            "tool_timeout_seconds": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "Timeout applied to each tool execution.",
-            },
-            "reasoning_effort": {
-                "type": "string",
-                "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
-                "description": (
-                    "Optional runtime-owned reasoning-effort hint forwarded to the active "
-                    "provider when supported (for example, 'low', 'medium', 'high'). Runtime "
-                    "rejects this hint when the resolved model explicitly does not support "
-                    "reasoning effort."
-                ),
-            },
-            "hooks": {
-                "type": "object",
-                "additionalProperties": False,
-                "description": ("Runtime-managed lifecycle hooks (pre/post tool, session, background)."),
-                "properties": {
-                    "enabled": {"type": "boolean"},
-                    "timeout_seconds": {"type": "number", "minimum": 1},
-                    "failure_mode": {"type": "string", "enum": ["warn", "fail"]},
-                    "pre_tool": {"$ref": "#/$defs/commandList"},
-                    "post_tool": {"$ref": "#/$defs/commandList"},
-                    "on_session_start": {"$ref": "#/$defs/commandList"},
-                    "on_session_end": {"$ref": "#/$defs/commandList"},
-                    "on_session_idle": {"$ref": "#/$defs/commandList"},
-                    "on_background_task_registered": {"$ref": "#/$defs/commandList"},
-                    "on_background_task_started": {"$ref": "#/$defs/commandList"},
-                    "on_background_task_progress": {"$ref": "#/$defs/commandList"},
-                    "on_background_task_completed": {"$ref": "#/$defs/commandList"},
-                    "on_background_task_failed": {"$ref": "#/$defs/commandList"},
-                    "on_background_task_cancelled": {"$ref": "#/$defs/commandList"},
-                    "on_background_task_interrupted": {"$ref": "#/$defs/commandList"},
-                    "on_background_task_notification_enqueued": {"$ref": "#/$defs/commandList"},
-                    "on_background_task_result_read": {"$ref": "#/$defs/commandList"},
-                    "on_delegated_result_available": {"$ref": "#/$defs/commandList"},
-                    "on_turn_progress": {"$ref": "#/$defs/commandList"},
-                    "on_stuck_detected": {"$ref": "#/$defs/commandList"},
-                    "formatter_presets": {
-                        "type": "object",
-                        "additionalProperties": {"$ref": "#/$defs/formatterPresetConfig"},
-                    },
-                },
-            },
-            "formatter": {
-                "type": "object",
-                "additionalProperties": False,
-                "description": "Formatting behavior exposed as a top-level user-facing capability.",
-                "properties": {
-                    "enabled": {"type": "boolean"},
-                    "format_on_write": {
-                        "type": "boolean",
-                        "description": (
-                            "Opt-in auto-format after edit/write. Off by default. "
-                            "'enabled' is kept as the existing alias and maps onto the "
-                            "same format-on-write switch (it no longer disables all hooks)."
-                        ),
-                    },
-                    "languages": {
-                        "type": "object",
-                        "additionalProperties": {"$ref": "#/$defs/formatterPresetConfig"},
-                    },
-                },
-            },
-            "tools": {"$ref": "#/$defs/runtimeToolsConfig"},
-            "skills": {"$ref": "#/$defs/skillsConfig"},
-            "context_window": {"$ref": "#/$defs/contextWindowConfig"},
-            "lsp": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "enabled": {"type": "boolean", "default": True},
-                    "diagnostics_on_write": {
-                        "type": "boolean",
-                        "description": ("Opt-in automatic LSP diagnostics after edit/write. Off by default. Does not gate the explicit 'lsp' tool."),
-                    },
-                    "servers": {
-                        "type": "object",
-                        "additionalProperties": {"$ref": "#/$defs/lspServerConfig"},
-                    },
-                },
-            },
-            "mcp": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "enabled": {"type": "boolean", "default": True},
-                    "request_timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
-                    "servers": {
-                        "type": "object",
-                        "additionalProperties": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "properties": {
-                                "transport": {
-                                    "type": "string",
-                                    "enum": ["stdio", "remote-http"],
-                                },
-                                "command": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "minItems": 1,
-                                },
-                                "url": {
-                                    "type": "string",
-                                    "format": "uri",
-                                    "minLength": 1,
-                                    "description": ("Remote HTTP MCP endpoint URL. Required when transport is remote-http."),
-                                },
-                                "env": {
-                                    "type": "object",
-                                    "additionalProperties": {"type": "string"},
-                                },
-                                "scope": {
-                                    "type": "string",
-                                    "enum": ["runtime", "session"],
-                                    "description": (
-                                        "Runtime-scoped servers are shared by the runtime; session-scoped servers are isolated per session."
-                                    ),
-                                },
-                            },
-                            "allOf": [
-                                {
-                                    "if": {
-                                        "properties": {"transport": {"const": "remote-http"}},
-                                        "required": ["transport"],
-                                    },
-                                    "then": {"required": ["url"]},
-                                    "else": {"required": ["command"]},
-                                }
-                            ],
-                        },
-                    },
-                },
-            },
-            "tui": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "leader_key": {"type": "string"},
-                    "keymap": {
-                        "type": "object",
-                        "additionalProperties": {
-                            "type": "string",
-                            "enum": [
-                                "command_palette",
-                                "session_new",
-                                "session_resume",
-                            ],
-                        },
-                    },
-                    "preferences": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "theme": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "properties": {
-                                    "name": {"type": "string"},
-                                    "mode": {
-                                        "type": "string",
-                                        "enum": ["auto", "light", "dark"],
-                                    },
-                                },
-                            },
-                            "reading": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "properties": {
-                                    "wrap": {"type": "boolean"},
-                                    "sidebar_collapsed": {"type": "boolean"},
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-            "providers": {
-                "type": "object",
-                "additionalProperties": False,
-                "description": ("Provider-level configuration. Credential fields are sensitive; prefer environment variables for secrets."),
-                "properties": {
-                    "openai": {"$ref": "#/$defs/openaiProviderConfig"},
-                    "anthropic": {"$ref": "#/$defs/anthropicProviderConfig"},
-                    "google": {"$ref": "#/$defs/googleProviderConfig"},
-                    "copilot": {"$ref": "#/$defs/copilotProviderConfig"},
-                    "endpoint": {"$ref": "#/$defs/endpointProviderConfig"},
-                    "opencode": {"$ref": "#/$defs/endpointProviderConfig"},
-                    "openrouter": {"$ref": "#/$defs/endpointProviderConfig"},
-                    "deepseek": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
-                    "zai": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
-                    "zhipuai": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
-                    "grok": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
-                    "minimax": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
-                    "kimi": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
-                    "opencode-go": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
-                    "qwen": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
-                    "groq": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
-                    "together": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
-                    "fireworks": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
-                    "mistral": {"$ref": "#/$defs/openAICompatibleProviderConfig"},
-                    "custom": {
-                        "type": "object",
-                        "additionalProperties": {"$ref": "#/$defs/endpointProviderConfig"},
-                        # A custom provider id is canonicalised the same way as a
-                        # built-in one (trimmed, lowercased) before it is stored, so
-                        # padding is accepted here and the reserved-name collision is
-                        # enforced by the parser, which can compare case-insensitively
-                        # (ECMA-262 `pattern` has no case-insensitive flag).
-                        "propertyNames": {
-                            "pattern": (
-                                r"^(?!(?:openai|anthropic|google|copilot|endpoint|opencode|openrouter|"
-                                r"deepseek|zai|zhipuai|grok|minimax|kimi|opencode-go|qwen|groq|together|"
-                                r"fireworks|mistral)$)(?!.*[/]).+$"
-                            )
-                        },
-                    },
-                },
-            },
-            "background_task": {
-                "type": "object",
-                "additionalProperties": False,
-                "description": "Background task queue and concurrency limits.",
-                "properties": {
-                    "delegated_reminders_enabled": {"type": "boolean"},
-                    "delegated_reminder_cooldown_seconds": {
-                        "type": "integer",
-                        "minimum": 1,
-                    },
-                    "default_concurrency": {"type": "integer", "minimum": 1},
-                    "provider_concurrency": {
-                        "type": "object",
-                        "additionalProperties": {"type": "integer", "minimum": 1},
-                    },
-                    "model_concurrency": {
-                        "type": "object",
-                        "additionalProperties": {"type": "integer", "minimum": 1},
-                    },
-                },
-            },
-            "agent": {"$ref": "#/$defs/agentConfig"},
-            "agents": {
-                "type": "object",
-                "properties": {
-                    "leader": {"$ref": "#/$defs/agentConfig"},
-                    "worker": {"$ref": "#/$defs/agentConfig"},
-                    "advisor": {"$ref": "#/$defs/agentConfig"},
-                    "explore": {"$ref": "#/$defs/agentConfig"},
-                    "researcher": {"$ref": "#/$defs/agentConfig"},
-                    "product": {"$ref": "#/$defs/agentConfig"},
-                },
-                "additionalProperties": {"$ref": "#/$defs/customAgentConfig"},
-                "propertyNames": {"pattern": "^[a-z][a-z0-9_-]*$"},
-            },
-        },
-        "$defs": {
-            "commandList": {
-                "type": "array",
-                "description": (
-                    "Array of commands; each command is a non-empty argv array of strings. Commands are executed directly without an implicit shell."
-                ),
-                "items": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 1,
-                },
-            },
-            "formatterPresetConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "command": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                    },
-                    "extensions": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                    },
-                    "root_markers": {"type": "array", "items": {"type": "string"}},
-                    "fallback_commands": {"$ref": "#/$defs/commandList"},
-                    "cwd_policy": {
-                        "type": "string",
-                        "enum": ["workspace", "nearest_root", "file_directory"],
-                    },
-                },
-            },
-            "runtimeToolsConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "builtin": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {"enabled": {"type": "boolean"}},
-                    },
-                    "local": {"$ref": "#/$defs/localToolsConfig"},
-                    "allowlist": {"type": "array", "items": {"type": "string"}},
-                    "default": {"type": "array", "items": {"type": "string"}},
-                    "essential_only": {
-                        "type": "boolean",
-                        "description": (
-                            "Essential/discoverable tool split: when true, only the essential "
-                            "tool set (plus allowlist-required tools) is sent top-level to the "
-                            "provider; the rest stay registered and reachable on demand."
-                        ),
-                    },
-                },
-            },
-            "agentToolsConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "builtin": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {"enabled": {"type": "boolean"}},
-                    },
-                    "allowlist": {"type": "array", "items": {"type": "string"}},
-                    "default": {"type": "array", "items": {"type": "string"}},
-                },
-            },
-            "contextWindowConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "version": {"type": "integer", "const": 2},
-                    "default_tool_result_chars": {"type": "integer", "minimum": 1},
-                    "per_tool_result_chars": {
-                        "type": "object",
-                        "additionalProperties": {"type": "integer", "minimum": 1},
-                    },
-                    "provider_context_diagnostics": {
-                        "type": "string",
-                        "enum": ["off", "warn", "block"],
-                        "description": (
-                            "Runtime policy for provider-context diagnostics before provider "
-                            "execution. 'warn' emits bounded metadata, 'block' fails selected "
-                            "high-severity diagnostics before the provider call, and 'off' keeps "
-                            "diagnostics debug-only."
-                        ),
-                    },
-                    "provider_context_oversized_feedback_chars": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": ("Character threshold for oversized retained tool feedback diagnostics."),
-                    },
-                    "context_transform_failure_policy": {
-                        "type": "string",
-                        "enum": ["ignore", "warn", "block"],
-                        "description": (
-                            "Policy for failed context transform providers. "
-                            "'ignore' keeps failures as debug metadata only, "
-                            "'warn' surfaces warning diagnostics without "
-                            "blocking provider execution, "
-                            "and 'block' turns transform failures into "
-                            "blocking provider-context diagnostics."
-                        ),
-                    },
-                    "summary_strategy": {
-                        "type": "string",
-                        "enum": ["deterministic", "model_assisted"],
-                    },
-                },
-            },
-            "lspServerConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "preset": {"type": "string", "minLength": 1},
-                    "command": {"type": "array", "items": {"type": "string"}},
-                    "languages": {"type": "array", "items": {"type": "string"}},
-                    "extensions": {"type": "array", "items": {"type": "string"}},
-                    "root_markers": {"type": "array", "items": {"type": "string"}},
-                    "settings": {"type": "object"},
-                    "init_options": {"type": "object"},
-                },
-            },
-            "skillsConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "enabled": {"type": "boolean"},
-                    "paths": {"type": "array", "items": {"type": "string"}},
-                },
-            },
-            "localToolsConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "description": (
-                    "Opt-in workspace-local custom tool manifest discovery. Runtime executes "
-                    "discovered command tools through the normal registry, allowlist, and "
-                    "permission path."
-                ),
-                "properties": {
-                    "enabled": {"type": "boolean"},
-                    "path": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": ("Workspace-relative directory containing *.json tool manifests."),
-                    },
-                },
-            },
-            "providerTransientRetryConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "max_retries": {"type": "integer", "minimum": 0},
-                    "base_delay_ms": {"type": "number", "minimum": 0},
-                    "max_delay_ms": {"type": "number", "minimum": 0},
-                    "jitter": {"type": "boolean"},
-                },
-            },
-            "openaiProviderConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "api_key": {"type": ["string", "null"], "minLength": 1},
-                    "base_url": {"type": ["string", "null"], "minLength": 1},
-                    "discovery_base_url": {"type": ["string", "null"], "minLength": 1},
-                    "organization": {"type": ["string", "null"], "minLength": 1},
-                    "project": {"type": ["string", "null"], "minLength": 1},
-                    "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
-                    "transient_retry": {"$ref": "#/$defs/providerTransientRetryConfig"},
-                },
-            },
-            "anthropicProviderConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "api_key": {"type": ["string", "null"], "minLength": 1},
-                    "base_url": {"type": ["string", "null"], "minLength": 1},
-                    "discovery_base_url": {"type": ["string", "null"], "minLength": 1},
-                    "version": {"type": ["string", "null"], "minLength": 1},
-                    "beta_headers": {"type": "array", "items": {"type": "string"}},
-                    "cache_retention": {"type": "string", "enum": ["none", "short", "long"]},
-                    "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
-                    "transient_retry": {"$ref": "#/$defs/providerTransientRetryConfig"},
-                },
-            },
-            "googleProviderAuthConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["method"],
-                "properties": {
-                    "method": {"type": "string", "enum": ["api_key", "oauth", "service_account"]},
-                    "api_key": {"type": ["string", "null"], "minLength": 1},
-                    "access_token": {"type": ["string", "null"], "minLength": 1},
-                    "service_account_json_path": {"type": ["string", "null"], "minLength": 1},
-                },
-            },
-            "googleProviderConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "auth": {"$ref": "#/$defs/googleProviderAuthConfig"},
-                    "base_url": {"type": ["string", "null"], "minLength": 1},
-                    "discovery_base_url": {"type": ["string", "null"], "minLength": 1},
-                    "project": {"type": ["string", "null"], "minLength": 1},
-                    "region": {"type": ["string", "null"], "minLength": 1},
-                    "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
-                    "transient_retry": {"$ref": "#/$defs/providerTransientRetryConfig"},
-                },
-            },
-            "copilotProviderAuthConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["method"],
-                "properties": {
-                    "method": {"type": "string", "enum": ["token", "oauth"]},
-                    "token": {"type": ["string", "null"], "minLength": 1},
-                    "token_env_var": {"type": ["string", "null"], "minLength": 1},
-                    "refresh_token": {"type": ["string", "null"], "minLength": 1},
-                    "refresh_leeway_seconds": {"type": "integer", "minimum": 1},
-                },
-            },
-            "copilotProviderConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "auth": {"$ref": "#/$defs/copilotProviderAuthConfig"},
-                    "base_url": {"type": ["string", "null"], "minLength": 1},
-                    "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
-                    "transient_retry": {"$ref": "#/$defs/providerTransientRetryConfig"},
-                },
-            },
-            "endpointProviderConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "api_key": {"type": ["string", "null"], "minLength": 1},
-                    "api_key_env_var": {"type": ["string", "null"], "minLength": 1},
-                    "base_url": {"type": ["string", "null"], "minLength": 1},
-                    "discovery_base_url": {"type": ["string", "null"], "minLength": 1},
-                    "auth_header": {"type": ["string", "null"], "minLength": 1},
-                    "auth_scheme": {"type": "string", "enum": ["bearer", "token", "none"]},
-                    "ssl_verify": {"type": "boolean"},
-                    "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
-                    "model_map": {
-                        "type": ["object", "null"],
-                        "propertyNames": {"pattern": ".+"},
-                        "additionalProperties": {"type": "string", "minLength": 1},
-                    },
-                    "transient_retry": {"$ref": "#/$defs/providerTransientRetryConfig"},
-                },
-            },
-            "openAICompatibleProviderConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "api_key": {"type": ["string", "null"], "minLength": 1},
-                    "api_key_env_var": {"type": ["string", "null"], "minLength": 1},
-                    "base_url": {"type": ["string", "null"], "minLength": 1},
-                    "discovery_base_url": {"type": ["string", "null"], "minLength": 1},
-                    "ssl_verify": {"type": "boolean"},
-                    "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
-                    "model_map": {
-                        "type": ["object", "null"],
-                        "propertyNames": {"pattern": ".+"},
-                        "additionalProperties": {"type": "string", "minLength": 1},
-                    },
-                    "transient_retry": {"$ref": "#/$defs/providerTransientRetryConfig"},
-                },
-            },
-            "agentConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "preset": {
-                        "type": "string",
-                        "pattern": "^[a-z][a-z0-9_-]*$",
-                    },
-                    "prompt_profile": {"type": "string", "minLength": 1},
-                    "prompt": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Explicit prompt/profile text for this agent config entry.",
-                    },
-                    "prompt_append": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": ("Additional local guidance appended to the resolved base prompt."),
-                    },
-                    "hook_refs": {"type": "array", "items": {"type": "string"}},
-                    "context_transform_refs": {
-                        "type": "array",
-                        "items": {"type": "string", "minLength": 1},
-                        "uniqueItems": True,
-                    },
-                    "model": {"type": "string", "minLength": 1},
-                    "tools": {"$ref": "#/$defs/agentToolsConfig"},
-                    "skills": {"$ref": "#/$defs/skillsConfig"},
-                    "mcp_binding": {"$ref": "#/$defs/agentMcpBindingConfig"},
-                    "fallback_models": {
-                        "type": "array",
-                        "items": {"type": "string", "minLength": 1},
-                        "description": "Agent-scoped fallback model chain; requires agent.model.",
-                    },
-                },
-            },
-            "agentMcpBindingConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "description": (
-                    "Declarative MCP profile/server binding intent for this agent. Runtime "
-                    "MCP config, lifecycle, approval, and tool allowlists remain authoritative."
-                ),
-                "properties": {
-                    "profile": {"type": "string", "minLength": 1},
-                    "servers": {
-                        "type": "array",
-                        "items": {"type": "string", "minLength": 1},
-                        "uniqueItems": True,
-                    },
-                },
-            },
-            "runtimePolicyConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "enabled": {"type": "boolean"},
-                    "version": {"type": "string", "const": "v1"},
-                    "tool_policy": {"$ref": "#/$defs/runtimePolicyToolPolicyConfig"},
-                    "delegation_policy": {"$ref": "#/$defs/runtimePolicyDelegationPolicyConfig"},
-                    "hook_policy": {"$ref": "#/$defs/runtimePolicyHookPolicyConfig"},
-                    "prompt_activation": {"$ref": "#/$defs/runtimePolicyPromptActivationConfig"},
-                },
-            },
-            "runtimePolicyToolPolicyConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "allow": {"type": "array", "items": {"type": "string", "minLength": 1}},
-                    "deny": {"type": "array", "items": {"type": "string", "minLength": 1}},
-                },
-            },
-            "runtimePolicyDelegationPolicyConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "allow": {"type": "array", "items": {"type": "string", "minLength": 1}},
-                    "deny": {"type": "array", "items": {"type": "string", "minLength": 1}},
-                },
-            },
-            "runtimePolicyHookPolicyConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "allowed_event_scopes": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "enum": [
-                                "session_start",
-                                "session_end",
-                                "pre_tool",
-                                "post_tool",
-                                "background_task_registered",
-                                "background_task_started",
-                                "background_task_progress",
-                                "background_task_completed",
-                                "background_task_failed",
-                                "background_task_cancelled",
-                                "background_task_interrupted",
-                                "background_task_notification_enqueued",
-                                "background_task_result_read",
-                                "delegated_result_available",
-                                "turn_progress",
-                                "stuck_detected",
-                            ],
-                        },
-                    },
-                    "actions": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "enum": ["observe", "report", "cancel", "guidance"],
-                        },
-                    },
-                },
-            },
-            "runtimePolicyPromptActivationConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "enabled": {"type": "boolean"},
-                    "profile_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
-                },
-            },
-            "permissionConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "external_directory_read": {"$ref": "#/$defs/permissionRules"},
-                    "external_directory_write": {"$ref": "#/$defs/permissionRules"},
-                    "rules": {
-                        "type": "array",
-                        "description": (
-                            "Ordered runtime permission rules for tool/path/command matches. "
-                            "First matching rule applies after hard tool allowlist and "
-                            "external-directory gates."
-                        ),
-                        "items": {"$ref": "#/$defs/patternPermissionRule"},
-                    },
-                },
-            },
-            "patternPermissionRule": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["decision"],
-                "properties": {
-                    "tool": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": ("Tool name glob, for example read, grep, or shell_exec."),
-                    },
-                    "path": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": ("Workspace-relative or canonical path glob for filesystem-related tool calls."),
-                    },
-                    "command": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Shell command glob used by shell_exec rules.",
-                    },
-                    "decision": {"type": "string", "enum": ["allow", "deny", "ask"]},
-                },
-            },
-            "permissionRules": {
-                "type": "object",
-                "description": "Ordered path-glob permission map. First matching pattern applies.",
-                "additionalProperties": {
-                    "type": "string",
-                    "enum": ["allow", "deny", "ask"],
-                },
-            },
-            "customAgentConfig": {
-                "allOf": [{"$ref": "#/$defs/agentConfig"}],
-                "required": ["preset"],
-            },
-        },
+        **body,
     }
+
+
+def runtime_config_schema_keys() -> frozenset[str]:
+    """Accepted top-level keys of the workspace config, from the payload model."""
+    return config_model_keys(RuntimeConfigPayload)
+
+
+def format_runtime_config_schema_json(schema: Mapping[str, object] | None = None) -> str:
+    """The exact text of the shipped ``schema/voidcode.config.schema.json``."""
+    document = runtime_config_json_schema() if schema is None else schema
+    return json.dumps(dict(document), indent=2, ensure_ascii=False) + "\n"
+
+
+__all__ = [
+    "RUNTIME_CONFIG_SCHEMA_ID",
+    "RUNTIME_CONFIG_SCHEMA_TITLE",
+    "RUNTIME_CONFIG_SCHEMA_URI",
+    "format_runtime_config_schema_json",
+    "format_starter_runtime_config_json",
+    "generate_starter_runtime_config",
+    "read_runtime_config_payload",
+    "runtime_config_json_schema",
+    "runtime_config_schema_keys",
+    "write_runtime_config_payload",
+]
 
 
 def generate_starter_runtime_config(

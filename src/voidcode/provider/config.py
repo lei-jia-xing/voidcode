@@ -9,6 +9,7 @@ from pydantic.functional_validators import BeforeValidator
 
 from .naming import (
     BUILTIN_PROVIDER_IDS,
+    PROVIDER_LABELS,
     UnknownProviderIdError,
     canonical_provider_id,
 )
@@ -100,15 +101,58 @@ def _parse_boundary_string_mapping(value: object) -> dict[str, str]:
     return mapping
 
 
-BoundaryOptionalString = Annotated[str | None, BeforeValidator(_parse_optional_boundary_string)]
+type GoogleAuthMethod = Literal["api_key", "oauth", "service_account"]
+type CopilotAuthMethod = Literal["token", "oauth"]
+type EndpointAuthScheme = Literal["bearer", "token", "none"]
+_VALID_GOOGLE_AUTH_METHODS: tuple[GoogleAuthMethod, ...] = ("api_key", "oauth", "service_account")
+_VALID_COPILOT_AUTH_METHODS: tuple[CopilotAuthMethod, ...] = ("token", "oauth")
+_VALID_ENDPOINT_AUTH_SCHEMES: tuple[EndpointAuthScheme, ...] = (
+    "bearer",
+    "token",
+    "none",
+)
+
+
+# The ``Field(...)`` range/minimum constraints below mirror what the paired
+# ``BeforeValidator`` already enforces, so the JSON Schema generated from these
+# boundary models (the shipped ``schema/voidcode.config.schema.json``) describes
+# the values the parser really accepts instead of a looser shape.
+# The range/length keywords below are published-contract metadata
+# (``json_schema_extra``), not validation: the paired ``BeforeValidator`` keeps
+# deciding acceptance and its messages, exactly as before these models were made
+# public for schema generation.
+BoundarySchemaNumber = Annotated[float, Field(json_schema_extra={"exclusiveMinimum": 0})]
+BoundarySchemaNonnegativeNumber = Annotated[float, Field(json_schema_extra={"minimum": 0})]
+BoundarySchemaPositiveInt = Annotated[int, Field(json_schema_extra={"minimum": 1})]
+BoundarySchemaNonnegativeInt = Annotated[int, Field(json_schema_extra={"minimum": 0})]
+BoundarySchemaString = Annotated[str, Field()]
+#: The endpoint auth scheme publishes its enum inside the string branch so the
+#: field also accepts an explicit null (which the parser normalises).
+BoundaryAuthSchemeValue = Annotated[str, Field(json_schema_extra={"enum": list(_VALID_ENDPOINT_AUTH_SCHEMES)})]
+_BoundaryAuthScheme = Annotated[BoundaryAuthSchemeValue | None, BeforeValidator(_parse_optional_boundary_string)]
+#: ``_parse_boundary_string_mapping`` rejects an empty value, so only the map's
+#: values publish a minimum; a plain provider string may be empty.
+BoundarySchemaNonEmptyString = Annotated[str, Field(json_schema_extra={"minLength": 1})]
+BoundaryOptionalString = Annotated[BoundarySchemaString | None, BeforeValidator(_parse_optional_boundary_string)]
 BoundaryRequiredString = Annotated[str, BeforeValidator(_parse_required_boundary_string)]
-BoundaryOptionalTimeout = Annotated[float | None, BeforeValidator(_parse_optional_boundary_timeout)]
-BoundaryOptionalPositiveInt = Annotated[int | None, BeforeValidator(_parse_optional_boundary_positive_int)]
-BoundaryOptionalNonnegativeInt = Annotated[int | None, BeforeValidator(_parse_optional_boundary_nonnegative_int)]
-BoundaryOptionalNonnegativeFloat = Annotated[float | None, BeforeValidator(_parse_optional_boundary_nonnegative_float)]
+BoundaryOptionalTimeout = Annotated[BoundarySchemaNumber | None, BeforeValidator(_parse_optional_boundary_timeout)]
+BoundaryOptionalPositiveInt = Annotated[BoundarySchemaPositiveInt | None, BeforeValidator(_parse_optional_boundary_positive_int)]
+BoundaryOptionalNonnegativeInt = Annotated[BoundarySchemaNonnegativeInt | None, BeforeValidator(_parse_optional_boundary_nonnegative_int)]
+BoundaryOptionalNonnegativeFloat = Annotated[BoundarySchemaNonnegativeNumber | None, BeforeValidator(_parse_optional_boundary_nonnegative_float)]
 BoundaryOptionalBool = Annotated[bool | None, BeforeValidator(_parse_optional_boundary_bool)]
 BoundaryStringList = Annotated[tuple[str, ...], BeforeValidator(_parse_boundary_string_list)]
-BoundaryStringMapping = Annotated[dict[str, str], BeforeValidator(_parse_boundary_string_mapping)]
+BoundaryStringMapping = Annotated[
+    dict[str, BoundarySchemaNonEmptyString] | None,
+    BeforeValidator(_parse_boundary_string_mapping),
+    Field(json_schema_extra={"propertyNames": {"pattern": ".+"}}),
+]
+
+#: ``providers.custom`` keys may not shadow a built-in provider id (the parser
+#: canonicalises and compares against ``BUILTIN_PROVIDER_IDS``) and may not
+#: contain a ``/``; the pattern is derived from the same provider table.
+#: The alternation is built from the label table's own ids (``[a-z0-9-]`` only in
+#: this repo), so it needs no regex escaping.
+_CUSTOM_PROVIDER_KEY_PATTERN = rf"^(?!(?:{'|'.join(PROVIDER_LABELS)})$)(?!.*[/]).+$"
 
 
 def _prefer_primary[T](primary: T | None, fallback: T | None) -> T | None:
@@ -141,14 +185,17 @@ class _AnthropicProviderConfigPayload(_ProviderPayloadModel):
     base_url: BoundaryOptionalString = None
     discovery_base_url: BoundaryOptionalString = None
     version: BoundaryOptionalString = None
-    beta_headers: BoundaryStringList = ()
+    beta_headers: BoundaryStringList | None = ()
     cache_retention: Literal["none", "short", "long"] = "none"
     timeout_seconds: BoundaryOptionalTimeout = None
     transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
 class _GoogleProviderAuthConfigPayload(_ProviderPayloadModel):
-    method: BoundaryRequiredString
+    method: BoundaryRequiredString = Field(
+        # ``_parse_google_auth_method`` owns the rejection.
+        json_schema_extra={"enum": list(_VALID_GOOGLE_AUTH_METHODS)},
+    )
     api_key: BoundaryOptionalString = None
     access_token: BoundaryOptionalString = None
     service_account_json_path: BoundaryOptionalString = None
@@ -165,7 +212,10 @@ class _GoogleProviderConfigPayload(_ProviderPayloadModel):
 
 
 class _CopilotProviderAuthConfigPayload(_ProviderPayloadModel):
-    method: BoundaryRequiredString
+    method: BoundaryRequiredString = Field(
+        # ``_parse_copilot_auth_method`` owns the rejection.
+        json_schema_extra={"enum": list(_VALID_COPILOT_AUTH_METHODS)},
+    )
     token: BoundaryOptionalString = None
     token_env_var: BoundaryOptionalString = None
     refresh_token: BoundaryOptionalString = None
@@ -185,7 +235,7 @@ class _ProviderEndpointConfigPayload(_ProviderPayloadModel):
     base_url: BoundaryOptionalString = None
     discovery_base_url: BoundaryOptionalString = None
     auth_header: BoundaryOptionalString = None
-    auth_scheme: BoundaryOptionalString = None
+    auth_scheme: _BoundaryAuthScheme = None
     ssl_verify: BoundaryOptionalBool = None
     timeout_seconds: BoundaryOptionalTimeout = None
     model_map: BoundaryStringMapping = Field(default_factory=dict)
@@ -203,7 +253,7 @@ class _OpenAICompatibleProviderConfigPayload(_ProviderPayloadModel):
     transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
 
-class _ProviderConfigsPayload(_ProviderPayloadModel):
+class ProviderConfigsPayload(_ProviderPayloadModel):
     openai: _OpenAIProviderConfigPayload | None = None
     anthropic: _AnthropicProviderConfigPayload | None = None
     google: _GoogleProviderConfigPayload | None = None
@@ -223,7 +273,10 @@ class _ProviderConfigsPayload(_ProviderPayloadModel):
     together: _OpenAICompatibleProviderConfigPayload | None = None
     fireworks: _OpenAICompatibleProviderConfigPayload | None = None
     mistral: _OpenAICompatibleProviderConfigPayload | None = None
-    custom: dict[str, _ProviderEndpointConfigPayload] = Field(default_factory=dict)
+    custom: dict[str, _ProviderEndpointConfigPayload] = Field(
+        default_factory=dict,
+        json_schema_extra={"propertyNames": {"pattern": _CUSTOM_PROVIDER_KEY_PATTERN}},
+    )
 
 
 class _ProviderFallbackPayload(_ProviderPayloadModel):
@@ -234,7 +287,7 @@ class _ProviderFallbackPayload(_ProviderPayloadModel):
 def _provider_config_payload_keys() -> dict[str, str]:
     """Canonical provider id -> the ``providers`` payload key that carries it."""
     keys: dict[str, str] = {}
-    for field_name, model_field in _ProviderConfigsPayload.model_fields.items():
+    for field_name, model_field in ProviderConfigsPayload.model_fields.items():
         if field_name == "custom":
             continue
         payload_key = model_field.validation_alias if isinstance(model_field.validation_alias, str) else field_name
@@ -493,10 +546,6 @@ class AnthropicProviderConfig:
             object.__setattr__(self, "beta_headers_explicit", True)
 
 
-type GoogleAuthMethod = Literal["api_key", "oauth", "service_account"]
-type EndpointAuthScheme = Literal["bearer", "token", "none"]
-
-
 @dataclass(frozen=True, slots=True)
 class GoogleProviderAuthConfig:
     method: GoogleAuthMethod
@@ -592,18 +641,6 @@ _COPILOT_TOKEN_ENV_VAR = "GITHUB_COPILOT_TOKEN"
 _ENDPOINT_API_KEY_ENV_VAR = "ENDPOINT_API_KEY"
 _ENDPOINT_BASE_URL_ENV_VAR = "ENDPOINT_BASE_URL"
 _OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
-
-_VALID_GOOGLE_AUTH_METHODS: tuple[GoogleAuthMethod, ...] = (
-    "api_key",
-    "oauth",
-    "service_account",
-)
-_VALID_COPILOT_AUTH_METHODS: tuple[CopilotAuthMethod, ...] = ("token", "oauth")
-_VALID_ENDPOINT_AUTH_SCHEMES: tuple[EndpointAuthScheme, ...] = (
-    "bearer",
-    "token",
-    "none",
-)
 
 
 def _parse_google_auth_method(raw_method: str, *, field_path: str) -> GoogleAuthMethod:
@@ -975,7 +1012,7 @@ def parse_provider_configs_payload(
     payload = _validate_provider_payload_model(
         _canonicalize_provider_config_payload_keys(raw_providers, field_path=source),
         field_path=source,
-        model_type=_ProviderConfigsPayload,
+        model_type=ProviderConfigsPayload,
     )
 
     environment: Mapping[str, str] = {} if env is None else env
@@ -1308,7 +1345,7 @@ def _parse_anthropic_provider_config(
         base_url=payload.base_url,
         discovery_base_url=payload.discovery_base_url,
         version=payload.version,
-        beta_headers=payload.beta_headers,
+        beta_headers=payload.beta_headers or (),
         cache_retention=payload.cache_retention,
         beta_headers_explicit="beta_headers" in payload.model_fields_set,
         timeout_seconds=payload.timeout_seconds,
@@ -1554,7 +1591,7 @@ def _parse_endpoint_provider_config(
         auth_scheme_explicit=raw_auth_scheme is not None,
         ssl_verify=payload.ssl_verify,
         timeout_seconds=payload.timeout_seconds,
-        model_map=payload.model_map,
+        model_map=payload.model_map or {},
         transient_retry=_parse_transient_retry_config(
             payload.transient_retry,
             field_path=_nested_config_field(field_path, "transient_retry"),
@@ -1600,7 +1637,7 @@ def _parse_openai_compatible_provider_config(
         discovery_base_url=payload.discovery_base_url,
         ssl_verify=payload.ssl_verify,
         timeout_seconds=payload.timeout_seconds,
-        model_map=payload.model_map,
+        model_map=payload.model_map or {},
         transient_retry=_parse_transient_retry_config(
             payload.transient_retry,
             field_path=_nested_config_field(field_path, "transient_retry"),

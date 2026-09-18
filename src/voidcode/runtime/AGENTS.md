@@ -13,6 +13,7 @@ Runtime control plane for execution, persistence, approvals, hooks, capability m
 | Public runtime exports | `__init__.py` | lazy-loads `VoidCodeRuntime` and `ToolRegistry` via `__getattr__` |
 | Main control plane | `service.py` | runtime graph loop, tool execution, approvals, resume, background tasks |
 | Runtime config loading | `config.py` | merges env, user, repo-local, and request overrides |
+| Config data boundary | `config_models.py` | one Pydantic definition source for every config input shape; `config_schema.py` generates `schema/voidcode.config.schema.json` from it (`mise run schema:check`). Models own shape only — precedence/merge/snapshot/policy stay in `config.py`, `config_materializer.py`, `policy.py`, `provider/config.py` |
 | Session persistence | `storage/` | SQLite schema, notifications, pending approval, background task state |
 | Permission defaults | `permission.py` | read-only tools auto-allow; write tools create pending approvals |
 | Runtime boundary contracts | `contracts.py` | request/response/session validation, metadata rules |

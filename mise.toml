@@ -85,8 +85,12 @@ run = "git-cliff --config cliff.toml --output CHANGELOG.md"
 [tasks."release:preview"]
 run = "git-cliff --config cliff.toml"
 
+[tasks."schema:check"]
+description = "Fail when schema/voidcode.config.schema.json is not the schema generated from the config payload models"
+run = "uv run python scripts/generate_config_schema.py --check"
+
 [tasks.check]
-depends = ["lint", "typecheck", "test", "frontend:check"]
+depends = ["lint", "typecheck", "schema:check", "test", "frontend:check"]
 
 [tasks.ci]
 depends = ["lint", "typecheck", "test:coverage", "build", "frontend:check", "frontend:build"]

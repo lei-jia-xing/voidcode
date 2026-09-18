@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 import sys
@@ -9,11 +8,9 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Lock
-from typing import Literal, Protocol, cast
+from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import ValidationError
 
 from ..agent import (
     AgentManifest,
@@ -25,19 +22,76 @@ from ..agent import (
     load_agent_manifest_registry,
 )
 from ..agent.prompts import has_builtin_prompt_profile, render_builtin_prompt_profile
-from ..formatter import FormatterCwdPolicy, RuntimeFormatterPresetConfig
+from ..formatter import RuntimeFormatterPresetConfig
 from ..hook.config import RuntimeHooksConfig
 from ..hook.presets import validate_hook_preset_refs
 from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
 from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
-from ..mcp.builtin import get_builtin_mcp_descriptor, list_builtin_mcp_descriptors
+from ..mcp.builtin import list_builtin_mcp_descriptors
 from ..provider import config as provider_config
 from ..provider.naming import (
     BUILTIN_PROVIDER_IDS,
     UnknownProviderIdError,
     canonical_provider_id,
 )
-from ..provider.reasoning_effort import normalize_reasoning_effort
+from .config_models import (
+    AGENT_PRESET_ID_PATTERN,
+    AGENT_RUNTIME_INTERNAL_CONFIG_KEY,
+    DEFAULT_HOOK_TIMEOUT_SECONDS,
+    ENV_SETTINGS_LOCK,
+    TOP_LEVEL_ENV_VARS,
+    AgentMcpBindingPayload,
+    AgentPayload,
+    AgentRuntimeInternalPayload,
+    AgentToolsPayload,
+    BackgroundTaskPayload,
+    ContextWindowPayload,
+    EnvironmentRuntimeSettings,
+    ExecutionEngineName,
+    FormatterPayload,
+    FormatterPresetPayload,
+    HooksPayload,
+    LspPayload,
+    LspServerPayload,
+    McpPayload,
+    McpTransport,
+    PermissionPayload,
+    PersistedAgentPayload,
+    RuntimeAgentPromptSource,
+    RuntimeConfigPayload,
+    RuntimeContextTransformFailureMode,
+    RuntimeMcpServerScope,
+    RuntimeProviderContextDiagnosticMode,
+    RuntimeTuiThemeMode,
+    SkillsPayload,
+    ToolsPayload,
+    TuiPayload,
+    UserConfigPayload,
+    config_model_keys,
+    format_environment_validation_error,
+    parse_approval_mode,
+    parse_reasoning_effort,
+    parse_tool_timeout_seconds,
+    reject_unknown_config_keys,
+    validate_config_model,
+    validate_config_section,
+    validate_formatter_preset_map,
+)
+from .config_models import (
+    APPROVAL_MODE_ENV_VAR as APPROVAL_MODE_ENV_VAR,
+)
+from .config_models import (
+    EXECUTION_ENGINE_ENV_VAR as EXECUTION_ENGINE_ENV_VAR,
+)
+from .config_models import (
+    MODEL_ENV_VAR as MODEL_ENV_VAR,
+)
+from .config_models import (
+    REASONING_EFFORT_ENV_VAR as REASONING_EFFORT_ENV_VAR,
+)
+from .config_models import (
+    TOOL_TIMEOUT_ENV_VAR as TOOL_TIMEOUT_ENV_VAR,
+)
 from .context.transforms import validate_runtime_context_transform_refs
 from .permission import (
     ExternalDirectoryPermissionConfig,
@@ -63,211 +117,7 @@ def _running_on_windows() -> bool:
     return sys.platform == "win32"
 
 
-APPROVAL_MODE_ENV_VAR = "VOIDCODE_APPROVAL_MODE"
-MODEL_ENV_VAR = "VOIDCODE_MODEL"
-EXECUTION_ENGINE_ENV_VAR = "VOIDCODE_EXECUTION_ENGINE"
-TOOL_TIMEOUT_ENV_VAR = "VOIDCODE_TOOL_TIMEOUT_SECONDS"
-REASONING_EFFORT_ENV_VAR = "VOIDCODE_REASONING_EFFORT"
-_VALID_APPROVAL_MODES = ("allow", "deny", "ask")
-_VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
-type ExecutionEngineName = Literal["deterministic", "provider"]
 DEFAULT_EXECUTION_ENGINE: ExecutionEngineName = "provider"
-type RuntimeProviderContextDiagnosticMode = Literal["off", "warn", "block"]
-type RuntimeContextTransformFailureMode = Literal["ignore", "warn", "block"]
-type RuntimeAgentPresetId = str
-type RuntimeAgentPromptSource = Literal["builtin", "custom_markdown"]
-
-_VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "provider")
-_TOP_LEVEL_ENV_VARS = (
-    APPROVAL_MODE_ENV_VAR,
-    MODEL_ENV_VAR,
-    EXECUTION_ENGINE_ENV_VAR,
-    TOOL_TIMEOUT_ENV_VAR,
-    REASONING_EFFORT_ENV_VAR,
-)
-_ENV_SETTINGS_LOCK = Lock()
-_REPO_CONFIG_KEYS = frozenset(
-    {
-        "$schema",
-        "approval_mode",
-        "permission",
-        "policy",
-        "model",
-        "execution_engine",
-        "fallback_models",
-        "tool_timeout_seconds",
-        "reasoning_effort",
-        "hooks",
-        "formatter",
-        "tools",
-        "skills",
-        "context_window",
-        "lsp",
-        "background_task",
-        "mcp",
-        "tui",
-        "providers",
-        "agent",
-        "agents",
-    }
-)
-_USER_CONFIG_KEYS = frozenset({"$schema", "tui", "web", "providers"})
-_HOOKS_CONFIG_KEYS = frozenset(
-    {
-        "enabled",
-        "timeout_seconds",
-        "failure_mode",
-        "pre_tool",
-        "post_tool",
-        "on_session_start",
-        "on_session_end",
-        "on_session_idle",
-        "on_background_task_registered",
-        "on_background_task_started",
-        "on_background_task_progress",
-        "on_background_task_completed",
-        "on_background_task_failed",
-        "on_background_task_cancelled",
-        "on_background_task_interrupted",
-        "on_background_task_notification_enqueued",
-        "on_background_task_result_read",
-        "on_delegated_result_available",
-        "on_turn_progress",
-        "on_stuck_detected",
-        "formatter_presets",
-    }
-)
-_FORMATTER_CONFIG_KEYS = frozenset({"enabled", "format_on_write", "languages"})
-_CONTEXT_WINDOW_CONFIG_KEYS = frozenset(
-    {
-        "version",
-        "default_tool_result_chars",
-        "per_tool_result_chars",
-        "provider_context_diagnostics",
-        "provider_context_oversized_feedback_chars",
-        "context_transform_failure_policy",
-        "summary_strategy",
-    }
-)
-_FORMATTER_PRESET_CONFIG_KEYS = frozenset({"command", "extensions", "root_markers", "fallback_commands", "cwd_policy"})
-_TOOLS_CONFIG_KEYS = frozenset({"builtin", "allowlist", "default", "local", "essential_only"})
-_TOOLS_BUILTIN_CONFIG_KEYS = frozenset({"enabled"})
-_TOOLS_LOCAL_CONFIG_KEYS = frozenset({"enabled", "path"})
-_SKILLS_CONFIG_KEYS = frozenset({"enabled", "paths"})
-_PERMISSION_CONFIG_KEYS = frozenset({"external_directory_read", "external_directory_write", "rules"})
-_PERMISSION_RULE_CONFIG_KEYS = frozenset({"tool", "path", "command", "decision"})
-_LSP_CONFIG_KEYS = frozenset({"enabled", "servers", "diagnostics_on_write"})
-_LSP_SERVER_CONFIG_KEYS = frozenset({"preset", "command", "languages", "extensions", "root_markers", "settings", "init_options"})
-_BACKGROUND_TASK_CONFIG_KEYS = frozenset(
-    {
-        "default_concurrency",
-        "provider_concurrency",
-        "model_concurrency",
-        "delegated_reminders_enabled",
-        "delegated_reminder_cooldown_seconds",
-    }
-)
-_MCP_CONFIG_KEYS = frozenset({"enabled", "servers", "request_timeout_seconds"})
-_MCP_SERVER_CONFIG_KEYS = frozenset({"transport", "command", "env", "scope", "url"})
-_TUI_CONFIG_KEYS = frozenset({"leader_key", "keymap", "preferences"})
-_TUI_PREFERENCES_CONFIG_KEYS = frozenset({"theme", "reading"})
-_TUI_THEME_CONFIG_KEYS = frozenset({"name", "mode"})
-_TUI_READING_CONFIG_KEYS = frozenset({"wrap", "sidebar_collapsed"})
-_AGENT_CONFIG_KEYS = frozenset(
-    {
-        "preset",
-        "prompt_profile",
-        "prompt",
-        "prompt_append",
-        "hook_refs",
-        "context_transform_refs",
-        "model",
-        "tools",
-        "skills",
-        "mcp_binding",
-        "fallback_models",
-    }
-)
-_AGENT_RUNTIME_INTERNAL_CONFIG_KEY = "runtime_internal"
-_AGENT_RUNTIME_INTERNAL_CONFIG_KEYS = frozenset(
-    {
-        "prompt_materialization",
-        "prompt_ref",
-        "prompt_source",
-        "manifest_source_scope",
-        "manifest_source_path",
-        "manifest_tool_allowlist",
-        "manifest_skill_refs",
-        "manifest_hook_refs",
-    }
-)
-_AGENT_MCP_BINDING_CONFIG_KEYS = frozenset({"profile", "servers"})
-
-
-class _EnvironmentRuntimeSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
-
-    approval_mode: PermissionDecision | None = Field(
-        default=None,
-        validation_alias=APPROVAL_MODE_ENV_VAR,
-    )
-    model: str | None = Field(default=None, validation_alias=MODEL_ENV_VAR)
-    execution_engine: ExecutionEngineName | None = Field(
-        default=None,
-        validation_alias=EXECUTION_ENGINE_ENV_VAR,
-    )
-    tool_timeout_seconds: int | None = Field(
-        default=None,
-        validation_alias=TOOL_TIMEOUT_ENV_VAR,
-    )
-    reasoning_effort: str | None = Field(
-        default=None,
-        validation_alias=REASONING_EFFORT_ENV_VAR,
-    )
-
-    @field_validator("approval_mode", mode="before")
-    @classmethod
-    def _validate_approval_mode(cls, value: object) -> PermissionDecision | None:
-        return _parse_approval_mode(
-            value,
-            source=f"environment variable {APPROVAL_MODE_ENV_VAR}",
-            allow_none=True,
-        )
-
-    @field_validator("model", mode="before")
-    @classmethod
-    def _validate_model(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"environment variable {MODEL_ENV_VAR} must be a non-empty string")
-        return value
-
-    @field_validator("execution_engine", mode="before")
-    @classmethod
-    def _validate_execution_engine(cls, value: object) -> ExecutionEngineName | None:
-        return _parse_execution_engine(
-            value,
-            source=f"environment variable {EXECUTION_ENGINE_ENV_VAR}",
-            allow_none=True,
-        )
-
-    @field_validator("tool_timeout_seconds", mode="before")
-    @classmethod
-    def _validate_tool_timeout_seconds(cls, value: object) -> int | None:
-        return _parse_environment_tool_timeout_seconds(value)
-
-    @field_validator("reasoning_effort", mode="before")
-    @classmethod
-    def _validate_reasoning_effort(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        if isinstance(value, str) and not value:
-            return None
-        return _parse_reasoning_effort(
-            value,
-            allow_none=True,
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,10 +204,6 @@ class RuntimeBackgroundTaskConfig:
     delegated_reminder_cooldown_seconds: int = 300
 
 
-type McpTransport = Literal["stdio", "remote-http"]
-type RuntimeMcpServerScope = Literal["runtime", "session"]
-
-
 @dataclass(frozen=True, slots=True)
 class RuntimeMcpServerConfig:
     transport: McpTransport = "stdio"
@@ -408,9 +254,6 @@ class RuntimeTuiConfig:
     leader_key: str | None = None
     keymap: Mapping[str, str] | None = None
     preferences: RuntimeTuiPreferences | None = None
-
-
-type RuntimeTuiThemeMode = Literal["auto", "light", "dark"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -526,7 +369,6 @@ class RuntimeWebSettings:
     provider_api_key_present: bool = False
 
 
-_VALID_TUI_THEME_MODES: tuple[RuntimeTuiThemeMode, ...] = ("auto", "light", "dark")
 _BUILTIN_TUI_THEME_DEFAULTS: dict[RuntimeTuiThemeMode, str] = {
     "auto": "textual-dark",
     "light": "textual-light",
@@ -696,206 +538,87 @@ def _load_repo_local_config(
         raise ValueError(f"runtime config file must contain a JSON object: {config_path}")
 
     payload = cast(dict[str, object], raw_payload)
-    _reject_unknown_config_keys(payload, allowed_keys=_REPO_CONFIG_KEYS, field_path="")
+    reject_unknown_config_keys(
+        payload,
+        allowed_keys=config_model_keys(RuntimeConfigPayload),
+        field_path="",
+    )
 
-    raw_policy = payload.get("policy")
+    # Sections whose validator lives in another module keep the first word: the
+    # policy and provider parsers own their contract messages.
     policy = validate_runtime_policy_config_payload(
-        raw_policy,
+        payload.get("policy"),
         source="runtime config field 'policy'",
     )
-
-    raw_model = payload.get("model")
-    parsed_execution_engine = _parse_execution_engine(
-        payload.get("execution_engine"),
-        source=f"runtime config field 'execution_engine' in {config_path}",
-        allow_none=True,
-    )
-    if raw_model is not None and not isinstance(raw_model, str):
-        raise ValueError("runtime config field 'model' must be a string when provided")
-
-    tool_timeout_seconds_configured = "tool_timeout_seconds" in payload
-    parsed_tool_timeout_seconds = _parse_tool_timeout_seconds(
-        payload.get("tool_timeout_seconds"),
-        source=f"runtime config field 'tool_timeout_seconds' in {config_path}",
-        allow_none=True,
+    providers = _parse_providers_config(payload.get("providers"), env=env)
+    provider_fallback = _parse_runtime_fallback_models_config(
+        payload.get("fallback_models"),
+        model=payload.get("model"),
     )
 
-    parsed_reasoning_effort = _parse_reasoning_effort(
-        payload.get("reasoning_effort"),
-        allow_none=True,
+    config_payload = validate_config_model(
+        RuntimeConfigPayload,
+        payload,
+        context={"config_file": str(config_path)},
     )
 
-    raw_fallback_models = payload.get("fallback_models")
-    provider_fallback = _parse_runtime_fallback_models_config(raw_fallback_models, model=raw_model)
-
-    raw_hooks = payload.get("hooks")
-    hooks = _parse_hooks_config(raw_hooks)
-
-    raw_formatter = payload.get("formatter")
-    formatter = _parse_formatter_config(raw_formatter)
+    hooks = _hooks_config_from_payload(config_payload.hooks)
+    formatter = _formatter_config_from_payload(config_payload.formatter)
     hooks = _apply_formatter_config(hooks=hooks, formatter=formatter)
 
-    raw_tools = payload.get("tools")
-    tools = _parse_tools_config(raw_tools)
-
-    raw_skills = payload.get("skills")
-    skills = _parse_skills_config(raw_skills)
-
-    raw_context_window = payload.get("context_window")
-    context_window = _parse_context_window_config(raw_context_window)
-
-    raw_lsp = payload.get("lsp")
-    lsp = _parse_lsp_config(raw_lsp)
-
-    raw_mcp = payload.get("mcp")
-    mcp = _parse_mcp_config(raw_mcp)
-
-    raw_background_task = payload.get("background_task")
-    background_task = _parse_background_task_config(raw_background_task)
-
-    raw_tui = payload.get("tui")
-    tui = _parse_tui_config(raw_tui)
-
-    raw_providers = payload.get("providers")
-    providers = _parse_providers_config(raw_providers, env=env)
-
-    raw_agent = payload.get("agent")
-    agent = _parse_agent_config(raw_agent, hooks=hooks, agent_registry=agent_registry)
-    raw_agents = payload.get("agents")
-    agents = _parse_agents_config(raw_agents, hooks=hooks, agent_registry=agent_registry)
-    raw_approval_mode = payload.get("approval_mode")
-    parsed_approval_mode = _parse_approval_mode(
-        raw_approval_mode,
-        source=f"runtime config field 'approval_mode' in {config_path}",
-        allow_none=True,
-    )
-    raw_permission = payload.get("permission")
-    parsed_permission = _parse_permission_config(raw_permission)
-
     return RuntimeConfigOverrides(
-        approval_mode=parsed_approval_mode,
-        permission=parsed_permission,
+        approval_mode=config_payload.approval_mode,
+        permission=_permission_config_from_payload(config_payload.permission),
         policy=policy,
-        model=raw_model,
-        execution_engine=parsed_execution_engine,
-        tool_timeout_seconds=parsed_tool_timeout_seconds,
-        tool_timeout_seconds_configured=tool_timeout_seconds_configured,
-        reasoning_effort=parsed_reasoning_effort,
+        model=config_payload.model,
+        execution_engine=config_payload.execution_engine,
+        tool_timeout_seconds=config_payload.tool_timeout_seconds,
+        tool_timeout_seconds_configured="tool_timeout_seconds" in config_payload.model_fields_set,
+        reasoning_effort=config_payload.reasoning_effort,
         hooks=hooks,
         formatter=formatter,
-        tools=tools,
-        skills=skills,
-        context_window=context_window,
-        lsp=lsp,
-        background_task=background_task,
-        mcp=mcp,
-        tui=tui,
+        tools=_tools_config_from_payload(config_payload.tools),
+        skills=_skills_config_from_payload(config_payload.skills),
+        context_window=_context_window_config_from_payload(config_payload.context_window),
+        lsp=_lsp_config_from_payload(config_payload.lsp),
+        background_task=_background_task_config_from_payload(config_payload.background_task),
+        mcp=_mcp_config_from_payload(config_payload.mcp),
+        tui=_tui_config_from_payload(config_payload.tui),
         provider_fallback=provider_fallback,
         providers=providers,
-        agent=agent,
-        agents=agents,
+        agent=_agent_config_from_payload(
+            config_payload.agent,
+            agent_registry=agent_registry,
+        ),
+        agents=_agents_config_from_payload(
+            config_payload.agents,
+            agent_registry=agent_registry,
+        ),
+    )
+
+
+def _permission_config_from_payload(payload: PermissionPayload | None) -> ExternalDirectoryPermissionConfig | None:
+    if payload is None:
+        return None
+    # Defaults stay here: an absent or empty rule map means "allow" for reads and
+    # "ask" for writes, exactly as an absent ``permission`` block does.
+    read_rules = tuple((payload.external_directory_read or {}).items()) or (("*", "allow"),)
+    write_rules = tuple((payload.external_directory_write or {}).items()) or (("*", "ask"),)
+    return ExternalDirectoryPermissionConfig(
+        read=ExternalDirectoryPolicy(rules=read_rules),
+        write=ExternalDirectoryPolicy(rules=write_rules),
+        rules=tuple(
+            PatternPermissionRule(tool=rule.tool, path=rule.path, command=rule.command, decision=rule.decision) for rule in payload.rules or ()
+        ),
     )
 
 
 def _parse_permission_config(raw_permission: object) -> ExternalDirectoryPermissionConfig | None:
     if raw_permission is None:
         return None
-    if not isinstance(raw_permission, dict):
-        raise ValueError("runtime config field 'permission' must be an object when provided")
-
-    permission_payload = cast(dict[str, object], raw_permission)
-    _reject_unknown_config_keys(
-        permission_payload,
-        allowed_keys=_PERMISSION_CONFIG_KEYS,
-        field_path="permission",
+    return _permission_config_from_payload(
+        validate_config_section(PermissionPayload, raw_permission, field_path="permission"),
     )
-
-    read_rules = _parse_permission_rules(
-        permission_payload.get("external_directory_read"),
-        field_path="permission.external_directory_read",
-        default=(("*", "allow"),),
-    )
-    write_rules = _parse_permission_rules(
-        permission_payload.get("external_directory_write"),
-        field_path="permission.external_directory_write",
-        default=(("*", "ask"),),
-    )
-    pattern_rules = _parse_pattern_permission_rules(permission_payload.get("rules"))
-    return ExternalDirectoryPermissionConfig(
-        read=ExternalDirectoryPolicy(rules=read_rules),
-        write=ExternalDirectoryPolicy(rules=write_rules),
-        rules=pattern_rules,
-    )
-
-
-def _parse_pattern_permission_rules(raw_rules: object) -> tuple[PatternPermissionRule, ...]:
-    if raw_rules is None:
-        return ()
-    if not isinstance(raw_rules, list):
-        raise ValueError("runtime config field 'permission.rules' must be an array when provided")
-    parsed: list[PatternPermissionRule] = []
-    for index, raw_rule in enumerate(raw_rules):
-        field_path = f"permission.rules[{index}]"
-        if not isinstance(raw_rule, dict):
-            raise ValueError(f"runtime config field '{field_path}' must be an object")
-        rule_payload = cast(dict[str, object], raw_rule)
-        _reject_unknown_config_keys(
-            rule_payload,
-            allowed_keys=_PERMISSION_RULE_CONFIG_KEYS,
-            field_path=field_path,
-        )
-        raw_tool = rule_payload.get("tool", "*")
-        if not isinstance(raw_tool, str) or not raw_tool.strip():
-            raise ValueError(f"runtime config field '{field_path}.tool' must be a non-empty string")
-        raw_path = rule_payload.get("path")
-        if raw_path is not None and (not isinstance(raw_path, str) or not raw_path.strip()):
-            raise ValueError(f"runtime config field '{field_path}.path' must be a non-empty string")
-        raw_command = rule_payload.get("command")
-        if raw_command is not None and (not isinstance(raw_command, str) or not raw_command.strip()):
-            raise ValueError(f"runtime config field '{field_path}.command' must be a non-empty string")
-        if "decision" not in rule_payload:
-            raise ValueError(f"runtime config field '{field_path}.decision' is required")
-        decision = _parse_approval_mode(
-            rule_payload.get("decision"),
-            source=f"runtime config field '{field_path}.decision'",
-            allow_none=False,
-        )
-        assert decision is not None
-        parsed.append(
-            PatternPermissionRule(
-                tool=raw_tool,
-                path=raw_path,
-                command=raw_command,
-                decision=decision,
-            )
-        )
-    return tuple(parsed)
-
-
-def _parse_permission_rules(
-    raw_rules: object,
-    *,
-    field_path: str,
-    default: tuple[tuple[str, PermissionDecision], ...],
-) -> tuple[tuple[str, PermissionDecision], ...]:
-    if raw_rules is None:
-        return default
-    if not isinstance(raw_rules, dict):
-        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
-    parsed: list[tuple[str, PermissionDecision]] = []
-    for raw_pattern, raw_decision in cast(dict[object, object], raw_rules).items():
-        if not isinstance(raw_pattern, str) or not raw_pattern.strip():
-            raise ValueError(f"runtime config field '{field_path}' keys must be non-empty strings")
-        decision = _parse_approval_mode(
-            raw_decision,
-            source=f"runtime config field '{field_path}.{raw_pattern}'",
-            allow_none=False,
-        )
-        assert decision is not None
-        parsed.append((raw_pattern, decision))
-    if not parsed:
-        return default
-    return tuple(parsed)
 
 
 def _load_user_config(env: Mapping[str, str]) -> RuntimeConfigOverrides:
@@ -912,12 +635,18 @@ def _load_user_config(env: Mapping[str, str]) -> RuntimeConfigOverrides:
         raise ValueError(f"runtime config file must contain a JSON object: {config_path}")
 
     payload = cast(dict[str, object], raw_payload)
-    _reject_unknown_config_keys(payload, allowed_keys=_USER_CONFIG_KEYS, field_path="")
-    raw_tui = payload.get("tui")
-    tui = _parse_tui_config(raw_tui)
-    raw_providers = payload.get("providers")
-    providers = _parse_providers_config(raw_providers, env=env)
-    return RuntimeConfigOverrides(tui=tui, providers=providers)
+    reject_unknown_config_keys(
+        payload,
+        allowed_keys=config_model_keys(UserConfigPayload),
+        field_path="",
+    )
+    # The provider parser owns its messages, so it sees the raw payload.
+    providers = _parse_providers_config(payload.get("providers"), env=env)
+    config_payload = validate_config_model(UserConfigPayload, payload)
+    return RuntimeConfigOverrides(
+        tui=_tui_config_from_payload(config_payload.tui),
+        providers=providers,
+    )
 
 
 def _user_runtime_config_path_from_env(env: Mapping[str, str]) -> Path:
@@ -936,147 +665,63 @@ def _user_runtime_config_path_from_env(env: Mapping[str, str]) -> Path:
     return Path.home() / ".config" / "voidcode" / "config.json"
 
 
+def _hooks_config_from_payload(payload: HooksPayload | None) -> RuntimeHooksConfig | None:
+    if payload is None:
+        return None
+    return RuntimeHooksConfig(
+        enabled=payload.enabled,
+        timeout_seconds=payload.timeout_seconds if payload.timeout_seconds is not None else DEFAULT_HOOK_TIMEOUT_SECONDS,
+        failure_mode=payload.failure_mode,
+        pre_tool=payload.pre_tool or (),
+        post_tool=payload.post_tool or (),
+        on_session_start=payload.on_session_start or (),
+        on_session_end=payload.on_session_end or (),
+        on_session_idle=payload.on_session_idle or (),
+        on_background_task_registered=payload.on_background_task_registered or (),
+        on_background_task_started=payload.on_background_task_started or (),
+        on_background_task_progress=payload.on_background_task_progress or (),
+        on_background_task_completed=payload.on_background_task_completed or (),
+        on_background_task_failed=payload.on_background_task_failed or (),
+        on_background_task_cancelled=payload.on_background_task_cancelled or (),
+        on_background_task_interrupted=payload.on_background_task_interrupted or (),
+        on_background_task_notification_enqueued=payload.on_background_task_notification_enqueued or (),
+        on_background_task_result_read=payload.on_background_task_result_read or (),
+        on_delegated_result_available=payload.on_delegated_result_available or (),
+        on_turn_progress=payload.on_turn_progress or (),
+        on_stuck_detected=payload.on_stuck_detected or (),
+        formatter_presets=_formatter_presets_from_payload(payload.formatter_presets, field_path="hooks.formatter_presets"),
+    )
+
+
 def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
     if raw_hooks is None:
         return None
-    if not isinstance(raw_hooks, dict):
-        raise ValueError("runtime config field 'hooks' must be an object when provided")
-
-    hooks_payload = cast(dict[str, object], raw_hooks)
-    _reject_unknown_config_keys(
-        hooks_payload,
-        allowed_keys=_HOOKS_CONFIG_KEYS,
-        field_path="hooks",
-    )
-    enabled = hooks_payload.get("enabled", True)
-    if not isinstance(enabled, bool):
-        raise ValueError("runtime config field 'hooks.enabled' must be a boolean when provided")
-    timeout_seconds = _parse_hook_timeout_seconds(
-        hooks_payload.get("timeout_seconds"),
-        source="runtime config field 'hooks.timeout_seconds'",
-    )
-    failure_mode = hooks_payload.get("failure_mode", "warn")
-    if failure_mode not in {"warn", "fail"}:
-        raise ValueError("runtime config field 'hooks.failure_mode' must be warn or fail")
-
-    pre_tool = _parse_command_list(hooks_payload.get("pre_tool"), field_path="hooks.pre_tool")
-    post_tool = _parse_command_list(hooks_payload.get("post_tool"), field_path="hooks.post_tool")
-    on_session_start = _parse_command_list(
-        hooks_payload.get("on_session_start"),
-        field_path="hooks.on_session_start",
-    )
-    on_session_end = _parse_command_list(
-        hooks_payload.get("on_session_end"),
-        field_path="hooks.on_session_end",
-    )
-    on_session_idle = _parse_command_list(
-        hooks_payload.get("on_session_idle"),
-        field_path="hooks.on_session_idle",
-    )
-    on_background_task_registered = _parse_command_list(
-        hooks_payload.get("on_background_task_registered"),
-        field_path="hooks.on_background_task_registered",
-    )
-    on_background_task_started = _parse_command_list(
-        hooks_payload.get("on_background_task_started"),
-        field_path="hooks.on_background_task_started",
-    )
-    on_background_task_progress = _parse_command_list(
-        hooks_payload.get("on_background_task_progress"),
-        field_path="hooks.on_background_task_progress",
-    )
-    on_background_task_completed = _parse_command_list(
-        hooks_payload.get("on_background_task_completed"),
-        field_path="hooks.on_background_task_completed",
-    )
-    on_background_task_failed = _parse_command_list(
-        hooks_payload.get("on_background_task_failed"),
-        field_path="hooks.on_background_task_failed",
-    )
-    on_background_task_cancelled = _parse_command_list(
-        hooks_payload.get("on_background_task_cancelled"),
-        field_path="hooks.on_background_task_cancelled",
-    )
-    on_background_task_interrupted = _parse_command_list(
-        hooks_payload.get("on_background_task_interrupted"),
-        field_path="hooks.on_background_task_interrupted",
-    )
-    on_background_task_notification_enqueued = _parse_command_list(
-        hooks_payload.get("on_background_task_notification_enqueued"),
-        field_path="hooks.on_background_task_notification_enqueued",
-    )
-    on_background_task_result_read = _parse_command_list(
-        hooks_payload.get("on_background_task_result_read"),
-        field_path="hooks.on_background_task_result_read",
-    )
-    on_delegated_result_available = _parse_command_list(
-        hooks_payload.get("on_delegated_result_available"),
-        field_path="hooks.on_delegated_result_available",
-    )
-    on_turn_progress = _parse_command_list(
-        hooks_payload.get("on_turn_progress"),
-        field_path="hooks.on_turn_progress",
-    )
-    on_stuck_detected = _parse_command_list(
-        hooks_payload.get("on_stuck_detected"),
-        field_path="hooks.on_stuck_detected",
-    )
-    formatter_presets: dict[str, RuntimeFormatterPresetConfig] = _parse_formatter_presets_config(
-        hooks_payload.get("formatter_presets"),
-        field_path="hooks.formatter_presets",
+    return _hooks_config_from_payload(
+        validate_config_section(HooksPayload, raw_hooks, field_path="hooks"),
     )
 
-    return RuntimeHooksConfig(
-        enabled=enabled,
-        timeout_seconds=timeout_seconds,
-        failure_mode=cast(Literal["warn", "fail"], failure_mode),
-        pre_tool=pre_tool,
-        post_tool=post_tool,
-        on_session_start=on_session_start,
-        on_session_end=on_session_end,
-        on_session_idle=on_session_idle,
-        on_background_task_registered=on_background_task_registered,
-        on_background_task_started=on_background_task_started,
-        on_background_task_progress=on_background_task_progress,
-        on_background_task_completed=on_background_task_completed,
-        on_background_task_failed=on_background_task_failed,
-        on_background_task_cancelled=on_background_task_cancelled,
-        on_background_task_interrupted=on_background_task_interrupted,
-        on_background_task_notification_enqueued=on_background_task_notification_enqueued,
-        on_background_task_result_read=on_background_task_result_read,
-        on_delegated_result_available=on_delegated_result_available,
-        on_turn_progress=on_turn_progress,
-        on_stuck_detected=on_stuck_detected,
-        formatter_presets=formatter_presets,
+
+def _formatter_config_from_payload(payload: FormatterPayload | None) -> RuntimeFormatterConfig | None:
+    if payload is None:
+        return None
+    # An absent ``languages`` key means "no preset overrides" (the hooks-level
+    # presets stay untouched); a present one merges over the built-in presets.
+    languages = (
+        _formatter_presets_from_payload(payload.languages, field_path="formatter.languages") if "languages" in payload.model_fields_set else {}
+    )
+    return RuntimeFormatterConfig(
+        enabled=payload.enabled,
+        format_on_write=payload.format_on_write,
+        languages=languages,
     )
 
 
 def _parse_formatter_config(raw_formatter: object) -> RuntimeFormatterConfig | None:
     if raw_formatter is None:
         return None
-    if not isinstance(raw_formatter, dict):
-        raise ValueError("runtime config field 'formatter' must be an object when provided")
-
-    formatter_payload = cast(dict[str, object], raw_formatter)
-    _reject_unknown_config_keys(
-        formatter_payload,
-        allowed_keys=_FORMATTER_CONFIG_KEYS,
-        field_path="formatter",
+    return _formatter_config_from_payload(
+        validate_config_section(FormatterPayload, raw_formatter, field_path="formatter"),
     )
-    enabled = _parse_optional_bool(formatter_payload.get("enabled"), field_path="formatter.enabled")
-    format_on_write = _parse_optional_bool(
-        formatter_payload.get("format_on_write"),
-        field_path="formatter.format_on_write",
-    )
-    languages = (
-        _parse_formatter_presets_config(
-            formatter_payload.get("languages"),
-            field_path="formatter.languages",
-        )
-        if "languages" in formatter_payload
-        else {}
-    )
-    return RuntimeFormatterConfig(enabled=enabled, format_on_write=format_on_write, languages=languages)
 
 
 def _apply_formatter_config(
@@ -1120,72 +765,54 @@ def _apply_formatter_config(
     )
 
 
-def _parse_formatter_presets_config(raw_value: object, *, field_path: str) -> dict[str, RuntimeFormatterPresetConfig]:
+def _formatter_presets_from_payload(
+    payload: Mapping[str, FormatterPresetPayload] | None,
+    *,
+    field_path: str,
+) -> dict[str, RuntimeFormatterPresetConfig]:
     parsed_presets = dict(RuntimeHooksConfig().formatter_presets)
-    if raw_value is None:
+    if not payload:
         return parsed_presets
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
-
-    raw_presets = cast(dict[str, object], raw_value)
-    for preset_name, raw_preset in raw_presets.items():
+    for preset_name, preset in payload.items():
         builtin_preset = parsed_presets.get(preset_name)
-        parsed_presets[preset_name] = _parse_formatter_preset_config(
-            raw_preset,
+        parsed_presets[preset_name] = _formatter_preset_from_payload(
+            preset,
             field_path=f"{field_path}.{preset_name}",
             base_preset=builtin_preset,
         )
     return parsed_presets
 
 
-def _parse_formatter_preset_config(
-    raw_value: object,
-    *,
-    field_path: str,
-    base_preset: RuntimeFormatterPresetConfig | None = None,
-) -> RuntimeFormatterPresetConfig:
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"runtime config field '{field_path}' must be an object")
-
-    preset_payload = cast(dict[str, object], raw_value)
-    _reject_unknown_config_keys(
-        preset_payload,
-        allowed_keys=_FORMATTER_PRESET_CONFIG_KEYS,
+def _parse_formatter_presets_config(raw_value: object, *, field_path: str) -> dict[str, RuntimeFormatterPresetConfig]:
+    return _formatter_presets_from_payload(
+        validate_formatter_preset_map(raw_value, field_path=field_path),
         field_path=field_path,
     )
-    raw_command = preset_payload.get("command")
-    command = (
-        _parse_string_list(raw_command, field_path=f"{field_path}.command")
-        if "command" in preset_payload
-        else (base_preset.command if base_preset is not None else ())
-    )
+
+
+def _formatter_preset_from_payload(
+    preset: FormatterPresetPayload,
+    *,
+    field_path: str,
+    base_preset: RuntimeFormatterPresetConfig | None,
+) -> RuntimeFormatterPresetConfig:
+    provided = preset.model_fields_set
+    command = preset.command if "command" in provided else (base_preset.command if base_preset is not None else ())
+    command = command or ()
     if not command:
         raise ValueError(f"runtime config field '{field_path}.command' must contain at least one string")
-    extensions = (
-        _parse_string_list(preset_payload.get("extensions"), field_path=f"{field_path}.extensions")
-        if "extensions" in preset_payload
-        else (base_preset.extensions if base_preset is not None else ())
-    )
-    root_markers = (
-        _parse_string_list(
-            preset_payload.get("root_markers"),
-            field_path=f"{field_path}.root_markers",
-        )
-        if "root_markers" in preset_payload
-        else (base_preset.root_markers if base_preset is not None else ())
-    )
+    extensions = preset.extensions if "extensions" in provided else (base_preset.extensions if base_preset is not None else ())
+    extensions = extensions or ()
+    root_markers = preset.root_markers if "root_markers" in provided else (base_preset.root_markers if base_preset is not None else ())
+    root_markers = root_markers or ()
     fallback_commands = (
-        _parse_command_list(
-            preset_payload.get("fallback_commands"),
-            field_path=f"{field_path}.fallback_commands",
-        )
-        if "fallback_commands" in preset_payload
-        else (base_preset.fallback_commands if base_preset is not None else ())
+        preset.fallback_commands if "fallback_commands" in provided else (base_preset.fallback_commands if base_preset is not None else ())
     )
-    cwd_policy = _parse_formatter_cwd_policy(
-        preset_payload.get("cwd_policy") if "cwd_policy" in preset_payload else None,
-        field_path=f"{field_path}.cwd_policy",
-        default=base_preset.cwd_policy if base_preset is not None else "nearest_root",
+    fallback_commands = fallback_commands or ()
+    cwd_policy = (
+        preset.cwd_policy
+        if "cwd_policy" in provided and preset.cwd_policy is not None
+        else (base_preset.cwd_policy if base_preset is not None else "nearest_root")
     )
     if base_preset is None and not extensions:
         raise ValueError(f"runtime config field '{field_path}.extensions' must contain at least one string for custom formatter presets")
@@ -1198,727 +825,17 @@ def _parse_formatter_preset_config(
     )
 
 
-def _parse_formatter_cwd_policy(raw_value: object, *, field_path: str, default: FormatterCwdPolicy) -> FormatterCwdPolicy:
-    if raw_value is None:
-        return default
-    if raw_value == "workspace":
-        return "workspace"
-    if raw_value == "nearest_root":
-        return "nearest_root"
-    if raw_value == "file_directory":
-        return "file_directory"
-    raise ValueError(f"runtime config field '{field_path}' must be one of: workspace, nearest_root, file_directory")
-
-
-def _parse_provider_context_diagnostic_mode(
-    value: object,
-) -> RuntimeProviderContextDiagnosticMode:
-    if value is None:
-        return "warn"
-    if value == "off":
-        return "off"
-    if value == "warn":
-        return "warn"
-    if value == "block":
-        return "block"
-    raise ValueError("runtime config field 'context_window.provider_context_diagnostics' must be one of: off, warn, block")
-
-
-def _parse_context_transform_failure_mode(
-    value: object,
-) -> RuntimeContextTransformFailureMode:
-    if value is None:
-        return "warn"
-    if value == "ignore":
-        return "ignore"
-    if value == "warn":
-        return "warn"
-    if value == "block":
-        return "block"
-    raise ValueError("runtime config field 'context_window.context_transform_failure_policy' must be one of: ignore, warn, block")
-
-
-def _parse_runtime_mcp_server_scope(value: object, *, field_path: str) -> RuntimeMcpServerScope:
-    if value is None:
-        return "runtime"
-    if value == "runtime":
-        return "runtime"
-    if value == "session":
-        return "session"
-    raise ValueError(f"runtime config field '{field_path}.scope' must be one of: runtime, session")
-
-
-def _parse_runtime_tui_theme_mode(value: object) -> RuntimeTuiThemeMode | None:
-    if value is None:
+def _tools_config_from_payload(payload: ToolsPayload | AgentToolsPayload | None) -> RuntimeToolsConfig | None:
+    if payload is None:
         return None
-    if value == "auto":
-        return "auto"
-    if value == "light":
-        return "light"
-    if value == "dark":
-        return "dark"
-    allowed = ", ".join(_VALID_TUI_THEME_MODES)
-    raise ValueError(f"runtime config field 'tui.preferences.theme.mode' must be one of: {allowed}")
-
-
-def _parse_permission_decision(value: object, *, source: str) -> PermissionDecision:
-    if value == "allow":
-        return "allow"
-    if value == "deny":
-        return "deny"
-    if value == "ask":
-        return "ask"
-    allowed = ", ".join(_VALID_APPROVAL_MODES)
-    raise ValueError(f"{source} must be one of: {allowed}")
-
-
-def _parse_execution_engine_name(value: object, *, source: str) -> ExecutionEngineName:
-    if value == "deterministic":
-        return "deterministic"
-    if value == "provider":
-        return "provider"
-    allowed = ", ".join(_VALID_EXECUTION_ENGINES)
-    raise ValueError(f"{source} must be one of: {allowed}")
-
-
-def _reject_unknown_config_keys(payload: Mapping[str, object], *, allowed_keys: frozenset[str], field_path: str) -> None:
-    unknown_keys = sorted(key for key in payload if key not in allowed_keys)
-    if not unknown_keys:
-        return
-    first_key = unknown_keys[0]
-    full_path = f"{field_path}.{first_key}" if field_path else first_key
-    raise ValueError(f"runtime config field '{full_path}' is not supported")
-
-
-def _parse_hook_timeout_seconds(raw_value: object, *, source: str) -> float | None:
-    if raw_value is None:
-        return RuntimeHooksConfig().timeout_seconds
-    if not isinstance(raw_value, int | float) or isinstance(raw_value, bool) or raw_value < 1:
-        raise ValueError(f"{source} must be a number greater than or equal to 1")
-    return float(raw_value)
-
-
-class _RuntimeToolsBuiltinValidationModel(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    enabled: bool | None = None
-
-    @field_validator("enabled", mode="before")
-    @classmethod
-    def _validate_enabled(cls, value: object) -> bool | None:
-        return _parse_optional_bool(value, field_path="tools.builtin.enabled")
-
-    def to_runtime_config(self) -> RuntimeToolsBuiltinConfig:
-        return RuntimeToolsBuiltinConfig(enabled=self.enabled)
-
-
-class _RuntimeToolsLocalValidationModel(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    enabled: bool | None = None
-    path: str = ".voidcode/tools"
-
-    @field_validator("enabled", mode="before")
-    @classmethod
-    def _validate_enabled(cls, value: object, info: ValidationInfo) -> bool | None:
-        field_path = _validation_context_field_path(info, default="tools.local")
-        return _parse_optional_bool(value, field_path=f"{field_path}.enabled")
-
-    @field_validator("path", mode="before")
-    @classmethod
-    def _validate_path(cls, value: object, info: ValidationInfo) -> str:
-        field_path = _validation_context_field_path(info, default="tools.local")
-        if value is None:
-            return ".voidcode/tools"
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"runtime config field '{field_path}.path' must be a non-empty string when provided")
-        if Path(value).is_absolute():
-            raise ValueError(f"runtime config field '{field_path}.path' must be workspace-relative")
-        if ".." in Path(value).parts:
-            raise ValueError(f"runtime config field '{field_path}.path' must not contain '..'")
-        return value.strip()
-
-    def to_runtime_config(self) -> RuntimeToolsLocalConfig:
-        return RuntimeToolsLocalConfig(enabled=self.enabled, path=self.path)
-
-
-class _RuntimeToolsValidationModel(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    builtin: _RuntimeToolsBuiltinValidationModel | None = None
-    local: _RuntimeToolsLocalValidationModel | None = None
-    allowlist: tuple[str, ...] | None = None
-    default: tuple[str, ...] | None = None
-    essential_only: bool | None = None
-
-    @field_validator("builtin", mode="before")
-    @classmethod
-    def _validate_builtin_shape(cls, value: object) -> dict[str, object] | _RuntimeToolsBuiltinValidationModel | None:
-        if value is None:
-            return None
-        if not isinstance(value, dict):
-            raise ValueError("runtime config field 'tools.builtin' must be an object when provided")
-        return cast(dict[str, object], value)
-
-    @field_validator("local", mode="before")
-    @classmethod
-    def _validate_local_shape(cls, value: object, info: ValidationInfo) -> dict[str, object] | _RuntimeToolsLocalValidationModel | None:
-        if value is None:
-            return None
-        field_path = _validation_context_field_path(info, default="tools")
-        if not isinstance(value, dict):
-            raise ValueError(f"runtime config field '{field_path}.local' must be an object when provided")
-        return _validate_runtime_config_model(
-            _RuntimeToolsLocalValidationModel,
-            cast(dict[str, object], value),
-            context={"field_path": f"{field_path}.local"},
-        )
-
-    @field_validator("allowlist", mode="before")
-    @classmethod
-    def _validate_allowlist(cls, value: object) -> tuple[str, ...] | None:
-        if value is None:
-            return None
-        return _parse_string_list(value, field_path="tools.allowlist")
-
-    @field_validator("default", mode="before")
-    @classmethod
-    def _validate_default(cls, value: object) -> tuple[str, ...] | None:
-        if value is None:
-            return None
-        return _parse_string_list(value, field_path="tools.default")
-
-    @field_validator("essential_only", mode="before")
-    @classmethod
-    def _validate_essential_only(cls, value: object) -> bool | None:
-        if value is None:
-            return None
-        return _parse_optional_bool(value, field_path="tools.essential_only")
-
-    def to_runtime_config(self) -> RuntimeToolsConfig:
-        return RuntimeToolsConfig(
-            builtin=self.builtin.to_runtime_config() if self.builtin is not None else None,
-            local=self.local.to_runtime_config() if self.local is not None else None,
-            allowlist=self.allowlist,
-            default=self.default,
-            essential_only=self.essential_only is True,
-        )
-
-
-class _RuntimeSkillsValidationModel(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    enabled: bool | None = None
-    paths: tuple[str, ...] = ()
-
-    @field_validator("enabled", mode="before")
-    @classmethod
-    def _validate_enabled(cls, value: object) -> bool | None:
-        return _parse_optional_bool(value, field_path="skills.enabled")
-
-    @field_validator("paths", mode="before")
-    @classmethod
-    def _validate_paths(cls, value: object) -> tuple[str, ...]:
-        return _parse_string_list(value, field_path="skills.paths")
-
-    def to_runtime_config(self) -> RuntimeSkillsConfig:
-        return RuntimeSkillsConfig(enabled=self.enabled, paths=self.paths)
-
-
-def _parse_optional_positive_int(value: object, *, field_path: str) -> int | None:
-    if value is None:
-        return None
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError(f"runtime config field '{field_path}' must be an integer when provided")
-    if value < 1:
-        raise ValueError(f"runtime config field '{field_path}' must be greater than or equal to 1")
-    return value
-
-
-def _parse_concurrency_limit(value: object, *, field_path: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError(f"runtime config field '{field_path}' must be an integer")
-    if value < 1:
-        raise ValueError(f"runtime config field '{field_path}' must be greater than or equal to 1")
-    return value
-
-
-def _parse_concurrency_map(value: object, *, field_path: str) -> dict[str, int]:
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
-    parsed: dict[str, int] = {}
-    for raw_key, raw_limit in cast(dict[object, object], value).items():
-        if not isinstance(raw_key, str) or not raw_key.strip():
-            raise ValueError(f"runtime config field '{field_path}' keys must be non-empty strings")
-        parsed[raw_key] = _parse_concurrency_limit(
-            raw_limit,
-            field_path=f"{field_path}.{raw_key}",
-        )
-    return parsed
-
-
-def _parse_background_task_config(raw_value: object) -> RuntimeBackgroundTaskConfig | None:
-    if raw_value is None:
-        return None
-    if not isinstance(raw_value, dict):
-        raise ValueError("runtime config field 'background_task' must be an object when provided")
-    payload = cast(dict[str, object], raw_value)
-    _reject_unknown_config_keys(
-        payload,
-        allowed_keys=_BACKGROUND_TASK_CONFIG_KEYS,
-        field_path="background_task",
+    local_config = payload.local if isinstance(payload, ToolsPayload) else None
+    return RuntimeToolsConfig(
+        builtin=None if payload.builtin is None else RuntimeToolsBuiltinConfig(enabled=payload.builtin.enabled),
+        local=(None if local_config is None else RuntimeToolsLocalConfig(enabled=local_config.enabled, path=local_config.path or ".voidcode/tools")),
+        allowlist=payload.allowlist,
+        default=payload.default,
+        essential_only=payload.essential_only is True,
     )
-    defaults = RuntimeBackgroundTaskConfig()
-    default_concurrency = RuntimeBackgroundTaskConfig().default_concurrency
-    if "default_concurrency" in payload:
-        default_concurrency = _parse_concurrency_limit(
-            payload.get("default_concurrency"),
-            field_path="background_task.default_concurrency",
-        )
-    delegated_reminders_enabled = defaults.delegated_reminders_enabled
-    if "delegated_reminders_enabled" in payload:
-        delegated_reminders_enabled = _parse_optional_bool(
-            payload.get("delegated_reminders_enabled"),
-            field_path="background_task.delegated_reminders_enabled",
-        )
-        if delegated_reminders_enabled is None:
-            delegated_reminders_enabled = defaults.delegated_reminders_enabled
-    delegated_reminder_cooldown_seconds = defaults.delegated_reminder_cooldown_seconds
-    if "delegated_reminder_cooldown_seconds" in payload:
-        delegated_reminder_cooldown_seconds = _parse_concurrency_limit(
-            payload.get("delegated_reminder_cooldown_seconds"),
-            field_path="background_task.delegated_reminder_cooldown_seconds",
-        )
-    return RuntimeBackgroundTaskConfig(
-        default_concurrency=default_concurrency,
-        provider_concurrency=_parse_concurrency_map(
-            payload.get("provider_concurrency"),
-            field_path="background_task.provider_concurrency",
-        ),
-        model_concurrency=_parse_concurrency_map(
-            payload.get("model_concurrency"),
-            field_path="background_task.model_concurrency",
-        ),
-        delegated_reminders_enabled=delegated_reminders_enabled,
-        delegated_reminder_cooldown_seconds=delegated_reminder_cooldown_seconds,
-    )
-
-
-class _RuntimeContextWindowValidationModel(BaseModel):
-    model_config = ConfigDict(extra="ignore", validate_default=True)
-    version: int = 2
-    default_tool_result_chars: int | None = 6_000
-    per_tool_result_chars: dict[str, int] = Field(default_factory=dict)
-    provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
-    provider_context_oversized_feedback_chars: int = 8_000
-    context_transform_failure_policy: RuntimeContextTransformFailureMode = "warn"
-    summary_strategy: Literal["deterministic", "model_assisted"] = "deterministic"
-
-    @field_validator("version", mode="before")
-    @classmethod
-    def _validate_version(cls, value: object) -> int:
-        if value is None:
-            return 2
-        if value != 2:
-            raise ValueError("runtime config field 'context_window.version' must be 2")
-        return 2
-
-    @field_validator("default_tool_result_chars", mode="before")
-    @classmethod
-    def _validate_default_chars(cls, value: object, info: ValidationInfo) -> int | None:
-        return _parse_optional_positive_int(value, field_path=f"context_window.{info.field_name}")
-
-    @field_validator("provider_context_diagnostics", mode="before")
-    @classmethod
-    def _validate_provider_context_diagnostics(cls, value: object) -> RuntimeProviderContextDiagnosticMode:
-        return _parse_provider_context_diagnostic_mode(value)
-
-    @field_validator("provider_context_oversized_feedback_chars", mode="before")
-    @classmethod
-    def _validate_provider_context_oversized_feedback_chars(cls, value: object) -> int:
-        if value is None:
-            return 8_000
-        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-            raise ValueError("runtime config field 'context_window.provider_context_oversized_feedback_chars' must be greater than or equal to 1")
-        return value
-
-    @field_validator("context_transform_failure_policy", mode="before")
-    @classmethod
-    def _validate_context_transform_failure_policy(cls, value: object) -> RuntimeContextTransformFailureMode:
-        return _parse_context_transform_failure_mode(value)
-
-    @field_validator("per_tool_result_chars", mode="before")
-    @classmethod
-    def _validate_per_tool_result_chars(cls, value: object) -> dict[str, int]:
-        if value is None:
-            return {}
-        if not isinstance(value, dict):
-            raise ValueError("runtime config field 'context_window.per_tool_result_chars' must be an object")
-        parsed: dict[str, int] = {}
-        for raw_key, raw_limit in cast(dict[object, object], value).items():
-            if not isinstance(raw_key, str) or not raw_key:
-                raise ValueError("runtime config field 'context_window.per_tool_result_chars' keys must be non-empty strings")
-            limit = _parse_optional_positive_int(raw_limit, field_path=f"context_window.per_tool_result_chars.{raw_key}")
-            assert limit is not None
-            parsed[raw_key] = limit
-        return parsed
-
-    def to_runtime_config(self) -> RuntimeContextWindowConfig:
-        return RuntimeContextWindowConfig(
-            default_tool_result_chars=self.default_tool_result_chars,
-            per_tool_result_chars=dict(self.per_tool_result_chars),
-            provider_context_diagnostics=self.provider_context_diagnostics,
-            provider_context_oversized_feedback_chars=self.provider_context_oversized_feedback_chars,
-            context_transform_failure_policy=self.context_transform_failure_policy,
-            summary_strategy=self.summary_strategy,
-        )
-
-
-def _validation_context_field_path(info: ValidationInfo, *, default: str) -> str:
-    context = info.context
-    if isinstance(context, dict):
-        typed_context = cast(dict[str, object], context)
-        field_path = typed_context.get("field_path")
-        if isinstance(field_path, str):
-            return field_path
-    return default
-
-
-def _merge_builtin_mcp_server_defaults(
-    server_name: str,
-    raw_server: dict[str, object],
-) -> dict[str, object]:
-    descriptor = get_builtin_mcp_descriptor(server_name)
-    if descriptor is None:
-        return dict(raw_server)
-    merged = dict(raw_server)
-    if "transport" not in merged:
-        merged["transport"] = "stdio" if "command" in merged else descriptor.transport
-    if descriptor.command and merged.get("transport") == "stdio":
-        merged.setdefault("command", list(descriptor.command))
-    if descriptor.url is not None and merged.get("transport") == "remote-http":
-        merged.setdefault("url", descriptor.url)
-    if descriptor.scope:
-        merged.setdefault("scope", descriptor.scope)
-    return merged
-
-
-class _RuntimeMcpServerValidationModel(BaseModel):
-    model_config = ConfigDict(extra="ignore", validate_default=True)
-
-    transport: McpTransport = "stdio"
-    command: tuple[str, ...] = ()
-    env: dict[str, str] = Field(default_factory=dict)
-    scope: RuntimeMcpServerScope = "runtime"
-    url: str | None = None
-
-    @field_validator("transport", mode="before")
-    @classmethod
-    def _validate_transport(cls, value: object, info: ValidationInfo) -> McpTransport:
-        if value is None:
-            return "stdio"
-        field_path = _validation_context_field_path(info, default="mcp.servers")
-        if value not in ("stdio", "remote-http"):
-            raise ValueError(f"runtime config field '{field_path}.transport' must be one of: stdio, remote-http")
-        return cast(McpTransport, value)
-
-    @field_validator("command", mode="before")
-    @classmethod
-    def _validate_command(cls, value: object, info: ValidationInfo) -> tuple[str, ...]:
-        field_path = _validation_context_field_path(info, default="mcp.servers")
-        if value is None:
-            return ()
-        if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
-            return cast(tuple[str, ...], value)
-        command = _parse_string_list(value, field_path=f"{field_path}.command")
-        return command
-
-    @field_validator("env", mode="before")
-    @classmethod
-    def _validate_env(cls, value: object, info: ValidationInfo) -> dict[str, str]:
-        field_path = _validation_context_field_path(info, default="mcp.servers")
-        if value is None:
-            return {}
-        if not isinstance(value, dict):
-            raise ValueError(f"runtime config field '{field_path}.env' must be an object")
-
-        parsed_env: dict[str, str] = {}
-        raw_env = cast(dict[object, object], value)
-        for key, item in raw_env.items():
-            if not isinstance(key, str):
-                raise ValueError(f"runtime config field '{field_path}.env' keys must be strings")
-            if not isinstance(item, str):
-                raise ValueError(f"runtime config field '{field_path}.env.{key}' must be a string")
-            parsed_env[key] = item
-        return parsed_env
-
-    @field_validator("scope", mode="before")
-    @classmethod
-    def _validate_scope(cls, value: object, info: ValidationInfo) -> RuntimeMcpServerScope:
-        field_path = _validation_context_field_path(info, default="mcp.servers")
-        return _parse_runtime_mcp_server_scope(value, field_path=field_path)
-
-    @field_validator("url", mode="before")
-    @classmethod
-    def _validate_url(cls, value: object, info: ValidationInfo) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str) or not value.strip():
-            field_path = _validation_context_field_path(info, default="mcp.servers")
-            raise ValueError(f"runtime config field '{field_path}.url' must be a non-empty string")
-        return value.strip()
-
-    def model_post_init(self, __context) -> None:
-        field_path = getattr(self, "_field_path", "unknown")
-        if self.transport == "stdio" and not self.command:
-            raise ValueError(f"MCP server '{field_path}' using stdio transport requires a command")
-        if self.transport == "remote-http" and not self.url:
-            raise ValueError(f"MCP server '{field_path}' using remote-http transport requires a url")
-
-    def to_runtime_config(self) -> RuntimeMcpServerConfig:
-        return RuntimeMcpServerConfig(
-            transport=self.transport,
-            command=self.command,
-            env=self.env,
-            scope=self.scope,
-            url=self.url,
-        )
-
-
-class _RuntimeMcpValidationModel(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    enabled: bool | None = None
-    servers: dict[str, _RuntimeMcpServerValidationModel] | None = None
-    request_timeout_seconds: float | None = None
-
-    @field_validator("enabled", mode="before")
-    @classmethod
-    def _validate_enabled(cls, value: object) -> bool | None:
-        return _parse_optional_bool(value, field_path="mcp.enabled")
-
-    @field_validator("servers", mode="before")
-    @classmethod
-    def _validate_servers(cls, value: object) -> dict[str, _RuntimeMcpServerValidationModel] | None:
-        if value is None:
-            return None
-        if not isinstance(value, dict):
-            raise ValueError("runtime config field 'mcp.servers' must be an object when provided")
-
-        parsed_servers: dict[str, _RuntimeMcpServerValidationModel] = {}
-        raw_servers = cast(dict[object, object], value)
-        for server_name, raw_server in raw_servers.items():
-            if not isinstance(server_name, str):
-                raise ValueError("runtime config field 'mcp.servers' keys must be strings")
-            if not isinstance(raw_server, dict):
-                raise ValueError(f"runtime config field 'mcp.servers.{server_name}' must be an object")
-            server_payload = _merge_builtin_mcp_server_defaults(
-                server_name,
-                cast(dict[str, object], raw_server),
-            )
-            _reject_unknown_config_keys(
-                server_payload,
-                allowed_keys=_MCP_SERVER_CONFIG_KEYS,
-                field_path=f"mcp.servers.{server_name}",
-            )
-            transport = server_payload.get("transport")
-            if transport is None:
-                transport = "stdio"
-            if transport == "stdio" and "command" not in server_payload:
-                raise ValueError(f"runtime config field 'mcp.servers.{server_name}.command' is required when transport is stdio")
-            if transport == "remote-http" and "url" not in server_payload:
-                raise ValueError(f"runtime config field 'mcp.servers.{server_name}.url' is required when transport is remote-http")
-            parsed_servers[server_name] = _validate_runtime_config_model(
-                _RuntimeMcpServerValidationModel,
-                server_payload,
-                context={"field_path": f"mcp.servers.{server_name}"},
-            )
-        return parsed_servers
-
-    @field_validator("request_timeout_seconds", mode="before")
-    @classmethod
-    def _validate_request_timeout_seconds(cls, value: object) -> float | None:
-        if value is None:
-            return None
-        if isinstance(value, bool) or not isinstance(value, int | float):
-            raise ValueError("runtime config field 'mcp.request_timeout_seconds' must be a number")
-        parsed = float(value)
-        if not math.isfinite(parsed):
-            raise ValueError("runtime config field 'mcp.request_timeout_seconds' must be a finite number")
-        if parsed <= 0:
-            raise ValueError("runtime config field 'mcp.request_timeout_seconds' must be greater than 0")
-        return parsed
-
-    def to_runtime_config(self) -> RuntimeMcpConfig:
-        return RuntimeMcpConfig(
-            enabled=self.enabled,
-            servers={server_name: server.to_runtime_config() for server_name, server in self.servers.items()} if self.servers is not None else None,
-            request_timeout_seconds=self.request_timeout_seconds,
-        )
-
-
-class _RuntimeTuiValidationModel(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    leader_key: str | None = None
-    keymap: dict[str, str] | None = None
-    preferences: _RuntimeTuiPreferencesValidationModel | None = None
-
-    @field_validator("preferences", mode="before")
-    @classmethod
-    def _validate_preferences(cls, value: object) -> object:
-        if value is None:
-            return None
-        if not isinstance(value, dict):
-            raise ValueError("runtime config field 'tui.preferences' must be an object when provided")
-        return cast(dict[str, object], value)
-
-    @field_validator("leader_key", mode="before")
-    @classmethod
-    def _validate_leader_key(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise ValueError("runtime config field 'tui.leader_key' must be a string when provided")
-        return value
-
-    @field_validator("keymap", mode="before")
-    @classmethod
-    def _validate_keymap(cls, value: object) -> dict[str, str] | None:
-        if value is None:
-            return None
-        if not isinstance(value, dict):
-            raise ValueError("runtime config field 'tui.keymap' must be an object when provided")
-
-        parsed_keymap: dict[str, str] = {}
-        raw_keymap = cast(dict[object, object], value)
-        for key, item in raw_keymap.items():
-            if not isinstance(key, str):
-                raise ValueError("runtime config field 'tui.keymap' keys must be strings")
-            if not isinstance(item, str):
-                raise ValueError("runtime config field 'tui.keymap' values must be strings")
-            if item not in _VALID_TUI_COMMANDS:
-                allowed = ", ".join(_VALID_TUI_COMMANDS)
-                raise ValueError(f"runtime config field 'tui.keymap' values must be one of: {allowed}")
-            parsed_keymap[key] = item
-
-        return parsed_keymap
-
-    def to_runtime_config(self) -> RuntimeTuiConfig:
-        return RuntimeTuiConfig(
-            leader_key=self.leader_key,
-            keymap=self.keymap,
-            preferences=(self.preferences.to_runtime_config() if self.preferences is not None else None),
-        )
-
-
-class _RuntimeTuiThemePreferencesValidationModel(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    name: str | None = None
-    mode: RuntimeTuiThemeMode | None = None
-
-    @field_validator("name", mode="before")
-    @classmethod
-    def _validate_name(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise ValueError("runtime config field 'tui.preferences.theme.name' must be a string when provided")
-        return value
-
-    @field_validator("mode", mode="before")
-    @classmethod
-    def _validate_mode(cls, value: object) -> RuntimeTuiThemeMode | None:
-        return _parse_runtime_tui_theme_mode(value)
-
-    def to_runtime_config(self) -> RuntimeTuiThemePreferences:
-        return RuntimeTuiThemePreferences(name=self.name, mode=self.mode)
-
-
-class _RuntimeTuiReadingPreferencesValidationModel(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    wrap: bool | None = None
-    sidebar_collapsed: bool | None = None
-
-    @field_validator("wrap", mode="before")
-    @classmethod
-    def _validate_wrap(cls, value: object) -> bool | None:
-        if value is None:
-            return None
-        if not isinstance(value, bool):
-            raise ValueError(
-                "runtime config field 'tui.preferences.reading.wrap' must be a boolean when provided"  # noqa: E501
-            )
-        return value
-
-    @field_validator("sidebar_collapsed", mode="before")
-    @classmethod
-    def _validate_sidebar_collapsed(cls, value: object) -> bool | None:
-        if value is None:
-            return None
-        if not isinstance(value, bool):
-            raise ValueError(
-                "runtime config field 'tui.preferences.reading.sidebar_collapsed' must be a boolean when provided"  # noqa: E501
-            )
-        return value
-
-    def to_runtime_config(self) -> RuntimeTuiReadingPreferences:
-        return RuntimeTuiReadingPreferences(
-            wrap=self.wrap,
-            sidebar_collapsed=self.sidebar_collapsed,
-        )
-
-
-class _RuntimeTuiPreferencesValidationModel(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    theme: _RuntimeTuiThemePreferencesValidationModel | None = None
-    reading: _RuntimeTuiReadingPreferencesValidationModel | None = None
-
-    @field_validator("theme", mode="before")
-    @classmethod
-    def _validate_theme(cls, value: object) -> object:
-        if value is None:
-            return None
-        if not isinstance(value, dict):
-            raise ValueError("runtime config field 'tui.preferences.theme' must be an object when provided")
-        return cast(dict[str, object], value)
-
-    @field_validator("reading", mode="before")
-    @classmethod
-    def _validate_reading(cls, value: object) -> object:
-        if value is None:
-            return None
-        if not isinstance(value, dict):
-            raise ValueError("runtime config field 'tui.preferences.reading' must be an object when provided")
-        return cast(dict[str, object], value)
-
-    def to_runtime_config(self) -> RuntimeTuiPreferences:
-        return RuntimeTuiPreferences(
-            theme=self.theme.to_runtime_config() if self.theme is not None else None,
-            reading=self.reading.to_runtime_config() if self.reading is not None else None,
-        )
-
-
-class _RuntimeConfigOutput(Protocol):
-    def to_runtime_config(self) -> object: ...
-
-
-def _validate_runtime_config_model[T: BaseModel](model_type: type[T], raw_value: dict[str, object], *, context: dict[str, object] | None = None) -> T:
-    try:
-        return model_type.model_validate(raw_value, context=context)
-    except ValidationError as exc:
-        base_field_path = None
-        if context is not None:
-            raw_base_field_path = context.get("field_path")
-            if isinstance(raw_base_field_path, str):
-                base_field_path = raw_base_field_path
-        message = _format_settings_validation_error(exc, field_path=base_field_path)
-        raise ValueError(message) from exc
 
 
 def _parse_tools_config(
@@ -1929,197 +846,124 @@ def _parse_tools_config(
 ) -> RuntimeToolsConfig | None:
     if raw_tools is None:
         return None
-    if not isinstance(raw_tools, dict):
-        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
+    model_type: type[ToolsPayload] | type[AgentToolsPayload] = ToolsPayload if allow_local else AgentToolsPayload
+    return _tools_config_from_payload(
+        validate_config_section(model_type, raw_tools, field_path=field_path),
+    )
 
-    tools_payload = cast(dict[str, object], raw_tools)
-    _reject_unknown_config_keys(
-        tools_payload,
-        allowed_keys=_TOOLS_CONFIG_KEYS,
-        field_path=field_path,
-    )
-    raw_builtin = tools_payload.get("builtin")
-    if isinstance(raw_builtin, dict):
-        _reject_unknown_config_keys(
-            cast(dict[str, object], raw_builtin),
-            allowed_keys=_TOOLS_BUILTIN_CONFIG_KEYS,
-            field_path=f"{field_path}.builtin",
-        )
-    raw_local = tools_payload.get("local")
-    if "local" in tools_payload and not allow_local:
-        raise ValueError(f"runtime config field '{field_path}.local' is not supported")
-    if isinstance(raw_local, dict):
-        _reject_unknown_config_keys(
-            cast(dict[str, object], raw_local),
-            allowed_keys=_TOOLS_LOCAL_CONFIG_KEYS,
-            field_path=f"{field_path}.local",
-        )
-    return cast(
-        RuntimeToolsConfig | None,
-        _parse_runtime_config_section(
-            tools_payload,
-            field_path=field_path,
-            model_type=_RuntimeToolsValidationModel,
-            context={"field_path": field_path},
-        ),
-    )
+
+def _skills_config_from_payload(payload: SkillsPayload | None) -> RuntimeSkillsConfig | None:
+    if payload is None:
+        return None
+    return RuntimeSkillsConfig(enabled=payload.enabled, paths=payload.paths or ())
 
 
 def _parse_skills_config(raw_skills: object) -> RuntimeSkillsConfig | None:
     if raw_skills is None:
         return None
-    if not isinstance(raw_skills, dict):
-        raise ValueError("runtime config field 'skills' must be an object when provided")
-
-    skills_payload = cast(dict[str, object], raw_skills)
-    _reject_unknown_config_keys(
-        skills_payload,
-        allowed_keys=_SKILLS_CONFIG_KEYS,
-        field_path="skills",
+    return _skills_config_from_payload(
+        validate_config_section(SkillsPayload, raw_skills, field_path="skills"),
     )
-    return cast(
-        RuntimeSkillsConfig | None,
-        _parse_runtime_config_section(
-            skills_payload,
-            field_path="skills",
-            model_type=_RuntimeSkillsValidationModel,
-        ),
+
+
+def _context_window_config_from_payload(payload: ContextWindowPayload | None) -> RuntimeContextWindowConfig | None:
+    if payload is None:
+        return None
+    return RuntimeContextWindowConfig(
+        default_tool_result_chars=payload.default_tool_result_chars,
+        per_tool_result_chars=dict(payload.per_tool_result_chars or {}),
+        provider_context_diagnostics=payload.provider_context_diagnostics or "warn",
+        provider_context_oversized_feedback_chars=payload.provider_context_oversized_feedback_chars or 8_000,
+        context_transform_failure_policy=payload.context_transform_failure_policy or "warn",
+        summary_strategy=payload.summary_strategy or "deterministic",
     )
 
 
 def _parse_context_window_config(raw_context_window: object) -> RuntimeContextWindowConfig | None:
     if raw_context_window is None:
         return None
-    if not isinstance(raw_context_window, dict):
-        raise ValueError("runtime config field 'context_window' must be an object when provided")
-
-    context_window_payload = cast(dict[str, object], raw_context_window)
-    _reject_unknown_config_keys(
-        context_window_payload,
-        allowed_keys=_CONTEXT_WINDOW_CONFIG_KEYS,
-        field_path="context_window",
+    return _context_window_config_from_payload(
+        validate_config_section(ContextWindowPayload, raw_context_window, field_path="context_window"),
     )
-    return cast(
-        RuntimeContextWindowConfig | None,
-        _parse_runtime_config_section(
-            context_window_payload,
-            field_path="context_window",
-            model_type=_RuntimeContextWindowValidationModel,
-        ),
+
+
+def _lsp_config_from_payload(payload: LspPayload | None) -> RuntimeLspConfig | None:
+    if payload is None:
+        return None
+    return RuntimeLspConfig(
+        enabled=payload.enabled,
+        servers=_lsp_servers_from_payload(payload.servers),
+        diagnostics_on_write=payload.diagnostics_on_write is True,
     )
 
 
 def _parse_lsp_config(raw_lsp: object) -> RuntimeLspConfig | None:
     if raw_lsp is None:
         return None
-    if not isinstance(raw_lsp, dict):
-        raise ValueError("runtime config field 'lsp' must be an object when provided")
-
-    lsp_payload = cast(dict[str, object], raw_lsp)
-    _reject_unknown_config_keys(lsp_payload, allowed_keys=_LSP_CONFIG_KEYS, field_path="lsp")
-    enabled = _parse_optional_bool(lsp_payload.get("enabled"), field_path="lsp.enabled")
-    servers = _parse_lsp_servers_config(lsp_payload.get("servers"), field_path="lsp.servers")
-    diagnostics_on_write = _parse_optional_bool(
-        lsp_payload.get("diagnostics_on_write"),
-        field_path="lsp.diagnostics_on_write",
-    )
-    return RuntimeLspConfig(
-        enabled=enabled,
-        servers=servers,
-        diagnostics_on_write=diagnostics_on_write if diagnostics_on_write is not None else False,
+    return _lsp_config_from_payload(
+        validate_config_section(LspPayload, raw_lsp, field_path="lsp"),
     )
 
 
-def _parse_lsp_servers_config(raw_value: object, *, field_path: str) -> dict[str, RuntimeLspServerConfig] | None:
-    if raw_value is None:
+def _lsp_servers_from_payload(
+    servers: Mapping[str, LspServerPayload] | None,
+) -> dict[str, RuntimeLspServerConfig] | None:
+    if servers is None:
         return None
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
-
-    raw_servers = cast(dict[str, object], raw_value)
-    parsed_servers: dict[str, RuntimeLspServerConfig] = {}
-    for server_name, raw_server in raw_servers.items():
-        parsed_servers[server_name] = _parse_lsp_server_config(
-            raw_server,
+    return {
+        server_name: _lsp_server_from_payload(
+            server_payload,
             server_name=server_name,
-            field_path=f"{field_path}.{server_name}",
+            field_path=f"lsp.servers.{server_name}",
         )
-    return parsed_servers
+        for server_name, server_payload in servers.items()
+    }
 
 
-def _parse_lsp_server_config(
-    raw_value: object,
+def _lsp_server_from_payload(
+    payload: LspServerPayload,
     *,
     server_name: str,
     field_path: str,
 ) -> RuntimeLspServerConfig:
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"runtime config field '{field_path}' must be an object")
-
-    server_payload = cast(dict[str, object], raw_value)
-    _reject_unknown_config_keys(
-        server_payload,
-        allowed_keys=_LSP_SERVER_CONFIG_KEYS,
-        field_path=field_path,
-    )
-    preset = server_payload.get("preset")
+    preset = payload.preset
     uses_builtin_server_name = has_builtin_lsp_server_preset(server_name)
-    if preset is not None:
-        if not isinstance(preset, str) or not preset:
-            raise ValueError(f"runtime config field '{field_path}.preset' must be a string")
-        if not has_builtin_lsp_server_preset(preset):
-            raise ValueError(f"runtime config field '{field_path}.preset' references unknown preset")
-    command = _parse_string_list(server_payload.get("command"), field_path=f"{field_path}.command")
-    if not command and preset is None and not uses_builtin_server_name:
+    if preset is not None and not has_builtin_lsp_server_preset(preset):
+        raise ValueError(f"runtime config field '{field_path}.preset' references unknown preset")
+    if not payload.command and preset is None and not uses_builtin_server_name:
         raise ValueError(f"runtime config field '{field_path}.command' must contain at least one string")
-    languages = _parse_string_list(
-        server_payload.get("languages"),
-        field_path=f"{field_path}.languages",
-    )
-    extensions = _parse_string_list(
-        server_payload.get("extensions"),
-        field_path=f"{field_path}.extensions",
-    )
-    root_markers = _parse_string_list(
-        server_payload.get("root_markers"),
-        field_path=f"{field_path}.root_markers",
-    )
-    settings = _parse_object_container(
-        server_payload.get("settings"),
-        field_path=f"{field_path}.settings",
-    )
-    init_options = _parse_object_container(
-        server_payload.get("init_options"),
-        field_path=f"{field_path}.init_options",
-    )
     return RuntimeLspServerConfig(
         preset=preset,
-        command=command,
-        languages=languages,
-        extensions=extensions,
-        root_markers=root_markers,
-        settings=settings or {},
-        init_options=init_options or {},
+        command=payload.command or (),
+        languages=payload.languages or (),
+        extensions=payload.extensions or (),
+        root_markers=payload.root_markers or (),
+        settings=dict(payload.settings or {}),
+        init_options=dict(payload.init_options or {}),
     )
 
 
-def _parse_mcp_config(raw_mcp: object) -> RuntimeMcpConfig | None:
-    if raw_mcp is None:
+def _mcp_config_from_payload(payload: McpPayload | None) -> RuntimeMcpConfig | None:
+    if payload is None:
         return None
-    if not isinstance(raw_mcp, dict):
-        raise ValueError("runtime config field 'mcp' must be an object when provided")
-    mcp_payload = cast(dict[str, object], raw_mcp)
-    _reject_unknown_config_keys(mcp_payload, allowed_keys=_MCP_CONFIG_KEYS, field_path="mcp")
-    parsed = cast(
-        RuntimeMcpConfig | None,
-        _parse_runtime_config_section(
-            mcp_payload,
-            field_path="mcp",
-            model_type=_RuntimeMcpValidationModel,
+    parsed = RuntimeMcpConfig(
+        enabled=payload.enabled,
+        servers=(
+            None
+            if payload.servers is None
+            else {
+                server_name: RuntimeMcpServerConfig(
+                    transport=server.transport or "stdio",
+                    command=server.command or (),
+                    env=dict(server.env or {}),
+                    scope=server.scope or "runtime",
+                    url=server.url,
+                )
+                for server_name, server in payload.servers.items()
+            }
         ),
+        request_timeout_seconds=payload.request_timeout_seconds,
     )
-    if parsed is None:
-        return None
     # Unset ``enabled`` (None) means enabled by default; an absent ``servers``
     # block then behaves exactly like ``mcp.enabled: true`` today: load the
     # builtin remote MCP descriptors. Only explicit ``enabled: false`` keeps
@@ -2133,83 +977,109 @@ def _parse_mcp_config(raw_mcp: object) -> RuntimeMcpConfig | None:
     return parsed
 
 
-def _parse_tui_config(raw_tui: object) -> RuntimeTuiConfig | None:
-    if raw_tui is None:
+def _parse_mcp_config(raw_mcp: object) -> RuntimeMcpConfig | None:
+    if raw_mcp is None:
         return None
-    if not isinstance(raw_tui, dict):
-        raise ValueError("runtime config field 'tui' must be an object when provided")
+    return _mcp_config_from_payload(
+        validate_config_section(McpPayload, raw_mcp, field_path="mcp"),
+    )
 
-    tui_payload = cast(dict[str, object], raw_tui)
-    _reject_unknown_config_keys(tui_payload, allowed_keys=_TUI_CONFIG_KEYS, field_path="tui")
-    return cast(
-        RuntimeTuiConfig | None,
-        _parse_runtime_config_section(
-            tui_payload,
-            field_path="tui",
-            model_type=_RuntimeTuiValidationModel,
+
+def _tui_config_from_payload(payload: TuiPayload | None) -> RuntimeTuiConfig | None:
+    if payload is None:
+        return None
+    return RuntimeTuiConfig(
+        leader_key=payload.leader_key,
+        keymap=(dict(payload.keymap) if payload.keymap is not None else None),
+        preferences=(
+            None
+            if payload.preferences is None
+            else RuntimeTuiPreferences(
+                theme=(
+                    None
+                    if payload.preferences.theme is None
+                    else RuntimeTuiThemePreferences(name=payload.preferences.theme.name, mode=payload.preferences.theme.mode)
+                ),
+                reading=(
+                    None
+                    if payload.preferences.reading is None
+                    else RuntimeTuiReadingPreferences(
+                        wrap=payload.preferences.reading.wrap,
+                        sidebar_collapsed=payload.preferences.reading.sidebar_collapsed,
+                    )
+                ),
+            )
         ),
     )
 
 
-def _parse_agent_config(
-    raw_agent: object,
-    *,
-    hooks: RuntimeHooksConfig | None = None,
-    agent_registry: AgentManifestRegistry | None = None,
-    allow_runtime_internal: bool = False,
-) -> RuntimeAgentConfig | None:
-    if raw_agent is None:
+def _parse_tui_config(raw_tui: object) -> RuntimeTuiConfig | None:
+    if raw_tui is None:
         return None
-    if not isinstance(raw_agent, dict):
-        raise ValueError("runtime config field 'agent' must be an object when provided")
-    payload = cast(dict[str, object], raw_agent)
-    allowed_keys = _AGENT_CONFIG_KEYS | ({_AGENT_RUNTIME_INTERNAL_CONFIG_KEY} if allow_runtime_internal else set())
-    _reject_unknown_config_keys(payload, allowed_keys=allowed_keys, field_path="agent")
-    if "preset" not in payload:
+    return _tui_config_from_payload(
+        validate_config_section(TuiPayload, raw_tui, field_path="tui"),
+    )
+
+
+def _background_task_config_from_payload(payload: BackgroundTaskPayload | None) -> RuntimeBackgroundTaskConfig | None:
+    if payload is None:
+        return None
+    return RuntimeBackgroundTaskConfig(
+        default_concurrency=payload.default_concurrency,
+        provider_concurrency=dict(payload.provider_concurrency or {}),
+        model_concurrency=dict(payload.model_concurrency or {}),
+        delegated_reminders_enabled=payload.delegated_reminders_enabled is not False,
+        delegated_reminder_cooldown_seconds=payload.delegated_reminder_cooldown_seconds,
+    )
+
+
+def _parse_background_task_config(raw_value: object) -> RuntimeBackgroundTaskConfig | None:
+    if raw_value is None:
+        return None
+    return _background_task_config_from_payload(
+        validate_config_section(BackgroundTaskPayload, raw_value, field_path="background_task"),
+    )
+
+
+_AGENT_ID_RE = re.compile(AGENT_PRESET_ID_PATTERN)
+
+
+def _agent_config_from_payload(
+    payload: AgentPayload | PersistedAgentPayload | None,
+    *,
+    preset_override: str | None = None,
+    agent_registry: AgentManifestRegistry | None = None,
+) -> RuntimeAgentConfig | None:
+    """Map a validated agent payload onto the runtime agent config.
+
+    Preset validity, prompt materialization and fallback resolution stay here:
+    they depend on the agent registry and on hooks, which the payload models do
+    not own.
+    """
+    if payload is None:
+        return None
+    preset = payload.preset if payload.preset is not None else preset_override
+    if preset is None:
         raise ValueError("runtime config field 'agent.preset' is required")
-    raw_internal = payload.get(_AGENT_RUNTIME_INTERNAL_CONFIG_KEY)
-    if raw_internal is None:
-        internal_payload: Mapping[str, object] = {}
-    else:
-        if not isinstance(raw_internal, dict):
-            raise ValueError("runtime config field 'agent.runtime_internal' must be an object when provided")
-        internal_payload = cast(dict[str, object], raw_internal)
-        _reject_unknown_config_keys(internal_payload, allowed_keys=_AGENT_RUNTIME_INTERNAL_CONFIG_KEYS, field_path="agent.runtime_internal")
-    raw_preset = payload.get("preset")
-    if not isinstance(raw_preset, str) or not is_valid_agent_manifest_id(raw_preset):
+    if not isinstance(preset, str) or not is_valid_agent_manifest_id(preset):
         valid_presets = _valid_agent_preset_message(agent_registry)
         raise ValueError(f"runtime config field 'agent.preset' must be one of: {valid_presets}")
-    manifest = _agent_manifest_for_preset(raw_preset, agent_registry)
-    raw_prompt_materialization = internal_payload.get("prompt_materialization")
-    prompt_materialization = _parse_agent_prompt_materialization(
-        raw_prompt_materialization,
-        field_path="agent.runtime_internal.prompt_materialization",
-    )
+    manifest = _agent_manifest_for_preset(preset, agent_registry)
+
+    internal_payload = payload.runtime_internal if isinstance(payload, PersistedAgentPayload) else None
+    prompt_materialization = None if internal_payload is None else internal_payload.prompt_materialization
     has_persisted_custom_materialization = prompt_materialization is not None and prompt_materialization.get("source") == "custom_markdown"
     if manifest is None and not has_persisted_custom_materialization:
         valid_presets = _valid_agent_preset_message(agent_registry)
         raise ValueError(f"runtime config field 'agent.preset' must be one of: {valid_presets}")
-    prompt_profile = payload.get("prompt_profile")
-    if prompt_profile is not None and (not isinstance(prompt_profile, str) or not prompt_profile.strip()):
-        raise ValueError("runtime config field 'agent.prompt_profile' must be a non-empty string")
-    prompt = payload.get("prompt")
-    if prompt is not None and (not isinstance(prompt, str) or not prompt.strip()):
-        raise ValueError("runtime config field 'agent.prompt' must be a non-empty string")
-    prompt_append = payload.get("prompt_append")
-    if prompt_append is not None and (not isinstance(prompt_append, str) or not prompt_append.strip()):
-        raise ValueError("runtime config field 'agent.prompt_append' must be a non-empty string")
-    prompt_ref = internal_payload.get("prompt_ref")
-    if prompt_ref is not None and (not isinstance(prompt_ref, str) or not prompt_ref.strip()):
-        raise ValueError("runtime config field 'agent.runtime_internal.prompt_ref' must be a non-empty string")
-    prompt_source = internal_payload.get("prompt_source")
-    if prompt_source is not None and prompt_source not in {"builtin", "custom_markdown"}:
-        raise ValueError("runtime config field 'agent.runtime_internal.prompt_source' must be one of: builtin, custom_markdown")
-    if prompt_source is not None and prompt_ref is None and raw_prompt_materialization is None:
+
+    prompt_ref = internal_payload.prompt_ref if internal_payload is not None else None
+    prompt_source = internal_payload.prompt_source if internal_payload is not None else None
+    if prompt_source is not None and prompt_ref is None and prompt_materialization is None:
         raise ValueError("runtime config field 'agent.runtime_internal.prompt_ref' is required with prompt_source")
-    normalized_prompt_ref = prompt_ref.strip() if isinstance(prompt_ref, str) else None
-    if normalized_prompt_ref is not None and not has_builtin_prompt_profile(normalized_prompt_ref):
+    if prompt_ref is not None and not has_builtin_prompt_profile(prompt_ref):
         raise ValueError("runtime config field 'agent.runtime_internal.prompt_ref' references unknown prompt profile")
-    normalized_prompt_source = "builtin" if normalized_prompt_ref is not None else None
+    normalized_prompt_source = "builtin" if prompt_ref is not None else None
     if prompt_materialization is not None:
         raw_source = prompt_materialization.get("source")
         if prompt_source is not None and prompt_source != raw_source:
@@ -2218,56 +1088,76 @@ def _parse_agent_config(
             normalized_prompt_source = "custom_markdown"
         elif raw_source == "builtin" and prompt_ref is not None:
             normalized_prompt_source = "builtin"
-    hook_refs = _parse_agent_hook_refs(payload.get("hook_refs"), hooks=hooks)
-    context_transform_refs = _parse_agent_context_transform_refs(payload.get("context_transform_refs"))
-    model = payload.get("model")
-    if model is not None and (not isinstance(model, str) or not model.strip()):
-        raise ValueError("runtime config field 'agent.model' must be a non-empty string")
-    execution_engine = _parse_execution_engine(
-        payload.get("execution_engine"),
-        source="runtime config field 'agent.execution_engine'",
-        allow_none=True,
-    )
-    provider_fallback = _parse_agent_provider_fallback_config(payload, model=model)
+
     return RuntimeAgentConfig(
-        preset=raw_preset,
-        prompt_profile=(prompt_profile.strip() if isinstance(prompt_profile, str) else normalized_prompt_ref),
-        prompt=prompt.strip() if isinstance(prompt, str) else None,
-        prompt_append=prompt_append.strip() if isinstance(prompt_append, str) else None,
+        preset=preset,
+        prompt_profile=payload.prompt_profile if payload.prompt_profile is not None else prompt_ref,
+        prompt=payload.prompt,
+        prompt_append=payload.prompt_append,
         runtime_internal=RuntimeAgentInternalState(
-            prompt_ref=normalized_prompt_ref,
+            prompt_ref=prompt_ref,
             prompt_source=cast(RuntimeAgentPromptSource, normalized_prompt_source),
-            prompt_materialization=prompt_materialization,
-            manifest_source_scope=_optional_string_from_mapping(
-                internal_payload,
-                "manifest_source_scope",
-                field_path="agent.runtime_internal.manifest_source_scope",
-            ),
-            manifest_source_path=_optional_string_from_mapping(
-                internal_payload,
-                "manifest_source_path",
-                field_path="agent.runtime_internal.manifest_source_path",
-            ),
-            manifest_tool_allowlist=_parse_string_list(
-                internal_payload.get("manifest_tool_allowlist"),
-                field_path="agent.runtime_internal.manifest_tool_allowlist",
-            ),
-            manifest_skill_refs=_parse_string_list(
-                internal_payload.get("manifest_skill_refs"),
-                field_path="agent.runtime_internal.manifest_skill_refs",
-            ),
-            manifest_hook_refs=_parse_agent_manifest_hook_refs(
-                internal_payload.get("manifest_hook_refs"),
-            ),
+            prompt_materialization=dict(prompt_materialization) if prompt_materialization is not None else None,
+            manifest_source_scope=internal_payload.manifest_source_scope if internal_payload is not None else None,
+            manifest_source_path=internal_payload.manifest_source_path if internal_payload is not None else None,
+            manifest_tool_allowlist=internal_payload.manifest_tool_allowlist if internal_payload is not None else (),
+            manifest_skill_refs=internal_payload.manifest_skill_refs if internal_payload is not None else (),
+            manifest_hook_refs=_validate_agent_manifest_hook_refs(internal_payload),
         ),
-        hook_refs=hook_refs,
-        context_transform_refs=context_transform_refs,
-        model=model.strip() if isinstance(model, str) else None,
-        execution_engine=execution_engine,
-        tools=_parse_tools_config(payload.get("tools"), field_path="agent.tools", allow_local=False),
-        skills=_parse_skills_config(payload.get("skills")),
-        mcp_binding=_parse_agent_mcp_binding(payload.get("mcp_binding"), field_path="agent.mcp_binding"),
-        provider_fallback=provider_fallback,
+        hook_refs=_validate_agent_hook_refs(payload.hook_refs or ()),
+        context_transform_refs=_validate_agent_context_transform_refs(payload.context_transform_refs or ()),
+        model=payload.model,
+        execution_engine=(payload.execution_engine if isinstance(payload, PersistedAgentPayload) else None),
+        tools=_tools_config_from_payload(payload.tools),
+        skills=_skills_config_from_payload(payload.skills),
+        mcp_binding=_agent_mcp_binding_from_payload(payload.mcp_binding),
+        provider_fallback=_parse_agent_provider_fallback_config(payload.fallback_models, model=payload.model),
+    )
+
+
+def _validate_agent_manifest_hook_refs(internal_payload: AgentRuntimeInternalPayload | None) -> tuple[str, ...]:
+    refs = internal_payload.manifest_hook_refs if internal_payload is not None else ()
+    if not refs:
+        return ()
+    return validate_hook_preset_refs(
+        refs,
+        field_path="runtime config field 'agent.manifest_hook_refs'",
+    )
+
+
+def _validate_agent_hook_refs(hook_refs: tuple[str, ...]) -> tuple[str, ...]:
+    if not hook_refs:
+        return ()
+    return validate_hook_preset_refs(hook_refs, field_path="runtime config field 'agent.hook_refs'")
+
+
+def _validate_agent_context_transform_refs(refs: tuple[str, ...]) -> tuple[str, ...]:
+    if not refs:
+        return ()
+    return validate_runtime_context_transform_refs(
+        refs,
+        field_path="runtime config field 'agent.context_transform_refs'",
+    )
+
+
+def _agent_mcp_binding_from_payload(payload: AgentMcpBindingPayload | None) -> AgentMcpBindingIntent | None:
+    if payload is None:
+        return None
+    return AgentMcpBindingIntent(profile=payload.profile, servers=payload.servers or ())
+
+
+def _parse_agent_config(
+    raw_agent: object,
+    *,
+    agent_registry: AgentManifestRegistry | None = None,
+    allow_runtime_internal: bool = False,
+) -> RuntimeAgentConfig | None:
+    if raw_agent is None:
+        return None
+    model_type: type[AgentPayload] | type[PersistedAgentPayload] = PersistedAgentPayload if allow_runtime_internal else AgentPayload
+    return _agent_config_from_payload(
+        validate_config_section(model_type, raw_agent, field_path="agent"),
+        agent_registry=agent_registry,
     )
 
 
@@ -2431,122 +1321,72 @@ def _valid_agent_preset_message(agent_registry: AgentManifestRegistry | None) ->
     return ", ".join(manifest.id for manifest in agent_registry.list_manifests())
 
 
-def _parse_agent_prompt_materialization(
-    value: object,
-    *,
-    field_path: str,
-) -> Mapping[str, object] | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
-    payload = {key: item for key, item in cast(dict[str, object], value).items() if isinstance(key, str)}
-    source = payload.get("source")
-    if source not in {"builtin", "custom_markdown"}:
-        raise ValueError(f"runtime config field '{field_path}.source' must be one of: builtin, custom_markdown")
-    if source == "custom_markdown":
-        body = payload.get("body")
-        if not isinstance(body, str) or not body.strip():
-            raise ValueError(f"runtime config field '{field_path}.body' must be a non-empty string")
-    return payload
-
-
-def _optional_string_from_mapping(
-    payload: Mapping[str, object],
-    key: str,
-    *,
-    field_path: str,
-) -> str | None:
-    value = payload.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"runtime config field '{field_path}' must be a non-empty string")
-    return value.strip()
-
-
-def _parse_agent_mcp_binding(
-    raw_binding: object,
-    *,
-    field_path: str,
-) -> AgentMcpBindingIntent | None:
-    if raw_binding is None:
-        return None
-    if not isinstance(raw_binding, dict):
-        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
-    payload = cast(dict[str, object], raw_binding)
-    _reject_unknown_config_keys(
-        payload,
-        allowed_keys=_AGENT_MCP_BINDING_CONFIG_KEYS,
-        field_path=field_path,
-    )
-    profile = payload.get("profile")
-    if profile is not None and (not isinstance(profile, str) or not profile.strip()):
-        raise ValueError(f"runtime config field '{field_path}.profile' must be a non-empty string")
-    return AgentMcpBindingIntent(
-        profile=profile.strip() if isinstance(profile, str) else None,
-        servers=_parse_string_list(payload.get("servers"), field_path=f"{field_path}.servers"),
-    )
-
-
-def _parse_agent_hook_refs(
-    raw_hook_refs: object,
-    *,
-    hooks: RuntimeHooksConfig | None,
-) -> tuple[str, ...]:
-    hook_refs = _parse_string_list(raw_hook_refs, field_path="agent.hook_refs")
-    if not hook_refs:
-        return ()
-    _ = hooks
-    return validate_hook_preset_refs(hook_refs, field_path="runtime config field 'agent.hook_refs'")
-
-
-def _parse_agent_manifest_hook_refs(raw_refs: object) -> tuple[str, ...]:
-    refs = _parse_string_list(raw_refs, field_path="agent.manifest_hook_refs")
-    if not refs:
-        return ()
-    return validate_hook_preset_refs(
-        refs,
-        field_path="runtime config field 'agent.manifest_hook_refs'",
-    )
-
-
-def _parse_agent_context_transform_refs(raw_refs: object) -> tuple[str, ...]:
-    refs = _parse_string_list(raw_refs, field_path="agent.context_transform_refs")
-    if not refs:
-        return ()
-    return validate_runtime_context_transform_refs(
-        refs,
-        field_path="runtime config field 'agent.context_transform_refs'",
-    )
-
-
 def _parse_agent_provider_fallback_config(
-    payload: Mapping[str, object],
+    fallback_models: object,
     *,
     model: object,
 ) -> RuntimeProviderFallbackConfig | None:
-    raw_fallback_models = payload.get("fallback_models")
-    if raw_fallback_models is None:
+    """Resolve an agent fallback chain through the provider boundary.
+
+    The chain arrives unvalidated on purpose: the provider parser owns item types,
+    duplicates and their messages (and reports them under
+    ``agent.fallback_models.fallback_models[i]``, the path HEAD produced).
+    """
+    if fallback_models is None:
         return None
     if not isinstance(model, str) or not model.strip():
         raise ValueError("runtime config field 'agent.model' is required when 'agent.fallback_models' is provided")
     return parse_provider_fallback_payload(
         {
             "preferred_model": model.strip(),
-            "fallback_models": raw_fallback_models,
+            "fallback_models": fallback_models,
         },
         source="runtime config field 'agent.fallback_models'",
     )
 
 
-_AGENTS_MAP_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
+def _agents_config_from_payload(
+    payload: Mapping[str, AgentPayload] | None,
+    *,
+    agent_registry: AgentManifestRegistry | None = None,
+) -> Mapping[str, RuntimeAgentConfig] | None:
+    if payload is None:
+        return None
+
+    parsed: dict[str, RuntimeAgentConfig] = {}
+    for key, entry in payload.items():
+        if not _AGENT_ID_RE.fullmatch(key):
+            raise ValueError("runtime config field 'agents' keys must match '^[a-z][a-z0-9_-]*$'")
+        is_known_key = _agent_manifest_for_preset(key, agent_registry) is not None
+        if entry.preset is None and not is_known_key:
+            valid_presets = _valid_agent_preset_message(agent_registry)
+            raise ValueError(f"runtime config field 'agents.{key}.preset' must be one of: {valid_presets}")
+
+        try:
+            parsed_entry = _agent_config_from_payload(
+                entry,
+                preset_override=key,
+                agent_registry=agent_registry,
+            )
+        except ValueError as exc:
+            # Agent diagnostics are written for the single ``agent`` block; an
+            # entry of the ``agents`` map reports the same defect under its own key.
+            message = str(exc).replace("agent.", f"agents.{key}.").replace("'agent'", f"'agents.{key}'")
+            raise ValueError(message) from exc
+
+        resolved_entry = _resolve_agent_config(
+            parsed_entry,
+            agent_registry=agent_registry,
+        )
+        if resolved_entry is None:
+            raise ValueError(f"runtime config field 'agents.{key}' must resolve to a valid agent")
+        parsed[key] = resolved_entry
+    return parsed
 
 
 def _parse_agents_config(
     raw_agents: object,
     *,
-    hooks: RuntimeHooksConfig | None = None,
     agent_registry: AgentManifestRegistry | None = None,
     allow_runtime_internal: bool = False,
 ) -> Mapping[str, RuntimeAgentConfig] | None:
@@ -2554,40 +1394,15 @@ def _parse_agents_config(
         return None
     if not isinstance(raw_agents, dict):
         raise ValueError("runtime config field 'agents' must be an object when provided")
-
-    raw_payload = cast(dict[object, object], raw_agents)
-    parsed: dict[str, RuntimeAgentConfig] = {}
-    for key, value in raw_payload.items():
-        if not isinstance(key, str) or not _AGENTS_MAP_KEY_PATTERN.fullmatch(key):
-            raise ValueError("runtime config field 'agents' keys must match '^[a-z][a-z0-9_-]*$'")
+    parsed_entries: dict[str, AgentPayload] = {}
+    for key, value in cast(dict[object, object], raw_agents).items():
+        if not isinstance(key, str):
+            raise ValueError("runtime config field 'agents' keys must be strings")
         if not isinstance(value, dict):
             raise ValueError(f"runtime config field 'agents.{key}' must be an object when provided")
-
-        entry_payload = dict(cast(dict[str, object], value))
-        is_known_key = _agent_manifest_for_preset(key, agent_registry) is not None
-        if "preset" not in entry_payload:
-            if is_known_key:
-                entry_payload["preset"] = key
-            else:
-                valid_presets = _valid_agent_preset_message(agent_registry)
-                raise ValueError(f"runtime config field 'agents.{key}.preset' must be one of: {valid_presets}")
-
-        try:
-            parsed_entry = _parse_agent_config(
-                entry_payload,
-                hooks=hooks,
-                agent_registry=agent_registry,
-                allow_runtime_internal=allow_runtime_internal,
-            )
-        except ValueError as exc:
-            message = str(exc).replace("agent.", f"agents.{key}.").replace("'agent'", f"'agents.{key}'")
-            raise ValueError(message) from exc
-
-        resolved_entry = _resolve_agent_config(parsed_entry, agent_registry=agent_registry)
-        if resolved_entry is None:
-            raise ValueError(f"runtime config field 'agents.{key}' must resolve to a valid agent")
-        parsed[key] = resolved_entry
-    return parsed
+        entry_type: type[AgentPayload] | type[PersistedAgentPayload] = PersistedAgentPayload if allow_runtime_internal else AgentPayload
+        parsed_entries[key] = validate_config_section(entry_type, value, field_path=f"agents.{key}")
+    return _agents_config_from_payload(parsed_entries, agent_registry=agent_registry)
 
 
 def serialize_runtime_agents_config(
@@ -2613,11 +1428,13 @@ def parse_runtime_agent_payload(
     agent_registry: AgentManifestRegistry | None = None,
     allow_runtime_internal: bool = False,
 ) -> RuntimeAgentConfig | None:
+    # ``hooks`` is part of this boundary's signature and stays unused: hook preset
+    # refs are validated against the hook registry, not against hook config.
+    _ = hooks
     try:
         return _resolve_agent_config(
             _parse_agent_config(
                 raw_agent,
-                hooks=hooks,
                 agent_registry=agent_registry,
                 allow_runtime_internal=allow_runtime_internal,
             ),
@@ -2681,7 +1498,7 @@ def serialize_runtime_agent_config(
                 if internal.manifest_hook_refs:
                     internal_payload["manifest_hook_refs"] = list(internal.manifest_hook_refs)
         if internal_payload:
-            payload[_AGENT_RUNTIME_INTERNAL_CONFIG_KEY] = internal_payload
+            payload[AGENT_RUNTIME_INTERNAL_CONFIG_KEY] = internal_payload
     return {key: value for key, value in payload.items() if value is not None}
 
 
@@ -2693,10 +1510,11 @@ def parse_runtime_agents_payload(
     agent_registry: AgentManifestRegistry | None = None,
     allow_runtime_internal: bool = False,
 ) -> Mapping[str, RuntimeAgentConfig] | None:
+    # ``hooks`` is part of this boundary's signature and stays unused (see above).
+    _ = hooks
     try:
         return _parse_agents_config(
             raw_agents,
-            hooks=hooks,
             agent_registry=agent_registry,
             allow_runtime_internal=allow_runtime_internal,
         )
@@ -2803,27 +1621,6 @@ def _serialize_runtime_agent_tools_config(
         return None
     payload.pop("local", None)
     return payload
-
-
-def _parse_runtime_config_section[TModel: BaseModel](
-    raw_value: object,
-    *,
-    field_path: str,
-    model_type: type[TModel],
-    context: dict[str, object] | None = None,
-) -> object | None:
-    if raw_value is None:
-        return None
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
-
-    validation_context: dict[str, object] = {"field_path": field_path} if context is None else context
-    validated_model = _validate_runtime_config_model(
-        model_type,
-        cast(dict[str, object], raw_value),
-        context=validation_context,
-    )
-    return cast(_RuntimeConfigOutput, validated_model).to_runtime_config()
 
 
 def _resolve_tui_config(global_tui: RuntimeTuiConfig | None, workspace_tui: RuntimeTuiConfig | None) -> RuntimeTuiConfig:
@@ -3121,76 +1918,12 @@ def _parse_providers_config(
     )
 
 
-def _parse_optional_bool(raw_value: object, *, field_path: str) -> bool | None:
-    if raw_value is None:
-        return None
-    if not isinstance(raw_value, bool):
-        raise ValueError(f"runtime config field '{field_path}' must be a boolean when provided")
-    return raw_value
-
-
-def _parse_object_container(raw_value: object, *, field_path: str) -> dict[str, object] | None:
-    if raw_value is None:
-        return None
-    if not isinstance(raw_value, dict):
-        raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
-    return cast(dict[str, object], raw_value)
-
-
-def _format_runtime_config_field_error(field_path: str) -> str:
-    runtime_field_prefix = "runtime config field '"
-    if field_path.startswith(runtime_field_prefix):
-        if field_path.endswith("'"):
-            return field_path
-        if "'[" in field_path:
-            base, suffix = field_path[len(runtime_field_prefix) :].split("'[", maxsplit=1)
-            return f"{runtime_field_prefix}{base}[{suffix}'"
-    return f"runtime config field '{field_path}'"
-
-
-def _parse_string_list(raw_value: object, *, field_path: str) -> tuple[str, ...]:
-    if raw_value is None:
-        return ()
-    if not isinstance(raw_value, list):
-        raise ValueError(f"{_format_runtime_config_field_error(field_path)} must be an array when provided")
-
-    raw_items = cast(list[object], raw_value)
-    parsed_items: list[str] = []
-    for index, item in enumerate(raw_items):
-        if not isinstance(item, str):
-            raise ValueError(f"{_format_runtime_config_field_error(f'{field_path}[{index}]')} must be a string")
-        parsed_items.append(item)
-    return tuple(parsed_items)
-
-
-def _parse_command_list(raw_value: object, *, field_path: str) -> tuple[tuple[str, ...], ...]:
-    if raw_value is None:
-        return ()
-    if not isinstance(raw_value, list):
-        raise ValueError(f"runtime config field '{field_path}' must be an array when provided")
-
-    raw_commands = cast(list[object], raw_value)
-    parsed_commands: list[tuple[str, ...]] = []
-    for command_index, raw_command in enumerate(raw_commands):
-        if not isinstance(raw_command, list):
-            raise ValueError(f"runtime config field '{field_path}[{command_index}]' must be an array")
-        command_field_path = f"{field_path}[{command_index}]"
-        parsed_command = _parse_string_list(
-            cast(list[object], raw_command),
-            field_path=command_field_path,
-        )
-        if not parsed_command:
-            raise ValueError(f"runtime config field '{command_field_path}' must contain at least one string")
-        parsed_commands.append(parsed_command)
-    return tuple(parsed_commands)
-
-
 def _load_environment_runtime_config(env: Mapping[str, str] | None) -> RuntimeConfigOverrides:
     try:
         with _temporary_runtime_environment(env):
-            settings = _EnvironmentRuntimeSettings()
+            settings = EnvironmentRuntimeSettings()
     except ValidationError as exc:
-        raise ValueError(_format_settings_validation_error(exc)) from exc
+        raise ValueError(format_environment_validation_error(exc)) from exc
 
     return RuntimeConfigOverrides(
         approval_mode=settings.approval_mode,
@@ -3207,10 +1940,10 @@ def _temporary_runtime_environment(env: Mapping[str, str] | None):
         yield
         return
 
-    with _ENV_SETTINGS_LOCK:
-        previous_values = {name: os.environ.get(name) for name in _TOP_LEVEL_ENV_VARS}
+    with ENV_SETTINGS_LOCK:
+        previous_values = {name: os.environ.get(name) for name in TOP_LEVEL_ENV_VARS}
         try:
-            for name in _TOP_LEVEL_ENV_VARS:
+            for name in TOP_LEVEL_ENV_VARS:
                 if name in env:
                     os.environ[name] = env[name]
                 else:
@@ -3224,31 +1957,6 @@ def _temporary_runtime_environment(env: Mapping[str, str] | None):
                     os.environ[name] = previous_value
 
 
-def _format_settings_validation_error(
-    exc: ValidationError,
-    *,
-    field_path: str | None = None,
-) -> str:
-    messages: list[str] = []
-    for error in exc.errors():
-        if error.get("type") == "extra_forbidden":
-            loc = error.get("loc")
-            loc_parts = tuple(str(part) for part in loc)
-            base_path = field_path or ""
-            full_path = ".".join(part for part in (base_path, *loc_parts) if part)
-            if full_path:
-                messages.append(f"runtime config field '{full_path}' is not supported")
-                continue
-        context = error.get("ctx")
-        if isinstance(context, dict):
-            original_error = context.get("error")
-            if isinstance(original_error, ValueError):
-                messages.append(str(original_error))
-                continue
-        messages.append(error["msg"])
-    return "; ".join(messages)
-
-
 def _resolve_approval_mode(
     *,
     explicit: PermissionDecision | None,
@@ -3259,7 +1967,7 @@ def _resolve_approval_mode(
         return explicit
     if repo_local is not None:
         return repo_local
-    parsed_environment = _parse_approval_mode(
+    parsed_environment = parse_approval_mode(
         environment,
         source=f"environment variable {APPROVAL_MODE_ENV_VAR}",
         allow_none=True,
@@ -3296,52 +2004,6 @@ def _resolve_execution_engine(
     return DEFAULT_EXECUTION_ENGINE
 
 
-def _parse_approval_mode(
-    raw_value: object,
-    *,
-    source: str,
-    allow_none: bool,
-) -> PermissionDecision | None:
-    if raw_value is None and allow_none:
-        return None
-    return _parse_permission_decision(raw_value, source=source)
-
-
-def _parse_execution_engine(
-    raw_value: object,
-    *,
-    source: str,
-    allow_none: bool,
-) -> ExecutionEngineName | None:
-    if raw_value is None and allow_none:
-        return None
-    return _parse_execution_engine_name(raw_value, source=source)
-
-
-def _parse_tool_timeout_seconds(raw_value: object, *, source: str, allow_none: bool) -> int | None:
-    if raw_value is None and allow_none:
-        return None
-    if not isinstance(raw_value, int) or isinstance(raw_value, bool) or raw_value < 1:
-        raise ValueError(f"{source} must be an integer greater than or equal to 1")
-    return raw_value
-
-
-def _parse_environment_tool_timeout_seconds(raw_value: object) -> int | None:
-    if raw_value is None:
-        return None
-    parsed_value = raw_value
-    if isinstance(raw_value, str):
-        try:
-            parsed_value = int(raw_value)
-        except ValueError as exc:
-            raise ValueError(f"environment variable {TOOL_TIMEOUT_ENV_VAR} must be an integer greater than or equal to 1") from exc
-    return _parse_tool_timeout_seconds(
-        parsed_value,
-        source=f"environment variable {TOOL_TIMEOUT_ENV_VAR}",
-        allow_none=True,
-    )
-
-
 def _resolve_tool_timeout_seconds(
     *,
     explicit: int | None,
@@ -3350,7 +2012,7 @@ def _resolve_tool_timeout_seconds(
     environment: int | None,
 ) -> int | None:
     if explicit is not None:
-        return _parse_tool_timeout_seconds(
+        return parse_tool_timeout_seconds(
             explicit,
             source="explicit runtime config override 'tool_timeout_seconds'",
             allow_none=True,
@@ -3369,7 +2031,7 @@ def _resolve_reasoning_effort(
     environment: str | None,
 ) -> str | None:
     if explicit is not None:
-        return _parse_reasoning_effort(
+        return parse_reasoning_effort(
             explicit,
             allow_none=True,
         )
@@ -3378,13 +2040,3 @@ def _resolve_reasoning_effort(
     if environment is not None:
         return environment
     return None
-
-
-def _parse_reasoning_effort(
-    raw_value: object,
-    *,
-    allow_none: bool,
-) -> str | None:
-    if raw_value is None and allow_none:
-        return None
-    return normalize_reasoning_effort(raw_value)

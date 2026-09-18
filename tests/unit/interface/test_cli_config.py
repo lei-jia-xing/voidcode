@@ -257,7 +257,12 @@ def test_config_schema_emits_json_schema(tmp_path: Path) -> None:
     assert isinstance(payload["$id"], str)
     assert payload["$id"].endswith(".json")
     assert {"model", "approval_mode", "agents", "mcp", "providers"} <= payload["properties"].keys()
-    assert payload["properties"]["approval_mode"]["enum"] == ["allow", "deny", "ask"]
+    # The shipped schema is generated from the payload models: an optional value
+    # publishes its enum inside the non-null branch of the null union.
+    assert payload["properties"]["approval_mode"]["anyOf"] == [
+        {"type": "string", "enum": ["allow", "deny", "ask"]},
+        {"type": "null"},
+    ]
 
 
 def test_config_init_print_emits_starter_config_without_writing(tmp_path: Path) -> None:

@@ -95,6 +95,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 - **frontend:** move server data (providers, agents, skills, sessions, status, review, workspaces, tasks, notifications, settings) into the TanStack Query cache under workspace-scoped keys, leaving the store to hold client state and the streamed-run projection; a real `AbortSignal` replaces the request-id guards, a failed workspace switch can no longer mix workspaces, browser-measured `/api/*` requests dropped 48 → 31 with every payload fetched once, and the store shrank 2086 → 1311 lines
 
+- **runtime:** define the configuration boundary once, in `runtime/config_models.py`, and generate the shipped schema from it: the loader's accepted/rejected behaviour is byte-identical to before (a 114-case HEAD-vs-now probe with 0 mismatches, and a 2092-row model-driven corpus that fails in BOTH directions — artifact stricter and artifact looser — with the remaining loader-only rules declared individually and their reasons), so what changes is the published JSON Schema artifact (12 new `$defs`, nullability widened to match the loader, corrected enums, expressible constraints now expressed) — breaking for a consumer of the old artifact; the parity corpus replaced per-row temporary workspaces and schema compilation with one reused workspace and one compiled validator, cutting the sweep from 441 s to 5.9 s (unit loop 461 s → 53 s, `mise run check` 462 s → 70 s), and the user-config surface carries no artifact, which is documented as a decision with its compensating tests
+
 
 
 ### CI

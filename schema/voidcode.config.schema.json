@@ -7,436 +7,250 @@
   "additionalProperties": false,
   "properties": {
     "$schema": {
-      "type": "string",
-      "description": "JSON Schema reference for editor support."
+      "description": "JSON Schema reference for editor support.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "approval_mode": {
-      "type": "string",
-      "enum": [
-        "allow",
-        "deny",
-        "ask"
-      ],
-      "description": "Default approval policy for tool execution."
-    },
-    "permission": {
-      "$ref": "#/$defs/permissionConfig"
-    },
-    "policy": {
-      "$ref": "#/$defs/runtimePolicyConfig"
-    },
-    "model": {
-      "type": "string",
-      "minLength": 1,
-      "description": "Provider/model identifier in `provider/model` form."
-    },
-    "execution_engine": {
-      "type": "string",
-      "enum": [
-        "deterministic",
-        "provider"
-      ],
-      "description": "Execution engine used when no request or environment override is set."
-    },
-    "fallback_models": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      },
-      "description": "Ordered fallback models tried after the primary model."
-    },
-    "tool_timeout_seconds": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "Timeout applied to each tool execution."
-    },
-    "reasoning_effort": {
-      "type": "string",
-      "enum": [
-        "off",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ],
-      "description": "Optional runtime-owned reasoning-effort hint forwarded to the active provider when supported (for example, 'low', 'medium', 'high'). Runtime rejects this hint when the resolved model explicitly does not support reasoning effort."
-    },
-    "hooks": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Runtime-managed lifecycle hooks (pre/post tool, session, background).",
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "timeout_seconds": {
-          "type": "number",
-          "minimum": 1
-        },
-        "failure_mode": {
-          "type": "string",
+      "description": "Default approval policy for tool execution.",
+      "anyOf": [
+        {
           "enum": [
-            "warn",
-            "fail"
-          ]
-        },
-        "pre_tool": {
-          "$ref": "#/$defs/commandList"
-        },
-        "post_tool": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_session_start": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_session_end": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_session_idle": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_background_task_registered": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_background_task_started": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_background_task_progress": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_background_task_completed": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_background_task_failed": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_background_task_cancelled": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_background_task_interrupted": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_background_task_notification_enqueued": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_background_task_result_read": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_delegated_result_available": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_turn_progress": {
-          "$ref": "#/$defs/commandList"
-        },
-        "on_stuck_detected": {
-          "$ref": "#/$defs/commandList"
-        },
-        "formatter_presets": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/formatterPresetConfig"
-          }
-        }
-      }
-    },
-    "formatter": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Formatting behavior exposed as a top-level user-facing capability.",
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "format_on_write": {
-          "type": "boolean",
-          "description": "Opt-in auto-format after edit/write. Off by default. 'enabled' is kept as the existing alias and maps onto the same format-on-write switch (it no longer disables all hooks)."
-        },
-        "languages": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/formatterPresetConfig"
-          }
-        }
-      }
-    },
-    "tools": {
-      "$ref": "#/$defs/runtimeToolsConfig"
-    },
-    "skills": {
-      "$ref": "#/$defs/skillsConfig"
-    },
-    "context_window": {
-      "$ref": "#/$defs/contextWindowConfig"
-    },
-    "lsp": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "default": true
-        },
-        "diagnostics_on_write": {
-          "type": "boolean",
-          "description": "Opt-in automatic LSP diagnostics after edit/write. Off by default. Does not gate the explicit 'lsp' tool."
-        },
-        "servers": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/lspServerConfig"
-          }
-        }
-      }
-    },
-    "mcp": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "default": true
-        },
-        "request_timeout_seconds": {
-          "type": "number",
-          "exclusiveMinimum": 0
-        },
-        "servers": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "transport": {
-                "type": "string",
-                "enum": [
-                  "stdio",
-                  "remote-http"
-                ]
-              },
-              "command": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "minItems": 1
-              },
-              "url": {
-                "type": "string",
-                "format": "uri",
-                "minLength": 1,
-                "description": "Remote HTTP MCP endpoint URL. Required when transport is remote-http."
-              },
-              "env": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "string"
-                }
-              },
-              "scope": {
-                "type": "string",
-                "enum": [
-                  "runtime",
-                  "session"
-                ],
-                "description": "Runtime-scoped servers are shared by the runtime; session-scoped servers are isolated per session."
-              }
-            },
-            "allOf": [
-              {
-                "if": {
-                  "properties": {
-                    "transport": {
-                      "const": "remote-http"
-                    }
-                  },
-                  "required": [
-                    "transport"
-                  ]
-                },
-                "then": {
-                  "required": [
-                    "url"
-                  ]
-                },
-                "else": {
-                  "required": [
-                    "command"
-                  ]
-                }
-              }
-            ]
-          }
-        }
-      }
-    },
-    "tui": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "leader_key": {
+            "allow",
+            "deny",
+            "ask"
+          ],
           "type": "string"
         },
-        "keymap": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string",
-            "enum": [
-              "command_palette",
-              "session_new",
-              "session_resume"
-            ]
-          }
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "permission": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/permissionConfig"
         },
-        "preferences": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "theme": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "name": {
-                  "type": "string"
-                },
-                "mode": {
-                  "type": "string",
-                  "enum": [
-                    "auto",
-                    "light",
-                    "dark"
-                  ]
-                }
-              }
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/runtimePolicyConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "model": {
+      "description": "Provider/model identifier in `provider/model` form.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "execution_engine": {
+      "description": "Execution engine used when no request or environment override is set.",
+      "anyOf": [
+        {
+          "enum": [
+            "deterministic",
+            "provider"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fallback_models": {
+      "description": "Ordered fallback models tried after the primary model.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "tool_timeout_seconds": {
+      "description": "Timeout applied to each tool execution.",
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "reasoning_effort": {
+      "description": "Optional runtime-owned reasoning-effort hint forwarded to the active provider when supported (for example, 'low', 'medium', 'high'). Runtime rejects this hint when the resolved model explicitly does not support reasoning effort.",
+      "anyOf": [
+        {
+          "enum": [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "hooks": {
+      "description": "Runtime-managed lifecycle hooks (pre/post tool, session, background).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/hooksConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "formatter": {
+      "description": "Formatting behavior exposed as a top-level user-facing capability.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/formatterConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tools": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/runtimeToolsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "skills": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/skillsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "context_window": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/contextWindowConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lsp": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/lspConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "mcp": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/mcpConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tui": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/tuiConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "providers": {
+      "description": "Provider-level configuration. Credential fields are sensitive; prefer environment variables for secrets.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/providersConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "background_task": {
+      "description": "Background task queue and concurrency limits.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/backgroundTaskConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agent": {
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/agentConfig"
             },
-            "reading": {
-              "type": "object",
-              "additionalProperties": false,
+            {
+              "required": [
+                "preset"
+              ]
+            },
+            {
               "properties": {
-                "wrap": {
-                  "type": "boolean"
-                },
-                "sidebar_collapsed": {
-                  "type": "boolean"
+                "preset": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_-]*$"
                 }
               }
             }
-          }
+          ]
+        },
+        {
+          "type": "null"
         }
-      }
-    },
-    "providers": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Provider-level configuration. Credential fields are sensitive; prefer environment variables for secrets.",
-      "properties": {
-        "openai": {
-          "$ref": "#/$defs/openaiProviderConfig"
-        },
-        "anthropic": {
-          "$ref": "#/$defs/anthropicProviderConfig"
-        },
-        "google": {
-          "$ref": "#/$defs/googleProviderConfig"
-        },
-        "copilot": {
-          "$ref": "#/$defs/copilotProviderConfig"
-        },
-        "endpoint": {
-          "$ref": "#/$defs/endpointProviderConfig"
-        },
-        "opencode": {
-          "$ref": "#/$defs/endpointProviderConfig"
-        },
-        "openrouter": {
-          "$ref": "#/$defs/endpointProviderConfig"
-        },
-        "deepseek": {
-          "$ref": "#/$defs/openAICompatibleProviderConfig"
-        },
-        "zai": {
-          "$ref": "#/$defs/openAICompatibleProviderConfig"
-        },
-        "zhipuai": {
-          "$ref": "#/$defs/openAICompatibleProviderConfig"
-        },
-        "grok": {
-          "$ref": "#/$defs/openAICompatibleProviderConfig"
-        },
-        "minimax": {
-          "$ref": "#/$defs/openAICompatibleProviderConfig"
-        },
-        "kimi": {
-          "$ref": "#/$defs/openAICompatibleProviderConfig"
-        },
-        "opencode-go": {
-          "$ref": "#/$defs/openAICompatibleProviderConfig"
-        },
-        "qwen": {
-          "$ref": "#/$defs/openAICompatibleProviderConfig"
-        },
-        "groq": {
-          "$ref": "#/$defs/openAICompatibleProviderConfig"
-        },
-        "together": {
-          "$ref": "#/$defs/openAICompatibleProviderConfig"
-        },
-        "fireworks": {
-          "$ref": "#/$defs/openAICompatibleProviderConfig"
-        },
-        "mistral": {
-          "$ref": "#/$defs/openAICompatibleProviderConfig"
-        },
-        "custom": {
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/endpointProviderConfig"
-          },
-          "propertyNames": {
-            "pattern": "^(?!(?:openai|anthropic|google|copilot|endpoint|opencode|openrouter|deepseek|zai|zhipuai|grok|minimax|kimi|opencode-go|qwen|groq|together|fireworks|mistral)$)(?!.*[/]).+$"
-          }
-        }
-      }
-    },
-    "background_task": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Background task queue and concurrency limits.",
-      "properties": {
-        "delegated_reminders_enabled": {
-          "type": "boolean"
-        },
-        "delegated_reminder_cooldown_seconds": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "default_concurrency": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "provider_concurrency": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "integer",
-            "minimum": 1
-          }
-        },
-        "model_concurrency": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "integer",
-            "minimum": 1
-          }
-        }
-      }
-    },
-    "agent": {
-      "$ref": "#/$defs/agentConfig"
+      ]
     },
     "agents": {
-      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/customAgentConfig"
+      },
+      "type": [
+        "object",
+        "null"
+      ],
       "properties": {
         "leader": {
           "$ref": "#/$defs/agentConfig"
@@ -456,751 +270,946 @@
         "product": {
           "$ref": "#/$defs/agentConfig"
         }
-      },
-      "additionalProperties": {
-        "$ref": "#/$defs/customAgentConfig"
-      },
-      "propertyNames": {
-        "pattern": "^[a-z][a-z0-9_-]*$"
       }
     }
   },
   "$defs": {
-    "commandList": {
-      "type": "array",
-      "description": "Array of commands; each command is a non-empty argv array of strings. Commands are executed directly without an implicit shell.",
-      "items": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        },
-        "minItems": 1
-      }
-    },
-    "formatterPresetConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "command": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1
-        },
-        "extensions": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1
-        },
-        "root_markers": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "fallback_commands": {
-          "$ref": "#/$defs/commandList"
-        },
-        "cwd_policy": {
-          "type": "string",
-          "enum": [
-            "workspace",
-            "nearest_root",
-            "file_directory"
-          ]
-        }
-      }
-    },
-    "runtimeToolsConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "builtin": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            }
-          }
-        },
-        "local": {
-          "$ref": "#/$defs/localToolsConfig"
-        },
-        "allowlist": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "default": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "essential_only": {
-          "type": "boolean",
-          "description": "Essential/discoverable tool split: when true, only the essential tool set (plus allowlist-required tools) is sent top-level to the provider; the rest stay registered and reachable on demand."
-        }
-      }
-    },
-    "agentToolsConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "builtin": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            }
-          }
-        },
-        "allowlist": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "default": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      }
-    },
-    "contextWindowConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "version": {
-          "type": "integer",
-          "const": 2
-        },
-        "default_tool_result_chars": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "per_tool_result_chars": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "integer",
-            "minimum": 1
-          }
-        },
-        "provider_context_diagnostics": {
-          "type": "string",
-          "enum": [
-            "off",
-            "warn",
-            "block"
-          ],
-          "description": "Runtime policy for provider-context diagnostics before provider execution. 'warn' emits bounded metadata, 'block' fails selected high-severity diagnostics before the provider call, and 'off' keeps diagnostics debug-only."
-        },
-        "provider_context_oversized_feedback_chars": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Character threshold for oversized retained tool feedback diagnostics."
-        },
-        "context_transform_failure_policy": {
-          "type": "string",
-          "enum": [
-            "ignore",
-            "warn",
-            "block"
-          ],
-          "description": "Policy for failed context transform providers. 'ignore' keeps failures as debug metadata only, 'warn' surfaces warning diagnostics without blocking provider execution, and 'block' turns transform failures into blocking provider-context diagnostics."
-        },
-        "summary_strategy": {
-          "type": "string",
-          "enum": [
-            "deterministic",
-            "model_assisted"
-          ]
-        }
-      }
-    },
-    "lspServerConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "preset": {
-          "type": "string",
-          "minLength": 1
-        },
-        "command": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "languages": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "extensions": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "root_markers": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "settings": {
-          "type": "object"
-        },
-        "init_options": {
-          "type": "object"
-        }
-      }
-    },
-    "skillsConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "paths": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      }
-    },
-    "localToolsConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Opt-in workspace-local custom tool manifest discovery. Runtime executes discovered command tools through the normal registry, allowlist, and permission path.",
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "path": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Workspace-relative directory containing *.json tool manifests."
-        }
-      }
-    },
-    "providerTransientRetryConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "max_retries": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "base_delay_ms": {
-          "type": "number",
-          "minimum": 0
-        },
-        "max_delay_ms": {
-          "type": "number",
-          "minimum": 0
-        },
-        "jitter": {
-          "type": "boolean"
-        }
-      }
-    },
-    "openaiProviderConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "api_key": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "base_url": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "discovery_base_url": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "organization": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "project": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "timeout_seconds": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "exclusiveMinimum": 0
-        },
-        "transient_retry": {
-          "$ref": "#/$defs/providerTransientRetryConfig"
-        }
-      }
-    },
-    "anthropicProviderConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "api_key": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "base_url": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "discovery_base_url": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "version": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "beta_headers": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "cache_retention": {
-          "type": "string",
-          "enum": [
-            "none",
-            "short",
-            "long"
-          ]
-        },
-        "timeout_seconds": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "exclusiveMinimum": 0
-        },
-        "transient_retry": {
-          "$ref": "#/$defs/providerTransientRetryConfig"
-        }
-      }
-    },
-    "googleProviderAuthConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "method"
-      ],
-      "properties": {
-        "method": {
-          "type": "string",
-          "enum": [
-            "api_key",
-            "oauth",
-            "service_account"
-          ]
-        },
-        "api_key": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "access_token": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "service_account_json_path": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        }
-      }
-    },
-    "googleProviderConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "auth": {
-          "$ref": "#/$defs/googleProviderAuthConfig"
-        },
-        "base_url": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "discovery_base_url": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "project": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "region": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "timeout_seconds": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "exclusiveMinimum": 0
-        },
-        "transient_retry": {
-          "$ref": "#/$defs/providerTransientRetryConfig"
-        }
-      }
-    },
-    "copilotProviderAuthConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "method"
-      ],
-      "properties": {
-        "method": {
-          "type": "string",
-          "enum": [
-            "token",
-            "oauth"
-          ]
-        },
-        "token": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "token_env_var": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "refresh_token": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "refresh_leeway_seconds": {
-          "type": "integer",
-          "minimum": 1
-        }
-      }
-    },
-    "copilotProviderConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "auth": {
-          "$ref": "#/$defs/copilotProviderAuthConfig"
-        },
-        "base_url": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "timeout_seconds": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "exclusiveMinimum": 0
-        },
-        "transient_retry": {
-          "$ref": "#/$defs/providerTransientRetryConfig"
-        }
-      }
-    },
-    "endpointProviderConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "api_key": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "api_key_env_var": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "base_url": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "discovery_base_url": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "auth_header": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "auth_scheme": {
-          "type": "string",
-          "enum": [
-            "bearer",
-            "token",
-            "none"
-          ]
-        },
-        "ssl_verify": {
-          "type": "boolean"
-        },
-        "timeout_seconds": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "exclusiveMinimum": 0
-        },
-        "model_map": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "propertyNames": {
-            "pattern": ".+"
-          },
-          "additionalProperties": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "transient_retry": {
-          "$ref": "#/$defs/providerTransientRetryConfig"
-        }
-      }
-    },
-    "openAICompatibleProviderConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "api_key": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "api_key_env_var": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "base_url": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "discovery_base_url": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "ssl_verify": {
-          "type": "boolean"
-        },
-        "timeout_seconds": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "exclusiveMinimum": 0
-        },
-        "model_map": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "propertyNames": {
-            "pattern": ".+"
-          },
-          "additionalProperties": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "transient_retry": {
-          "$ref": "#/$defs/providerTransientRetryConfig"
-        }
-      }
-    },
-    "agentConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "preset": {
-          "type": "string",
-          "pattern": "^[a-z][a-z0-9_-]*$"
-        },
-        "prompt_profile": {
-          "type": "string",
-          "minLength": 1
-        },
-        "prompt": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Explicit prompt/profile text for this agent config entry."
-        },
-        "prompt_append": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Additional local guidance appended to the resolved base prompt."
-        },
-        "hook_refs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "context_transform_refs": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          },
-          "uniqueItems": true
-        },
-        "model": {
-          "type": "string",
-          "minLength": 1
-        },
-        "tools": {
-          "$ref": "#/$defs/agentToolsConfig"
-        },
-        "skills": {
-          "$ref": "#/$defs/skillsConfig"
-        },
-        "mcp_binding": {
-          "$ref": "#/$defs/agentMcpBindingConfig"
-        },
-        "fallback_models": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          },
-          "description": "Agent-scoped fallback model chain; requires agent.model."
-        }
-      }
-    },
     "agentMcpBindingConfig": {
-      "type": "object",
       "additionalProperties": false,
       "description": "Declarative MCP profile/server binding intent for this agent. Runtime MCP config, lifecycle, approval, and tool allowlists remain authoritative.",
       "properties": {
         "profile": {
-          "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "servers": {
-          "type": "array",
           "items": {
-            "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "type": "string"
           },
-          "uniqueItems": true
+          "type": [
+            "array",
+            "null"
+          ]
         }
-      }
+      },
+      "type": "object"
+    },
+    "agentConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt_profile": {
+          "description": "Prompt/profile selection for this agent entry.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt": {
+          "description": "Explicit prompt/profile text for this agent config entry.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt_append": {
+          "description": "Additional local guidance appended to the resolved base prompt.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hook_refs": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "context_transform_refs": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "model": {
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tools": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/agentToolsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "skills": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/skillsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mcp_binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/agentMcpBindingConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fallback_models": {
+          "description": "Agent-scoped fallback model chain; requires agent.model.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "fallback_models": {
+                "type": "array"
+              }
+            },
+            "required": [
+              "fallback_models"
+            ]
+          },
+          "then": {
+            "required": [
+              "model"
+            ]
+          }
+        }
+      ]
+    },
+    "agentToolsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "builtin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/toolsBuiltinConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "allowlist": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "default": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "essential_only": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "backgroundTaskConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "default_concurrency": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "provider_concurrency": {
+          "additionalProperties": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "model_concurrency": {
+          "additionalProperties": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "delegated_reminders_enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "delegated_reminder_cooldown_seconds": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "contextWindowConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "anyOf": [
+            {
+              "const": 2,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "default_tool_result_chars": {
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "per_tool_result_chars": {
+          "additionalProperties": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "provider_context_diagnostics": {
+          "description": "Runtime policy for provider-context diagnostics before provider execution. 'warn' emits bounded metadata, 'block' fails selected high-severity diagnostics before the provider call, and 'off' keeps diagnostics debug-only.",
+          "anyOf": [
+            {
+              "enum": [
+                "off",
+                "warn",
+                "block"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider_context_oversized_feedback_chars": {
+          "description": "Character threshold for oversized retained tool feedback diagnostics.",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "context_transform_failure_policy": {
+          "description": "Policy for failed context transform providers. 'ignore' keeps failures as debug metadata only, 'warn' surfaces warning diagnostics without blocking provider execution, and 'block' turns transform failures into blocking provider-context diagnostics.",
+          "anyOf": [
+            {
+              "enum": [
+                "ignore",
+                "warn",
+                "block"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "summary_strategy": {
+          "anyOf": [
+            {
+              "enum": [
+                "deterministic",
+                "model_assisted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "formatterConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "format_on_write": {
+          "description": "Opt-in auto-format after edit/write. Off by default. 'enabled' is kept as the existing alias and maps onto the same format-on-write switch (it no longer disables all hooks).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "languages": {
+          "additionalProperties": {
+            "$ref": "#/$defs/formatterPresetConfig"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "formatterPresetConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "extensions": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "root_markers": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "fallback_commands": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cwd_policy": {
+          "anyOf": [
+            {
+              "enum": [
+                "workspace",
+                "nearest_root",
+                "file_directory"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "hooksConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "minimum": 1,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "failure_mode": {
+          "enum": [
+            "warn",
+            "fail"
+          ],
+          "type": "string"
+        },
+        "pre_tool": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "post_tool": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_session_start": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_session_end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_session_idle": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_background_task_registered": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_background_task_started": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_background_task_progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_background_task_completed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_background_task_failed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_background_task_cancelled": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_background_task_interrupted": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_background_task_notification_enqueued": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_background_task_result_read": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_delegated_result_available": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_turn_progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_stuck_detected": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "formatter_presets": {
+          "additionalProperties": {
+            "$ref": "#/$defs/formatterPresetConfig"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "lspConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "diagnostics_on_write": {
+          "description": "Opt-in automatic LSP diagnostics after edit/write. Off by default. Does not gate the explicit 'lsp' tool.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "servers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/lspServerConfig"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "lspServerConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "languages": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "extensions": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "root_markers": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "settings": {
+          "additionalProperties": true,
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "init_options": {
+          "additionalProperties": true,
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "mcpConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "servers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/mcpServerConfig"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "request_timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "mcpServerConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "transport": {
+          "anyOf": [
+            {
+              "enum": [
+                "stdio",
+                "remote-http"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "scope": {
+          "description": "Runtime-scoped servers are shared by the runtime; session-scoped servers are isolated per session.",
+          "anyOf": [
+            {
+              "enum": [
+                "runtime",
+                "session"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "url": {
+          "description": "Remote HTTP MCP endpoint URL. Required when transport is remote-http.",
+          "format": "uri",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "permissionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "external_directory_read": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/permissionRules"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "external_directory_write": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/permissionRules"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rules": {
+          "description": "Ordered runtime permission rules for tool/path/command matches. First matching rule applies after hard tool allowlist and external-directory gates.",
+          "items": {
+            "$ref": "#/$defs/patternPermissionRule"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "patternPermissionRule": {
+      "additionalProperties": false,
+      "properties": {
+        "tool": {
+          "description": "Tool name glob, for example read, grep, or shell_exec.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "description": "Workspace-relative or canonical path glob for filesystem-related tool calls.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "command": {
+          "description": "Shell command glob used by shell_exec rules.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decision": {
+          "enum": [
+            "allow",
+            "deny",
+            "ask"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision"
+      ],
+      "type": "object"
+    },
+    "runtimePolicyDelegationPolicyConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "deny": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "default": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "runtimePolicyHookPolicyConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_event_scopes": {
+          "items": {
+            "enum": [
+              "session_start",
+              "session_end",
+              "session_idle",
+              "pre_tool",
+              "post_tool",
+              "background_task_registered",
+              "background_task_started",
+              "background_task_progress",
+              "background_task_completed",
+              "background_task_failed",
+              "background_task_cancelled",
+              "background_task_notification_enqueued",
+              "background_task_result_read",
+              "delegated_result_available",
+              "turn_progress",
+              "stuck_detected"
+            ],
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "actions": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "runtimePolicyConfig": {
-      "type": "object",
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean"
         },
         "version": {
-          "type": "string",
-          "const": "v1"
+          "const": "v1",
+          "type": "string"
         },
         "tool_policy": {
           "$ref": "#/$defs/runtimePolicyToolPolicyConfig"
@@ -1214,168 +1223,978 @@
         "prompt_activation": {
           "$ref": "#/$defs/runtimePolicyPromptActivationConfig"
         }
-      }
-    },
-    "runtimePolicyToolPolicyConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "allow": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "deny": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        }
-      }
-    },
-    "runtimePolicyDelegationPolicyConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "allow": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "deny": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        }
-      }
-    },
-    "runtimePolicyHookPolicyConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "allowed_event_scopes": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": [
-              "session_start",
-              "session_end",
-              "pre_tool",
-              "post_tool",
-              "background_task_registered",
-              "background_task_started",
-              "background_task_progress",
-              "background_task_completed",
-              "background_task_failed",
-              "background_task_cancelled",
-              "background_task_interrupted",
-              "background_task_notification_enqueued",
-              "background_task_result_read",
-              "delegated_result_available",
-              "turn_progress",
-              "stuck_detected"
-            ]
-          }
-        },
-        "actions": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": [
-              "observe",
-              "report",
-              "cancel",
-              "guidance"
-            ]
-          }
-        }
-      }
+      },
+      "required": [
+        "version"
+      ],
+      "type": "object"
     },
     "runtimePolicyPromptActivationConfig": {
-      "type": "object",
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean"
         },
         "profile_refs": {
-          "type": "array",
           "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        }
-      }
-    },
-    "permissionConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "external_directory_read": {
-          "$ref": "#/$defs/permissionRules"
-        },
-        "external_directory_write": {
-          "$ref": "#/$defs/permissionRules"
-        },
-        "rules": {
-          "type": "array",
-          "description": "Ordered runtime permission rules for tool/path/command matches. First matching rule applies after hard tool allowlist and external-directory gates.",
-          "items": {
-            "$ref": "#/$defs/patternPermissionRule"
-          }
-        }
-      }
-    },
-    "patternPermissionRule": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "decision"
-      ],
-      "properties": {
-        "tool": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Tool name glob, for example read, grep, or shell_exec."
-        },
-        "path": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Workspace-relative or canonical path glob for filesystem-related tool calls."
-        },
-        "command": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Shell command glob used by shell_exec rules."
-        },
-        "decision": {
-          "type": "string",
-          "enum": [
-            "allow",
-            "deny",
-            "ask"
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
           ]
         }
-      }
+      },
+      "type": "object"
+    },
+    "runtimePolicyToolPolicyConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "deny": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "default": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "providersConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "openai": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openaiProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "anthropic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/anthropicProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "google": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/googleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "copilot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/copilotProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endpoint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/endpointProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "opencode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/endpointProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "openrouter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/endpointProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deepseek": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "zai": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "zhipuai": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "grok": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "minimax": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kimi": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "opencode-go": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "qwen": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "groq": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "together": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fireworks": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mistral": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "custom": {
+          "additionalProperties": {
+            "$ref": "#/$defs/endpointProviderConfig"
+          },
+          "propertyNames": {
+            "pattern": "^(?!(?:openai|anthropic|google|copilot|endpoint|opencode|opencode-go|openrouter|deepseek|zai|zhipuai|grok|minimax|kimi|qwen|groq|together|fireworks|mistral)$)(?!.*[/]).+$"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "skillsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "toolsBuiltinConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "localToolsConfig": {
+      "additionalProperties": false,
+      "description": "Opt-in workspace-local custom tool manifest discovery. Runtime executes discovered command tools through the normal registry, allowlist, and permission path.",
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Workspace-relative directory containing *.json tool manifests.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "runtimeToolsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "builtin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/toolsBuiltinConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "local": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/localToolsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "allowlist": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "default": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "essential_only": {
+          "description": "Essential/discoverable tool split: when true, only the essential tool set (plus allowlist-required tools) is sent top-level to the provider; the rest stay registered and reachable on demand.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "tuiConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "leader_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "keymap": {
+          "additionalProperties": {
+            "enum": [
+              "command_palette",
+              "session_new",
+              "session_resume"
+            ],
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "preferences": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/tuiPreferencesConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "tuiPreferencesConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "theme": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/tuiThemePreferencesConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reading": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/tuiReadingPreferencesConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "tuiReadingPreferencesConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "wrap": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "sidebar_collapsed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "tuiThemePreferencesConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "auto",
+                "light",
+                "dark"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "anthropicProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "discovery_base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "beta_headers": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "cache_retention": {
+          "enum": [
+            "none",
+            "short",
+            "long"
+          ],
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "transient_retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/providerTransientRetryConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "copilotProviderAuthConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "enum": [
+            "token",
+            "oauth"
+          ],
+          "type": "string"
+        },
+        "token": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_env_var": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "refresh_token": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "refresh_leeway_seconds": {
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "method"
+      ],
+      "type": "object"
+    },
+    "copilotProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/copilotProviderAuthConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "transient_retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/providerTransientRetryConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "googleProviderAuthConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "enum": [
+            "api_key",
+            "oauth",
+            "service_account"
+          ],
+          "type": "string"
+        },
+        "api_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "access_token": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service_account_json_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "method"
+      ],
+      "type": "object"
+    },
+    "googleProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "auth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/googleProviderAuthConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "discovery_base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "transient_retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/providerTransientRetryConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "openAICompatibleProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_key_env_var": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "discovery_base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ssl_verify": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "model_map": {
+          "propertyNames": {
+            "pattern": ".+"
+          },
+          "additionalProperties": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "transient_retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/providerTransientRetryConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "openaiProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "discovery_base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "organization": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "transient_retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/providerTransientRetryConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "endpointProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_key_env_var": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "discovery_base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "auth_header": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "auth_scheme": {
+          "anyOf": [
+            {
+              "enum": [
+                "bearer",
+                "token",
+                "none"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ssl_verify": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "model_map": {
+          "propertyNames": {
+            "pattern": ".+"
+          },
+          "additionalProperties": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "transient_retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/providerTransientRetryConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "providerTransientRetryConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "max_retries": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "base_delay_ms": {
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_delay_ms": {
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "jitter": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "commandList": {
+      "items": {
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1,
+        "type": "array"
+      },
+      "type": "array",
+      "description": "Array of commands; each command is a non-empty argv array of strings. Commands are executed directly without an implicit shell."
     },
     "permissionRules": {
-      "type": "object",
-      "description": "Ordered path-glob permission map. First matching pattern applies.",
       "additionalProperties": {
-        "type": "string",
         "enum": [
           "allow",
           "deny",
           "ask"
-        ]
-      }
+        ],
+        "type": "string"
+      },
+      "propertyNames": {
+        "minLength": 1
+      },
+      "type": "object",
+      "description": "Ordered path-glob permission map. First matching pattern applies."
     },
     "customAgentConfig": {
       "allOf": [
@@ -1387,5 +2206,24 @@
         "preset"
       ]
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "fallback_models": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "fallback_models"
+        ]
+      },
+      "then": {
+        "required": [
+          "model"
+        ]
+      }
+    }
+  ]
 }

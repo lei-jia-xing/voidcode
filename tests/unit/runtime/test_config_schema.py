@@ -23,8 +23,14 @@ from voidcode.runtime.config import (
     RuntimeTuiConfig,
     load_runtime_config,
 )
+from voidcode.runtime.config_models import (
+    SCHEMA_DEFINITION_NAMES,
+    RuntimeConfigPayload,
+    config_model_keys,
+)
 from voidcode.runtime.config_schema import (
     RUNTIME_CONFIG_SCHEMA_ID,
+    format_runtime_config_schema_json,
     format_starter_runtime_config_json,
     generate_starter_runtime_config,
     runtime_config_json_schema,
@@ -36,6 +42,30 @@ def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prom
     path.write_text(f"---\n{frontmatter}\n---\n{body}\n", encoding="utf-8")
 
 
+def _referenced_definition(
+    schema: dict[str, object],
+    node: object,
+) -> dict[str, object]:
+    """Resolve a generated property to the object it references.
+
+    The artifact is generated from the payload models, so an object-valued
+    property is a ``$ref`` (optionally wrapped in the ``null`` branch of an
+    optional field) rather than an inline object.
+    """
+    if isinstance(node, dict):
+        reference = node.get("$ref")
+        if isinstance(reference, str):
+            name = reference.rsplit("/", 1)[-1]
+            return cast(dict[str, object], cast(dict[str, object], schema["$defs"])[name])
+        branches = node.get("anyOf")
+        if isinstance(branches, list):
+            for branch in branches:
+                resolved = _referenced_definition(schema, branch) if isinstance(branch, dict) and "$ref" in branch else None
+                if resolved is not None:
+                    return resolved
+    raise AssertionError(f"property does not reference a definition: {node!r}")
+
+
 def test_runtime_config_json_schema_exposes_core_fields() -> None:
     schema = runtime_config_json_schema()
 
@@ -44,7 +74,8 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     properties = cast(dict[str, object], schema["properties"])
     assert isinstance(properties, dict)
     assert schema["additionalProperties"] is False
-    providers = cast(dict[str, object], properties["providers"])
+    defs = cast(dict[str, object], schema["$defs"])
+    providers = _referenced_definition(schema, properties["providers"])
     assert providers["additionalProperties"] is False
     provider_properties = cast(dict[str, object], providers["properties"])
     payload = {
@@ -68,24 +99,42 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     assert "workflow_mode" not in properties
     assert "agents" in properties
     assert "workflows" not in properties
+    # An optional section publishes an explicit ``null`` branch: the loader treats
+    # an explicit ``null`` as "unset", so the contract accepts it too.
     assert properties["approval_mode"] == {
-        "type": "string",
-        "enum": ["allow", "deny", "ask"],
+        "anyOf": [{"type": "string", "enum": ["allow", "deny", "ask"]}, {"type": "null"}],
         "description": "Default approval policy for tool execution.",
     }
-    assert properties["permission"] == {"$ref": "#/$defs/permissionConfig"}
+    assert properties["permission"] == {"anyOf": [{"$ref": "#/$defs/permissionConfig"}, {"type": "null"}]}
     assert properties["execution_engine"] == {
-        "type": "string",
-        "enum": ["deterministic", "provider"],
+        "anyOf": [{"type": "string", "enum": ["deterministic", "provider"]}, {"type": "null"}],
         "description": "Execution engine used when no request or environment override is set.",
     }
-    assert properties["agent"] == {"$ref": "#/$defs/agentConfig"}
+    assert properties["agent"] == {
+        "anyOf": [
+            {
+                "allOf": [
+                    {"$ref": "#/$defs/agentConfig"},
+                    {"required": ["preset"]},
+                    {"properties": {"preset": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*$"}}},
+                ]
+            },
+            {"type": "null"},
+        ]
+    }
     agents = cast(dict[str, object], properties["agents"])
-    agent_map_properties = cast(dict[str, object], agents["properties"])
-    assert agent_map_properties["worker"] == {"$ref": "#/$defs/agentConfig"}
     assert agents["additionalProperties"] == {"$ref": "#/$defs/customAgentConfig"}
+    assert agents["propertyNames"] == {"pattern": "^[a-z][a-z0-9_-]*$"}
+    # Builtin map keys may omit ``preset``; only additional entries require it.
+    assert set(cast(dict[str, object], agents["properties"])) == {
+        "leader",
+        "worker",
+        "advisor",
+        "explore",
+        "researcher",
+        "product",
+    }
     assert "categories" not in properties
-    defs = cast(dict[str, object], schema["$defs"])
     assert isinstance(defs, dict)
     assert "categoryConfig" not in defs
     agent_config = cast(dict[str, object], defs["agentConfig"])
@@ -97,61 +146,53 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     assert preset_property["pattern"] == "^[a-z][a-z0-9_-]*$"
     assert "enum" not in preset_property
     assert agent_properties["fallback_models"] == {
-        "type": "array",
-        "items": {"type": "string", "minLength": 1},
+        "type": ["array", "null"],
+        "items": {"type": "string"},
         "description": "Agent-scoped fallback model chain; requires agent.model.",
     }
-    assert agent_properties["mcp_binding"] == {"$ref": "#/$defs/agentMcpBindingConfig"}
+    assert agent_properties["mcp_binding"] == {"anyOf": [{"$ref": "#/$defs/agentMcpBindingConfig"}, {"type": "null"}]}
     agent_mcp_binding_config = cast(dict[str, object], defs["agentMcpBindingConfig"])
     assert agent_mcp_binding_config["additionalProperties"] is False
     agent_mcp_binding_properties = cast(
         dict[str, object],
         agent_mcp_binding_config["properties"],
     )
-    assert agent_mcp_binding_properties["profile"] == {"type": "string", "minLength": 1}
+    assert agent_mcp_binding_properties["profile"] == {"type": ["string", "null"], "minLength": 1}
+    # Duplicate detection is a loader rule (see the parity corpus), not a
+    # published constraint.
     assert agent_mcp_binding_properties["servers"] == {
-        "type": "array",
+        "type": ["array", "null"],
         "items": {"type": "string", "minLength": 1},
-        "uniqueItems": True,
     }
     custom_agent_config = cast(dict[str, object], defs["customAgentConfig"])
     assert custom_agent_config["required"] == ["preset"]
-    mcp_schema = cast(dict[str, object], properties["mcp"])
+    mcp_schema = _referenced_definition(schema, properties["mcp"])
     mcp_properties = cast(dict[str, object], mcp_schema["properties"])
     mcp_servers = cast(dict[str, object], mcp_properties["servers"])
-    mcp_server_schema = cast(dict[str, object], mcp_servers["additionalProperties"])
+    mcp_server_schema = _referenced_definition(schema, mcp_servers["additionalProperties"])
     assert "required" not in mcp_server_schema
     mcp_server_properties = cast(dict[str, object], mcp_server_schema["properties"])
-    assert mcp_server_properties["transport"] == {
-        "type": "string",
-        "enum": ["stdio", "remote-http"],
-    }
+    # an explicit null is normalised to the default transport
+    assert mcp_server_properties["transport"] == {"anyOf": [{"type": "string", "enum": ["stdio", "remote-http"]}, {"type": "null"}]}
     assert mcp_server_properties["url"] == {
-        "type": "string",
+        "type": ["string", "null"],
         "format": "uri",
         "minLength": 1,
         "description": ("Remote HTTP MCP endpoint URL. Required when transport is remote-http."),
     }
-    assert mcp_server_schema["allOf"] == [
-        {
-            "if": {
-                "properties": {"transport": {"const": "remote-http"}},
-                "required": ["transport"],
-            },
-            "then": {"required": ["url"]},
-            "else": {"required": ["command"]},
-        }
-    ]
+    # The transport/argv requirement is enforced by the loader, not published:
+    # a builtin server shorthand may omit both keys (the descriptor fills them).
+    assert "allOf" not in mcp_server_schema
     assert mcp_server_properties["scope"] == {
-        "type": "string",
-        "enum": ["runtime", "session"],
+        "anyOf": [{"type": "string", "enum": ["runtime", "session"]}, {"type": "null"}],
         "description": ("Runtime-scoped servers are shared by the runtime; session-scoped servers are isolated per session."),
     }
-    background_task_schema = cast(dict[str, object], properties["background_task"])
+    background_task_schema = _referenced_definition(schema, properties["background_task"])
     assert background_task_schema["additionalProperties"] is False
     background_task_properties = cast(dict[str, object], background_task_schema["properties"])
+    # An explicit null is normalised to the default, so the artifact accepts it.
     assert background_task_properties["delegated_reminders_enabled"] == {
-        "type": "boolean",
+        "type": ["boolean", "null"],
     }
     assert background_task_properties["delegated_reminder_cooldown_seconds"] == {
         "type": "integer",
@@ -166,7 +207,7 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         "type": "integer",
         "minimum": 1,
     }
-    hooks_schema = cast(dict[str, object], properties["hooks"])
+    hooks_schema = _referenced_definition(schema, properties["hooks"])
     hooks_properties = cast(dict[str, object], hooks_schema["properties"])
     formatter_presets = cast(dict[str, object], hooks_properties["formatter_presets"])
     assert formatter_presets["additionalProperties"] == {"$ref": "#/$defs/formatterPresetConfig"}
@@ -186,36 +227,45 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         numeric_property = cast(dict[str, object], context_window_properties[key])
         assert numeric_property["minimum"] == 1
     provider_context_diagnostics = cast(dict[str, object], context_window_properties["provider_context_diagnostics"])
-    assert provider_context_diagnostics["enum"] == ["off", "warn", "block"]
+    assert provider_context_diagnostics["anyOf"] == [
+        {"type": "string", "enum": ["off", "warn", "block"]},
+        {"type": "null"},
+    ]
     transform_failure_policy = cast(dict[str, object], context_window_properties["context_transform_failure_policy"])
-    assert transform_failure_policy["enum"] == ["ignore", "warn", "block"]
+    assert transform_failure_policy["anyOf"] == [
+        {"type": "string", "enum": ["ignore", "warn", "block"]},
+        {"type": "null"},
+    ]
     provider_context_threshold = cast(dict[str, object], context_window_properties["provider_context_oversized_feedback_chars"])
     assert provider_context_threshold["minimum"] == 1
     tools_config = cast(dict[str, object], defs["runtimeToolsConfig"])
     assert tools_config["additionalProperties"] is False
     tools_properties = cast(dict[str, object], tools_config["properties"])
     assert "paths" not in tools_properties
-    assert tools_properties["local"] == {"$ref": "#/$defs/localToolsConfig"}
-    assert properties["tools"] == {"$ref": "#/$defs/runtimeToolsConfig"}
-    assert agent_properties["tools"] == {"$ref": "#/$defs/agentToolsConfig"}
+    assert tools_properties["local"] == {"anyOf": [{"$ref": "#/$defs/localToolsConfig"}, {"type": "null"}]}
+    assert properties["tools"] == {"anyOf": [{"$ref": "#/$defs/runtimeToolsConfig"}, {"type": "null"}]}
+    assert agent_properties["tools"] == {"anyOf": [{"$ref": "#/$defs/agentToolsConfig"}, {"type": "null"}]}
     agent_tools_config = cast(dict[str, object], defs["agentToolsConfig"])
     assert agent_tools_config["additionalProperties"] is False
     agent_tools_properties = cast(dict[str, object], agent_tools_config["properties"])
-    assert set(agent_tools_properties) == {"builtin", "allowlist", "default"}
+    # ``essential_only`` is accepted for agent tools by the loader, so the
+    # published contract declares it instead of hiding an accepted key.
+    assert set(agent_tools_properties) == {"builtin", "allowlist", "default", "essential_only"}
     assert "local" not in agent_tools_properties
     local_tools_config = cast(dict[str, object], defs["localToolsConfig"])
     assert local_tools_config["additionalProperties"] is False
     local_tools_properties = cast(dict[str, object], local_tools_config["properties"])
-    assert local_tools_properties["enabled"] == {"type": "boolean"}
+    assert local_tools_properties["enabled"] == {"type": ["boolean", "null"]}
     assert local_tools_properties["path"] == {
-        "type": "string",
+        "type": ["string", "null"],
         "minLength": 1,
         "description": "Workspace-relative directory containing *.json tool manifests.",
     }
     permission_config = cast(dict[str, object], defs["permissionConfig"])
     permission_properties = cast(dict[str, object], permission_config["properties"])
-    assert permission_properties["external_directory_read"] == {"$ref": "#/$defs/permissionRules"}
-    assert permission_properties["external_directory_write"] == {"$ref": "#/$defs/permissionRules"}
+    # an explicit null is normalised to the default rule map
+    assert permission_properties["external_directory_read"] == {"anyOf": [{"$ref": "#/$defs/permissionRules"}, {"type": "null"}]}
+    assert permission_properties["external_directory_write"] == {"anyOf": [{"$ref": "#/$defs/permissionRules"}, {"type": "null"}]}
     permission_rule_list = cast(dict[str, object], permission_properties["rules"])
     assert permission_rule_list["items"] == {"$ref": "#/$defs/patternPermissionRule"}
     pattern_permission_rule = cast(dict[str, object], defs["patternPermissionRule"])
@@ -316,7 +366,7 @@ def test_runtime_config_json_schema_exposes_policy_config_contract() -> None:
     properties = cast(dict[str, object], schema["properties"])
     defs = cast(dict[str, object], schema["$defs"])
 
-    assert properties["policy"] == {"$ref": "#/$defs/runtimePolicyConfig"}
+    assert properties["policy"] == {"anyOf": [{"$ref": "#/$defs/runtimePolicyConfig"}, {"type": "null"}]}
     policy_config = cast(dict[str, object], defs["runtimePolicyConfig"])
     assert policy_config["additionalProperties"] is False
     policy_properties = cast(dict[str, object], policy_config["properties"])
@@ -333,14 +383,29 @@ def test_runtime_config_json_schema_exposes_policy_config_contract() -> None:
     assert policy_properties["tool_policy"] == {"$ref": "#/$defs/runtimePolicyToolPolicyConfig"}
     assert policy_properties["delegation_policy"] == {"$ref": "#/$defs/runtimePolicyDelegationPolicyConfig"}
     assert policy_properties["hook_policy"] == {"$ref": "#/$defs/runtimePolicyHookPolicyConfig"}
+    assert policy_properties["prompt_activation"] == {"$ref": "#/$defs/runtimePolicyPromptActivationConfig"}
+    assert policy_properties["enabled"] == {"type": "boolean"}
+    assert policy_config["required"] == ["version"]
+    # The policy list sections accept the ``default`` key the loader understands,
+    # so the published contract lists it next to allow/deny.
+    tool_policy_properties = cast(dict[str, object], cast(dict[str, object], defs["runtimePolicyToolPolicyConfig"])["properties"])
+    assert set(tool_policy_properties) == {"allow", "deny", "default"}
+    # an explicit null is rejected for ``default``, and the value must be non-empty
+    assert tool_policy_properties["default"] == {"type": "string", "minLength": 1}
 
     hook_policy = cast(dict[str, object], defs["runtimePolicyHookPolicyConfig"])
     hook_properties = cast(dict[str, object], hook_policy["properties"])
+    assert "enum" not in cast(dict[str, object], hook_properties["actions"])
     allowed_scopes = cast(dict[str, object], hook_properties["allowed_event_scopes"])
     allowed_scope_items = cast(dict[str, object], allowed_scopes["items"])
+    # The enum is generated from ``policy.runtime_policy_allowed_hook_scopes()``,
+    # the same table the loader validates against. It therefore carries
+    # ``session_idle`` and does not carry ``background_task_interrupted``, which
+    # has a hook surface but is rejected by the policy scope table today.
     assert allowed_scope_items["enum"] == [
         "session_start",
         "session_end",
+        "session_idle",
         "pre_tool",
         "post_tool",
         "background_task_registered",
@@ -349,7 +414,6 @@ def test_runtime_config_json_schema_exposes_policy_config_contract() -> None:
         "background_task_completed",
         "background_task_failed",
         "background_task_cancelled",
-        "background_task_interrupted",
         "background_task_notification_enqueued",
         "background_task_result_read",
         "delegated_result_available",
@@ -445,17 +509,82 @@ def _assert_config_section_mapping(
     assert {rename.get(k, k) for k in config_keys} == config_fields
 
 
+SCHEMA_PATH = Path(__file__).resolve().parents[3] / "schema" / "voidcode.config.schema.json"
+
+
 def test_runtime_config_schema_file_matches_generated_schema() -> None:
-    """The checked-in schema.json must be a faithful export of the runtime schema.
+    """The checked-in schema.json must be a faithful export of the generated schema.
 
-    ``voidcode config schema`` prints ``runtime_config_json_schema()`` (config_schema.py),
-    which is the runtime authority; ``schema/voidcode.config.schema.json`` is its static
-    editor-support export and must not drift.
+    ``runtime_config_json_schema()`` is generated from the payload models in
+    ``runtime/config_models.py`` and ``voidcode config schema`` prints it, while
+    ``schema/voidcode.config.schema.json`` is its static editor-support export.
+    The comparison is byte-exact, so the artifact must be regenerated with
+    ``uv run python scripts/generate_config_schema.py`` (``mise run schema:check``)
+    whenever a model changes: a field added to the models cannot ship without it.
     """
-    schema_path = Path(__file__).resolve().parents[3] / "schema" / "voidcode.config.schema.json"
-    file_schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    assert SCHEMA_PATH.read_text(encoding="utf-8") == format_runtime_config_schema_json()
 
-    assert file_schema == runtime_config_json_schema()
+
+def test_runtime_config_schema_covers_every_published_definition() -> None:
+    """Every model definition publishes an explicit name and every name is used.
+
+    ``SCHEMA_DEFINITION_NAMES`` is the artifact's ``#/$defs`` contract; a payload
+    model added without a published name makes schema generation fail loudly
+    instead of silently renaming the definition, and a stale entry means the
+    models and the published names drifted apart.
+    """
+    schema = runtime_config_json_schema()
+    published = set(cast(dict[str, object], schema["$defs"]))
+    # ``commandList``/``permissionRules``/``customAgentConfig`` are folded or
+    # synthesized by the generator rather than owned by a payload model.
+    shared = {"commandList", "permissionRules", "customAgentConfig"}
+
+    generated_names = set(SCHEMA_DEFINITION_NAMES.values())
+    assert published - shared <= generated_names
+    # Every published name other than the folded ones is reachable in the artifact.
+    assert generated_names & published >= published - shared
+
+
+def test_runtime_config_schema_top_level_keys_match_the_payload_model() -> None:
+    """The shipped artifact's top-level keys are exactly the payload model's keys."""
+    file_schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    properties = cast(dict[str, object], file_schema["properties"])
+
+    assert set(properties) == set(config_model_keys(RuntimeConfigPayload))
+
+
+def test_runtime_config_schema_accepts_null_wherever_the_loader_treats_null_as_unset(tmp_path: Path) -> None:
+    """Optional sections accept an explicit ``null`` in the published contract."""
+    schema = runtime_config_json_schema()
+    null_payload = {
+        "$schema": None,
+        "approval_mode": None,
+        "permission": None,
+        "policy": None,
+        "model": None,
+        "execution_engine": None,
+        "fallback_models": None,
+        "tool_timeout_seconds": None,
+        "reasoning_effort": None,
+        "hooks": None,
+        "formatter": None,
+        "tools": None,
+        "skills": None,
+        "context_window": None,
+        "lsp": None,
+        "mcp": None,
+        "tui": None,
+        "providers": None,
+        "background_task": None,
+        "agent": None,
+        "agents": None,
+    }
+    jsonschema.validate(null_payload, schema)
+    # The loader must agree: a config file of explicit nulls resolves to defaults.
+    (tmp_path / ".voidcode.json").write_text(json.dumps(null_payload), encoding="utf-8")
+    config = load_runtime_config(tmp_path, env={})
+    assert config.approval_mode == "ask"
+    assert config.execution_engine == "provider"
 
 
 @pytest.mark.parametrize(
@@ -487,7 +616,7 @@ def test_runtime_config_schema_file_matches_generated_schema() -> None:
             set(),
         ),
         (
-            "properties.mcp",
+            "$defs.mcpConfig",
             RuntimeMcpConfig,
             {},
             set(),
@@ -508,28 +637,28 @@ def test_runtime_config_schema_file_matches_generated_schema() -> None:
             set(),
         ),
         (
-            "properties.lsp",
+            "$defs.lspConfig",
             RuntimeLspConfig,
             {},
             set(),
             set(),
         ),
         (
-            "properties.formatter",
+            "$defs.formatterConfig",
             RuntimeFormatterConfig,
             {},
             set(),
             set(),
         ),
         (
-            "properties.background_task",
+            "$defs.backgroundTaskConfig",
             RuntimeBackgroundTaskConfig,
             {},
             set(),
             set(),
         ),
         (
-            "properties.tui",
+            "$defs.tuiConfig",
             RuntimeTuiConfig,
             {},
             set(),
@@ -538,7 +667,7 @@ def test_runtime_config_schema_file_matches_generated_schema() -> None:
         # RuntimeHooksConfig.format_on_write is a derived alias populated from
         # formatter.format_on_write/enabled, so it is not a hooks-level config key.
         (
-            "properties.hooks",
+            "$defs.hooksConfig",
             RuntimeHooksConfig,
             {},
             set(),
