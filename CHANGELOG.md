@@ -105,6 +105,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 
+- **runtime:** cancel the in-flight tool invocation and reap it with a bounded window when the runtime timeout wins, instead of abandoning the daemon thread with no signal — a cooperative tool now observes cancellation and stops before its late write, every timeout surface (`runtime.tool_timeout`, `runtime.tool_completed`, `runtime.failed`, and the dispatched `invoke_tool` result) carries `cancellation_signalled` / `execution_stopped` / `side_effect_state`, an unconfirmed stop is reported as `side_effect_state="unknown"` with an error saying the execution may still be running instead of a plain failure, and a late completion is logged for diagnosis but never committed as the tool result (`docs/contracts/agent-tool-calling.md` → 「取消与超时（execution lifecycle）」)
+
 - **frontend:** render one tool row per call when the deterministic engine announces a call before the runtime names it (including an approval-denied call), accept a pushed live frame only for the session on screen, dedupe live-only bursts by payload instead of the shared cursor, and recover the boot selection when the replayed session is gone; a raw-HTML tool payload renders as text
 
 - **runtime:** keep the retry/fallback after a provider attempt has already surfaced streamed output and mark the restart with `discarded_streamed_output: true`, so the TUI (and the web store) retract the abandoned attempt's live projection; nothing persisted is ever discarded, and the transcript keeps its single `graph.response_ready`

@@ -378,6 +378,16 @@ def _is_tool_timeout_like_exception(exc: Exception) -> bool:
     return "timeout" in message or "timed out" in message
 
 
+def _tool_timeout_execution_facts(exc: RuntimeToolTimeoutError) -> dict[str, object]:
+    """Additive execution facts every timeout surface must carry.
+
+    ``error_kind='tool_timeout'`` alone reads as "the call failed"; the facts
+    say whether the runtime cancelled the invocation, whether it confirmed the
+    execution stopped, and therefore what may be claimed about side effects.
+    """
+    return dict(exc.execution_facts())
+
+
 def _is_abort_requested(request: GraphRunRequest) -> bool:
     return bool(request.abort_signal is not None and request.abort_signal.cancelled)
 
@@ -1004,6 +1014,7 @@ class RuntimeRunLoopCoordinator:
                     partial_timeout_payload.update(capped_partial.data)
                     partial_timeout_content = capped_partial.content
                     partial_timeout_error = capped_partial.error
+                timeout_facts = _tool_timeout_execution_facts(exc)
                 envelope = self._persist_event(
                     session_id=session.session.id,
                     event_type=RUNTIME_TOOL_TIMEOUT,
@@ -1011,6 +1022,7 @@ class RuntimeRunLoopCoordinator:
                     payload={
                         "tool": tool_call.tool_name,
                         "timeout_seconds": tool_timeout,
+                        **timeout_facts,
                     },
                 )
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
@@ -1035,13 +1047,15 @@ class RuntimeRunLoopCoordinator:
                         "arguments": timeout_sanitized_args,
                         "status": "error",
                         "content": partial_timeout_content,
+                        **timeout_facts,
                         **_tool_error_payload(
                             tool_name=tool_call.tool_name,
-                            error=partial_timeout_error or str(exc),
+                            error=partial_timeout_error or exc.error_message,
                             error_kind="tool_timeout",
                             extra_details={
                                 "timed_out": True,
                                 "timeout_seconds": tool_timeout,
+                                **timeout_facts,
                             },
                         ),
                         "display": failed_display,
@@ -1050,7 +1064,19 @@ class RuntimeRunLoopCoordinator:
                 )
                 sequence = envelope.sequence
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-                failed_chunk, _ = self._persist_chunk(chunk_builders.failed_chunk(session=session, sequence=sequence + 1, error=str(exc)))
+                failed_chunk, _ = self._persist_chunk(
+                    chunk_builders.failed_chunk(
+                        session=session,
+                        sequence=sequence + 1,
+                        error=exc.error_message,
+                        payload={
+                            "kind": "tool_timeout",
+                            "tool": tool_call.tool_name,
+                            "timeout_seconds": tool_timeout,
+                            **timeout_facts,
+                        },
+                    )
+                )
                 yield failed_chunk
                 return
             if not tool_exception_recovery_enabled and not _is_tool_timeout_like_exception(exc):
@@ -2963,6 +2989,7 @@ class RuntimeRunLoopCoordinator:
                     partial_timeout_payload.update(capped_partial.data)
                     partial_timeout_content = capped_partial.content
                     partial_timeout_error = capped_partial.error
+                timeout_facts = _tool_timeout_execution_facts(exc)
                 envelope = self._persist_event(
                     session_id=session.session.id,
                     event_type=RUNTIME_TOOL_TIMEOUT,
@@ -2970,6 +2997,7 @@ class RuntimeRunLoopCoordinator:
                     payload={
                         "tool": plan_tool_call.tool_name,
                         "timeout_seconds": tool_timeout,
+                        **timeout_facts,
                     },
                 )
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
@@ -2994,13 +3022,15 @@ class RuntimeRunLoopCoordinator:
                         "arguments": timeout_sanitized_args,
                         "status": "error",
                         "content": partial_timeout_content,
+                        **timeout_facts,
                         **_tool_error_payload(
                             tool_name=plan_tool_call.tool_name,
-                            error=partial_timeout_error or str(exc),
+                            error=partial_timeout_error or exc.error_message,
                             error_kind="tool_timeout",
                             extra_details={
                                 "timed_out": True,
                                 "timeout_seconds": tool_timeout,
+                                **timeout_facts,
                             },
                         ),
                         "display": failed_display,
@@ -3009,7 +3039,19 @@ class RuntimeRunLoopCoordinator:
                 )
                 sequence = envelope.sequence
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-                failed_chunk, _ = self._persist_chunk(chunk_builders.failed_chunk(session=session, sequence=sequence + 1, error=str(exc)))
+                failed_chunk, _ = self._persist_chunk(
+                    chunk_builders.failed_chunk(
+                        session=session,
+                        sequence=sequence + 1,
+                        error=exc.error_message,
+                        payload={
+                            "kind": "tool_timeout",
+                            "tool": plan_tool_call.tool_name,
+                            "timeout_seconds": tool_timeout,
+                            **timeout_facts,
+                        },
+                    )
+                )
                 yield failed_chunk
                 return "returned", None, session, sequence
             if not tool_exception_recovery_enabled and not _is_tool_timeout_like_exception(exc):
@@ -3242,12 +3284,14 @@ class RuntimeRunLoopCoordinator:
         tool_results: list[ToolResult],
         error: str,
         error_kind: str,
+        extra_details: dict[str, object] | None = None,
     ) -> Generator[RuntimeStreamChunk, None, int]:
         """Emit a failed ``runtime.tool_completed`` and append an error result.
 
         Tool-level feedback for dispatched tools: the run continues after an
         unknown, denied, or hook-cancelled dispatch instead of failing the
-        session.
+        session. ``extra_details`` carries additive execution facts into both
+        the persisted payload and the model-visible tool result.
         """
         sanitized_arguments = sanitize_tool_arguments(dict(arguments))
         tool_result = ToolResult(
@@ -3258,11 +3302,12 @@ class RuntimeRunLoopCoordinator:
             data={
                 "tool_call_id": tool_call_id,
                 "arguments": sanitized_arguments,
+                **dict(extra_details or {}),
             },
             diagnostics=ToolDiagnostics(
                 kind=error_kind,
                 summary=_tool_error_summary(error),
-                details=_tool_error_details(tool_name=tool_name),
+                details=_tool_error_details(tool_name=tool_name, extra=extra_details),
                 guidance="Check the tool name and arguments, then retry.",
             ),
         )
@@ -3582,12 +3627,13 @@ class RuntimeRunLoopCoordinator:
             if isinstance(tool_outcome, Exception):
                 raise tool_outcome
             tool_result = tool_outcome
-        except RuntimeToolTimeoutError:
+        except RuntimeToolTimeoutError as exc:
+            timeout_facts = _tool_timeout_execution_facts(exc)
             envelope = self._persist_event(
                 session_id=session.session.id,
                 event_type=RUNTIME_TOOL_TIMEOUT,
                 source="runtime",
-                payload={"tool": inner_name, "timeout_seconds": tool_timeout},
+                payload={"tool": inner_name, "timeout_seconds": tool_timeout, **timeout_facts},
             )
             sequence = envelope.sequence
             yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
@@ -3597,8 +3643,9 @@ class RuntimeRunLoopCoordinator:
                 tool_call_id=outer_call_id,
                 arguments=dict(inner_call.arguments),
                 tool_results=tool_results,
-                error=f"tool '{inner_name}' exceeded runtime timeout of {tool_timeout}s",
+                error=exc.error_message,
                 error_kind="tool_timeout",
+                extra_details=timeout_facts,
             )
             return session, sequence
         except Exception as exc:

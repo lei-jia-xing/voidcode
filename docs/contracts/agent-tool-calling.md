@@ -179,6 +179,17 @@ Agent 发起工具调用时只提交工具名与参数对象：
 
 并会展开合并该工具的 `data` 字段。
 
+### 取消与超时（execution lifecycle）
+
+Runtime 拥有工具执行生命周期：工具不得自行判定"这次调用算不算结束"，也不得假设只有成功返回的结果才会被记录。
+
+- **取消如何传入正在运行的工具**：runtime 交给工具的 `context.abort_signal` 就是该次调用的取消视图。用户中断取消 run 级信号；runtime 超时只取消该次调用（不得把 run 变成 `interrupted`）。两者都通过同一个槽位 `context.abort_signal.cancelled` 对工具可见；工具必须轮询它，并在观察到之后尽快停止，不得继续写入。
+- **runtime 何时可以认为执行已经结束**：只有在有界回收窗口内确认执行线程已经退出（`execution_stopped=true`）时。超时路径先设置取消信号，再停止等待，然后回收；`runtime.tool_timeout`、该次调用的 `runtime.tool_completed`（`diagnostics.kind="tool_timeout"`）与终结 run 的 `runtime.failed` 都带同一组事实：`cancellation_signalled`、`execution_stopped`、`side_effect_state`（`settled` 当且仅当 `execution_stopped`）。
+- **runtime 对副作用的承诺**：`settled` 只对这一条执行成立（runtime 已确认该执行线程退出，不再有来自它的新副作用；工具自行派生、已脱离该执行的写入者不在承诺范围内）；无法确认停止时必须报告 `side_effect_state="unknown"`，并在 `error` 文本中说明该执行可能仍在运行、副作用状态未知；不允许退化成普通的失败。`settled` 从不表示已发生的副作用被回滚或未发生，runtime 不承诺线程取消能回滚任何已完成的副作用。
+- **结果所有权**：runtime 记录超时结果之后到达的完成结果不会被提交为工具结果，只会记入 runtime 日志用于诊断。
+- 工具自行超时（`RuntimeTimeoutAwareTool.invoke_with_runtime_timeout`）时由工具保证停止，此时 `cancellation_signalled=false`，runtime 仍会在有界窗口内回收其执行线程并报告 `execution_stopped`。
+- 不轮询取消信号的工具无法被中断，只能等它自己结束；runtime 会如实报告 `side_effect_state="unknown"`。
+
 ## Permission 与 approval 规则
 
 `read_only` 是 agent-facing 合约中判断审批预期的核心字段。

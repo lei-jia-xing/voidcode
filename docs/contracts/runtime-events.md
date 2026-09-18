@@ -54,7 +54,7 @@ EventEnvelope(
 - LSP：`runtime.lsp_server_started`、`runtime.lsp_server_reused`、`runtime.lsp_server_startup_rejected`、`runtime.lsp_server_stopped`、`runtime.lsp_server_failed`
 - MCP：`runtime.mcp_server_started`、`runtime.mcp_server_reused`、`runtime.mcp_server_acquired`、`runtime.mcp_server_released`、`runtime.mcp_server_stopped`、`runtime.mcp_server_idle_cleaned`、`runtime.mcp_server_failed`
 - graph 阶段：`graph.loop_step`、`graph.model_turn`、`graph.tool_request_created`
-- 工具执行边界：`runtime.tool_lookup_succeeded`、`runtime.tool_started`、`runtime.tool_progress`、`runtime.tool_completed`、`runtime.tool_hook_pre`、`runtime.tool_hook_post`
+- 工具执行边界：`runtime.tool_lookup_succeeded`、`runtime.tool_started`、`runtime.tool_progress`、`runtime.tool_completed`、`runtime.tool_timeout`、`runtime.tool_hook_pre`、`runtime.tool_hook_post`
 - 权限 / 审批 / 提问：`runtime.permission_resolved`、`runtime.approval_requested`、`runtime.approval_resolved`、`runtime.question_requested`、`runtime.question_answered`
 - 终结：`graph.response_ready`、`runtime.failed`
 
@@ -322,6 +322,16 @@ Runtime hook surface 与其事件名称的内部对应关系由
 - source: `tool`
 - 当前 payload:
   - 工具定义的结果数据
+
+### `runtime.tool_timeout`
+- source: `runtime`
+- 当前 payload:
+  - `tool: str`
+  - `timeout_seconds: int | null`，生效的 runtime 超时
+  - `cancellation_signalled: bool`，runtime 是否在停止等待前取消了该次调用
+  - `execution_stopped: bool`，runtime 是否在有界回收窗口内确认执行已经停止
+  - `side_effect_state: "settled" | "unknown"`，`settled` 当且仅当 `execution_stopped` 为 `true`
+- 同一组执行事实同时出现在该次调用的 `runtime.tool_completed`（顶层与 `diagnostics.details`，`diagnostics.kind="tool_timeout"`）和终结该 run 的 `runtime.failed` payload 上；语义与验收规则见 `agent-tool-calling.md` 的「取消与超时」。
 
 ## 工具执行阶段区分
 

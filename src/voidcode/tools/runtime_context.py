@@ -82,6 +82,9 @@ class RuntimeToolInvocationContext:
     model: str | None = None
     todo_phases: tuple[dict[str, object], ...] = ()
     tool_timeout_seconds: int | None = None
+    #: Cancellation view for this invocation: mirrors the run-scoped abort
+    #: signal and adds the runtime's own timeout cancellation. Tools must poll
+    #: ``cancelled`` and stop when it becomes true.
     abort_signal: ProviderAbortSignal | None = None
     emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None
     lsp: RuntimeLspToolFacade | None = None

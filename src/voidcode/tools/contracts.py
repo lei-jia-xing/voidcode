@@ -11,6 +11,17 @@ if TYPE_CHECKING:
 type ToolResultStatus = Literal["ok", "error"]
 type ToolDiagnosticsDetails = dict[str, object]
 type ToolReplayPolicy = Literal["safe", "never"]
+#: Side-effect state the runtime may claim for a timed-out execution. ``settled``
+#: means the runtime confirmed the execution stopped; it never means the side
+#: effects already performed were rolled back. ``unknown`` means the execution
+#: may still be in flight.
+type ToolSideEffectState = Literal["settled", "unknown"]
+#: Appended to a timeout message when the runtime could not confirm that the
+#: execution stopped, so no surface reports a plain failure.
+UNCONFIRMED_STOP_CLAUSE = (
+    "the runtime stopped waiting for it without confirming that the execution stopped, "
+    "so it may still be running and the state of its side effects is unknown"
+)
 
 _MAX_DIAGNOSTIC_TEXT_CHARS = 4000
 _MAX_DIAGNOSTIC_DEPTH = 8
@@ -117,11 +128,51 @@ class ToolDiagnostics:
 
 
 class RuntimeToolTimeoutError(TimeoutError):
-    """Raised when the runtime-owned outer tool timeout wins."""
+    """Raised when the runtime-owned outer tool timeout wins.
 
-    def __init__(self, message: str, *, partial_result: object | None = None) -> None:
+    A timeout only says the runtime stopped waiting for the call; it never
+    promises that the call stopped. The execution facts below carry what the
+    runtime could actually verify, so every surface that reports the timeout
+    (tool result, event payload, session state) can state the side-effect state
+    instead of implying that nothing further will happen.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_result: object | None = None,
+        cancellation_signalled: bool = False,
+        execution_stopped: bool = True,
+    ) -> None:
         super().__init__(message)
         self.partial_result = partial_result
+        #: The runtime cancelled the invocation before it stopped waiting.
+        self.cancellation_signalled = cancellation_signalled
+        #: The runtime confirmed the execution stopped before it returned. The
+        #: executor finalizes this once it has reaped (or failed to reap) the
+        #: worker; tools that time themselves out are stopped by definition.
+        self.execution_stopped = execution_stopped
+
+    @property
+    def side_effect_state(self) -> ToolSideEffectState:
+        """``settled`` only when the runtime confirmed the execution stopped."""
+        return "settled" if self.execution_stopped else "unknown"
+
+    @property
+    def error_message(self) -> str:
+        """Runtime-facing message that states the verified side-effect state."""
+        if self.execution_stopped:
+            return str(self)
+        return f"{self}; {UNCONFIRMED_STOP_CLAUSE}"
+
+    def execution_facts(self) -> dict[str, object]:
+        """Additive execution facts shared by every timeout surface."""
+        return {
+            "cancellation_signalled": self.cancellation_signalled,
+            "execution_stopped": self.execution_stopped,
+            "side_effect_state": self.side_effect_state,
+        }
 
 
 @dataclass(frozen=True, slots=True)

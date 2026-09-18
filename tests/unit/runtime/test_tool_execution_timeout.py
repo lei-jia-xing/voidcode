@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
+import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -23,6 +26,7 @@ from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 from voidcode.tools.runtime_context import (
     RuntimeToolInvocationContext,
     bind_runtime_tool_context,
+    current_runtime_tool_context,
 )
 
 
@@ -85,6 +89,84 @@ class _HangingTool:
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         time.sleep(9999)
         return ToolResult(tool_name=self.definition.name, status="ok", content="unreachable")
+
+
+_CANCEL_POLL_SECONDS = 0.01
+_FIRST_WRITE = "first-write.txt"
+_SECOND_WRITE = "second-write.txt"
+
+
+class _CancellationWriterTool:
+    """Controllable mutating tool that polls the runtime cancellation signal.
+
+    Every behaviour writes once, then blocks until the runtime cancellation
+    signal is observable. The tool then either stops (``stop``), ignores the
+    signal until the test releases it (``ignore``), or finishes immediately with
+    an ``ok`` result (``complete``). Nothing waits on a sleep race: the runtime
+    only cancels after its deadline expired, and ``ignore`` stays alive until
+    the test explicitly releases it.
+    """
+
+    definition = ToolDefinition(
+        name="cancellation_writer_tool",
+        description="Writes a file, blocks on runtime cancellation, then acts on the signal.",
+        read_only=False,
+    )
+
+    def __init__(self, workspace: Path, *, behaviour: Literal["stop", "ignore", "complete"]) -> None:
+        self._workspace = workspace
+        self._behaviour = behaviour
+        self.started = threading.Event()
+        self.cancellation_observed = threading.Event()
+        self.release = threading.Event()
+        self.late_write_done = threading.Event()
+        self.finished = threading.Event()
+        self.cancelled_at_end = False
+        self.second_write_performed = False
+
+    def _observe_cancellation(self) -> bool:
+        context = current_runtime_tool_context()
+        signal = context.abort_signal if context is not None else None
+        if signal is None or not signal.cancelled:
+            return False
+        self.cancellation_observed.set()
+        return True
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        _ = call
+        self.started.set()
+        (self._workspace / _FIRST_WRITE).write_text("first\n", encoding="utf-8")
+        if self._behaviour == "ignore":
+            while True:
+                self._observe_cancellation()
+                if self.release.wait(_CANCEL_POLL_SECONDS):
+                    break
+        else:
+            while not self._observe_cancellation():
+                time.sleep(_CANCEL_POLL_SECONDS)
+        self.cancelled_at_end = True
+        if self._behaviour == "stop":
+            self.finished.set()
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="error",
+                content="cancelled by the runtime before the second write",
+                error="cancelled by the runtime before the second write",
+                data={"cancelled": True, "second_write_performed": False},
+            )
+        if self._behaviour == "ignore":
+            (self._workspace / _SECOND_WRITE).write_text("second\n", encoding="utf-8")
+            self.second_write_performed = True
+            self.late_write_done.set()
+            self.finished.set()
+            return ToolResult(tool_name=self.definition.name, status="ok", content="wrote both files")
+        self.finished.set()
+        return ToolResult(
+            tool_name=self.definition.name,
+            status="ok",
+            content="finished at the boundary",
+            data={"completed_at_boundary": True, "second_write_performed": False},
+        )
 
 
 class _SlowButFinishingTool:
@@ -803,10 +885,26 @@ def test_runtime_timeout_wins_when_shorter_than_shell_exec_timeout(tmp_path: Pat
 
     assert "runtime.failed" in event_types
     assert len(timeout_events) == 1
-    assert timeout_events[0].payload == {"tool": "shell_exec", "timeout_seconds": 1}
+    # The timeout payload additionally records the execution facts the runtime
+    # verified: shell_exec stops its own process on the runtime timeout, so no
+    # runtime cancellation was needed, and the execution is confirmed stopped.
+    assert timeout_events[0].payload == {
+        "tool": "shell_exec",
+        "timeout_seconds": 1,
+        "cancellation_signalled": False,
+        "execution_stopped": True,
+        "side_effect_state": "settled",
+    }
 
 
 def test_runtime_timeout_prevents_delayed_shell_exec_side_effect(tmp_path: Path) -> None:
+    """A timed-out command cannot write after the runtime returns.
+
+    The observation window is gated on an independent witness process that
+    passes the moment at which the timed-out command would have written its
+    side effect, so the assertion cannot pass merely because the window was too
+    short (the previous version stopped waiting as soon as the file was absent).
+    """
     side_effect_path = tmp_path / "late-side-effect.txt"
     command = (
         f'"{sys.executable}" -c "import time; '
@@ -826,14 +924,211 @@ def test_runtime_timeout_prevents_delayed_shell_exec_side_effect(tmp_path: Path)
         ),
     )
 
-    _ = list(runtime.run_stream(RuntimeRequest(prompt="go")))
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline:
-        if not side_effect_path.exists():
-            break
-        time.sleep(0.1)
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
+    timeout_payload = _single_tool_event(chunks, "runtime.tool_timeout").payload
+
+    witness_path = tmp_path / "witness.txt"
+    witness = "import sys, time; from pathlib import Path; time.sleep(2.5); Path(sys.argv[1]).write_text('passed', encoding='utf-8')"
+    subprocess.run([sys.executable, "-c", witness, str(witness_path)], check=True, timeout=30)
+    assert witness_path.exists(), "the witness must pass the moment the timed-out command would have written"
 
     assert side_effect_path.exists() is False
+    # shell_exec stops its own process on the runtime timeout, so the runtime
+    # never had to cancel it: the payload says so instead of implying anything
+    # about work that may still be running.
+    assert timeout_payload["cancellation_signalled"] is False
+    assert timeout_payload["execution_stopped"] is True
+    assert timeout_payload["side_effect_state"] == "settled"
+
+
+def _single_tool_event(chunks: list[Any], event_type: str) -> Any:
+    events = [chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == event_type]
+    assert len(events) == 1, f"expected exactly one {event_type} event, saw {len(events)}"
+    return events[0]
+
+
+def _replay_tool_events(runtime: VoidCodeRuntime, session_id: str, event_type: str) -> list[Any]:
+    return [event for event in runtime.resume(session_id).events if event.event_type == event_type]
+
+
+def _wait_for_log_record(caplog: pytest.LogCaptureFixture, needle: str, *, timeout: float = 10.0) -> None:
+    """Wait for an asynchronous observer thread to record its diagnostic line."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if needle in caplog.text:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"no log record containing {needle!r} within {timeout}s; saw: {caplog.text!r}")
+
+
+def _timeout_runtime(tmp_path: Path, tool: Any) -> VoidCodeRuntime:
+    return VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([tool]),
+        graph=_SingleToolCallGraph(tool.definition.name),
+        config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
+            approval_mode="allow",
+            execution_engine="deterministic",
+            tool_timeout_seconds=1,
+        ),
+    )
+
+
+def test_runtime_timeout_signals_cancellation_and_stops_a_cooperative_tool(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A cooperative tool sees the runtime cancellation and stops on its own."""
+    session_id = "timeout-cancellation-observed"
+    tool = _CancellationWriterTool(tmp_path, behaviour="stop")
+    runtime = _timeout_runtime(tmp_path, tool)
+
+    with caplog.at_level(logging.WARNING, logger="voidcode.runtime.tool_execution"):
+        chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
+
+    # The runtime cancelled the in-flight invocation on the same signal the
+    # interrupt path cancels, and the tool observed it.
+    assert tool.started.is_set()
+    assert tool.cancellation_observed.is_set()
+    assert tool.cancelled_at_end is True
+    assert tool.finished.is_set() is True
+    # An observed cancellation means the tool stopped: no late write, and the
+    # runtime could confirm the execution stopped.
+    assert tool.second_write_performed is False
+    assert (tmp_path / _SECOND_WRITE).exists() is False
+    assert (tmp_path / _FIRST_WRITE).read_text(encoding="utf-8") == "first\n"
+
+    timeout_payload = _single_tool_event(chunks, "runtime.tool_timeout").payload
+    assert timeout_payload == {
+        "tool": tool.definition.name,
+        "timeout_seconds": 1,
+        "cancellation_signalled": True,
+        "execution_stopped": True,
+        "side_effect_state": "settled",
+    }
+
+    completed_payload = _single_tool_event(chunks, "runtime.tool_completed").payload
+    assert completed_payload["status"] == "error"
+    assert completed_payload["diagnostics"]["kind"] == "tool_timeout"
+    assert completed_payload["side_effect_state"] == "settled"
+    # The tool's own cancellation result is a late result: it must not become
+    # the recorded tool result.
+    assert completed_payload["content"] is None
+    assert "cancelled by the runtime" not in str(completed_payload)
+
+    failed_payload = _single_tool_event(chunks, "runtime.failed").payload
+    assert failed_payload["kind"] == "tool_timeout"
+    assert failed_payload["side_effect_state"] == "settled"
+    assert failed_payload["error"] == f"tool '{tool.definition.name}' exceeded runtime timeout of 1s"
+
+    # The arrival of the late cancellation result is recorded for diagnosis.
+    _wait_for_log_record(caplog, "abandoned its timed-out execution")
+    assert "status=error" in caplog.text
+
+    assert runtime.resume(session_id).session.status == "failed"
+    replayed = _replay_tool_events(runtime, session_id, "runtime.tool_completed")
+    assert len(replayed) == 1
+    assert replayed[0].payload["status"] == "error"
+    assert replayed[0].payload["diagnostics"]["kind"] == "tool_timeout"
+
+
+def test_runtime_timeout_reports_unknown_side_effects_when_the_tool_ignores_cancellation(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A tool that ignores cancellation leaves the runtime with an unknown state."""
+    session_id = "timeout-cancellation-ignored"
+    tool = _CancellationWriterTool(tmp_path, behaviour="ignore")
+    runtime = _timeout_runtime(tmp_path, tool)
+
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="voidcode.runtime.tool_execution"):
+        chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
+    elapsed = time.monotonic() - started
+
+    # The runtime did not wait for the uncooperative tool: it cancelled the
+    # invocation, reaped for a bounded window, and returned.
+    assert tool.started.is_set()
+    assert tool.cancellation_observed.is_set()
+    assert tool.finished.is_set() is False
+    assert elapsed < 3.0
+
+    timeout_payload = _single_tool_event(chunks, "runtime.tool_timeout").payload
+    assert timeout_payload == {
+        "tool": tool.definition.name,
+        "timeout_seconds": 1,
+        "cancellation_signalled": True,
+        "execution_stopped": False,
+        "side_effect_state": "unknown",
+    }
+
+    completed_payload = _single_tool_event(chunks, "runtime.tool_completed").payload
+    assert completed_payload["status"] == "error"
+    assert completed_payload["side_effect_state"] == "unknown"
+    assert "may still be running" in completed_payload["error"]
+
+    failed_payload = _single_tool_event(chunks, "runtime.failed").payload
+    assert failed_payload["kind"] == "tool_timeout"
+    assert failed_payload["execution_stopped"] is False
+    assert failed_payload["side_effect_state"] == "unknown"
+    assert "may still be running" in failed_payload["error"]
+    assert (tmp_path / _SECOND_WRITE).exists() is False
+
+    # Releasing the tool proves the runtime's claim: the abandoned execution was
+    # still in flight and performed its second write after the run returned.
+    tool.release.set()
+    assert tool.late_write_done.wait(10.0), "the released tool must complete"
+    assert tool.second_write_performed is True
+    assert (tmp_path / _SECOND_WRITE).exists() is True
+
+    # The late completion is recorded for diagnosis, never committed as the
+    # tool result.
+    _wait_for_log_record(caplog, "abandoned its timed-out execution")
+    assert "status=ok" in caplog.text
+    replayed = _replay_tool_events(runtime, session_id, "runtime.tool_completed")
+    assert len(replayed) == 1
+    assert replayed[0].payload["status"] == "error"
+    assert replayed[0].payload["diagnostics"]["kind"] == "tool_timeout"
+    assert "wrote both files" not in str(replayed[0].payload)
+
+
+def test_late_tool_completion_at_the_boundary_is_not_committed_as_the_tool_result(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A completion racing the abandoned wait is recorded, not committed."""
+    session_id = "timeout-boundary-completion"
+    tool = _CancellationWriterTool(tmp_path, behaviour="complete")
+    runtime = _timeout_runtime(tmp_path, tool)
+
+    with caplog.at_level(logging.WARNING, logger="voidcode.runtime.tool_execution"):
+        chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
+
+    # The tool finished as soon as cancellation was signalled: it exited within
+    # the bounded reap window, so the runtime could confirm the execution
+    # stopped without reaping it by waiting.
+    assert tool.cancellation_observed.is_set()
+    assert tool.finished.is_set() is True
+
+    completed_payload = _single_tool_event(chunks, "runtime.tool_completed").payload
+    assert completed_payload["status"] == "error"
+    assert completed_payload["execution_stopped"] is True
+    assert completed_payload["side_effect_state"] == "settled"
+    assert completed_payload["diagnostics"]["kind"] == "tool_timeout"
+    assert completed_payload["content"] is None
+    assert "finished at the boundary" not in str(completed_payload)
+
+    _wait_for_log_record(caplog, "abandoned its timed-out execution")
+    assert "status=ok" in caplog.text
+
+    # Storage keeps the timeout outcome: the late ok result never overwrites it.
+    assert runtime.resume(session_id).session.status == "failed"
+    replayed = _replay_tool_events(runtime, session_id, "runtime.tool_completed")
+    assert len(replayed) == 1
+    assert replayed[0].payload["status"] == "error"
+    assert replayed[0].payload["diagnostics"]["kind"] == "tool_timeout"
+    assert "finished at the boundary" not in str(replayed[0].payload)
 
 
 def test_tool_native_timeout_error_does_not_emit_runtime_tool_timeout_without_runtime_cap(
@@ -995,10 +1290,16 @@ def test_timeout_exit_emits_terminal_tool_status_with_error(
     assert payload["tool"] == "shell_exec"
     assert payload["diagnostics"]["kind"] == "tool_timeout"
     assert payload["diagnostics"]["summary"] == "tool 'shell_exec' exceeded runtime timeout of 1s"
+    # The details are additive since the timeout records its execution facts:
+    # shell_exec kills its own process on the runtime timeout, so cancellation
+    # was not signalled by the runtime and the execution is confirmed stopped.
     assert payload["diagnostics"]["details"] == {
         "tool_name": "shell_exec",
         "timed_out": True,
         "timeout_seconds": 1,
+        "cancellation_signalled": False,
+        "execution_stopped": True,
+        "side_effect_state": "settled",
     }
     assert payload["diagnostics"]["guidance"] == "Reduce the command scope, increase the timeout, or retry."
 
