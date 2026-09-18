@@ -387,7 +387,52 @@ session 一旦进入终端状态（`completed` / `failed`，以及没有活跃 r
 
 1. **child/task 真相独立于 parent 封印**：child session 行与 `background_tasks` 行是 child 自己的 truth；parent 封印不影响 child 完成结果的持久化（task 标记 terminal、child session 落盘照常进行）。
 2. **parent 通知是唯一 sanctioned 的例外**：`DELEGATED_BACKGROUND_TASK_EVENT_TYPES` 仍允许附加到已封印的 parent 行（parent 需要感知 delegated result 的完成），但它们只是通知，永远不会改变 parent 的 status / sequence 顺序 / resume checkpoint。若未来某通知类型落入封印范围，worker 侧必须捕获 `SessionSealedError` 并丢弃通知，而不是崩溃或回退 child 真相。
-3. **关闭排空顺序（enforced）**：`VoidCodeRuntime.__exit__` 必须先 `shutdown_background_tasks()`（join 每个 worker——worker 在退出前已把 task 终态、child session 真相、parent 通知与 lifecycle hooks 全部落盘；超时未完成的 worker 被标记 `failed` 以兜底），再停掉进程管理器，最后才关闭 ACP/MCP/LSP 适配器。session 封印侧：run 产生的所有事件先增量 append，`save_run` 只封存行快照且绝不回退 `last_event_sequence`，封印先于活跃 run 注销发生，从而把「封印后到达的 late event」精确地暴露给 runtime guard 并被拒绝/丢弃。
+3. **关闭排空顺序（enforced）**：`VoidCodeRuntime.__exit__` 必须先 `shutdown_background_tasks()`（join 每个 worker——worker 在退出前已把 task 终态、child session 真相、parent 通知与 lifecycle hooks 全部落盘；超时未完成的 worker 先被**撤销执行所有权**、再被标记 `interrupted`（keep-alive）/`failed` 以兜底，见「执行所有权与 late write」），再停掉进程管理器，最后才关闭 ACP/MCP/LSP 适配器；完整规范与执行点见 [`execution-lifecycle.md`](./execution-lifecycle.md) → (d)。session 封印侧：run 产生的所有事件先增量 append，`save_run` 只封存行快照且绝不回退 `last_event_sequence`，封印先于活跃 run 注销发生，从而把「封印后到达的 late event」精确地暴露给 runtime guard 并被拒绝/丢弃。
+
+## 执行所有权与 late write（execution ownership）
+
+生命周期规范（取消如何传入、何时允许提交结果、何时失去所有权、何时释放资源）以
+[`execution-lifecycle.md`](./execution-lifecycle.md) 为唯一权威表述；本节只保留 delegated/background 场景的具体机制。
+
+不变式：
+
+> 每个 background execution 在开始前从 runtime 取得一份 `ExecutionLease`；只有当前**未撤销**的 lease 能让该 execution 写 runtime 真相与 session 事件。撤销按 lease 身份（`task_id` + `generation`）生效，而不是按 task 名查询——因此后来取得同一 task 所有权的 execution 永远不会重新授权旧的 execution。
+
+### 授予（grant）
+
+- 唯一分发点 `RuntimeBackgroundTaskSupervisor._spawn_worker_thread`（queue drain 与 `steer_background_task` 共用）在 worker 线程 `start()` **之前**授予 lease 并递增 generation，所以并发的 shutdown/reconcile 撤销总能观察到它。
+- worker 线程在 `run_background_task_worker` 的整个执行期内把 lease 绑定到自身线程（`EXECUTION_OWNERSHIP.bind`）。绑定即写资格：`SqliteSessionStore._write_connect`——所有存储写入的唯一网关——在写入前校验绑定（`assert_writes_allowed`），因此任何现有或未来的持久化路径都无法绕过该检查。
+
+### 撤销（revoke）
+
+runtime 从执行者手中**夺取**所有权时撤销，且撤销先于状态变更：
+
+| 触发 | 位置 | 语义 |
+| --- | --- | --- |
+| shutdown join 超时 | `_fail_unfinished_shutdown_threads` | 先 revoke，再把 task 行标 `interrupted`/`failed`——终态因此是终局而非暂定 |
+| dispatch 后、worker 启动前 shutdown | `_mark_background_task_interrupted_before_worker` | lease 随 dispatch 产生但从未成为 execution，直接撤销 |
+| 被新 execution 取代（同一 task 重新分发） | `grant` | 旧 lease 立即撤销（generation 递增） |
+| execution 正常结束 | worker 线程收尾 | `revoke_if_current`（身份校验，不会覆盖已接管的新 execution） |
+
+`cancelled` 是**协作式**停止：cancel 请求翻转 task 行，worker 保留收尾资格落盘 child 的取消真相与 parent 通知；只有当 worker 未在期限内结束（shutdown）时才被剥夺所有权。
+
+### 撤销后可提交的内容
+
+**无。** 被撤销的 execution：任务状态提交（`finalize_background_task_from_session_response` 与 worker 失败分支）经 `authorize_bound` 拒绝，不触碰 task 行；生命周期通知（`run_background_task_lifecycle_hook`）被拒，不追加 parent 通知；任何 session / background-task 存储写入在 `_write_connect` 抛 `ExecutionOwnershipRevokedError`，因此既写不了事件，也 seal 不了 child 行。
+
+拒绝不静默丢失：写入方记录 `late_write` 诊断（`ExecutionOwnershipRegistry.late_writes()`，按 task + generation + operation + **拒绝线程**去重计数，因此条目里的线程与计数同每条 warning 一致）并输出 `logger.warning`；诊断只记录事实，绝不变更 truth。
+
+### 恢复语义
+
+`interrupted` 仍是**可恢复断点**：resume 是 runtime 拥有的状态转换（`interrupted -> running`，由 steer 重新分发）并授予新 generation。旧 worker 的 late completion 不是 resume，也永远不能被当作 resume 应用。
+
+### shutdown 保证
+
+`shutdown_background_tasks` 返回后：每个已派发 task 行都是 terminal；按时完成的 worker 的 child 真相、parent 通知与 hooks 已落盘；超时未完成的 execution 已失去写资格——其后续的事件写入、任务状态提交与完成通知全部被拒绝并记录为诊断，`interrupted` 行不会被改写。
+
+该保证是**进程内**的：进程退出后 execution 线程已死，late write 只能来自另一个进程对同一数据库的写入，属于现有 SQLite 并发模型，不在本契约范围内。
+
+边界（可检查的不变式）：lease 绑定在线程上，网关只校验当前线程的绑定，因此 runtime-owned 的提交**必须发生在 execution 自己的线程（或继承了该 lease 的线程）上**。工具执行线程已经在保证内：`tool_executor` 的 worker 继承调用方的 lease（`src/voidcode/runtime/tool_execution.py:334-337`），所以工具自身发起的 runtime-owned 写（例如 `background_process op="start"` 注册进程行）在撤销后同样被拒。走出本保证的只有**工具自己 spawn 的**写者线程/进程（以及任何未来 spawn 自己线程、又从该线程持久化的 manager）：新增这类持久化线程前，必须把 lease 传播到该线程或改为在 execution 线程上提交。
 
 ## v1 delegated/background idle reminder
 

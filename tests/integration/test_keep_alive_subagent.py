@@ -13,6 +13,11 @@ Covers the observable contracts of the keep-alive delegated worker:
 - runtime shutdown parks an idle keep-alive task ``interrupted`` with the
   child session and transcript preserved, and a fresh runtime (process
   restart) can steer the same task id (``interrupted -> running``);
+- runtime shutdown that expires its wait seizes execution ownership: the
+  still-running worker cannot commit a completion, change task state, append a
+  parent notification, or write child-session events afterwards, the refusal is
+  recorded as a diagnostic, and a later steer resumes the task under a NEW
+  execution that does commit;
 - the one-shot child ``yield`` contract is enforced: a delegated child
   whose turn carries no ``keep_alive_turn`` metadata still raises
   ``ValueError`` when it completes without ``yield``.
@@ -24,15 +29,18 @@ a prompt-driven graph that performs one tool call per child turn.
 from __future__ import annotations
 
 import importlib
+import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 import pytest
 
 from voidcode.graph.contracts import GraphSession
+from voidcode.runtime.execution_ownership import EXECUTION_OWNERSHIP
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
@@ -280,6 +288,288 @@ class _ImmediateFinishGraph:
         if session.metadata.get("parent_session_id") is not None:
             return _GraphStep(output="child done without handoff", is_finished=True)
         return _GraphStep(output="leader done", is_finished=True)
+
+
+class _BlockingKeepAliveChildGraph:
+    """Leader delegates a keep-alive child whose first turns block on gates.
+
+    ``blocks[i]`` is the ``(entered, gate)`` pair for child turn ``i + 1``: the
+    turn signals ``entered`` and waits on ``gate`` before submitting its
+    ``yield``. Turns without a pair submit immediately. A blocked turn provably
+    outlives a short shutdown wait — the audited window in which a seized
+    worker used to complete anyway.
+    """
+
+    def __init__(self, *, blocks: tuple[tuple[threading.Event, threading.Event], ...] = ()) -> None:
+        self.blocks = blocks
+        self._turn_index = 0
+
+    def step(
+        self,
+        request: object,
+        tool_results: tuple[object, ...],
+        *,
+        session: GraphSession,
+    ) -> _GraphStep:
+        if session.metadata.get("parent_session_id") is None:
+            if not tool_results:
+                return _GraphStep(
+                    tool_call=_tool_call(
+                        tool_name="task",
+                        arguments={
+                            "prompt": "blocking keep-alive child",
+                            "run_in_background": True,
+                            "load_skills": [],
+                            "subagent_type": "worker",
+                            "description": "Blocking keep-alive child",
+                            "keep_alive": True,
+                        },
+                    ),
+                )
+            return _GraphStep(
+                output=cast(ToolResultLike, tool_results[-1]).content,
+                is_finished=True,
+            )
+        if any(cast(ToolResultLike, result).tool_name == "yield" for result in tool_results):
+            return _GraphStep(output="child finished", is_finished=True)
+        self._turn_index += 1
+        if self._turn_index <= len(self.blocks):
+            entered, gate = self.blocks[self._turn_index - 1]
+            entered.set()
+            gate.wait(timeout=15.0)
+        return _GraphStep(
+            tool_call=_tool_call(
+                tool_name="yield",
+                arguments={"summary": "keep-alive handoff", "data": {"completed_work": ["child turn"]}},
+            ),
+        )
+
+
+class BackgroundTaskSupervisorLike(Protocol):
+    threads: dict[str, threading.Thread]
+
+
+class StoredSessionLike(Protocol):
+    events: tuple[EventLike, ...]
+
+
+class SessionStoreLike(Protocol):
+    def load_session(self, *, workspace: Path, session_id: str) -> StoredSessionLike: ...
+
+    def load_session_status(self, *, workspace: Path, session_id: str) -> str: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _SeizedKeepAlive:
+    """Observable result of seizing a blocked keep-alive execution."""
+
+    task_id: str
+    child_session_id: str
+    worker: threading.Thread
+    task_after_seizure: BackgroundTaskStateLike
+    child_after_seizure: dict[str, object]
+    parent_after_seizure: dict[str, object]
+
+
+def _runtime_internals(runtime: RuntimeRunner) -> Any:
+    """Runtime internals the observable contract does not expose (test-only)."""
+    return cast(Any, runtime)
+
+
+def _supervisor(runtime: RuntimeRunner) -> BackgroundTaskSupervisorLike:
+    return cast(BackgroundTaskSupervisorLike, _runtime_internals(runtime)._background_task_supervisor)
+
+
+def _session_ledger(runtime: RuntimeRunner, workspace: Path, session_id: str) -> dict[str, object]:
+    """Observable session truth: status, event count, watermark, completions.
+
+    Read from the store rather than ``session_result``: a delegated child that
+    is still mid-turn has no ``agent_capability_snapshot`` yet, and the whole
+    point of the seized assertion is to read the row *while* the run is
+    unfinished.
+    """
+    store = cast(SessionStoreLike, _runtime_internals(runtime)._session_store)
+    events = store.load_session(workspace=workspace, session_id=session_id).events
+    return {
+        "status": store.load_session_status(workspace=workspace, session_id=session_id),
+        "event_count": len(events),
+        "max_sequence": max((event.sequence for event in events), default=0),
+        "completion_notifications": sum(1 for event in events if event.event_type == "runtime.background_task_completed"),
+    }
+
+
+def _blocking_keep_alive_runtime(
+    tmp_path: Path,
+    *,
+    blocks: tuple[tuple[threading.Event, threading.Event], ...] = (),
+) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                graph=_BlockingKeepAliveChildGraph(blocks=blocks),
+                permission_policy=permission_policy(mode="allow"),
+            ),
+        ),
+    )
+    return runtime_request, runtime
+
+
+def _seize_blocked_keep_alive_child(tmp_path: Path) -> tuple[RuntimeRunner, _SeizedKeepAlive]:
+    """Run the audited scenario: seize a keep-alive worker that is still blocked.
+
+    Deterministic throughout: the child signals ``entered`` then blocks on
+    ``gate``; the shutdown wait is allowed to expire; the worker thread is
+    released and joined before anything is asserted about the outcome.
+    """
+    entered: threading.Event = threading.Event()
+    gate: threading.Event = threading.Event()
+    runtime_request, runtime = _blocking_keep_alive_runtime(tmp_path, blocks=((entered, gate),))
+
+    leader = runtime.run(runtime_request(prompt="delegate blocking keep-alive child", session_id="leader-session"))
+    task_id = _task_id_from_leader_run(leader)
+    assert entered.wait(timeout=10.0), "child never entered its blocking step"
+
+    worker = _supervisor(runtime).threads[task_id]
+    child_session_id = runtime.load_background_task(task_id).session_id
+    assert child_session_id is not None
+
+    runtime.shutdown_background_tasks(timeout_seconds=0.05)
+    task_after_seizure = runtime.load_background_task(task_id)
+    # The wait expired while the execution was still running: without an
+    # ownership rule this worker commits a completion after shutdown returned.
+    assert worker.is_alive(), "the blocked child did not outlive the shutdown wait"
+    seized = _SeizedKeepAlive(
+        task_id=task_id,
+        child_session_id=child_session_id,
+        worker=worker,
+        task_after_seizure=task_after_seizure,
+        child_after_seizure=_session_ledger(runtime, tmp_path, child_session_id),
+        parent_after_seizure=_session_ledger(runtime, tmp_path, "leader-session"),
+    )
+    gate.set()
+    worker.join(timeout=10.0)
+    assert not worker.is_alive(), "the seized worker did not exit after the gate was released"
+    return runtime, seized
+
+
+def test_keep_alive_shutdown_seizes_worker_ownership_and_refuses_late_completion(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A seized keep-alive execution cannot commit anything after shutdown returned.
+
+    Shutdown expires its wait while the child turn is still blocked; the worker
+    threads that fact through as an ownership revocation, so the late
+    completion it produces when the block clears is refused everywhere:
+    task state, child-session events, and the parent completion notification.
+    The refusal itself is preserved as a diagnostic.
+    """
+    with caplog.at_level(logging.WARNING, logger="voidcode.runtime.execution_ownership"):
+        runtime, seized = _seize_blocked_keep_alive_child(tmp_path)
+
+    assert seized.task_after_seizure.status == "interrupted"
+    final_task = runtime.load_background_task(seized.task_id)
+
+    # (b) task state: the seized execution cannot flip ``interrupted`` to a
+    # completion, and it cannot clear the shutdown error it does not own.
+    assert final_task.status == "interrupted"
+    assert final_task.error == seized.task_after_seizure.error
+    assert final_task.error == "runtime exited during keep-alive worker turn"
+
+    # (d) child-session truth: no event and no row upgrade from the revoked run.
+    assert _session_ledger(runtime, tmp_path, seized.child_session_id) == seized.child_after_seizure
+
+    # (c) no parent notification from the revoked execution.
+    assert _session_ledger(runtime, tmp_path, "leader-session") == seized.parent_after_seizure
+    assert _session_ledger(runtime, tmp_path, "leader-session")["completion_notifications"] == 0
+
+    # (a)+(3) the refused late completion is recorded, not lost.
+    diagnostics = [diagnostic for diagnostic in EXECUTION_OWNERSHIP.late_writes() if diagnostic.task_id == seized.task_id]
+    assert diagnostics, "the late write after revocation was not recorded"
+    assert diagnostics[0].reason == "runtime shutdown deadline expired while the execution was in flight"
+    assert any("lost ownership" in record.getMessage() for record in caplog.records)
+
+
+def test_keep_alive_interrupted_resume_runs_under_a_new_execution_and_commits(tmp_path: Path) -> None:
+    """``interrupted`` stays resumable: the next steer owns the task and commits.
+
+    A late completion from the seized worker is not a resume. Resuming is a
+    runtime-owned transition that grants a NEW execution; that execution must
+    still be able to complete the task and repair the child session row.
+    """
+    _, seized = _seize_blocked_keep_alive_child(tmp_path)
+
+    # A fresh runtime (process restart) is how ``interrupted`` is resumed: the
+    # old runtime's shutdown flag is terminal for its own dispatcher.
+    settled = threading.Event()
+    settled.set()
+    _, fresh_runtime = _blocking_keep_alive_runtime(tmp_path, blocks=((settled, settled),))
+
+    steered = fresh_runtime.steer_background_task(seized.task_id, "resume handoff")
+    assert steered.status == "running"
+    assert steered.session_id == seized.child_session_id
+
+    completed = _wait_for_background_task_status(fresh_runtime, seized.task_id, {"completed"})
+    assert completed.error is None
+
+    child = fresh_runtime.session_result(session_id=seized.child_session_id)
+    assert child.session.status == "completed"
+    assert _session_ledger(fresh_runtime, tmp_path, "leader-session")["completion_notifications"] == 1
+
+
+def test_keep_alive_resume_does_not_reauthorize_the_seized_worker(tmp_path: Path) -> None:
+    """A new execution's ownership never re-authorizes the seized one.
+
+    Revocation is per lease identity, not per task: after the task is resumed
+    (``interrupted -> running`` under a new generation), the old worker's late
+    completion is still refused — it neither finishes the task nor becomes the
+    resumed turn's result.
+    """
+    entered_old: threading.Event = threading.Event()
+    gate_old: threading.Event = threading.Event()
+    runtime_request, runtime = _blocking_keep_alive_runtime(tmp_path, blocks=((entered_old, gate_old),))
+    leader = runtime.run(runtime_request(prompt="delegate blocking keep-alive child", session_id="leader-session"))
+    task_id = _task_id_from_leader_run(leader)
+    assert entered_old.wait(timeout=10.0), "child never entered its blocking step"
+    worker_old = _supervisor(runtime).threads[task_id]
+
+    runtime.shutdown_background_tasks(timeout_seconds=0.05)
+    assert worker_old.is_alive(), "the blocked child did not outlive the shutdown wait"
+
+    # Resume: a new execution takes ownership of the same task and blocks.
+    entered_new: threading.Event = threading.Event()
+    gate_new: threading.Event = threading.Event()
+    _, fresh_runtime = _blocking_keep_alive_runtime(tmp_path, blocks=((entered_new, gate_new),))
+    steered = fresh_runtime.steer_background_task(task_id, "resume handoff")
+    assert steered.status == "running"
+    child_session_id = steered.session_id
+    assert child_session_id is not None
+    assert entered_new.wait(timeout=10.0), "the resumed execution never entered its blocking step"
+    live_lease = EXECUTION_OWNERSHIP.current(workspace=tmp_path, task_id=task_id)
+    assert live_lease is not None
+    assert live_lease.generation == 2, "the resumed execution must own a NEW generation"
+
+    # Release the OLD seized worker while the new execution is still running.
+    gate_old.set()
+    worker_old.join(timeout=10.0)
+    assert not worker_old.is_alive(), "the seized worker did not exit after the gate was released"
+    assert fresh_runtime.load_background_task(task_id).status == "running"
+
+    gate_new.set()
+    completed = _wait_for_background_task_status(fresh_runtime, task_id, {"completed"})
+    assert completed.error is None
+    assert fresh_runtime.session_result(session_id=child_session_id).session.status == "completed"
+    # Exactly one completion notification: the new execution's.
+    assert _session_ledger(fresh_runtime, tmp_path, "leader-session")["completion_notifications"] == 1
+    refusals = [diagnostic for diagnostic in EXECUTION_OWNERSHIP.late_writes() if diagnostic.task_id == task_id]
+    assert refusals, "the seized worker's late write was not recorded"
+    assert {diagnostic.generation for diagnostic in refusals} == {1}
 
 
 def _wait_for_background_task_status(

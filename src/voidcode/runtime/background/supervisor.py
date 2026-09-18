@@ -45,6 +45,7 @@ from ..events import (
     EventEnvelope,
 )
 from ..execution.seams import resolve_runtime_session_routing
+from ..execution_ownership import EXECUTION_OWNERSHIP, ExecutionLease, ExecutionOwnershipRevokedError
 from ..hook_runtime import HOOK_RECURSION_ENV_VAR, hook_execution_policy_from_metadata
 from ..permission_policy import approval_request_id_from_waiting_response
 from ..runtime_debug import prompt_from_events
@@ -314,12 +315,19 @@ class RuntimeBackgroundTaskSupervisor:
            durably (terminal task row, child-session truth, parent-session
            notification, lifecycle hooks) BEFORE the thread exits, so a joined
            worker's writes are committed when this loop sees it dead.
-        3. If the timeout expires, terminalize (mark ``failed`` in storage)
-           every worker that could not finish, so no in-flight background-task
-           result is lost to teardown.
+        3. If the timeout expires, seize ownership of every worker that could
+           not finish — revoke its execution lease, then terminalize its task
+           row (``interrupted`` for keep-alive tasks, ``failed`` otherwise) —
+           so no in-flight background-task result is lost to teardown AND the
+           still-live worker can no longer write anything.
 
-        After this returns, every dispatched task row is terminal and all
-        child/background-task results are durable.
+        After this returns, every dispatched task row is terminal, all
+        child/background-task results are durable, and every execution that
+        could not finish in time has lost write eligibility (see the
+        "Execution ownership" invariant in
+        ``docs/contracts/background-task-delegation.md``). ``interrupted``
+        remains resumable: a later execution takes ownership with a new lease,
+        while the seized worker's late completion is refused and recorded.
         """
         self._shutdown_requested = True
         deadline = time.monotonic() + max(timeout_seconds, 0.0)
@@ -430,6 +438,17 @@ class RuntimeBackgroundTaskSupervisor:
                     if self._threads.get(task_id) is thread:
                         self._threads.pop(task_id, None)
                 continue
+            # Ownership is seized before the row is terminalized: the worker is
+            # still alive past the shutdown deadline, so it must lose every
+            # write (task state, child-session events, parent notifications)
+            # before this transition claims the task. Revoking first is what
+            # makes the terminal row below final rather than provisional — a
+            # late completion from this worker can no longer overwrite it.
+            _ = EXECUTION_OWNERSHIP.revoke(
+                workspace=self._workspace,
+                task_id=task_id,
+                reason="runtime shutdown deadline expired while the execution was in flight",
+            )
             try:
                 task = self._session_store.load_background_task(
                     workspace=self._workspace,
@@ -1300,6 +1319,16 @@ class RuntimeBackgroundTaskSupervisor:
                         )
                         if pending_approval is not None or pending_question is not None:
                             continue
+                    # The registration liveness read above already proved no
+                    # live worker owns this row, so the runtime seizes it: revoke
+                    # any lease that outlived its execution before declaring the
+                    # task terminal, keeping "row is terminal" and "no execution
+                    # may still write" in agreement.
+                    _ = EXECUTION_OWNERSHIP.revoke(
+                        workspace=self._workspace,
+                        task_id=summary.task.id,
+                        reason="background task worker exited before a terminal update",
+                    )
                     terminal_orphan = self._session_store.mark_background_task_terminal(
                         workspace=self._workspace,
                         task_id=summary.task.id,
@@ -1414,12 +1443,23 @@ class RuntimeBackgroundTaskSupervisor:
         The thread is registered in ``self._threads`` here, before the caller
         starts it, so a concurrent drain orphan-scan never terminalizes a
         ``running`` row that owns an in-flight dispatch.
+
+        This is also the single dispatch chokepoint for execution ownership:
+        the worker's lease is granted here, before the thread starts, so a
+        concurrent shutdown/reconcile revocation always observes a lease for
+        this execution and can never be outrun by a worker that has not yet
+        claimed one. The lease is bound to the worker thread around
+        ``run_background_task_worker`` — see
+        ``docs/contracts/background-task-delegation.md`` ("Execution
+        ownership").
         """
         worker_start_gate = threading.Event()
+        lease = EXECUTION_OWNERSHIP.grant(workspace=self._workspace, task_id=task_id)
 
         def run_worker_after_started_hook(
             *,
             background_task_id: str = task_id,
+            execution_lease: ExecutionLease = lease,
             reserved_identity: _BackgroundTaskConcurrencyIdentity = reserved_identity,
             start_gate: threading.Event = worker_start_gate,
         ) -> None:
@@ -1432,7 +1472,19 @@ class RuntimeBackgroundTaskSupervisor:
                         with self._queue_lock:
                             self._release_slot(reserved_identity)
                     return
-                self.run_background_task_worker(background_task_id)
+                try:
+                    with EXECUTION_OWNERSHIP.bind(execution_lease):
+                        self.run_background_task_worker(background_task_id)
+                finally:
+                    # A lease never outlives its execution: release ownership so
+                    # a later steer/resume grants a fresh generation. Identity
+                    # checked, so a successor that already took ownership (a
+                    # steer dispatched from this worker's own queue drain) is
+                    # never clobbered.
+                    _ = EXECUTION_OWNERSHIP.revoke_if_current(
+                        execution_lease,
+                        reason="delegated execution ended",
+                    )
             finally:
                 with self._queue_lock:
                     # Only the current worker may unregister itself. A newer
@@ -1453,6 +1505,14 @@ class RuntimeBackgroundTaskSupervisor:
         return worker, worker_start_gate
 
     def _mark_background_task_interrupted_before_worker(self, *, task_id: str) -> None:
+        # The dispatch that granted this lease never became an execution: revoke
+        # first so the lease cannot authorize anything (there is no worker
+        # thread to stop).
+        _ = EXECUTION_OWNERSHIP.revoke(
+            workspace=self._workspace,
+            task_id=task_id,
+            reason="runtime shutdown requested before delegated worker execution started",
+        )
         try:
             terminal_task = self._session_store.mark_background_task_terminal(
                 workspace=self._workspace,
@@ -2480,6 +2540,17 @@ class RuntimeBackgroundTaskSupervisor:
         background_run = metadata.get("background_run")
         if not isinstance(background_task_id, str) or background_run is not True:
             return
+        # Single commit path for a delegated turn's outcome. A worker whose
+        # ownership was revoked (shutdown deadline, terminal seizure,
+        # supersede) must not commit a completion here: the refusal is recorded
+        # as a late-write diagnostic and the resumable ``interrupted`` row is
+        # left to a new execution. See the "Execution ownership" invariant in
+        # docs/contracts/background-task-delegation.md.
+        if not EXECUTION_OWNERSHIP.authorize_bound(
+            task_id=background_task_id,
+            operation="finalize_background_task_from_session_response",
+        ):
+            return
         current_task = self._session_store.load_background_task(
             workspace=self._workspace,
             task_id=background_task_id,
@@ -2660,6 +2731,14 @@ class RuntimeBackgroundTaskSupervisor:
         }
         surface = surface_by_status.get(task.status)
         if surface is None:
+            return
+        # Notifications are part of the commit: a revoked execution must not
+        # announce a terminal outcome it does not own. Control-plane callers
+        # (shutdown drain, reconcile, cancel) are unbound and unaffected.
+        if not EXECUTION_OWNERSHIP.authorize_bound(
+            task_id=task.task.id,
+            operation="run_background_task_lifecycle_hook",
+        ):
             return
         self.run_background_task_lifecycle_surface(
             task=task,
@@ -3106,7 +3185,11 @@ class RuntimeBackgroundTaskSupervisor:
                                 if slot_identity is not None and slot_reserved:
                                     self._release_slot(slot_identity)
                                     slot_reserved = False
-                            self._drain_background_task_queue()
+                            # Control-plane dispatch for other queued tasks runs
+                            # unbound, so a revoked execution never files their
+                            # writes as its own late writes.
+                            with EXECUTION_OWNERSHIP.bind(None):
+                                self._drain_background_task_queue()
                             if self._wait_for_slot_or_cancel(
                                 task_id=task_id,
                                 identity=fallback_identity,
@@ -3182,7 +3265,10 @@ class RuntimeBackgroundTaskSupervisor:
                     with self._queue_lock:
                         self._release_slot(slot_identity)
                         slot_reserved = False
-                    self._drain_background_task_queue()
+                    # Control-plane dispatch (see the fallback drain above): the
+                    # retry's queue drain is not this execution's write.
+                    with EXECUTION_OWNERSHIP.bind(None):
+                        self._drain_background_task_queue()
                     if self._wait_for_rate_limit_backoff_or_cancel(
                         task_id=task_id,
                         retry_count=retry_count,
@@ -3255,8 +3341,18 @@ class RuntimeBackgroundTaskSupervisor:
                 else:
                     self.finalize_background_task_from_session_response(session_response=response)
                 return
+        except ExecutionOwnershipRevokedError as revoked:
+            # The execution lost ownership mid-turn and its next write was
+            # refused at the storage gateway. Nothing to finalize: the refusal
+            # is recorded on the lease (``late_writes``) and the terminal task
+            # row belongs to whichever transition revoked us.
+            logger.warning("background task %s execution stopped by ownership revocation: %s", task_id, revoked)
         except Exception as exc:
             logger.exception("background task failed: %s", task_id)
+            if not EXECUTION_OWNERSHIP.authorize_bound(task_id=task_id, operation="mark_background_task_terminal"):
+                # Ownership was revoked: a late failure must not mutate task
+                # truth. The refusal is recorded as a late-write diagnostic.
+                return
             try:
                 terminal_task = self._session_store.mark_background_task_terminal(
                     workspace=self._workspace,
@@ -3299,14 +3395,18 @@ class RuntimeBackgroundTaskSupervisor:
                 if self._threads.get(task_id) is threading.current_thread():
                     self._threads.pop(task_id, None)
             if not self._shutdown_requested:
-                try:
-                    self._drain_background_task_queue()
-                except (RuntimeError, ValueError) as drain_exc:
-                    logger.debug(
-                        "background task %s skipped queue drain during worker cleanup: %s",
-                        task_id,
-                        drain_exc,
-                    )
+                # Dispatching other queued tasks is control-plane work, not a
+                # write by this execution, so it must not run under this
+                # execution's lease (which a revoked worker still carries).
+                with EXECUTION_OWNERSHIP.bind(None):
+                    try:
+                        self._drain_background_task_queue()
+                    except (RuntimeError, ValueError) as drain_exc:
+                        logger.debug(
+                            "background task %s skipped queue drain during worker cleanup: %s",
+                            task_id,
+                            drain_exc,
+                        )
 
     @staticmethod
     def _response_has_rate_limit_error(response: RuntimeResponse) -> bool:

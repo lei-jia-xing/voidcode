@@ -23,6 +23,7 @@ from ..tools.runtime_context import (
     RuntimeTranscriptFacade,
     bind_runtime_tool_context,
 )
+from .execution_ownership import EXECUTION_OWNERSHIP
 
 logger = logging.getLogger(__name__)
 
@@ -321,18 +322,30 @@ class RuntimeToolExecutor:
                         dropped.last_ordinal = None
                         dropped.streams.clear()
 
+        # Runtime-owned commits made from inside a tool (``background_process``
+        # ``op=start`` registering a process row, a delegated ``task`` dispatch,
+        # ...) must be attributed to the execution that invoked the tool, not to
+        # a thread the executor owns. The tool worker therefore inherits the
+        # caller's execution lease, so the storage gateway refuses those commits
+        # once ownership is revoked — without this, a seized execution could keep
+        # mutating truth through its tools. An unbound caller (foreground run,
+        # control plane) leaves the worker unbound. See the "Execution ownership"
+        # invariant in docs/contracts/background-task-delegation.md.
+        caller_lease = EXECUTION_OWNERSHIP.bound_lease()
+
         def invoke_tool() -> None:
-            try:
-                result = self._invoke_tool(
-                    tool=tool,
-                    invocation=invocation,
-                    tool_timeout=tool_timeout,
-                    emit_tool_progress=emit_tool_progress,
-                    cancel_signal=cancel_signal,
-                )
-                progress_queue.put(_ToolResultItem(result, dropped.take()))
-            except Exception as exc:
-                progress_queue.put(_ToolExceptionItem(exc, dropped.take()))
+            with EXECUTION_OWNERSHIP.bind(caller_lease):
+                try:
+                    result = self._invoke_tool(
+                        tool=tool,
+                        invocation=invocation,
+                        tool_timeout=tool_timeout,
+                        emit_tool_progress=emit_tool_progress,
+                        cancel_signal=cancel_signal,
+                    )
+                    progress_queue.put(_ToolResultItem(result, dropped.take()))
+                except Exception as exc:
+                    progress_queue.put(_ToolExceptionItem(exc, dropped.take()))
 
         worker = threading.Thread(
             target=invoke_tool,

@@ -28,6 +28,7 @@ from ..events import (
     EventEnvelope,
     EventSource,
 )
+from ..execution_ownership import EXECUTION_OWNERSHIP
 from ..paths import DB_PATH_ENV, sessions_db_path
 from ..permission import PendingApproval
 from ..question import PendingQuestion
@@ -567,6 +568,12 @@ class SqliteSessionStore(
 
     @contextmanager
     def _write_connect(self, workspace: Path) -> Iterator[sqlite3.Connection]:
+        # Execution ownership gate: this is the single gateway every storage
+        # mutation passes through, so a revoked execution cannot commit here
+        # regardless of which caller reaches it. See
+        # ``runtime/execution_ownership.py`` and the "Execution ownership"
+        # invariant in docs/contracts/background-task-delegation.md.
+        EXECUTION_OWNERSHIP.assert_writes_allowed(operation="session_store_write")
         with self._connect(workspace) as connection:
             _ = connection.execute("BEGIN IMMEDIATE")
             try:

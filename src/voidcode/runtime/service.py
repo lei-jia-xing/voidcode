@@ -681,7 +681,13 @@ class VoidCodeRuntime(RuntimeSurface):
         #      joins every live worker so each child/background-task result is
         #      durably finalized (task row terminal state, parent-session
         #      notification events, lifecycle hooks) before anything is torn
-        #      down, and terminalizes anything that could not finish.
+        #      down, and, for anything that could not finish, revokes its
+        #      execution ownership first (the still-live worker can then no
+        #      longer write task state, child-session events or parent
+        #      notifications) before terminalizing its task row
+        #      (``interrupted`` for keep-alive tasks, ``failed`` otherwise).
+        #      See docs/contracts/background-task-delegation.md →
+        #      「执行所有权与 late write」.
         #   2. Stop spawned background processes.
         #   3. Tear down ACP/MCP/LSP adapters LAST — their per-session release
         #      events were already drained/persisted by the run loop at run end,
@@ -698,10 +704,16 @@ class VoidCodeRuntime(RuntimeSurface):
 
         Enforced ordering inside ``RuntimeBackgroundTaskSupervisor.shutdown``:
         set the shutdown flag, join every live worker (each worker finalizes
-        its task durably before exiting), then terminalize (mark ``failed`` in
-        storage) any worker that could not finish within the timeout. After
-        this returns, every task row is terminal and all child/background-task
-        results are durable — no pending worker writes can be lost to teardown.
+        its task durably before exiting), then seize ownership of any worker
+        that could not finish within the timeout — revoke its execution lease,
+        then mark its task row terminal (``interrupted`` for keep-alive tasks,
+        ``failed`` otherwise). After this returns, every task row is terminal,
+        the results that finished in time are durable, and seized workers can
+        no longer write runtime truth from their own thread (tool threads
+        inherit the caller's lease, so tool-side commits are covered too); a
+        manager-owned thread that persists on its own is outside this guarantee
+        — see the boundary invariant in
+        docs/contracts/background-task-delegation.md → 「执行所有权与 late write」.
         """
         self._background_task_facade.shutdown(timeout_seconds=timeout_seconds)
 
