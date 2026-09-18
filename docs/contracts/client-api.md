@@ -185,31 +185,31 @@ MVP 生命周期：
 - `POST /api/sessions/{id}/undo` — 撤销（回退）会话；成功 `200`；错误 `404`、`405`
 - `POST /api/sessions/{id}/revert` — 写入 revert marker；成功 `200`；错误 `400`、`404`、`405`
 - `POST /api/sessions/{id}/unrevert` — 清除 revert marker；成功 `200`；错误 `404`、`405`
-- `GET /api/sessions/{parent}/tasks` — 按 parent session 列出 background tasks；成功 `200`；错误 `405`
+- `GET /api/sessions/{parent}/tasks` — 按 parent session 列出 background tasks；成功 `200`；错误 `404`、`405`
 - `GET /api/tasks` — 列出 background tasks（workspace 全局视图）；成功 `200`；错误 `405`
 - `POST /api/tasks` — 创建 background task；成功 `201`；错误 `400`、`405`
 - `GET /api/tasks/{id}` — 读取单个 task 状态；成功 `200`；错误 `404`、`405`
 - `GET /api/tasks/{id}/output` — 读取 task 输出/结果视图；成功 `200`；错误 `404`、`405`
 - `POST /api/tasks/{id}/cancel` — 取消 task；成功 `200`；错误 `404`、`405`
-- `POST /api/tasks/{id}/retry` — 重试 terminal task（复用旧请求创建新的 queued task handle）；成功 `201`；错误 `400`、`405`
-- `POST /api/tasks/{id}/steer` — 向 keep-alive task 派发下一 worker turn；成功 `200`；错误 `400`、`405`
+- `POST /api/tasks/{id}/retry` — 重试 terminal task（复用旧请求创建新的 queued task handle）；成功 `201`；错误 `400`、`404`、`405`
+- `POST /api/tasks/{id}/steer` — 向 keep-alive task 派发下一 worker turn；成功 `200`；错误 `400`、`404`、`405`
 - `GET /api/notifications` — 列出通知；成功 `200`；错误 `405`
 - `POST /api/notifications/{id}/ack` — 确认通知；成功 `200`；错误 `404`、`405`
 - `GET /api/settings` — 读取运行时设置；成功 `200`；错误 `405`
 - `POST /api/settings` — 更新运行时设置；成功 `200`；错误 `400`、`405`
 - `GET /api/workspaces` — 列出 workspace registry 快照；成功 `200`；错误 `405`
-- `POST /api/workspaces/open` — 打开/切换 workspace；成功 `200`；错误 `400`、`404`、`405`
+- `POST /api/workspaces/open` — 打开/切换 workspace；成功 `200`；错误 `400`（`code=invalid_workspace`）、`404`、`409`（`code=workspace_busy`）、`405`
 - `GET /api/providers` — 列出 providers 及 configured/current 状态；成功 `200`；错误 `405`
-- `GET /api/providers/{name}/models` — 列出 provider 模型与 catalog metadata；成功 `200`（已配置）/ `409`（未配置，body 仍为 JSON）；错误 `400`、`405`
+- `GET /api/providers/{name}/models` — 列出 provider 模型与 catalog metadata；成功 `200`（已配置）/ `409`（未配置，body 仍是同一个 models 载荷）；错误 `405`
 - `GET /api/providers/{name}/inspect` — 读取 provider 端点/配置检查视图；成功 `200` / `409`；错误 `400`、`405`
-- `POST /api/providers/{name}/validate` — 校验 provider 凭据/就绪状态；成功 `200` / `409`；错误 `405`
+- `POST /api/providers/{name}/validate` — 校验 provider 凭据/就绪状态；成功 `200` / `409`（body 仍是同一个 validation 载荷）；错误 `400`、`405`
 - `GET /api/agents` — 列出可用 agents；成功 `200`；错误 `405`
 - `GET /api/skills` — 列出 skills；成功 `200`；错误 `405`
 - `GET /api/commands` — 列出命令；成功 `200`；错误 `405`
 - `GET /api/status` — 读取运行时状态快照（git / lsp / mcp / background_tasks）；成功 `200`；错误 `405`
 - `POST /api/status/mcp/retry` — 重试 MCP 连接并返回状态快照；成功 `200`；错误 `400`、`405`
 - `GET /api/review` — 读取 workspace review 快照；成功 `200`；错误 `405`
-- `GET /api/review/diff/{path}` — 读取单个文件 diff（`{path}` 为 path-safe 多段路径）；成功 `200`；错误 `400`、`405`
+- `GET /api/review/diff/{path}` — 读取单个文件 diff（`{path}` 为 path-safe 多段路径）；成功 `200`；错误 `400`、`404`、`405`
 - `GET /api/openapi.json` — 返回本路由表对应的 OpenAPI 文档（JSON）；成功 `200`；错误 `405`
 
 所有 route 在方法不匹配时返回 `405`（`{"error": "method not allowed", "code": null}`）；未知 `/api/*` 路径返回 `404`（`{"error": "not found", "code": null}`）。`/api/openapi.json` 是传输层自己渲染的 route，因此 SPA fallback 不会遮蔽它，未知 `/api/*` 路径也不会落到 `index.html`。
@@ -231,6 +231,60 @@ MVP 生命周期：
 ### 重复的标量查询参数
 
 当同一个标量查询参数（例如 `show_thinking=true&show_thinking=false`）重复出现时，传输层采用**最后一个取值生效（last-wins）**：FastAPI/Starlette 的查询解析按此约定处理，与 HTTP 客户端（浏览器 `URLSearchParams`、`requests` 等）的普遍行为一致。这是有意选择的契约，而不是偶然行为：迁移前的手写传输层取的是第一个取值，与 HTTP 惯例相悖，现已统一为 last-wins。需要保留多个取值的语义时，路由 MUST 使用显式的重复参数/列表形状，而不是依赖单值参数的多次出现。
+
+## 响应模型（authoritative response surface）
+
+每一条 route 的成功响应体都由 `src/voidcode/runtime/transport/http_models.py` 中的
+pydantic 模型描述，并通过 `response_model=` 接到路由上，因此
+`/api/openapi.json` 现在会为每个 operation 给出真实的响应 schema（生成客户端类型时
+从这里生成，而不是在客户端手写第二份形状）。
+
+需要区分的两件事：
+
+- **模型是描述，不是运行时校验。** 所有 handler 都返回自己渲染的 `Response`
+  （`http_contract.JsonResponse`），FastAPI 因此**不会**把响应体过一遍
+  `response_model`：字节级渲染（`sort_keys=True`、显式 charset）与每帧成本都不变。
+  正因如此，模型必须**完整**覆盖序列化器真正发出的字段，而这一点由
+  `tests/integration/test_http_response_schema.py` 用 fixture runtime 驱动**每一条**
+  route 来钉住：body 必须能通过模型校验（`extra="forbid"`，未知字段即失败），并且
+  再 dump 回来必须与 body 完全一致（缺字段、多余字段、`null`/缺失语义漂移都会失败）。
+- **`null` 与“缺失”是两种线格式。** 一部分序列化器在值未设置时**整个省略 key**
+  （`SessionRef.parent_id`、event 的 `delegated_lifecycle`、agent/skill 的来源字段、
+  debug 快照的 `runtime_policy`、provider model 的每个 capability），另一部分则明确
+  输出 `null`（`BackgroundTaskState.child_session_id`、错误信封的 `code`、`kind` 之外的
+  帧字段）。模型用 `_absent_when_none` 记录前者，因此 dump 结果与线上 body 逐字节形状
+  一致；生成的客户端类型可以据此区分 `field?: T` 与 `field: T | null`。
+
+### 有意保持动态的部分
+
+以下字段是 runtime 拥有的自由形状，按 `dict[str, object]`（JSON object）声明，而不是
+伪装成固定字段；其余字段一律完整建模：
+
+| 模型 | 动态字段 | 原因 |
+|---|---|---|
+| `EventBody` / `SessionDebugEventBody` | `payload` | 每个事件类型拥有自己的 payload 形状（见 `runtime-events.md`），客户端按 `event_type` 路由 |
+| `SessionStateBody` / `BackgroundTaskRequestSnapshotBody` / `NotificationBody` / `BackgroundTaskResultBody.hook_reminder` | `metadata` / `payload` / `hook_reminder` | 持久化的 runtime/session 元数据 blob，由 runtime 自己投影与约束 |
+| `RuntimePolicyBody` | `diagnostics`、`precedence_trace` 条目、以及 `schema_version`/`policy_version`/`mode`/`read_only`/`agent_preset`/`agent_manifest_id`/`intent.label`/`intent.confidence` | runtime policy 快照的 bounded 投影；标量的类型来自其唯一写入者（`runtime/policy.py`），传输层不再做二次校验 |
+| `ProviderContextBody.context_window` | `context_window` | `runtime/context` 拥有的窗口预算投影 |
+| `ProviderReadinessBody.reasoning_controls` | `reasoning_controls` | provider 特有的 reasoning 控制项 |
+| `CapabilityStatusBody.details` | `details` | 每个 capability manager 自己的明细 |
+| `BackgroundTaskStateBody.output_schema` / `structured_output` | 同上 | 由委派调用方提供的 JSON Schema / 实例 |
+| 事件内的工具参数 | `arguments`、`artifact`、`tool_arguments`、`tool_calls` 条目、`details` | 工具输入/产物形状由工具自身拥有 |
+
+`model_metadata`（provider 模型目录）不是动态 map：其值类型是完整的
+`ProviderModelMetadataBody`，key 为 model id。所有 23 个 capability 字段都已建模，
+未知名不会出现（序列化器直接丢弃未设置项）。
+
+### 校验位置
+
+JSON route 与 SSE 帧都在**测试期**校验，热路径不做逐帧/逐响应 pydantic 校验：
+
+- handler 自己渲染 body，FastAPI 的 `response_model` 在这个仓库里只是文档；
+- 运行流的帧率是 provider delta 级（每帧可能只是一小段文本），而为每帧跑一次完整
+  pydantic 校验会把热路径成本与模型规模挂钩，却只换来“漂移被推迟到线上”的收益；
+- 漂移检测的价值来自覆盖全部 route/帧形状的契约测试（加上 CI），不是来自运行期；
+- 需要真实请求体校验时，那是**请求**边界（`_HttpBoundaryModel`、`extra="forbid"`）的
+  职责，那里本来就有。
 
 ## HTTP 错误信封
 

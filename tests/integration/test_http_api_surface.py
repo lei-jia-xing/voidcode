@@ -182,6 +182,43 @@ def test_openapi_document_lists_exactly_the_shipped_route_table() -> None:
     assert not any("openapi" in path for path in document["paths"])
 
 
+def test_openapi_document_carries_a_response_schema_for_every_operation() -> None:
+    """Every documented operation describes its response body.
+
+    The JSON routes point at a response model in ``components.schemas``; the two
+    server-sent-events routes publish the frame model the same way, because
+    OpenAPI cannot describe an ``text/event-stream`` body. A route added without
+    a model fails here.
+    """
+    document = _openapi_document(_app())
+    schemas = document["components"]["schemas"]
+
+    for path, operations in document["paths"].items():
+        for method, operation in operations.items():
+            success = [response for code, response in operation["responses"].items() if code.startswith("2")]
+            assert len(success) == 1, (method, path)
+            content = success[0].get("content", {})
+            media_types = [media for media, body in content.items() if body.get("schema") or body.get("itemSchema")]
+            assert media_types, f"{method} {path} has no response schema"
+            for media_type in media_types:
+                # An SSE route publishes the frame contract as ``itemSchema``
+                # next to the media type; its ``schema`` describes the raw text.
+                body = content[media_type]
+                schema = body.get("itemSchema") or body.get("schema")
+                references = [schema] if "$ref" in schema else [schema.get("items", {})]
+                assert all("$ref" in reference for reference in references), (method, path)
+                for reference in references:
+                    name = cast(str, reference["$ref"]).rsplit("/", 1)[-1]
+                    assert name in schemas, f"{method} {path} references unknown schema {name}"
+
+    assert sorted(
+        (method, path)
+        for path, operations in document["paths"].items()
+        for method, operation in operations.items()
+        if any("text/event-stream" in response.get("content", {}) for response in operation["responses"].values())
+    ) == [("get", "/api/sessions/{session_id}/events"), ("post", "/api/runtime/run/stream")]
+
+
 def test_openapi_document_carries_a_summary_and_tags_for_every_operation() -> None:
     document = _openapi_document(_app())
 

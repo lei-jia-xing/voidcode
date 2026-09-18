@@ -18,10 +18,11 @@ from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, 
 from contextlib import ExitStack, asynccontextmanager, contextmanager, nullcontext, suppress
 from copy import deepcopy
 from pathlib import Path
-from typing import Protocol, cast, final
+from typing import Any, Protocol, cast, final
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel
 from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
 from starlette.responses import Response
@@ -109,6 +110,36 @@ from .http_contract import (
     request_validation_error_response,
     sse_frame,
     unhandled_exception_response,
+)
+from .http_models import (
+    AgentSummaryBody,
+    BackgroundTaskOutputBody,
+    BackgroundTaskRetryBody,
+    BackgroundTaskStateBody,
+    BackgroundTaskSteerBody,
+    BackgroundTaskSummaryBody,
+    CommandSummaryBody,
+    ErrorEnvelope,
+    NotificationBody,
+    ProviderInspectBody,
+    ProviderModelsBody,
+    ProviderSummaryBody,
+    ProviderValidationBody,
+    ReviewFileDiffBody,
+    RunStreamFrameBody,
+    RuntimeResponseBody,
+    RuntimeStatusBody,
+    SessionCancelBody,
+    SessionDebugBody,
+    SessionEventFrameBody,
+    SessionResultBody,
+    SessionRevertBody,
+    SessionSteerBody,
+    SessionSummaryBody,
+    SkillSummaryBody,
+    WebSettingsBody,
+    WorkspaceRegistryBody,
+    WorkspaceReviewBody,
 )
 
 logger = logging.getLogger(__name__)
@@ -385,6 +416,68 @@ def _runtime_request_from(payload: _RunStreamRequestPayload) -> RuntimeRequest:
     )
 
 
+# Every failing route answers the transport's error envelope, so each operation
+# documents that body for the statuses it can actually produce plus one
+# catch-all. The catch-all also keeps FastAPI from advertising the 422 it adds by
+# default: this transport answers validation failures with 400.
+_ERROR_ENVELOPE_DESCRIPTION = (
+    "Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, "
+    "task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure."
+)
+
+# The frames of a server-sent-events route are not expressible as an OpenAPI
+# response body, so the route publishes the frame model next to the media type
+# and the framing itself is documented in docs/contracts/http-response-schema.md.
+_SSE_SUCCESS_DESCRIPTION = (
+    "A hand-framed server-sent-events stream: the body is one `data: <json>\\n\\n` frame per event, and every frame "
+    "is the referenced model. OpenAPI cannot describe an event-stream body, so the frame contract is published here "
+    "and pinned by tests/integration/test_http_response_schema.py."
+)
+
+
+# The media type the JSON response class renders; the transport's error envelope
+# always uses it, including on the SSE routes whose *failures* are plain JSON.
+_JSON_MEDIA_TYPE = JsonResponse.media_type
+
+# A route that answers its own payload with an extra status (a provider that is
+# not configured answers 409 with its inspection payload, not with the error
+# envelope) documents that status with the same model.
+_ALTERNATE_STATUS_DESCRIPTION = (
+    "The same body, answered with a non-success status: the runtime reports a provider that is neither configured nor "
+    "validated with 409 instead of failing the request."
+)
+
+
+def _error_responses(statuses: tuple[int, ...], *, media_type: str | None = None) -> dict[int | str, dict[str, object]]:
+    """The documented error envelope for one route: named statuses plus a catch-all.
+
+    ``media_type`` pins the media the envelope is served as. FastAPI documents a
+    ``model=`` response under the *route's* response media type, which would
+    describe an SSE route's JSON failure body as ``text/event-stream``; passing
+    the JSON media type makes the entry name it outright. The ``ErrorEnvelope``
+    component is published by the JSON routes either way.
+    """
+    envelope: dict[str, object] = {"model": ErrorEnvelope}
+    if media_type is not None:
+        envelope = {"content": {media_type: {"schema": {"$ref": f"#/components/schemas/{ErrorEnvelope.__name__}"}}}}
+    responses: dict[int | str, dict[str, object]] = {status: dict(envelope) for status in statuses}
+    responses["default"] = {**envelope, "description": _ERROR_ENVELOPE_DESCRIPTION}
+    return responses
+
+
+def _sse_success_response(frame: type[BaseModel]) -> dict[str, object]:
+    """The 200 response of an SSE route: media type plus the frame model reference.
+
+    ``itemSchema`` is the extension FastAPI itself uses for SSE routes; the
+    ``$ref`` resolves because the route also declares the frame model as its
+    ``response_model``, which publishes it in ``components.schemas``.
+    """
+    return {
+        "description": _SSE_SUCCESS_DESCRIPTION,
+        "content": {"text/event-stream": {"itemSchema": {"$ref": f"#/components/schemas/{frame.__name__}"}}},
+    }
+
+
 @final
 class RuntimeTransportApp(FastAPI):
     """The runtime's HTTP transport as a FastAPI application.
@@ -463,10 +556,15 @@ class RuntimeTransportApp(FastAPI):
     def _register_routes(self) -> None:
         """The transport's route table.
 
-        Paths, methods and status codes are the hand-rolled transport's; ``tag``
-        and ``summary`` exist for the OpenAPI document at ``/api/openapi.json``,
-        and ``response_model=None`` keeps FastAPI out of the response shapes
-        because those dicts are runtime-owned serializer output.
+        Paths, methods and status codes are the hand-rolled transport's; ``tag``,
+        ``summary`` and ``response_model`` are what the OpenAPI document at
+        ``/api/openapi.json`` publishes. The response models come from
+        :mod:`voidcode.runtime.transport.http_models` and describe exactly what
+        the ``_serialize_*`` projections emit; every endpoint returns its own
+        ``Response``, so FastAPI documents the shapes without touching the wire.
+        An SSE route passes its frame model as ``streaming_frame``: the frame is
+        published next to the ``text/event-stream`` media type because OpenAPI
+        cannot describe an event-stream body.
         """
 
         def route(
@@ -476,15 +574,33 @@ class RuntimeTransportApp(FastAPI):
             methods: list[str],
             tag: str,
             summary: str,
+            response_model: Any = None,
+            status_code: int = 200,
+            error_statuses: tuple[int, ...] = (),
+            alternate_statuses: tuple[int, ...] = (),
+            streaming_frame: type[BaseModel] | None = None,
             in_schema: bool = True,
         ) -> None:
+            response_class: type[Response] = JsonResponse
+            # An SSE route's failures are JSON, so its error entries name the
+            # media type instead of inheriting the event-stream one.
+            envelope_media_type = None if streaming_frame is None else _JSON_MEDIA_TYPE
+            responses = _error_responses(error_statuses, media_type=envelope_media_type)
+            for status in alternate_statuses:
+                responses[status] = {"model": response_model, "description": _ALTERNATE_STATUS_DESCRIPTION}
+            if streaming_frame is not None:
+                responses[200] = _sse_success_response(streaming_frame)
+                response_class = EventStreamResponse
             self.add_api_route(
                 path,
                 endpoint,
                 methods=methods,
                 tags=[tag],
                 summary=summary,
-                response_model=None,
+                response_model=streaming_frame or response_model,
+                status_code=status_code,
+                responses=responses,
+                response_class=response_class,
                 include_in_schema=in_schema,
             )
 
@@ -503,51 +619,189 @@ class RuntimeTransportApp(FastAPI):
             methods=["POST"],
             tag="runtime",
             summary="Run a prompt and stream ordered events as SSE",
+            streaming_frame=RunStreamFrameBody,
+            error_statuses=(400,),
         )
-        route("/api/sessions", self._handle_list_sessions, methods=["GET"], tag="sessions", summary="List persisted main sessions")
-        route("/api/tasks", self._handle_list_background_tasks, methods=["GET"], tag="tasks", summary="List background tasks")
-        route("/api/tasks", self._handle_start_background_task, methods=["POST"], tag="tasks", summary="Start a background task")
-        route("/api/notifications", self._handle_list_notifications, methods=["GET"], tag="notifications", summary="List notifications")
-        route("/api/settings", self._handle_get_settings, methods=["GET"], tag="settings", summary="Read runtime web settings")
-        route("/api/settings", self._handle_update_settings, methods=["POST"], tag="settings", summary="Update runtime web settings")
-        route("/api/workspaces", self._handle_list_workspaces, methods=["GET"], tag="workspaces", summary="List the workspace registry")
+        route(
+            "/api/sessions",
+            self._handle_list_sessions,
+            methods=["GET"],
+            tag="sessions",
+            summary="List persisted main sessions",
+            response_model=list[SessionSummaryBody],
+        )
+        route(
+            "/api/tasks",
+            self._handle_list_background_tasks,
+            methods=["GET"],
+            tag="tasks",
+            summary="List background tasks",
+            response_model=list[BackgroundTaskSummaryBody],
+        )
+        route(
+            "/api/tasks",
+            self._handle_start_background_task,
+            methods=["POST"],
+            tag="tasks",
+            summary="Start a background task",
+            response_model=BackgroundTaskStateBody,
+            status_code=201,
+            error_statuses=(400,),
+        )
+        route(
+            "/api/notifications",
+            self._handle_list_notifications,
+            methods=["GET"],
+            tag="notifications",
+            summary="List notifications",
+            response_model=list[NotificationBody],
+        )
+        route(
+            "/api/settings",
+            self._handle_get_settings,
+            methods=["GET"],
+            tag="settings",
+            summary="Read runtime web settings",
+            response_model=WebSettingsBody,
+        )
+        route(
+            "/api/settings",
+            self._handle_update_settings,
+            methods=["POST"],
+            tag="settings",
+            summary="Update runtime web settings",
+            response_model=WebSettingsBody,
+            error_statuses=(400,),
+        )
+        route(
+            "/api/workspaces",
+            self._handle_list_workspaces,
+            methods=["GET"],
+            tag="workspaces",
+            summary="List the workspace registry",
+            response_model=WorkspaceRegistryBody,
+            error_statuses=(404,),
+        )
         route(
             "/api/workspaces/open",
             self._handle_open_workspace,
             methods=["POST"],
             tag="workspaces",
             summary="Open or switch the active workspace",
+            response_model=WorkspaceRegistryBody,
+            error_statuses=(400, 404, 409),
         )
-        route("/api/providers", self._handle_list_providers, methods=["GET"], tag="providers", summary="List providers")
-        route("/api/agents", self._handle_list_agents, methods=["GET"], tag="runtime", summary="List available agents")
-        route("/api/skills", self._handle_list_skills, methods=["GET"], tag="runtime", summary="List available skills")
-        route("/api/commands", self._handle_list_commands, methods=["GET"], tag="runtime", summary="List available commands")
-        route("/api/status", self._handle_get_status, methods=["GET"], tag="runtime", summary="Read the runtime status snapshot")
-        route("/api/status/mcp/retry", self._handle_retry_mcp, methods=["POST"], tag="runtime", summary="Retry MCP connections")
-        route("/api/review", self._handle_get_review, methods=["GET"], tag="review", summary="Read the workspace review snapshot")
-        route("/api/review/diff/{path:path}", self._handle_get_review_diff, methods=["GET"], tag="review", summary="Read one file diff")
+        route(
+            "/api/providers",
+            self._handle_list_providers,
+            methods=["GET"],
+            tag="providers",
+            summary="List providers",
+            response_model=list[ProviderSummaryBody],
+        )
+        route(
+            "/api/agents",
+            self._handle_list_agents,
+            methods=["GET"],
+            tag="runtime",
+            summary="List available agents",
+            response_model=list[AgentSummaryBody],
+        )
+        route(
+            "/api/skills",
+            self._handle_list_skills,
+            methods=["GET"],
+            tag="runtime",
+            summary="List available skills",
+            response_model=list[SkillSummaryBody],
+        )
+        route(
+            "/api/commands",
+            self._handle_list_commands,
+            methods=["GET"],
+            tag="runtime",
+            summary="List available commands",
+            response_model=list[CommandSummaryBody],
+        )
+        route(
+            "/api/status",
+            self._handle_get_status,
+            methods=["GET"],
+            tag="runtime",
+            summary="Read the runtime status snapshot",
+            response_model=RuntimeStatusBody,
+        )
+        route(
+            "/api/status/mcp/retry",
+            self._handle_retry_mcp,
+            methods=["POST"],
+            tag="runtime",
+            summary="Retry MCP connections",
+            response_model=RuntimeStatusBody,
+            error_statuses=(400,),
+        )
+        route(
+            "/api/review",
+            self._handle_get_review,
+            methods=["GET"],
+            tag="review",
+            summary="Read the workspace review snapshot",
+            response_model=WorkspaceReviewBody,
+        )
+        route(
+            "/api/review/diff/{path:path}",
+            self._handle_get_review_diff,
+            methods=["GET"],
+            tag="review",
+            summary="Read one file diff",
+            response_model=ReviewFileDiffBody,
+            error_statuses=(400, 404),
+        )
         route(
             "/api/notifications/{notification_id:path}/ack",
             self._handle_acknowledge_notification,
             methods=["POST"],
             tag="notifications",
             summary="Acknowledge a notification",
+            response_model=NotificationBody,
+            error_statuses=(404,),
         )
-        route("/api/tasks/{task_id}", self._handle_background_task_status, methods=["GET"], tag="tasks", summary="Read one background task")
+        route(
+            "/api/tasks/{task_id}",
+            self._handle_background_task_status,
+            methods=["GET"],
+            tag="tasks",
+            summary="Read one background task",
+            response_model=BackgroundTaskStateBody,
+            error_statuses=(404,),
+        )
         route(
             "/api/tasks/{task_id}/output",
             self._handle_background_task_output,
             methods=["GET"],
             tag="tasks",
             summary="Read a background task's output",
+            response_model=BackgroundTaskOutputBody,
+            error_statuses=(404,),
         )
-        route("/api/tasks/{task_id}/cancel", self._handle_cancel_background_task, methods=["POST"], tag="tasks", summary="Cancel a background task")
+        route(
+            "/api/tasks/{task_id}/cancel",
+            self._handle_cancel_background_task,
+            methods=["POST"],
+            tag="tasks",
+            summary="Cancel a background task",
+            response_model=BackgroundTaskStateBody,
+            error_statuses=(404,),
+        )
         route(
             "/api/tasks/{task_id}/retry",
             self._handle_retry_background_task,
             methods=["POST"],
             tag="tasks",
             summary="Retry a terminal background task",
+            response_model=BackgroundTaskRetryBody,
+            status_code=201,
+            error_statuses=(400, 404),
         )
         route(
             "/api/tasks/{task_id}/steer",
@@ -555,6 +809,8 @@ class RuntimeTransportApp(FastAPI):
             methods=["POST"],
             tag="tasks",
             summary="Steer a keep-alive background task",
+            response_model=BackgroundTaskSteerBody,
+            error_statuses=(400, 404),
         )
         route(
             "/api/sessions/{session_id}",
@@ -562,6 +818,8 @@ class RuntimeTransportApp(FastAPI):
             methods=["GET"],
             tag="sessions",
             summary="Replay a persisted session (read-only)",
+            response_model=RuntimeResponseBody,
+            error_statuses=(404,),
         )
         route(
             "/api/sessions/{session_id}/events",
@@ -569,6 +827,8 @@ class RuntimeTransportApp(FastAPI):
             methods=["GET"],
             tag="sessions",
             summary="Stream a session's ordered events as SSE",
+            streaming_frame=SessionEventFrameBody,
+            error_statuses=(400, 404),
         )
         route(
             "/api/sessions/{session_id}/tasks",
@@ -576,6 +836,8 @@ class RuntimeTransportApp(FastAPI):
             methods=["GET"],
             tag="sessions",
             summary="List a parent session's background tasks",
+            response_model=list[BackgroundTaskSummaryBody],
+            error_statuses=(404,),
         )
         route(
             "/api/sessions/{session_id}/delegated-context",
@@ -583,6 +845,8 @@ class RuntimeTransportApp(FastAPI):
             methods=["GET"],
             tag="sessions",
             summary="Read a delegated child session's context",
+            response_model=BackgroundTaskOutputBody,
+            error_statuses=(404,),
         )
         route(
             "/api/sessions/{session_id}/approval",
@@ -590,6 +854,8 @@ class RuntimeTransportApp(FastAPI):
             methods=["POST"],
             tag="sessions",
             summary="Resolve a pending approval and continue the run",
+            response_model=RuntimeResponseBody,
+            error_statuses=(400, 404, 409),
         )
         route(
             "/api/sessions/{session_id}/question",
@@ -597,6 +863,8 @@ class RuntimeTransportApp(FastAPI):
             methods=["POST"],
             tag="sessions",
             summary="Answer a pending question and continue the run",
+            response_model=RuntimeResponseBody,
+            error_statuses=(400, 404, 409),
         )
         route(
             "/api/sessions/{session_id}/result",
@@ -604,6 +872,8 @@ class RuntimeTransportApp(FastAPI):
             methods=["GET"],
             tag="sessions",
             summary="Read a session's terminal result",
+            response_model=SessionResultBody,
+            error_statuses=(404,),
         )
         route(
             "/api/sessions/{session_id}/debug",
@@ -611,14 +881,26 @@ class RuntimeTransportApp(FastAPI):
             methods=["GET"],
             tag="sessions",
             summary="Read a session's debug snapshot",
+            response_model=SessionDebugBody,
+            error_statuses=(404,),
         )
-        route("/api/sessions/{session_id}/undo", self._handle_session_undo, methods=["POST"], tag="sessions", summary="Undo the session revert")
+        route(
+            "/api/sessions/{session_id}/undo",
+            self._handle_session_undo,
+            methods=["POST"],
+            tag="sessions",
+            summary="Undo the session revert",
+            response_model=SessionRevertBody,
+            error_statuses=(404,),
+        )
         route(
             "/api/sessions/{session_id}/revert",
             self._handle_session_revert,
             methods=["POST"],
             tag="sessions",
             summary="Write a session revert marker",
+            response_model=SessionRevertBody,
+            error_statuses=(400, 404),
         )
         route(
             "/api/sessions/{session_id}/unrevert",
@@ -626,6 +908,8 @@ class RuntimeTransportApp(FastAPI):
             methods=["POST"],
             tag="sessions",
             summary="Clear the session revert marker",
+            response_model=SessionRevertBody,
+            error_statuses=(404,),
         )
         route(
             "/api/sessions/{session_id}/cancel",
@@ -633,6 +917,8 @@ class RuntimeTransportApp(FastAPI):
             methods=["POST"],
             tag="sessions",
             summary="Cancel the session's active run",
+            response_model=SessionCancelBody,
+            error_statuses=(400, 404),
         )
         route(
             "/api/sessions/{session_id}/resume",
@@ -640,6 +926,8 @@ class RuntimeTransportApp(FastAPI):
             methods=["POST"],
             tag="sessions",
             summary="Explicitly resume an interrupted session",
+            response_model=RuntimeResponseBody,
+            error_statuses=(404,),
         )
         route(
             "/api/sessions/{session_id}/steer",
@@ -647,6 +935,8 @@ class RuntimeTransportApp(FastAPI):
             methods=["POST"],
             tag="sessions",
             summary="Queue a steering message for the session",
+            response_model=SessionSteerBody,
+            error_statuses=(400, 404, 409),
         )
         route(
             "/api/providers/{provider_name}/models",
@@ -654,6 +944,8 @@ class RuntimeTransportApp(FastAPI):
             methods=["GET"],
             tag="providers",
             summary="List a provider's models",
+            response_model=ProviderModelsBody,
+            alternate_statuses=(409,),
         )
         route(
             "/api/providers/{provider_name}/inspect",
@@ -661,6 +953,9 @@ class RuntimeTransportApp(FastAPI):
             methods=["GET"],
             tag="providers",
             summary="Inspect a provider's endpoint and configuration",
+            response_model=ProviderInspectBody,
+            error_statuses=(400,),
+            alternate_statuses=(409,),
         )
         route(
             "/api/providers/{provider_name}/validate",
@@ -668,6 +963,9 @@ class RuntimeTransportApp(FastAPI):
             methods=["POST"],
             tag="providers",
             summary="Validate a provider's credentials",
+            response_model=ProviderValidationBody,
+            error_statuses=(400,),
+            alternate_statuses=(409,),
         )
 
     # ------------------------------------------------------------------ plumbing

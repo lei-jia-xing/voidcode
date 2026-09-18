@@ -91,6 +91,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 - **provider:** give provider naming one semantic on every surface: the lowercase vendor id (`minimax`) is the machine identifier (registry key, `providers.<id>` config key, `provider/model` prefix, `<ID>_API_KEY` env prefix, catalog key, `/api/providers` `name`) and one shared label table (`MiniMax`) names it for humans in `/api/providers`, `provider inspect`, and `doctor`; provider input is trimmed and lowercased at every boundary, so `MiniMax/...`, `MINIMAX/...`, and ` minimax /...` resolve to the same provider with the same endpoint, and `providers.custom.<name>` keys are canonicalised the same way; an id that is neither a built-in nor a declared `providers.custom` provider now fails loudly with the canonical ids and the declaration path instead of silently reusing `providers.endpoint`'s config (breaking for configs that relied on an undeclared prefix — use the `endpoint` id or declare the provider under `providers.custom`); model ids stay verbatim on the wire while catalog, capability, and fallback-chain matching stay case-insensitive, and the web settings save path stores `providers.<id>` instead of colliding with built-in names under `providers.custom`
 
+- **runtime:** declare a response model for every JSON route so `/api/openapi.json` describes the real bodies (70 models; the SSE frame payloads are typed and pinned by a contract test); the wire output is unchanged, validated against the declared models with no field loss, and this is the prerequisite for generating the frontend types instead of hand-maintaining them (`docs/contracts/client-api.md`, `docs/contracts/stream-transport.md`)
+
 
 
 ### CI

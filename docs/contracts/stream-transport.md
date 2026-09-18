@@ -89,6 +89,27 @@ partial preview 不参与 session truth、checkpoint 或 replay；provider 不�
 - 流在 session 状态进入 `{completed, failed, interrupted}` 后关闭；客户端断开
   时立即停止写入，不继续向失效 socket 推送事件。
 
+### 帧的类型化契约
+
+帧信封由 `src/voidcode/runtime/transport/http_models.py` 中的两个模型描述，并按
+route 发布在 `/api/openapi.json` 的 `text/event-stream` 媒体类型旁（`itemSchema`）：
+
+- `RunStreamFrameBody`（`POST /api/runtime/run/stream`）：`kind ∈ {event, output}`；
+  `session` 按上面的重发规则为完整 session state 或 `null`；`kind=event` 必须带
+  `event`，`kind=output` 必须带 `output`。
+- `SessionEventFrameBody`（`GET /api/sessions/{id}/events`）：`kind ∈ {session, event}`；
+  `output` 恒为 `null`（该流不承载运行输出）；`kind=session` 必须带 `session`，
+  `kind=event` 必须带 `event`。
+
+OpenAPI 无法描述 `text/event-stream` 的 body，所以帧契约的权威来源是这两个模型加
+`tests/integration/test_http_response_schema.py`：测试用真实 handler 驱动两条 SSE
+route，把每个 `data:` 帧解析出来，逐帧对照模型校验并无损 dump 回比较；模型的
+kind/payload 不变量（例如 `kind=event` 缺 `event`）同时被直接断言。
+
+帧**不在热路径上校验**：运行流按 provider delta 逐帧发送，逐帧 pydantic 校验会把
+每帧成本与模型规模挂钩，而漂移检测的价值来自覆盖全部帧形状的契约测试；需要真正的
+输入校验时那是请求边界（`_HttpBoundaryModel`）的职责。
+
 ## 客户端预期
 
 ### CLI
