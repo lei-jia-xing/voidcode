@@ -851,21 +851,19 @@ class SqliteSessionStore(
         """Insert only the missing sequence rows and lift only lagging floors.
 
         The counters are monotonic and already maintained by every write the
-        store performs, so a verified database needs no rewrite here: rows are
-        inserted only when absent and a floor is written only when it is below
-        an existing timestamp. This runs once per verified database file (see
-        ``_ensure_schema_once``), not per connection.
+        store performs, so a verified database needs no rewrite here: a row is
+        inserted only when absent and a floor is written only when it is below an
+        existing timestamp. The insert is a single ``INSERT OR IGNORE`` rather
+        than a read-then-write: bootstrap runs once per verified database file
+        (see ``_ensure_schema_once``) but several processes can verify the same
+        file concurrently, and a ``SELECT``/``INSERT`` pair would race into
+        ``IntegrityError: UNIQUE constraint failed: storage_sequences.scope``.
         """
-        existing_scopes = {
-            cast(str, row["scope"])
-            for row in cast(
-                list[sqlite3.Row],
-                connection.execute("SELECT scope FROM storage_sequences").fetchall(),
-            )
-        }
         for scope in SqliteSessionStore._SEQUENCE_SCOPES:
-            if scope not in existing_scopes:
-                _ = connection.execute("INSERT INTO storage_sequences (scope, value) VALUES (?, 0)", (scope,))
+            _ = connection.execute(
+                "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES (?, 0)",
+                (scope,),
+            )
         SqliteSessionStore._bump_sequence_floor(
             connection=connection,
             scope="sessions",

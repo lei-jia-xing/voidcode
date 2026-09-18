@@ -135,10 +135,21 @@ class ActiveSessionRegistry:
             if not handles:
                 self._runs.pop(key, None)
 
-    def contains(self, *, workspace: Path, session_id: str) -> bool:
+    def contains(self, *, workspace: Path, session_id: str, exclude_run_id: str | None = None) -> bool:
+        """Whether a run other than ``exclude_run_id`` is registered for the session.
+
+        A caller that has already registered its own run (a resume that owns a
+        fresh handle for the session) excludes that handle, so it asks the real
+        question — "is somebody else running this session?" — instead of finding
+        itself. Every run id is a non-null hex string, so ``None`` excludes
+        nothing and keeps the plain membership meaning.
+        """
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
         with self._lock:
-            return key in self._runs
+            handles = self._runs.get(key)
+            if handles is None:
+                return False
+            return any(run_id != exclude_run_id for run_id in handles)
 
     def active_run_count(self, *, workspace: Path, session_id: str) -> int:
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)

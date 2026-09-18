@@ -29,6 +29,7 @@
 - [`client-api.md`](./client-api.md) — 客户端可见的 session/run/load/resume/stream 契约
 - [`approval-flow.md`](./approval-flow.md) — 受控执行与审批语义
 - [`agent-tool-calling.md`](./agent-tool-calling.md) — 面向 agent 的工具调用、参数、返回、审批与选择指南
+- [`execution-lifecycle.md`](./execution-lifecycle.md) — 取消如何传入、何时允许提交、何时失去所有权、何时释放资源的唯一权威表述（含各条执行点）
 - [`agent-tool-enforcement.md`](./agent-tool-enforcement.md) — agent preset 中 tool allowlist/default tool set 如何进入 runtime enforcement
 - [`agent-hook-presets.md`](./agent-hook-presets.md) — agent preset hook refs 如何通过 builtin hook preset catalog 校验与表达角色 intent
 - [`agent-capability-bindings.md`](./agent-capability-bindings.md) — agent preset 的 tools/skills/hooks/MCP/provider binding 如何由 runtime materialize 成可重放 snapshot
@@ -36,7 +37,7 @@
 - [`runtime-extension-points.md`](./runtime-extension-points.md) — typed runtime extension points 与 observability events 的所有权边界
 - [`runtime-lifecycle-hooks.md`](./runtime-lifecycle-hooks.md) — richer lifecycle hook phases 的 runtime-owned 执行契约
 - [`runtime-typed-tool-hooks.md`](./runtime-typed-tool-hooks.md) — typed tool input handler 的执行顺序、rewrite 与 authority 边界
-- [`background-task-delegation.md`](./background-task-delegation.md) — delegated/background task parent/child linkage、结果读取、retry/cancel 与 fake-provider/fake-MCP 验证立场
+- [`background-task-delegation.md`](./background-task-delegation.md) — delegated/background task parent/child linkage、结果读取、retry/cancel、执行所有权（execution ownership）与 shutdown 排空顺序，以及 fake-provider/fake-MCP 验证立场
 - [`stream-transport.md`](./stream-transport.md) — 运行时流的交付与重放预期
 
 ## 相关 Issue

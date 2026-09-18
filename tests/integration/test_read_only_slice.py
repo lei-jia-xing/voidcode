@@ -5395,6 +5395,19 @@ def test_runtime_persists_and_resumes_session_across_instances(tmp_path: Path) -
     )
 
 
+def _drop_crashed_run_registration(*, workspace: Path, session_id: str) -> None:
+    """Forget the abandoned run's process-local registration.
+
+    ``ACTIVE_SESSION_REGISTRY`` records live runs in memory, so a crashed
+    process takes its registration with it. These tests abandon a stream inside
+    one process instead of killing one, so the phantom registration has to be
+    dropped explicitly before the resumed runtime may rewrite the session's
+    history (a resume refuses to rewrite history another run still owns).
+    """
+    active_session_module = importlib.import_module("voidcode.runtime.active_session")
+    active_session_module.ACTIVE_SESSION_REGISTRY.unregister(workspace=workspace, session_id=session_id)
+
+
 def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_path: Path) -> None:
     first_file = tmp_path / "first.txt"
     second_file = tmp_path / "second.txt"
@@ -5423,6 +5436,7 @@ def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_p
             if tool_requests >= 2:
                 break
 
+    _drop_crashed_run_registration(workspace=tmp_path, session_id="crash-session")
     second_runtime = cast(
         RuntimeRunner,
         cast(object, runtime_class(workspace=tmp_path, graph=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
@@ -5471,6 +5485,7 @@ def test_runtime_resume_truncates_orphaned_tail_after_interrupted_checkpoint(tmp
             if tool_requests >= 2:
                 break
 
+    _drop_crashed_run_registration(workspace=tmp_path, session_id="orphan-session")
     storage_module = importlib.import_module("voidcode.runtime.storage")
     store = cast(SessionStoreLike, storage_module.SqliteSessionStore())
     checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="orphan-session")
@@ -5540,6 +5555,7 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
     # the completed first-turn call rather than the in-flight batch.
     assert first_graph.pending_tool_call_count == 1
 
+    _drop_crashed_run_registration(workspace=tmp_path, session_id="multi-tool-crash")
     storage_module = importlib.import_module("voidcode.runtime.storage")
     store = cast(SessionStoreLike, storage_module.SqliteSessionStore())
     checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="multi-tool-crash")

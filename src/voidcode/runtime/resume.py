@@ -15,6 +15,7 @@ from .acp import (
     emit_current_acp_drain,
     finalize_run_acp,
 )
+from .active_session import ACTIVE_SESSION_REGISTRY
 from .config import RuntimeConfig, serialize_runtime_agent_config
 from .contracts import (
     NoPendingApprovalError,
@@ -89,6 +90,22 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _require_recorded_capability_snapshot(session_metadata: dict[str, object]) -> None:
+    """Refuse, by name, a resume whose checkpoint records no capability binding.
+
+    ``build_skill_snapshot(source="resume")`` stays the authoritative check; this
+    precondition exists so the refusal happens before the resume rewrites the
+    session's persisted events and so the caller gets the reason instead of an
+    internal "missing metadata field" error.
+    """
+    if isinstance(session_metadata.get("agent_capability_snapshot"), dict):
+        return
+    raise RuntimeRequestError(
+        "session cannot be resumed: its checkpoint records no agent capability snapshot, "
+        "so the runtime cannot replay the capabilities (provider, model, tools, skills) that run was bound to"
+    )
 
 
 class RuntimeResumeCoordinator:
@@ -1215,6 +1232,17 @@ class RuntimeResumeCoordinator:
         finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
         runtime = self._surface
+        # A checkpoint resume re-executes a turn and (for an interrupted
+        # checkpoint) rewrites the persisted event tail. Both are only legal
+        # while no OTHER run owns the session: a run in flight keeps appending
+        # its own events, so a concurrent resume would rewrite truth it does not
+        # own and the run's terminal bookkeeping would seal a truncated log. The
+        # streaming resume registers its own run before calling this coordinator
+        # (that handle is the resume itself, not a competing owner), so the check
+        # excludes it. The active registry is process-local, exactly like the run
+        # ownership it records.
+        if ACTIVE_SESSION_REGISTRY.contains(workspace=self._workspace, session_id=session_id, exclude_run_id=run_id):
+            raise RuntimeRequestError(f"session {session_id!r} has a run in flight: resume would rewrite its history; retry once the run has ended")
         checkpoint_envelope = self.validated_resume_checkpoint_envelope(
             checkpoint=checkpoint,
             expected_kind=expected_kind,
@@ -1229,33 +1257,35 @@ class RuntimeResumeCoordinator:
             raise ValueError("persisted resume checkpoint session_metadata must be an object")
         if not isinstance(raw_tool_results, list):
             raise ValueError("persisted resume checkpoint tool_results must be a list")
+        # A resume replays the capability binding the recorded run was bound to,
+        # so a checkpoint that carries no binding (a run interrupted before it
+        # materialized one) cannot be replayed. Refuse it here — by name, before
+        # anything is read-and-rewritten — instead of failing deeper inside the
+        # skill-snapshot projection, which is the same refusal without a reason
+        # the caller can act on. See docs/contracts/execution-lifecycle.md → (b).
+        _require_recorded_capability_snapshot(session_metadata)
         checkpoint_last_sequence: int | None = None
         if truncate_tail:
             raw_last_sequence = payload.get("last_event_sequence")
             if not isinstance(raw_last_sequence, int):
                 raise ValueError("persisted interrupted resume checkpoint last_event_sequence must be an integer")
             checkpoint_last_sequence = raw_last_sequence
-            self._session_store.truncate_session_events_after(
-                workspace=self._workspace,
-                session_id=session_id,
-                sequence=checkpoint_last_sequence,
-            )
-        stored = self._session_store.load_session(
+
+        # Read-only resume preparation runs BEFORE the tail rewrite below. A
+        # resume that cannot be honored — for example a checkpoint that records
+        # no capability snapshot to replay — must fail without having truncated
+        # the session's persisted events, and the session row is read here only
+        # for its identity and turn.
+        stored_row = self._session_store.load_session(
             workspace=self._workspace,
             session_id=session_id,
         )
-        validate_session_workspace(stored.session, session_id=session_id, workspace=self._workspace)
-        tool_results = list(self.tool_results_from_checkpoint(cast(list[object], raw_tool_results)))
-        replayed_conversation_segments = runtime.replayed_conversation_segments_for_existing_session(
-            stored=stored,
-            parent_session_id=stored.session.session.parent_id,
-            current_prompt=prompt,
-        )
+        validate_session_workspace(stored_row.session, session_id=session_id, workspace=self._workspace)
         session = session_with_run_id(
             SessionState(
-                session=stored.session.session,
+                session=stored_row.session.session,
                 status="running",
-                turn=stored.session.turn,
+                turn=stored_row.session.turn,
                 metadata=cast(dict[str, object], session_metadata),
             ),
             run_id=run_id,
@@ -1277,6 +1307,26 @@ class RuntimeResumeCoordinator:
             metadata=session.metadata,
             agent=effective_config.agent,
             source="resume",
+        )
+
+        if checkpoint_last_sequence is not None:
+            self._session_store.truncate_session_events_after(
+                workspace=self._workspace,
+                session_id=session_id,
+                sequence=checkpoint_last_sequence,
+            )
+        # Reload after the rewrite: the replayed segments and the response's
+        # event list must come from the truncated log, never from the orphaned
+        # tail this resume just dropped.
+        stored = self._session_store.load_session(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
+        tool_results = list(self.tool_results_from_checkpoint(cast(list[object], raw_tool_results)))
+        replayed_conversation_segments = runtime.replayed_conversation_segments_for_existing_session(
+            stored=stored,
+            parent_session_id=stored.session.session.parent_id,
+            current_prompt=prompt,
         )
         assembled_context = runtime.assemble_provider_context(
             prompt=prompt,

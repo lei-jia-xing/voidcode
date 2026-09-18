@@ -1873,6 +1873,13 @@ class VoidCodeRuntime(RuntimeSurface):
         if startup is None:
             return
         session, sequence, graph, graph_request, tool_results = startup
+        # The run-start checkpoint was written before this run materialized the
+        # capability binding and skill snapshot a resume replays from, so an
+        # interruption before the first safe boundary used to leave a session
+        # that cannot be resumed. Refresh it now that both records exist — this
+        # is the last point before any tool call, so every execution window is
+        # covered. See docs/contracts/execution-lifecycle.md → (b).
+        self._refresh_run_checkpoint(session=session, prompt=prepared.request.prompt, sequence=sequence)
         loop = yield from self._run_stream_graph_loop(
             graph=graph,
             tool_registry=tool_registry,
@@ -2183,6 +2190,30 @@ class VoidCodeRuntime(RuntimeSurface):
                 yield self._persist_emitted_chunk(failed_chunk)
                 return None
         return session, sequence, tool_registry, skill_registry
+
+    def _refresh_run_checkpoint(self, *, session: SessionState, prompt: str, sequence: int) -> None:
+        """Record the run's replayable bindings in its resumable checkpoint.
+
+        A resume replays what the recorded run was bound to (capability binding +
+        skill snapshot), but the run-start checkpoint is written before either is
+        materialized. This refresh happens once they exist and before any tool
+        call, so an interruption at any later point is resumable.
+
+        ``save_interrupted_checkpoint`` writes the row only (no events), so this is
+        a cheap metadata refresh at the last durable event of this run's prefix.
+        """
+        self._session_store.save_interrupted_checkpoint(
+            workspace=self._workspace,
+            session_id=session.session.id,
+            prompt=prompt,
+            session_metadata=session.metadata,
+            tool_results=(),
+            last_event_sequence=sequence,
+            output=None,
+            create_if_missing=False,
+            turn=session.turn,
+            parent_session_id=session.session.parent_id,
+        )
 
     def _start_stream_acp_and_skills(
         self,

@@ -181,6 +181,9 @@ Agent 发起工具调用时只提交工具名与参数对象：
 
 ### 取消与超时（execution lifecycle）
 
+生命周期规范（取消如何传入、何时允许提交结果、何时失去所有权、何时释放资源）以
+[`execution-lifecycle.md`](./execution-lifecycle.md) 为唯一权威表述；本节只保留工具作者需要知道的细节。
+
 Runtime 拥有工具执行生命周期：工具不得自行判定"这次调用算不算结束"，也不得假设只有成功返回的结果才会被记录。
 
 - **取消如何传入正在运行的工具**：runtime 交给工具的 `context.abort_signal` 就是该次调用的取消视图。用户中断取消 run 级信号；runtime 超时只取消该次调用（不得把 run 变成 `interrupted`）。两者都通过同一个槽位 `context.abort_signal.cancelled` 对工具可见；工具必须轮询它，并在观察到之后尽快停止，不得继续写入。
