@@ -2,6 +2,34 @@ import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "./store";
 import { useShallow } from "zustand/react/shallow";
+import {
+  asyncStatusFromQuery,
+  backgroundTaskIdFromControlResponse,
+  queryErrorMessage,
+  refreshDelegatedTaskSurfaces,
+  resolveProviderModelReference,
+  resolveSelectedReviewPath,
+  useAcknowledgeNotification,
+  useAgentsQuery,
+  useBackgroundTaskAction,
+  useBackgroundTasksQuery,
+  useCommandsQuery,
+  useNotificationsQuery,
+  useProviderCatalogQuery,
+  useProviderValidation,
+  useRetryMcpConnections,
+  useReviewDiffQuery,
+  useReviewQuery,
+  useRuntimeStatusQuery,
+  useSessionDebugQuery,
+  useSessionsQuery,
+  useSettingsQuery,
+  useSwitchWorkspace,
+  useTaskOutputQuery,
+  useUpdateSettings,
+  useWorkspacesQuery,
+} from "./lib/queries";
+import type { BackgroundTaskActionRequest } from "./lib/queries";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { ChildSessionSidebar } from "./components/ChildSessionSidebar";
 import { ChatThread } from "./components/ChatThread";
@@ -133,62 +161,17 @@ function App() {
     setProviderModel,
     reasoningEffort,
     setReasoningEffort,
-    workspaces,
-    workspacesStatus,
-    workspacesError,
-    workspaceSwitchStatus,
-    workspaceSwitchError,
-    providers,
-    providersStatus,
-    providersError,
-    providerModels,
-    providerValidationResults,
-    providerValidationStatus,
-    providerValidationError,
-    agentPresets,
-    commands,
-    loadWorkspaces,
-    switchWorkspace,
-    loadProviders,
-    validateProviderCredentials,
-    loadAgents,
-    loadSkills,
-    loadCommands,
-    statusSnapshot,
-    statusStatus,
-    statusError,
-    mcpRetryStatus,
-    mcpRetryError,
-    loadStatus,
-    retryMcpConnections,
-    reviewSnapshot,
-    reviewStatus,
-    reviewError,
-    reviewSelectedPath,
-    reviewDiff,
-    reviewDiffStatus,
-    reviewDiffError,
-    loadReview,
-    selectReviewPath,
-    sessions,
-    currentSessionId,
-    childSessionParentId,
     sessionSidebarWidth,
     setSessionSidebarWidth,
+    reviewSelectedPath,
+    setReviewSelectedPath,
+    selectedBackgroundTaskOutputId,
+    selectBackgroundTaskOutput,
+    currentSessionId,
+    childSessionParentId,
     currentSessionEvents,
     currentSessionOutput,
     currentSessionState,
-    loadSessions,
-    loadNotifications = undefined,
-    notifications = [],
-    notificationsStatus = "idle",
-    notificationsError = null,
-    ackNotification = undefined,
-    resumeSession = undefined,
-    resumeStatus = "idle",
-    resumeError = null,
-    sessionsStatus,
-    sessionsError,
     selectSession,
     replayTargetSessionId,
     runTask,
@@ -204,30 +187,15 @@ function App() {
     questionStatus,
     questionError,
     answerQuestion,
-    backgroundTasks,
-    backgroundTasksStatus,
-    backgroundTasksError,
-    selectedBackgroundTaskOutputId,
-    backgroundTaskOutput,
-    backgroundTaskOutputStatus,
-    backgroundTaskOutputError,
-    loadBackgroundTasks,
-    loadBackgroundTaskOutput,
-    settings,
-    settingsStatus,
-    settingsError,
-    loadSettings,
-    updateSettings,
-    sessionDebug,
-    sessionDebugStatus,
-    sessionDebugError,
-    loadSessionDebug,
+    resumeSession,
+    resumeStatus,
+    resumeError,
   } = useAppStore(
-    // The store is the single source of truth and this shell reads most of it,
-    // so the subscription is exactly the fields it renders: a write to a slice
-    // the shell does not use (skills, agents, review mode, ...) can then never
-    // re-render the whole app, and `useShallow` keeps the object identity stable
-    // while none of them changed.
+    // The shell subscribes to client state and the streamed-run projection only:
+    // every server payload is read from the query cache by the hooks below, so a
+    // write to a store slice this shell does not paint (a skill catalog, the
+    // review mode, the cancel flag) can never re-render the whole app, and
+    // `useShallow` keeps the object identity stable while none of them changed.
     useShallow((state) => ({
       language: state.language,
       setLanguage: state.setLanguage,
@@ -237,62 +205,17 @@ function App() {
       setProviderModel: state.setProviderModel,
       reasoningEffort: state.reasoningEffort,
       setReasoningEffort: state.setReasoningEffort,
-      workspaces: state.workspaces,
-      workspacesStatus: state.workspacesStatus,
-      workspacesError: state.workspacesError,
-      workspaceSwitchStatus: state.workspaceSwitchStatus,
-      workspaceSwitchError: state.workspaceSwitchError,
-      providers: state.providers,
-      providersStatus: state.providersStatus,
-      providersError: state.providersError,
-      providerModels: state.providerModels,
-      providerValidationResults: state.providerValidationResults,
-      providerValidationStatus: state.providerValidationStatus,
-      providerValidationError: state.providerValidationError,
-      agentPresets: state.agentPresets,
-      commands: state.commands,
-      loadWorkspaces: state.loadWorkspaces,
-      switchWorkspace: state.switchWorkspace,
-      loadProviders: state.loadProviders,
-      validateProviderCredentials: state.validateProviderCredentials,
-      loadAgents: state.loadAgents,
-      loadSkills: state.loadSkills,
-      loadCommands: state.loadCommands,
-      statusSnapshot: state.statusSnapshot,
-      statusStatus: state.statusStatus,
-      statusError: state.statusError,
-      mcpRetryStatus: state.mcpRetryStatus,
-      mcpRetryError: state.mcpRetryError,
-      loadStatus: state.loadStatus,
-      retryMcpConnections: state.retryMcpConnections,
-      reviewSnapshot: state.reviewSnapshot,
-      reviewStatus: state.reviewStatus,
-      reviewError: state.reviewError,
-      reviewSelectedPath: state.reviewSelectedPath,
-      reviewDiff: state.reviewDiff,
-      reviewDiffStatus: state.reviewDiffStatus,
-      reviewDiffError: state.reviewDiffError,
-      loadReview: state.loadReview,
-      selectReviewPath: state.selectReviewPath,
-      sessions: state.sessions,
-      currentSessionId: state.currentSessionId,
-      childSessionParentId: state.childSessionParentId,
       sessionSidebarWidth: state.sessionSidebarWidth,
       setSessionSidebarWidth: state.setSessionSidebarWidth,
+      reviewSelectedPath: state.reviewSelectedPath,
+      setReviewSelectedPath: state.setReviewSelectedPath,
+      selectedBackgroundTaskOutputId: state.selectedBackgroundTaskOutputId,
+      selectBackgroundTaskOutput: state.selectBackgroundTaskOutput,
+      currentSessionId: state.currentSessionId,
+      childSessionParentId: state.childSessionParentId,
       currentSessionEvents: state.currentSessionEvents,
       currentSessionOutput: state.currentSessionOutput,
       currentSessionState: state.currentSessionState,
-      loadSessions: state.loadSessions,
-      loadNotifications: state.loadNotifications,
-      notifications: state.notifications,
-      notificationsStatus: state.notificationsStatus,
-      notificationsError: state.notificationsError,
-      ackNotification: state.ackNotification,
-      resumeSession: state.resumeSession,
-      resumeStatus: state.resumeStatus,
-      resumeError: state.resumeError,
-      sessionsStatus: state.sessionsStatus,
-      sessionsError: state.sessionsError,
       selectSession: state.selectSession,
       replayTargetSessionId: state.replayTargetSessionId,
       runTask: state.runTask,
@@ -308,24 +231,9 @@ function App() {
       questionStatus: state.questionStatus,
       questionError: state.questionError,
       answerQuestion: state.answerQuestion,
-      backgroundTasks: state.backgroundTasks,
-      backgroundTasksStatus: state.backgroundTasksStatus,
-      backgroundTasksError: state.backgroundTasksError,
-      selectedBackgroundTaskOutputId: state.selectedBackgroundTaskOutputId,
-      backgroundTaskOutput: state.backgroundTaskOutput,
-      backgroundTaskOutputStatus: state.backgroundTaskOutputStatus,
-      backgroundTaskOutputError: state.backgroundTaskOutputError,
-      loadBackgroundTasks: state.loadBackgroundTasks,
-      loadBackgroundTaskOutput: state.loadBackgroundTaskOutput,
-      settings: state.settings,
-      settingsStatus: state.settingsStatus,
-      settingsError: state.settingsError,
-      loadSettings: state.loadSettings,
-      updateSettings: state.updateSettings,
-      sessionDebug: state.sessionDebug,
-      sessionDebugStatus: state.sessionDebugStatus,
-      sessionDebugError: state.sessionDebugError,
-      loadSessionDebug: state.loadSessionDebug,
+      resumeSession: state.resumeSession,
+      resumeStatus: state.resumeStatus,
+      resumeError: state.resumeError,
     })),
   );
   const { t, i18n } = useTranslation();
@@ -335,14 +243,162 @@ function App() {
   const [showFileTree, setShowFileTree] = useState(false);
   const [showCodeReview, setShowCodeReview] = useState(false);
   const [showContext, setShowContext] = useState(false);
-  const [backgroundTaskAction, setBackgroundTaskAction] = useState<{
-    taskId: string;
-    status: "loading" | "error";
-    error: string | null;
-  } | null>(null);
   const [sessionEventError, setSessionEventError] = useState<string | null>(
     null,
   );
+
+  // Server data. Every payload below is read from the query cache; the active
+  // workspace path is the scope every other key is built from, so a switch
+  // re-keys them all instead of overwriting entries. Statuses are derived from
+  // the query state, so there is no second copy of them in the store.
+  const workspacesQuery = useWorkspacesQuery();
+  const workspaces = workspacesQuery.data ?? null;
+  const workspacesStatus = asyncStatusFromQuery(workspacesQuery);
+  const workspacesError = queryErrorMessage(workspacesQuery);
+  const scope = workspaces?.current?.path ?? null;
+
+  const prepareWorkspaceSwitch = useCallback(() => {
+    useAppStore.getState().prepareWorkspaceSwitch();
+  }, []);
+  const {
+    switchTo: switchWorkspaceTo,
+    status: workspaceSwitchStatus,
+    error: workspaceSwitchError,
+  } = useSwitchWorkspace(prepareWorkspaceSwitch);
+
+  const providerCatalogQuery = useProviderCatalogQuery(scope);
+  // Memoized so the derived maps keep their identity across renders: they are
+  // dependencies of the composer's own memos.
+  const providers = useMemo(
+    () => providerCatalogQuery.data?.providers ?? [],
+    [providerCatalogQuery.data],
+  );
+  const providerModels = useMemo(
+    () => providerCatalogQuery.data?.models ?? {},
+    [providerCatalogQuery.data],
+  );
+  const providersStatus = asyncStatusFromQuery(providerCatalogQuery);
+  const providersError = queryErrorMessage(providerCatalogQuery);
+  const providerNames = useMemo(
+    () => providers.map((provider) => provider.name),
+    [providers],
+  );
+  const providerValidation = useProviderValidation(scope, providerNames);
+  const resolvedProviderModel = resolveProviderModelReference(
+    providerModel,
+    providers,
+    providerModels,
+  );
+
+  const agentsQuery = useAgentsQuery(scope);
+  const agentPresets = agentsQuery.data ?? [];
+  const commandsQuery = useCommandsQuery(scope);
+  const commands = commandsQuery.data ?? [];
+
+  const statusQuery = useRuntimeStatusQuery(scope);
+  const statusSnapshot = statusQuery.data ?? null;
+  const statusStatus = asyncStatusFromQuery(statusQuery);
+  const statusError = queryErrorMessage(statusQuery);
+  const {
+    retry: retryMcpConnections,
+    isPending: isMcpRetryPending,
+    error: mcpRetryFailure,
+  } = useRetryMcpConnections(scope);
+  const mcpRetryStatus = isMcpRetryPending
+    ? "loading"
+    : mcpRetryFailure
+      ? "error"
+      : "idle";
+  const mcpRetryError = mcpRetryFailure ? errorMessage(mcpRetryFailure) : null;
+
+  const reviewQuery = useReviewQuery(scope);
+  const reviewSnapshot = reviewQuery.data ?? null;
+  const reviewStatus = asyncStatusFromQuery(reviewQuery);
+  const reviewError = queryErrorMessage(reviewQuery);
+  // The selection is client state; the path actually shown is derived, so a
+  // review reload can never leave it pointing at a file that no longer changed.
+  const effectiveReviewPath = useMemo(
+    () => resolveSelectedReviewPath(reviewSnapshot, reviewSelectedPath),
+    [reviewSnapshot, reviewSelectedPath],
+  );
+  const reviewDiffQuery = useReviewDiffQuery(scope, effectiveReviewPath);
+  const reviewDiff = reviewDiffQuery.data ?? null;
+  const reviewDiffStatus = asyncStatusFromQuery(reviewDiffQuery);
+  const reviewDiffError = queryErrorMessage(reviewDiffQuery);
+
+  const sessionsQuery = useSessionsQuery(scope);
+  const sessions = useMemo(
+    () => sessionsQuery.data ?? [],
+    [sessionsQuery.data],
+  );
+  const sessionsStatus = asyncStatusFromQuery(sessionsQuery);
+  const sessionsError = queryErrorMessage(sessionsQuery);
+
+  const notificationsQuery = useNotificationsQuery(scope);
+  const notifications = useMemo(
+    () => notificationsQuery.data ?? [],
+    [notificationsQuery.data],
+  );
+  const notificationsStatus = asyncStatusFromQuery(notificationsQuery);
+  const notificationsError = queryErrorMessage(notificationsQuery);
+  const { acknowledge: acknowledgeNotification, isPending: isAcking } =
+    useAcknowledgeNotification(scope);
+  const notificationsBusy = notificationsQuery.isFetching || isAcking;
+
+  const settingsQuery = useSettingsQuery(scope);
+  const settings = settingsQuery.data ?? null;
+  const {
+    save: saveSettings,
+    status: saveSettingsStatus,
+    error: saveSettingsFailure,
+  } = useUpdateSettings(scope);
+  const settingsStatus =
+    saveSettingsStatus === "loading"
+      ? "loading"
+      : saveSettingsStatus === "error"
+        ? "error"
+        : asyncStatusFromQuery(settingsQuery);
+  const settingsError =
+    saveSettingsStatus === "error"
+      ? errorMessage(saveSettingsFailure)
+      : queryErrorMessage(settingsQuery);
+
+  const sessionDebugQuery = useSessionDebugQuery(
+    scope,
+    showContext ? currentSessionId : null,
+  );
+  const sessionDebug = sessionDebugQuery.data ?? null;
+  const sessionDebugStatus = asyncStatusFromQuery(sessionDebugQuery);
+  const sessionDebugError = queryErrorMessage(sessionDebugQuery);
+
+  // The task surface follows the session being browsed: a delegated child uses
+  // its parent's task list, everything else this session's own (or the global
+  // list when nothing is selected). The id is part of the query key, so a
+  // selection change can never show the previous scope's tasks.
+  const taskSessionScopeId = childSessionParentId ?? currentSessionId ?? null;
+  const backgroundTasksQuery = useBackgroundTasksQuery(
+    scope,
+    taskSessionScopeId,
+  );
+  const backgroundTasks = useMemo(
+    () => backgroundTasksQuery.data ?? [],
+    [backgroundTasksQuery.data],
+  );
+  const backgroundTasksStatus = asyncStatusFromQuery(backgroundTasksQuery);
+  const backgroundTasksError = queryErrorMessage(backgroundTasksQuery);
+  const taskOutputQuery = useTaskOutputQuery(
+    scope,
+    selectedBackgroundTaskOutputId,
+  );
+  const backgroundTaskOutput = taskOutputQuery.data ?? null;
+  const backgroundTaskOutputStatus = asyncStatusFromQuery(taskOutputQuery);
+  const backgroundTaskOutputError = queryErrorMessage(taskOutputQuery);
+  const {
+    run: runBackgroundTaskActionRequest,
+    pendingTaskId: backgroundTaskActionTaskId,
+    status: backgroundTaskActionStatus,
+    error: backgroundTaskActionError,
+  } = useBackgroundTaskAction(scope);
   const hydratedInitialSessionRef = useRef(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const lastMessageSignatureRef = useRef("");
@@ -491,17 +547,13 @@ function App() {
     i18n.changeLanguage(language);
   }, [language, i18n]);
 
-  useEffect(() => {
-    loadSessions();
-  }, [loadSessions]);
-
   const returnToParentSession = useCallback(() => {
     if (childSessionParentId) {
-      void selectSession(childSessionParentId);
+      void selectSession(childSessionParentId, scope);
       return;
     }
-    void loadBackgroundTaskOutput(null);
-  }, [childSessionParentId, loadBackgroundTaskOutput, selectSession]);
+    selectBackgroundTaskOutput(null);
+  }, [childSessionParentId, scope, selectBackgroundTaskOutput, selectSession]);
 
   // While browsing a delegated child session, use OpenCode-style Alt+arrow navigation.
   useEffect(() => {
@@ -522,7 +574,7 @@ function App() {
       if (event.altKey && event.key === "ArrowDown") {
         event.preventDefault();
         if (childSessionTaskIds.length > 0) {
-          void loadBackgroundTaskOutput(childSessionTaskIds[0]);
+          selectBackgroundTaskOutput(childSessionTaskIds[0]);
         }
         return;
       }
@@ -532,7 +584,7 @@ function App() {
         selectedChildTaskIndex > 0
       ) {
         event.preventDefault();
-        void loadBackgroundTaskOutput(
+        selectBackgroundTaskOutput(
           childSessionTaskIds[selectedChildTaskIndex - 1],
         );
         return;
@@ -544,7 +596,7 @@ function App() {
         selectedChildTaskIndex < childSessionTaskIds.length - 1
       ) {
         event.preventDefault();
-        void loadBackgroundTaskOutput(
+        selectBackgroundTaskOutput(
           childSessionTaskIds[selectedChildTaskIndex + 1],
         );
       }
@@ -554,8 +606,9 @@ function App() {
   }, [
     childSessionTaskIds,
     displayedIsChildSession,
-    loadBackgroundTaskOutput,
     returnToParentSession,
+    scope,
+    selectBackgroundTaskOutput,
     selectedChildTaskIndex,
   ]);
 
@@ -597,13 +650,15 @@ function App() {
         () => {
           lastDelegatedRefreshAt = Date.now();
           if (controller.signal.aborted) return;
-          void loadBackgroundTasks();
-          const outputId = selectedBackgroundTaskOutputIdRef.current;
-          if (outputId) void loadBackgroundTaskOutput(outputId);
-          if (notificationsDirty) {
-            notificationsDirty = false;
-            void loadNotifications?.();
-          }
+          const refreshNotifications = notificationsDirty;
+          notificationsDirty = false;
+          void refreshDelegatedTaskSurfaces(
+            {
+              outputId: selectedBackgroundTaskOutputIdRef.current,
+              notifications: refreshNotifications,
+            },
+            scope,
+          );
         },
         Math.max(
           0,
@@ -649,7 +704,7 @@ function App() {
           // The user is browsing a delegated child session: refresh its output
           // in place. Re-selecting the underlying session here would clear the
           // child view state and flip the transcript back to the parent.
-          await loadBackgroundTaskOutput(outputId);
+          await refreshDelegatedTaskSurfaces({ outputId }, scope);
           return;
         }
         if (useAppStore.getState().replayStatus === "loading") {
@@ -669,7 +724,7 @@ function App() {
           storeStatus === undefined ||
           TERMINAL_DISPLAY_SESSION_STATUSES[storeStatus] !== true;
         if (appliedEvents > 0 || appliedSessionState || sessionMayStillBeLive) {
-          await selectSession(currentSessionId);
+          await selectSession(currentSessionId, scope);
         }
       } catch (error) {
         if (!controller.signal.aborted) {
@@ -686,45 +741,32 @@ function App() {
     runOrigin,
     runStatus,
     replayStatus,
-    loadBackgroundTaskOutput,
-    loadBackgroundTasks,
-    loadNotifications,
+    scope,
     selectSession,
   ]);
 
+  // The catalogs and settings adjust client state the store owns: which agent
+  // preset is still selectable, and the runtime's default model while the user
+  // has not chosen one. The store stays their single owner; the loaded payloads
+  // only inform it.
   useEffect(() => {
-    if (showContext && currentSessionId) {
-      void loadSessionDebug(currentSessionId);
+    if (agentsQuery.data) {
+      useAppStore.getState().reconcileAgentPreset(agentsQuery.data);
     }
-  }, [showContext, currentSessionId, loadSessionDebug]);
+  }, [agentsQuery.data]);
 
   useEffect(() => {
-    void loadWorkspaces?.();
-    void loadProviders?.();
-    void loadAgents?.();
-    void loadSkills?.();
-    void loadCommands?.();
-    void loadSettings?.();
-    void loadStatus?.();
-    void loadBackgroundTasks?.();
-    void loadNotifications?.();
-  }, [
-    loadAgents,
-    loadSkills,
-    loadCommands,
-    loadProviders,
-    loadBackgroundTasks,
-    loadNotifications,
-    loadSettings,
-    loadStatus,
-    loadWorkspaces,
-  ]);
+    useAppStore.getState().hydrateModelFromSettings(settings?.model);
+  }, [settings?.model]);
 
+  // The authoritative session list decides whether a selection with a resolved
+  // transcript behind it still exists. That is lifecycle (it clears the shell's
+  // own selection), so it stays in the store; the list itself is server data.
   useEffect(() => {
-    if (!showFileTree && !showCodeReview) return;
-    if (reviewStatus !== "idle") return;
-    void loadReview();
-  }, [loadReview, reviewStatus, showCodeReview, showFileTree]);
+    if (sessionsQuery.data) {
+      useAppStore.getState().reconcileSessionList(sessionsQuery.data);
+    }
+  }, [sessionsQuery.data]);
 
   useEffect(() => {
     if (hydratedInitialSessionRef.current || sessionsStatus !== "success") {
@@ -734,8 +776,8 @@ function App() {
     if (!currentSessionId || isRunning) {
       return;
     }
-    void selectSession(currentSessionId);
-  }, [currentSessionId, isRunning, selectSession, sessionsStatus]);
+    void selectSession(currentSessionId, scope);
+  }, [currentSessionId, isRunning, scope, selectSession, sessionsStatus]);
 
   useEffect(() => {
     // A reader gesture hands them the viewport: stop following straight away so
@@ -847,13 +889,13 @@ function App() {
   // shallowly, so a callback rebuilt on every render would defeat them.
   const handleSendMessage = useCallback(
     async (message: string, options?: { skills?: string[] }) => {
-      await runTask(message, {
+      await runTask(message, scope, {
         metadata: options?.skills?.length
           ? { skills: options.skills }
           : undefined,
       });
     },
-    [runTask],
+    [runTask, scope],
   );
 
   const handleSteer = useCallback(
@@ -888,34 +930,23 @@ function App() {
   }, [backgroundTaskOutput, displayedIsChildSession, selectedChildTaskSummary]);
 
   const runBackgroundTaskAction = useCallback(
-    async (taskId: string, action: (taskId: string) => Promise<unknown>) => {
-      setBackgroundTaskAction({ taskId, status: "loading", error: null });
+    async (request: BackgroundTaskActionRequest) => {
       try {
-        const result = await action(taskId);
-        await loadBackgroundTasks();
-        let nextTaskId = taskId;
-        if (result && typeof result === "object" && "task" in result) {
-          const taskValue = result.task;
-          if (taskValue && typeof taskValue === "object" && "id" in taskValue) {
-            const idValue = taskValue.id;
-            if (typeof idValue === "string" && idValue.length > 0) {
-              nextTaskId = idValue;
-            }
-          }
+        const result = await runBackgroundTaskActionRequest(request);
+        const answeredTaskId =
+          backgroundTaskIdFromControlResponse(result) ?? request.taskId;
+        if (
+          selectedBackgroundTaskOutputIdRef.current === request.taskId &&
+          answeredTaskId !== request.taskId
+        ) {
+          // A retry answers with the task it created; follow it.
+          selectBackgroundTaskOutput(answeredTaskId);
         }
-        if (selectedBackgroundTaskOutputIdRef.current === taskId) {
-          await loadBackgroundTaskOutput(nextTaskId);
-        }
-        setBackgroundTaskAction(null);
-      } catch (error) {
-        setBackgroundTaskAction({
-          taskId,
-          status: "error",
-          error: errorMessage(error),
-        });
+      } catch {
+        // The action's own state carries the failure to the task panel.
       }
     },
-    [loadBackgroundTaskOutput, loadBackgroundTasks],
+    [runBackgroundTaskActionRequest, selectBackgroundTaskOutput],
   );
   const currentSessionTitle = useMemo(() => {
     if (!currentSessionId) return null;
@@ -947,28 +978,51 @@ function App() {
   // skip re-renders when nothing chat-related changed.
   const handleSelectSession = useCallback(
     (sessionId: string) => {
-      void selectSession(sessionId);
+      void selectSession(sessionId, scope);
     },
-    [selectSession],
+    [scope, selectSession],
   );
   const handleFileTreePathSelect = useCallback(
     (path: string) => {
-      void selectReviewPath(path);
+      setReviewSelectedPath(path);
       setShowCodeReview(true);
     },
-    [selectReviewPath],
+    [setReviewSelectedPath],
   );
   const handleSelectBackgroundTaskOutput = useCallback(
     (taskId: string) => {
-      void loadBackgroundTaskOutput(taskId);
+      selectBackgroundTaskOutput(taskId);
     },
-    [loadBackgroundTaskOutput],
+    [selectBackgroundTaskOutput],
   );
+  // `refetch` is stable across renders, so these handlers keep their identity as
+  // props of memoized panels.
+  const { refetch: refetchBackgroundTasks } = backgroundTasksQuery;
   const handleRefreshBackgroundTasks = useCallback(() => {
-    void loadBackgroundTasks();
-  }, [loadBackgroundTasks]);
+    void refetchBackgroundTasks();
+  }, [refetchBackgroundTasks]);
+  const { refetch: refetchSessions } = sessionsQuery;
+  const handleRefreshSessions = useCallback(async () => {
+    await refetchSessions();
+  }, [refetchSessions]);
+  const { refetch: refetchReview } = reviewQuery;
+  const handleRefreshReview = useCallback(() => {
+    void refetchReview();
+  }, [refetchReview]);
+  const { refetch: refetchSettings } = settingsQuery;
+  const handleRefreshSettings = useCallback(() => {
+    void refetchSettings();
+  }, [refetchSettings]);
+  const { refetch: refetchProviderCatalog } = providerCatalogQuery;
+  const handleRefreshProviders = useCallback(() => {
+    void refetchProviderCatalog();
+  }, [refetchProviderCatalog]);
+  const handleSwitchWorkspace = useCallback(
+    (path: string) => switchWorkspaceTo(path),
+    [switchWorkspaceTo],
+  );
   const handleRetryMcpConnections = useCallback(() => {
-    void retryMcpConnections();
+    retryMcpConnections();
   }, [retryMcpConnections]);
   // Panel open/close handlers are props of memoized children, so they must keep
   // their identity across the stream: an inline arrow would be a new prop on
@@ -980,28 +1034,25 @@ function App() {
   const handleCloseFileTree = useCallback(() => setShowFileTree(false), []);
   const handleCloseCodeReview = useCallback(() => setShowCodeReview(false), []);
   const handleCloseContext = useCallback(() => setShowContext(false), []);
+  const { refetch: refetchSessionDebug } = sessionDebugQuery;
   const handleRefreshContext = useCallback(() => {
-    if (currentSessionId) void loadSessionDebug(currentSessionId);
-  }, [currentSessionId, loadSessionDebug]);
+    void refetchSessionDebug();
+  }, [refetchSessionDebug]);
   const handleToggleLanguage = useCallback(
     () => setLanguage(language === "en" ? "zh-CN" : "en"),
     [language, setLanguage],
   );
   const cancelBackgroundTask = useCallback(
-    (taskId: string) =>
-      runBackgroundTaskAction(taskId, RuntimeClient.cancelBackgroundTask),
+    (taskId: string) => runBackgroundTaskAction({ kind: "cancel", taskId }),
     [runBackgroundTaskAction],
   );
   const retryBackgroundTask = useCallback(
-    (taskId: string) =>
-      runBackgroundTaskAction(taskId, RuntimeClient.retryBackgroundTask),
+    (taskId: string) => runBackgroundTaskAction({ kind: "retry", taskId }),
     [runBackgroundTaskAction],
   );
   const steerBackgroundTask = useCallback(
     (taskId: string, prompt: string) =>
-      runBackgroundTaskAction(taskId, (id) =>
-        RuntimeClient.steerBackgroundTask(id, prompt),
-      ),
+      runBackgroundTaskAction({ kind: "steer", taskId, prompt }),
     [runBackgroundTaskAction],
   );
   const composerDisabled =
@@ -1033,7 +1084,7 @@ function App() {
         onSelectSession={handleSelectSession}
         onOpenProjects={handleOpenProjects}
         onOpenSettings={handleOpenSettings}
-        onRefreshSessions={loadSessions}
+        onRefreshSessions={handleRefreshSessions}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -1166,7 +1217,7 @@ function App() {
                         type="button"
                         className="min-w-0 flex-1 text-left text-[var(--vc-text-primary)] hover:underline"
                         onClick={() =>
-                          void selectSession(notification.session.id)
+                          void selectSession(notification.session.id, scope)
                         }
                       >
                         <span className="mr-2 rounded bg-[var(--vc-surface-2)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--vc-text-subtle)]">
@@ -1178,10 +1229,9 @@ function App() {
                         compact
                         variant="ghost"
                         onClick={() => {
-                          if (ackNotification)
-                            void ackNotification(notification.id);
+                          acknowledgeNotification(notification.id);
                         }}
-                        disabled={notificationsStatus === "loading"}
+                        disabled={notificationsBusy}
                       >
                         {t("runtimeOps.acknowledge")}
                       </ControlButton>
@@ -1198,9 +1248,9 @@ function App() {
                 <ControlButton
                   compact
                   variant="secondary"
-                  disabled={isResumeLoading || !resumeSession}
+                  disabled={isResumeLoading}
                   onClick={() => {
-                    if (resumeSession) void resumeSession(currentSessionId);
+                    void resumeSession(currentSessionId);
                   }}
                 >
                   {isResumeLoading
@@ -1225,7 +1275,7 @@ function App() {
                   variant="secondary"
                   onClick={() => {
                     if (replayTargetSessionId)
-                      void selectSession(replayTargetSessionId);
+                      void selectSession(replayTargetSessionId, scope);
                   }}
                 >
                   {t("common.retry")}
@@ -1313,13 +1363,9 @@ function App() {
                 onCancelTask={cancelBackgroundTask}
                 onRetryTask={retryBackgroundTask}
                 onSteerTask={steerBackgroundTask}
-                actionTaskId={backgroundTaskAction?.taskId ?? null}
-                actionStatus={
-                  backgroundTaskAction?.status === "loading"
-                    ? "loading"
-                    : "idle"
-                }
-                actionError={backgroundTaskAction?.error ?? null}
+                actionTaskId={backgroundTaskActionTaskId}
+                actionStatus={backgroundTaskActionStatus}
+                actionError={backgroundTaskActionError}
               />
             </div>
 
@@ -1334,7 +1380,7 @@ function App() {
               onSteer={handleSteer}
               onCancel={cancelCurrentRun}
               onAgentPresetChange={setAgentPreset}
-              providerModel={providerModel}
+              providerModel={resolvedProviderModel}
               reasoningEffort={reasoningEffort}
               providers={providers}
               providerModels={providerModels}
@@ -1356,7 +1402,7 @@ function App() {
               </p>
               <ControlButton
                 variant="primary"
-                onClick={() => void loadWorkspaces()}
+                onClick={() => void workspacesQuery.refetch()}
                 className="mt-5"
               >
                 {t("common.retry")}
@@ -1399,12 +1445,12 @@ function App() {
         snapshot={reviewSnapshot}
         status={reviewStatus}
         error={reviewError}
-        selectedPath={reviewSelectedPath}
+        selectedPath={effectiveReviewPath}
         diff={reviewDiff}
         diffStatus={reviewDiffStatus}
         diffError={reviewDiffError}
         onClose={handleCloseFileTree}
-        onRefresh={loadReview}
+        onRefresh={handleRefreshReview}
         onSelectPath={handleFileTreePathSelect}
       />
 
@@ -1414,12 +1460,12 @@ function App() {
         snapshot={reviewSnapshot}
         status={reviewStatus}
         error={reviewError}
-        selectedPath={reviewSelectedPath}
+        selectedPath={effectiveReviewPath}
         diff={reviewDiff}
         diffStatus={reviewDiffStatus}
         diffError={reviewDiffError}
         onClose={handleCloseCodeReview}
-        onRefresh={loadReview}
+        onRefresh={handleRefreshReview}
         onSelectPath={handleFileTreePathSelect}
       />
 
@@ -1441,16 +1487,16 @@ function App() {
         providersStatus={providersStatus}
         providersError={providersError}
         providerModels={providerModels}
-        providerValidationResults={providerValidationResults}
-        providerValidationStatus={providerValidationStatus}
-        providerValidationError={providerValidationError}
+        providerValidationResults={providerValidation.results}
+        providerValidationStatus={providerValidation.status}
+        providerValidationError={providerValidation.error}
         language={language}
         onToggleLanguage={handleToggleLanguage}
         onClose={handleCloseSettings}
-        onLoad={loadSettings}
-        onLoadProviders={loadProviders}
-        onValidateProvider={validateProviderCredentials}
-        onSave={updateSettings}
+        onLoad={handleRefreshSettings}
+        onLoadProviders={handleRefreshProviders}
+        onValidateProvider={providerValidation.validate}
+        onSave={saveSettings}
       />
 
       <OpenProjectModal
@@ -1463,7 +1509,7 @@ function App() {
         workspaceSwitchStatus={workspaceSwitchStatus}
         workspaceSwitchError={workspaceSwitchError}
         currentWorkspacePath={workspaces?.current?.path ?? null}
-        onSwitchWorkspace={switchWorkspace}
+        onSwitchWorkspace={handleSwitchWorkspace}
       />
     </div>
   );

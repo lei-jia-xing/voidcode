@@ -2,15 +2,19 @@ import "./test-local-storage";
 import { Profiler, type ReactElement } from "react";
 import { render, act, cleanup } from "@testing-library/react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import { useAppStore } from "./store";
+import { queryClient } from "./lib/queries";
 import type { RuntimeStatusSnapshot } from "./lib/runtime/types";
 import "./i18n";
 
-// The shell reads a single explicit `useShallow` slice of the store. This file
-// pins that contract behaviourally with render counting: a write to state the
-// slice does not carry must not commit the shell, a write to state it does
-// carry must.
+// The shell reads an explicit `useShallow` slice of the store — now client state
+// and the streamed-run projection only, because the server payloads it paints
+// come from the query cache. This file pins that contract behaviourally with
+// render counting: a write to store state the slice does not carry must not
+// commit the shell, a write to state it does carry must. A write to a *query*
+// commits it through the cache instead (see the query hooks' own suites).
 const statusSnapshot: RuntimeStatusSnapshot = {
   git: { state: "git_ready", root: "/workspace", error: null },
   lsp: { state: "stopped", error: null, details: {} },
@@ -50,6 +54,12 @@ vi.mock("./lib/runtime/client", () => ({
     listBackgroundTasks: vi.fn(async () => []),
     listSessionBackgroundTasks: vi.fn(async () => []),
     getStatus: vi.fn(async () => statusSnapshot),
+    getReview: vi.fn(async () => ({
+      root: "/workspace",
+      git: { state: "git_ready" },
+      changed_files: [],
+      tree: [],
+    })),
     getSettings: vi.fn(async () => ({})),
     getSessionReplay: vi.fn(),
     getChildSessionContext: vi.fn(),
@@ -61,10 +71,22 @@ describe("App store slice", () => {
 
   beforeEach(async () => {
     commits = 0;
-    // Settle the shell's mount effects before any measurement so their own
-    // commits are not attributed to the store writes under test.
-    await act(async () => {});
+    // The shell is given the process-wide client (the one the store reads
+    // through), so each test starts from an empty cache.
+    queryClient.clear();
   });
+
+  // Settle the shell's mount work before any measurement so its own commits (the
+  // language change, the boot queries, the catalog reconciliation) are never
+  // attributed to the store writes under test. One flush is not enough: those
+  // commits land several turns after render.
+  async function settleShell() {
+    for (let turn = 0; turn < 5; turn += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+  }
 
   afterEach(() => {
     cleanup();
@@ -72,30 +94,30 @@ describe("App store slice", () => {
 
   function renderShell(): ReactElement {
     return (
-      <Profiler
-        id="shell"
-        onRender={() => {
-          commits += 1;
-        }}
-      >
-        <App />
-      </Profiler>
+      <QueryClientProvider client={queryClient}>
+        <Profiler
+          id="shell"
+          onRender={() => {
+            commits += 1;
+          }}
+        >
+          <App />
+        </Profiler>
+      </QueryClientProvider>
     );
   }
 
   it("only commits for writes its explicit slice carries", async () => {
     render(renderShell());
-    await act(async () => {});
+    await settleShell();
 
-    // Fields the 97-field slice does not carry: agent/skill/command catalog
-    // status, review mode, and the local run bookkeeping.
+    // Fields the slice does not carry: the review mode (painted by the review
+    // panel only when it asks), the cancel flag (read by the cancel action, not
+    // painted), and the replay token (lifecycle bookkeeping).
     const skipped: Array<Array<[string, unknown]>> = [
-      [["skills", []]],
-      [["skillsStatus", "loading"]],
-      [["agentsStatus", "loading"]],
-      [["commandsStatus", "loading"]],
       [["reviewMode", "files"]],
       [["cancelRequested", true]],
+      [["replayRequestId", 7]],
     ];
     for (const writes of skipped) {
       const before = commits;
@@ -111,8 +133,9 @@ describe("App store slice", () => {
 
     // Fields the slice carries because the shell paints them.
     for (const [key, value] of [
-      ["settingsStatus", "loading"],
-      ["providerValidationResults", { deepseek: { ok: true } }],
+      ["runStatus", "running"],
+      ["currentSessionOutput", "streamed answer"],
+      ["agentPreset", "explore"],
     ] as Array<[string, unknown]>) {
       const before = commits;
       await act(async () => {

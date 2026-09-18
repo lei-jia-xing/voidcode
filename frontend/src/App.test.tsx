@@ -1,3 +1,8 @@
+// This suite asserts what the shell *renders* for a given fixture, with the query
+// layer stubbed (`./lib/queries`) the way the store used to be stubbed: bodies
+// assert synchronously after render, which a real cache cannot satisfy. The real
+// shell<->cache wiring is owned by `App.follow.test.tsx` and by
+// `src/lib/queries/queries.integration.test.tsx`.
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import App from "./App";
@@ -13,6 +18,164 @@ import "./i18n";
 vi.mock("./store", () => ({
   useAppStore: vi.fn(),
 }));
+
+// The shell reads server data through the query layer, so this suite stubs the
+// query hooks from the same fixtures it used to stub the store with: every
+// assertion below still describes what the shell paints for a given payload.
+// Pure helpers (status mapping, model normalization, review-path resolution) stay
+// real via `importOriginal`.
+const queryFixtures = vi.hoisted(() => ({
+  current: {} as Record<string, unknown>,
+}));
+
+vi.mock("./lib/queries", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./lib/queries")>();
+  const fixture = () => queryFixtures.current;
+  // A query's state as the hooks report it, from the fixture's old
+  // `*Status` vocabulary: idle -> pending/idle, loading -> pending/fetching.
+  const queryResult = (data: unknown, status: unknown, error: unknown) => {
+    const queryStatus =
+      status === "error"
+        ? "error"
+        : status === "success"
+          ? "success"
+          : "pending";
+    const fetchStatus =
+      status === "loading"
+        ? "fetching"
+        : status === "error" || status === "success"
+          ? "idle"
+          : "idle";
+    return {
+      data: data ?? null,
+      status: queryStatus,
+      fetchStatus,
+      error: error ? new Error(String(error)) : null,
+      isFetching: fetchStatus === "fetching",
+      refetch: async () => {},
+    };
+  };
+  const actionNoop = () => {};
+
+  return {
+    // Only the pure helpers stay real; every hook is stubbed explicitly so a
+    // newly mounted hook fails loudly here instead of reaching for a provider
+    // this suite does not install.
+    queryKeys: actual.queryKeys,
+    asyncStatusFromQuery: actual.asyncStatusFromQuery,
+    queryErrorMessage: actual.queryErrorMessage,
+    resolveProviderModelReference: actual.resolveProviderModelReference,
+    resolveSelectedReviewPath: actual.resolveSelectedReviewPath,
+    backgroundTaskIdFromControlResponse:
+      actual.backgroundTaskIdFromControlResponse,
+    refreshAfterMutation: actual.refreshAfterMutation,
+    useWorkspacesQuery: () =>
+      queryResult(
+        fixture().workspaces,
+        fixture().workspacesStatus,
+        fixture().workspacesError,
+      ),
+    useSwitchWorkspace: () => ({
+      switchTo: fixture().switchWorkspace ?? actionNoop,
+      status: fixture().workspaceSwitchStatus ?? "idle",
+      error: fixture().workspaceSwitchError ?? null,
+    }),
+    useProviderCatalogQuery: () =>
+      queryResult(
+        {
+          providers: fixture().providers ?? [],
+          models: fixture().providerModels ?? {},
+        },
+        fixture().providersStatus,
+        fixture().providersError,
+      ),
+    useProviderValidation: () => ({
+      results: fixture().providerValidationResults ?? {},
+      status: fixture().providerValidationStatus ?? {},
+      error: fixture().providerValidationError ?? {},
+      validate: fixture().validateProviderCredentials ?? actionNoop,
+    }),
+    useAgentsQuery: () => queryResult(fixture().agentPresets, "success", null),
+    useCommandsQuery: () => queryResult(fixture().commands, "success", null),
+    useRuntimeStatusQuery: () =>
+      queryResult(
+        fixture().statusSnapshot,
+        fixture().statusStatus,
+        fixture().statusError,
+      ),
+    useRetryMcpConnections: () => ({
+      retry: fixture().retryMcpConnections ?? actionNoop,
+      isPending: fixture().mcpRetryStatus === "loading",
+      error: fixture().mcpRetryError
+        ? new Error(String(fixture().mcpRetryError))
+        : null,
+    }),
+    useReviewQuery: () =>
+      queryResult(
+        fixture().reviewSnapshot,
+        fixture().reviewStatus,
+        fixture().reviewError,
+      ),
+    useReviewDiffQuery: () =>
+      queryResult(
+        fixture().reviewDiff,
+        fixture().reviewDiffStatus,
+        fixture().reviewDiffError,
+      ),
+    useSessionsQuery: () =>
+      queryResult(
+        fixture().sessions,
+        fixture().sessionsStatus,
+        fixture().sessionsError,
+      ),
+    useNotificationsQuery: () =>
+      queryResult(
+        fixture().notifications,
+        fixture().notificationsStatus,
+        fixture().notificationsError,
+      ),
+    useAcknowledgeNotification: () => ({
+      acknowledge: fixture().ackNotification ?? actionNoop,
+      isPending: false,
+    }),
+    useSettingsQuery: () =>
+      queryResult(
+        fixture().settings,
+        fixture().settingsStatus,
+        fixture().settingsError,
+      ),
+    useUpdateSettings: () => ({
+      save: fixture().updateSettings ?? actionNoop,
+      status: "idle",
+      error: null,
+    }),
+    useSessionDebugQuery: () =>
+      queryResult(
+        fixture().sessionDebug,
+        fixture().sessionDebugStatus,
+        fixture().sessionDebugError,
+      ),
+    useBackgroundTasksQuery: () =>
+      queryResult(
+        fixture().backgroundTasks,
+        fixture().backgroundTasksStatus,
+        fixture().backgroundTasksError,
+      ),
+    useTaskOutputQuery: () =>
+      queryResult(
+        fixture().backgroundTaskOutput,
+        fixture().backgroundTaskOutputStatus,
+        fixture().backgroundTaskOutputError,
+      ),
+    useBackgroundTaskAction: () => ({
+      run: async () => null,
+      pendingTaskId: null,
+      status: "idle",
+      error: null,
+    }),
+    refreshDelegatedTaskSurfaces: async () => {},
+  };
+});
 
 vi.mock("./components/SettingsPanel", () => ({
   SettingsPanel: () => <div data-testid="settings-panel-mock" />,
@@ -106,7 +269,7 @@ describe("App", () => {
     reviewDiffError: null,
     reviewMode: "changes",
     loadReview: vi.fn(),
-    selectReviewPath: vi.fn(),
+    setReviewSelectedPath: vi.fn(),
     setReviewMode: vi.fn(),
     sessions: [],
     currentSessionId: null,
@@ -140,7 +303,13 @@ describe("App", () => {
     backgroundTaskOutputStatus: "idle",
     backgroundTaskOutputError: null,
     loadBackgroundTasks: vi.fn(),
-    loadBackgroundTaskOutput: vi.fn(),
+    selectBackgroundTaskOutput: vi.fn(),
+    prepareWorkspaceSwitch: vi.fn(),
+    reconcileAgentPreset: vi.fn(),
+    reconcileSessionList: vi.fn(),
+    hydrateModelFromSettings: vi.fn(),
+    mergeSessionEvent: vi.fn(() => false),
+    mergeSessionState: vi.fn(() => false),
     sessionDebug: null,
     sessionDebugStatus: "idle",
     sessionDebugError: null,
@@ -152,15 +321,26 @@ describe("App", () => {
     updateSettings: vi.fn(),
   };
 
+  type StoreMockView = typeof mockStore;
+  let currentStoreMock: StoreMockView = mockStore;
+
+  // A test's mocked store view is also the query-fixture source: the shell reads
+  // server data from the query hooks and lifecycle state from the store, and this
+  // helper keeps both views of the same fixture in step. The value is a superset
+  // of the base view, so it is accepted as a plain record.
+  function setStoreMock(value: Record<string, unknown>) {
+    currentStoreMock = value as StoreMockView;
+    queryFixtures.current = value;
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue(value);
+    (useAppStore as unknown as { getState: () => StoreMockView }).getState =
+      () => currentStoreMock;
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-16T06:00:00Z"));
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
-      mockStore,
-    );
-    (useAppStore as unknown as { getState: () => typeof mockStore }).getState =
-      () => mockStore;
+    setStoreMock(mockStore);
   });
 
   afterEach(() => {
@@ -174,7 +354,7 @@ describe("App", () => {
   });
 
   it("renders composer and triggers runTask on submit", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -199,9 +379,13 @@ describe("App", () => {
     fireEvent.change(textarea, { target: { value: "read README.md" } });
     fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
 
-    expect(mockStore.runTask).toHaveBeenCalledWith("read README.md", {
-      metadata: undefined,
-    });
+    expect(mockStore.runTask).toHaveBeenCalledWith(
+      "read README.md",
+      "/workspace",
+      {
+        metadata: undefined,
+      },
+    );
   });
 
   it("renders runtime notification empty and error states without inventing entries", () => {
@@ -222,16 +406,13 @@ describe("App", () => {
       notificationsStatus: "success",
       notificationsError: null,
     };
-    const storeMock = useAppStore as unknown as {
-      mockReturnValue: (value: unknown) => void;
-    };
-    storeMock.mockReturnValue(workspaceStore);
+    setStoreMock(workspaceStore);
 
     const { rerender } = render(<App />);
     expect(screen.getByText("No notifications.")).toBeInTheDocument();
     expect(screen.queryByText("Acknowledge")).not.toBeInTheDocument();
 
-    storeMock.mockReturnValue({
+    setStoreMock({
       ...workspaceStore,
       notificationsStatus: "error",
       notificationsError: "notification load failed",
@@ -240,14 +421,24 @@ describe("App", () => {
     expect(screen.getByText("notification load failed")).toBeInTheDocument();
   });
 
-  it("loads runtime-owned settings on startup", () => {
+  it("adopts the runtime settings model while no live preference is set", () => {
+    const hydrateModelFromSettings = vi.fn();
+    setStoreMock({
+      ...mockStore,
+      providerModel: "",
+      hydrateModelFromSettings,
+      settings: { provider: "opencode-go", model: "opencode-go/kimi-k2.6" },
+    });
+
     render(<App />);
 
-    expect(mockStore.loadSettings).toHaveBeenCalled();
+    expect(hydrateModelFromSettings).toHaveBeenCalledWith(
+      "opencode-go/kimi-k2.6",
+    );
   });
 
   it("renders runtime status popover without task tab or summary stat cards", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -290,7 +481,7 @@ describe("App", () => {
   });
 
   it("uses a working bar instead of the old agent idle header badge", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -316,7 +507,7 @@ describe("App", () => {
   });
 
   it("shows a workspace loading state instead of flashing the empty project page during boot", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: null,
       workspacesStatus: "loading",
@@ -332,7 +523,7 @@ describe("App", () => {
 
   it("wires the running composer stop button to cancel the current run", () => {
     const cancelCurrentRun = vi.fn();
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       cancelCurrentRun,
       workspaces: {
@@ -360,7 +551,7 @@ describe("App", () => {
       .spyOn(RuntimeClient, "sessionEvents")
       .mockImplementation(async function* () {});
 
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       currentSessionId: "session-running",
       currentSessionEvents: [],
@@ -421,9 +612,7 @@ describe("App", () => {
         candidates: [],
       },
     };
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
-      workspaceStore,
-    );
+    setStoreMock(workspaceStore);
 
     render(<App />);
 
@@ -486,14 +675,16 @@ describe("App", () => {
     ).toHaveAttribute("aria-expanded", "true");
 
     fireEvent.click(screen.getByRole("button", { name: "app.ts" }));
-    expect(workspaceStore.selectReviewPath).toHaveBeenCalledWith("src/app.ts");
+    expect(workspaceStore.setReviewSelectedPath).toHaveBeenCalledWith(
+      "src/app.ts",
+    );
     expect(
       screen.getByRole("button", { name: "Toggle code review" }),
     ).toHaveAttribute("aria-expanded", "true");
   });
 
   it("does not show the agent status badge in the workspace header", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -516,7 +707,7 @@ describe("App", () => {
   });
 
   it("renders when runtime status omits git details", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -538,9 +729,9 @@ describe("App", () => {
   });
 
   it("shows delegated child session transcript and switches back to the parent session", () => {
-    const loadBackgroundTaskOutput = vi.fn();
+    const selectBackgroundTaskOutput = vi.fn();
     const selectSession = vi.fn();
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -651,7 +842,7 @@ describe("App", () => {
         output: "child output",
       },
       childSessionParentId: "parent-session",
-      loadBackgroundTaskOutput,
+      selectBackgroundTaskOutput,
       selectSession,
     });
 
@@ -681,14 +872,14 @@ describe("App", () => {
 
     fireEvent.click(screen.getByText("Back to parent"));
 
-    expect(selectSession).toHaveBeenCalledWith("parent-session");
-    expect(loadBackgroundTaskOutput).not.toHaveBeenCalledWith(null);
+    expect(selectSession).toHaveBeenCalledWith("parent-session", "/workspace");
+    expect(selectBackgroundTaskOutput).not.toHaveBeenCalledWith(null);
   });
 
   it("supports OpenCode-style Alt+arrow child-session navigation", () => {
-    const loadBackgroundTaskOutput = vi.fn();
+    const selectBackgroundTaskOutput = vi.fn();
     const selectSession = vi.fn();
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -780,24 +971,24 @@ describe("App", () => {
         output: "child output 1",
       },
       childSessionParentId: "parent-session",
-      loadBackgroundTaskOutput,
+      selectBackgroundTaskOutput,
       selectSession,
     });
 
     render(<App />);
 
     fireEvent.keyDown(window, { key: "ArrowDown", altKey: true });
-    expect(loadBackgroundTaskOutput).toHaveBeenCalledWith("task-child-1");
+    expect(selectBackgroundTaskOutput).toHaveBeenCalledWith("task-child-1");
 
     fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
-    expect(loadBackgroundTaskOutput).toHaveBeenCalledWith("task-child-2");
+    expect(selectBackgroundTaskOutput).toHaveBeenCalledWith("task-child-2");
 
     fireEvent.keyDown(window, { key: "ArrowLeft", altKey: true });
-    expect(loadBackgroundTaskOutput).not.toHaveBeenCalledWith("task-child-0");
+    expect(selectBackgroundTaskOutput).not.toHaveBeenCalledWith("task-child-0");
 
     fireEvent.keyDown(window, { key: "ArrowUp", altKey: true });
-    expect(selectSession).toHaveBeenCalledWith("parent-session");
-    expect(loadBackgroundTaskOutput).not.toHaveBeenCalledWith(null);
+    expect(selectSession).toHaveBeenCalledWith("parent-session", "/workspace");
+    expect(selectBackgroundTaskOutput).not.toHaveBeenCalledWith(null);
   });
 
   it("renders a workspace loading state before showing the empty project page", () => {
@@ -813,7 +1004,7 @@ describe("App", () => {
   });
 
   it("renders chat messages when current session has events", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -885,7 +1076,7 @@ describe("App", () => {
       payload: { prompt },
     });
 
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: workspace,
       currentSessionEvents: [requestEvent(1, "first question")],
@@ -910,7 +1101,7 @@ describe("App", () => {
     fireEvent.wheel(scroller, { deltaY: -400 });
     await flushScrollFrame();
 
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: workspace,
       currentSessionEvents: [
@@ -945,7 +1136,7 @@ describe("App", () => {
       payload: { prompt },
     });
 
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: workspace,
       currentSessionEvents: [requestEvent(1, "first question")],
@@ -967,7 +1158,7 @@ describe("App", () => {
     // Within the follow threshold (50px from the bottom).
     scroller.scrollTop = 1950;
 
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: workspace,
       currentSessionEvents: [
@@ -1010,7 +1201,7 @@ describe("App", () => {
       },
     ];
     const renderFrame = (answer: string) =>
-      (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      setStoreMock({
         ...mockStore,
         workspaces: workspace,
         currentSessionEvents: streamEvents(answer),
@@ -1072,7 +1263,7 @@ describe("App", () => {
       },
     ];
     const renderFrame = (answer: string) =>
-      (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      setStoreMock({
         ...mockStore,
         workspaces: workspace,
         currentSessionEvents: streamEvents(answer),
@@ -1122,7 +1313,7 @@ describe("App", () => {
   });
 
   it("renders thinking block for reasoning events", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1161,7 +1352,7 @@ describe("App", () => {
   });
 
   it("renders streamed assistant text before the final response event", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1210,7 +1401,7 @@ describe("App", () => {
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => {});
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1261,7 +1452,7 @@ describe("App", () => {
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => {});
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1312,7 +1503,7 @@ describe("App", () => {
   });
 
   it("does not render thinking block when no reasoning events exist", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1344,7 +1535,7 @@ describe("App", () => {
 
   it("renders approval controls for waiting sessions and triggers allow", () => {
     const resolveApproval = vi.fn();
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1397,7 +1588,7 @@ describe("App", () => {
 
   it("triggers deny for waiting sessions", () => {
     const resolveApproval = vi.fn();
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1448,7 +1639,7 @@ describe("App", () => {
   });
 
   it("hides approval controls when session is not waiting", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1475,7 +1666,7 @@ describe("App", () => {
   });
 
   it("renders approval error and disables controls while submitting", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1528,7 +1719,7 @@ describe("App", () => {
   });
 
   it("renders the session list item with prompt-first title, status, and updated time", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1563,7 +1754,7 @@ describe("App", () => {
   });
 
   it("renders idle session status labels from contract-valid summaries", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1596,7 +1787,7 @@ describe("App", () => {
   });
 
   it("renders the header with current session prompt", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1657,7 +1848,7 @@ describe("App", () => {
       "Implement the remaining opencode-style frontend chrome fixes from user feedback by editing the top chrome controls and composer footer selectors.";
     const conciseTitle =
       "Implement the remaining opencode-style frontend chrome…";
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1691,7 +1882,7 @@ describe("App", () => {
   it("shortens the live Vulkan Chinese prompt without keeping request boilerplate", () => {
     const vulkanPrompt =
       "请你作为 leader agent，在当前仓库中实现一个最小 Vulkan 三角形示例。要求：先检查项目结构和可用构建方式，再创建必要的源文件/构建配置/README说明；尽量保持最小可运行，不要做无关功能。";
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1728,7 +1919,7 @@ describe("App", () => {
   });
 
   it("falls back to the replayed request prompt in the header when summary prompt is unavailable", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1760,7 +1951,7 @@ describe("App", () => {
   });
 
   it("prefers the latest replayed request prompt in the header fallback", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1800,7 +1991,7 @@ describe("App", () => {
   });
 
   it("renders model controls and updates provider model", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1857,7 +2048,7 @@ describe("App", () => {
   });
 
   it("keeps composer input enabled while running", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {
@@ -1882,7 +2073,7 @@ describe("App", () => {
   });
 
   it("renders run error banner when run fails", () => {
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+    setStoreMock({
       ...mockStore,
       workspaces: {
         current: {

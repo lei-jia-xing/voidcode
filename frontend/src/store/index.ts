@@ -8,30 +8,48 @@ import {
   failureMessageFromEvent,
 } from "../lib/runtime/event-parser";
 import {
+  currentWorkspaceScope,
+  queryClient,
+  queryKeys,
+  readProviderCatalog,
+  refreshAfterMutation,
+  resolveProviderModelReference,
+  type WorkspaceScope,
+} from "../lib/queries";
+import {
   AgentSummary,
   ApprovalDecision,
   AsyncStatus,
-  BackgroundTaskOutput,
-  BackgroundTaskSummary,
-  CommandSummary,
-  StoredSessionSummary,
-  SessionState,
   EventEnvelope,
   ProviderModelsResult,
   ProviderSummary,
-  ProviderValidationResult,
   QuestionAnswer,
   RuntimeSessionDebugSnapshot,
-  SkillSummary,
-  RuntimeStatusSnapshot,
-  RuntimeSettings,
-  RuntimeSettingsUpdate,
-  ReviewFileDiff,
-  WorkspaceRegistrySnapshot,
-  WorkspaceReviewSnapshot,
-  RuntimeNotification,
+  SessionState,
+  StoredSessionSummary,
 } from "../lib/runtime/types";
 
+/**
+ * Client state and the runtime's execution lifecycle.
+ *
+ * What lives here: the persisted user preferences (language, agent preset,
+ * model, reasoning effort, sidebar width, review mode), the panel/selection
+ * state (the selected session, the selected review path, the selected background
+ * task, the child-session parent, the workspace selection reset), and the
+ * *streamed-run projection* — the session row, event list and output the run and
+ * follow streams write as they arrive, together with the run/cancel, approval,
+ * question, replay and resume state machines that own them.
+ *
+ * What does not live here: every plain-HTTP payload. Providers, agents, skills,
+ * commands, sessions, status, review, workspaces, tasks, notifications, settings
+ * and the per-session debug snapshot are read from the TanStack Query cache (see
+ * `lib/queries`), so a payload has exactly one home. This module reads those
+ * entries where its own logic needs them (the session list for the
+ * delegated-context routing decision, the provider catalog to build a run
+ * request) and writes them where its lifecycle produces one (the task-output
+ * entry a delegated-context probe selects) — it never mirrors them into React
+ * state.
+ */
 const DEFAULT_SESSION_SIDEBAR_WIDTH = 344;
 
 // The active run's AbortController. runTask creates one per run and passes its
@@ -40,8 +58,10 @@ const DEFAULT_SESSION_SIDEBAR_WIDTH = 344;
 // the controller out of the persisted store.
 let activeRunAbortController: AbortController | null = null;
 let activeRunIdentity: { sessionId: string; runId: string } | null = null;
-let notificationsRequestId = 0;
-let workspaceGeneration = 0;
+// The transcript read of the current selection (child-context probe + replay).
+// A newer selection aborts it: the superseded request is really cancelled
+// instead of being decoded and discarded, and a workspace switch aborts it too.
+let activeSelectionAbortController: AbortController | null = null;
 
 type PersistedAppState = Pick<
   AppState,
@@ -59,42 +79,11 @@ interface AppState {
   agentPreset: string;
   providerModel: string;
   reasoningEffort: string;
-  workspaces: WorkspaceRegistrySnapshot | null;
-  workspacesStatus: AsyncStatus;
-  workspacesError: string | null;
-  workspaceSwitchStatus: AsyncStatus;
-  workspaceSwitchError: string | null;
-  providers: ProviderSummary[];
-  providersStatus: AsyncStatus;
-  providersError: string | null;
-  providerModels: Record<string, ProviderModelsResult>;
-  providerValidationResults: Record<string, ProviderValidationResult>;
-  providerValidationStatus: Record<string, AsyncStatus>;
-  providerValidationError: Record<string, string | null>;
-  agentPresets: AgentSummary[];
-  agentsStatus: AsyncStatus;
-  agentsError: string | null;
-  skills: SkillSummary[];
-  skillsStatus: AsyncStatus;
-  skillsError: string | null;
-  commands: CommandSummary[];
-  commandsStatus: AsyncStatus;
-  commandsError: string | null;
-  statusSnapshot: RuntimeStatusSnapshot | null;
-  statusStatus: AsyncStatus;
-  statusError: string | null;
-  mcpRetryStatus: AsyncStatus;
-  mcpRetryError: string | null;
-  reviewSnapshot: WorkspaceReviewSnapshot | null;
-  reviewStatus: AsyncStatus;
-  reviewError: string | null;
-  reviewSelectedPath: string | null;
-  reviewDiff: ReviewFileDiff | null;
-  reviewDiffStatus: AsyncStatus;
-  reviewDiffError: string | null;
-  reviewMode: "changes" | "files";
 
-  sessions: StoredSessionSummary[];
+  reviewMode: "changes" | "files";
+  reviewSelectedPath: string | null;
+  selectedBackgroundTaskOutputId: string | null;
+
   currentSessionId: string | null;
   sessionSidebarWidth: number;
   currentSessionState: SessionState | null;
@@ -102,10 +91,13 @@ interface AppState {
   currentSessionOutput: string | null;
   childSessionParentId: string | null;
 
-  sessionsStatus: "idle" | "loading" | "success" | "error";
-  sessionsError: string | null;
-  replayStatus: "idle" | "loading" | "success" | "error";
+  replayStatus: AsyncStatus;
   replayError: string | null;
+  replayRequestId: number;
+  replayTargetSessionId: string | null;
+  resumeStatus: AsyncStatus;
+  resumeError: string | null;
+
   runStatus: "idle" | "running" | "cancelling" | "success" | "error";
   runOrigin: "local" | "external" | null;
   runError: string | null;
@@ -114,53 +106,47 @@ interface AppState {
   approvalError: string | null;
   questionStatus: "idle" | "submitting" | "success" | "error";
   questionError: string | null;
-  backgroundTasks: BackgroundTaskSummary[];
-  backgroundTasksStatus: AsyncStatus;
-  backgroundTasksError: string | null;
-  selectedBackgroundTaskOutputId: string | null;
-  backgroundTaskOutput: BackgroundTaskOutput | null;
-  backgroundTaskOutputStatus: AsyncStatus;
-  backgroundTaskOutputError: string | null;
-  sessionDebug: RuntimeSessionDebugSnapshot | null;
-  sessionDebugStatus: AsyncStatus;
-  sessionDebugError: string | null;
-  replayRequestId: number;
-  replayTargetSessionId: string | null;
-  notifications: RuntimeNotification[];
-  notificationsStatus: AsyncStatus;
-  notificationsError: string | null;
-  resumeStatus: AsyncStatus;
-  resumeError: string | null;
-
-  settings: RuntimeSettings | null;
-  settingsStatus: "idle" | "loading" | "success" | "error";
-  settingsError: string | null;
 
   setLanguage: (lang: "en" | "zh-CN") => void;
   setAgentPreset: (preset: string) => void;
   setProviderModel: (model: string) => void;
   setReasoningEffort: (effort: string) => void;
-  loadWorkspaces: () => Promise<void>;
-  switchWorkspace: (path: string) => Promise<void>;
-  loadProviders: () => Promise<void>;
-  validateProviderCredentials: (providerName: string) => Promise<void>;
-  loadAgents: () => Promise<void>;
-  loadSkills: () => Promise<void>;
-  loadCommands: () => Promise<void>;
-  loadStatus: () => Promise<void>;
-  retryMcpConnections: () => Promise<void>;
-  loadReview: () => Promise<void>;
-  selectReviewPath: (path: string | null) => Promise<void>;
-  setReviewMode: (mode: "changes" | "files") => void;
   setSessionSidebarWidth: (width: number) => void;
-  loadSessions: () => Promise<void>;
+  setReviewMode: (mode: "changes" | "files") => void;
+  setReviewSelectedPath: (path: string | null) => void;
+  /** Select a background task's output view; `null` returns to the plain session. */
+  selectBackgroundTaskOutput: (taskId: string | null) => void;
+  /** Adopt a loaded agent catalog over the stored preset preference. */
+  reconcileAgentPreset: (agents: AgentSummary[]) => void;
+  /** Adopt the runtime settings' model while the user has not chosen one. */
+  hydrateModelFromSettings: (model: string | null | undefined) => void;
+  /** Drop everything the previous workspace owned, ahead of a switch. */
+  prepareWorkspaceSwitch: () => void;
+  /** Apply the freshly loaded session list to the current selection. */
+  reconcileSessionList: (sessions: StoredSessionSummary[]) => void;
   /** Merge one pushed session-event frame; false when it was already stored. */
   mergeSessionEvent: (event: EventEnvelope) => boolean;
   /** Adopt the session row pushed by a stream; false when nothing moved. */
   mergeSessionState: (session: SessionState) => boolean;
-  selectSession: (sessionId: string) => Promise<void>;
+  /**
+   * Select a session and read its transcript.
+   *
+   * `workspaceScope` is the workspace the caller is acting in. It is an explicit
+   * argument because this action reads and writes the query cache: the shell
+   * always knows which workspace it is showing, and an action must not resolve
+   * that from a hidden global read.
+   */
+  selectSession: (
+    sessionId: string,
+    workspaceScope: WorkspaceScope,
+  ) => Promise<void>;
+  /**
+   * Start a run in `workspaceScope`, whose provider catalog supplies the model
+   * metadata the request is built from.
+   */
   runTask: (
     prompt: string,
+    workspaceScope: WorkspaceScope,
     options?: {
       sessionId?: string | null;
       metadata?: {
@@ -173,17 +159,7 @@ interface AppState {
   cancelCurrentRun: () => Promise<void>;
   resolveApproval: (decision: ApprovalDecision) => Promise<void>;
   answerQuestion: (answers: QuestionAnswer[]) => Promise<void>;
-  loadBackgroundTasks: () => Promise<void>;
-  loadBackgroundTaskOutput: (taskId: string | null) => Promise<void>;
-  loadSessionDebug: (sessionId?: string | null) => Promise<void>;
-  loadNotifications: () => Promise<void>;
-  ackNotification: (notificationId: string) => Promise<void>;
   resumeSession: (sessionId?: string | null) => Promise<void>;
-  refreshAfterMutation: (
-    options?: RefreshAfterMutationOptions,
-  ) => Promise<void>;
-  loadSettings: () => Promise<void>;
-  updateSettings: (settings: RuntimeSettingsUpdate) => Promise<void>;
 }
 
 function getPendingApprovalRequestId(events: EventEnvelope[]): string | null {
@@ -216,6 +192,36 @@ function getPendingApprovalRequestId(events: EventEnvelope[]): string | null {
   return null;
 }
 
+function getPendingQuestionRequestId(events: EventEnvelope[]): string | null {
+  const answeredRequestIds = new Set<string>();
+
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    const requestId = event.payload.request_id;
+
+    if (event.event_type === "runtime.question_answered") {
+      if (typeof requestId === "string" && requestId.length > 0) {
+        answeredRequestIds.add(requestId);
+      }
+      continue;
+    }
+
+    if (event.event_type !== "runtime.question_requested") {
+      continue;
+    }
+
+    if (
+      typeof requestId === "string" &&
+      requestId.length > 0 &&
+      !answeredRequestIds.has(requestId)
+    ) {
+      return requestId;
+    }
+  }
+
+  return null;
+}
+
 function runStatusForReplay(session: SessionState): AppState["runStatus"] {
   return session.status === "running" ? "running" : "idle";
 }
@@ -223,6 +229,7 @@ function runStatusForReplay(session: SessionState): AppState["runStatus"] {
 function isRunLocked(runStatus: AppState["runStatus"]): boolean {
   return runStatus === "running" || runStatus === "cancelling";
 }
+
 function runtimeFailureMessage(event: EventEnvelope): string | null {
   return failureMessageFromEvent(event);
 }
@@ -288,95 +295,25 @@ function applyLiveStreamEvent(
   return [...events.slice(0, end), event];
 }
 
-function getPendingQuestionRequestId(events: EventEnvelope[]): string | null {
-  const answeredRequestIds = new Set<string>();
-
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    const requestId = event.payload.request_id;
-
-    if (event.event_type === "runtime.question_answered") {
-      if (typeof requestId === "string" && requestId.length > 0) {
-        answeredRequestIds.add(requestId);
-      }
-      continue;
-    }
-
-    if (event.event_type !== "runtime.question_requested") {
-      continue;
-    }
-
-    if (
-      typeof requestId === "string" &&
-      requestId.length > 0 &&
-      !answeredRequestIds.has(requestId)
-    ) {
-      return requestId;
-    }
-  }
-
-  return null;
-}
-
-function firstTreeFilePath(
-  nodes: WorkspaceReviewSnapshot["tree"],
-): string | null {
-  for (const node of nodes) {
-    if (node.kind === "file") {
-      return node.path;
-    }
-    const childPath = firstTreeFilePath(node.children);
-    if (childPath) {
-      return childPath;
-    }
-  }
-
-  return null;
-}
-
-function treeContainsPath(
-  nodes: WorkspaceReviewSnapshot["tree"],
-  targetPath: string,
+/**
+ * Whether the runtime's own session list says this id is a main session.
+ *
+ * The flat session list is the main-session surface: it filters every delegated
+ * child out (see the runtime's transport). A session found in it therefore has
+ * no parent, so the delegated-context lookup can only answer 404 — this reads the
+ * cached list to skip the guaranteed miss. Unloaded list (no workspace yet) means
+ * "unknown", which keeps the lookup-then-fallback path.
+ */
+function knownMainSessionInCache(
+  sessionId: string,
+  workspaceScope: WorkspaceScope,
 ): boolean {
-  for (const node of nodes) {
-    if (node.path === targetPath) {
-      return true;
-    }
-    if (treeContainsPath(node.children, targetPath)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function normalizeProviderModelReference(
-  model: string,
-  providers: ProviderSummary[],
-  providerModels: Record<string, ProviderModelsResult>,
-): string {
-  if (!model || model.includes("/")) {
-    return model;
-  }
-
-  const currentProviderName = providers.find(
-    (provider) => provider.current && provider.configured,
-  )?.name;
-  if (
-    currentProviderName &&
-    (providerModels[currentProviderName]?.models ?? []).includes(model)
-  ) {
-    return `${currentProviderName}/${model}`;
-  }
-
-  const matchingProviderNames = Object.entries(providerModels)
-    .filter(([, result]) => result.models.includes(model))
-    .map(([providerName]) => providerName);
-  if (matchingProviderNames.length === 1) {
-    return `${matchingProviderNames[0]}/${model}`;
-  }
-
-  return model;
+  if (workspaceScope === null) return false;
+  const sessions = queryClient.getQueryData<StoredSessionSummary[]>(
+    queryKeys.sessions(workspaceScope),
+  );
+  const summary = sessions?.find((item) => item.session.id === sessionId);
+  return summary !== undefined && (summary.session.parent_id ?? null) === null;
 }
 
 function selectedModelMetadata(
@@ -384,7 +321,7 @@ function selectedModelMetadata(
   providers: ProviderSummary[],
   providerModels: Record<string, ProviderModelsResult>,
 ) {
-  const normalized = normalizeProviderModelReference(
+  const normalized = resolveProviderModelReference(
     model,
     providers,
     providerModels,
@@ -396,82 +333,35 @@ function selectedModelMetadata(
   return metadata[modelName] ?? metadata[normalized];
 }
 
-type RefreshAfterMutationOptions = {
-  sessions?: boolean;
-  status?: boolean;
-  review?: boolean;
-  backgroundTasks?: boolean;
-  notifications?: boolean;
-  debug?: boolean;
-  sessionId?: string | null;
-};
+/**
+ * Whether the loaded debug snapshot says a failed session can be resumed.
+ *
+ * The debug snapshot is a query payload, so the store reads it out of the cache
+ * where it is written, instead of keeping a second copy next to it.
+ */
+function isResumableDebugSnapshot(
+  sessionId: string | null,
+  scope: string | null,
+): boolean {
+  if (scope === null || sessionId === null) return false;
+  const snapshot = queryClient.getQueryData<RuntimeSessionDebugSnapshot>(
+    queryKeys.sessionDebug(scope, sessionId),
+  );
+  return snapshot?.resumable === true;
+}
 
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
-      refreshAfterMutation: async ({
-        sessions = false,
-        status = false,
-        review = false,
-        backgroundTasks = false,
-        notifications = false,
-        debug = false,
-        sessionId,
-      } = {}) => {
-        const refreshes: Promise<void>[] = [];
-        if (sessions) refreshes.push(get().loadSessions());
-        if (status) refreshes.push(get().loadStatus());
-        if (review) refreshes.push(get().loadReview());
-        if (backgroundTasks) refreshes.push(get().loadBackgroundTasks());
-        if (notifications) refreshes.push(get().loadNotifications());
-        if (debug) {
-          const targetSessionId = sessionId ?? get().currentSessionId;
-          if (targetSessionId) {
-            refreshes.push(get().loadSessionDebug(targetSessionId));
-          }
-        }
-        await Promise.all(refreshes);
-      },
       language: "en",
       agentPreset: "leader",
       providerModel: "deepseek/deepseek-v4-pro",
       reasoningEffort: "",
-      workspaces: null,
-      workspacesStatus: "idle",
-      workspacesError: null,
-      workspaceSwitchStatus: "idle",
-      workspaceSwitchError: null,
-      providers: [],
-      providersStatus: "idle",
-      providersError: null,
-      providerModels: {},
-      providerValidationResults: {},
-      providerValidationStatus: {},
-      providerValidationError: {},
-      agentPresets: [],
-      agentsStatus: "idle",
-      agentsError: null,
-      skills: [],
-      skillsStatus: "idle",
-      skillsError: null,
-      commands: [],
-      commandsStatus: "idle",
-      commandsError: null,
-      statusSnapshot: null,
-      statusStatus: "idle",
-      statusError: null,
-      mcpRetryStatus: "idle",
-      mcpRetryError: null,
-      reviewSnapshot: null,
-      reviewStatus: "idle",
-      reviewError: null,
-      reviewSelectedPath: null,
-      reviewDiff: null,
-      reviewDiffStatus: "idle",
-      reviewDiffError: null,
-      reviewMode: "changes",
 
-      sessions: [],
+      reviewMode: "changes",
+      reviewSelectedPath: null,
+      selectedBackgroundTaskOutputId: null,
+
       currentSessionId: null,
       sessionSidebarWidth: DEFAULT_SESSION_SIDEBAR_WIDTH,
       currentSessionState: null,
@@ -479,10 +369,13 @@ export const useAppStore = create<AppState>()(
       currentSessionOutput: null,
       childSessionParentId: null,
 
-      sessionsStatus: "idle",
-      sessionsError: null,
       replayStatus: "idle",
       replayError: null,
+      replayRequestId: 0,
+      replayTargetSessionId: null,
+      resumeStatus: "idle",
+      resumeError: null,
+
       runStatus: "idle",
       runOrigin: null,
       runError: null,
@@ -491,572 +384,115 @@ export const useAppStore = create<AppState>()(
       approvalError: null,
       questionStatus: "idle",
       questionError: null,
-      notifications: [],
-      notificationsStatus: "idle",
-      notificationsError: null,
-      resumeStatus: "idle",
-      resumeError: null,
-      backgroundTasks: [],
-      backgroundTasksStatus: "idle",
-      backgroundTasksError: null,
-      selectedBackgroundTaskOutputId: null,
-      backgroundTaskOutput: null,
-      backgroundTaskOutputStatus: "idle",
-      backgroundTaskOutputError: null,
-      sessionDebug: null,
-      sessionDebugStatus: "idle",
-      sessionDebugError: null,
-      replayRequestId: 0,
-      replayTargetSessionId: null,
-
-      settings: null,
-      settingsStatus: "idle",
-      settingsError: null,
 
       setLanguage: (language) => set({ language }),
       setAgentPreset: (agentPreset) => set({ agentPreset }),
       setProviderModel: (providerModel) => set({ providerModel }),
       setReasoningEffort: (reasoningEffort) => set({ reasoningEffort }),
-      loadWorkspaces: async () => {
-        const generation = workspaceGeneration;
-        set({ workspacesStatus: "loading", workspacesError: null });
-        try {
-          const workspaces = await RuntimeClient.listWorkspaces();
-          if (generation !== workspaceGeneration) return;
+      setSessionSidebarWidth: (sessionSidebarWidth) =>
+        set({ sessionSidebarWidth }),
+      setReviewMode: (reviewMode) => set({ reviewMode }),
+      setReviewSelectedPath: (reviewSelectedPath) =>
+        set({ reviewSelectedPath }),
+
+      selectBackgroundTaskOutput: (taskId) => {
+        if (taskId === null) {
+          // Returning from a delegated child means returning from the task view
+          // that stood in for it, so the parent link is cleared with the output.
           set({
-            workspaces,
-            workspacesStatus: "success",
-            workspaceSwitchStatus:
-              get().workspaceSwitchStatus === "loading"
-                ? "success"
-                : get().workspaceSwitchStatus,
-            workspaceSwitchError: null,
+            selectedBackgroundTaskOutputId: null,
+            childSessionParentId: null,
           });
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set({
-            workspacesStatus: "error",
-            workspacesError: errorMessage(err),
-            workspaceSwitchStatus:
-              get().workspaceSwitchStatus === "loading"
-                ? "error"
-                : get().workspaceSwitchStatus,
-            workspaceSwitchError:
-              get().workspaceSwitchStatus === "loading"
-                ? errorMessage(err)
-                : get().workspaceSwitchError,
-          });
+          return;
         }
+        set({ selectedBackgroundTaskOutputId: taskId });
       },
-      switchWorkspace: async (path) => {
-        const generation = ++workspaceGeneration;
-        // A workspace switch invalidates every in-flight local stream. Abort
-        // it before replacing state and bump the replay token so late chunks
-        // cannot leak into the new workspace.
+
+      reconcileAgentPreset: (agents) => {
+        const selectable = agents.filter((agent) => agent.selectable !== false);
+        const currentPreset = get().agentPreset;
+        if (selectable.some((agent) => agent.id === currentPreset)) return;
+        set({ agentPreset: selectable[0]?.id ?? "leader" });
+      },
+
+      hydrateModelFromSettings: (model) => {
+        if (!model || get().providerModel.trim()) return;
+        set({ providerModel: model });
+      },
+
+      prepareWorkspaceSwitch: () => {
+        // A workspace switch invalidates every in-flight local stream. Abort it
+        // before replacing state, and bump the replay token so late chunks and
+        // late replay responses cannot leak into the new workspace. The
+        // workspace-scoped queries of the old scope are cancelled by the switch
+        // mutation itself (they are keyed by that scope).
         activeRunAbortController?.abort();
         activeRunAbortController = null;
-        notificationsRequestId += 1;
-        set({
-          replayRequestId: get().replayRequestId + 1,
-          runStatus: "idle",
-          runOrigin: null,
-          cancelRequested: false,
-          workspaceSwitchStatus: "loading",
-          workspaceSwitchError: null,
-          notifications: [],
-          notificationsStatus: "idle",
-          notificationsError: null,
+        activeSelectionAbortController?.abort();
+        activeSelectionAbortController = null;
+        set((state) => ({
+          replayRequestId: state.replayRequestId + 1,
+          currentSessionId: null,
+          currentSessionState: null,
+          currentSessionEvents: [],
+          currentSessionOutput: null,
+          childSessionParentId: null,
+          replayStatus: "idle",
+          replayError: null,
+          replayTargetSessionId: null,
           resumeStatus: "idle",
           resumeError: null,
-        });
-        try {
-          const workspaces = await RuntimeClient.openWorkspace(path);
-          if (generation !== workspaceGeneration) return;
+          runStatus: "idle",
+          runOrigin: null,
+          runError: null,
+          cancelRequested: false,
+          approvalStatus: "idle",
+          approvalError: null,
+          questionStatus: "idle",
+          questionError: null,
+          selectedBackgroundTaskOutputId: null,
+        }));
+      },
+
+      reconcileSessionList: (sessions) => {
+        const { currentSessionId, childSessionParentId, replayStatus } = get();
+        const selectionHasTranscript =
+          get().currentSessionState !== null ||
+          get().currentSessionEvents.length > 0 ||
+          get().currentSessionOutput !== null;
+        const selectionIsLive =
+          get().currentSessionState?.status === "running" ||
+          get().currentSessionState?.status === "waiting";
+
+        if (
+          currentSessionId &&
+          !selectionIsLive &&
+          // CONTRACT: the runtime's flat session list is authoritative about
+          // *finished* sessions only. A selection whose projection says the
+          // session is live (running/waiting) is never judged against a list
+          // payload — a payload read before the run started would drop the run
+          // off the screen. It is judged on the post-run refresh instead, which
+          // re-reads the list once the run has settled.
+          // Delegated child sessions are not part of the flat session list;
+          // while one is being browsed its absence must not reset the app.
+          childSessionParentId === null &&
+          // Only a selection with a resolved transcript behind it can be
+          // judged against this list. Before the replay lands (and while it is
+          // in flight, when `childSessionParentId` has already been cleared for
+          // the new selection) nothing here knows whether the selected session
+          // is a delegated child, and the list can never contain one. A session
+          // that is really gone is reported by the replay itself.
+          selectionHasTranscript &&
+          replayStatus !== "loading" &&
+          !sessions.some((s) => s.session.id === currentSessionId)
+        ) {
           set({
-            workspaces,
-            workspacesStatus: "success",
-            workspacesError: null,
-            workspaceSwitchStatus: "success",
-            workspaceSwitchError: null,
-            providers: [],
-            providersStatus: "idle",
-            providersError: null,
-            providerModels: {},
-            providerValidationResults: {},
-            providerValidationStatus: {},
-            providerValidationError: {},
-            agentPresets: [],
-            agentsStatus: "idle",
-            agentsError: null,
-            skills: [],
-            skillsStatus: "idle",
-            skillsError: null,
-            commands: [],
-            commandsStatus: "idle",
-            commandsError: null,
             currentSessionId: null,
             currentSessionState: null,
             currentSessionEvents: [],
             currentSessionOutput: null,
-            childSessionParentId: null,
+            replayStatus: "idle",
             replayError: null,
-            runStatus: "idle",
-            runOrigin: null,
-            runError: null,
-            approvalStatus: "idle",
-            approvalError: null,
-            questionStatus: "idle",
-            questionError: null,
-            reviewSnapshot: null,
-            reviewStatus: "idle",
-            reviewError: null,
-            reviewSelectedPath: null,
-            reviewDiff: null,
-            reviewDiffStatus: "idle",
-            reviewDiffError: null,
-            statusSnapshot: null,
-            statusStatus: "idle",
-            statusError: null,
-            mcpRetryStatus: "idle",
-            mcpRetryError: null,
-            sessions: [],
-            sessionsStatus: "idle",
-            sessionsError: null,
-            notifications: [],
-            notificationsStatus: "idle",
-            notificationsError: null,
-            backgroundTasks: [],
-            backgroundTasksStatus: "idle",
-            backgroundTasksError: null,
-            selectedBackgroundTaskOutputId: null,
-            backgroundTaskOutput: null,
-            backgroundTaskOutputStatus: "idle",
-            backgroundTaskOutputError: null,
-            sessionDebug: null,
-            sessionDebugStatus: "idle",
-            sessionDebugError: null,
-          });
-          await Promise.all([
-            get().loadSessions(),
-            get().loadProviders(),
-            get().loadAgents(),
-            get().loadSkills(),
-            get().loadCommands(),
-            get().loadStatus(),
-            get().loadReview(),
-            get().loadBackgroundTasks(),
-            get().loadNotifications(),
-          ]);
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set({
-            workspaceSwitchStatus: "error",
-            workspaceSwitchError: errorMessage(err),
-          });
-        }
-      },
-
-      loadProviders: async () => {
-        const generation = workspaceGeneration;
-        set({ providersStatus: "loading", providersError: null });
-        try {
-          const providers = await RuntimeClient.listProviders();
-          const configuredProviders = providers.filter(
-            (provider) => provider.configured,
-          );
-          const providerModelsEntries = await Promise.all(
-            configuredProviders.map(async (provider) => {
-              const result = await RuntimeClient.listProviderModels(
-                provider.name,
-              );
-              return [provider.name, result] as const;
-            }),
-          );
-          const providerModels = Object.fromEntries(providerModelsEntries);
-          const normalizedProviderModel = normalizeProviderModelReference(
-            get().providerModel,
-            providers,
-            providerModels,
-          );
-          if (generation !== workspaceGeneration) return;
-          set({
-            providers,
-            providersStatus: "success",
-            providersError: null,
-            providerModels,
-            providerModel: normalizedProviderModel,
-          });
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set({
-            providersStatus: "error",
-            providersError: errorMessage(err),
-          });
-        }
-      },
-
-      loadAgents: async () => {
-        const generation = workspaceGeneration;
-        set({ agentsStatus: "loading", agentsError: null });
-        try {
-          const agentPresets = await RuntimeClient.listAgents();
-          const selectableAgentPresets = agentPresets.filter(
-            (agent) => agent.selectable !== false,
-          );
-          if (generation !== workspaceGeneration) return;
-          set({
-            agentPresets,
-            agentsStatus: "success",
-            agentsError: null,
-            agentPreset: selectableAgentPresets.some(
-              (agent) => agent.id === get().agentPreset,
-            )
-              ? get().agentPreset
-              : (selectableAgentPresets[0]?.id ?? "leader"),
-          });
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set({
-            agentsStatus: "error",
-            agentsError: errorMessage(err),
-          });
-        }
-      },
-      loadSkills: async () => {
-        const generation = workspaceGeneration;
-        set({ skillsStatus: "loading", skillsError: null });
-        try {
-          const skills = await RuntimeClient.listSkills();
-          if (generation !== workspaceGeneration) return;
-          set({
-            skills,
-            skillsStatus: "success",
-            skillsError: null,
-          });
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set({
-            skillsStatus: "error",
-            skillsError: errorMessage(err),
-          });
-        }
-      },
-      loadCommands: async () => {
-        const generation = workspaceGeneration;
-        set({ commandsStatus: "loading", commandsError: null });
-        try {
-          const commands = await RuntimeClient.listCommands();
-          if (generation !== workspaceGeneration) return;
-          set({
-            commands,
-            commandsStatus: "success",
-            commandsError: null,
-          });
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set({
-            commandsStatus: "error",
-            commandsError: errorMessage(err),
-          });
-        }
-      },
-
-      validateProviderCredentials: async (providerName) => {
-        if (!providerName) return;
-        const generation = workspaceGeneration;
-        set((state) => ({
-          providerValidationStatus: {
-            ...state.providerValidationStatus,
-            [providerName]: "loading",
-          },
-          providerValidationError: {
-            ...state.providerValidationError,
-            [providerName]: null,
-          },
-        }));
-        try {
-          const result =
-            await RuntimeClient.validateProviderCredentials(providerName);
-          if (generation !== workspaceGeneration) return;
-          set((state) => ({
-            providerValidationResults: {
-              ...state.providerValidationResults,
-              [providerName]: result,
-            },
-            providerValidationStatus: {
-              ...state.providerValidationStatus,
-              [providerName]: result.ok ? "success" : "error",
-            },
-            providerValidationError: {
-              ...state.providerValidationError,
-              [providerName]: result.ok ? null : result.message,
-            },
-          }));
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set((state) => ({
-            providerValidationStatus: {
-              ...state.providerValidationStatus,
-              [providerName]: "error",
-            },
-            providerValidationError: {
-              ...state.providerValidationError,
-              [providerName]: errorMessage(err),
-            },
-          }));
-        }
-      },
-
-      loadStatus: async () => {
-        const generation = workspaceGeneration;
-        set({ statusStatus: "loading", statusError: null });
-        try {
-          const statusSnapshot = await RuntimeClient.getStatus();
-          if (generation !== workspaceGeneration) return;
-          set({
-            statusSnapshot,
-            statusStatus: "success",
-            statusError: null,
-            mcpRetryStatus:
-              get().mcpRetryStatus === "loading"
-                ? "success"
-                : get().mcpRetryStatus,
-            mcpRetryError: null,
-          });
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set({
-            statusStatus: "error",
-            statusError: errorMessage(err),
-            mcpRetryStatus:
-              get().mcpRetryStatus === "loading"
-                ? "error"
-                : get().mcpRetryStatus,
-            mcpRetryError:
-              get().mcpRetryStatus === "loading"
-                ? errorMessage(err)
-                : get().mcpRetryError,
-          });
-        }
-      },
-
-      retryMcpConnections: async () => {
-        const generation = workspaceGeneration;
-        set({ mcpRetryStatus: "loading", mcpRetryError: null });
-        try {
-          const statusSnapshot = await RuntimeClient.retryMcpConnections();
-          if (generation !== workspaceGeneration) return;
-          set({
-            statusSnapshot,
-            statusStatus: "success",
-            statusError: null,
-            mcpRetryStatus: "success",
-            mcpRetryError: null,
-          });
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set({
-            mcpRetryStatus: "error",
-            mcpRetryError: errorMessage(err),
-          });
-        }
-      },
-
-      loadReview: async () => {
-        const generation = workspaceGeneration;
-        set({ reviewStatus: "loading", reviewError: null });
-        try {
-          const reviewSnapshot = await RuntimeClient.getReview();
-          if (generation !== workspaceGeneration) return;
-          const selectedPath = get().reviewSelectedPath;
-          const treeFallbackPath = firstTreeFilePath(reviewSnapshot.tree);
-          const nextSelectedPath =
-            selectedPath &&
-            (reviewSnapshot.changed_files.some(
-              (item) => item.path === selectedPath,
-            ) ||
-              treeContainsPath(reviewSnapshot.tree, selectedPath))
-              ? selectedPath
-              : (reviewSnapshot.changed_files[0]?.path ?? treeFallbackPath);
-          set({
-            reviewSnapshot,
-            reviewStatus: "success",
-            reviewError: null,
-            reviewSelectedPath: nextSelectedPath,
-            reviewDiff: null,
-            reviewDiffStatus: nextSelectedPath ? "idle" : "success",
-            reviewDiffError: null,
-          });
-          if (nextSelectedPath && generation === workspaceGeneration) {
-            await get().selectReviewPath(nextSelectedPath);
-          }
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set({
-            reviewStatus: "error",
-            reviewError: errorMessage(err),
-          });
-        }
-      },
-
-      selectReviewPath: async (path) => {
-        const generation = workspaceGeneration;
-        if (!path) {
-          set({
-            reviewSelectedPath: null,
-            reviewDiff: null,
-            reviewDiffStatus: "idle",
-            reviewDiffError: null,
-          });
-          return;
-        }
-        set({
-          reviewSelectedPath: path,
-          reviewDiffStatus: "loading",
-          reviewDiffError: null,
-        });
-        try {
-          const reviewDiff = await RuntimeClient.getReviewDiff(path);
-          if (
-            generation !== workspaceGeneration ||
-            get().reviewSelectedPath !== path
-          ) {
-            return;
-          }
-          set({
-            reviewDiff,
-            reviewDiffStatus: "success",
-            reviewDiffError: null,
-          });
-        } catch (err) {
-          if (
-            generation !== workspaceGeneration ||
-            get().reviewSelectedPath !== path
-          ) {
-            return;
-          }
-          set({
-            reviewDiff: null,
-            reviewDiffStatus: "error",
-            reviewDiffError: errorMessage(err),
-          });
-        }
-      },
-
-      setReviewMode: (reviewMode) => set({ reviewMode }),
-
-      setSessionSidebarWidth: (sessionSidebarWidth) =>
-        set({ sessionSidebarWidth }),
-
-      loadSessions: async () => {
-        const generation = workspaceGeneration;
-        set({ sessionsStatus: "loading", sessionsError: null });
-        try {
-          const sessions = await RuntimeClient.listSessions();
-          if (generation !== workspaceGeneration) return;
-          const { currentSessionId, childSessionParentId, replayStatus } =
-            get();
-          const selectionHasTranscript =
-            get().currentSessionState !== null ||
-            get().currentSessionEvents.length > 0 ||
-            get().currentSessionOutput !== null;
-
-          if (
-            currentSessionId &&
-            // Delegated child sessions are not part of the flat session list;
-            // while one is being browsed its absence must not reset the app.
-            childSessionParentId === null &&
-            // Only a selection with a resolved transcript behind it can be
-            // judged against this list. Before the replay lands (and while it is
-            // in flight, when `childSessionParentId` has already been cleared for
-            // the new selection) nothing here knows whether the selected session
-            // is a delegated child, and the list can never contain one. A session
-            // that is really gone is reported by the replay itself.
-            selectionHasTranscript &&
-            replayStatus !== "loading" &&
-            !sessions.some((s) => s.session.id === currentSessionId)
-          ) {
-            set({
-              sessions,
-              sessionsStatus: "success",
-              currentSessionId: null,
-              currentSessionState: null,
-              currentSessionEvents: [],
-              currentSessionOutput: null,
-              replayStatus: "idle",
-              replayError: null,
-            });
-          } else {
-            set({ sessions, sessionsStatus: "success" });
-          }
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set({
-            sessionsStatus: "error",
-            sessionsError: errorMessage(err),
-          });
-        }
-      },
-      loadNotifications: async () => {
-        const generation = workspaceGeneration;
-        const requestId = ++notificationsRequestId;
-        set({ notificationsStatus: "loading", notificationsError: null });
-        try {
-          const notifications = await RuntimeClient.listNotifications();
-          if (
-            generation !== workspaceGeneration ||
-            requestId !== notificationsRequestId
-          ) {
-            return;
-          }
-          set({
-            notifications,
-            notificationsStatus: "success",
-            notificationsError: null,
-          });
-        } catch (err) {
-          if (
-            generation !== workspaceGeneration ||
-            requestId !== notificationsRequestId
-          ) {
-            return;
-          }
-          set({
-            notificationsStatus: "error",
-            notificationsError: errorMessage(err),
-          });
-        }
-      },
-      ackNotification: async (notificationId) => {
-        const generation = workspaceGeneration;
-        const requestId = ++notificationsRequestId;
-        set({ notificationsStatus: "loading", notificationsError: null });
-        try {
-          const acknowledged =
-            await RuntimeClient.ackNotification(notificationId);
-          if (
-            generation !== workspaceGeneration ||
-            requestId !== notificationsRequestId
-          ) {
-            return;
-          }
-          set((state) => ({
-            notifications: state.notifications.map((notification) =>
-              notification.id === acknowledged.id ? acknowledged : notification,
-            ),
-            notificationsStatus: "success",
-            notificationsError: null,
-          }));
-        } catch (err) {
-          if (
-            generation !== workspaceGeneration ||
-            requestId !== notificationsRequestId
-          ) {
-            return;
-          }
-          set({
-            notificationsStatus: "error",
-            notificationsError: errorMessage(err),
           });
         }
       },
@@ -1116,7 +552,7 @@ export const useAppStore = create<AppState>()(
         return moved;
       },
 
-      selectSession: async (sessionId: string) => {
+      selectSession: async (sessionId: string, workspaceScope) => {
         const childParentSessionId = get().childSessionParentId;
         const allowChildParentReturn =
           Boolean(sessionId) &&
@@ -1138,13 +574,18 @@ export const useAppStore = create<AppState>()(
           // Already browsing this delegated child session: refresh its output
           // in place instead of clearing the child view and re-fetching the
           // context, which would make the transcript flash between views.
-          await get().loadBackgroundTaskOutput(
-            get().selectedBackgroundTaskOutputId,
-          );
+          await queryClient.invalidateQueries({
+            queryKey: queryKeys.taskOutput(
+              workspaceScope,
+              get().selectedBackgroundTaskOutputId as string,
+            ),
+          });
           return;
         }
 
         if (!sessionId) {
+          activeSelectionAbortController?.abort();
+          activeSelectionAbortController = null;
           set({
             currentSessionId: null,
             currentSessionState: null,
@@ -1159,15 +600,8 @@ export const useAppStore = create<AppState>()(
             approvalError: null,
             questionStatus: "idle",
             questionError: null,
-            sessionDebug: null,
-            sessionDebugStatus: "idle",
-            sessionDebugError: null,
             selectedBackgroundTaskOutputId: null,
-            backgroundTaskOutput: null,
-            backgroundTaskOutputStatus: "idle",
-            backgroundTaskOutputError: null,
           });
-          await get().loadBackgroundTasks();
           return;
         }
 
@@ -1177,6 +611,12 @@ export const useAppStore = create<AppState>()(
         const previousSessionEvents = get().currentSessionEvents;
         const previousSessionOutput = get().currentSessionOutput;
         const previousChildParentId = get().childSessionParentId;
+        // A newer selection supersedes the transcript read it interrupts: the
+        // request itself is aborted, and the replay token below keeps its late
+        // frames out of the newer selection's state.
+        activeSelectionAbortController?.abort();
+        const selectionAbortController = new AbortController();
+        activeSelectionAbortController = selectionAbortController;
         set({
           currentSessionId: sessionId,
           currentSessionState: null,
@@ -1192,33 +632,22 @@ export const useAppStore = create<AppState>()(
           approvalError: null,
           questionStatus: "idle",
           questionError: null,
-          sessionDebug: null,
-          sessionDebugStatus: "idle",
-          sessionDebugError: null,
           selectedBackgroundTaskOutputId: null,
-          backgroundTaskOutput: null,
-          backgroundTaskOutputStatus: "idle",
-          backgroundTaskOutputError: null,
           childSessionParentId: null,
         });
 
-        // The runtime's flat session list is the main-session surface: it
-        // filters every delegated child out. A session found in it therefore
-        // has no parent, so the delegated-context lookup can only answer 404 —
-        // skip the guaranteed miss and replay directly. A child session is
-        // absent from the list, so it keeps the lookup-then-fallback path.
-        const selectedSummary = get().sessions.find(
-          (item) => item.session.id === sessionId,
+        const knownMainSession = knownMainSessionInCache(
+          sessionId,
+          workspaceScope,
         );
-        const knownMainSession =
-          selectedSummary !== undefined &&
-          (selectedSummary.session.parent_id ?? null) === null;
 
         try {
           if (!knownMainSession) {
             try {
-              const childContext =
-                await RuntimeClient.getChildSessionContext(sessionId);
+              const childContext = await RuntimeClient.getChildSessionContext(
+                sessionId,
+                selectionAbortController.signal,
+              );
               if (
                 get().replayRequestId !== requestId ||
                 get().currentSessionId !== sessionId
@@ -1229,10 +658,14 @@ export const useAppStore = create<AppState>()(
                 childContext.task.parent_session_id ??
                 childContext.session_result?.session.session.parent_id ??
                 previousSessionId;
+              // The probe answered with the same payload the task-output read
+              // returns, so it seeds the entry the task view is keyed by: one
+              // payload, one key, whichever surface asked for it.
+              queryClient.setQueryData(
+                queryKeys.taskOutput(workspaceScope, childContext.task.task_id),
+                childContext,
+              );
               set({
-                backgroundTaskOutput: childContext,
-                backgroundTaskOutputStatus: "success",
-                backgroundTaskOutputError: null,
                 selectedBackgroundTaskOutputId: childContext.task.task_id,
                 childSessionParentId: parentSessionId,
                 currentSessionState:
@@ -1253,10 +686,10 @@ export const useAppStore = create<AppState>()(
                 replayStatus: "success",
                 replayError: null,
               });
-              await Promise.all([
-                get().loadBackgroundTasks(),
-                get().loadNotifications(),
-              ]);
+              await refreshAfterMutation(
+                { backgroundTasks: true, notifications: true },
+                workspaceScope,
+              );
               return;
             } catch (error) {
               const status =
@@ -1274,7 +707,10 @@ export const useAppStore = create<AppState>()(
             }
           }
 
-          const replay = await RuntimeClient.getSessionReplay(sessionId);
+          const replay = await RuntimeClient.getSessionReplay(
+            sessionId,
+            selectionAbortController.signal,
+          );
           if (
             get().replayRequestId !== requestId ||
             get().currentSessionId !== sessionId
@@ -1297,10 +733,10 @@ export const useAppStore = create<AppState>()(
             replayError: null,
             replayTargetSessionId: null,
           });
-          await Promise.all([
-            get().loadBackgroundTasks(),
-            get().loadNotifications(),
-          ]);
+          await refreshAfterMutation(
+            { backgroundTasks: true, notifications: true },
+            workspaceScope,
+          );
         } catch (err) {
           if (
             get().replayRequestId !== requestId ||
@@ -1338,14 +774,14 @@ export const useAppStore = create<AppState>()(
           });
         }
       },
+
       resumeSession: async (sessionId) => {
-        const generation = workspaceGeneration;
         const targetSessionId = sessionId ?? get().currentSessionId;
         const currentSessionState = get().currentSessionState;
         const isResumable =
           currentSessionState?.status === "interrupted" ||
           (currentSessionState?.status === "failed" &&
-            get().sessionDebug?.resumable === true);
+            isResumableDebugSnapshot(targetSessionId, currentWorkspaceScope()));
         if (
           !targetSessionId ||
           !isResumable ||
@@ -1369,7 +805,6 @@ export const useAppStore = create<AppState>()(
         try {
           const response = await RuntimeClient.resumeSession(targetSessionId);
           if (
-            generation !== workspaceGeneration ||
             get().replayRequestId !== requestId ||
             get().currentSessionId !== targetSessionId
           ) {
@@ -1388,14 +823,13 @@ export const useAppStore = create<AppState>()(
             resumeStatus: "success",
             resumeError: null,
           });
-          await Promise.all([
-            get().loadSessions(),
-            get().loadNotifications(),
-            get().loadBackgroundTasks(),
-          ]);
+          await refreshAfterMutation({
+            sessions: true,
+            notifications: true,
+            backgroundTasks: true,
+          });
         } catch (err) {
           if (
-            generation !== workspaceGeneration ||
             get().replayRequestId !== requestId ||
             get().currentSessionId !== targetSessionId
           ) {
@@ -1411,11 +845,10 @@ export const useAppStore = create<AppState>()(
         }
       },
 
-      runTask: async (prompt: string, options) => {
+      runTask: async (prompt: string, workspaceScope, options) => {
         if (get().replayStatus === "loading" || isRunLocked(get().runStatus)) {
           return;
         }
-        const generation = workspaceGeneration;
 
         const nextReplayRequestId = get().replayRequestId + 1;
         const abortController = new AbortController();
@@ -1431,9 +864,6 @@ export const useAppStore = create<AppState>()(
           approvalError: null,
           questionStatus: "idle",
           questionError: null,
-          sessionDebug: null,
-          sessionDebugStatus: "idle",
-          sessionDebugError: null,
         });
         const effectiveSessionId =
           options?.sessionId !== undefined
@@ -1461,10 +891,11 @@ export const useAppStore = create<AppState>()(
           ),
         );
 
+        const catalog = readProviderCatalog(workspaceScope);
         const modelMetadata = selectedModelMetadata(
           get().providerModel,
-          get().providers,
-          get().providerModels,
+          catalog.providers,
+          catalog.models,
         );
         // The runtime owns the capability decision and clamps to the model's own
         // levels, so the client only vetoes when the model's catalog metadata says
@@ -1486,10 +917,10 @@ export const useAppStore = create<AppState>()(
             : {}),
           agent: {
             preset: get().agentPreset,
-            model: normalizeProviderModelReference(
+            model: resolveProviderModelReference(
               get().providerModel,
-              get().providers,
-              get().providerModels,
+              catalog.providers,
+              catalog.models,
             ),
             ...forwardAgentMetadata,
           },
@@ -1508,11 +939,7 @@ export const useAppStore = create<AppState>()(
           let streamFailureMessage: string | null = null;
           let streamInterrupted = false;
           for await (const chunk of stream) {
-            if (
-              generation !== workspaceGeneration ||
-              get().replayRequestId !== nextReplayRequestId
-            )
-              return;
+            if (get().replayRequestId !== nextReplayRequestId) return;
             const runtimeState = chunk.session?.metadata.runtime_state;
             if (
               chunk.session &&
@@ -1536,11 +963,7 @@ export const useAppStore = create<AppState>()(
               );
             }
             set((state) => {
-              if (
-                generation !== workspaceGeneration ||
-                state.replayRequestId !== nextReplayRequestId
-              )
-                return state;
+              if (state.replayRequestId !== nextReplayRequestId) return state;
               const newEvents = chunk.event
                 ? applyLiveStreamEvent(state.currentSessionEvents, chunk.event)
                 : state.currentSessionEvents;
@@ -1561,6 +984,7 @@ export const useAppStore = create<AppState>()(
           // event, the user's cancel request (cancelRequested / cancelling),
           // or the authoritative backend session row landed as "interrupted"
           // even if no cancellation event accompanied the stream close.
+          if (get().replayRequestId !== nextReplayRequestId) return;
           const sessionStatus = get().currentSessionState?.status;
           const interrupted =
             streamInterrupted ||
@@ -1570,7 +994,6 @@ export const useAppStore = create<AppState>()(
           const failed =
             !interrupted &&
             (streamFailureMessage !== null || sessionStatus === "failed");
-          if (generation !== workspaceGeneration) return;
           set({
             runStatus: interrupted ? "idle" : failed ? "error" : "success",
             runError: failed
@@ -1578,21 +1001,20 @@ export const useAppStore = create<AppState>()(
               : null,
             cancelRequested: false,
           });
-          await get().refreshAfterMutation({
-            sessions: true,
-            status: true,
-            review: true,
-            backgroundTasks: true,
-            notifications: true,
-            debug: true,
-            sessionId: get().currentSessionId,
-          });
+          await refreshAfterMutation(
+            {
+              sessions: true,
+              status: true,
+              review: true,
+              backgroundTasks: true,
+              notifications: true,
+              debug: true,
+              sessionId: get().currentSessionId,
+            },
+            workspaceScope,
+          );
         } catch (err) {
-          if (
-            generation !== workspaceGeneration ||
-            get().replayRequestId !== nextReplayRequestId
-          )
-            return;
+          if (get().replayRequestId !== nextReplayRequestId) return;
           // A torn-down stream during a user interrupt surfaces as an
           // AbortError (or any rejection once the cancel flag is set), and the
           // backend session row may already be interrupted.
@@ -1641,13 +1063,11 @@ export const useAppStore = create<AppState>()(
             });
           return;
         }
-        const generation = workspaceGeneration;
         const requestId = get().replayRequestId;
         try {
           await RuntimeClient.cancelSession(target.sessionId, target.runId);
           if (
             runOrigin !== "local" &&
-            generation === workspaceGeneration &&
             requestId === get().replayRequestId &&
             get().currentSessionId === target.sessionId &&
             get().runStatus === "cancelling"
@@ -1657,7 +1077,6 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           if (
             runOrigin !== "local" &&
-            generation === workspaceGeneration &&
             requestId === get().replayRequestId &&
             get().currentSessionId === target.sessionId
           ) {
@@ -1732,7 +1151,7 @@ export const useAppStore = create<AppState>()(
             approvalStatus: "success",
             approvalError: null,
           });
-          await get().refreshAfterMutation({
+          await refreshAfterMutation({
             sessions: true,
             status: true,
             review: true,
@@ -1787,23 +1206,21 @@ export const useAppStore = create<AppState>()(
           } catch {
             // Preserve the runtime error and last known state if replay fails.
           }
-          await get().refreshAfterMutation({ sessions: true });
+          await refreshAfterMutation({ sessions: true });
         }
       },
 
       answerQuestion: async (answers) => {
-        const generation = workspaceGeneration;
         const requestGeneration = get().replayRequestId;
-        const isCurrent = () =>
-          generation === workspaceGeneration &&
-          get().replayRequestId === requestGeneration &&
-          get().currentSessionId === currentSessionId;
         const {
           currentSessionId,
           currentSessionEvents,
           replayStatus,
           questionStatus,
         } = get();
+        const isCurrent = () =>
+          get().replayRequestId === requestGeneration &&
+          get().currentSessionId === currentSessionId;
 
         if (
           !currentSessionId ||
@@ -1854,7 +1271,7 @@ export const useAppStore = create<AppState>()(
             questionStatus: "idle",
             questionError: null,
           });
-          await get().refreshAfterMutation({
+          await refreshAfterMutation({
             sessions: true,
             status: true,
             review: true,
@@ -1885,187 +1302,11 @@ export const useAppStore = create<AppState>()(
             // Preserve the last runtime-owned snapshot when replay is unavailable.
           }
           if (!isCurrent()) return;
-          await get().refreshAfterMutation({
+          await refreshAfterMutation({
             sessions: true,
             status: true,
             review: true,
             backgroundTasks: true,
-          });
-        }
-      },
-
-      loadBackgroundTasks: async () => {
-        const generation = workspaceGeneration;
-        const scopedSessionId =
-          get().childSessionParentId ?? get().currentSessionId;
-        set({ backgroundTasksStatus: "loading", backgroundTasksError: null });
-        try {
-          const backgroundTasks = scopedSessionId
-            ? await RuntimeClient.listSessionBackgroundTasks(scopedSessionId)
-            : await RuntimeClient.listBackgroundTasks();
-          if (
-            generation !== workspaceGeneration ||
-            (get().childSessionParentId ?? get().currentSessionId) !==
-              scopedSessionId
-          ) {
-            return;
-          }
-          set({
-            backgroundTasks,
-            backgroundTasksStatus: "success",
-            backgroundTasksError: null,
-          });
-          if (
-            get().selectedBackgroundTaskOutputId &&
-            !backgroundTasks.some(
-              (task) => task.task.id === get().selectedBackgroundTaskOutputId,
-            )
-          ) {
-            set({
-              selectedBackgroundTaskOutputId: null,
-              backgroundTaskOutput: null,
-              backgroundTaskOutputStatus: "idle",
-              backgroundTaskOutputError: null,
-            });
-          }
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set({
-            backgroundTasksStatus: "error",
-            backgroundTasksError: errorMessage(err),
-          });
-        }
-      },
-      loadBackgroundTaskOutput: async (taskId) => {
-        const generation = workspaceGeneration;
-        if (!taskId) {
-          set({
-            selectedBackgroundTaskOutputId: null,
-            backgroundTaskOutput: null,
-            backgroundTaskOutputStatus: "idle",
-            backgroundTaskOutputError: null,
-            childSessionParentId: null,
-          });
-          return;
-        }
-
-        set({
-          selectedBackgroundTaskOutputId: taskId,
-          backgroundTaskOutput: null,
-          backgroundTaskOutputStatus: "loading",
-          backgroundTaskOutputError: null,
-        });
-        try {
-          const backgroundTaskOutput =
-            await RuntimeClient.getBackgroundTaskOutput(taskId);
-          if (
-            generation !== workspaceGeneration ||
-            get().selectedBackgroundTaskOutputId !== taskId
-          ) {
-            return;
-          }
-          set({
-            backgroundTaskOutput,
-            backgroundTaskOutputStatus: "success",
-            backgroundTaskOutputError: null,
-          });
-        } catch (err) {
-          if (
-            generation !== workspaceGeneration ||
-            get().selectedBackgroundTaskOutputId !== taskId
-          ) {
-            return;
-          }
-          set({
-            backgroundTaskOutput: null,
-            backgroundTaskOutputStatus: "error",
-            backgroundTaskOutputError: errorMessage(err),
-          });
-        }
-      },
-
-      loadSessionDebug: async (sessionId) => {
-        const generation = workspaceGeneration;
-        const targetSessionId = sessionId ?? get().currentSessionId;
-        if (!targetSessionId) {
-          set({
-            sessionDebug: null,
-            sessionDebugStatus: "idle",
-            sessionDebugError: null,
-          });
-          return;
-        }
-        set({ sessionDebugStatus: "loading", sessionDebugError: null });
-        try {
-          const sessionDebug =
-            await RuntimeClient.getSessionDebug(targetSessionId);
-          if (
-            generation !== workspaceGeneration ||
-            get().currentSessionId !== targetSessionId
-          ) {
-            return;
-          }
-          set({
-            sessionDebug,
-            sessionDebugStatus: "success",
-            sessionDebugError: null,
-          });
-        } catch (err) {
-          if (
-            generation !== workspaceGeneration ||
-            get().currentSessionId !== targetSessionId
-          ) {
-            return;
-          }
-          set({
-            sessionDebug: null,
-            sessionDebugStatus: "error",
-            sessionDebugError: errorMessage(err),
-          });
-        }
-      },
-      loadSettings: async () => {
-        const generation = workspaceGeneration;
-        set({ settingsStatus: "loading", settingsError: null });
-        try {
-          const settings = await RuntimeClient.getSettings();
-          if (generation !== workspaceGeneration) return;
-          set({ settings, settingsStatus: "success" });
-          if (settings.model && !get().providerModel.trim()) {
-            set({ providerModel: settings.model });
-          }
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set({
-            settingsStatus: "error",
-            settingsError: errorMessage(err),
-          });
-        }
-      },
-
-      updateSettings: async (settings) => {
-        const generation = workspaceGeneration;
-        set({ settingsStatus: "loading", settingsError: null });
-        try {
-          const updated = await RuntimeClient.updateSettings(settings);
-          if (generation !== workspaceGeneration) return;
-          set({
-            settings: updated,
-            settingsStatus: "success",
-            providerValidationResults: {},
-            providerValidationStatus: {},
-            providerValidationError: {},
-          });
-          if (updated.model && !get().providerModel.trim()) {
-            set({ providerModel: updated.model });
-          }
-          await get().loadProviders();
-          await get().loadStatus();
-        } catch (err) {
-          if (generation !== workspaceGeneration) return;
-          set({
-            settingsStatus: "error",
-            settingsError: errorMessage(err),
           });
         }
       },

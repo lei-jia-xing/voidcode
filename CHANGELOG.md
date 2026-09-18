@@ -93,6 +93,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 - **runtime:** declare a response model for every JSON route so `/api/openapi.json` describes the real bodies (70 models; the SSE frame payloads are typed and pinned by a contract test); the wire output is unchanged, validated against the declared models with no field loss, and this is the prerequisite for generating the frontend types instead of hand-maintaining them (`docs/contracts/client-api.md`, `docs/contracts/stream-transport.md`)
 
+- **frontend:** move server data (providers, agents, skills, sessions, status, review, workspaces, tasks, notifications, settings) into the TanStack Query cache under workspace-scoped keys, leaving the store to hold client state and the streamed-run projection; a real `AbortSignal` replaces the request-id guards, a failed workspace switch can no longer mix workspaces, browser-measured `/api/*` requests dropped 48 → 31 with every payload fetched once, and the store shrank 2086 → 1311 lines
+
 
 
 ### CI

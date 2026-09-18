@@ -9,8 +9,10 @@ import {
   fireEvent,
 } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import { useAppStore } from "./store";
+import { currentWorkspaceScope, queryClient, queryKeys } from "./lib/queries";
 import type {
   BackgroundTaskOutput,
   BackgroundTaskSummary,
@@ -28,6 +30,10 @@ vi.mock("./components/SettingsPanel", () => ({
 vi.mock("./components/OpenProjectModal", () => ({
   OpenProjectModal: () => <div data-testid="open-project-modal-mock" />,
 }));
+
+// The workspace the mocked registry opens, i.e. the scope every seeded
+// payload belongs to.
+const WORKSPACE_PATH = "/workspace";
 
 const runtimeClientMocks = vi.hoisted(() => ({
   listWorkspacesMock: vi.fn(),
@@ -224,6 +230,29 @@ const NO_DELEGATED_CONTEXT = {
   message: "no delegated child context",
 };
 
+// The shell reads server data from the query cache, so a view assertion reads the
+// entry the component reads. The cache is the process-wide client the shell is
+// provided with (the same instance the store reads through).
+function taskOutput(): { output: string | null } | undefined {
+  const scope = currentWorkspaceScope();
+  const taskId = useAppStore.getState().selectedBackgroundTaskOutputId;
+  return taskId === null
+    ? undefined
+    : queryClient.getQueryData(queryKeys.taskOutput(scope, taskId));
+}
+
+function queryStatus(key: readonly unknown[]): string | undefined {
+  return queryClient.getQueryState(key)?.status;
+}
+
+function renderApp() {
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>,
+  );
+}
+
 function childContextCalls(): number {
   return runtimeClientMocks.getChildSessionContextMock.mock.calls.filter(
     ([sessionId]) => sessionId === "child-session",
@@ -237,86 +266,38 @@ function childStreamCalls(): number {
 }
 
 function resetStore() {
+  // Client state only: the server payloads the shell paints live in the query
+  // cache, which each test starts from empty and repopulates through the mocked
+  // runtime client.
+  queryClient.clear();
   useAppStore.setState({
     language: "en",
     agentPreset: "leader",
     providerModel: "deepseek/deepseek-v4-pro",
-    workspaces: {
-      current: {
-        path: "/workspace",
-        label: "workspace",
-        available: true,
-        current: true,
-        last_opened_at: 1,
-      },
-      recent: [],
-      candidates: [],
-    },
-    workspacesStatus: "success",
-    workspacesError: null,
-    workspaceSwitchStatus: "idle",
-    workspaceSwitchError: null,
-    providers: [],
-    providersStatus: "idle",
-    providersError: null,
-    providerModels: {},
-    providerValidationResults: {},
-    providerValidationStatus: {},
-    providerValidationError: {},
-    agentPresets: [],
-    agentsStatus: "idle",
-    agentsError: null,
-    commands: [],
-    commandsStatus: "idle",
-    commandsError: null,
-    skills: [],
-    skillsStatus: "idle",
-    skillsError: null,
-    sessions: [],
+    reasoningEffort: "",
+    reviewMode: "changes",
+    reviewSelectedPath: null,
+    selectedBackgroundTaskOutputId: null,
     currentSessionId: null,
     childSessionParentId: null,
     sessionSidebarWidth: 344,
     currentSessionState: null,
     currentSessionEvents: [],
     currentSessionOutput: null,
-    sessionsStatus: "success",
-    sessionsError: null,
     replayStatus: "idle",
     replayError: null,
+    replayRequestId: 0,
+    replayTargetSessionId: null,
+    resumeStatus: "idle",
+    resumeError: null,
     runStatus: "idle",
+    runOrigin: null,
     runError: null,
     cancelRequested: false,
     approvalStatus: "idle",
     approvalError: null,
     questionStatus: "idle",
     questionError: null,
-    backgroundTasks: [],
-    backgroundTasksStatus: "idle",
-    backgroundTasksError: null,
-    selectedBackgroundTaskOutputId: null,
-    backgroundTaskOutput: null,
-    backgroundTaskOutputStatus: "idle",
-    backgroundTaskOutputError: null,
-    sessionDebug: null,
-    sessionDebugStatus: "idle",
-    sessionDebugError: null,
-    replayRequestId: 0,
-    statusSnapshot: null,
-    statusStatus: "idle",
-    statusError: null,
-    mcpRetryStatus: "idle",
-    mcpRetryError: null,
-    reviewSnapshot: null,
-    reviewStatus: "idle",
-    reviewError: null,
-    reviewSelectedPath: null,
-    reviewDiff: null,
-    reviewDiffStatus: "idle",
-    reviewDiffError: null,
-    reviewMode: "changes",
-    settings: null,
-    settingsStatus: "idle",
-    settingsError: null,
   });
 }
 
@@ -366,7 +347,9 @@ async function browseParentSession() {
   });
   await flushAsync();
   await act(async () => {
-    await useAppStore.getState().selectSession("session-parent");
+    await useAppStore
+      .getState()
+      .selectSession("session-parent", WORKSPACE_PATH);
   });
   await waitFor(() => {
     expect(useAppStore.getState().replayStatus).toBe("success");
@@ -441,7 +424,7 @@ describe("App follow stream with delegated child sessions", () => {
   });
 
   it("shows an interrupted child once without opening a redundant follow stream", async () => {
-    render(<App />);
+    renderApp();
     await browseParentSession();
 
     // Override the child behavior after browsing the parent (browseParentSession
@@ -454,7 +437,9 @@ describe("App follow stream with delegated child sessions", () => {
     );
 
     await act(async () => {
-      await useAppStore.getState().selectSession("child-session");
+      await useAppStore
+        .getState()
+        .selectSession("child-session", WORKSPACE_PATH);
     });
 
     // The child view is populated once and stably.
@@ -465,9 +450,7 @@ describe("App follow stream with delegated child sessions", () => {
       expect(useAppStore.getState().childSessionParentId).toBe(
         "session-parent",
       );
-      expect(useAppStore.getState().backgroundTaskOutput?.output).toBe(
-        "child output",
-      );
+      expect(taskOutput()?.output).toBe("child output");
       // An interrupted (unsealed) child is terminal for display: it must not
       // be treated as a live run.
       expect(useAppStore.getState().runStatus).toBe("idle");
@@ -481,7 +464,9 @@ describe("App follow stream with delegated child sessions", () => {
     expect(childContextCalls()).toBe(1);
     expect(childStreamCalls()).toBe(0);
     expect(useAppStore.getState().currentSessionId).toBe("child-session");
-    expect(useAppStore.getState().backgroundTaskOutputStatus).toBe("success");
+    expect(
+      queryStatus(queryKeys.taskOutput(currentWorkspaceScope(), "task-child")),
+    ).toBe("success");
   });
 
   it("does not follow or re-select a child while its context fetch is in flight", async () => {
@@ -492,7 +477,7 @@ describe("App follow stream with delegated child sessions", () => {
     });
     const childContextDeferred = createDeferred<BackgroundTaskOutput>();
 
-    render(<App />);
+    renderApp();
     await browseParentSession();
 
     // Override the child behavior after browsing the parent (browseParentSession
@@ -506,7 +491,9 @@ describe("App follow stream with delegated child sessions", () => {
 
     let selectPromise!: Promise<void>;
     await act(async () => {
-      selectPromise = useAppStore.getState().selectSession("child-session");
+      selectPromise = useAppStore
+        .getState()
+        .selectSession("child-session", WORKSPACE_PATH);
       await Promise.resolve();
     });
 
@@ -527,9 +514,7 @@ describe("App follow stream with delegated child sessions", () => {
     await flushAsync();
     expect(childContextCalls()).toBe(1);
     expect(childStreamCalls()).toBe(0);
-    expect(useAppStore.getState().backgroundTaskOutput?.output).toBe(
-      "child output",
-    );
+    expect(taskOutput()?.output).toBe("child output");
   });
 
   it("shows a locally interrupted run as Interrupted and never as Failed", async () => {
@@ -571,10 +556,10 @@ describe("App follow stream with delegated child sessions", () => {
       },
     ]);
 
-    render(<App />);
+    renderApp();
     await flushAsync();
     await act(async () => {
-      await useAppStore.getState().runTask("do it");
+      await useAppStore.getState().runTask("do it", WORKSPACE_PATH);
     });
     await flushAsync();
 
@@ -645,12 +630,12 @@ describe("App follow stream with delegated child sessions", () => {
       },
     ]);
 
-    render(<App />);
+    renderApp();
     await flushAsync();
 
     let runPromise!: Promise<void>;
     await act(async () => {
-      runPromise = useAppStore.getState().runTask("do it");
+      runPromise = useAppStore.getState().runTask("do it", WORKSPACE_PATH);
       await Promise.resolve();
     });
     await waitFor(() => {
@@ -714,10 +699,10 @@ describe("App follow stream with delegated child sessions", () => {
       },
     ]);
 
-    render(<App />);
+    renderApp();
     await flushAsync();
     await act(async () => {
-      await useAppStore.getState().runTask("do it");
+      await useAppStore.getState().runTask("do it", WORKSPACE_PATH);
     });
     await flushAsync();
 
@@ -743,7 +728,7 @@ describe("App follow stream with delegated child sessions", () => {
       currentSessionId: sessionId,
     });
 
-    render(<App />);
+    renderApp();
     await flushAsync();
 
     const textarea = screen.getByPlaceholderText(
@@ -795,7 +780,7 @@ describe("App follow stream with delegated child sessions", () => {
         "completed externally",
       ),
     );
-    render(<App />);
+    renderApp();
     await flushAsync();
     useAppStore.setState({
       currentSessionId: "external-session",
@@ -929,7 +914,7 @@ describe("App session-event follow stream (push contract)", () => {
       ),
     );
 
-    render(<App />);
+    renderApp();
     await startExternalRunSession("session-1", [
       makeEvent(1, "runtime.request_received", { prompt: "do it" }, "runtime"),
     ]);
@@ -991,7 +976,7 @@ describe("App session-event follow stream (push contract)", () => {
       await held.promise;
     });
 
-    render(<App />);
+    renderApp();
     await startExternalRunSession("session-1", [
       makeEvent(1, "runtime.request_received", { prompt: "do it" }, "runtime"),
       makeEvent(
@@ -1032,7 +1017,7 @@ describe("App session-event follow stream (push contract)", () => {
       await held.promise;
     });
 
-    render(<App />);
+    renderApp();
     await startExternalRunSession("session-1", [
       makeEvent(1, "runtime.request_received", { prompt: "do it" }, "runtime"),
     ]);
@@ -1082,7 +1067,7 @@ describe("App session-event follow stream (push contract)", () => {
       await held.promise;
     });
 
-    render(<App />);
+    renderApp();
     await startExternalRunSession("session-1", [
       makeEvent(1, "runtime.request_received", { prompt: "do it" }, "runtime"),
     ]);
@@ -1116,7 +1101,7 @@ describe("App session-event follow stream (push contract)", () => {
       };
     });
 
-    render(<App />);
+    renderApp();
     await browseParentSession();
     // Override the child behavior after browsing the parent
     // (browseParentSession owns the parent-side implementation).
@@ -1130,7 +1115,9 @@ describe("App session-event follow stream (push contract)", () => {
       runtimeClientMocks.getSessionReplayMock.mock.calls.length;
 
     await act(async () => {
-      await useAppStore.getState().selectSession("child-session");
+      await useAppStore
+        .getState()
+        .selectSession("child-session", WORKSPACE_PATH);
     });
     await waitFor(() => {
       expect(useAppStore.getState().selectedBackgroundTaskOutputId).toBe(
@@ -1146,9 +1133,7 @@ describe("App session-event follow stream (push contract)", () => {
     expect(useAppStore.getState().selectedBackgroundTaskOutputId).toBe(
       "task-child",
     );
-    expect(useAppStore.getState().backgroundTaskOutput?.output).toBe(
-      "child output",
-    );
+    expect(taskOutput()?.output).toBe("child output");
     // Where a pushed frame for the selected session lands is the store's
     // business and is pinned there; what this view guarantees is that the child
     // context still owns the transcript on screen (asserted above and below).
@@ -1158,6 +1143,7 @@ describe("App session-event follow stream (push contract)", () => {
     // The child view is refreshed in place instead.
     expect(runtimeClientMocks.getBackgroundTaskOutputMock).toHaveBeenCalledWith(
       "task-child",
+      expect.anything(),
     );
     expect(screen.getByText(/child output/)).toBeInTheDocument();
   });

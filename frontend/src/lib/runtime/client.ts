@@ -92,6 +92,19 @@ async function expectOk(res: Response, fallback: string): Promise<void> {
   }
 }
 
+/**
+ * Read one query endpoint, with an optional abort signal.
+ *
+ * The signal is what makes a superseded request a real cancellation: the query
+ * layer aborts it, `fetch` rejects with `AbortError`, and the caller's promise
+ * settles instead of decoding an answer nothing will use. The options object is
+ * only added when a signal exists, so an uncancellable read issues exactly the
+ * request it always did.
+ */
+function fetchQuery(url: string, signal?: AbortSignal): Promise<Response> {
+  return signal === undefined ? fetch(url) : fetch(url, { signal });
+}
+
 function encodePathSegments(path: string): string {
   return path.split("/").map(encodeURIComponent).join("/");
 }
@@ -131,17 +144,19 @@ export class RuntimeClient {
     afterSequence = 0,
     signal?: AbortSignal,
   ): AsyncGenerator<RuntimeStreamChunk, void, unknown> {
-    const res = await fetch(
+    const res = await fetchQuery(
       withShowThinking(
         `/api/sessions/${encodeURIComponent(sessionId)}/events?after_sequence=${afterSequence}&follow=true`,
       ),
-      { signal },
+      signal,
     );
     yield* readSseStream(res, "Session event stream failed");
   }
 
-  static async listWorkspaces(): Promise<WorkspaceRegistrySnapshot> {
-    const res = await fetch(`/api/workspaces`);
+  static async listWorkspaces(
+    signal?: AbortSignal,
+  ): Promise<WorkspaceRegistrySnapshot> {
+    const res = await fetchQuery(`/api/workspaces`, signal);
     await expectOk(res, "Failed to load workspaces");
     return res.json();
   }
@@ -156,8 +171,10 @@ export class RuntimeClient {
     return res.json();
   }
 
-  static async listNotifications(): Promise<RuntimeNotification[]> {
-    const res = await fetch(`/api/notifications`);
+  static async listNotifications(
+    signal?: AbortSignal,
+  ): Promise<RuntimeNotification[]> {
+    const res = await fetchQuery(`/api/notifications`, signal);
     await expectOk(res, "Failed to load notifications");
     return res.json();
   }
@@ -173,23 +190,27 @@ export class RuntimeClient {
     return res.json();
   }
 
-  static async listSessions(): Promise<StoredSessionSummary[]> {
-    const res = await fetch(`/api/sessions`);
+  static async listSessions(
+    signal?: AbortSignal,
+  ): Promise<StoredSessionSummary[]> {
+    const res = await fetchQuery(`/api/sessions`, signal);
     await expectOk(res, "Failed to list sessions");
     return res.json();
   }
 
-  static async listProviders(): Promise<ProviderSummary[]> {
-    const res = await fetch(`/api/providers`);
+  static async listProviders(signal?: AbortSignal): Promise<ProviderSummary[]> {
+    const res = await fetchQuery(`/api/providers`, signal);
     await expectOk(res, "Failed to load providers");
     return res.json();
   }
 
   static async listProviderModels(
     providerName: string,
+    signal?: AbortSignal,
   ): Promise<ProviderModelsResult> {
-    const res = await fetch(
+    const res = await fetchQuery(
       `/api/providers/${encodeURIComponent(providerName)}/models`,
+      signal,
     );
     if (!res.ok && res.status !== 409) {
       throw new Error(
@@ -215,26 +236,26 @@ export class RuntimeClient {
     return res.json();
   }
 
-  static async listAgents(): Promise<AgentSummary[]> {
-    const res = await fetch(`/api/agents`);
+  static async listAgents(signal?: AbortSignal): Promise<AgentSummary[]> {
+    const res = await fetchQuery(`/api/agents`, signal);
     await expectOk(res, "Failed to load agents");
     return res.json();
   }
 
-  static async listSkills(): Promise<SkillSummary[]> {
-    const res = await fetch(`/api/skills`);
+  static async listSkills(signal?: AbortSignal): Promise<SkillSummary[]> {
+    const res = await fetchQuery(`/api/skills`, signal);
     await expectOk(res, "Failed to load skills");
     return res.json();
   }
 
-  static async listCommands(): Promise<CommandSummary[]> {
-    const res = await fetch(`/api/commands`);
+  static async listCommands(signal?: AbortSignal): Promise<CommandSummary[]> {
+    const res = await fetchQuery(`/api/commands`, signal);
     await expectOk(res, "Failed to load commands");
     return res.json();
   }
 
-  static async getStatus(): Promise<RuntimeStatusSnapshot> {
-    const res = await fetch(`/api/status`);
+  static async getStatus(signal?: AbortSignal): Promise<RuntimeStatusSnapshot> {
+    const res = await fetchQuery(`/api/status`, signal);
     await expectOk(res, "Failed to load status");
     return res.json();
   }
@@ -247,14 +268,22 @@ export class RuntimeClient {
     return res.json();
   }
 
-  static async getReview(): Promise<WorkspaceReviewSnapshot> {
-    const res = await fetch(`/api/review`);
+  static async getReview(
+    signal?: AbortSignal,
+  ): Promise<WorkspaceReviewSnapshot> {
+    const res = await fetchQuery(`/api/review`, signal);
     await expectOk(res, "Failed to load review");
     return res.json();
   }
 
-  static async getReviewDiff(path: string): Promise<ReviewFileDiff> {
-    const res = await fetch(`/api/review/diff/${encodePathSegments(path)}`);
+  static async getReviewDiff(
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<ReviewFileDiff> {
+    const res = await fetchQuery(
+      `/api/review/diff/${encodePathSegments(path)}`,
+      signal,
+    );
     await expectOk(res, "Failed to load review diff");
     return res.json();
   }
@@ -270,9 +299,13 @@ export class RuntimeClient {
     return res.json();
   }
 
-  static async getSessionReplay(sessionId: string): Promise<RuntimeResponse> {
-    const res = await fetch(
+  static async getSessionReplay(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<RuntimeResponse> {
+    const res = await fetchQuery(
       withShowThinking(`/api/sessions/${encodeURIComponent(sessionId)}`),
+      signal,
     );
     await expectOk(res, "Failed to replay session");
     return res.json();
@@ -280,9 +313,11 @@ export class RuntimeClient {
 
   static async getSessionDebug(
     sessionId: string,
+    signal?: AbortSignal,
   ): Promise<RuntimeSessionDebugSnapshot> {
-    const res = await fetch(
+    const res = await fetchQuery(
       withShowThinking(`/api/sessions/${encodeURIComponent(sessionId)}/debug`),
+      signal,
     );
     await expectOk(res, "Failed to load session debug");
     return res.json();
@@ -361,17 +396,21 @@ export class RuntimeClient {
     return res.json();
   }
 
-  static async listBackgroundTasks(): Promise<BackgroundTaskSummary[]> {
-    const res = await fetch(`/api/tasks`);
+  static async listBackgroundTasks(
+    signal?: AbortSignal,
+  ): Promise<BackgroundTaskSummary[]> {
+    const res = await fetchQuery(`/api/tasks`, signal);
     await expectOk(res, "Failed to load background tasks");
     return res.json();
   }
 
   static async listSessionBackgroundTasks(
     sessionId: string,
+    signal?: AbortSignal,
   ): Promise<BackgroundTaskSummary[]> {
-    const res = await fetch(
+    const res = await fetchQuery(
       `/api/sessions/${encodeURIComponent(sessionId)}/tasks`,
+      signal,
     );
     await expectOk(res, "Failed to load session background tasks");
     return res.json();
@@ -379,9 +418,11 @@ export class RuntimeClient {
 
   static async getBackgroundTaskOutput(
     taskId: string,
+    signal?: AbortSignal,
   ): Promise<BackgroundTaskOutput> {
-    const res = await fetch(
+    const res = await fetchQuery(
       withShowThinking(`/api/tasks/${encodeURIComponent(taskId)}/output`),
+      signal,
     );
     await expectOk(res, "Failed to load background task output");
     return res.json();
@@ -422,18 +463,20 @@ export class RuntimeClient {
 
   static async getChildSessionContext(
     sessionId: string,
+    signal?: AbortSignal,
   ): Promise<ChildSessionContextResult> {
-    const res = await fetch(
+    const res = await fetchQuery(
       withShowThinking(
         `/api/sessions/${encodeURIComponent(sessionId)}/delegated-context`,
       ),
+      signal,
     );
     await expectOk(res, "Failed to load delegated child session context");
     return res.json();
   }
 
-  static async getSettings(): Promise<RuntimeSettings> {
-    const res = await fetch(`/api/settings`);
+  static async getSettings(signal?: AbortSignal): Promise<RuntimeSettings> {
+    const res = await fetchQuery(`/api/settings`, signal);
     await expectOk(res, "Failed to load settings");
     return res.json();
   }

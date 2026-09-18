@@ -7,6 +7,8 @@ import type {
   BackgroundTaskOutput,
   BackgroundTaskSummary,
   EventEnvelope,
+  ProviderModelsResult,
+  ProviderSummary,
   QuestionAnswer,
   ReviewFileDiff,
   RuntimeNotification,
@@ -17,6 +19,7 @@ import type {
   RuntimeSettings,
   SessionState,
   StoredSessionSummary,
+  WorkspaceReviewSnapshot,
 } from "./lib/runtime/types";
 
 type PersistedState = {
@@ -58,6 +61,12 @@ Object.defineProperty(globalThis, "localStorage", {
 });
 
 let useAppStore: typeof import("./store").useAppStore;
+let queryClient: typeof import("./lib/queries").queryClient;
+let queryKeys: typeof import("./lib/queries").queryKeys;
+
+// The scope every seeded runtime payload belongs to (the workspace the shell has
+// open). The store reads its server data out of these same cache entries.
+const WORKSPACE_PATH = "/workspace";
 
 const emptyStatusSnapshot: RuntimeStatusSnapshot = {
   git: { state: "git_ready", root: "/workspace", error: null },
@@ -292,6 +301,115 @@ const NO_DELEGATED_CONTEXT = {
   message: "no delegated child context",
 };
 
+function seedWorkspaceRegistry() {
+  queryClient.setQueryData(queryKeys.workspaceRegistry(), {
+    current: {
+      path: WORKSPACE_PATH,
+      label: "workspace",
+      available: true,
+      current: true,
+      last_opened_at: 1,
+    },
+    recent: [],
+    candidates: [],
+  });
+}
+
+function seedSessions(sessions: StoredSessionSummary[]) {
+  queryClient.setQueryData(queryKeys.sessions(WORKSPACE_PATH), sessions);
+}
+
+function seedProviderCatalog(
+  providers: ProviderSummary[],
+  models: Record<string, ProviderModelsResult>,
+) {
+  queryClient.setQueryData(queryKeys.providerCatalog(WORKSPACE_PATH), {
+    providers,
+    models,
+  });
+}
+
+function seedBackgroundTaskList(
+  sessionId: string | null,
+  tasks: BackgroundTaskSummary[],
+) {
+  queryClient.setQueryData(
+    queryKeys.backgroundTasks(WORKSPACE_PATH, sessionId),
+    tasks,
+  );
+}
+
+function seedTaskOutput(taskId: string, output: BackgroundTaskOutput) {
+  queryClient.setQueryData(
+    queryKeys.taskOutput(WORKSPACE_PATH, taskId),
+    output,
+  );
+}
+
+function seedReviewSnapshot(snapshot: WorkspaceReviewSnapshot) {
+  queryClient.setQueryData(queryKeys.review(WORKSPACE_PATH), snapshot);
+}
+
+function makeDebugSnapshot(sessionId: string): RuntimeSessionDebugSnapshot {
+  return {
+    session: makeSessionState(sessionId, "completed"),
+    prompt: "read README.md",
+    persisted_status: "completed",
+    current_status: "completed",
+    active: false,
+    resumable: false,
+    replayable: true,
+    terminal: true,
+    pending_approval: null,
+    pending_question: null,
+    last_relevant_event: null,
+    last_failure_event: null,
+    failure: null,
+    last_tool: null,
+    suggested_operator_action: null,
+    operator_guidance: null,
+  };
+}
+
+function seedStatusSnapshot(snapshot: RuntimeStatusSnapshot) {
+  queryClient.setQueryData(queryKeys.status(WORKSPACE_PATH), snapshot);
+}
+
+function seedSettings(settings: RuntimeSettings) {
+  queryClient.setQueryData(queryKeys.settings(WORKSPACE_PATH), settings);
+}
+
+function seedDebugSnapshot(
+  sessionId: string,
+  snapshot: RuntimeSessionDebugSnapshot,
+) {
+  queryClient.setQueryData(
+    queryKeys.sessionDebug(WORKSPACE_PATH, sessionId),
+    snapshot,
+  );
+}
+
+function cachedBackgroundTasks(sessionId: string | null) {
+  return queryClient.getQueryData<BackgroundTaskSummary[]>(
+    queryKeys.backgroundTasks(WORKSPACE_PATH, sessionId),
+  );
+}
+
+function cachedTaskOutput(taskId: string) {
+  return queryClient.getQueryData<BackgroundTaskOutput>(
+    queryKeys.taskOutput(WORKSPACE_PATH, taskId),
+  );
+}
+
+// A completed mutation invalidates the surfaces it can have moved; entries with
+// no mounted observer are marked stale and reload when they are next rendered.
+function isInvalidated(key: readonly unknown[]): boolean {
+  return queryClient
+    .getQueryCache()
+    .findAll({ queryKey: key })
+    .some((query) => query.state.isInvalidated);
+}
+
 // The shared reset every suite in this file starts from: mocks, the persisted
 // blob, and a fresh store module with default state. Registered by the suites
 // that need it so a `-t`-filtered run is independent of the other suites.
@@ -305,70 +423,42 @@ async function resetStoreForTest() {
     NO_DELEGATED_CONTEXT,
   );
   ({ useAppStore } = await import("./store"));
+  ({ queryClient, queryKeys } = await import("./lib/queries"));
+  // Client state only: server payloads live in the query cache, which every test
+  // starts empty and seeds through the helpers above. The workspace registry is
+  // the exception — it is the scope every other key is built from, so the shell
+  // always has one open here.
+  queryClient.clear();
   useAppStore.setState({
     language: "en",
     agentPreset: "leader",
     providerModel: "deepseek/deepseek-v4-pro",
-    workspaces: null,
-    workspacesStatus: "idle",
-    workspacesError: null,
-    workspaceSwitchStatus: "idle",
-    workspaceSwitchError: null,
-    providers: [],
-    providersStatus: "idle",
-    providersError: null,
-    providerModels: {},
-    providerValidationResults: {},
-    providerValidationStatus: {},
-    providerValidationError: {},
-    agentPresets: [],
-    agentsStatus: "idle",
-    agentsError: null,
-    sessions: [],
+    reasoningEffort: "",
+    reviewMode: "changes",
+    reviewSelectedPath: null,
+    selectedBackgroundTaskOutputId: null,
     currentSessionId: null,
     childSessionParentId: null,
     sessionSidebarWidth: 344,
     currentSessionState: null,
     currentSessionEvents: [],
     currentSessionOutput: null,
-    sessionsStatus: "idle",
-    sessionsError: null,
     replayStatus: "idle",
     replayError: null,
+    replayRequestId: 0,
+    replayTargetSessionId: null,
+    resumeStatus: "idle",
+    resumeError: null,
     runStatus: "idle",
+    runOrigin: null,
     runError: null,
+    cancelRequested: false,
     approvalStatus: "idle",
     approvalError: null,
     questionStatus: "idle",
     questionError: null,
-    backgroundTasks: [],
-    backgroundTasksStatus: "idle",
-    backgroundTasksError: null,
-    selectedBackgroundTaskOutputId: null,
-    backgroundTaskOutput: null,
-    backgroundTaskOutputStatus: "idle",
-    backgroundTaskOutputError: null,
-    sessionDebug: null,
-    sessionDebugStatus: "idle",
-    sessionDebugError: null,
-    replayRequestId: 0,
-    statusSnapshot: null,
-    statusStatus: "idle",
-    statusError: null,
-    mcpRetryStatus: "idle",
-    mcpRetryError: null,
-    reviewSnapshot: null,
-    reviewStatus: "idle",
-    reviewError: null,
-    reviewSelectedPath: null,
-    reviewDiff: null,
-    reviewDiffStatus: "idle",
-    reviewDiffError: null,
-    reviewMode: "changes",
-    settings: null,
-    settingsStatus: "idle",
-    settingsError: null,
   });
+  seedWorkspaceRegistry();
   runtimeClientMocks.openWorkspaceMock.mockResolvedValue({
     current: null,
     recent: [],
@@ -460,44 +550,51 @@ async function resetStoreForTest() {
 describe("useAppStore integration flow", () => {
   beforeEach(resetStoreForTest);
 
-  it("refreshes only the explicitly requested mutation surfaces", async () => {
+  it("invalidates only the explicitly requested mutation surfaces", async () => {
     const sessionId = "session-refresh";
     useAppStore.setState({ currentSessionId: sessionId });
-    runtimeClientMocks.getStatusMock.mockResolvedValue(emptyStatusSnapshot);
-    runtimeClientMocks.getReviewMock.mockResolvedValue({
+    seedSessions([]);
+    seedStatusSnapshot(emptyStatusSnapshot);
+    seedReviewSnapshot({
       root: "/workspace",
-      git: { state: "clean" },
+      git: { state: "git_ready", root: "/workspace" },
       changed_files: [],
       tree: [],
     });
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
-    runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([]);
+    seedBackgroundTaskList(null, []);
+    seedDebugSnapshot(sessionId, makeDebugSnapshot(sessionId));
+    seedSettings({});
 
-    await useAppStore.getState().refreshAfterMutation({
-      sessions: true,
-      status: true,
-      review: true,
-    });
+    const { refreshAfterMutation } = await import("./lib/queries");
+    await refreshAfterMutation({ sessions: true, status: true, review: true });
 
-    expect(runtimeClientMocks.listSessionsMock).toHaveBeenCalledTimes(1);
-    expect(runtimeClientMocks.getStatusMock).toHaveBeenCalledTimes(1);
-    expect(runtimeClientMocks.getReviewMock).toHaveBeenCalledTimes(1);
-    expect(runtimeClientMocks.listBackgroundTasksMock).not.toHaveBeenCalled();
-    expect(runtimeClientMocks.getSessionDebugMock).not.toHaveBeenCalled();
+    // A completed mutation invalidates the surfaces it can have moved: an entry a
+    // component is watching reloads at once, an inactive one is marked stale and
+    // reloads when it is next rendered. Every other surface is left alone, which
+    // is what this asserts instead of the old unconditional refetch counts.
+    expect(isInvalidated(queryKeys.sessions(WORKSPACE_PATH))).toBe(true);
+    expect(isInvalidated(queryKeys.status(WORKSPACE_PATH))).toBe(true);
+    expect(isInvalidated(queryKeys.review(WORKSPACE_PATH))).toBe(true);
+    expect(isInvalidated(queryKeys.backgroundTasksRoot(WORKSPACE_PATH))).toBe(
+      false,
+    );
+    expect(
+      isInvalidated(queryKeys.sessionDebug(WORKSPACE_PATH, sessionId)),
+    ).toBe(false);
+    expect(isInvalidated(queryKeys.settings(WORKSPACE_PATH))).toBe(false);
 
-    // The task surface is requested without a session scope, so state the scope
-    // rather than relying on the list refresh having dropped the selection.
-    useAppStore.setState({ currentSessionId: null });
-    await useAppStore.getState().refreshAfterMutation({
+    await refreshAfterMutation({
       backgroundTasks: true,
       debug: true,
       sessionId,
     });
 
-    expect(runtimeClientMocks.listBackgroundTasksMock).toHaveBeenCalledTimes(1);
-    expect(runtimeClientMocks.getSessionDebugMock).toHaveBeenCalledWith(
-      sessionId,
+    expect(isInvalidated(queryKeys.backgroundTasksRoot(WORKSPACE_PATH))).toBe(
+      true,
     );
+    expect(
+      isInvalidated(queryKeys.sessionDebug(WORKSPACE_PATH, sessionId)),
+    ).toBe(true);
   });
   it("handles run -> waiting approval -> allow -> replay through the real store", async () => {
     const sessionId = "session-1";
@@ -561,12 +658,10 @@ describe("useAppStore integration flow", () => {
     runtimeClientMocks.getSessionReplayMock.mockResolvedValue(
       completedResponse,
     );
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([
-      makeStoredSessionSummary(sessionId, "completed", "write note.txt hello"),
-    ]);
+    seedSessions([]);
 
     const store = useAppStore.getState();
-    await store.runTask("write note.txt hello");
+    await store.runTask("write note.txt hello", WORKSPACE_PATH);
 
     let state = useAppStore.getState();
     expect(state.currentSessionId).toBe(sessionId);
@@ -595,15 +690,15 @@ describe("useAppStore integration flow", () => {
         "graph.response_ready",
       ],
     );
-    expect(state.sessions).toEqual([
-      makeStoredSessionSummary(sessionId, "completed", "write note.txt hello"),
-    ]);
+    // The settled run refreshes the session list by invalidating it.
+    expect(isInvalidated(queryKeys.sessions(WORKSPACE_PATH))).toBe(true);
 
-    await state.selectSession(sessionId);
+    await state.selectSession(sessionId, WORKSPACE_PATH);
 
     state = useAppStore.getState();
     expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(
       sessionId,
+      expect.anything(),
     );
     expect(state.currentSessionState?.status).toBe("completed");
     expect(state.currentSessionOutput).toBe("hello");
@@ -666,7 +761,9 @@ describe("useAppStore integration flow", () => {
       makeStoredSessionSummary(sessionId, "waiting", "write delayed.txt hello"),
     ]);
 
-    await useAppStore.getState().runTask("write delayed.txt hello");
+    await useAppStore
+      .getState()
+      .runTask("write delayed.txt hello", WORKSPACE_PATH);
 
     const approvalPromise = useAppStore.getState().resolveApproval("allow");
     await Promise.resolve();
@@ -763,7 +860,9 @@ describe("useAppStore integration flow", () => {
       makeStoredSessionSummary(sessionId, "completed", "write open.txt hello"),
     ]);
 
-    const runPromise = useAppStore.getState().runTask("write open.txt hello");
+    const runPromise = useAppStore
+      .getState()
+      .runTask("write open.txt hello", WORKSPACE_PATH);
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -869,7 +968,9 @@ describe("useAppStore integration flow", () => {
       makeStoredSessionSummary(sessionId, "completed", "write slow.txt hello"),
     ]);
 
-    await useAppStore.getState().runTask("write slow.txt hello");
+    await useAppStore
+      .getState()
+      .runTask("write slow.txt hello", WORKSPACE_PATH);
 
     const approvalPromise = useAppStore.getState().resolveApproval("allow");
     await Promise.resolve();
@@ -957,7 +1058,9 @@ describe("useAppStore integration flow", () => {
       makeStoredSessionSummary(sessionId, "failed", "write denied.txt hello"),
     ]);
 
-    await useAppStore.getState().runTask("write denied.txt hello");
+    await useAppStore
+      .getState()
+      .runTask("write denied.txt hello", WORKSPACE_PATH);
 
     const approvalPromise = useAppStore.getState().resolveApproval("deny");
     await Promise.resolve();
@@ -1088,7 +1191,7 @@ describe("useAppStore integration flow", () => {
       makeStoredSessionSummary(sessionId, "completed", "run npm test"),
     ]);
 
-    await useAppStore.getState().runTask("run npm test");
+    await useAppStore.getState().runTask("run npm test", WORKSPACE_PATH);
 
     let state = useAppStore.getState();
     expect(state.currentSessionEvents[1]?.payload.tool_status).toMatchObject({
@@ -1103,7 +1206,7 @@ describe("useAppStore integration flow", () => {
       copyable: { command: "npm test", output: "2 passed" },
     });
 
-    await state.selectSession(sessionId);
+    await state.selectSession(sessionId, WORKSPACE_PATH);
 
     state = useAppStore.getState();
     expect(state.currentSessionEvents).toEqual(completedResponse.events);
@@ -1176,7 +1279,7 @@ describe("useAppStore integration flow", () => {
     ]);
 
     const store = useAppStore.getState();
-    await store.runTask("ask a direction");
+    await store.runTask("ask a direction", WORKSPACE_PATH);
 
     let state = useAppStore.getState();
     expect(state.runError).toBeNull();
@@ -1336,7 +1439,9 @@ describe("useAppStore integration flow", () => {
       makeStoredSessionSummary(sessionId, "failed", "write nope.txt later"),
     ]);
 
-    await useAppStore.getState().runTask("write nope.txt later");
+    await useAppStore
+      .getState()
+      .runTask("write nope.txt later", WORKSPACE_PATH);
     await useAppStore.getState().resolveApproval("deny");
 
     const state = useAppStore.getState();
@@ -1351,7 +1456,7 @@ describe("useAppStore integration flow", () => {
       ],
     );
 
-    await state.selectSession(sessionId);
+    await state.selectSession(sessionId, WORKSPACE_PATH);
 
     expect(useAppStore.getState().currentSessionEvents).toEqual(
       failedResponse.events,
@@ -1386,14 +1491,15 @@ describe("useAppStore integration flow", () => {
     };
     localStorage.setItem("app-storage", JSON.stringify(persisted));
 
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValue(replay);
+    // The runtime's flat list is the main-session surface, and the store reads it
+    // out of the cache to know a delegated-context probe cannot apply.
+    seedSessions([
       makeStoredSessionSummary(sessionId, "completed", "read note.txt"),
     ]);
-    runtimeClientMocks.getSessionReplayMock.mockResolvedValue(replay);
 
     await useAppStore.persist.rehydrate();
-    await useAppStore.getState().loadSessions();
-    await useAppStore.getState().selectSession(sessionId);
+    await useAppStore.getState().selectSession(sessionId, WORKSPACE_PATH);
 
     const state = useAppStore.getState();
     expect(state.language).toBe("zh-CN");
@@ -1404,6 +1510,7 @@ describe("useAppStore integration flow", () => {
     expect(state.currentSessionOutput).toBe("note body");
     expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(
       sessionId,
+      expect.anything(),
     );
   });
 
@@ -1416,25 +1523,41 @@ describe("useAppStore integration flow", () => {
     expect(persisted.state.sessionSidebarWidth).toBe(380);
   });
 
-  it("loads clean review diff state for selected nested file tree paths", async () => {
-    const reviewDiff: ReviewFileDiff = {
+  it("keeps a nested file tree path as the selected review path", async () => {
+    // The selection is client state; the diff of the selected path is a query
+    // keyed by it (its fetching and its key are pinned in the query layer's own
+    // suite, which drives the hooks the shell renders).
+    const nestedPath = "src/app file #1.ts";
+    const snapshot: WorkspaceReviewSnapshot = {
       root: "/workspace",
-      path: "src/app file #1.ts",
-      state: "clean",
-      diff: null,
+      git: { state: "git_ready", root: "/workspace" },
+      changed_files: [{ path: nestedPath, change_type: "modified" }],
+      tree: [
+        {
+          kind: "directory",
+          name: "src",
+          path: "src",
+          changed: true,
+          children: [
+            {
+              kind: "file",
+              name: "app file #1.ts",
+              path: nestedPath,
+              changed: true,
+              children: [],
+            },
+          ],
+        },
+      ],
     };
-    runtimeClientMocks.getReviewDiffMock.mockResolvedValue(reviewDiff);
+    const { resolveSelectedReviewPath } = await import("./lib/queries");
 
-    await useAppStore.getState().selectReviewPath("src/app file #1.ts");
+    useAppStore.getState().setReviewSelectedPath(nestedPath);
 
-    const state = useAppStore.getState();
-    expect(runtimeClientMocks.getReviewDiffMock).toHaveBeenCalledWith(
-      "src/app file #1.ts",
-    );
-    expect(state.reviewSelectedPath).toBe("src/app file #1.ts");
-    expect(state.reviewDiffStatus).toBe("success");
-    expect(state.reviewDiff).toEqual(reviewDiff);
-    expect(state.reviewDiffError).toBeNull();
+    expect(useAppStore.getState().reviewSelectedPath).toBe(nestedPath);
+    // A path that is still part of the reload resolves to itself, so the reader's
+    // pick survives a review refresh instead of snapping to the first file.
+    expect(resolveSelectedReviewPath(snapshot, nestedPath)).toBe(nestedPath);
   });
 
   it("falls back to no active session if persisted session is stale", async () => {
@@ -1451,7 +1574,7 @@ describe("useAppStore integration flow", () => {
     };
     localStorage.setItem("app-storage", JSON.stringify(persisted));
 
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
+    seedSessions([]);
     runtimeClientMocks.getSessionReplayMock.mockRejectedValue(
       new Error("Not Found"),
     );
@@ -1461,12 +1584,14 @@ describe("useAppStore integration flow", () => {
     let state = useAppStore.getState();
     expect(state.currentSessionId).toBe(sessionId);
 
-    await useAppStore.getState().loadSessions();
+    // Nothing has been replayed behind the selection yet, so the list cannot
+    // judge it: the selection survives this reconciliation.
+    useAppStore.getState().reconcileSessionList([]);
 
     state = useAppStore.getState();
     expect(state.replayError).toBeNull();
 
-    await useAppStore.getState().selectSession(sessionId);
+    await useAppStore.getState().selectSession(sessionId, WORKSPACE_PATH);
 
     state = useAppStore.getState();
     expect(state.currentSessionId).toBeNull();
@@ -1563,53 +1688,52 @@ describe("useAppStore integration flow", () => {
     expect(state.currentSessionOutput).toBe("before resume");
   });
 
-  it("ignores delayed old-workspace responses after a newer switch", async () => {
-    const staleSessions = createDeferred<StoredSessionSummary[]>();
-    const oldSession = makeStoredSessionSummary(
-      "old-workspace-session",
-      "completed",
-      "old workspace",
-    );
-    const newSession = makeStoredSessionSummary(
-      "new-workspace-session",
-      "completed",
-      "new workspace",
-    );
-    runtimeClientMocks.listSessionsMock
-      .mockImplementationOnce(() => staleSessions.promise)
-      .mockResolvedValueOnce([newSession]);
+  it("judges a finished selection against the session list but never a live one", () => {
+    // CONTRACT: the runtime's flat list is authoritative about *finished*
+    // sessions; a session whose projection says it is live is judged on the
+    // post-run refresh instead. The first half of this test fails if that guard
+    // is removed.
+    useAppStore.setState({
+      currentSessionId: "live-session",
+      currentSessionState: makeSessionState("live-session", "running"),
+      currentSessionEvents: [
+        makeEvent(
+          1,
+          "runtime.request_received",
+          { prompt: "still running" },
+          "runtime",
+          "live-session",
+        ),
+      ],
+    });
 
-    const oldSwitch = useAppStore.getState().switchWorkspace("/old");
-    await Promise.resolve();
-    const newSwitch = useAppStore.getState().switchWorkspace("/new");
-    await newSwitch;
+    useAppStore
+      .getState()
+      .reconcileSessionList([
+        makeStoredSessionSummary("other-session", "completed", "other prompt"),
+      ]);
 
-    staleSessions.resolve([oldSession]);
-    await oldSwitch;
+    expect(useAppStore.getState().currentSessionId).toBe("live-session");
+    expect(useAppStore.getState().currentSessionEvents).toHaveLength(1);
 
-    const state = useAppStore.getState();
-    expect(state.sessions).toEqual([newSession]);
-    expect(state.sessions).not.toContainEqual(oldSession);
-    expect(state.workspaceSwitchStatus).toBe("success");
-  });
+    // The same selection, once its run has settled, *is* judged: the session is
+    // gone from the list, so the shell returns to the empty state.
+    useAppStore.setState({
+      currentSessionState: makeSessionState("live-session", "completed"),
+    });
 
-  it("reloads runtime ops data after switching workspaces", async () => {
-    const task = makeBackgroundTaskSummary("task-1", "inspect workspace");
-    runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([task]);
+    useAppStore
+      .getState()
+      .reconcileSessionList([
+        makeStoredSessionSummary("other-session", "completed", "other prompt"),
+      ]);
 
-    await useAppStore.getState().switchWorkspace("/new-workspace");
-
-    const state = useAppStore.getState();
-    expect(runtimeClientMocks.listBackgroundTasksMock).toHaveBeenCalled();
-    expect(state.backgroundTasks).toEqual([task]);
+    expect(useAppStore.getState().currentSessionId).toBeNull();
+    expect(useAppStore.getState().currentSessionEvents).toEqual([]);
   });
 
   it("refreshes session-scoped background tasks after selecting a session", async () => {
     const firstTask = makeBackgroundTaskSummary("task-a", "prior session task");
-    const secondTask = makeBackgroundTaskSummary(
-      "task-b",
-      "selected session task",
-    );
     const replay = makeRuntimeResponse(
       "session-2",
       "completed",
@@ -1624,22 +1748,22 @@ describe("useAppStore integration flow", () => {
       ],
       "selected",
     );
-    useAppStore.setState({
-      currentSessionId: "session-1",
-      backgroundTasks: [firstTask],
-    });
+    seedBackgroundTaskList("session-1", [firstTask]);
+    useAppStore.setState({ currentSessionId: "session-1" });
     runtimeClientMocks.getSessionReplayMock.mockResolvedValue(replay);
-    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([
-      secondTask,
-    ]);
 
-    await useAppStore.getState().selectSession("session-2");
+    await useAppStore.getState().selectSession("session-2", WORKSPACE_PATH);
 
-    const state = useAppStore.getState();
-    expect(
-      runtimeClientMocks.listSessionBackgroundTasksMock,
-    ).toHaveBeenCalledWith("session-2");
-    expect(state.backgroundTasks).toEqual([secondTask]);
+    // Selecting a session moves the task surface with it: the session scope is
+    // part of the task list's key, and the store marks the surface stale so an
+    // on-screen panel refetches for the session now selected. The payload itself
+    // stays in the cache — the store never takes a copy of it.
+    expect(useAppStore.getState().currentSessionId).toBe("session-2");
+    expect(isInvalidated(queryKeys.backgroundTasksRoot(WORKSPACE_PATH))).toBe(
+      true,
+    );
+    expect(cachedBackgroundTasks("session-1")).toEqual([firstTask]);
+    expect(cachedBackgroundTasks("session-2")).toBeUndefined();
   });
 
   it("reloads global background tasks when selecting a new session", async () => {
@@ -1648,120 +1772,38 @@ describe("useAppStore integration flow", () => {
       "prior session task",
     );
     const globalTask = makeBackgroundTaskSummary("task-global", "global task");
-    useAppStore.setState({
-      currentSessionId: "session-1",
-      backgroundTasks: [sessionTask],
-    });
-    runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([globalTask]);
-
-    await useAppStore.getState().selectSession("");
-
-    const state = useAppStore.getState();
-    expect(runtimeClientMocks.listBackgroundTasksMock).toHaveBeenCalled();
-    expect(
-      runtimeClientMocks.listSessionBackgroundTasksMock,
-    ).not.toHaveBeenCalled();
-    expect(state.currentSessionId).toBeNull();
-    expect(state.backgroundTasks).toEqual([globalTask]);
-  });
-
-  it("ignores stale background task responses after session scope changes", async () => {
-    const staleTask = makeBackgroundTaskSummary("task-stale", "stale task");
-    const currentTask = makeBackgroundTaskSummary(
-      "task-current",
-      "current task",
-    );
-    const firstRequest = createDeferred<BackgroundTaskSummary[]>();
+    seedBackgroundTaskList("session-1", [sessionTask]);
+    seedBackgroundTaskList(null, [globalTask]);
     useAppStore.setState({ currentSessionId: "session-1" });
-    runtimeClientMocks.listSessionBackgroundTasksMock.mockReturnValueOnce(
-      firstRequest.promise,
-    );
 
-    const staleLoad = useAppStore.getState().loadBackgroundTasks();
-    useAppStore.setState({ currentSessionId: "session-2" });
-    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValueOnce([
-      currentTask,
-    ]);
-    await useAppStore.getState().loadBackgroundTasks();
+    await useAppStore.getState().selectSession("", WORKSPACE_PATH);
 
-    firstRequest.resolve([staleTask]);
-    await staleLoad;
-
-    const state = useAppStore.getState();
-    expect(
-      runtimeClientMocks.listSessionBackgroundTasksMock,
-    ).toHaveBeenNthCalledWith(1, "session-1");
-    expect(
-      runtimeClientMocks.listSessionBackgroundTasksMock,
-    ).toHaveBeenNthCalledWith(2, "session-2");
-    expect(state.backgroundTasks).toEqual([currentTask]);
+    // Clearing the selection drops the session scope, so the shell reads the
+    // workspace-wide list under its own key. Neither list is the other's answer.
+    expect(useAppStore.getState().currentSessionId).toBeNull();
+    expect(cachedBackgroundTasks(null)).toEqual([globalTask]);
+    expect(cachedBackgroundTasks("session-1")).toEqual([sessionTask]);
   });
 
-  it("loads and guards selected background task output", async () => {
-    const slowOutput = createDeferred<BackgroundTaskOutput>();
-    const fastOutput: BackgroundTaskOutput = {
-      task: {
-        task_id: "task-fast",
-        status: "completed",
-        parent_session_id: "session-1",
-        requested_child_session_id: "requested-child",
-        child_session_id: "child-session",
-        approval_request_id: null,
-        question_request_id: null,
-        approval_blocked: false,
-        summary_output: "fast summary",
-        error: null,
-        result_available: true,
-        cancellation_cause: null,
-        routing: { mode: "subagent", subagent_type: "explore" },
-      },
-      session_result: {
-        session: makeSessionState("child-session", "completed"),
-        prompt: "inspect output",
-        status: "completed",
-        summary: "session summary",
-        output: "session output",
-        error: null,
-        last_event_sequence: 2,
-        transcript: [],
-      },
-      output: "fast output",
-    };
-    runtimeClientMocks.getBackgroundTaskOutputMock.mockReturnValueOnce(
-      slowOutput.promise,
-    );
+  it("selects a background task output as client state, and clears the child view with it", () => {
+    // Which task is selected is client state; the payload is the cache entry that
+    // selection keys, so a superseded selection cannot show the other task's
+    // output (pinned in the query layer's suite, which drives the hooks).
+    useAppStore.setState({ childSessionParentId: "session-parent" });
 
-    const slowLoad = useAppStore
-      .getState()
-      .loadBackgroundTaskOutput("task-slow");
+    useAppStore.getState().selectBackgroundTaskOutput("task-fast");
+
     expect(useAppStore.getState().selectedBackgroundTaskOutputId).toBe(
-      "task-slow",
-    );
-    expect(useAppStore.getState().backgroundTaskOutputStatus).toBe("loading");
-
-    runtimeClientMocks.getBackgroundTaskOutputMock.mockResolvedValueOnce(
-      fastOutput,
-    );
-    await useAppStore.getState().loadBackgroundTaskOutput("task-fast");
-
-    slowOutput.resolve({
-      ...fastOutput,
-      task: { ...fastOutput.task, task_id: "task-slow" },
-      output: "stale output",
-    });
-    await slowLoad;
-
-    const state = useAppStore.getState();
-    expect(runtimeClientMocks.getBackgroundTaskOutputMock).toHaveBeenCalledWith(
-      "task-slow",
-    );
-    expect(runtimeClientMocks.getBackgroundTaskOutputMock).toHaveBeenCalledWith(
       "task-fast",
     );
-    expect(state.selectedBackgroundTaskOutputId).toBe("task-fast");
-    expect(state.backgroundTaskOutputStatus).toBe("success");
-    expect(state.backgroundTaskOutput).toEqual(fastOutput);
-    expect(state.backgroundTaskOutputError).toBeNull();
+    expect(useAppStore.getState().childSessionParentId).toBe("session-parent");
+
+    useAppStore.getState().selectBackgroundTaskOutput(null);
+
+    expect(useAppStore.getState().selectedBackgroundTaskOutputId).toBeNull();
+    // Returning from a delegated child means returning from the task view that
+    // stood in for it, so the child link is cleared with the output.
+    expect(useAppStore.getState().childSessionParentId).toBeNull();
   });
 
   it("keeps delegated child output selected while refreshing session-scoped task lists", async () => {
@@ -1811,25 +1853,29 @@ describe("useAppStore integration flow", () => {
       output: "child output",
     };
 
+    seedTaskOutput("task-child", childOutput);
+    seedBackgroundTaskList("session-parent", [childTask]);
     useAppStore.setState({
       currentSessionId: "session-parent",
       selectedBackgroundTaskOutputId: "task-child",
-      backgroundTaskOutput: childOutput,
-      backgroundTaskOutputStatus: "success",
     });
-    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([
-      childTask,
-    ]);
 
-    await useAppStore.getState().loadBackgroundTasks();
+    const { refreshDelegatedTaskSurfaces } = await import("./lib/queries");
+    await refreshDelegatedTaskSurfaces({ outputId: "task-child" });
 
-    const state = useAppStore.getState();
-    expect(state.backgroundTasks).toEqual([childTask]);
-    expect(state.selectedBackgroundTaskOutputId).toBe("task-child");
-    expect(state.backgroundTaskOutput).toEqual(childOutput);
+    // Refreshing the task surfaces never clears the selected child output: the
+    // selection is the shell's own state and the payload is the entry its key
+    // points at.
+    expect(isInvalidated(queryKeys.backgroundTasksRoot(WORKSPACE_PATH))).toBe(
+      true,
+    );
     expect(
-      runtimeClientMocks.listSessionBackgroundTasksMock,
-    ).toHaveBeenCalledWith("session-parent");
+      isInvalidated(queryKeys.taskOutput(WORKSPACE_PATH, "task-child")),
+    ).toBe(true);
+    expect(useAppStore.getState().selectedBackgroundTaskOutputId).toBe(
+      "task-child",
+    );
+    expect(cachedTaskOutput("task-child")).toEqual(childOutput);
   });
 
   it("restores the delegated child parent session on parent return", async () => {
@@ -1879,7 +1925,7 @@ describe("useAppStore integration flow", () => {
     runtimeClientMocks.getChildSessionContextMock.mockResolvedValueOnce(
       childOutput,
     );
-    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
+    seedBackgroundTaskList(null, []);
     runtimeClientMocks.getSessionReplayMock.mockResolvedValueOnce(
       makeRuntimeResponse(
         "session-parent",
@@ -1889,21 +1935,27 @@ describe("useAppStore integration flow", () => {
       ),
     );
 
-    await useAppStore.getState().selectSession("child-session");
+    await useAppStore.getState().selectSession("child-session", WORKSPACE_PATH);
 
     expect(useAppStore.getState().currentSessionId).toBe("child-session");
     expect(useAppStore.getState().childSessionParentId).toBe("session-parent");
-    expect(
-      runtimeClientMocks.listSessionBackgroundTasksMock,
-    ).toHaveBeenCalledWith("session-parent");
+    // The child view marks the parent's task surface stale; the panel reads that
+    // scope's list from its own cache key.
+    expect(isInvalidated(queryKeys.backgroundTasksRoot(WORKSPACE_PATH))).toBe(
+      true,
+    );
 
     await useAppStore
       .getState()
-      .selectSession(useAppStore.getState().childSessionParentId ?? "");
+      .selectSession(
+        useAppStore.getState().childSessionParentId ?? "",
+        WORKSPACE_PATH,
+      );
 
     const state = useAppStore.getState();
     expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(
       "session-parent",
+      expect.anything(),
     );
     expect(state.currentSessionId).toBe("session-parent");
     expect(state.childSessionParentId).toBeNull();
@@ -1920,7 +1972,9 @@ describe("useAppStore integration flow", () => {
       message: "no delegated child context for session: session-parent",
     });
 
-    await useAppStore.getState().selectSession("session-parent");
+    await useAppStore
+      .getState()
+      .selectSession("session-parent", WORKSPACE_PATH);
 
     expect(runtimeClientMocks.getSessionReplayMock).not.toHaveBeenCalled();
     expect(useAppStore.getState().currentSessionId).toBeNull();
@@ -1931,7 +1985,7 @@ describe("useAppStore integration flow", () => {
     // children are filtered out of it), so a session found there has no parent
     // and the delegated-context lookup could only answer 404. Selecting such a
     // session must go straight to the replay.
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+    seedSessions([
       makeStoredSessionSummary("session-parent", "completed", "parent prompt"),
     ]);
     runtimeClientMocks.getSessionReplayMock.mockResolvedValueOnce(
@@ -1959,14 +2013,16 @@ describe("useAppStore integration flow", () => {
     );
     runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
 
-    await useAppStore.getState().loadSessions();
-    await useAppStore.getState().selectSession("session-parent");
+    await useAppStore
+      .getState()
+      .selectSession("session-parent", WORKSPACE_PATH);
 
     expect(
       runtimeClientMocks.getChildSessionContextMock,
     ).not.toHaveBeenCalled();
     expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(
       "session-parent",
+      expect.anything(),
     );
     const state = useAppStore.getState();
     expect(state.currentSessionId).toBe("session-parent");
@@ -2019,7 +2075,7 @@ describe("useAppStore integration flow", () => {
     });
     runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
 
-    await useAppStore.getState().selectSession("child-session");
+    await useAppStore.getState().selectSession("child-session", WORKSPACE_PATH);
 
     const state = useAppStore.getState();
     expect(state.currentSessionId).toBe("child-session");
@@ -2097,12 +2153,15 @@ describe("useAppStore integration flow", () => {
       ),
     );
 
-    await useAppStore.getState().selectSession("child-session");
-    await useAppStore.getState().selectSession("session-parent");
+    await useAppStore.getState().selectSession("child-session", WORKSPACE_PATH);
+    await useAppStore
+      .getState()
+      .selectSession("session-parent", WORKSPACE_PATH);
 
     const state = useAppStore.getState();
     expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(
       "session-parent",
+      expect.anything(),
     );
     expect(state.currentSessionId).toBe("session-parent");
     expect(state.childSessionParentId).toBeNull();
@@ -2169,7 +2228,7 @@ describe("useAppStore integration flow", () => {
       },
     ]);
 
-    await useAppStore.getState().selectSession("child-session");
+    await useAppStore.getState().selectSession("child-session", WORKSPACE_PATH);
 
     const before = useAppStore.getState();
     expect(before.currentSessionId).toBe("child-session");
@@ -2178,12 +2237,14 @@ describe("useAppStore integration flow", () => {
 
     // Re-selecting the already-browsed child must refresh in place instead of
     // clearing the child view (which made the transcript flip on its own).
-    await useAppStore.getState().selectSession("child-session");
+    await useAppStore.getState().selectSession("child-session", WORKSPACE_PATH);
 
     const after = useAppStore.getState();
-    expect(runtimeClientMocks.getBackgroundTaskOutputMock).toHaveBeenCalledWith(
-      "task-child",
-    );
+    // The re-selection refreshes the selected task output in place, so the child
+    // transcript is reloaded rather than cleared and re-probed.
+    expect(
+      isInvalidated(queryKeys.taskOutput(WORKSPACE_PATH, "task-child")),
+    ).toBe(true);
     expect(runtimeClientMocks.getChildSessionContextMock).toHaveBeenCalledTimes(
       1,
     );
@@ -2191,7 +2252,11 @@ describe("useAppStore integration flow", () => {
     expect(after.childSessionParentId).toBe("session-parent");
     expect(after.selectedBackgroundTaskOutputId).toBe("task-child");
     expect(after.replayStatus).toBe("success");
-    expect(after.backgroundTaskOutputStatus).toBe("success");
+    expect(
+      queryClient.getQueryState(
+        queryKeys.taskOutput(WORKSPACE_PATH, "task-child"),
+      )?.status,
+    ).toBe("success");
   });
 
   it("keeps the delegated child view when the flat session list omits child sessions", async () => {
@@ -2253,8 +2318,16 @@ describe("useAppStore integration flow", () => {
       makeStoredSessionSummary("session-parent", "completed", "parent prompt"),
     ]);
 
-    await useAppStore.getState().selectSession("child-session");
-    await useAppStore.getState().loadSessions();
+    await useAppStore.getState().selectSession("child-session", WORKSPACE_PATH);
+    useAppStore
+      .getState()
+      .reconcileSessionList([
+        makeStoredSessionSummary(
+          "session-parent",
+          "completed",
+          "parent prompt",
+        ),
+      ]);
 
     const state = useAppStore.getState();
     expect(state.currentSessionId).toBe("child-session");
@@ -2328,13 +2401,13 @@ describe("useAppStore integration flow", () => {
       },
     ]);
 
-    await useAppStore.getState().selectSession("child-session");
+    await useAppStore.getState().selectSession("child-session", WORKSPACE_PATH);
 
     const state = useAppStore.getState();
     expect(state.currentSessionId).toBe("child-session");
     expect(state.childSessionParentId).toBe("session-parent");
     expect(state.selectedBackgroundTaskOutputId).toBe("task-child");
-    expect(state.backgroundTaskOutput).toBe(interruptedChildOutput);
+    expect(cachedTaskOutput("task-child")).toBe(interruptedChildOutput);
     expect(state.replayStatus).toBe("success");
     // An interrupted (unsealed) child is terminal for display: it must not be
     // treated as a live run.
@@ -2346,19 +2419,18 @@ describe("useAppStore integration flow", () => {
 
     // Re-selecting the already-browsed interrupted child refreshes in place
     // instead of clearing the child view and re-fetching the context.
-    await useAppStore.getState().selectSession("child-session");
+    await useAppStore.getState().selectSession("child-session", WORKSPACE_PATH);
 
     expect(runtimeClientMocks.getChildSessionContextMock).toHaveBeenCalledTimes(
       1,
     );
-    expect(runtimeClientMocks.getBackgroundTaskOutputMock).toHaveBeenCalledWith(
-      "task-child",
-    );
+    expect(
+      isInvalidated(queryKeys.taskOutput(WORKSPACE_PATH, "task-child")),
+    ).toBe(true);
     const after = useAppStore.getState();
     expect(after.currentSessionId).toBe("child-session");
     expect(after.childSessionParentId).toBe("session-parent");
     expect(after.selectedBackgroundTaskOutputId).toBe("task-child");
-    expect(after.backgroundTaskOutputStatus).toBe("success");
   });
 
   it("surfaces approval lookup failure when no pending request exists", async () => {
@@ -2380,7 +2452,7 @@ describe("useAppStore integration flow", () => {
       makeStoredSessionSummary(sessionId, "running", "write later"),
     ]);
 
-    await useAppStore.getState().runTask("write later");
+    await useAppStore.getState().runTask("write later", WORKSPACE_PATH);
     await useAppStore.getState().resolveApproval("allow");
 
     const state = useAppStore.getState();
@@ -2407,7 +2479,9 @@ describe("useAppStore integration flow", () => {
 
     runtimeClientMocks.runStreamMock.mockReturnValue(stream());
 
-    const runPromise = useAppStore.getState().runTask("read slow.txt");
+    const runPromise = useAppStore
+      .getState()
+      .runTask("read slow.txt", WORKSPACE_PATH);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -2437,7 +2511,9 @@ describe("useAppStore integration flow", () => {
 
     runtimeClientMocks.runStreamMock.mockReturnValue(stream());
 
-    const runPromise = useAppStore.getState().runTask("read slow.txt");
+    const runPromise = useAppStore
+      .getState()
+      .runTask("read slow.txt", WORKSPACE_PATH);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -2449,7 +2525,7 @@ describe("useAppStore integration flow", () => {
     );
     expect(useAppStore.getState().runStatus).toBe("cancelling");
 
-    await useAppStore.getState().runTask("read second.txt");
+    await useAppStore.getState().runTask("read second.txt", WORKSPACE_PATH);
 
     expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledTimes(1);
 
@@ -2477,7 +2553,9 @@ describe("useAppStore integration flow", () => {
 
     runtimeClientMocks.runStreamMock.mockReturnValue(stream());
 
-    const runPromise = useAppStore.getState().runTask("read before session id");
+    const runPromise = useAppStore
+      .getState()
+      .runTask("read before session id", WORKSPACE_PATH);
     await Promise.resolve();
     useAppStore.setState({ currentSessionId: null, currentSessionState: null });
 
@@ -2486,7 +2564,7 @@ describe("useAppStore integration flow", () => {
     expect(runtimeClientMocks.cancelSessionMock).not.toHaveBeenCalled();
     expect(useAppStore.getState().runStatus).toBe("cancelling");
 
-    await useAppStore.getState().runTask("read second.txt");
+    await useAppStore.getState().runTask("read second.txt", WORKSPACE_PATH);
 
     expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledTimes(1);
 
@@ -2522,7 +2600,9 @@ describe("useAppStore integration flow", () => {
       reason: null,
     });
 
-    const runPromise = useAppStore.getState().runTask("read stale.txt");
+    const runPromise = useAppStore
+      .getState()
+      .runTask("read stale.txt", WORKSPACE_PATH);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -2534,7 +2614,7 @@ describe("useAppStore integration flow", () => {
     );
     expect(useAppStore.getState().runStatus).toBe("cancelling");
 
-    await useAppStore.getState().runTask("read second.txt");
+    await useAppStore.getState().runTask("read second.txt", WORKSPACE_PATH);
 
     expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledTimes(1);
 
@@ -2566,7 +2646,9 @@ describe("useAppStore integration flow", () => {
       () => cancelGate.promise,
     );
 
-    const runPromise = useAppStore.getState().runTask("read race.txt");
+    const runPromise = useAppStore
+      .getState()
+      .runTask("read race.txt", WORKSPACE_PATH);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -2616,7 +2698,9 @@ describe("useAppStore integration flow", () => {
       });
     });
 
-    const runPromise = useAppStore.getState().runTask("read slow.txt");
+    const runPromise = useAppStore
+      .getState()
+      .runTask("read slow.txt", WORKSPACE_PATH);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -2667,7 +2751,9 @@ describe("useAppStore integration flow", () => {
       new Error("cancel post failed"),
     );
 
-    const runPromise = useAppStore.getState().runTask("read slow.txt");
+    const runPromise = useAppStore
+      .getState()
+      .runTask("read slow.txt", WORKSPACE_PATH);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -2712,7 +2798,9 @@ describe("useAppStore integration flow", () => {
       ),
     ]);
 
-    await useAppStore.getState().runTask("read interrupted.txt");
+    await useAppStore
+      .getState()
+      .runTask("read interrupted.txt", WORKSPACE_PATH);
 
     expect(useAppStore.getState().runStatus).toBe("idle");
     expect(useAppStore.getState().runError).toBeNull();
@@ -2751,7 +2839,7 @@ describe("useAppStore integration flow", () => {
 
     runtimeClientMocks.runStreamMock.mockReturnValue(stream());
 
-    await useAppStore.getState().runTask("say ok");
+    await useAppStore.getState().runTask("say ok", WORKSPACE_PATH);
 
     const state = useAppStore.getState();
     expect(state.runStatus).toBe("error");
@@ -2790,7 +2878,7 @@ describe("useAppStore integration flow", () => {
       makeStoredSessionSummary(sessionId, "failed", "say ok"),
     ]);
 
-    await useAppStore.getState().runTask("say ok");
+    await useAppStore.getState().runTask("say ok", WORKSPACE_PATH);
 
     const state = useAppStore.getState();
     expect(state.currentSessionState?.status).toBe("failed");
@@ -2872,7 +2960,7 @@ describe("useAppStore integration flow", () => {
       makeStoredSessionSummary(sessionId, "completed", "hello"),
     ]);
 
-    await useAppStore.getState().runTask("hello");
+    await useAppStore.getState().runTask("hello", WORKSPACE_PATH);
 
     // The restart event retracts the first attempt's live text, so the surviving
     // attempt is the only thing rendered (the persisted transcript is untouched).
@@ -2897,7 +2985,9 @@ describe("useAppStore integration flow", () => {
 
     runtimeClientMocks.runStreamMock.mockReturnValue(stream());
 
-    await useAppStore.getState().runTask("fail without details");
+    await useAppStore
+      .getState()
+      .runTask("fail without details", WORKSPACE_PATH);
 
     const state = useAppStore.getState();
     expect(state.runStatus).toBe("error");
@@ -2920,11 +3010,16 @@ describe("useAppStore integration flow", () => {
     }
 
     runtimeClientMocks.runStreamMock.mockReturnValue(stream());
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([
-      makeStoredSessionSummary(sessionId, "completed", "analyze repo"),
-    ]);
+    seedSessions([]);
+    seedStatusSnapshot(emptyStatusSnapshot);
+    seedReviewSnapshot({
+      root: "/workspace",
+      git: { state: "git_ready", root: "/workspace" },
+      changed_files: [],
+      tree: [],
+    });
 
-    await useAppStore.getState().runTask("analyze repo", {
+    await useAppStore.getState().runTask("analyze repo", WORKSPACE_PATH, {
       metadata: {
         skills: ["demo"],
         provider_stream: true,
@@ -2947,8 +3042,10 @@ describe("useAppStore integration flow", () => {
         },
       },
     });
-    expect(runtimeClientMocks.getStatusMock).toHaveBeenCalled();
-    expect(runtimeClientMocks.getReviewMock).toHaveBeenCalled();
+    // The settled run refreshes the workspace status and the code review by
+    // invalidating them.
+    expect(isInvalidated(queryKeys.status(WORKSPACE_PATH))).toBe(true);
+    expect(isInvalidated(queryKeys.review(WORKSPACE_PATH))).toBe(true);
   });
 
   it("sends reasoning_effort only when the selected model supports it", async () => {
@@ -2970,13 +3067,9 @@ describe("useAppStore integration flow", () => {
     runtimeClientMocks.listSessionsMock.mockResolvedValue([
       makeStoredSessionSummary(sessionId, "completed", "think carefully"),
     ]);
-    useAppStore.setState({
-      reasoningEffort: "high",
-      providerModel: "zai/glm-5",
-      providers: [
-        { name: "zai", label: "Z.AI", configured: true, current: true },
-      ],
-      providerModels: {
+    seedProviderCatalog(
+      [{ name: "zai", label: "Z.AI", configured: true, current: true }],
+      {
         zai: {
           provider: "zai",
           configured: true,
@@ -2989,9 +3082,13 @@ describe("useAppStore integration flow", () => {
           },
         },
       },
+    );
+    useAppStore.setState({
+      reasoningEffort: "high",
+      providerModel: "zai/glm-5",
     });
 
-    await useAppStore.getState().runTask("think carefully");
+    await useAppStore.getState().runTask("think carefully", WORKSPACE_PATH);
 
     expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "think carefully",
@@ -3029,10 +3126,8 @@ describe("useAppStore integration flow", () => {
     runtimeClientMocks.listSessionsMock.mockResolvedValue([
       makeStoredSessionSummary(sessionId, "completed", "think carefully"),
     ]);
-    useAppStore.setState({
-      reasoningEffort: "xhigh",
-      providerModel: "endpoint/custom-model",
-      providers: [
+    seedProviderCatalog(
+      [
         {
           name: "endpoint",
           label: "Endpoint",
@@ -3040,7 +3135,7 @@ describe("useAppStore integration flow", () => {
           current: true,
         },
       ],
-      providerModels: {
+      {
         endpoint: {
           provider: "endpoint",
           configured: true,
@@ -3050,9 +3145,13 @@ describe("useAppStore integration flow", () => {
           },
         },
       },
+    );
+    useAppStore.setState({
+      reasoningEffort: "xhigh",
+      providerModel: "endpoint/custom-model",
     });
 
-    await useAppStore.getState().runTask("think carefully");
+    await useAppStore.getState().runTask("think carefully", WORKSPACE_PATH);
 
     expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "think carefully",
@@ -3086,10 +3185,8 @@ describe("useAppStore integration flow", () => {
     runtimeClientMocks.listSessionsMock.mockResolvedValue([
       makeStoredSessionSummary(sessionId, "completed", "plain run"),
     ]);
-    useAppStore.setState({
-      reasoningEffort: "high",
-      providerModel: "deepseek/deepseek-v4-pro",
-      providers: [
+    seedProviderCatalog(
+      [
         {
           name: "deepseek",
           label: "DeepSeek",
@@ -3097,7 +3194,7 @@ describe("useAppStore integration flow", () => {
           current: true,
         },
       ],
-      providerModels: {
+      {
         deepseek: {
           provider: "deepseek",
           configured: true,
@@ -3110,9 +3207,13 @@ describe("useAppStore integration flow", () => {
           },
         },
       },
+    );
+    useAppStore.setState({
+      reasoningEffort: "high",
+      providerModel: "deepseek/deepseek-v4-pro",
     });
 
-    await useAppStore.getState().runTask("plain run", {
+    await useAppStore.getState().runTask("plain run", WORKSPACE_PATH, {
       metadata: { reasoning_effort: "xhigh" },
     });
 
@@ -3151,9 +3252,8 @@ describe("useAppStore integration flow", () => {
         "run current provider alias",
       ),
     ]);
-    useAppStore.setState({
-      providerModel: "kimi-k2.6",
-      providers: [
+    seedProviderCatalog(
+      [
         {
           name: "opencode-go",
           label: "OpenCode Go",
@@ -3162,7 +3262,7 @@ describe("useAppStore integration flow", () => {
         },
         { name: "kimi", label: "Kimi", configured: true, current: false },
       ],
-      providerModels: {
+      {
         "opencode-go": {
           provider: "opencode-go",
           configured: true,
@@ -3174,9 +3274,14 @@ describe("useAppStore integration flow", () => {
           models: ["kimi-k2.6"],
         },
       },
+    );
+    useAppStore.setState({
+      providerModel: "kimi-k2.6",
     });
 
-    await useAppStore.getState().runTask("run current provider alias");
+    await useAppStore
+      .getState()
+      .runTask("run current provider alias", WORKSPACE_PATH);
 
     expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "run current provider alias",
@@ -3209,9 +3314,8 @@ describe("useAppStore integration flow", () => {
     runtimeClientMocks.listSessionsMock.mockResolvedValue([
       makeStoredSessionSummary(sessionId, "completed", "run unique alias"),
     ]);
-    useAppStore.setState({
-      providerModel: "kimi-k2.6",
-      providers: [
+    seedProviderCatalog(
+      [
         {
           name: "opencode-go",
           label: "OpenCode Go",
@@ -3220,7 +3324,7 @@ describe("useAppStore integration flow", () => {
         },
         { name: "kimi", label: "Kimi", configured: true, current: false },
       ],
-      providerModels: {
+      {
         "opencode-go": {
           provider: "opencode-go",
           configured: true,
@@ -3232,9 +3336,12 @@ describe("useAppStore integration flow", () => {
           models: ["kimi-k2.6"],
         },
       },
+    );
+    useAppStore.setState({
+      providerModel: "kimi-k2.6",
     });
 
-    await useAppStore.getState().runTask("run unique alias");
+    await useAppStore.getState().runTask("run unique alias", WORKSPACE_PATH);
 
     expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "run unique alias",
@@ -3267,9 +3374,8 @@ describe("useAppStore integration flow", () => {
     runtimeClientMocks.listSessionsMock.mockResolvedValue([
       makeStoredSessionSummary(sessionId, "completed", "run qualified alias"),
     ]);
-    useAppStore.setState({
-      providerModel: "kimi/kimi-k2.6",
-      providers: [
+    seedProviderCatalog(
+      [
         {
           name: "opencode-go",
           label: "OpenCode Go",
@@ -3278,7 +3384,7 @@ describe("useAppStore integration flow", () => {
         },
         { name: "kimi", label: "Kimi", configured: true, current: false },
       ],
-      providerModels: {
+      {
         "opencode-go": {
           provider: "opencode-go",
           configured: true,
@@ -3290,9 +3396,12 @@ describe("useAppStore integration flow", () => {
           models: ["kimi-k2.6"],
         },
       },
+    );
+    useAppStore.setState({
+      providerModel: "kimi/kimi-k2.6",
     });
 
-    await useAppStore.getState().runTask("run qualified alias");
+    await useAppStore.getState().runTask("run qualified alias", WORKSPACE_PATH);
 
     expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "run qualified alias",
@@ -3325,9 +3434,8 @@ describe("useAppStore integration flow", () => {
     runtimeClientMocks.listSessionsMock.mockResolvedValue([
       makeStoredSessionSummary(sessionId, "completed", "run ambiguous alias"),
     ]);
-    useAppStore.setState({
-      providerModel: "kimi-k2.6",
-      providers: [
+    seedProviderCatalog(
+      [
         {
           name: "opencode-go",
           label: "OpenCode Go",
@@ -3337,7 +3445,7 @@ describe("useAppStore integration flow", () => {
         { name: "kimi", label: "Kimi", configured: true, current: false },
         { name: "zai", label: "Z.AI", configured: true, current: false },
       ],
-      providerModels: {
+      {
         "opencode-go": {
           provider: "opencode-go",
           configured: true,
@@ -3354,9 +3462,12 @@ describe("useAppStore integration flow", () => {
           models: ["kimi-k2.6"],
         },
       },
+    );
+    useAppStore.setState({
+      providerModel: "kimi-k2.6",
     });
 
-    await useAppStore.getState().runTask("run ambiguous alias");
+    await useAppStore.getState().runTask("run ambiguous alias", WORKSPACE_PATH);
 
     expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "run ambiguous alias",
@@ -3389,9 +3500,8 @@ describe("useAppStore integration flow", () => {
     runtimeClientMocks.listSessionsMock.mockResolvedValue([
       makeStoredSessionSummary(sessionId, "completed", "run unknown alias"),
     ]);
-    useAppStore.setState({
-      providerModel: "mystery-model",
-      providers: [
+    seedProviderCatalog(
+      [
         {
           name: "opencode-go",
           label: "OpenCode Go",
@@ -3400,7 +3510,7 @@ describe("useAppStore integration flow", () => {
         },
         { name: "kimi", label: "Kimi", configured: true, current: false },
       ],
-      providerModels: {
+      {
         "opencode-go": {
           provider: "opencode-go",
           configured: true,
@@ -3412,9 +3522,12 @@ describe("useAppStore integration flow", () => {
           models: ["kimi-k2.6"],
         },
       },
+    );
+    useAppStore.setState({
+      providerModel: "mystery-model",
     });
 
-    await useAppStore.getState().runTask("run unknown alias");
+    await useAppStore.getState().runTask("run unknown alias", WORKSPACE_PATH);
 
     expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "run unknown alias",
@@ -3428,46 +3541,19 @@ describe("useAppStore integration flow", () => {
     });
   });
 
-  it("retries MCP connections and stores refreshed backend status", async () => {
-    const retrySnapshot: RuntimeStatusSnapshot = {
-      git: { state: "git_ready", root: "/workspace", error: null },
-      lsp: { state: "running", error: null, details: {} },
-      mcp: {
-        state: "failed",
-        error: "MCP[demo]: failed to start server",
-        details: {
-          retry_available: true,
-          servers: [
-            {
-              server: "demo",
-              status: "failed",
-              stage: "startup",
-              error: "MCP[demo]: failed to start server",
-              retry_available: true,
-            },
-          ],
-        },
-      },
-      background_tasks: {
-        active_worker_slots: 1,
-        queued_count: 2,
-        running_count: 1,
-        terminal_count: 4,
-        default_concurrency: 3,
-        provider_concurrency: { "opencode-go": 2 },
-        model_concurrency: { "opencode-go/glm-5.1": 1 },
-        status_counts: { queued: 2, running: 1, completed: 4 },
-      },
-    };
-    runtimeClientMocks.retryMcpConnectionsMock.mockResolvedValue(retrySnapshot);
+  it("hydrates the runtime's default model only while no live preference is set", () => {
+    useAppStore.setState({ providerModel: "" });
 
-    await useAppStore.getState().retryMcpConnections();
+    useAppStore.getState().hydrateModelFromSettings("zai/glm-5");
+    expect(useAppStore.getState().providerModel).toBe("zai/glm-5");
 
-    const state = useAppStore.getState();
-    expect(runtimeClientMocks.retryMcpConnectionsMock).toHaveBeenCalledOnce();
-    expect(state.statusSnapshot).toEqual(retrySnapshot);
-    expect(state.mcpRetryStatus).toBe("success");
-    expect(state.mcpRetryError).toBeNull();
+    useAppStore.getState().setProviderModel("opencode-go/kimi-k2.6");
+    useAppStore.getState().hydrateModelFromSettings("zai/glm-5");
+
+    // A live preference is the user's, and an absent settings model says nothing.
+    expect(useAppStore.getState().providerModel).toBe("opencode-go/kimi-k2.6");
+    useAppStore.getState().hydrateModelFromSettings(undefined);
+    expect(useAppStore.getState().providerModel).toBe("opencode-go/kimi-k2.6");
   });
 
   it("respects explicit null sessionId and starts a fresh run", async () => {
@@ -3491,7 +3577,9 @@ describe("useAppStore integration flow", () => {
       makeStoredSessionSummary("fresh-session", "completed", "new run"),
     ]);
 
-    await useAppStore.getState().runTask("new run", { sessionId: null });
+    await useAppStore
+      .getState()
+      .runTask("new run", WORKSPACE_PATH, { sessionId: null });
 
     expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "new run",
@@ -3528,7 +3616,7 @@ describe("useAppStore integration flow", () => {
 
     useAppStore.setState({ currentSessionId: "previous-session" });
 
-    await useAppStore.getState().runTask("start new", {
+    await useAppStore.getState().runTask("start new", WORKSPACE_PATH, {
       sessionId: null,
     });
 
@@ -3539,107 +3627,6 @@ describe("useAppStore integration flow", () => {
         agent: {
           preset: "leader",
           model: "deepseek/deepseek-v4-pro",
-        },
-      },
-    });
-  });
-
-  it("loads runtime-owned settings without overriding an existing live providerModel", async () => {
-    runtimeClientMocks.getSettingsMock.mockResolvedValue({
-      provider: "zai",
-      provider_api_key_present: true,
-      model: "zai/glm-5",
-    });
-
-    await useAppStore.getState().loadSettings();
-
-    const state = useAppStore.getState();
-    expect(runtimeClientMocks.getSettingsMock).toHaveBeenCalledOnce();
-    expect(state.settings).toEqual({
-      provider: "zai",
-      provider_api_key_present: true,
-      model: "zai/glm-5",
-    });
-    expect(state.providerModel).toBe("deepseek/deepseek-v4-pro");
-  });
-
-  it("keeps an explicit live providerModel when loading runtime-owned settings", async () => {
-    useAppStore.setState({ providerModel: "opencode-go/kimi-k2.6" });
-    runtimeClientMocks.getSettingsMock.mockResolvedValue({
-      provider: "zai",
-      provider_api_key_present: true,
-      model: "zai/glm-5",
-    });
-
-    await useAppStore.getState().loadSettings();
-
-    const state = useAppStore.getState();
-    expect(state.settings).toEqual({
-      provider: "zai",
-      provider_api_key_present: true,
-      model: "zai/glm-5",
-    });
-    expect(state.providerModel).toBe("opencode-go/kimi-k2.6");
-  });
-
-  it("keeps the live providerModel when settings load after hydration", async () => {
-    const sessionId = "session-hydrated-qualified-model";
-    const requestReceived = makeEvent(
-      1,
-      "runtime.request_received",
-      { prompt: "hydrated qualified model" },
-      "runtime",
-      sessionId,
-    );
-
-    async function* stream() {
-      yield makeStreamChunk(sessionId, "completed", requestReceived);
-      yield makeStreamChunk(sessionId, "completed", null, "ok");
-    }
-
-    runtimeClientMocks.getSettingsMock.mockResolvedValue({
-      provider: "opencode-go",
-      provider_api_key_present: true,
-      model: "opencode-go/kimi-k2.6",
-    });
-    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([
-      makeStoredSessionSummary(
-        sessionId,
-        "completed",
-        "hydrated qualified model",
-      ),
-    ]);
-    useAppStore.setState({
-      providerModel: "kimi-k2.6",
-      providers: [
-        {
-          name: "opencode-go",
-          label: "OpenCode Go",
-          configured: true,
-          current: true,
-        },
-      ],
-      providerModels: {
-        "opencode-go": {
-          provider: "opencode-go",
-          configured: true,
-          models: [],
-        },
-      },
-    });
-
-    await useAppStore.getState().loadSettings();
-    await useAppStore.getState().runTask("hydrated qualified model");
-
-    expect(useAppStore.getState().providerModel).toBe("kimi-k2.6");
-    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
-      prompt: "hydrated qualified model",
-      session_id: null,
-      metadata: {
-        agent: {
-          preset: "leader",
-          model: "kimi-k2.6",
         },
       },
     });
@@ -3664,9 +3651,8 @@ describe("useAppStore integration flow", () => {
     runtimeClientMocks.listSessionsMock.mockResolvedValue([
       makeStoredSessionSummary(sessionId, "completed", "use configured model"),
     ]);
-    useAppStore.setState({
-      providerModel: "opencode-go/kimi-k2.6",
-      providers: [
+    seedProviderCatalog(
+      [
         {
           name: "opencode-go",
           label: "OpenCode Go",
@@ -3674,16 +3660,21 @@ describe("useAppStore integration flow", () => {
           current: true,
         },
       ],
-      providerModels: {
+      {
         "opencode-go": {
           provider: "opencode-go",
           configured: true,
           models: [],
         },
       },
+    );
+    useAppStore.setState({
+      providerModel: "opencode-go/kimi-k2.6",
     });
 
-    await useAppStore.getState().runTask("use configured model");
+    await useAppStore
+      .getState()
+      .runTask("use configured model", WORKSPACE_PATH);
 
     expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "use configured model",
@@ -3695,111 +3686,6 @@ describe("useAppStore integration flow", () => {
         },
       },
     });
-  });
-
-  it("updates runtime-owned settings without expecting provider_api_key in the response", async () => {
-    runtimeClientMocks.updateSettingsMock.mockResolvedValue({
-      provider: "deepseek",
-      provider_api_key_present: true,
-      model: "deepseek/deepseek-v4-pro",
-    });
-
-    await useAppStore.getState().updateSettings({
-      provider: "deepseek",
-      provider_api_key: "secret-key",
-      model: "deepseek/deepseek-v4-pro",
-    });
-
-    const state = useAppStore.getState();
-    expect(runtimeClientMocks.updateSettingsMock).toHaveBeenCalledWith({
-      provider: "deepseek",
-      provider_api_key: "secret-key",
-      model: "deepseek/deepseek-v4-pro",
-    });
-    expect(state.settings).toEqual({
-      provider: "deepseek",
-      provider_api_key_present: true,
-      model: "deepseek/deepseek-v4-pro",
-    });
-    expect(state.providerModel).toBe("deepseek/deepseek-v4-pro");
-  });
-
-  it("keeps an explicit live providerModel when saving runtime-owned settings", async () => {
-    useAppStore.setState({ providerModel: "opencode-go/kimi-k2.6" });
-    runtimeClientMocks.updateSettingsMock.mockResolvedValue({
-      provider: "deepseek",
-      provider_api_key_present: true,
-      model: "deepseek/deepseek-v4-pro",
-    });
-
-    await useAppStore.getState().updateSettings({
-      provider: "deepseek",
-      model: "deepseek/deepseek-v4-pro",
-    });
-
-    const state = useAppStore.getState();
-    expect(state.settings).toEqual({
-      provider: "deepseek",
-      provider_api_key_present: true,
-      model: "deepseek/deepseek-v4-pro",
-    });
-    expect(state.providerModel).toBe("opencode-go/kimi-k2.6");
-  });
-
-  it("records provider credential validation results by provider", async () => {
-    runtimeClientMocks.validateProviderCredentialsMock.mockResolvedValue({
-      provider: "opencode-go",
-      configured: true,
-      ok: false,
-      status: "skipped",
-      message:
-        "Provider credentials are configured; remote validation is unavailable.",
-    });
-
-    await useAppStore.getState().validateProviderCredentials("opencode-go");
-
-    const state = useAppStore.getState();
-    expect(
-      runtimeClientMocks.validateProviderCredentialsMock,
-    ).toHaveBeenCalledWith("opencode-go");
-    expect(state.providerValidationStatus["opencode-go"]).toBe("error");
-    expect(state.providerValidationResults["opencode-go"]).toMatchObject({
-      provider: "opencode-go",
-      ok: false,
-      status: "skipped",
-    });
-  });
-
-  it("clears stale provider validation state after settings updates", async () => {
-    runtimeClientMocks.updateSettingsMock.mockResolvedValue({
-      provider: "opencode-go",
-      provider_api_key_present: true,
-      model: "opencode-go/glm-5.1",
-    });
-    useAppStore.setState({
-      providerValidationResults: {
-        "opencode-go": {
-          provider: "opencode-go",
-          configured: true,
-          ok: true,
-          status: "ok",
-          message: "Remote provider validation succeeded.",
-        },
-      },
-      providerValidationStatus: { "opencode-go": "success" },
-      providerValidationError: { "opencode-go": null },
-    });
-
-    await useAppStore.getState().updateSettings({
-      provider: "opencode-go",
-      provider_api_key: "new-secret-key",
-      model: "opencode-go/glm-5.1",
-    });
-
-    const state = useAppStore.getState();
-    expect(state.providerValidationResults).toEqual({});
-    expect(state.providerValidationStatus).toEqual({});
-    expect(state.providerValidationError).toEqual({});
   });
 
   it("recovers composer state after approval resolution failure", async () => {
@@ -3843,7 +3729,7 @@ describe("useAppStore integration flow", () => {
       new Error(approvalFailureMessage),
     );
     runtimeClientMocks.getSessionReplayMock.mockResolvedValue(recoveryResponse);
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+    seedSessions([
       makeStoredSessionSummary(
         sessionId,
         "waiting",
@@ -3851,7 +3737,9 @@ describe("useAppStore integration flow", () => {
       ),
     ]);
 
-    await useAppStore.getState().runTask("write approval-recover.txt recover");
+    await useAppStore
+      .getState()
+      .runTask("write approval-recover.txt recover", WORKSPACE_PATH);
 
     let state = useAppStore.getState();
     expect(state.currentSessionId).toBe(sessionId);
@@ -3885,8 +3773,8 @@ describe("useAppStore integration flow", () => {
     expect(state.replayStatus).toBe("success");
     expect(state.replayError).toBeNull();
 
-    // Sessions list was refreshed.
-    expect(runtimeClientMocks.listSessionsMock).toHaveBeenCalled();
+    // The failed approval still refreshes the session list, by invalidating it.
+    expect(isInvalidated(queryKeys.sessions(WORKSPACE_PATH))).toBe(true);
   });
 
   it("rolls back optimistic approval when resolution and recovery replay both fail", async () => {
@@ -3947,7 +3835,9 @@ describe("useAppStore integration flow", () => {
       ),
     ]);
 
-    await useAppStore.getState().runTask("write rollback.txt retry");
+    await useAppStore
+      .getState()
+      .runTask("write rollback.txt retry", WORKSPACE_PATH);
 
     await useAppStore.getState().resolveApproval("allow");
 
@@ -4033,7 +3923,9 @@ describe("useAppStore integration flow", () => {
       ),
     ]);
 
-    await useAppStore.getState().runTask("write approval-running.txt recover");
+    await useAppStore
+      .getState()
+      .runTask("write approval-running.txt recover", WORKSPACE_PATH);
 
     const stateBeforeApproval = useAppStore.getState();
     expect(stateBeforeApproval.currentSessionState?.status).toBe("waiting");
@@ -4219,11 +4111,11 @@ describe("useAppStore integration flow", () => {
         }
       },
     );
-    const first = useAppStore.getState().runTask("first");
+    const first = useAppStore.getState().runTask("first", WORKSPACE_PATH);
     await firstStarted.promise;
     const cancel = useAppStore.getState().cancelCurrentRun();
     await first;
-    const second = useAppStore.getState().runTask("second");
+    const second = useAppStore.getState().runTask("second", WORKSPACE_PATH);
     await secondStarted.promise;
     expect(runtimeClientMocks.cancelSessionMock).toHaveBeenCalledWith(
       "same-session",
@@ -4270,10 +4162,18 @@ describe("delegated child session restore", () => {
     await store.persist.rehydrate();
     expect(store.getState().currentSessionId).toBe("child-session");
 
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+    seedSessions([
       makeStoredSessionSummary("session-parent", "completed", "parent prompt"),
     ]);
-    await store.getState().loadSessions();
+    store
+      .getState()
+      .reconcileSessionList([
+        makeStoredSessionSummary(
+          "session-parent",
+          "completed",
+          "parent prompt",
+        ),
+      ]);
 
     expect(store.getState().currentSessionId).toBe("child-session");
     expect(store.getState().replayStatus).toBe("idle");
@@ -4286,7 +4186,7 @@ describe("delegated child session restore", () => {
     const { useAppStore: store } = await import("./store");
     seedBootSelection("gone-session");
     await store.persist.rehydrate();
-    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+    seedSessions([
       makeStoredSessionSummary("session-parent", "completed", "parent prompt"),
     ]);
     runtimeClientMocks.getChildSessionContextMock.mockRejectedValueOnce({
@@ -4298,8 +4198,7 @@ describe("delegated child session restore", () => {
       new Error("Not Found"),
     );
 
-    await store.getState().loadSessions();
-    await store.getState().selectSession("gone-session");
+    await store.getState().selectSession("gone-session", WORKSPACE_PATH);
 
     const state = store.getState();
     expect(state.currentSessionId).toBeNull();
@@ -4323,7 +4222,6 @@ describe("delegated child session restore", () => {
       new Error("Not Found"),
     );
     store.setState({
-      sessions: [],
       currentSessionId: "open-session",
       childSessionParentId: null,
       currentSessionState: makeSessionState("open-session", "completed"),
@@ -4332,7 +4230,7 @@ describe("delegated child session restore", () => {
       replayStatus: "success",
     });
 
-    await store.getState().selectSession("stale-parent");
+    await store.getState().selectSession("stale-parent", WORKSPACE_PATH);
 
     const state = store.getState();
     expect(state.currentSessionId).toBe("open-session");
@@ -4344,11 +4242,6 @@ describe("delegated child session restore", () => {
 
   it("clears the selection in memory and in storage when the workspace switches", async () => {
     const { useAppStore: store } = await import("./store");
-    runtimeClientMocks.openWorkspaceMock.mockResolvedValueOnce({
-      current: null,
-      recent: [],
-      candidates: [],
-    });
     store.setState({
       currentSessionId: "open-session",
       childSessionParentId: "session-parent",
@@ -4356,7 +4249,9 @@ describe("delegated child session restore", () => {
       currentSessionOutput: "open output",
     });
 
-    await store.getState().switchWorkspace("/other");
+    // The switch action drops the previous workspace's client state before it
+    // posts; the scoped payloads are unreachable through the new scope's keys.
+    store.getState().prepareWorkspaceSwitch();
 
     expect(store.getState().currentSessionId).toBeNull();
     expect(store.getState().childSessionParentId).toBeNull();
@@ -4386,9 +4281,9 @@ describe("delegated child session restore", () => {
     });
     runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
     const { useAppStore: store } = await import("./store");
-    store.setState({ sessions: [], currentSessionId: null });
+    store.setState({ currentSessionId: null });
 
-    await store.getState().selectSession("child-session");
+    await store.getState().selectSession("child-session", WORKSPACE_PATH);
 
     const state = store.getState();
     expect(state.currentSessionId).toBe("child-session");
