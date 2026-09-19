@@ -1440,6 +1440,15 @@ describe("Live Stream Reasoning Contract", () => {
       expect(part.text).not.toContain(`${part.text}${part.text}`);
     }
 
+    // The streamed deltas are the thinking accumulator's entries, in order
+    // (the aggregate is deduplicated against them, not appended to them).
+    expect(assistantMessage!.thinking).toEqual([
+      "first turn part ",
+      "one",
+      "second turn part ",
+      "two",
+    ]);
+
     const textParts = (assistantMessage!.parts ?? []).filter(
       (part) => part.kind === "text",
     );
