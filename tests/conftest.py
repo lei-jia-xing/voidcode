@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-import inspect
+import importlib
+import ipaddress
 import os
+import socket
+import ssl
+import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
+from urllib.error import URLError
 
 import pytest
 
@@ -27,64 +33,127 @@ def _isolated_xdg_runtime_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / ".xdg-data"))
 
 
-_TEST_ROOT = Path(__file__).resolve().parent
+# ---------------------------------------------------------------------------
+# Offline guards: no test may reach the outside world by accident.
+#
+# Three machine-dependent costs live behind "the real thing": a connect to an
+# unroutable host burns the full timeout per call (and a routed one makes the
+# assertion depend on the host), provider model discovery performs a live
+# ``GET /v1/models``, and the doctor probes every formatter binary for its
+# ``--version`` (``npx --version`` alone costs seconds when npm cannot reach its
+# registry). Each guard fails or answers deterministically *and immediately*
+# while keeping the observable contract the caller already sees on a failed
+# network: model discovery still reports ``source="fallback"`` with
+# ``last_refresh_status="failed"``, and the formatter check still reports the
+# status it derives from ``shutil.which``.
+#
+# A test whose subject *is* the live network opts out with ``allow_live_network``.
+# ---------------------------------------------------------------------------
 
-_SLOW_TEST_FILES = {
-    Path("unit/interface/test_cli_config.py"),
-    Path("unit/interface/test_cli_delegated_parity.py"),
-    Path("unit/interface/test_cli_discovery.py"),
-    Path("unit/interface/test_cli_doctor.py"),
-    Path("unit/interface/test_cli_entrypoint.py"),
-    Path("unit/interface/test_cli_memory.py"),
-    Path("unit/interface/test_cli_provider.py"),
-    Path("unit/interface/test_cli_readiness.py"),
-    Path("unit/interface/test_cli_run.py"),
-    Path("unit/interface/test_cli_sessions.py"),
-    Path("unit/interface/test_cli_storage.py"),
-    Path("unit/interface/test_cli_tasks.py"),
-    Path("unit/interface/test_tui.py"),
-    Path("unit/runtime/test_mcp.py"),
-    Path("unit/runtime/test_http_question_payload_fuzz.py"),
-    Path("unit/runtime/test_runtime_service_extensions.py"),
-}
+_OPT_OUT_FIXTURE = "allow_live_network"
 
 
-def _relative_test_path(path: Path) -> Path | None:
+@pytest.fixture
+def allow_live_network() -> None:
+    """Opt a test out of the autouse offline guards.
+
+    Requesting this fixture lets the test open real non-loopback sockets, use the
+    live model-discovery fetcher, and launch the real external tool probes the
+    doctor would run. Only a test whose subject is the real network may ask for
+    it; everything else stays deterministic.
+    """
+    return None
+
+
+def _is_loopback_address(address: object) -> bool:
+    if not isinstance(address, tuple) or not address:
+        return False
+    host = address[0]
+    if not isinstance(host, str):
+        return False
+    if host in {"localhost", "localhost.localdomain"}:
+        return True
     try:
-        return path.resolve().relative_to(_TEST_ROOT)
+        return ipaddress.ip_address(host).is_loopback
     except ValueError:
-        return None
-
-
-def _source_contains(item: pytest.Item, *needles: str) -> bool:
-    test_obj = getattr(item, "obj", None)
-    if test_obj is None:
         return False
-    try:
-        source = inspect.getsource(test_obj)
-    except OSError, TypeError:
-        return False
-    return any(needle in source for needle in needles)
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    for item in items:
-        test_path = _relative_test_path(Path(str(item.path)))
-        if test_path is None:
-            continue
+@pytest.fixture(autouse=True)
+def _deny_live_sockets(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail immediately on a real non-loopback connect.
 
-        if test_path.parts[0] == "integration":
-            item.add_marker(pytest.mark.integration)
+    Loopback stays open: the HTTP transport tests run a real server. Unix sockets
+    stay open too (their address is a path, not a host). ``SSLSocket`` overrides
+    ``connect``, so it is guarded separately; both delegate the loopback case back
+    to the real implementation.
+    """
+    if _OPT_OUT_FIXTURE in request.fixturenames:
+        return
 
-        if test_path.parts[:3] == ("unit", "tools", "fuzz") or "fuzz" in test_path.name:
-            item.add_marker(pytest.mark.fuzz)
-            item.add_marker(pytest.mark.slow)
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
 
-        if test_path in _SLOW_TEST_FILES:
-            item.add_marker(pytest.mark.slow)
+    def guarded_connect(self: socket.socket, address: object, *args: Any, **kwargs: Any) -> Any:
+        if self.family != socket.AF_UNIX and not _is_loopback_address(address):
+            raise OSError(f"tests must not open a real network connection: {address!r}")
+        return real_connect(self, address, *args, **kwargs)
 
-        if _source_contains(item, "time.sleep("):
-            item.add_marker(pytest.mark.slow)
+    def guarded_connect_ex(self: socket.socket, address: object, *args: Any, **kwargs: Any) -> Any:
+        if self.family != socket.AF_UNIX and not _is_loopback_address(address):
+            raise OSError(f"tests must not open a real network connection: {address!r}")
+        return real_connect_ex(self, address, *args, **kwargs)
 
-        if _source_contains(item, "socket.socket("):
-            item.add_marker(pytest.mark.slow)
+    for socket_class in (socket.socket, ssl.SSLSocket):
+        monkeypatch.setattr(socket_class, "connect", guarded_connect)
+        monkeypatch.setattr(socket_class, "connect_ex", guarded_connect_ex)
+
+
+@pytest.fixture(autouse=True)
+def _deny_live_model_discovery(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cut the provider model-discovery HTTP call, offline and instantly.
+
+    ``model_catalog`` performs discovery with the module-level ``urlopen``; that
+    is the single seam every provider fetch routes through, and the one the
+    discovery tests already stub per-test (their ``monkeypatch.setattr`` wins
+    because it is applied after this fixture). Raising ``URLError`` reproduces
+    exactly what an unreachable provider host already produces, so callers keep
+    observing the same fallback result without waiting out the connect timeout.
+    """
+    if _OPT_OUT_FIXTURE in request.fixturenames:
+        return
+
+    catalog = importlib.import_module("voidcode.provider.model_catalog")
+
+    def _offline_urlopen(http_request: Any, *args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise URLError(f"live model discovery is disabled in tests: {http_request.full_url}")
+
+    monkeypatch.setattr(catalog, "urlopen", _offline_urlopen)
+
+
+class _CannedSubprocess:
+    """Stand-in for ``voidcode.doctor.checker``'s ``subprocess`` module.
+
+    The doctor's executable checks only need the probe to succeed: the check's
+    status comes from ``shutil.which``, and no test observes the tool's real
+    version string. Keeping the launch out of the unit tests removes a
+    machine-dependent external process (and its registry traffic).
+    """
+
+    TimeoutExpired = subprocess.TimeoutExpired
+    CalledProcessError = subprocess.CalledProcessError
+
+    @staticmethod
+    def run(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+
+@pytest.fixture(autouse=True)
+def _stub_external_tool_probes(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer the doctor's ``<tool> --version`` probes without launching a tool."""
+    if _OPT_OUT_FIXTURE in request.fixturenames:
+        return
+    checker = importlib.import_module("voidcode.doctor.checker")
+    monkeypatch.setattr(checker, "subprocess", _CannedSubprocess)

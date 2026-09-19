@@ -126,13 +126,6 @@ def _leaf_variants(annotation: object) -> list[object]:
 _MAP_ENTRY = "__map_entry__"
 
 
-def _map_entry(payload: object) -> str:
-    """The key of the first entry in a baseline map (its real name is kept)."""
-    if isinstance(payload, dict) and payload:
-        return str(next(iter(payload)))
-    return "entry"
-
-
 def _mapped_model_of(annotation: object) -> type[BaseModel] | None:
     for arg in typing.get_args(annotation):
         if typing.get_origin(arg) is dict:

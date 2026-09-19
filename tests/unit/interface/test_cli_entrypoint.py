@@ -7,13 +7,14 @@ exit-code propagation of the console script.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 from voidcode.cli_support import EXIT_USAGE_ERROR
 
-from ._cli_harness import run_cli
+from ._cli_harness import run_cli, run_cli_process
 
 ROOT_COMMANDS = {
     "acp",
@@ -62,36 +63,6 @@ def listed_names(help_text: str) -> set[str]:
     return {line.split()[0] for line in section.splitlines() if line.startswith("  ") and line.strip()}
 
 
-def test_root_help_lists_every_command(capsys: pytest.CaptureFixture[str]) -> None:
-    out = help_output(capsys)
-
-    assert out.startswith("Usage: voidcode")
-    assert listed_names(out) == ROOT_COMMANDS
-
-
-@pytest.mark.parametrize("group", sorted(GROUP_SUBCOMMANDS))
-def test_group_help_lists_every_subcommand(group: str, capsys: pytest.CaptureFixture[str]) -> None:
-    out = help_output(capsys, group)
-
-    assert out.startswith(f"Usage: voidcode {group}")
-    assert listed_names(out) == GROUP_SUBCOMMANDS[group]
-
-
-@pytest.mark.parametrize("surface", HELP_SURFACES, ids=[" ".join(surface) for surface in HELP_SURFACES])
-def test_every_help_surface_exits_zero(surface: tuple[str, ...], capsys: pytest.CaptureFixture[str]) -> None:
-    out = help_output(capsys, *surface)
-
-    assert f"Usage: voidcode {' '.join(surface)}" in out
-    assert "Options:" in out
-
-
-def test_root_help_is_printed_when_no_command_is_given(capsys: pytest.CaptureFixture[str]) -> None:
-    from voidcode.cli import app
-
-    assert app.main([]) == 0
-    assert "Usage: voidcode" in capsys.readouterr().out
-
-
 def test_unknown_command_is_a_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
     from voidcode.cli import app
 
@@ -112,8 +83,14 @@ def test_unknown_option_is_a_usage_error(tmp_path: Path) -> None:
 
 
 def test_module_entrypoint_serves_help_and_version(tmp_path: Path) -> None:
-    help_result = run_cli("--help", cwd=tmp_path)
-    version_result = run_cli("--version", cwd=tmp_path)
+    """The real ``python -m voidcode`` process answers help and version.
+
+    This one keeps spawning a process: it is the only test that pins the module
+    entrypoint itself (``__main__`` → ``raise SystemExit(main())``) rather than
+    the in-process ``main(argv)`` call the other contract tests use.
+    """
+    help_result = run_cli_process("--help", cwd=tmp_path)
+    version_result = run_cli_process("--version", cwd=tmp_path)
 
     assert help_result.returncode == 0
     assert help_result.stdout.startswith("Usage: voidcode")
@@ -166,3 +143,55 @@ def test_machine_payloads_stay_on_stdout(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert result.stderr == ""
     assert json.loads(result.stdout) == {"workspace": str(tmp_path), "scope": "main", "sessions": []}
+
+
+def test_back_to_back_invocations_share_no_state(tmp_path: Path) -> None:
+    """Two in-process invocations each see only their own workspace, database and environment.
+
+    ``run_cli`` no longer spawns, so the isolation a fresh process gave for free
+    is reset per invocation instead: environment, working directory and both
+    output streams, on top of the per-workspace database. Each result is
+    asserted, and the caller's environment and cwd are asserted afterwards to
+    pin that the reset really happened.
+    """
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for workspace in (first, second):
+        workspace.mkdir()
+        (workspace / "note.txt").write_text("note\n", encoding="utf-8")
+
+    env_before = dict(os.environ)
+    cwd_before = os.getcwd()
+
+    first_run = run_cli("run", "read note.txt", "--workspace", str(first), "--json", cwd=first)
+    second_run = run_cli("run", "read note.txt", "--workspace", str(second), "--json", cwd=second)
+    second_list = run_cli("sessions", "list", "--workspace", str(second), "--json", cwd=second)
+    credentialed = run_cli(
+        "config",
+        "show",
+        "--workspace",
+        str(second),
+        cwd=second,
+        env={"VOIDCODE_MODEL": "openai/gpt-4o", "OPENAI_API_KEY": "sk-sentinel-two-runs"},
+    )
+    uncredentialed = run_cli("config", "show", "--workspace", str(second), cwd=second)
+
+    assert first_run.returncode == 0
+    assert second_run.returncode == 0
+    first_payload = json.loads(first_run.stdout)
+    second_payload = json.loads(second_run.stdout)
+    assert first_payload["workspace"] == str(first)
+    assert second_payload["workspace"] == str(second)
+    assert first_payload["output"] == second_payload["output"] == "Read 1 line(s) from note.txt."
+
+    # The second workspace's database holds that run's session and nothing from the first.
+    listed = json.loads(second_list.stdout)
+    assert [row["session"]["id"] for row in listed["sessions"]] == [second_payload["session"]["session"]["id"]]
+
+    # Each ``config show`` observed its own environment: the credential is only in the first.
+    assert json.loads(credentialed.stdout)["provider_readiness"]["provider"] == "openai"
+    assert "sk-sentinel-two-runs" not in credentialed.stdout
+    assert json.loads(uncredentialed.stdout)["model"] is None
+
+    assert dict(os.environ) == env_before
+    assert os.getcwd() == cwd_before

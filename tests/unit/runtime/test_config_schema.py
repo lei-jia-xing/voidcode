@@ -37,11 +37,6 @@ from voidcode.runtime.config_schema import (
 )
 
 
-def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prompt.") -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"---\n{frontmatter}\n---\n{body}\n", encoding="utf-8")
-
-
 def _referenced_definition(
     schema: dict[str, object],
     node: object,

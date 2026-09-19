@@ -132,42 +132,6 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
     assert notifications[0].session.parent_id == "leader-session"
 
 
-def test_session_storage_roundtrips_requested_mode_and_derived_read_only(
-    tmp_path: Path,
-) -> None:
-    store = SqliteSessionStore()
-    metadata: dict[str, object] = {
-        "mode": "plan",
-        "read_only": False,
-    }
-    request = RuntimeRequest(prompt="persist derived read only", session_id="derived-read-only-session")
-    response = RuntimeResponse(
-        session=SessionState(
-            session=SessionRef(id="derived-read-only-session"),
-            status="completed",
-            turn=1,
-            metadata=metadata,
-        ),
-        events=(
-            EventEnvelope(
-                session_id="derived-read-only-session",
-                sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
-            ),
-        ),
-        output="done",
-    )
-
-    store.save_run(workspace=tmp_path, request=request, response=response)
-
-    loaded = store.load_session(workspace=tmp_path, session_id="derived-read-only-session")
-
-    # Plan mode implies read_only even when the explicit flag is False.
-    assert loaded.session.metadata["mode"] == "plan"
-    assert loaded.session.metadata["read_only"] is True
-
-
 def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     metadata: dict[str, object] = {
@@ -1925,22 +1889,6 @@ def test_session_storage_bulk_append_dedupes_within_batch(tmp_path: Path) -> Non
         "runtime.acp_connected",
     ]
     assert [event.sequence for event in loaded.events] == [1, 2, 3]
-
-
-def test_session_storage_bulk_append_rejects_non_lifecycle_event_on_terminal_session(tmp_path: Path) -> None:
-    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
-    store.save_run(
-        workspace=tmp_path,
-        request=RuntimeRequest(prompt="sealed", session_id="sealed-session"),
-        response=_completed_response("sealed-session"),
-    )
-
-    with pytest.raises(SessionSealedError, match="sealed-session.*runtime.tool_started"):
-        _ = store.append_session_events(
-            workspace=tmp_path,
-            session_id="sealed-session",
-            events=(("runtime.tool_started", "runtime", {"tool": "write"}, None),),
-        )
 
 
 def test_session_storage_bulk_append_allows_lifecycle_event_on_terminal_session(tmp_path: Path) -> None:

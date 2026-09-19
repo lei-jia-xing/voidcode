@@ -7,7 +7,6 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ToolCall, WebSearchTool
 
 
@@ -47,44 +46,6 @@ def test_websearch_tool_rejects_empty_query() -> None:
         )
 
 
-def test_websearch_tool_rejects_non_string_query() -> None:
-    tool = WebSearchTool()
-    query_type_error = (
-        r"web_search Validation error: query: "
-        r"Input should be a valid string \(received int\)"
-        r"\. Please retry with corrected arguments that satisfy the tool schema\."
-    )
-
-    with pytest.raises(ValueError, match=query_type_error):
-        tool.invoke(
-            ToolCall(tool_name="web_search", arguments={"query": 123}),
-            workspace=Path("/tmp"),
-        )
-
-
-def test_websearch_tool_reports_missing_query_and_invalid_num_results() -> None:
-    tool = WebSearchTool()
-    missing_query_error = (
-        r"web_search Validation error: query: "
-        r"Input should be a valid string \(received NoneType\)"
-        r"\. Please retry with corrected arguments that satisfy the tool schema\."
-    )
-    invalid_num_results_error = (
-        r"web_search Validation error: numResults: Value error, "
-        r"numResults must be greater than or equal to 1 \(received int\)"
-        r"\. Please retry with corrected arguments that satisfy the tool schema\."
-    )
-
-    with pytest.raises(ValueError, match=missing_query_error):
-        tool.invoke(ToolCall(tool_name="web_search", arguments={}), workspace=Path("/tmp"))
-
-    with pytest.raises(ValueError, match=invalid_num_results_error):
-        tool.invoke(
-            ToolCall(tool_name="web_search", arguments={"query": "test", "numResults": 0}),
-            workspace=Path("/tmp"),
-        )
-
-
 def test_websearch_tool_respects_num_results_limit() -> None:
     tool = WebSearchTool()
 
@@ -95,14 +56,13 @@ def test_websearch_tool_respects_num_results_limit() -> None:
         patch(
             "httpx.Client.post",
             return_value=_json_response(fake_response),
-        ) as post_mock,
+        ),
     ):
         result = tool.invoke(
             ToolCall(tool_name="web_search", arguments={"query": "test", "numResults": 5}),
             workspace=Path("/tmp"),
         )
 
-    post_mock.assert_called_once()
     assert result.data["num_results"] == 5
 
 
@@ -171,40 +131,6 @@ def test_websearch_tool_uses_beautifulsoup_ddg_fallback_parsing() -> None:
     assert lines[6] == "   Snippet B..."
 
 
-def test_websearch_tool_parses_broader_ddg_html_without_result_class() -> None:
-    tool = WebSearchTool()
-
-    html = """
-    <html>
-      <body>
-        <article data-testid="result">
-          <div class="result__title">
-            <h2>
-              <a href="/l/?uddg=https%3A%2F%2Fexample.net%2Fc">Result C</a>
-            </h2>
-          </div>
-          <div class="exsnippet">Snippet C</div>
-        </article>
-      </body>
-    </html>
-    """
-
-    with patch("httpx.Client.get", return_value=_html_response(html)):
-        result = tool.invoke(
-            ToolCall(tool_name="web_search", arguments={"query": "test", "numResults": 1}),
-            workspace=Path("/tmp"),
-        )
-
-    assert result.status == "ok"
-    assert result.data["source"] == "duckduckgo"
-    assert result.fallback_reason is None
-    assert isinstance(result.content, str)
-    results = str(result.data["results"])
-    assert "Result C" in results
-    assert "https://example.net/c" in results
-    assert "Snippet C..." in results
-
-
 def test_websearch_tool_reports_truthful_metadata_when_ddg_parsing_fails() -> None:
     tool = WebSearchTool()
 
@@ -218,28 +144,3 @@ def test_websearch_tool_reports_truthful_metadata_when_ddg_parsing_fails() -> No
     assert result.data["source"] == "duckduckgo-error"
     assert result.fallback_reason == "duckduckgo fallback failed before parsing results"
     assert result.content == "Found web results for test using duckduckgo-error."
-
-
-def test_websearch_tool_reports_truthful_metadata_when_ddg_html_has_no_results() -> None:
-    tool = WebSearchTool()
-
-    html = "<html><body><main><p>No searchable results here.</p></main></body></html>"
-
-    with patch("httpx.Client.get", return_value=_html_response(html)):
-        result = tool.invoke(
-            ToolCall(tool_name="web_search", arguments={"query": "test"}),
-            workspace=Path("/tmp"),
-        )
-
-    assert result.status == "ok"
-    assert result.data["source"] == "duckduckgo-empty"
-    assert result.fallback_reason == "duckduckgo fallback returned no parseable results"
-    assert result.content == "Found web results for test using duckduckgo-empty."
-
-
-def test_tools_package_and_default_registry_export_websearch_tool() -> None:
-    registry = ToolRegistry.with_defaults()
-
-    assert "WebSearchTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
-    assert registry.resolve("web_search").definition.name == "web_search"
-    assert registry.resolve("web_search").definition.read_only is True

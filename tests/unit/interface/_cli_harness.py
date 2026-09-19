@@ -1,8 +1,12 @@
 """Shared harness for the CLI contract tests.
 
-The contract tests exercise the CLI as a process (exit code, stdout, stderr) and,
-where a state is not reachable with the deterministic engine, as ``main(argv)``
-with a stubbed runtime seam.
+The contract tests exercise the CLI the way a user does (exit code, stdout,
+stderr, persisted state) and, where a state is not reachable with the
+deterministic engine, as ``main(argv)`` with a stubbed runtime seam.
+
+``run_cli`` invokes the CLI in-process; ``run_cli_process`` runs the real
+``python -m voidcode`` entrypoint and is reserved for the tests whose subject is
+the process itself.
 
 ``RUNTIME_SEAM`` is the single module that constructs the runtime for the CLI.
 All runtime patches route through it so the seam has exactly one definition.
@@ -11,10 +15,12 @@ All runtime patches route through it so the seam has exactly one definition.
 from __future__ import annotations
 
 import importlib
+import io
+import os
 import subprocess
 import sys
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,8 +29,24 @@ from unittest.mock import patch
 
 from tests.unit._paths import with_src_pythonpath
 
+CLI_APP: Any = importlib.import_module("voidcode.cli.app")
 RUNTIME_SEAM: Any = importlib.import_module("voidcode.cli.runtime_gateway")
-CLI_SUPPORT: Any = importlib.import_module("voidcode.cli_support")
+
+#: Database file ``run_cli`` isolates each workspace against.
+DB_FILE_NAME = ".cli-contracts.sqlite3"
+
+
+@dataclass(frozen=True, slots=True)
+class CliRun:
+    """What one CLI invocation observably produced.
+
+    ``returncode``, ``stdout`` and ``stderr`` are the fields the spawned
+    ``subprocess.CompletedProcess`` exposed; tests read only those.
+    """
+
+    returncode: int
+    stdout: str
+    stderr: str
 
 
 @dataclass(frozen=True)
@@ -131,48 +153,49 @@ class StubRuntime:
         return None
 
 
-class TtyInput:
-    """Interactive stdin stub: ``isatty()`` plus scripted answers."""
-
-    def __init__(self, *answers: str) -> None:
-        self._answers = list(answers)
-
-    def isatty(self) -> bool:
-        return True
-
-    def readline(self) -> str:
-        return self._answers.pop(0) if self._answers else ""
-
-
-class TtyStderr:
-    def __init__(self, *, isatty: bool = True) -> None:
-        self.writes: list[str] = []
-        self._isatty = isatty
-
-    def isatty(self) -> bool:
-        return self._isatty
-
-    def write(self, text: str) -> int:
-        self.writes.append(text)
-        return len(text)
-
-    def flush(self) -> None:
-        return None
-
-    @property
-    def text(self) -> str:
-        return "".join(self.writes)
-
-
 def run_cli(
     *args: str,
     cwd: Path,
     env: dict[str, str] | None = None,
+) -> CliRun:
+    """Invoke the CLI in this process against an isolated workspace and database.
+
+    The observable contract is the one the spawned process had — exit status,
+    stdout, stderr, and the state the command persisted — without paying a
+    Python interpreter and full CLI import per call. Everything the spawn gave
+    for free is reset by ``_cli_invocation``: the whole environment, the working
+    directory, and the two output streams.
+
+    ``run_cli_process`` is the real ``python -m voidcode`` spawn, kept for the
+    tests whose subject is the entrypoint itself.
+    """
+    effective_env = _invocation_env(env, cwd=cwd)
+    with _cli_invocation(cwd=cwd, env=effective_env) as (stdout, stderr):
+        code = CLI_APP.main(list(args))
+    return CliRun(returncode=code, stdout=stdout.text(), stderr=stderr.text())
+
+
+def run_cli_process(
+    *args: str,
+    cwd: Path,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``python -m voidcode`` against an isolated workspace and database."""
+    """Run the real ``python -m voidcode`` entrypoint against an isolated workspace."""
+    return subprocess.run(
+        [sys.executable, "-m", "voidcode", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=cwd,
+        env=_invocation_env(env, cwd=cwd),
+    )
+
+
+def _invocation_env(env: dict[str, str] | None, *, cwd: Path) -> dict[str, str]:
+    """The environment one CLI invocation runs with, in-process or spawned."""
     effective_env = with_src_pythonpath(env)
     effective_env.setdefault("VOIDCODE_EXECUTION_ENGINE", "deterministic")
-    effective_env.setdefault("VOIDCODE_DB_PATH", str(cwd / ".cli-contracts.sqlite3"))
+    effective_env.setdefault("VOIDCODE_DB_PATH", str(cwd / DB_FILE_NAME))
     effective_env.setdefault("HOME", str(cwd))
     effective_env.setdefault("XDG_CONFIG_HOME", str(cwd / ".config"))
     effective_env.setdefault("XDG_STATE_HOME", str(cwd / ".state"))
@@ -181,14 +204,41 @@ def run_cli(
     for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "VOIDCODE_MODEL"):
         if key not in explicit:
             effective_env.pop(key, None)
-    return subprocess.run(
-        [sys.executable, "-m", "voidcode", *args],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=cwd,
-        env=effective_env,
-    )
+    return effective_env
+
+
+class _CapturedText(io.TextIOWrapper):
+    """A text stream click can write through (it needs a binary ``.buffer``)."""
+
+    def __init__(self) -> None:
+        super().__init__(io.BytesIO(), encoding="utf-8", newline="", write_through=True)
+
+    def text(self) -> str:
+        buffer = self.buffer
+        assert isinstance(buffer, io.BytesIO)
+        return buffer.getvalue().decode("utf-8", "replace")
+
+
+@contextmanager
+def _cli_invocation(*, cwd: Path, env: dict[str, str]) -> Iterator[tuple[_CapturedText, _CapturedText]]:
+    """Isolate one in-process CLI call the way a fresh process did.
+
+    Replaces the environment outright (the spawn passed ``env=`` rather than
+    merging), restores the working directory, and captures both output streams.
+    """
+    stdout, stderr = _CapturedText(), _CapturedText()
+    saved_env = dict(os.environ)
+    saved_cwd = os.getcwd()
+    os.environ.clear()
+    os.environ.update(env)
+    os.chdir(cwd)
+    try:
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            yield stdout, stderr
+    finally:
+        os.chdir(saved_cwd)
+        os.environ.clear()
+        os.environ.update(saved_env)
 
 
 @contextmanager

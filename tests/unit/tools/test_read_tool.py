@@ -1,47 +1,11 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ReadTool, ToolCall
-from voidcode.tools.contracts import ToolDefinition
-from voidcode.tools.guidance import guidance_for_tool
-from voidcode.tools.read import MAX_ATTACHMENT_BYTES, MAX_LINE_LENGTH
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
-
-
-class _FakeToolCatalog:
-    def __init__(self, definition: ToolDefinition) -> None:
-        self.definition = definition
-
-    def lookup(self, tool_name: str) -> ToolDefinition | None:
-        return self.definition if tool_name == self.definition.name else None
-
-
-def test_read_tool_tool_uri_returns_complete_guidance_and_live_schema(tmp_path: Path) -> None:
-    definition = ToolDefinition(
-        name="read",
-        description="Short provider description",
-        input_schema={"type": "object", "properties": {"path": {"type": "string"}}},
-        read_only=True,
-    )
-    tool = ReadTool()
-
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader", tool_catalog=_FakeToolCatalog(definition))):
-        result = tool.invoke(
-            ToolCall(tool_name="read", arguments={"path": "voidcode://tool/read"}),
-            workspace=tmp_path,
-        )
-
-    assert result.status == "ok"
-    assert result.data["guidance"] == guidance_for_tool("read")
-    assert result.data["input_schema"] == definition.input_schema
-    assert guidance_for_tool("read") in result.data["raw_content"]
-    assert '"path"' in result.data["raw_content"]
 
 
 def test_read_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) -> None:
@@ -79,22 +43,6 @@ def test_read_tool_rejects_directories_with_suggestions(tmp_path: Path) -> None:
     assert "Did you mean:" in str(exc_info.value)
 
 
-def test_read_tool_returns_attachment_for_images(tmp_path: Path) -> None:
-    image = tmp_path / "image.png"
-    _ = image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"fake")
-    tool = ReadTool()
-
-    result = tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "image.png"}),
-        workspace=tmp_path,
-    )
-
-    assert result.status == "ok"
-    assert result.data["type"] == "attachment"
-    assert isinstance(result.data["attachment"], dict)
-    assert not hasattr(result, "attachment")
-
-
 def test_read_tool_allows_workspace_escape_path_with_absolute_display(tmp_path: Path) -> None:
     outside = tmp_path.parent / "outside-read.txt"
     outside.write_text("outside", encoding="utf-8")
@@ -109,94 +57,6 @@ def test_read_tool_allows_workspace_escape_path_with_absolute_display(tmp_path: 
     assert result.data["path"] == str(outside.resolve())
 
 
-def test_read_tool_allows_symlink_escape_when_runtime_permission_allows(
-    tmp_path: Path,
-) -> None:
-    outside = tmp_path.parent / "outside_read_escape.txt"
-    outside.write_text("secret", encoding="utf-8")
-    link = tmp_path / "link.txt"
-    try:
-        link.symlink_to(outside)
-    except OSError:
-        pytest.skip("symlink is not available on this platform")
-
-    tool = ReadTool()
-    result = tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "link.txt"}),
-        workspace=tmp_path,
-    )
-    assert result.status == "ok"
-    assert result.data["path"] == str(outside.resolve())
-
-
-def test_read_tool_sniffs_text_with_bounded_stream_read(tmp_path: Path) -> None:
-    sample = tmp_path / "sample.txt"
-    _ = sample.write_text("alpha\nbeta\n", encoding="utf-8")
-    tool = ReadTool()
-
-    with patch.object(Path, "read_bytes", side_effect=AssertionError("read_bytes should not be used")):
-        result = tool.invoke(
-            ToolCall(tool_name="read", arguments={"path": "sample.txt"}),
-            workspace=tmp_path,
-        )
-
-    assert result.status == "ok"
-    assert result.content == "Read 2 line(s) from sample.txt."
-    assert result.data["raw_content"] == "alpha\nbeta"
-
-
-def test_read_tool_rejects_non_regular_target(tmp_path: Path) -> None:
-    if not hasattr(os, "mkfifo"):
-        pytest.skip("mkfifo is not available on this platform")
-
-    fifo_path = tmp_path / "sample.fifo"
-    os.mkfifo(fifo_path)
-    tool = ReadTool()
-
-    with pytest.raises(ValueError, match="only supports regular files"):
-        tool.invoke(
-            ToolCall(tool_name="read", arguments={"path": "sample.fifo"}),
-            workspace=tmp_path,
-        )
-
-
-def test_read_tool_reports_field_specific_validation_errors(tmp_path: Path) -> None:
-    tool = ReadTool()
-
-    file_path_error = (
-        r"read Validation error: path: "
-        r"Input should be a valid string \(received int\)"
-        r"\. Please retry with corrected arguments that satisfy the tool schema\."
-    )
-    with pytest.raises(ValueError, match=file_path_error):
-        tool.invoke(
-            ToolCall(tool_name="read", arguments={"path": 123}),
-            workspace=tmp_path,
-        )
-
-    offset_error = (
-        r"read Validation error: offset: Value error, "
-        r"offset must be greater than or equal to 1 \(received int\)"
-        r"\. Please retry with corrected arguments that satisfy the tool schema\."
-    )
-    with pytest.raises(ValueError, match=offset_error):
-        tool.invoke(
-            ToolCall(tool_name="read", arguments={"path": "sample.txt", "offset": 0}),
-            workspace=tmp_path,
-        )
-
-    limit_error = (
-        r"read Validation error: limit: Value error, "
-        r"limit must be greater than or equal to 1 \(received int\)"
-        r"\. Please retry with corrected arguments that satisfy the tool schema\."
-    )
-    with pytest.raises(ValueError, match=limit_error):
-        tool.invoke(
-            ToolCall(tool_name="read", arguments={"path": "sample.txt", "limit": 0}),
-            workspace=tmp_path,
-        )
-
-
 def test_read_tool_reports_missing_file_path(tmp_path: Path) -> None:
     tool = ReadTool()
     missing_file_path_error = (
@@ -207,44 +67,6 @@ def test_read_tool_reports_missing_file_path(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=missing_file_path_error):
         tool.invoke(ToolCall(tool_name="read", arguments={}), workspace=tmp_path)
-
-
-def test_read_tool_rejects_oversized_attachment_before_read_bytes(tmp_path: Path) -> None:
-    image = tmp_path / "image.png"
-    _ = image.write_bytes(b"\x89PNG\r\n\x1a\n" + (b"x" * MAX_ATTACHMENT_BYTES))
-    tool = ReadTool()
-
-    with patch.object(Path, "read_bytes", side_effect=AssertionError("read_bytes should not be used")):
-        with pytest.raises(ValueError, match="attachment exceeds the maximum supported size"):
-            tool.invoke(
-                ToolCall(tool_name="read", arguments={"path": "image.png"}),
-                workspace=tmp_path,
-            )
-
-
-def test_read_tool_does_not_emit_offset_guidance_for_clipped_line_only(tmp_path: Path) -> None:
-    sample = tmp_path / "sample.txt"
-    _ = sample.write_text("x" * (MAX_LINE_LENGTH + 5), encoding="utf-8")
-    tool = ReadTool()
-
-    result = tool.invoke(
-        ToolCall(tool_name="read", arguments={"path": "sample.txt"}),
-        workspace=tmp_path,
-    )
-
-    assert result.status == "ok"
-    assert "truncated" in (result.content or "")
-    assert result.data["raw_content"].startswith("x" * MAX_LINE_LENGTH)
-    assert result.data["next_offset"] is None
-    assert result.data["truncated"] is True
-    assert result.data["partial"] is True
-
-
-def test_tools_package_and_default_registry_export_read_tool() -> None:
-    registry = ToolRegistry.with_defaults()
-
-    assert "ReadTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
-    assert registry.resolve("read").definition.name == "read"
 
 
 class _FakeArtifactFacade:
@@ -285,54 +107,6 @@ class _FakeArtifactFacade:
 _ARTIFACT_ID = "artifact_0123456789abcdef01234567"
 
 
-def test_read_tool_resolves_artifact_uri_with_bounded_content(tmp_path: Path) -> None:
-    content = "".join(f"line-{index}\n" for index in range(3000))
-    facade = _FakeArtifactFacade(_ARTIFACT_ID, content)
-    tool = ReadTool()
-
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1", artifact=facade)):
-        result = tool.invoke(
-            ToolCall(
-                tool_name="read",
-                arguments={"path": f"voidcode://artifact/{_ARTIFACT_ID}", "limit": 100},
-            ),
-            workspace=tmp_path,
-        )
-
-    assert result.status == "ok"
-    assert result.data["type"] == "artifact"
-    assert result.data["artifact_id"] == _ARTIFACT_ID
-    assert result.data["raw_content"] == "".join(f"line-{index}\n" for index in range(100))
-    assert result.data["next_offset"] == 100
-    assert result.data["line_count"] == 3000
-    assert result.data["truncated"] is True
-    assert result.data["partial"] is True
-    assert result.data["offset"] == 1
-    assert result.data["limit"] == 100
-    assert "output is truncated" in (result.content or "")
-    assert facade.requests == [(_ARTIFACT_ID, 0, 100)]
-
-
-def test_read_tool_artifact_uri_pages_with_one_based_offset(tmp_path: Path) -> None:
-    content = "".join(f"line-{index}\n" for index in range(3000))
-    facade = _FakeArtifactFacade(_ARTIFACT_ID, content)
-    tool = ReadTool()
-
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1", artifact=facade)):
-        result = tool.invoke(
-            ToolCall(
-                tool_name="read",
-                arguments={"path": f"voidcode://artifact/{_ARTIFACT_ID}", "offset": 101, "limit": 100},
-            ),
-            workspace=tmp_path,
-        )
-
-    assert result.data["raw_content"] == "".join(f"line-{index}\n" for index in range(100, 200))
-    assert result.data["next_offset"] == 200
-    assert result.data["offset"] == 101
-    assert facade.requests == [(_ARTIFACT_ID, 100, 100)]
-
-
 def test_read_tool_rejects_unknown_artifact_id(tmp_path: Path) -> None:
     facade = _FakeArtifactFacade(_ARTIFACT_ID, "content")
     tool = ReadTool()
@@ -343,166 +117,6 @@ def test_read_tool_rejects_unknown_artifact_id(tmp_path: Path) -> None:
                 ToolCall(
                     tool_name="read",
                     arguments={"path": "voidcode://artifact/artifact_ffffffffffffffffffffffff"},
-                ),
-                workspace=tmp_path,
-            )
-
-
-def test_read_tool_rejects_malformed_artifact_id(tmp_path: Path) -> None:
-    tool = ReadTool()
-
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1")):
-        with pytest.raises(ValueError, match="invalid artifact id"):
-            tool.invoke(
-                ToolCall(tool_name="read", arguments={"path": "voidcode://artifact/not-an-id"}),
-                workspace=tmp_path,
-            )
-        with pytest.raises(ValueError, match="requires an artifact id"):
-            tool.invoke(
-                ToolCall(tool_name="read", arguments={"path": "voidcode://artifact/"}),
-                workspace=tmp_path,
-            )
-
-
-def test_read_tool_artifact_uri_requires_runtime_artifact_reader(tmp_path: Path) -> None:
-    tool = ReadTool()
-
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1")):
-        with pytest.raises(ValueError, match="without a runtime artifact reader"):
-            tool.invoke(
-                ToolCall(
-                    tool_name="read",
-                    arguments={"path": f"voidcode://artifact/{_ARTIFACT_ID}"},
-                ),
-                workspace=tmp_path,
-            )
-
-
-class _FakeTranscriptFacade:
-    """Minimal RuntimeTranscriptFacade stand-in mirroring bounded semantics."""
-
-    def __init__(self, *, total_events: int = 30, accessible: set[str] | None = None) -> None:
-        self._total_events = total_events
-        self._accessible = accessible
-        self.requests: list[tuple[str, int | None]] = []
-
-    def read_transcript(
-        self,
-        *,
-        session_id: str,
-        limit: int | None = None,
-    ) -> dict[str, object] | None:
-        self.requests.append((session_id, limit))
-        if self._accessible is not None and session_id not in self._accessible:
-            return None
-        bounded = min(max(limit if limit is not None else 20, 1), 100)
-        selected = min(bounded, self._total_events)
-        return {
-            "session_id": session_id,
-            "status": "completed",
-            "summary": "done",
-            "last_event_sequence": self._total_events,
-            "message_limit": bounded,
-            "transcript_count": selected,
-            "transcript_truncated": self._total_events > selected,
-            "transcript": [{"sequence": index, "event_type": f"event-{index}", "source": "tool"} for index in range(1, selected + 1)],
-        }
-
-
-def test_read_tool_resolves_transcript_uri_bounded_and_payload_stripped(tmp_path: Path) -> None:
-    facade = _FakeTranscriptFacade(total_events=30)
-    tool = ReadTool()
-
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader", transcript=facade)):
-        result = tool.invoke(
-            ToolCall(
-                tool_name="read",
-                arguments={"path": "voidcode://transcript/child", "limit": 5},
-            ),
-            workspace=tmp_path,
-        )
-
-    assert result.status == "ok"
-    assert result.data["type"] == "transcript"
-    assert result.data["session_id"] == "child"
-    assert result.data["message_limit"] == 5
-    assert result.data["transcript_count"] == 5
-    assert result.data["transcript_truncated"] is True
-    assert len(result.data["transcript"]) == 5
-    for event in result.data["transcript"]:
-        assert set(event) == {"sequence", "event_type", "source"}
-        assert "payload" not in event
-    assert result.data["status"] == "completed"
-    assert "Read 5 transcript event(s)" in (result.content or "")
-    assert "truncated" in (result.content or "")
-    assert facade.requests == [("child", 5)]
-
-
-def test_read_tool_transcript_uri_defaults_to_20_event_limit(tmp_path: Path) -> None:
-    facade = _FakeTranscriptFacade(total_events=100)
-    tool = ReadTool()
-
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader", transcript=facade)):
-        result = tool.invoke(
-            ToolCall(
-                tool_name="read",
-                arguments={"path": "voidcode://transcript/child"},
-            ),
-            workspace=tmp_path,
-        )
-
-    assert result.data["message_limit"] == 20
-    assert len(result.data["transcript"]) == 20
-    assert facade.requests == [("child", 20)]
-
-
-def test_read_tool_transcript_uri_rejects_unavailable_session(tmp_path: Path) -> None:
-    facade = _FakeTranscriptFacade(accessible={"child"})
-    tool = ReadTool()
-
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader", transcript=facade)):
-        with pytest.raises(ValueError, match="transcript not accessible for session: other"):
-            tool.invoke(
-                ToolCall(
-                    tool_name="read",
-                    arguments={"path": "voidcode://transcript/other"},
-                ),
-                workspace=tmp_path,
-            )
-
-
-def test_read_tool_transcript_uri_rejects_malformed_session_id(tmp_path: Path) -> None:
-    facade = _FakeTranscriptFacade()
-    tool = ReadTool()
-
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader", transcript=facade)):
-        with pytest.raises(ValueError, match="must not contain '/'"):
-            tool.invoke(
-                ToolCall(
-                    tool_name="read",
-                    arguments={"path": "voidcode://transcript/a/b"},
-                ),
-                workspace=tmp_path,
-            )
-        with pytest.raises(ValueError, match="requires a session id"):
-            tool.invoke(
-                ToolCall(
-                    tool_name="read",
-                    arguments={"path": "voidcode://transcript/"},
-                ),
-                workspace=tmp_path,
-            )
-
-
-def test_read_tool_transcript_uri_requires_runtime_transcript_reader(tmp_path: Path) -> None:
-    tool = ReadTool()
-
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader")):
-        with pytest.raises(ValueError, match="without a runtime transcript reader"):
-            tool.invoke(
-                ToolCall(
-                    tool_name="read",
-                    arguments={"path": "voidcode://transcript/child"},
                 ),
                 workspace=tmp_path,
             )

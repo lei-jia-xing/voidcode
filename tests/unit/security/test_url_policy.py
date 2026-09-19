@@ -46,29 +46,27 @@ def test_validate_url_rejects_credentials(url: str) -> None:
         validate_url(url)
 
 
-@pytest.mark.parametrize("hostname", BLOCKED_HOSTNAMES)
-def test_validate_url_rejects_blocked_hostnames(hostname: str) -> None:
-    with pytest.raises(ValueError, match="blocked for security reasons"):
-        validate_url(f"http://{hostname}/")
-
-
 @pytest.mark.parametrize(
-    "host",
+    "url",
     [
-        "127.0.0.1",
-        "127.1.2.3",
-        "10.0.0.5",
-        "172.16.0.1",
-        "192.168.1.100",
-        "169.254.169.254",
-        "0.0.0.0",
-        "[::1]",
-        "[::ffff:127.0.0.1]",
+        *(f"http://{hostname}/" for hostname in BLOCKED_HOSTNAMES),
+        # Case-insensitive hostname matching.
+        "http://LocalHost/",
+        # IP literals: loopback, RFC1918, link-local metadata, unspecified, IPv6.
+        "http://127.0.0.1/",
+        "http://127.1.2.3/",
+        "http://10.0.0.5/",
+        "http://172.16.0.1/",
+        "http://192.168.1.100/",
+        "http://169.254.169.254/",
+        "http://0.0.0.0/",
+        "http://[::1]/",
+        "http://[::ffff:127.0.0.1]/",
     ],
 )
-def test_validate_url_rejects_blocked_ip_targets(host: str) -> None:
+def test_validate_url_rejects_blocked_targets(url: str) -> None:
     with pytest.raises(ValueError, match="blocked for security reasons"):
-        validate_url(f"http://{host}/")
+        validate_url(url)
 
 
 def test_validate_url_rejects_private_ip_from_dns_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -101,11 +99,6 @@ def test_validate_url_records_explicit_port() -> None:
 def test_validate_url_normalizes_hostname_case_and_dots() -> None:
     result = validate_url("https://EXAMPLE.COM./")
     assert result.hostname == "example.com"
-
-
-def test_validate_url_rejects_blocked_hostname_with_case_variation() -> None:
-    with pytest.raises(ValueError, match="blocked for security reasons"):
-        validate_url("http://LocalHost/")
 
 
 def test_validate_redirect_target_validates_joined_url() -> None:

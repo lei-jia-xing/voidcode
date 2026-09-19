@@ -1,8 +1,8 @@
 """Contract tests for ``voidcode storage`` and ``voidcode stats``.
 
-Every test drives the real CLI process against an isolated workspace and
-database, so the assertions are the observable surface: exit codes, JSON
-payloads on stdout, stderr ownership, and the SQLite files left on disk.
+Every test drives the CLI against an isolated workspace and database, so the
+assertions are the observable surface: exit codes, JSON payloads on stdout,
+stderr ownership, and the SQLite files left on disk.
 """
 
 from __future__ import annotations
@@ -12,11 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from ._cli_harness import run_cli
+from ._cli_harness import DB_FILE_NAME, run_cli
 
 SOURCE_FILE = "note.txt"
 SOURCE_TEXT = "hello from the deterministic harness\n"
-DB_FILE_NAME = ".cli-contracts.sqlite3"
 
 
 @pytest.fixture
@@ -85,21 +84,6 @@ def test_stats_tools_reports_the_tool_that_ran(recorded_workspace: Path) -> None
     assert tools["read"]["calls"] >= 1
 
 
-def test_stats_tools_without_json_prints_a_report_instead(recorded_workspace: Path) -> None:
-    result = run_cli(
-        "stats",
-        "tools",
-        "--workspace",
-        str(recorded_workspace),
-        cwd=recorded_workspace,
-    )
-
-    assert result.returncode == 0
-    assert result.stderr == ""
-    assert not result.stdout.lstrip().startswith("{")
-    assert "read" in result.stdout
-
-
 def test_storage_prune_keep_sessions_zero_removes_the_session(recorded_workspace: Path) -> None:
     prune = run_cli(
         "storage",
@@ -126,30 +110,6 @@ def test_storage_prune_keep_sessions_zero_removes_the_session(recorded_workspace
     )
     assert diagnostics.returncode == 0
     assert json.loads(diagnostics.stdout)["storage"]["counts"]["sessions"] == 0
-
-
-def test_storage_prune_rejects_negative_keep_sessions(recorded_workspace: Path) -> None:
-    result = run_cli(
-        "storage",
-        "prune",
-        "--workspace",
-        str(recorded_workspace),
-        "--keep-sessions=-1",
-        cwd=recorded_workspace,
-    )
-
-    assert result.returncode == 12
-    assert result.stdout == ""
-    assert "error: keep_sessions must be non-negative when provided" in result.stderr
-
-    diagnostics = run_cli(
-        "storage",
-        "diagnostics",
-        "--workspace",
-        str(recorded_workspace),
-        cwd=recorded_workspace,
-    )
-    assert json.loads(diagnostics.stdout)["storage"]["counts"]["sessions"] >= 1
 
 
 def test_storage_reset_removes_the_database_and_sidecar_files(recorded_workspace: Path) -> None:

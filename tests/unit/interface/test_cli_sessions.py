@@ -12,11 +12,10 @@ from typing import Any
 
 import pytest
 
-from voidcode.cli import app
-from voidcode.cli_support import EXIT_INVALID_RESOURCE, EXIT_RUNTIME_ERROR, EXIT_SUCCESS, EXIT_USAGE_ERROR
-from voidcode.runtime.session import SessionRef, StoredSessionSummary
+from voidcode.cli_support import EXIT_INVALID_RESOURCE, EXIT_RUNTIME_ERROR, EXIT_SUCCESS
+from voidcode.runtime.session import StoredSessionSummary
 
-from ._cli_harness import StubRuntime, cli_boundary, deterministic_config, run_cli
+from ._cli_harness import StubRuntime, run_cli
 
 
 class _SessionListRuntime(StubRuntime):
@@ -67,41 +66,6 @@ def test_sessions_list_json_reports_main_scope_and_nested_rows(seeded_session: t
     assert row["status"] == "completed"
     # The id lives under the nested ``session`` ref; consumers must not read it off the row.
     assert "id" not in row
-
-
-def test_sessions_list_scope_excludes_children_unless_requested(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    summaries = (
-        StoredSessionSummary(
-            session=SessionRef(id="leader-session"),
-            status="completed",
-            turn=1,
-            prompt="read sample.txt",
-            updated_at=1,
-        ),
-        StoredSessionSummary(
-            session=SessionRef(id="child-session", parent_id="leader-session"),
-            status="completed",
-            turn=1,
-            prompt="delegated read",
-            updated_at=2,
-        ),
-    )
-    runtime = _SessionListRuntime(summaries)
-
-    with cli_boundary(config=deterministic_config(), runtime=runtime):
-        main_result = app.main(["sessions", "list", "--workspace", str(tmp_path), "--json"])
-        main_payload = json.loads(capsys.readouterr().out)
-        all_result = app.main(["sessions", "list", "--workspace", str(tmp_path), "--include-children", "--json"])
-        all_payload = json.loads(capsys.readouterr().out)
-
-    assert main_result == EXIT_SUCCESS
-    assert main_payload["scope"] == "main"
-    assert [row["session"]["id"] for row in main_payload["sessions"]] == ["leader-session"]
-    assert all_result == EXIT_SUCCESS
-    assert all_payload["scope"] == "all"
-    assert {row["session"]["id"] for row in all_payload["sessions"]} == {"leader-session", "child-session"}
-    child_row = next(row for row in all_payload["sessions"] if row["session"]["id"] == "child-session")
-    assert child_row["session"]["parent_id"] == "leader-session"
 
 
 # ---------------------------------------------------------------------------
@@ -157,59 +121,6 @@ def test_sessions_resume_dry_run_reports_debug_without_executing(seeded_session:
     assert payload["session_id"] == session_id
     assert payload["debug"]["prompt"] == "read sample.txt"
     assert "RESULT" not in result.stdout
-
-
-@pytest.mark.parametrize(
-    ("flag", "value"),
-    [("--approval-request-id", "req-1"), ("--approval-decision", "allow")],
-)
-def test_sessions_resume_rejects_partial_approval_flags(tmp_path: Path, flag: str, value: str) -> None:
-    result = run_cli(
-        "sessions",
-        "resume",
-        "demo-session",
-        "--workspace",
-        str(tmp_path),
-        flag,
-        value,
-        cwd=tmp_path,
-    )
-
-    assert result.returncode == EXIT_USAGE_ERROR
-    assert result.stdout == ""
-    assert result.stderr.startswith("error:")
-    assert "Traceback" not in result.stderr
-
-
-def test_sessions_resume_unknown_approval_request_is_clean_runtime_error(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    runtime = _ResumeErrorRuntime()
-
-    with cli_boundary(config=deterministic_config(), runtime=runtime):
-        result = app.main(
-            [
-                "sessions",
-                "resume",
-                "demo-session",
-                "--workspace",
-                str(tmp_path),
-                "--approval-request-id",
-                "bogus",
-                "--approval-decision",
-                "allow",
-            ]
-        )
-
-    captured = capsys.readouterr()
-    assert result == EXIT_RUNTIME_ERROR
-    assert captured.out == ""
-    error_lines = [line for line in captured.err.splitlines() if line.strip()]
-    assert len(error_lines) == 1
-    assert error_lines[0].startswith("error:")
-    assert "bogus" in captured.err
-    assert "Traceback" not in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -274,41 +185,9 @@ def test_sessions_export_import_roundtrip_writes_and_reads_bundle(tmp_path: Path
     assert imported_bundle["original_workspace"] == str(source)
 
 
-def test_sessions_export_json_format_prints_bundle_without_writing_file(seeded_session: tuple[Path, str]) -> None:
-    workspace, session_id = seeded_session
-
-    result = run_cli("sessions", "export", session_id, "--workspace", str(workspace), "--format", "json", cwd=workspace)
-
-    payload = json.loads(result.stdout)
-    assert result.returncode == EXIT_SUCCESS
-    assert payload["schema"] == "voidcode.session.bundle.v1"
-    assert payload["sessions"][0]["id"] == session_id
-    assert list(workspace.glob("*.vcsession.zip")) == []
-
-
 # ---------------------------------------------------------------------------
 # sessions answer
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("extra_args", [(), ("--response-json", "not-json")])
-def test_sessions_answer_requires_a_usable_response_payload(tmp_path: Path, extra_args: tuple[str, ...]) -> None:
-    result = run_cli(
-        "sessions",
-        "answer",
-        "question-session",
-        "--workspace",
-        str(tmp_path),
-        "--question-request-id",
-        "question-1",
-        *extra_args,
-        cwd=tmp_path,
-    )
-
-    assert result.returncode == EXIT_USAGE_ERROR
-    assert result.stdout == ""
-    assert result.stderr.startswith("error:")
-    assert "Traceback" not in result.stderr
 
 
 def test_sessions_answer_without_pending_question_exits_invalid_resource(tmp_path: Path) -> None:

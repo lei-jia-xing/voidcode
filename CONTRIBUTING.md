@@ -42,7 +42,6 @@ Run the standard checks with `mise`:
 mise run lint
 mise run format
 mise run typecheck
-mise run test:fast
 mise run test
 mise run test:coverage
 mise run build
@@ -70,8 +69,9 @@ uv run pre-commit run --all-files
 
 Please add or update tests when behavior changes.
 
+- Read [`docs/testing.md`](./docs/testing.md) for what the suite covers on purpose and what it deliberately leaves untested.
 - Run the relevant local checks before opening a pull request.
-- Prefer `mise run test:fast` while iterating, then run the relevant full or coverage-bearing task before asking for review.
+- Run `mise run test` while iterating, and `mise run test:coverage` before asking for review.
 - Keep linting and type checking clean.
 - If you change CLI, runtime, graph, tool, or transport behavior, add test coverage where an existing test surface already exists.
 - For frontend changes, run the relevant Bun-based checks as well.

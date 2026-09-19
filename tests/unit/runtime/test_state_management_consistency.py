@@ -110,17 +110,6 @@ def _wait_for_terminal(runtime: VoidCodeRuntime, task_id: str, *, timeout: float
     raise AssertionError(f"task {task_id} did not reach terminal state")
 
 
-def _queued_task(task_id: str, *, parent_session_id: str | None = None) -> BackgroundTaskState:
-    return BackgroundTaskState(
-        task=BackgroundTaskRef(id=task_id),
-        status="queued",
-        request=BackgroundTaskRequestSnapshot(
-            prompt=task_id,
-            parent_session_id=parent_session_id,
-        ),
-    )
-
-
 # ── 1. status ↔ event canonical mapping ────────────────────────────────────
 
 

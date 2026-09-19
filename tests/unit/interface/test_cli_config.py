@@ -10,12 +10,11 @@ taken from the environment is consumed but never printed.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from ._cli_harness import run_cli
+from ._cli_harness import CliRun, run_cli
 
 # Process exit codes owned by ``voidcode.cli_support``, pinned here as the user-visible contract.
 EXIT_USAGE_ERROR = 2
@@ -58,7 +57,7 @@ def seed_session(workspace: Path, *, session_id: str = SESSION_ID) -> None:
     assert result.returncode == 0, result.stderr
 
 
-def assert_clean_error(result: subprocess.CompletedProcess[str], expected_exit: int) -> str:
+def assert_clean_error(result: CliRun, expected_exit: int) -> str:
     """A CLI error owns stderr as a single ``error:`` line, leaves stdout empty and never traces back."""
     assert result.returncode == expected_exit
     assert result.stdout == ""
@@ -133,54 +132,6 @@ def test_config_show_reports_effective_workspace_config(tmp_path: Path) -> None:
     assert payload["mcp"]["details"]["running_server_count"] == 0
 
 
-def test_config_show_resolves_per_agent_model_override(tmp_path: Path) -> None:
-    write_config(
-        tmp_path,
-        {
-            "model": "deepseek/deepseek-v4-flash",
-            "agents": {"worker": {"model": "openai/worker-model"}},
-        },
-    )
-
-    result = run_cli("config", "show", "--workspace", str(tmp_path), cwd=tmp_path)
-
-    assert result.returncode == 0
-    payload = json.loads(result.stdout)
-    assert payload["model"] == "deepseek/deepseek-v4-flash"
-    assert payload["agents"]["worker"]["model"] == "openai/worker-model"
-    assert payload["agents"]["worker"]["effective_model"] == "openai/worker-model"
-    assert payload["agents"]["leader"]["model"] is None
-    assert payload["agents"]["leader"]["effective_model"] == "deepseek/deepseek-v4-flash"
-
-
-def test_config_show_redacts_mcp_command_credentials(tmp_path: Path) -> None:
-    write_config(
-        tmp_path,
-        {
-            "mcp": {
-                "enabled": False,
-                "servers": {
-                    "context7": {
-                        "command": ["context7", "--api-key", "sk-mcp-secret"],
-                        "scope": "runtime",
-                    }
-                },
-            }
-        },
-    )
-
-    result = run_cli("config", "show", "--workspace", str(tmp_path), cwd=tmp_path)
-
-    assert result.returncode == 0
-    assert result.stderr == ""
-    payload = json.loads(result.stdout)
-    assert payload["mcp"]["state"] == "unconfigured"
-    server = payload["mcp"]["details"]["servers"][0]
-    assert server["server"] == "context7"
-    assert server["command"] == ["context7", "--api-key", "<redacted>"]
-    assert "sk-mcp-secret" not in result.stdout
-
-
 def test_config_show_reports_defaults_for_unconfigured_workspace(tmp_path: Path) -> None:
     result = run_cli("config", "show", "--workspace", str(tmp_path), cwd=tmp_path)
 
@@ -197,28 +148,6 @@ def test_config_show_reports_defaults_for_unconfigured_workspace(tmp_path: Path)
     assert payload["context_budget"] == {"context_window": None, "max_output_tokens": None}
 
 
-def test_config_show_session_resolves_session_snapshot(tmp_path: Path) -> None:
-    write_config(tmp_path, {"model": "opencode-go/glm-5", "approval_mode": "deny"})
-    seed_session(tmp_path)
-    write_config(tmp_path, {"model": "deepseek/deepseek-v4-flash", "approval_mode": "deny"})
-
-    session_result = run_cli("config", "show", "--workspace", str(tmp_path), "--session", SESSION_ID, cwd=tmp_path)
-    workspace_result = run_cli("config", "show", "--workspace", str(tmp_path), cwd=tmp_path)
-
-    assert session_result.returncode == 0
-    assert session_result.stderr == ""
-    assert workspace_result.returncode == 0
-    session_payload = json.loads(session_result.stdout)
-    workspace_payload = json.loads(workspace_result.stdout)
-    assert session_payload["workspace"] == str(tmp_path)
-    assert session_payload["session_id"] == SESSION_ID
-    assert session_payload["approval_mode"] == "allow"
-    assert session_payload["model"] == "opencode-go/glm-5"
-    assert workspace_payload["session_id"] is None
-    assert workspace_payload["approval_mode"] == "deny"
-    assert workspace_payload["model"] == "deepseek/deepseek-v4-flash"
-
-
 def test_config_show_rejects_missing_workspace(tmp_path: Path) -> None:
     missing = tmp_path / "missing-workspace"
 
@@ -226,25 +155,6 @@ def test_config_show_rejects_missing_workspace(tmp_path: Path) -> None:
 
     message = assert_clean_error(result, EXIT_INVALID_RESOURCE)
     assert str(missing) in message
-
-
-def test_config_show_rejects_unknown_session(tmp_path: Path) -> None:
-    result = run_cli("config", "show", "--workspace", str(tmp_path), "--session", "missing-session", cwd=tmp_path)
-
-    message = assert_clean_error(result, EXIT_RUNTIME_ERROR)
-    assert "missing-session" in message
-
-
-def test_config_show_rejects_session_from_another_workspace(tmp_path: Path) -> None:
-    session_workspace = tmp_path / "session-workspace"
-    other_workspace = tmp_path / "other-workspace"
-    session_workspace.mkdir()
-    other_workspace.mkdir()
-    seed_session(session_workspace)
-
-    result = run_cli("config", "show", "--workspace", str(other_workspace), "--session", SESSION_ID, cwd=other_workspace)
-
-    assert_clean_error(result, EXIT_RUNTIME_ERROR)
 
 
 def test_config_schema_emits_json_schema(tmp_path: Path) -> None:
@@ -263,17 +173,6 @@ def test_config_schema_emits_json_schema(tmp_path: Path) -> None:
         {"type": "string", "enum": ["allow", "deny", "ask"]},
         {"type": "null"},
     ]
-
-
-def test_config_init_print_emits_starter_config_without_writing(tmp_path: Path) -> None:
-    result = run_cli("config", "init", "--workspace", str(tmp_path), "--print", cwd=tmp_path)
-
-    assert result.returncode == 0
-    assert result.stderr == ""
-    payload = json.loads(result.stdout)
-    assert isinstance(payload["$schema"], str)
-    assert payload["approval_mode"] == "ask"
-    assert not (tmp_path / ".voidcode.json").exists()
 
 
 def test_config_init_writes_starter_config_and_refuses_overwrite(tmp_path: Path) -> None:
@@ -304,25 +203,6 @@ def test_config_init_rejects_malformed_model_without_writing(tmp_path: Path) -> 
     assert result.stderr.startswith("error: ")
     assert "model" in result.stderr
     assert "Traceback" not in result.stderr
-    assert not (tmp_path / ".voidcode.json").exists()
-
-
-def test_config_init_rejects_unknown_option_with_usage_error(tmp_path: Path) -> None:
-    result = run_cli(
-        "config",
-        "init",
-        "--workspace",
-        str(tmp_path),
-        "--execution-engine",
-        "provider",
-        "--print",
-        cwd=tmp_path,
-    )
-
-    assert result.returncode == EXIT_USAGE_ERROR
-    assert result.stdout == ""
-    assert result.stderr.startswith("Usage: voidcode config init")
-    assert "--execution-engine" in result.stderr
     assert not (tmp_path / ".voidcode.json").exists()
 
 

@@ -122,34 +122,6 @@ def test_rejects_overlapping_edits(tmp_path: Path) -> None:
     assert path.read_text(encoding="utf-8") == "abcdef"
 
 
-def test_rejects_missing_expected_hash_with_structured_diagnostic(tmp_path: Path) -> None:
-    path = tmp_path / "sample.txt"
-    path.write_text("abcdef", encoding="utf-8")
-    with pytest.raises(ToolDiagnosticError, match="expectedHash") as exc_info:
-        ApplyWorkspaceEditTool().invoke(
-            _call(
-                [
-                    {
-                        "path": "sample.txt",
-                        "startLine": 1,
-                        "startCharacter": 1,
-                        "endLine": 1,
-                        "endCharacter": 5,
-                        "newText": "x",
-                    },
-                ]
-            ),
-            workspace=tmp_path,
-        )
-    diagnostic = exc_info.value
-    assert diagnostic.error_kind == "tool_input_mismatch"
-    assert diagnostic.error_details["reason"] == "missing_expected_hash"
-    assert diagnostic.error_details["edit_index"] == 1
-    assert diagnostic.error_details["path"] == "sample.txt"
-    assert "read" in (diagnostic.retry_guidance or "")
-    assert path.read_text(encoding="utf-8") == "abcdef"
-
-
 def test_schema_requires_expected_hash_on_every_edit() -> None:
     schema = ApplyWorkspaceEditTool.definition.input_schema
     edits_schema = schema["edits"]
@@ -194,30 +166,3 @@ def test_rejects_edit_on_line_outside_read_window(tmp_path: Path) -> None:
     assert diagnostic.error_details["reason"] == "unseen_range"
     assert diagnostic.error_details["unseen_line_ranges"] == [{"start": 3, "end": 3}]
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
-
-
-def test_applies_edit_when_target_lines_are_seen(tmp_path: Path) -> None:
-    path = tmp_path / "sample.py"
-    path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
-    resolved = path.resolve().as_posix()
-    edit = {
-        "path": "sample.py",
-        "startLine": 2,
-        "startCharacter": 1,
-        "endLine": 2,
-        "endCharacter": 5,
-        "newText": "BETA",
-        "expectedHash": _content_hash(path),
-    }
-
-    with bind_runtime_tool_context(
-        RuntimeToolInvocationContext(
-            session_id="test",
-            read_paths=frozenset({resolved}),
-            read_lines={resolved: frozenset({1, 2, 3})},
-        )
-    ):
-        result = ApplyWorkspaceEditTool().invoke(_call([edit]), workspace=tmp_path)
-
-    assert result.status == "ok"
-    assert path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"

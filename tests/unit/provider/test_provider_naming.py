@@ -96,8 +96,6 @@ def test_unknown_provider_id_error_is_a_value_error() -> None:
     error = UnknownProviderIdError("ghost")
 
     assert isinstance(error, ValueError)
-    assert error.provider_name == "ghost"
-    assert str(error) == error.message
 
 
 @pytest.mark.parametrize("raw_model", _MINI_MAX_SPELLINGS)

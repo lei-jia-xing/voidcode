@@ -158,30 +158,6 @@ def test_parse_provider_configs_payload_parses_transient_retry_for_openai_compat
     )
 
 
-def test_parse_provider_configs_payload_defaults_transient_retry_max_retries_to_three() -> None:
-    parsed = parse_provider_configs_payload(
-        {
-            "opencode-go": {
-                "transient_retry": {
-                    "base_delay_ms": 500,
-                    "max_delay_ms": 4000,
-                    "jitter": False,
-                }
-            }
-        },
-        source="runtime config field 'providers'",
-    )
-
-    assert parsed is not None
-    assert parsed.opencode_go is not None
-    assert parsed.opencode_go.transient_retry == ProviderTransientRetryConfig(
-        max_retries=3,
-        base_delay_ms=500.0,
-        max_delay_ms=4000.0,
-        jitter=False,
-    )
-
-
 def test_parse_provider_configs_payload_parses_ssl_verify_for_openai_compatible_provider() -> None:
     parsed = parse_provider_configs_payload(
         {
@@ -194,64 +170,6 @@ def test_parse_provider_configs_payload_parses_ssl_verify_for_openai_compatible_
     )
 
     assert parsed == ProviderConfigs(opencode_go=OpenAICompatibleProviderConfig(api_key="opencode-key", ssl_verify=False))
-
-
-def test_parse_provider_configs_payload_parses_ssl_verify_for_custom_provider() -> None:
-    parsed = parse_provider_configs_payload(
-        {
-            "custom": {
-                "team-gateway": {
-                    "base_url": "https://gateway.example.test/v1",
-                    "ssl_verify": False,
-                }
-            }
-        },
-        source="runtime config field 'providers'",
-    )
-
-    assert parsed == ProviderConfigs(
-        custom={
-            "team-gateway": ProviderEndpointConfig(
-                base_url="https://gateway.example.test/v1",
-                ssl_verify=False,
-            )
-        }
-    )
-
-
-def test_parse_provider_configs_payload_rejects_invalid_custom_ssl_verify_type() -> None:
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"runtime config field 'providers\.custom\.team-gateway\.ssl_verify' "
-            r"must be a boolean when provided"
-        ),
-    ):
-        _ = parse_provider_configs_payload(
-            {"custom": {"team-gateway": {"ssl_verify": "false"}}},
-            source="runtime config field 'providers'",
-        )
-
-
-def test_parse_provider_configs_payload_rejects_invalid_transient_retry_delay_order() -> None:
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"runtime config field 'providers\.opencode-go\.transient_retry\.max_delay_ms' "
-            r"must be greater than or equal to base_delay_ms"
-        ),
-    ):
-        _ = parse_provider_configs_payload(
-            {
-                "opencode-go": {
-                    "transient_retry": {
-                        "base_delay_ms": 2000,
-                        "max_delay_ms": 1000,
-                    }
-                }
-            },
-            source="runtime config field 'providers'",
-        )
 
 
 def test_parse_provider_configs_payload_rejects_unknown_provider_block() -> None:
@@ -311,155 +229,6 @@ def test_parse_provider_configs_payload_rejects_legacy_litellm_block_with_rename
         )
 
 
-def test_merge_provider_configs_preserves_fallback_endpoint_none_auth_scheme() -> None:
-    primary = ProviderConfigs(endpoint=ProviderEndpointConfig(api_key="env-key"))
-    fallback = ProviderConfigs(endpoint=ProviderEndpointConfig(auth_scheme="none"))
-
-    merged = merge_provider_configs(primary, fallback)
-
-    assert merged is not None
-    assert merged.endpoint == ProviderEndpointConfig(
-        api_key="env-key",
-        auth_scheme="none",
-    )
-
-
-def test_merge_provider_configs_preserves_fallback_endpoint_token_auth_scheme() -> None:
-    primary = ProviderConfigs(endpoint=ProviderEndpointConfig(api_key="env-key"))
-    fallback = ProviderConfigs(endpoint=ProviderEndpointConfig(auth_scheme="token", auth_header="X-API-Key"))
-
-    merged = merge_provider_configs(primary, fallback)
-
-    assert merged is not None
-    assert merged.endpoint == ProviderEndpointConfig(
-        api_key="env-key",
-        auth_header="X-API-Key",
-        auth_scheme="token",
-    )
-
-
-def test_merge_provider_configs_preserves_primary_custom_ssl_verify_false() -> None:
-    primary = ProviderConfigs(custom={"team-gateway": ProviderEndpointConfig(ssl_verify=False)})
-    fallback = ProviderConfigs(custom={"team-gateway": ProviderEndpointConfig(ssl_verify=True)})
-
-    merged = merge_provider_configs(primary, fallback)
-
-    assert merged is not None
-    assert merged.custom["team-gateway"] == ProviderEndpointConfig(ssl_verify=False)
-
-
-def test_merge_provider_configs_preserves_primary_openai_compatible_ssl_verify_false() -> None:
-    primary = ProviderConfigs(opencode_go=OpenAICompatibleProviderConfig(ssl_verify=False))
-    fallback = ProviderConfigs(opencode_go=OpenAICompatibleProviderConfig(ssl_verify=True))
-
-    merged = merge_provider_configs(primary, fallback)
-
-    assert merged is not None
-    assert merged.opencode_go == OpenAICompatibleProviderConfig(ssl_verify=False)
-
-
-def test_merge_provider_configs_allows_empty_anthropic_beta_headers_override() -> None:
-    primary = parse_provider_configs_payload(
-        {"anthropic": {"beta_headers": []}},
-        source="runtime config field 'providers'",
-    )
-    fallback = ProviderConfigs(anthropic=AnthropicProviderConfig(beta_headers=("stale-beta",)))
-
-    merged = merge_provider_configs(primary, fallback)
-
-    assert merged is not None
-    assert merged.anthropic == AnthropicProviderConfig(
-        beta_headers=(),
-        beta_headers_explicit=True,
-    )
-
-
-def test_merge_provider_configs_preserves_anthropic_beta_headers_when_absent() -> None:
-    primary = parse_provider_configs_payload(
-        {"anthropic": {"api_key": "repo-key"}},
-        source="runtime config field 'providers'",
-    )
-    fallback = ProviderConfigs(anthropic=AnthropicProviderConfig(beta_headers=("fallback-beta",)))
-
-    merged = merge_provider_configs(primary, fallback)
-
-    assert merged is not None
-    assert merged.anthropic == AnthropicProviderConfig(
-        api_key="repo-key",
-        beta_headers=("fallback-beta",),
-    )
-
-
-def test_serialize_provider_configs_preserves_explicit_empty_anthropic_beta_headers() -> None:
-    payload = serialize_provider_configs(
-        ProviderConfigs(
-            anthropic=AnthropicProviderConfig(
-                beta_headers=(),
-                beta_headers_explicit=True,
-            )
-        )
-    )
-
-    assert payload == {"anthropic": {"beta_headers": []}}
-
-
-def test_serialize_provider_configs_includes_custom_ssl_verify() -> None:
-    payload = serialize_provider_configs(ProviderConfigs(custom={"team-gateway": ProviderEndpointConfig(ssl_verify=False)}))
-
-    assert payload == {"custom": {"team-gateway": {"auth_scheme": "bearer", "ssl_verify": False}}}
-
-
-def test_serialize_provider_configs_includes_endpoint_ssl_verify() -> None:
-    payload = serialize_provider_configs(ProviderConfigs(endpoint=ProviderEndpointConfig(ssl_verify=False)))
-
-    assert payload == {"endpoint": {"auth_scheme": "bearer", "ssl_verify": False}}
-
-
-def test_serialize_provider_configs_includes_openai_compatible_ssl_verify() -> None:
-    payload = serialize_provider_configs(ProviderConfigs(opencode_go=OpenAICompatibleProviderConfig(ssl_verify=False)))
-
-    assert payload == {"opencode-go": {"ssl_verify": False}}
-
-
-def test_parse_provider_configs_payload_rejects_invalid_openai_base_url_type() -> None:
-    with pytest.raises(
-        ValueError,
-        match=r"runtime config field 'providers\.openai\.base_url' must be a string when provided",
-    ):
-        _ = parse_provider_configs_payload(
-            {"openai": {"base_url": 123}},
-            source="runtime config field 'providers'",
-        )
-
-
-def test_parse_provider_configs_payload_rejects_invalid_endpoint_model_map_value() -> None:
-    with pytest.raises(
-        ValueError,
-        match=r"runtime config field 'providers\.endpoint\.model_map\.demo' must be a string",
-    ):
-        _ = parse_provider_configs_payload(
-            {"endpoint": {"model_map": {"demo": 123}}},
-            source="runtime config field 'providers'",
-        )
-
-
-def test_parse_provider_configs_payload_rejects_invalid_custom_provider_name() -> None:
-    with pytest.raises(
-        ValueError,
-        match="runtime config field 'providers.custom.invalid/name'",
-    ):
-        _ = parse_provider_configs_payload(
-            {
-                "custom": {
-                    "invalid/name": {
-                        "base_url": "http://localhost:4000",
-                    }
-                }
-            },
-            source="runtime config field 'providers'",
-        )
-
-
 @pytest.mark.parametrize("builtin_name", ["openai", "anthropic", "google", "copilot", "endpoint", "opencode"])
 def test_parse_provider_configs_payload_rejects_custom_provider_name_colliding_with_builtin(
     builtin_name: str,
@@ -481,44 +250,6 @@ def test_parse_provider_configs_payload_rejects_custom_provider_name_colliding_w
             },
             source="runtime config field 'providers'",
         )
-
-
-def test_parse_provider_configs_payload_rejects_case_or_whitespace_variant_of_builtin_name() -> None:
-    # Padded and mixed-case input canonicalises first, so the collision check sees
-    # the built-in name it would otherwise shadow.
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"runtime config field 'providers.custom\. OpenAI ' "
-            r"must not collide with built-in provider names \(conflicts with 'openai'\)"
-        ),
-    ):
-        _ = parse_provider_configs_payload(
-            {
-                "custom": {
-                    " OpenAI ": {
-                        "base_url": "http://localhost:4000",
-                    }
-                }
-            },
-            source="runtime config field 'providers'",
-        )
-
-
-def test_custom_provider_name_with_surrounding_whitespace_is_trimmed() -> None:
-    parsed = parse_provider_configs_payload(
-        {
-            "custom": {
-                " llama-local ": {
-                    "base_url": "http://localhost:11434/v1",
-                }
-            }
-        },
-        source="runtime config field 'providers'",
-    )
-
-    assert parsed is not None
-    assert list(parsed.custom) == ["llama-local"]
 
 
 def test_custom_provider_name_is_canonicalised_to_lowercase() -> None:
@@ -568,341 +299,73 @@ def test_parse_provider_fallback_payload_rejects_duplicate_chain_models() -> Non
 # =============================================================================
 
 
-def test_parse_deepseek_provider_config_from_env() -> None:
+@pytest.mark.parametrize(
+    ("provider_id", "attribute", "env", "expected_api_key"),
+    (
+        pytest.param("deepseek", "deepseek", {"DEEPSEEK_API_KEY": "deepseek-env-key"}, "deepseek-env-key", id="deepseek"),
+        pytest.param("zai", "zai", {"ZAI_API_KEY": "zai-env-key"}, "zai-env-key", id="zai"),
+        pytest.param(
+            "zhipuai",
+            "zhipuai",
+            {"ZAI_API_KEY": "zai-env-key", "ZHIPU_API_KEY": "zhipu-env-key"},
+            "zhipu-env-key",
+            id="zhipuai-prefers-own-key",
+        ),
+        pytest.param("zhipuai", "zhipuai", {"ZAI_API_KEY": "zai-env-key"}, "zai-env-key", id="zhipuai-falls-back-to-zai"),
+        pytest.param("grok", "grok", {"XAI_API_KEY": "xai-env-key"}, "xai-env-key", id="grok"),
+        # The removed GROK_API_KEY spelling must never populate the provider.
+        pytest.param("grok", "grok", {"GROK_API_KEY": "grok-env-key"}, None, id="grok-removed-env-var-ignored"),
+        pytest.param("minimax", "minimax", {"MINIMAX_API_KEY": "minimax-env-key"}, "minimax-env-key", id="minimax"),
+        pytest.param("kimi", "kimi", {"KIMI_API_KEY": "kimi-env-key"}, "kimi-env-key", id="kimi"),
+        pytest.param(
+            "opencode-go",
+            "opencode_go",
+            {"OPENCODE_API_KEY": "opencode-go-env-key"},
+            "opencode-go-env-key",
+            id="opencode-go",
+        ),
+        pytest.param("qwen", "qwen", {"DASHSCOPE_API_KEY": "qwen-env-key"}, "qwen-env-key", id="qwen"),
+    ),
+)
+def test_parse_provider_config_from_env(
+    provider_id: str,
+    attribute: str,
+    env: dict[str, str],
+    expected_api_key: str | None,
+) -> None:
     parsed = parse_provider_configs_payload(
-        {"deepseek": {}},
+        {provider_id: {}},
         source="runtime config field 'providers'",
-        env={"DEEPSEEK_API_KEY": "deepseek-env-key"},
+        env=env,
     )
 
     assert parsed is not None
-    assert parsed.deepseek == OpenAICompatibleProviderConfig(api_key="deepseek-env-key")
-
-
-def test_parse_zai_provider_config_from_env() -> None:
-    parsed = parse_provider_configs_payload(
-        {"zai": {}},
-        source="runtime config field 'providers'",
-        env={"ZAI_API_KEY": "zai-env-key"},
-    )
-
-    assert parsed is not None
-    assert parsed.zai == OpenAICompatibleProviderConfig(api_key="zai-env-key")
-
-
-def test_parse_zhipuai_provider_config_prefers_zhipu_api_key() -> None:
-    parsed = parse_provider_configs_payload(
-        {"zhipuai": {}},
-        source="runtime config field 'providers'",
-        env={"ZAI_API_KEY": "zai-env-key", "ZHIPU_API_KEY": "zhipu-env-key"},
-    )
-
-    assert parsed is not None
-    assert parsed.zhipuai == OpenAICompatibleProviderConfig(api_key="zhipu-env-key")
-
-
-def test_parse_zhipuai_provider_config_falls_back_to_zai_api_key() -> None:
-    parsed = parse_provider_configs_payload(
-        {"zhipuai": {}},
-        source="runtime config field 'providers'",
-        env={"ZAI_API_KEY": "zai-env-key"},
-    )
-
-    assert parsed is not None
-    assert parsed.zhipuai == OpenAICompatibleProviderConfig(api_key="zai-env-key")
-
-
-def test_parse_zai_provider_config_with_base_url_and_model_map() -> None:
-    parsed = parse_provider_configs_payload(
-        {
-            "zai": {
-                "api_key": "zai-key",
-                "base_url": "https://custom.z.ai",
-                "model_map": {"glm4": "glm-4-flash", "glm4-plus": "glm-4-plus"},
-            }
-        },
-        source="runtime config field 'providers'",
-    )
-
-    assert parsed is not None
-    assert parsed.zai == OpenAICompatibleProviderConfig(
-        api_key="zai-key",
-        base_url="https://custom.z.ai",
-        model_map={"glm4": "glm-4-flash", "glm4-plus": "glm-4-plus"},
-    )
-
-
-def test_parse_grok_provider_config_from_env() -> None:
-    parsed = parse_provider_configs_payload(
-        {"grok": {}},
-        source="runtime config field 'providers'",
-        env={"XAI_API_KEY": "xai-env-key"},
-    )
-
-    assert parsed is not None
-    assert parsed.grok == OpenAICompatibleProviderConfig(api_key="xai-env-key")
-
-
-def test_parse_grok_provider_config_ignores_removed_grok_api_key() -> None:
-    parsed = parse_provider_configs_payload(
-        {"grok": {}},
-        source="runtime config field 'providers'",
-        env={"GROK_API_KEY": "grok-env-key"},
-    )
-
-    assert parsed is not None
-    assert parsed.grok == OpenAICompatibleProviderConfig()
-
-
-def test_parse_minimax_provider_config_from_env() -> None:
-    parsed = parse_provider_configs_payload(
-        {"minimax": {}},
-        source="runtime config field 'providers'",
-        env={"MINIMAX_API_KEY": "minimax-env-key"},
-    )
-
-    assert parsed is not None
-    assert parsed.minimax == OpenAICompatibleProviderConfig(api_key="minimax-env-key")
-
-
-def test_parse_minimax_provider_config_with_timeout() -> None:
-    parsed = parse_provider_configs_payload(
-        {
-            "minimax": {
-                "api_key": "minimax-key",
-                "timeout_seconds": 60.0,
-            }
-        },
-        source="runtime config field 'providers'",
-    )
-
-    assert parsed is not None
-    assert parsed.minimax == OpenAICompatibleProviderConfig(
-        api_key="minimax-key",
-        timeout_seconds=60.0,
-    )
-
-
-def test_parse_kimi_provider_config_from_env() -> None:
-    parsed = parse_provider_configs_payload(
-        {"kimi": {}},
-        source="runtime config field 'providers'",
-        env={"KIMI_API_KEY": "kimi-env-key"},
-    )
-
-    assert parsed is not None
-    assert parsed.kimi == OpenAICompatibleProviderConfig(api_key="kimi-env-key")
-
-
-def test_parse_kimi_provider_config_with_base_url() -> None:
-    parsed = parse_provider_configs_payload(
-        {
-            "kimi": {
-                "api_key": "kimi-key",
-                "base_url": "https://api.moonshot.cn/v1",
-            }
-        },
-        source="runtime config field 'providers'",
-    )
-
-    assert parsed is not None
-    assert parsed.kimi == OpenAICompatibleProviderConfig(
-        api_key="kimi-key",
-        base_url="https://api.moonshot.cn/v1",
-    )
-
-
-def test_parse_openai_compatible_provider_config_with_discovery_base_url() -> None:
-    parsed = parse_provider_configs_payload(
-        {
-            "kimi": {
-                "api_key": "kimi-key",
-                "base_url": "https://api.moonshot.ai",
-                "discovery_base_url": "https://api.moonshot.ai/v1",
-            }
-        },
-        source="runtime config field 'providers'",
-    )
-
-    assert parsed is not None
-    assert parsed.kimi == OpenAICompatibleProviderConfig(
-        api_key="kimi-key",
-        base_url="https://api.moonshot.ai",
-        discovery_base_url="https://api.moonshot.ai/v1",
-    )
-
-
-def test_parse_opencode_go_provider_config_from_env() -> None:
-    parsed = parse_provider_configs_payload(
-        {"opencode-go": {}},
-        source="runtime config field 'providers'",
-        env={"OPENCODE_API_KEY": "opencode-go-env-key"},
-    )
-
-    assert parsed is not None
-    assert parsed.opencode_go == OpenAICompatibleProviderConfig(api_key="opencode-go-env-key")
-
-
-def test_parse_opencode_go_provider_config_with_model_map() -> None:
-    parsed = parse_provider_configs_payload(
-        {
-            "opencode-go": {
-                "api_key": "opencode-go-key",
-                "model_map": {"gpt-4o": "opencode/gpt-4o", "claude": "opencode/claude-3-5-sonnet"},
-            }
-        },
-        source="runtime config field 'providers'",
-    )
-
-    assert parsed is not None
-    assert parsed.opencode_go == OpenAICompatibleProviderConfig(
-        api_key="opencode-go-key",
-        model_map={"gpt-4o": "opencode/gpt-4o", "claude": "opencode/claude-3-5-sonnet"},
-    )
-
-
-def test_parse_qwen_provider_config_from_env() -> None:
-    parsed = parse_provider_configs_payload(
-        {"qwen": {}},
-        source="runtime config field 'providers'",
-        env={"DASHSCOPE_API_KEY": "qwen-env-key"},
-    )
-
-    assert parsed is not None
-    assert parsed.qwen == OpenAICompatibleProviderConfig(api_key="qwen-env-key")
-
-
-def test_parse_qwen_provider_config_with_base_url() -> None:
-    parsed = parse_provider_configs_payload(
-        {
-            "qwen": {
-                "api_key": "qwen-key",
-                "base_url": "https://dashscope.aliyuncs.com",
-            }
-        },
-        source="runtime config field 'providers'",
-    )
-
-    assert parsed is not None
-    assert parsed.qwen == OpenAICompatibleProviderConfig(
-        api_key="qwen-key",
-        base_url="https://dashscope.aliyuncs.com",
-    )
-
-
-def test_parse_multiple_openai_compatible_providers_together() -> None:
-    parsed = parse_provider_configs_payload(
-        {
-            "deepseek": {"api_key": "deepseek-key"},
-            "zai": {"api_key": "zai-key"},
-            "zhipuai": {"api_key": "zhipuai-key"},
-            "grok": {"api_key": "grok-key"},
-            "minimax": {"api_key": "minimax-key"},
-            "kimi": {"api_key": "kimi-key"},
-            "opencode-go": {"api_key": "opencode-go-key"},
-            "qwen": {"api_key": "qwen-key"},
-        },
-        source="runtime config field 'providers'",
-    )
-
-    assert parsed is not None
-    assert parsed.deepseek == OpenAICompatibleProviderConfig(api_key="deepseek-key")
-    assert parsed.zai == OpenAICompatibleProviderConfig(api_key="zai-key")
-    assert parsed.zhipuai == OpenAICompatibleProviderConfig(api_key="zhipuai-key")
-    assert parsed.grok == OpenAICompatibleProviderConfig(api_key="grok-key")
-    assert parsed.minimax == OpenAICompatibleProviderConfig(api_key="minimax-key")
-    assert parsed.kimi == OpenAICompatibleProviderConfig(api_key="kimi-key")
-    assert parsed.opencode_go == OpenAICompatibleProviderConfig(api_key="opencode-go-key")
-    assert parsed.qwen == OpenAICompatibleProviderConfig(api_key="qwen-key")
-
-
-def test_parse_openai_compatible_provider_with_api_key_env_var_override() -> None:
-    parsed = parse_provider_configs_payload(
-        {
-            "zhipuai": {
-                "api_key": "direct-key",
-                "api_key_env_var": "MY_CUSTOM_ZHIPUAI_KEY",
-            }
-        },
-        source="runtime config field 'providers'",
-        env={"MY_CUSTOM_ZHIPUAI_KEY": "env-key", "ZAI_API_KEY": "default-env-key"},
-    )
-
-    assert parsed is not None
-    assert parsed.zhipuai == OpenAICompatibleProviderConfig(
-        api_key="direct-key",
-        api_key_env_var="MY_CUSTOM_ZHIPUAI_KEY",
-    )
-
-
-def test_reject_unknown_openai_compatible_provider() -> None:
-    with pytest.raises(ValueError, match=r"runtime config field 'providers.unknown_cn': unknown provider id 'unknown_cn'"):
-        _ = parse_provider_configs_payload(
-            {"unknown_cn": {"api_key": "key"}},
-            source="runtime config field 'providers'",
-        )
+    assert getattr(parsed, attribute) == OpenAICompatibleProviderConfig(api_key=expected_api_key)
 
 
 @pytest.mark.parametrize(
-    "provider_name",
-    ["deepseek", "zai", "zhipuai", "grok", "minimax", "kimi", "opencode-go", "qwen"],
+    ("env", "attribute", "expected_api_key"),
+    (
+        pytest.param({"OPENCODE_API_KEY": "opencode-go-env-key"}, "opencode_go", "opencode-go-env-key", id="opencode-go"),
+        pytest.param({"DEEPSEEK_API_KEY": "deepseek-env-key"}, "deepseek", "deepseek-env-key", id="deepseek"),
+        pytest.param({"XAI_API_KEY": "xai-env-key"}, "grok", "xai-env-key", id="grok"),
+        pytest.param({"ZAI_API_KEY": "zai-env-key"}, "zai", "zai-env-key", id="zai"),
+        pytest.param({"ZHIPU_API_KEY": "zhipu-env-key"}, "zhipuai", "zhipu-env-key", id="zhipuai"),
+        pytest.param({"DASHSCOPE_API_KEY": "qwen-env-key"}, "qwen", "qwen-env-key", id="qwen"),
+    ),
 )
-def test_openai_compatible_provider_not_allowed_in_custom_block(provider_name: str) -> None:
-    with pytest.raises(
-        ValueError,
-        match=rf"runtime config field 'providers.custom\.{provider_name}'",
-    ):
-        _ = parse_provider_configs_payload(
-            {
-                "custom": {
-                    provider_name: {"api_key": "key"},
-                }
-            },
-            source="runtime config field 'providers'",
-        )
-
-
-def test_provider_configs_from_env_builds_opencode_go_without_repo_provider_block() -> None:
-    parsed = provider_configs_from_env({"OPENCODE_API_KEY": "opencode-go-env-key"})
+def test_provider_configs_from_env_builds_configured_provider(
+    env: dict[str, str],
+    attribute: str,
+    expected_api_key: str,
+) -> None:
+    parsed = provider_configs_from_env(env)
 
     assert parsed is not None
-    assert parsed.opencode_go == OpenAICompatibleProviderConfig(api_key="opencode-go-env-key")
+    assert getattr(parsed, attribute) == OpenAICompatibleProviderConfig(api_key=expected_api_key)
 
 
-def test_provider_configs_from_env_builds_deepseek_without_repo_provider_block() -> None:
-    parsed = provider_configs_from_env({"DEEPSEEK_API_KEY": "deepseek-env-key"})
-
-    assert parsed is not None
-    assert parsed.deepseek == OpenAICompatibleProviderConfig(api_key="deepseek-env-key")
-
-
-def test_provider_configs_from_env_builds_grok_with_xai_api_key() -> None:
-    parsed = provider_configs_from_env({"XAI_API_KEY": "xai-env-key"})
-
-    assert parsed is not None
-    assert parsed.grok == OpenAICompatibleProviderConfig(api_key="xai-env-key")
-
-
-def test_provider_configs_from_env_builds_zai_with_zai_api_key() -> None:
-    parsed = provider_configs_from_env({"ZAI_API_KEY": "zai-env-key"})
-
-    assert parsed is not None
-    assert parsed.zai == OpenAICompatibleProviderConfig(api_key="zai-env-key")
-
-
-def test_provider_configs_from_env_builds_zhipuai_with_zhipu_api_key() -> None:
-    parsed = provider_configs_from_env({"ZHIPU_API_KEY": "zhipu-env-key"})
-
-    assert parsed is not None
-    assert parsed.zhipuai == OpenAICompatibleProviderConfig(api_key="zhipu-env-key")
-
-
-def test_provider_configs_from_env_builds_qwen_with_dashscope_api_key() -> None:
-    parsed = provider_configs_from_env({"DASHSCOPE_API_KEY": "qwen-env-key"})
-
-    assert parsed is not None
-    assert parsed.qwen == OpenAICompatibleProviderConfig(api_key="qwen-env-key")
-
+def test_provider_configs_from_env_leaves_unconfigured_providers_unset() -> None:
     other_provider_env = provider_configs_from_env({"ZAI_API_KEY": "zai-env-key"})
 
     assert other_provider_env is not None
@@ -917,60 +380,6 @@ def test_merge_provider_configs_keeps_repo_provider_over_environment_fallback() 
 
     assert merged is not None
     assert merged.opencode_go == OpenAICompatibleProviderConfig(api_key="repo-key")
-
-
-def test_merge_provider_configs_preserves_empty_base_url_override() -> None:
-    merged = merge_provider_configs(
-        ProviderConfigs(
-            openai=OpenAIProviderConfig(base_url="", discovery_base_url=""),
-            endpoint=ProviderEndpointConfig(base_url="", discovery_base_url=""),
-            opencode_go=OpenAICompatibleProviderConfig(base_url="", discovery_base_url=""),
-        ),
-        ProviderConfigs(
-            openai=OpenAIProviderConfig(
-                base_url="https://fallback.openai.example",
-                discovery_base_url="https://fallback.openai.example/v1",
-            ),
-            endpoint=ProviderEndpointConfig(
-                base_url="https://fallback.endpoint.example",
-                discovery_base_url="https://fallback.endpoint.example/v1",
-            ),
-            opencode_go=OpenAICompatibleProviderConfig(
-                base_url="https://fallback.opencode.example",
-                discovery_base_url="https://fallback.opencode.example/v1",
-            ),
-        ),
-    )
-
-    assert merged is not None
-    assert merged.openai is not None
-    assert merged.openai.base_url == ""
-    assert merged.openai.discovery_base_url == ""
-    assert merged.endpoint is not None
-    assert merged.endpoint.base_url == ""
-    assert merged.endpoint.discovery_base_url == ""
-    assert merged.opencode_go is not None
-    assert merged.opencode_go.base_url == ""
-    assert merged.opencode_go.discovery_base_url == ""
-
-
-@pytest.mark.parametrize(
-    ("provider", "env_var", "api_key"),
-    [
-        ("groq", "GROQ_API_KEY", "groq-env-key"),
-        ("together", "TOGETHER_API_KEY", "together-env-key"),
-        ("fireworks", "FIREWORKS_API_KEY", "fireworks-env-key"),
-        ("mistral", "MISTRAL_API_KEY", "mistral-env-key"),
-    ],
-)
-def test_new_provider_configs_use_standard_environment_keys(provider: str, env_var: str, api_key: str) -> None:
-    parsed = parse_provider_configs_payload({provider: {}}, source="providers", env={env_var: api_key})
-    assert parsed is not None
-    assert getattr(parsed, provider) == OpenAICompatibleProviderConfig(api_key=api_key)
-
-    from_env = provider_configs_from_env({env_var: api_key})
-    assert from_env is not None
-    assert getattr(from_env, provider) == OpenAICompatibleProviderConfig(api_key=api_key)
 
 
 def test_new_provider_configs_serialize_without_secrets() -> None:

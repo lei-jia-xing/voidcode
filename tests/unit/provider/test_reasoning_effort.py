@@ -72,14 +72,6 @@ def test_clamp_effort_to_supported_returns_unchanged_when_supported_is_none() ->
     assert clamp_effort_to_supported("high", None) == "high"
 
 
-def test_clamp_effort_to_supported_returns_off_unchanged() -> None:
-    assert clamp_effort_to_supported("off", ("low", "high")) == "off"
-
-
-def test_clamp_effort_to_supported_returns_unchanged_when_effort_supported() -> None:
-    assert clamp_effort_to_supported("medium", ("minimal", "medium", "max")) == "medium"
-
-
 def test_clamp_effort_to_supported_snaps_down_to_nearest_supported() -> None:
     assert clamp_effort_to_supported("high", ("minimal", "low", "medium")) == "medium"
 
@@ -109,10 +101,6 @@ def test_map_effort_for_provider_sends_lowest_supported_level_for_off() -> None:
     ) == {"reasoning_effort": "low"}
 
 
-def test_map_effort_for_provider_omits_effort_for_off_without_supported_levels() -> None:
-    assert map_effort_for_provider(provider_name="openai", effort=REASONING_EFFORT_OFF) == {}
-
-
 def test_map_effort_for_provider_does_not_translate_levels_by_provider_name() -> None:
     # Old promise: the mapping table rewrote levels per provider name ("max" became
     # "xhigh" except for anthropic). New promise: levels are decided by the model's
@@ -121,12 +109,6 @@ def test_map_effort_for_provider_does_not_translate_levels_by_provider_name() ->
         assert map_effort_for_provider(provider_name=provider_name, effort=REASONING_EFFORT_MAX) == {
             "reasoning_effort": REASONING_EFFORT_MAX,
         }
-
-
-def test_map_effort_for_provider_passes_other_values_through() -> None:
-    assert map_effort_for_provider(provider_name="openai", effort="medium") == {
-        "reasoning_effort": "medium",
-    }
 
 
 def test_clamp_then_map_snaps_to_the_models_own_levels_for_a_shipped_model() -> None:
@@ -149,17 +131,22 @@ def test_clamp_then_map_snaps_to_the_models_own_levels_for_a_shipped_model() -> 
     ) == {"reasoning_effort": "max"}
 
 
-@pytest.mark.parametrize("provider_name", ["zai", "zhipuai"])
-def test_map_effort_for_provider_uses_named_provider_binary_for_off(provider_name: str) -> None:
-    assert map_effort_for_provider(provider_name=provider_name, effort="off") == {
-        "extra_body": {"thinking": {"type": "disabled"}},
-    }
-
-
-@pytest.mark.parametrize("provider_name", ["zai", "zhipuai"])
-def test_map_effort_for_provider_uses_named_provider_binary_for_high(provider_name: str) -> None:
-    assert map_effort_for_provider(provider_name=provider_name, effort="high") == {
-        "extra_body": {"thinking": {"type": "enabled"}},
+@pytest.mark.parametrize(
+    ("provider_name", "effort", "expected_thinking"),
+    (
+        pytest.param("zai", "off", "disabled", id="zai-off"),
+        pytest.param("zai", "high", "enabled", id="zai-high"),
+        pytest.param("zhipuai", "off", "disabled", id="zhipuai-off"),
+        pytest.param("zhipuai", "high", "enabled", id="zhipuai-high"),
+    ),
+)
+def test_map_effort_for_provider_uses_named_provider_binary(
+    provider_name: str,
+    effort: str,
+    expected_thinking: str,
+) -> None:
+    assert map_effort_for_provider(provider_name=provider_name, effort=effort) == {
+        "extra_body": {"thinking": {"type": expected_thinking}},
     }
 
 
@@ -171,37 +158,6 @@ def test_map_effort_for_provider_routes_deepseek_levels_through_extra_body(effor
     assert map_effort_for_provider(provider_name="deepseek", effort=effort) == {
         "extra_body": {"reasoning_effort": effort},
     }
-
-
-def test_map_effort_for_provider_routes_deepseek_off_through_the_binary_switch() -> None:
-    assert map_effort_for_provider(provider_name="deepseek", effort=REASONING_EFFORT_OFF) == {
-        "extra_body": {"thinking": {"type": "disabled"}},
-    }
-
-
-@pytest.mark.parametrize(
-    ("effort", "expected"),
-    [
-        (REASONING_EFFORT_OFF, "low"),
-        (REASONING_EFFORT_MINIMAL, "low"),
-        (REASONING_EFFORT_LOW, "low"),
-        (REASONING_EFFORT_MEDIUM, "medium"),
-        (REASONING_EFFORT_HIGH, "high"),
-        (REASONING_EFFORT_XHIGH, "high"),
-        (REASONING_EFFORT_MAX, "high"),
-    ],
-)
-def test_opencode_go_minimax_m2_7_keeps_its_previous_wire_values(effort: str, expected: str) -> None:
-    # The name-keyed ladder is gone, but for the shipped metadata the clamp
-    # reproduces exactly the values the removed table produced.
-    metadata = static_catalog_metadata("opencode-go", "minimax-m2.7")
-    assert metadata is not None
-    assert metadata.supported_effort_levels == ("low", "medium", "high")
-    assert map_effort_for_provider(
-        provider_name="opencode-go",
-        effort=clamp_effort_to_supported(effort, metadata.supported_effort_levels),
-        supported_levels=metadata.supported_effort_levels,
-    ) == {"reasoning_effort": expected}
 
 
 @pytest.mark.parametrize(

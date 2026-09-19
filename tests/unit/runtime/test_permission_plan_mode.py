@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -13,13 +13,17 @@ from voidcode.runtime.contracts import (
 )
 from voidcode.runtime.permission import (
     PLAN_MODE_DENIAL_REASON,
+    ExternalDirectoryPermissionConfig,
+    ExternalDirectoryPolicy,
     OperationClass,
+    PathScope,
     PermissionPolicy,
     default_policy_for_tool,
     is_plan_mode_blocked,
     resolve_permission,
 )
 from voidcode.runtime.permission_context import RuntimePermissionContextResolver, operation_class_for_tool
+from voidcode.runtime.permission_engine import PermissionEngine
 from voidcode.tools import AstGrepTool, ShellExecTool
 from voidcode.tools.contracts import ToolCall, ToolDefinition
 
@@ -174,9 +178,32 @@ def test_request_metadata_accepts_runtime_mode(mode: str) -> None:
     assert normalized.get("mode") == mode
 
 
-def test_request_metadata_rejects_unknown_runtime_mode() -> None:
-    with pytest.raises(RuntimeRequestError, match="mode"):
-        _ = validate_runtime_request_metadata({"mode": "magic"})
+@pytest.mark.parametrize(
+    ("helper", "metadata", "match"),
+    (
+        pytest.param(validate_runtime_request_metadata, {"mode": "magic"}, "mode", id="validate-unknown-mode"),
+        pytest.param(
+            validate_runtime_request_metadata,
+            {"read_only": "true"},
+            "read_only",
+            id="validate-non-boolean-read-only",
+        ),
+        pytest.param(runtime_mode_from_metadata, {"mode": "magic"}, "mode", id="helper-unknown-mode"),
+        pytest.param(
+            runtime_read_only_from_metadata,
+            {"read_only": "true"},
+            "read_only",
+            id="helper-non-boolean-read-only",
+        ),
+    ),
+)
+def test_request_metadata_rejects_invalid_mode_and_read_only(
+    helper: Any,
+    metadata: dict[str, object],
+    match: str,
+) -> None:
+    with pytest.raises(RuntimeRequestError, match=match):
+        _ = helper(metadata)
 
 
 @pytest.mark.parametrize("read_only", [True, False])
@@ -185,11 +212,6 @@ def test_request_metadata_accepts_explicit_read_only_flag(read_only: bool) -> No
 
     assert normalized.get("read_only") is read_only
     assert runtime_read_only_from_metadata(normalized) is read_only
-
-
-def test_request_metadata_rejects_non_boolean_read_only_flag() -> None:
-    with pytest.raises(RuntimeRequestError, match="read_only"):
-        _ = validate_runtime_request_metadata({"read_only": "true"})
 
 
 def test_plan_runtime_mode_implies_effective_read_only() -> None:
@@ -204,16 +226,6 @@ def test_normal_runtime_mode_allows_explicit_read_only() -> None:
 
     assert runtime_mode_from_metadata(normalized) == "normal"
     assert runtime_read_only_from_metadata(normalized) is True
-
-
-def test_runtime_mode_helper_rejects_invalid_unvalidated_metadata() -> None:
-    with pytest.raises(RuntimeRequestError, match="mode"):
-        _ = runtime_mode_from_metadata({"mode": "magic"})
-
-
-def test_runtime_read_only_helper_rejects_invalid_unvalidated_read_only() -> None:
-    with pytest.raises(RuntimeRequestError, match="read_only"):
-        _ = runtime_read_only_from_metadata({"read_only": "true"})
 
 
 def test_default_policy_allows_read_only_and_asks_for_write() -> None:
@@ -276,3 +288,55 @@ def test_ast_grep_replace_is_write_operation_and_denied_in_plan_mode(tmp_path: P
     assert outcome.decision == "deny"
     assert outcome.pending_approval is not None
     assert outcome.pending_approval.policy_surface == "mode.plan"
+
+
+class _StubTool:
+    pass
+
+
+class _StubResolver:
+    """A resolver double pinned to two external paths: one allowed, one denied."""
+
+    def permission_context_for_tool_call(
+        self,
+        *,
+        tool: ToolDefinition,
+        tool_instance: object,
+        tool_call: ToolCall,
+        patch_path_extractor: object,
+    ) -> tuple[PathScope, str | None, OperationClass, tuple[str, ...]]:
+        _ = tool, tool_instance, tool_call, patch_path_extractor
+        return ("external", "/ext-a/x", "read", ("/ext-a/x", "/ext-b/y"))
+
+    def normalized_permission_path_candidates(
+        self,
+        tool_call: ToolCall,
+        external_paths: tuple[str, ...],
+        *,
+        patch_path_extractor: object,
+        tool: ToolDefinition | None = None,
+    ) -> tuple[str, ...]:
+        _ = tool_call, external_paths, patch_path_extractor, tool
+        return ()
+
+
+def test_external_directory_policy_denies_across_multiple_external_paths() -> None:
+    """A deny on any external path wins over allows on the other paths."""
+    definition = ToolDefinition(name="read", description="read", input_schema={}, read_only=True)
+    engine = PermissionEngine(
+        _context_resolver=_StubResolver(),  # type: ignore[arg-type]
+        _permission_config=ExternalDirectoryPermissionConfig(),
+    )
+
+    evaluation = engine.evaluate(
+        tool=definition,
+        tool_instance=_StubTool(),  # type: ignore[arg-type]
+        tool_call=ToolCall(tool_name="read", arguments={"path": "/ext-a/x"}),
+        permission_rules=(),
+        permission_config=ExternalDirectoryPermissionConfig(
+            read=ExternalDirectoryPolicy(rules=(("/ext-b/*", "deny"), ("*", "allow"))),
+        ),
+    )
+
+    assert evaluation.external_decision == "deny"
+    assert evaluation.matched_rule == "/ext-b/*"

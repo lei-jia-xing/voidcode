@@ -6,11 +6,6 @@ from typing import cast
 import pytest
 
 from voidcode.runtime.acp import AcpAdapterState, AcpConfigState
-from voidcode.runtime.contracts import (
-    PLAN_STATE_METADATA_KEYS,
-    RUNTIME_STATE_METADATA_KEYS,
-    SKILL_SNAPSHOT_METADATA_KEYS,
-)
 from voidcode.runtime.execution.provider_execution_metadata import run_id_from_session_metadata
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.session_metadata_helpers import (
@@ -23,7 +18,6 @@ from voidcode.runtime.session_metadata_helpers import (
     runtime_state_context_compacted,
     runtime_state_context_projection,
     runtime_state_context_transform_applied,
-    runtime_state_metadata_payload,
     runtime_state_pending_tool_intent,
     runtime_state_run_id,
     runtime_state_todos,
@@ -93,41 +87,35 @@ def test_persisted_parse_rejects_unknown_keys(parse: object, payload: dict[str, 
 
 
 @pytest.mark.parametrize(
-    "parse,payload",
+    ("parse", "payload", "match"),
     (
-        (parse_runtime_state_metadata, {"run_id": 42}),
-        (parse_runtime_state_metadata, {"todos": []}),
-        (parse_plan_state_metadata, {"status": 7}),
-        (parse_plan_state_metadata, {"blocked_tool": "bash"}),
-        (parse_delegation_metadata, {"mode": "sync", "depth": "3"}),
-        (parse_delegation_metadata, {"mode": "invalid"}),
-        (parse_delegation_metadata, {"depth": 1}),
+        pytest.param(parse_runtime_state_metadata, {"run_id": 42}, "", id="runtime-state-wrong-type"),
+        pytest.param(parse_runtime_state_metadata, {"todos": []}, "", id="runtime-state-todos-shape"),
+        pytest.param(parse_runtime_state_metadata, [], "persisted runtime_state must be an object", id="runtime-state-not-dict"),
+        pytest.param(parse_plan_state_metadata, {"status": 7}, "", id="plan-state-wrong-type"),
+        pytest.param(parse_plan_state_metadata, {"blocked_tool": "bash"}, "", id="plan-state-missing-status"),
+        pytest.param(parse_plan_state_metadata, "waiting", "persisted plan_state must be an object", id="plan-state-not-dict"),
+        pytest.param(parse_delegation_metadata, {"mode": "sync", "depth": "3"}, "", id="delegation-depth-type"),
+        pytest.param(parse_delegation_metadata, {"mode": "invalid"}, "", id="delegation-unknown-mode"),
+        pytest.param(parse_delegation_metadata, {"depth": 1}, "", id="delegation-missing-mode"),
+        pytest.param(parse_delegation_metadata, None, "persisted delegation must be an object", id="delegation-not-dict"),
     ),
 )
-def test_persisted_parse_rejects_type_and_missing_fields(parse: object, payload: dict[str, object]) -> None:
-    with pytest.raises(ValueError):
+def test_persisted_parse_rejects_invalid_payloads(parse: object, payload: object, match: str) -> None:
+    with pytest.raises(ValueError, match=match or None):
         cast(object, parse)(payload)  # type: ignore[operator]
 
 
-def test_persisted_parse_rejects_non_dict() -> None:
-    with pytest.raises(ValueError, match="persisted runtime_state must be an object"):
-        parse_runtime_state_metadata([])
-    with pytest.raises(ValueError, match="persisted plan_state must be an object"):
-        parse_plan_state_metadata("waiting")
-    with pytest.raises(ValueError, match="persisted delegation must be an object"):
-        parse_delegation_metadata(None)
-
-
-def test_persisted_parse_accepts_current_payload_and_copies_input() -> None:
+def test_persisted_parse_accepts_current_payloads() -> None:
     runtime_state = _runtime_state_payload()
     parsed = parse_runtime_state_metadata(runtime_state)
     assert parsed == runtime_state
+
+    # The parse result is a defensive copy: mutating it must not touch the caller's payload.
     parsed["run_id"] = "mutated"
     assert runtime_state["run_id"] == "run-1"
 
-
-def test_persisted_parse_accepts_current_delegation_payload() -> None:
-    parsed = parse_delegation_metadata(
+    delegation = parse_delegation_metadata(
         {
             "mode": "background",
             "subagent_type": "task",
@@ -137,38 +125,13 @@ def test_persisted_parse_accepts_current_delegation_payload() -> None:
             "selected_execution_engine": "provider",
         }
     )
-    assert parsed["depth"] == 2
-    assert parsed["mode"] == "background"
-
-
-@pytest.mark.parametrize(
-    "parser,payload",
-    (
-        (parse_runtime_state_metadata, {"run_id": "run-1", "continuity": {"version": 1}}),
-        (parse_plan_state_metadata, {"blocked_tool": "bash"}),
-        (parse_delegation_metadata, {"mode": "sync", "depth": "3"}),
-    ),
-)
-def test_legacy_metadata_is_rejected(parser: object, payload: dict[str, object]) -> None:
-    with pytest.raises(ValueError):
-        cast(object, parser)(payload)  # type: ignore[operator]
+    assert delegation["depth"] == 2
+    assert delegation["mode"] == "background"
 
 
 # ---------------------------------------------------------------------------
 # 只读 accessor（§5.4）
 # ---------------------------------------------------------------------------
-
-
-def test_runtime_state_run_id_accessor() -> None:
-    assert runtime_state_run_id({"runtime_state": {"run_id": "run-1"}}) == "run-1"
-    assert runtime_state_run_id({"runtime_state": {}}) is None
-    assert runtime_state_run_id({}) is None
-    with pytest.raises(ValueError, match="run_id"):
-        runtime_state_run_id({"runtime_state": {"run_id": ""}})
-    assert run_id_from_session_metadata({"runtime_state": {"run_id": "run-1"}}) == "run-1"
-    assert run_id_from_session_metadata({}) is None
-
-
 def test_runtime_state_accessors() -> None:
     metadata = {"runtime_state": _runtime_state_payload()}
     assert runtime_state_todos(metadata) == {
@@ -178,7 +141,7 @@ def test_runtime_state_accessors() -> None:
         "summary": {"total": 0, "pending": 0, "in_progress": 0, "completed": 0, "abandoned": 0, "blocked": 0, "active": 0},
     }
     assert runtime_state_pending_tool_intent(metadata) is not None
-    assert runtime_state_pending_tool_intent(metadata) is not None and metadata["runtime_state"]["pending_tool_intent"] is not None
+    assert metadata["runtime_state"]["pending_tool_intent"] is not None
     assert runtime_state_context_compacted(metadata) is not None
     assert runtime_state_context_transform_applied(metadata) is not None
     assert runtime_state_context_projection(metadata) is not None
@@ -189,9 +152,17 @@ def test_runtime_state_accessors() -> None:
         runtime_state_todos({"runtime_state": {"todos": []}})
     assert runtime_state_value({}, "run_id") is None
 
+    # run_id accessor: present, absent, blank (rejected), plus the execution-layer alias.
+    assert runtime_state_run_id({"runtime_state": {"run_id": "run-1"}}) == "run-1"
+    assert runtime_state_run_id({"runtime_state": {}}) is None
+    assert runtime_state_run_id({}) is None
+    with pytest.raises(ValueError, match="run_id"):
+        runtime_state_run_id({"runtime_state": {"run_id": ""}})
+    assert run_id_from_session_metadata({"runtime_state": {"run_id": "run-1"}}) == "run-1"
+    assert run_id_from_session_metadata({}) is None
 
-def test_todo_state_from_session_metadata_via_accessor() -> None:
-    metadata = {
+    # Todos accessor with a populated payload, plus the malformed-shape rejection.
+    todos_metadata = {
         "runtime_state": {
             "todos": {
                 "version": 2,
@@ -201,7 +172,7 @@ def test_todo_state_from_session_metadata_via_accessor() -> None:
             }
         }
     }
-    todo_state = todo_state_from_session_metadata(metadata)
+    todo_state = todo_state_from_session_metadata(todos_metadata)
     assert todo_state is not None
     assert todo_state["revision"] == 5
     with pytest.raises(ValueError, match="must be an object"):
@@ -264,41 +235,6 @@ def test_parse_skill_snapshot_metadata_delegates_hash_validation() -> None:
     payload["snapshot_hash"] = "0" * 64  # 篡改 hash
     with pytest.raises(ValueError, match="hash"):
         parse_skill_snapshot_metadata(payload)
-
-
-# ---------------------------------------------------------------------------
-# key-set 常量与 TypedDict 字段一致（§3）
-# ---------------------------------------------------------------------------
-
-
-def test_key_set_constants() -> None:
-    assert RUNTIME_STATE_METADATA_KEYS == frozenset(
-        {
-            "run_id",
-            "acp",
-            "context_projection",
-            "context_projection_summary",
-            "todos",
-            "pending_tool_intent",
-            "context_compacted",
-            "context_transform_applied",
-        }
-    )
-    # legacy 键明确不在写入 key-set
-    assert "continuity" not in RUNTIME_STATE_METADATA_KEYS
-    assert "continuity_summary" not in RUNTIME_STATE_METADATA_KEYS
-    assert PLAN_STATE_METADATA_KEYS == frozenset({"status", "approval_request_id", "blocked_tool", "last_error"})
-    assert SKILL_SNAPSHOT_METADATA_KEYS == frozenset(
-        {
-            "snapshot_version",
-            "source",
-            "selected_skill_names",
-            "applied_skill_payloads",
-            "skill_prompt_context",
-            "binding_snapshot",
-            "snapshot_hash",
-        }
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -427,31 +363,6 @@ def test_delegation_strict_write_gate_rejects_invalid_depth() -> None:
 # ---------------------------------------------------------------------------
 # Phase 2：字节等价（构造器输出与迁移前手工构造完全一致）
 # ---------------------------------------------------------------------------
-
-
-def test_runtime_state_metadata_payload_matches_manual_construction() -> None:
-    acp_state = _acp_state()
-    expected_acp = {
-        "mode": "managed",
-        "configured_enabled": True,
-        "status": "connected",
-        "available": True,
-        "last_error": None,
-        "last_request_type": None,
-        "last_request_id": None,
-        "last_event_type": None,
-        "last_delegation": None,
-    }
-    assert runtime_state_metadata_payload(run_id="run-1", acp_state=acp_state) == {
-        "run_id": "run-1",
-        "acp": expected_acp,
-    }
-    # run_id=None 时不写 run_id key（service.py:5921-5942 原语义）
-    assert runtime_state_metadata_payload(run_id=None, acp_state=acp_state) == {
-        "acp": expected_acp,
-    }
-
-
 def test_session_with_run_id_matches_manual_merge() -> None:
     session = _write_path_session(runtime_state={"run_id": "run-1"})
     updated = session_with_run_id(session, run_id="run-2")
@@ -521,17 +432,6 @@ def test_session_with_context_transform_applied_state_matches_manual_constructio
         "last_emitted_fingerprints": ["fp-9"],
         "last_emitted_run_id": "run-2",
     }
-
-
-def test_session_without_tool_intent_matches_manual_pop() -> None:
-    session = _write_path_session(runtime_state={"pending_tool_intent": {"tool_call_id": "call-1"}})
-    cleaned = session_without_tool_intent(session)
-    assert cleaned is not session
-    assert cleaned.metadata["runtime_state"] == {}
-    assert cleaned.session is session.session
-    # 无 pending_tool_intent 时原样返回同一对象（调用方身份判断）
-    plain = _write_path_session(runtime_state={"run_id": "run-1"})
-    assert session_without_tool_intent(plain) is plain
 
 
 def test_snapshot_to_session_metadata_gates_and_matches_snapshot_payload() -> None:

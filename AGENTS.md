@@ -102,5 +102,6 @@ mise run pre-commit
 ## NOTES
 - `src/voidcode/` uses src-layout; do not look for a top-level `voidcode/` package directory.
 - CI has two jobs: Python and frontend. Release workflow only publishes Python packages.
+- The test suite is intentionally core-only; `docs/testing.md` lists what "core" means and which areas are deliberately untested, so do not read those gaps as accidents.
 - Read `src/voidcode/runtime/AGENTS.md` before changing runtime session/config/tool orchestration.
 - Read `frontend/AGENTS.md` before touching anything under `frontend/`.

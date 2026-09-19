@@ -95,27 +95,6 @@ def test_plan_state_rejects_malformed_persisted_value() -> None:
         plan_state_from_metadata({"plan_state": []})
 
 
-_EXPECTED_PERSISTED_RUNTIME_CONFIG_KEYS = {
-    "approval_mode",
-    "permission",
-    "policy",
-    "execution_engine",
-    "tool_timeout_seconds",
-    "reasoning_effort",
-    "model",
-    "fallback_models",
-    "providers",
-    "resolved_provider",
-    "resolved_hook_presets",
-    "tools",
-    "agent",
-    "agents",
-    "context_window",
-    "lsp",
-    "mcp",
-}
-
-
 def _accepted_persisted_runtime_config_values() -> dict[str, object]:
     return {
         "approval_mode": "deny",
@@ -164,14 +143,15 @@ def _accepted_persisted_runtime_config_values() -> dict[str, object]:
     }
 
 
-def test_persisted_runtime_config_key_set_is_current_and_complete() -> None:
-    assert set(PERSISTED_RUNTIME_CONFIG_KEYS) == _EXPECTED_PERSISTED_RUNTIME_CONFIG_KEYS
-
-
-@pytest.mark.parametrize("field", sorted(_EXPECTED_PERSISTED_RUNTIME_CONFIG_KEYS))
+@pytest.mark.parametrize("field", sorted(PERSISTED_RUNTIME_CONFIG_KEYS))
 def test_persisted_runtime_config_accepts_representative_value_for_each_key(field: str) -> None:
+    values = _accepted_persisted_runtime_config_values()
+    # The field list comes from the source constant, so a newly persisted key must
+    # be given a representative value (and a result assertion) here instead of
+    # silently escaping the acceptance surface.
+    assert field in values, f"add a representative persisted value for new key {field!r}"
     payload = _current_runtime_config_payload()
-    payload[field] = _accepted_persisted_runtime_config_values()[field]
+    payload[field] = values[field]
 
     materialized = parse_persisted_runtime_config(payload)
 

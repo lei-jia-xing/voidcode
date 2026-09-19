@@ -16,7 +16,6 @@ import pytest
 from voidcode.runtime.config import (
     _load_user_config,
     load_runtime_config,
-    merge_runtime_tui_preferences,
 )
 
 
@@ -99,8 +98,3 @@ def test_formatter_languages_merge_over_the_hooks_override(tmp_path: Path) -> No
 
     assert config.hooks is not None
     assert config.hooks.formatter_presets["python"].command == ("other-fmt",)
-
-
-def test_merge_runtime_tui_preferences_still_prefers_the_override(tmp_path: Path) -> None:
-    """Guard the merge helper the formatter fix relies on staying side-effect free."""
-    assert callable(merge_runtime_tui_preferences)

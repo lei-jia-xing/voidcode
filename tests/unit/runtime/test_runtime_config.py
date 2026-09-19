@@ -65,8 +65,6 @@ from voidcode.runtime.permission import PatternPermissionRule
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
 
 _parse_tui_config = runtime_config.__dict__["_parse_tui_config"]
-_parse_tools_config = runtime_config.__dict__["_parse_tools_config"]
-_parse_skills_config = runtime_config.__dict__["_parse_skills_config"]
 
 
 def _prompt_materialization_payload(profile: str) -> dict[str, object]:
@@ -1873,18 +1871,6 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
             "runtime config field 'context_window.provider_context_oversized_feedback_chars'.*greater than or equal to 1",
             id="context-window-provider-context-threshold-zero",
         ),
-    ],
-)
-def test_runtime_config_rejects_invalid_payload(tmp_path: Path, payload: dict[str, object], match: str) -> None:
-    _write_runtime_config(tmp_path, payload)
-
-    with pytest.raises(ValueError, match=match):
-        _ = load_runtime_config(tmp_path, env={})
-
-
-@pytest.mark.parametrize(
-    ("payload", "match"),
-    [
         pytest.param({"plan": {}}, "runtime config field 'plan'", id="top-level-plan"),
         pytest.param({"tools": []}, "runtime config field 'tools'", id="tools-shape"),
         pytest.param(
@@ -2219,11 +2205,7 @@ def test_runtime_config_rejects_invalid_payload(tmp_path: Path, payload: dict[st
         ),
     ],
 )
-def test_runtime_config_rejects_invalid_extension_domain_shapes(
-    tmp_path: Path,
-    payload: dict[str, object],
-    match: str,
-) -> None:
+def test_runtime_config_rejects_invalid_payload(tmp_path: Path, payload: dict[str, object], match: str) -> None:
     _write_runtime_config(tmp_path, payload)
 
     with pytest.raises(ValueError, match=match):

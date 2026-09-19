@@ -177,3 +177,23 @@ def test_live_builtin_provider_schemas_validate_as_object_envelopes(runtime: Voi
         # A definition whose declared properties do not survive the provider projection
         # would silently hand the model a schema missing arguments.
         assert _declared_property_names(definition) <= set(properties), f"{definition.name} lost declared properties in the provider schema"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "expected_read_only"),
+    (
+        pytest.param("edit", False, id="edit"),
+        pytest.param("glob", True, id="glob"),
+        pytest.param("grep", True, id="grep"),
+        pytest.param("read", True, id="read"),
+        pytest.param("shell_exec", False, id="shell-exec"),
+        pytest.param("web_fetch", True, id="web-fetch"),
+        pytest.param("web_search", True, id="web-search"),
+        pytest.param("write", False, id="write"),
+    ),
+)
+def test_live_builtin_registry_read_only_metadata(tool_name: str, expected_read_only: bool) -> None:
+    """The default registry's read-only classification feeds policy and replay decisions."""
+    registry = ToolRegistry.with_defaults()
+
+    assert registry.resolve(tool_name).definition.read_only is expected_read_only

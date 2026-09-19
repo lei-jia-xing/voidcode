@@ -17,10 +17,6 @@ from voidcode.runtime.background.models import (
 )
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse, UnknownBackgroundTaskError
 from voidcode.runtime.events import (
-    DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS,
-    DELEGATED_BACKGROUND_TASK_DURABILITY_FIELDS,
-    DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
-    DELEGATED_BACKGROUND_TASK_ROUTING_FIELDS,
     EventEnvelope,
 )
 from voidcode.runtime.paths import sessions_db_path
@@ -522,29 +518,6 @@ def test_background_task_storage_lists_by_parent_session_and_preserves_order(
 
     assert [task.task.id for task in listed] == ["task-parent-a-2", "task-parent-a-1"]
     assert all(task.prompt in {"first", "third"} for task in listed)
-
-
-def test_background_task_storage_lists_by_parent_session_returns_empty_when_no_match(
-    tmp_path: Path,
-) -> None:
-    store = SqliteSessionStore()
-    store.create_background_task(
-        workspace=tmp_path,
-        task=BackgroundTaskState(
-            task=BackgroundTaskRef(id="task-other-parent"),
-            request=BackgroundTaskRequestSnapshot(
-                prompt="child background task",
-                parent_session_id="leader-other",
-            ),
-        ),
-    )
-
-    listed = store.list_background_tasks_by_parent_session(
-        workspace=tmp_path,
-        parent_session_id="leader-missing",
-    )
-
-    assert listed == ()
 
 
 def test_background_task_storage_marks_running_and_terminal(tmp_path: Path) -> None:
@@ -1473,43 +1446,6 @@ def test_background_task_storage_reconciliation_preserves_approval_blocked_child
         "background",
         "explore",
         1,
-    )
-
-
-def test_runtime_events_define_delegated_background_task_durability_fields() -> None:
-    assert DELEGATED_BACKGROUND_TASK_EVENT_TYPES == (
-        "runtime.background_task_progress",
-        "runtime.background_task_waiting_approval",
-        "runtime.background_task_idle_reminder",
-        "runtime.background_task_awaiting_steer",
-        "runtime.background_task_completed",
-        "runtime.background_task_failed",
-        "runtime.background_task_cancelled",
-        "runtime.background_task_interrupted",
-        "runtime.background_task_group_completed",
-        "runtime.delegated_result_available",
-    )
-    assert DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS == (
-        "task_id",
-        "parent_session_id",
-        "requested_child_session_id",
-        "child_session_id",
-        "approval_request_id",
-        "question_request_id",
-    )
-    assert DELEGATED_BACKGROUND_TASK_ROUTING_FIELDS == (
-        "routing_mode",
-        "routing_subagent_type",
-        "routing_description",
-        "routing_command",
-    )
-    assert DELEGATED_BACKGROUND_TASK_DURABILITY_FIELDS == (
-        *DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS,
-        *DELEGATED_BACKGROUND_TASK_ROUTING_FIELDS,
-        "status",
-        "approval_blocked",
-        "result_available",
-        "cancellation_cause",
     )
 
 

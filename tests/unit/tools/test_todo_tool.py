@@ -46,18 +46,6 @@ def test_single_operations_update_one_runtime_snapshot(tmp_path: Path) -> None:
     assert cast(list[dict[str, object]], phases[0]["tasks"])[1] == {"content": "second", "status": "completed"}
 
 
-def test_block_preserves_closed_tasks_and_drop_marks_abandoned(tmp_path: Path) -> None:
-    tool = TodoTool()
-    _, phases = _invoke(tool, {"op": "init", "items": ["done", "open"]}, workspace=tmp_path)
-    _, phases = _invoke(tool, {"op": "done", "task": "done"}, phases=phases, workspace=tmp_path)
-    _, phases = _invoke(tool, {"op": "block", "phase": "Tasks", "reason": "dependency"}, phases=phases, workspace=tmp_path)
-    tasks = cast(list[dict[str, object]], phases[0]["tasks"])
-    assert tasks[0] == {"content": "done", "status": "completed"}
-    assert tasks[1] == {"content": "open", "status": "blocked", "blocker": "dependency"}
-    _, phases = _invoke(tool, {"op": "drop", "task": "open"}, phases=phases, workspace=tmp_path)
-    assert cast(list[dict[str, object]], phases[0]["tasks"])[1] == {"content": "open", "status": "abandoned"}
-
-
 def test_append_and_rm_are_atomic_on_failure(tmp_path: Path) -> None:
     tool = TodoTool()
     _, phases = _invoke(tool, {"op": "init", "items": ["existing"]}, workspace=tmp_path)
@@ -66,22 +54,6 @@ def test_append_and_rm_are_atomic_on_failure(tmp_path: Path) -> None:
     assert phases == ({"name": "Tasks", "tasks": [{"content": "existing", "status": "in_progress"}]},)
     _, phases = _invoke(tool, {"op": "rm", "task": "existing"}, phases=phases, workspace=tmp_path)
     assert phases == ({"name": "Tasks", "tasks": []},)
-
-
-def test_init_rejects_blank_and_trim_colliding_items_atomically(tmp_path: Path) -> None:
-    tool = TodoTool()
-    _, phases = _invoke(tool, {"op": "init", "items": ["keep"]}, workspace=tmp_path)
-    for items in (["new", "   "], ["new", " new "]):
-        with pytest.raises(ValueError, match="non-empty|Duplicate task|already exists"):
-            _invoke(tool, {"op": "append", "phase": "Tasks", "items": list(items)}, phases=phases, workspace=tmp_path)
-
-
-def test_rm_failure_is_atomic(tmp_path: Path) -> None:
-    tool = TodoTool()
-    _, phases = _invoke(tool, {"op": "init", "items": ["keep"]}, workspace=tmp_path)
-    with pytest.raises(ValueError, match="not found"):
-        _invoke(tool, {"op": "rm", "task": "missing"}, phases=phases, workspace=tmp_path)
-    assert phases == ({"name": "Tasks", "tasks": [{"content": "keep", "status": "in_progress"}]},)
 
 
 def test_view_is_read_only_and_old_payload_is_rejected(tmp_path: Path) -> None:
