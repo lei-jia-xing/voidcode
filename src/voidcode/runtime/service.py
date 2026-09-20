@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 import time
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, final
 
-from ..acp import AcpRequestEnvelope, AcpResponseEnvelope
+from ..acp import AcpResponseEnvelope
 from ..agent import AgentManifestRegistry, get_builtin_agent_manifest, load_agent_manifest_registry
 from ..agent.prompts import render_agent_prompt
 from ..command import (
@@ -33,7 +33,6 @@ from ..hook.typed import (
     builtin_tool_input_handler_registry,
 )
 from ..mcp import McpCachedToolSurface, McpToolDescriptor
-from ..mcp.redaction import redact_mcp_command
 from ..provider.auth import (
     ProviderAuthResolver,
 )
@@ -43,7 +42,7 @@ from ..provider.models import (
     ResolvedProviderConfig,
     ResolvedProviderModel,
 )
-from ..provider.naming import provider_label, split_provider_model_reference
+from ..provider.naming import split_provider_model_reference
 from ..provider.protocol import (
     ProviderAbortSignal,
 )
@@ -61,13 +60,6 @@ from ..tools.contracts import (
     ToolResult,
 )
 from ..tools.delegation import TaskBatchTool, TaskTool
-from ..tools.output import (
-    read_tool_output_artifact,
-    search_tool_output_artifact,
-)
-from ..tools.output import (
-    resolve_tool_output_artifact as resolve_tool_output_artifact_metadata,
-)
 from ..tools.process import BackgroundProcessTool
 from ..tools.question import QuestionTool
 from ..tools.runtime_context import current_runtime_tool_context
@@ -77,7 +69,6 @@ from .acp import (
     AcpAdapter,
     AcpAdapterState,
     build_acp_adapter,
-    delegated_execution_for_task,
     disconnect_acp_for_session_state,
     emit_acp_events,
     emit_current_acp_drain,
@@ -108,7 +99,6 @@ from .agent_capability import (
 )
 from .background.facade import _RuntimeBackgroundTaskFacade
 from .background.models import (
-    BACKGROUND_TASK_TERMINAL_STATUSES,
     BackgroundTaskState,
     StoredBackgroundTaskSummary,
     is_background_task_terminal,
@@ -123,10 +113,6 @@ from .bundle import (
     SessionBundle,
     SessionBundleImportResult,
     SessionBundleOptions,
-    apply_session_bundle,
-    build_session_bundle,
-    read_session_bundle,
-    write_session_bundle,
 )
 from .config import (
     ExecutionEngineName,
@@ -138,10 +124,8 @@ from .config import (
     RuntimeProviderFallbackConfig,
     RuntimeSkillsConfig,
     RuntimeWebSettings,
-    load_global_web_settings,
     load_runtime_config,
     parse_runtime_agent_payload,
-    parse_runtime_agents_payload,
     save_global_web_settings,
     serialize_runtime_agent_config,
     serialize_runtime_agents_config,
@@ -188,7 +172,6 @@ from .contracts import (
     ProviderSummary,
     ProviderValidationResult,
     ReviewFileDiff,
-    RuntimeBackgroundTaskStatusSnapshot,
     RuntimeHookPresetSnapshot,
     RuntimeNotification,
     RuntimeProviderContextPolicyDecision,
@@ -199,8 +182,6 @@ from .contracts import (
     RuntimeResponse,
     RuntimeSessionDebugEvent,
     RuntimeSessionDebugFailure,
-    RuntimeSessionDebugPendingApproval,
-    RuntimeSessionDebugPendingQuestion,
     RuntimeSessionDebugSnapshot,
     RuntimeSessionDebugToolSummary,
     RuntimeSessionResult,
@@ -215,17 +196,15 @@ from .contracts import (
     validate_id,
     validate_runtime_request_metadata,
 )
+from .coordinators.inspection import InspectionCoordinator
 from .edit_schema_policy import EditSchema, EditSchemaResolver, select_edit_schema
 from .effectiveness import ToolEffectivenessReport
 from .event_envelopes import (
-    envelopes_for_acp_events,
-    envelopes_for_lsp_events,
     envelopes_for_mcp_events,
     resequence_event,
 )
 from .events import (
     RUNTIME_HOOK_PRESETS_LOADED,
-    RUNTIME_QUESTION_ANSWERED,
     RUNTIME_REASONING_DIAGNOSTIC,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_LOADED,
@@ -240,7 +219,6 @@ from .execution.provider_execution_metadata import (
     run_id_from_session_metadata,
 )
 from .execution.seams import (
-    cache_key_for_effective_config,
     provider_model_required_message,
     resolve_runtime_session_routing,
     select_graph_for_effective_config,
@@ -263,7 +241,7 @@ from .hook_runtime import (
     run_lifecycle_hooks_for_session,
 )
 from .interaction_queue import drain_runtime_messages, enqueue_runtime_message
-from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
+from .lsp import LspManager, LspManagerState, LspRequestResult, build_lsp_manager
 from .mcp import McpManager, build_mcp_manager, mcp_server_for_tool_name, release_mcp_session_events
 from .mcp_tool_cache import McpToolCatalogCache
 from .mode import MODE_DEFINITIONS, resolve_mode, runtime_mode_from_metadata, runtime_read_only_from_metadata
@@ -289,22 +267,16 @@ from .policy import (
 from .provider_catalog_cache import RuntimeProviderCatalogCache
 from .provider_catalog_query import RuntimeProviderCatalogQuery
 from .provider_inspection import (
-    ProviderReadinessFacts,
     ProviderSummaryProjector,
-    ProviderValidationFacts,
     RuntimeProviderAuthInspector,
-    RuntimeProviderReadinessProjector,
-    RuntimeProviderValidationProjector,
 )
 from .provider_metadata import (
     ReasoningEffortCapability,
-    resolve_reasoning_effort_capability,
     tool_feedback_mode,
     validate_reasoning_effort_capability,
 )
 from .question import PendingQuestion, QuestionResponse
 from .resume import RuntimeResumeCoordinator
-from .review import WorkspaceReviewService
 from .run_loop import RuntimeRunLoopCoordinator
 from .runtime_debug import (
     current_debug_status,
@@ -323,7 +295,6 @@ from .session import (
     SessionStatus,
     StoredSessionSummary,
     is_session_status_terminal,
-    normalize_persisted_session_metadata,
     reload_persisted_session,
     session_metadata_for_replay,
     validate_session_workspace,
@@ -364,11 +335,9 @@ from .skills import (
 from .status_projection import project_acp_status
 from .storage import SessionSealedError, SessionStore, SqliteSessionStore
 from .tool_execution import RuntimeToolExecutor
+from .tool_materialization import materialize, materialize_unscoped, workspace_local_tools_factory
 from .tool_materializer import RuntimeToolMaterialization, RuntimeToolMaterializer
-from .tool_provider import (
-    LocalCustomToolProvider,
-    scoped_tool_registry_for_agent,
-)
+from .tool_provider import scoped_tool_registry_for_agent
 from .tool_registry import (
     DeferredToolSource,
     ToolPolicyDecision,
@@ -480,6 +449,7 @@ class VoidCodeRuntime(RuntimeSurface):
     _agent_registry: AgentManifestRegistry
     _run_loop_coordinator: RuntimeRunLoopCoordinator
     _resume_coordinator: RuntimeResumeCoordinator
+    _inspection_coordinator: InspectionCoordinator
     _background_task_supervisor: RuntimeBackgroundTaskSupervisor
     _background_task_facade: _RuntimeBackgroundTaskFacade
     _background_process_manager: BackgroundProcessManager
@@ -644,6 +614,30 @@ class VoidCodeRuntime(RuntimeSurface):
             background_task_supervisor=self._background_task_supervisor,
             run_loop_coordinator=self._run_loop_coordinator,
         )
+        self._inspection_coordinator = InspectionCoordinator(
+            self,
+            session_store=self._session_store,
+            workspace=self._workspace,
+            config=self._config,
+            lsp_manager=self._lsp_manager,
+            mcp_manager=self._mcp_manager,
+            acp_adapter=self._acp_adapter,
+            model_provider_registry=self._model_provider_registry,
+            provider_catalog_cache=self._provider_catalog_cache,
+            provider_catalog_query=self._provider_catalog_query,
+            provider_summary_projector=self._provider_summary_projector,
+            provider_auth_inspector=self._provider_auth_inspector,
+            provider_auth_resolver=self._provider_auth_resolver,
+            skill_registry=self._skill_registry,
+            agent_registry=self._agent_registry,
+            background_task_supervisor=self._background_task_supervisor,
+            resolved_provider_config=self._resolved_provider_config,
+            provider_model=self._provider_model,
+            load_background_task=self.load_background_task,
+            refresh_mcp_tools=self._refresh_mcp_tools,
+            is_active_session=self._is_active_session_id,
+            active_session_metadata=self._active_session_metadata,
+        )
         self._background_process_manager = BackgroundProcessManager(
             persistence=cast(BackgroundProcessPersistence, self._session_store),
             workspace=self._workspace,
@@ -775,14 +769,11 @@ class VoidCodeRuntime(RuntimeSurface):
         self,
         effective_config: EffectiveRuntimeConfig,
     ) -> RuntimeToolMaterialization:
-        local_config = effective_config.tools.local if effective_config.tools is not None else None
-        local_tools = LocalCustomToolProvider(
-            workspace=self._workspace,
-            config=local_config,
-        ).provide_tools()
-        return self._tool_materializer.materialize_local_tools(
-            self._tool_materialization,
-            local_tools,
+        return materialize_unscoped(
+            effective_config,
+            materialization=self._tool_materialization,
+            materializer=self._tool_materializer,
+            local_tools_provider_factory=workspace_local_tools_factory(self._workspace),
         )
 
     def _start_run_acp(
@@ -825,14 +816,11 @@ class VoidCodeRuntime(RuntimeSurface):
         *,
         use_cache: bool = True,
     ) -> RuntimeGraph:
-        cache_key = cache_key_for_effective_config(config)
-        if use_cache and cache_key in self._graph_cache:
-            return self._graph_cache[cache_key]
-
-        graph = select_graph_for_effective_config(config=config).graph
-        if use_cache:
-            self._graph_cache[cache_key] = graph
-        return graph
+        return select_graph_for_effective_config(
+            config=config,
+            cache=self._graph_cache,
+            force_rebuild=not use_cache,
+        ).graph
 
     @staticmethod
     def _can_build_graph_for_effective_config(config: EffectiveRuntimeConfig) -> bool:
@@ -1211,13 +1199,14 @@ class VoidCodeRuntime(RuntimeSurface):
         effective_config: EffectiveRuntimeConfig,
         metadata: dict[str, object] | None = None,
     ) -> RuntimeToolMaterialization:
-        materialization = self._tool_materialization_with_effective_local_tools(effective_config)
-        registry = self._tool_scope_resolver.scope(
-            materialization.registry,
-            agent=effective_config.agent,
+        return materialize(
+            effective_config,
+            materialization=self._tool_materialization,
+            materializer=self._tool_materializer,
+            local_tools_provider_factory=workspace_local_tools_factory(self._workspace),
+            scope_resolver=self._tool_scope_resolver,
             metadata=metadata,
         )
-        return materialization.scoped(registry)
 
     def tool_policy_denial(
         self,
@@ -1259,14 +1248,14 @@ class VoidCodeRuntime(RuntimeSurface):
         )
 
     def current_lsp_state(self) -> LspManagerState:
-        return self._lsp_manager.current_state()
+        return self._inspection_coordinator.current_lsp_state()
 
     def current_mcp_state(self):
-        return self._mcp_manager.current_state()
+        return self._inspection_coordinator.current_mcp_state()
 
     @property
     def provider_auth_resolver(self) -> ProviderAuthResolver:
-        return self._provider_auth_resolver
+        return self._inspection_coordinator.provider_auth_resolver
 
     def request_lsp(
         self,
@@ -1276,13 +1265,11 @@ class VoidCodeRuntime(RuntimeSurface):
         params: dict[str, object],
         workspace: Path,
     ) -> LspRequestResult:
-        return self._lsp_manager.request(
-            LspRequest(
-                server_name=server_name,
-                method=method,
-                params=params,
-                workspace=workspace,
-            )
+        return self._inspection_coordinator.request_lsp(
+            server_name=server_name,
+            method=method,
+            params=params,
+            workspace=workspace,
         )
 
     def request_diagnostics(
@@ -1291,18 +1278,10 @@ class VoidCodeRuntime(RuntimeSurface):
         file_path: str,
         workspace: str,
     ) -> dict[str, object]:
-        _ = workspace
-        result = self.request_lsp(
-            server_name=None,
-            method="textDocument/diagnostic",
-            params={
-                "textDocument": {
-                    "uri": (self._workspace / file_path).resolve().as_uri(),
-                }
-            },
-            workspace=self._workspace,
+        return self._inspection_coordinator.request_diagnostics(
+            file_path=file_path,
+            workspace=workspace,
         )
-        return {"lsp_response": result.response}
 
     def request_mcp_tool(
         self,
@@ -1312,14 +1291,11 @@ class VoidCodeRuntime(RuntimeSurface):
         arguments: dict[str, object],
         workspace: Path,
     ):
-        context = current_runtime_tool_context()
-        return self._mcp_manager.call_tool(
+        return self._inspection_coordinator.request_mcp_tool(
             server_name=server_name,
             tool_name=tool_name,
             arguments=arguments,
             workspace=workspace,
-            owner_session_id=context.session_id if context is not None else None,
-            parent_session_id=context.parent_session_id if context is not None else None,
         )
 
     def cleanup_idle_mcp_sessions(
@@ -1327,48 +1303,27 @@ class VoidCodeRuntime(RuntimeSurface):
         *,
         max_idle_seconds: float = 300.0,
     ) -> tuple[EventEnvelope, ...]:
-        return envelopes_for_mcp_events(
-            session_id="runtime",
-            start_sequence=1,
-            mcp_events=cast(
-                tuple[object, ...],
-                self._mcp_manager.cleanup_idle_session_servers(max_idle_seconds=max_idle_seconds),
-            ),
+        return self._inspection_coordinator.cleanup_idle_mcp_sessions(
+            max_idle_seconds=max_idle_seconds,
         )
 
     def shutdown_mcp(self) -> tuple[EventEnvelope, ...]:
-        return envelopes_for_mcp_events(
-            session_id="runtime",
-            start_sequence=1,
-            mcp_events=self._mcp_manager.shutdown(),
-        )
+        return self._inspection_coordinator.shutdown_mcp()
 
     def shutdown_lsp(self) -> tuple[EventEnvelope, ...]:
-        return envelopes_for_lsp_events(
-            session_id="runtime",
-            start_sequence=1,
-            lsp_events=self._lsp_manager.shutdown(),
-        )
+        return self._inspection_coordinator.shutdown_lsp()
 
     def current_acp_state(self):
-        return self._acp_adapter.current_state()
+        return self._inspection_coordinator.current_acp_state()
 
     def connect_acp(self) -> tuple[EventEnvelope, ...]:
-        return envelopes_for_acp_events(
-            session_id="runtime",
-            start_sequence=1,
-            acp_events=self._acp_adapter.connect(),
-        )
+        return self._inspection_coordinator.connect_acp()
 
     def disconnect_acp(self) -> tuple[EventEnvelope, ...]:
-        return envelopes_for_acp_events(
-            session_id="runtime",
-            start_sequence=1,
-            acp_events=self._acp_adapter.disconnect(),
-        )
+        return self._inspection_coordinator.disconnect_acp()
 
     def request_acp(self, *, request_type: str, payload: dict[str, object]) -> AcpResponseEnvelope:
-        return self._acp_adapter.request(AcpRequestEnvelope(request_type=request_type, payload=payload))
+        return self._inspection_coordinator.request_acp(request_type=request_type, payload=payload)
 
     def request_delegated_acp(
         self,
@@ -1377,29 +1332,11 @@ class VoidCodeRuntime(RuntimeSurface):
         task_id: str,
         payload: dict[str, object],
     ) -> AcpResponseEnvelope:
-        task = self.load_background_task(task_id)
-        envelope = AcpRequestEnvelope(
+        return self._inspection_coordinator.request_delegated_acp(
             request_type=request_type,
-            request_id=task.task.id,
-            session_id=task.session_id,
-            parent_session_id=task.parent_session_id,
-            delegation=delegated_execution_for_task(
-                task=task,
-                lifecycle_status=("waiting_approval" if task.status == "running" and task.approval_request_id else task.status),
-            ),
+            task_id=task_id,
             payload=payload,
         )
-        response = self._acp_adapter.request(envelope)
-        if response.status != "error" or response.error not in _ACP_CONNECTIVITY_ERRORS:
-            return response
-        try:
-            if response.error == "ACP transport is not connected":
-                _ = self.disconnect_acp()
-            _ = self.connect_acp()
-        except Exception:
-            logger.debug("failed to reconnect ACP for delegated request retry", exc_info=True)
-            return response
-        return self._acp_adapter.request(envelope)
 
     def _runtime_agent_registry(self) -> AgentManifestRegistry:
         registry = load_agent_manifest_registry(self._workspace)
@@ -1411,11 +1348,7 @@ class VoidCodeRuntime(RuntimeSurface):
         return AgentManifestRegistry(builtin=builtin, custom=registry.custom)
 
     def fail_acp(self, message: str) -> tuple[EventEnvelope, ...]:
-        return envelopes_for_acp_events(
-            session_id="runtime",
-            start_sequence=1,
-            acp_events=self._acp_adapter.fail(message),
-        )
+        return self._inspection_coordinator.fail_acp(message)
 
     def run_with_persistence(
         self,
@@ -2858,10 +2791,10 @@ class VoidCodeRuntime(RuntimeSurface):
         )
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
-        return self._session_store.list_sessions(workspace=self._workspace)
+        return self._inspection_coordinator.list_sessions()
 
     def tool_effectiveness_report(self) -> ToolEffectivenessReport:
-        return self._session_store.tool_effectiveness_report(workspace=self._workspace)
+        return self._inspection_coordinator.tool_effectiveness_report()
 
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
         validated_request = self._validated_request(request)
@@ -3066,38 +2999,11 @@ class VoidCodeRuntime(RuntimeSurface):
         return self._background_task_facade.steer(task_id, content)
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
-        delegated_task = self._session_store.load_background_task_by_child_session(
-            workspace=self._workspace,
-            child_session_id=session_id,
-        )
-        if delegated_task is not None:
-            self._session_store.stop_background_task_idle_reminder(
-                workspace=self._workspace,
-                task_id=delegated_task.task.id,
-                stop_condition="result_read",
-            )
-        _ = self._load_session_result(session_id=session_id)
-        self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
-        return self._load_session_result(session_id=session_id)
+        return self._inspection_coordinator.session_result(session_id=session_id)
 
     def replay_session(self, *, session_id: str) -> RuntimeResponse:
         """Read the persisted session transcript without resume semantics."""
-        validate_id(session_id)
-        response = self._load_stored_response(session_id=session_id)
-        projected_metadata = session_metadata_for_replay(response.session.metadata)
-        return RuntimeResponse(
-            session=SessionState(
-                session=response.session.session,
-                status=response.session.status,
-                turn=response.session.turn,
-                metadata=projected_metadata,
-            ),
-            events=self._events_with_runtime_policy_projection(
-                response.events,
-                metadata=projected_metadata,
-            ),
-            output=response.output,
-        )
+        return self._inspection_coordinator.replay_session(session_id=session_id)
 
     def session_events_after(self, *, session_id: str, after_sequence: int) -> SessionEventBatch:
         """Read only the persisted events after ``after_sequence`` plus the row status.
@@ -3109,83 +3015,22 @@ class VoidCodeRuntime(RuntimeSurface):
         projection as a full replay, and the projection is only computed when
         the batch actually contains a policy-annotated event.
         """
-        validate_id(session_id)
-        stored = self._session_store.read_session_events_after(
-            workspace=self._workspace,
+        return self._inspection_coordinator.session_events_after(
             session_id=session_id,
             after_sequence=after_sequence,
         )
-        events = stored.events
-        if any(event.event_type in _POLICY_PROJECTED_EVENT_TYPES for event in events):
-            events = self._events_with_runtime_policy_projection(
-                events,
-                metadata=session_metadata_for_replay(normalize_persisted_session_metadata(stored.metadata)),
-            )
-        return SessionEventBatch(status=stored.status, events=events)
 
     def revert_session(self, *, session_id: str, sequence: int) -> RuntimeSessionRevertMarker:
-        validate_id(session_id)
-        marker = self._session_store.revert_session(
-            workspace=self._workspace,
-            session_id=session_id,
-            sequence=sequence,
-        )
-        validate_session_workspace(
-            self._session_store.load_session_result(
-                workspace=self._workspace,
-                session_id=session_id,
-            ).session,
-            session_id=session_id,
-            workspace=self._workspace,
-        )
-        return marker
+        return self._inspection_coordinator.revert_session(session_id=session_id, sequence=sequence)
 
     def undo_session(self, *, session_id: str) -> RuntimeSessionRevertMarker:
-        validate_id(session_id)
-        marker = self._session_store.undo_session(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
-        validate_session_workspace(
-            self._session_store.load_session_result(
-                workspace=self._workspace,
-                session_id=session_id,
-            ).session,
-            session_id=session_id,
-            workspace=self._workspace,
-        )
-        return marker
+        return self._inspection_coordinator.undo_session(session_id=session_id)
 
     def unrevert_session(self, *, session_id: str) -> RuntimeSessionRevertMarker | None:
-        validate_id(session_id)
-        marker = self._session_store.unrevert_session(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
-        validate_session_workspace(
-            self._session_store.load_session_result(
-                workspace=self._workspace,
-                session_id=session_id,
-            ).session,
-            session_id=session_id,
-            workspace=self._workspace,
-        )
-        return marker
+        return self._inspection_coordinator.unrevert_session(session_id=session_id)
 
     def _load_session_result(self, *, session_id: str) -> RuntimeSessionResult:
-        validate_id(session_id)
-        result = self._session_store.load_session_result(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
-        validate_session_workspace(result.session, session_id=session_id, workspace=self._workspace)
-        raw_snapshot = result.session.metadata.get("agent_capability_snapshot")
-        if raw_snapshot is None:
-            raise ValueError("persisted session requires agent_capability_snapshot")
-        if not isinstance(raw_snapshot, dict):
-            raise ValueError("persisted agent_capability_snapshot must be an object")
-        validate_agent_capability_snapshot(cast(dict[str, object], raw_snapshot))
-        return result
+        return self._inspection_coordinator._load_session_result(session_id=session_id)
 
     def resolve_tool_output_artifact(
         self,
@@ -3195,33 +3040,11 @@ class VoidCodeRuntime(RuntimeSurface):
         tool_call_id: str | None = None,
     ) -> dict[str, object]:
         """Resolve spilled tool output artifact metadata for a session."""
-
-        validate_id(session_id)
-        result = self._session_store.load_session_result(
-            workspace=self._workspace,
+        return self._inspection_coordinator.resolve_tool_output_artifact(
             session_id=session_id,
-        )
-        validate_session_workspace(result.session, session_id=session_id, workspace=self._workspace)
-        artifact = resolve_tool_output_artifact_metadata(
-            result.transcript,
             artifact_id=artifact_id,
             tool_call_id=tool_call_id,
         )
-        if artifact is None:
-            return {
-                "status": "artifact_not_found",
-                "artifact_missing": True,
-                "artifact_id": artifact_id,
-                "tool_call_id": tool_call_id,
-                "session_id": session_id,
-            }
-        read_result = read_tool_output_artifact(artifact, offset=0, limit=0)
-        status = read_result.get("status")
-        return {
-            **artifact,
-            "status": status if isinstance(status, str) else artifact.get("status", "unknown"),
-            "artifact_missing": bool(read_result.get("artifact_missing")),
-        }
 
     def read_tool_output_artifact(
         self,
@@ -3233,15 +3056,13 @@ class VoidCodeRuntime(RuntimeSurface):
         limit: int = 2000,
     ) -> dict[str, object]:
         """Read a bounded slice from a spilled tool output artifact."""
-
-        artifact = self.resolve_tool_output_artifact(
+        return self._inspection_coordinator.read_tool_output_artifact(
             session_id=session_id,
             artifact_id=artifact_id,
             tool_call_id=tool_call_id,
+            offset=offset,
+            limit=limit,
         )
-        if artifact.get("status") == "artifact_not_found":
-            return artifact
-        return read_tool_output_artifact(artifact, offset=offset, limit=limit)
 
     def search_tool_output_artifact(
         self,
@@ -3254,187 +3075,26 @@ class VoidCodeRuntime(RuntimeSurface):
         limit: int = 100,
     ) -> dict[str, object]:
         """Search a spilled tool output artifact by artifact id or tool call id."""
-
-        artifact = self.resolve_tool_output_artifact(
+        return self._inspection_coordinator.search_tool_output_artifact(
             session_id=session_id,
+            pattern=pattern,
             artifact_id=artifact_id,
             tool_call_id=tool_call_id,
-        )
-        if artifact.get("status") == "artifact_not_found":
-            return artifact
-        return search_tool_output_artifact(
-            artifact,
-            pattern=pattern,
             case_sensitive=case_sensitive,
             limit=limit,
         )
 
     def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot:
-        validate_id(session_id)
-        active = self._is_active_session_id(session_id)
-        active_metadata = self._active_session_metadata(session_id) if active else None
-        try:
-            result = self._load_session_result(session_id=session_id)
-        except AttributeError, UnknownSessionError, ValueError:
-            if not active:
-                raise
-            return self._active_only_session_debug_snapshot(session_id=session_id)
-        if self._should_prefer_active_debug_snapshot(
-            result=result,
-            active_metadata=active_metadata,
-        ):
-            return self._active_only_session_debug_snapshot(session_id=session_id)
-        persistence_error: str | None = None
-        pending_approval: PendingApproval | None = None
-        pending_question: PendingQuestion | None = None
-        resume_checkpoint: dict[str, object] | None = None
-        try:
-            pending_approval = self._session_store.load_pending_approval(
-                workspace=self._workspace,
-                session_id=session_id,
-            )
-            pending_question = self._session_store.load_pending_question(
-                workspace=self._workspace,
-                session_id=session_id,
-            )
-            resume_checkpoint = self._session_store.load_resume_checkpoint(
-                workspace=self._workspace,
-                session_id=session_id,
-            )
-        except ValueError as exc:
-            persistence_error = str(exc)
-        current_status = self._current_debug_status(
-            result=result,
-            active=active,
-            pending_approval=pending_approval,
-            pending_question=pending_question,
-        )
-        checkpoint_kind = (
-            cast(str, resume_checkpoint.get("kind"))
-            if isinstance(resume_checkpoint, dict) and isinstance(resume_checkpoint.get("kind"), str)
-            else None
-        )
-        terminal = result.session.status in {"completed", "failed"}
-        resumable = (
-            result.session.status == "waiting"
-            or result.session.status == "interrupted"
-            or (result.session.status == "failed" and checkpoint_kind == "provider_failure_retryable")
-        )
-        replayable = bool(result.transcript) or result.output is not None or terminal
-        last_relevant_event = self._debug_event(
-            next(
-                (
-                    event
-                    for event in reversed(result.transcript)
-                    if event.event_type
-                    in {
-                        "runtime.approval_requested",
-                        "runtime.question_requested",
-                        "runtime.approval_resolved",
-                        RUNTIME_QUESTION_ANSWERED,
-                        "runtime.failed",
-                        "runtime.tool_completed",
-                        "graph.response_ready",
-                    }
-                ),
-                result.transcript[-1] if result.transcript else None,
-            )
-        )
-        last_failure_event = self._debug_event(
-            next(
-                (event for event in reversed(result.transcript) if event.event_type == "runtime.failed"),
-                None,
-            )
-        )
-        last_tool = self._last_tool_summary(result)
-        provider_context = self._provider_context_debug_snapshot(result)
-        failure = self._debug_failure(
-            result=result,
-            last_failure_event=last_failure_event,
-            last_tool=last_tool,
-            pending_approval=pending_approval,
-            pending_question=pending_question,
-            resume_checkpoint=resume_checkpoint,
-            persistence_error=persistence_error,
-        )
-        suggested_operator_action, operator_guidance = self._operator_guidance(
-            current_status=current_status,
-            pending_approval=pending_approval,
-            pending_question=pending_question,
-            active=active,
-            resumable=resumable,
-            terminal=terminal,
-            failure=failure,
-        )
-        return RuntimeSessionDebugSnapshot(
-            session=result.session,
-            prompt=result.prompt,
-            persisted_status=result.status,
-            current_status=current_status,
-            active=active,
-            resumable=resumable,
-            replayable=replayable,
-            terminal=terminal,
-            resume_checkpoint_kind=checkpoint_kind,
-            pending_approval=(
-                RuntimeSessionDebugPendingApproval(
-                    request_id=pending_approval.request_id,
-                    tool_name=pending_approval.tool_name,
-                    target_summary=pending_approval.target_summary,
-                    reason=pending_approval.reason,
-                    policy_mode=pending_approval.policy_mode,
-                    arguments=dict(pending_approval.arguments),
-                    owner_session_id=pending_approval.owner_session_id,
-                    owner_parent_session_id=pending_approval.owner_parent_session_id,
-                    delegated_task_id=pending_approval.delegated_task_id,
-                    path_scope=pending_approval.path_scope,
-                    operation_class=pending_approval.operation_class,
-                    canonical_path=pending_approval.canonical_path,
-                    matched_rule=pending_approval.matched_rule,
-                    policy_surface=pending_approval.policy_surface,
-                )
-                if pending_approval is not None
-                else None
-            ),
-            pending_question=(
-                RuntimeSessionDebugPendingQuestion(
-                    request_id=pending_question.request_id,
-                    tool_name=pending_question.tool_name,
-                    question_count=len(pending_question.prompts),
-                    headers=tuple(prompt.header for prompt in pending_question.prompts),
-                )
-                if pending_question is not None
-                else None
-            ),
-            revert_marker=result.revert_marker,
-            last_event_sequence=result.last_event_sequence,
-            last_relevant_event=last_relevant_event,
-            last_failure_event=last_failure_event,
-            failure=failure,
-            last_tool=last_tool,
-            provider_context=provider_context,
-            hook_presets=self._debug_hook_preset_snapshot(result.session.metadata),
-            suggested_operator_action=suggested_operator_action,
-            operator_guidance=operator_guidance,
-        )
+        return self._inspection_coordinator.session_debug_snapshot(session_id=session_id)
 
     def list_notifications(self) -> tuple[RuntimeNotification, ...]:
-        notifications = self._session_store.list_notifications(workspace=self._workspace)
-        return tuple(notification for notification in notifications if self._session_belongs_to_workspace(notification.session.id))
+        return self._inspection_coordinator.list_notifications()
 
     def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-        if not notification_id:
-            raise ValueError("notification_id must be a non-empty string")
-        notification = self._session_store.acknowledge_notification(
-            workspace=self._workspace,
-            notification_id=notification_id,
-        )
-        if not self._session_belongs_to_workspace(notification.session.id):
-            raise ValueError(f"unknown notification: {notification_id}")
-        return notification
+        return self._inspection_coordinator.acknowledge_notification(notification_id=notification_id)
 
     def storage_diagnostics(self) -> dict[str, object]:
-        return self._session_store.storage_diagnostics(workspace=self._workspace)
+        return self._inspection_coordinator.storage_diagnostics()
 
     def export_session_bundle(
         self,
@@ -3442,16 +3102,9 @@ class VoidCodeRuntime(RuntimeSurface):
         session_id: str,
         options: SessionBundleOptions | None = None,
     ) -> SessionBundle:
-        validate_id(session_id)
-        _ = self._load_session_result(session_id=session_id)
-        return build_session_bundle(
-            session_store=self._session_store,
-            workspace=self._workspace,
+        return self._inspection_coordinator.export_session_bundle(
             session_id=session_id,
-            options=options or SessionBundleOptions(),
-            storage_diagnostics=self.storage_diagnostics(),
-            config_summary=self._session_bundle_config_summary(session_id=session_id),
-            provider_summary=self._session_bundle_provider_summary(session_id=session_id),
+            options=options,
         )
 
     def export_session_bundle_file(
@@ -3462,15 +3115,12 @@ class VoidCodeRuntime(RuntimeSurface):
         options: SessionBundleOptions | None = None,
         fmt: str | None = None,
     ) -> SessionBundle:
-        bundle = self.export_session_bundle(session_id=session_id, options=options)
-        if fmt is not None and fmt not in {"zip", "json"}:
-            raise ValueError(f"unsupported session bundle format: {fmt!r}")
-        _ = write_session_bundle(
-            bundle,
-            path=output_path,
+        return self._inspection_coordinator.export_session_bundle_file(
+            session_id=session_id,
+            output_path=output_path,
+            options=options,
             fmt=fmt,
         )
-        return bundle
 
     def import_session_bundle_file(
         self,
@@ -3478,42 +3128,16 @@ class VoidCodeRuntime(RuntimeSurface):
         bundle_path: Path,
         dry_run: bool = False,
     ) -> SessionBundleImportResult:
-        bundle = read_session_bundle(bundle_path)
-        return apply_session_bundle(
-            bundle,
-            session_store=self._session_store,
-            workspace=self._workspace,
+        return self._inspection_coordinator.import_session_bundle_file(
+            bundle_path=bundle_path,
             dry_run=dry_run,
         )
 
     def _session_bundle_config_summary(self, *, session_id: str) -> dict[str, object]:
-        effective_config = self.effective_runtime_config(session_id=session_id)
-        return {
-            "session_id": session_id,
-            "approval_mode": effective_config.approval_mode,
-            "model": effective_config.model,
-            "fallback_models": (list(effective_config.provider_fallback.fallback_models) if effective_config.provider_fallback is not None else []),
-            "reasoning_effort": effective_config.reasoning_effort,
-            "agent": serialize_runtime_agent_config(effective_config.agent),
-            "resolved_provider": resolved_provider_snapshot(effective_config.resolved_provider),
-        }
+        return self._inspection_coordinator._session_bundle_config_summary(session_id=session_id)
 
     def _session_bundle_provider_summary(self, *, session_id: str) -> dict[str, object]:
-        readiness = self.provider_readiness(session_id=session_id)
-        return {
-            "provider": readiness.provider,
-            "model": readiness.model,
-            "configured": readiness.configured,
-            "ok": readiness.ok,
-            "status": readiness.status,
-            "guidance": readiness.guidance,
-            "auth_present": readiness.auth_present,
-            "streaming_configured": readiness.streaming_configured,
-            "streaming_supported": readiness.streaming_supported,
-            "context_window": readiness.context_window,
-            "max_output_tokens": readiness.max_output_tokens,
-            "fallback_chain": list(readiness.fallback_chain),
-        }
+        return self._inspection_coordinator._session_bundle_provider_summary(session_id=session_id)
 
     def prune_runtime_storage(
         self,
@@ -3522,44 +3146,20 @@ class VoidCodeRuntime(RuntimeSurface):
         keep_background_tasks: int | None = None,
         older_than: int | None = None,
     ) -> dict[str, int]:
-        return self._session_store.prune_runtime_storage(
-            workspace=self._workspace,
+        return self._inspection_coordinator.prune_runtime_storage(
             keep_sessions=keep_sessions,
             keep_background_tasks=keep_background_tasks,
             older_than=older_than,
         )
 
     def reset_runtime_storage(self) -> dict[str, object]:
-        return self._session_store.reset_runtime_storage(workspace=self._workspace)
+        return self._inspection_coordinator.reset_runtime_storage()
 
     def effective_runtime_config(self, *, session_id: str | None = None) -> EffectiveRuntimeConfig:
-        if session_id is None:
-            return self.effective_runtime_config_from_metadata(None)
-        validate_id(session_id)
-        response = self._load_stored_response(session_id=session_id)
-        return self.effective_runtime_config_from_metadata(response.session.metadata)
+        return self._inspection_coordinator.effective_runtime_config(session_id=session_id)
 
     def effective_agent_model_config(self, *, session_id: str | None = None) -> dict[str, object]:
-        agents, base_model, base_provider_fallback = self._display_routing_config(session_id=session_id)
-        payload: dict[str, object] = {}
-        for manifest in self._agent_registry.list_manifests():
-            preset_agent = agents.get(manifest.id)
-            model = preset_agent.model if preset_agent is not None else manifest.model_preference
-            if model is None:
-                model = base_model
-            provider_fallback = provider_fallback_for_agent_selection(
-                model=model,
-                preset_agent=preset_agent,
-                base_provider_fallback=base_provider_fallback,
-            )
-            fallback_models = list(provider_fallback.fallback_models) if provider_fallback is not None else []
-            payload[manifest.id] = {
-                "model": preset_agent.model if preset_agent is not None else None,
-                "fallback_models": fallback_models,
-                "effective_model": model,
-                "effective_fallback_models": fallback_models,
-            }
-        return payload
+        return self._inspection_coordinator.effective_agent_model_config(session_id=session_id)
 
     def _display_routing_config(
         self,
@@ -3570,29 +3170,7 @@ class VoidCodeRuntime(RuntimeSurface):
         str | None,
         RuntimeProviderFallbackConfig | None,
     ]:
-        if session_id is None:
-            return (
-                self._config.agents or {},
-                self._config.model,
-                self._config.provider_fallback,
-            )
-        validate_id(session_id)
-        response = self._load_stored_response(session_id=session_id)
-        runtime_config = response.session.metadata.get("runtime_config")
-        if not isinstance(runtime_config, dict):
-            raise ValueError("persisted session metadata must include runtime_config object")
-        payload = cast(dict[str, object], runtime_config)
-        materialized = parse_persisted_runtime_config(payload)
-        base_model = materialized.model
-        base_provider_fallback = materialized.provider_fallback
-        agents = parse_runtime_agents_payload(
-            payload.get("agents"),
-            source="persisted runtime_config.agents",
-            hooks=self._config.hooks,
-            agent_registry=self._agent_registry,
-            allow_runtime_internal=True,
-        )
-        return agents or {}, base_model, base_provider_fallback
+        return self._inspection_coordinator._display_routing_config(session_id=session_id)
 
     def _canonical_known_provider_name(self, provider_name: str) -> str:
         """Canonical id for a provider this runtime knows, or a loud error.
@@ -3602,21 +3180,16 @@ class VoidCodeRuntime(RuntimeSurface):
         not degrade into the generic endpoint provider, so the registry answers
         this question once and raises otherwise.
         """
-        if not provider_name or "/" in provider_name:
-            raise ValueError("provider_name must be a non-empty provider id without '/'")
-        return self._model_provider_registry.resolve_with_metadata(provider_name).provider_name
+        return self._inspection_coordinator._canonical_known_provider_name(provider_name)
 
     def refresh_provider_models(self, provider_name: str) -> tuple[str, ...]:
-        canonical_name = self._canonical_known_provider_name(provider_name)
-        models = self._model_provider_registry.refresh_available_models(canonical_name)
-        self._persist_provider_model_catalog_cache()
-        return models
+        return self._inspection_coordinator.refresh_provider_models(provider_name)
 
     def provider_models(self, provider_name: str) -> tuple[str, ...]:
-        return self._provider_catalog_query.models(provider_name)
+        return self._inspection_coordinator.provider_models(provider_name)
 
     def provider_model_catalog(self, provider_name: str) -> dict[str, object] | None:
-        return self._provider_catalog_query.catalog_payload(provider_name)
+        return self._inspection_coordinator.provider_model_catalog(provider_name)
 
     def _hydrate_provider_model_catalog_cache(self) -> None:
         self._provider_catalog_cache.hydrate()
@@ -3625,7 +3198,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self._provider_catalog_cache.persist()
 
     def _metadata_for_provider_model(self, provider_name: str, model_name: str) -> ProviderModelMetadata | None:
-        return self._provider_catalog_query.metadata_for_model(provider_name, model_name)
+        return self._inspection_coordinator._metadata_for_provider_model(provider_name, model_name)
 
     def reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> ReasoningEffortCapability:
         """Resolve the reasoning-effort capability of a config's active provider/model target.
@@ -3634,17 +3207,7 @@ class VoidCodeRuntime(RuntimeSurface):
         decides; the provider-level allowlist is only the fallback for models whose
         metadata is silent (see `resolve_reasoning_effort_capability`).
         """
-        selection = config.resolved_provider.active_target.selection
-        provider_name = selection.provider
-        model_name = selection.model
-        model_metadata = (
-            self._metadata_for_provider_model(provider_name, model_name) if provider_name is not None and model_name is not None else None
-        )
-        return resolve_reasoning_effort_capability(
-            provider_name=provider_name,
-            model_name=model_name,
-            model_metadata=model_metadata,
-        )
+        return self._inspection_coordinator.reasoning_effort_capability(config)
 
     def _context_window_policy_for_provider_attempt(
         self,
@@ -3653,71 +3216,26 @@ class VoidCodeRuntime(RuntimeSurface):
         resolved_provider: ResolvedProviderConfig | None,
         provider_attempt: int,
     ) -> ContextWindowPolicy:
-        # Provider context limits are enforced by the provider. Without a
-        # provider-reported turn usage value, runtime must not invent a budget.
-        _ = resolved_provider, provider_attempt
-        return policy
+        return cast(
+            ContextWindowPolicy,
+            self._inspection_coordinator._context_window_policy_for_provider_attempt(
+                policy,
+                resolved_provider=resolved_provider,
+                provider_attempt=provider_attempt,
+            ),
+        )
 
     def list_provider_summaries(self) -> tuple[ProviderSummary, ...]:
-        return self._provider_summary_projector.project_all(
-            self._model_provider_registry.providers,
-            current_provider=self._current_provider_name(),
-            label_for=provider_label,
-            is_configured=self._provider_is_configured,
-        )
+        return self._inspection_coordinator.list_provider_summaries()
 
     def provider_models_result(self, provider_name: str) -> ProviderModelsResult:
-        canonical_name = self._canonical_known_provider_name(provider_name)
-        configured = self._provider_is_configured(canonical_name)
-        catalog = self.provider_model_catalog(canonical_name)
-        if configured and catalog is None:
-            _ = self.refresh_provider_models(canonical_name)
-        return self._provider_catalog_query.models_result(
-            canonical_name,
-            configured=configured,
-        )
+        return self._inspection_coordinator.provider_models_result(provider_name)
 
     def provider_readiness(self, *, session_id: str | None = None) -> ProviderReadinessResult:
-        effective_config = self.effective_runtime_config(session_id=session_id)
-        return self._provider_readiness_for_effective_config(effective_config)
+        return self._inspection_coordinator.provider_readiness(session_id=session_id)
 
     def _provider_readiness_for_effective_config(self, effective_config: EffectiveRuntimeConfig) -> ProviderReadinessResult:
-        active_target = effective_config.resolved_provider.active_target
-        provider_name = active_target.selection.provider
-        model_name = active_target.selection.model
-        fallback_chain = tuple(_provider_target_label(target) for target in effective_config.resolved_provider.target_chain.all_targets)
-        streaming_configured = None
-        streaming_supported = None
-        context_window = None
-        max_output_tokens = None
-        if provider_name is not None and model_name is not None:
-            metadata = self._metadata_for_provider_model(provider_name, model_name)
-            if metadata is not None:
-                streaming_supported = metadata.supports_streaming
-                context_window = metadata.context_window
-                max_output_tokens = metadata.max_output_tokens
-        configured = provider_name is not None and self._provider_is_configured(provider_name)
-        auth_present, auth_failure_kind, auth_message = self._provider_auth_presence(provider_name)
-        return RuntimeProviderReadinessProjector.project(
-            ProviderReadinessFacts(
-                provider=provider_name,
-                model=model_name,
-                configured=configured,
-                auth_present=auth_present,
-                auth_failure_kind=auth_failure_kind,
-                auth_message=auth_message,
-                streaming_configured=streaming_configured,
-                streaming_supported=streaming_supported,
-                context_window=context_window,
-                max_output_tokens=max_output_tokens,
-                fallback_chain=fallback_chain,
-                reasoning_controls=self._reasoning_controls_diagnostic(
-                    effective_config=effective_config,
-                    provider_name=provider_name,
-                    model_name=model_name,
-                ),
-            )
-        )
+        return self._inspection_coordinator._provider_readiness_for_effective_config(effective_config)
 
     def _reasoning_controls_diagnostic(
         self,
@@ -3733,129 +3251,26 @@ class VoidCodeRuntime(RuntimeSurface):
         payload therefore names the layer that decided and, when neither layer
         knows, says the forward is unverified instead of claiming support.
         """
-        effort = effective_config.reasoning_effort
-        payload: dict[str, object] = {
-            "reasoning_effort_requested": effort is not None,
-            "reasoning_effort": effort,
-            "status": "not_requested" if effort is None else "unknown",
-            "forwarded": False,
-        }
-        if provider_name is None or model_name is None:
-            payload["status"] = "unavailable"
-            payload["reason"] = "provider_model_unresolved"
-            return payload
-        capability = resolve_reasoning_effort_capability(
+        return self._inspection_coordinator._reasoning_controls_diagnostic(
+            effective_config=effective_config,
             provider_name=provider_name,
             model_name=model_name,
-            model_metadata=self._metadata_for_provider_model(provider_name, model_name),
         )
-        payload["supports_reasoning_effort"] = capability.supported
-        payload["capability_source"] = capability.source
-        if effort is None:
-            return payload
-        if capability.supported is False:
-            payload["status"] = "unsupported"
-            payload["reason"] = (
-                "model_metadata_disallows_reasoning_effort"
-                if capability.source == "model_metadata"
-                else "provider_default_disallows_reasoning_effort"
-            )
-            return payload
-        if capability.supported is None:
-            payload["status"] = "forwarded_unverified"
-            payload["reason"] = "model_capability_unknown"
-        else:
-            payload["status"] = "forwarded"
-        payload["forwarded"] = True
-        return payload
 
     def _reasoning_controls_diagnostic_for_config(
         self,
         effective_config: EffectiveRuntimeConfig,
     ) -> dict[str, object] | None:
-        if effective_config.execution_engine != "provider":
-            return None
-        active_target = effective_config.resolved_provider.active_target.selection
-        provider_name = active_target.provider
-        model_name = active_target.model
-        diagnostic = self._reasoning_controls_diagnostic(
-            effective_config=effective_config,
-            provider_name=provider_name,
-            model_name=model_name,
-        )
-        if diagnostic.get("reasoning_effort_requested") is not True:
-            return None
-        return {
-            "severity": "info",
-            "category": "reasoning_controls",
-            "provider": provider_name,
-            "model": model_name,
-            **diagnostic,
-        }
+        return self._inspection_coordinator._reasoning_controls_diagnostic_for_config(effective_config)
 
     def inspect_provider(self, provider_name: str) -> ProviderInspectResult:
-        canonical_name = self._canonical_known_provider_name(provider_name)
-        summary = next(
-            (provider for provider in self.list_provider_summaries() if provider.name == canonical_name),
-            self._provider_summary_projector.project_one(
-                canonical_name,
-                current_provider=self._current_provider_name(),
-                label_for=provider_label,
-                is_configured=self._provider_is_configured,
-            ),
-        )
-        validation = self.validate_provider_credentials(provider_name)
-        models = self.provider_models_result(provider_name)
-        current_model = self._provider_model.selection.model if self._provider_model.selection.provider == provider_name else None
-        current_metadata = self._metadata_for_provider_model(provider_name, current_model) if current_model is not None else None
-        return ProviderInspectResult(
-            summary=summary,
-            models=models,
-            validation=validation,
-            current_model=current_model,
-            current_model_metadata=current_metadata,
-            readiness=self.provider_readiness() if summary.current else None,
-        )
+        return self._inspection_coordinator.inspect_provider(provider_name)
 
     def validate_provider_credentials(self, provider_name: str) -> ProviderValidationResult:
-        canonical_name = self._canonical_known_provider_name(provider_name)
-        provider_name = canonical_name
-        configured = self._provider_is_configured(provider_name)
-        if not configured:
-            return RuntimeProviderValidationProjector.project(
-                ProviderValidationFacts(
-                    provider=provider_name,
-                    configured=False,
-                    auth_present=None,
-                    models=self.provider_models_result(provider_name),
-                )
-            )
-        auth_present, auth_failure_kind, auth_message = self._provider_auth_presence(provider_name)
-        if auth_present is False:
-            return RuntimeProviderValidationProjector.project(
-                ProviderValidationFacts(
-                    provider=provider_name,
-                    configured=True,
-                    auth_present=auth_present,
-                    auth_failure_kind=auth_failure_kind,
-                    auth_message=auth_message,
-                )
-            )
-        _ = self.refresh_provider_models(provider_name)
-        result = self.provider_models_result(provider_name)
-        return RuntimeProviderValidationProjector.project(
-            ProviderValidationFacts(
-                provider=provider_name,
-                configured=True,
-                auth_present=auth_present,
-                auth_failure_kind=auth_failure_kind,
-                auth_message=auth_message,
-                models=result,
-            )
-        )
+        return self._inspection_coordinator.validate_provider_credentials(provider_name)
 
     def _provider_auth_presence(self, provider_name: str | None) -> tuple[bool | None, str | None, str | None]:
-        return self._provider_auth_inspector.presence(provider_name).as_tuple()
+        return self._inspection_coordinator._provider_auth_presence(provider_name)
 
     @staticmethod
     def _tool_feedback_mode(
@@ -3864,230 +3279,24 @@ class VoidCodeRuntime(RuntimeSurface):
         return tool_feedback_mode(value)
 
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
-        summaries: list[AgentSummary] = []
-        configured_agent = self._config.agent
-        for manifest in self._agent_registry.list_manifests():
-            if manifest.mode != "primary":
-                continue
-
-            agent_config = configured_agent if configured_agent is not None and configured_agent.preset == manifest.id else None
-            execution_engine = (
-                agent_config.execution_engine
-                if agent_config is not None and agent_config.execution_engine is not None
-                else manifest.execution_engine
-                if manifest.execution_engine is not None
-                else self._config.execution_engine
-            )
-            agent_model = agent_config.model if agent_config is not None else None
-            model = (
-                agent_model
-                if agent_model is not None
-                else manifest.model_preference
-                if agent_config is not None and manifest.model_preference is not None
-                else self._config.model
-            )
-            provider_fallback = (
-                agent_config.provider_fallback
-                if agent_config is not None and agent_config.provider_fallback is not None
-                else self._config.provider_fallback
-            )
-            resolved_provider = resolve_provider_config(
-                model,
-                provider_fallback_for_agent_selection(
-                    model=model,
-                    preset_agent=agent_config,
-                    base_provider_fallback=self._config.provider_fallback,
-                ),
-                registry=self._model_provider_registry,
-            )
-            resolved_model = resolved_provider.model or model
-            active_selection = resolved_provider.active_target.selection
-            model_source = (
-                "configured"
-                if agent_model is not None
-                else "builtin"
-                if agent_config is not None and manifest.model_preference is not None
-                else "configured"
-                if self._config.model is not None or provider_fallback is not None
-                else None
-            )
-            configured = agent_config is not None or self._config.model is not None or provider_fallback is not None
-            summaries.append(
-                AgentSummary(
-                    id=manifest.id,
-                    label=manifest.name,
-                    description=manifest.description,
-                    mode=manifest.mode,
-                    selectable=manifest.id in self._agent_registry.executable_primary_ids(),
-                    configured=configured,
-                    source_scope=manifest.source_scope,
-                    source_path=manifest.source_path,
-                    execution_engine=execution_engine,
-                    model=resolved_model,
-                    model_label=active_selection.model,
-                    model_source=model_source,
-                    provider=active_selection.provider,
-                    fallback_chain=tuple(_provider_target_label(target) for target in resolved_provider.target_chain.all_targets),
-                )
-            )
-        return tuple(summaries)
+        return self._inspection_coordinator.list_agent_summaries()
 
     def list_skill_summaries(self) -> tuple[SkillSummary, ...]:
-        summaries: list[SkillSummary] = []
-        for skill in sorted(self._skill_registry.all(), key=lambda item: item.name):
-            summaries.append(
-                SkillSummary(
-                    name=skill.name,
-                    description=skill.description,
-                    origin=skill.origin,
-                    source_path=str(skill.entry_path),
-                )
-            )
-        return tuple(summaries)
+        return self._inspection_coordinator.list_skill_summaries()
 
     def list_command_summaries(self) -> tuple[CommandSummary, ...]:
-        registry = load_command_registry(workspace=self._workspace)
-        commands = registry.list()
-        summaries: list[CommandSummary] = []
-        for command in commands:
-            summaries.append(self._command_summary(command))
-        return tuple(summaries)
+        return self._inspection_coordinator.list_command_summaries()
 
     @staticmethod
     def _command_summary(command: CommandDefinition) -> CommandSummary:
-        return CommandSummary(
-            name=command.name,
-            description=command.description,
-            source=command.source,
-            enabled=command.enabled,
-            hidden=command.hidden,
-            agent=command.agent,
-            model=command.model,
-            subtask=command.subtask,
-            path=(str(command.path) if command.path is not None else None),
-        )
+        from .coordinators.inspection import _command_summary as _shared_summary
+
+        return _shared_summary(command)
 
     def current_status(self) -> RuntimeStatusSnapshot:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         self._background_task_supervisor.drain_queued_background_tasks()
-        git = self._git_status_snapshot()
-        lsp_state = self.current_lsp_state()
-        mcp_state = self.current_mcp_state()
-        acp_state = self.current_acp_state()
-        lsp_servers = tuple(lsp_state.servers.values())
-        lsp_status = (
-            "unconfigured"
-            if lsp_state.mode != "managed" or not lsp_state.configuration.configured_enabled
-            else "failed"
-            if any(server.status == "failed" for server in lsp_servers)
-            else "running"
-            if any(server.status == "running" for server in lsp_servers)
-            else "stopped"
-        )
-        lsp_error = next(
-            (server.last_error for server in lsp_servers if server.last_error),
-            None,
-        )
-        mcp_servers = tuple(mcp_state.servers.values())
-        mcp_configured_servers = mcp_state.configuration.servers
-        mcp_status = (
-            "unconfigured"
-            if mcp_state.mode != "managed" or not mcp_state.configuration.configured_enabled
-            else "failed"
-            if any(server.status == "failed" for server in mcp_servers)
-            else "running"
-            if any(server.status == "running" for server in mcp_servers)
-            else "stopped"
-        )
-        mcp_error = next((server.error for server in mcp_servers if server.error), None)
-        lsp_server_details: list[dict[str, object]] = []
-        for server_name in sorted(lsp_state.configuration.servers):
-            server_state = lsp_state.servers.get(server_name)
-            server_config = lsp_state.configuration.servers.get(server_name)
-            lsp_server_details.append(
-                {
-                    "server": server_name,
-                    "status": (
-                        server_state.status
-                        if server_state is not None
-                        else "disabled"
-                        if lsp_state.mode != "managed" or not lsp_state.configuration.configured_enabled
-                        else "stopped"
-                    ),
-                    "available": bool(server_state and server_state.available),
-                    "command": (list(server_config.command) if server_config is not None else []),
-                    "error": (None if server_state is None else server_state.last_error),
-                }
-            )
-        mcp_server_details: list[dict[str, object]] = []
-        for server_name, server_config in sorted(mcp_configured_servers.items()):
-            runtime_state = mcp_state.servers.get(server_name)
-            command = (
-                list(runtime_state.command) if runtime_state is not None and runtime_state.command else list(getattr(server_config, "command", ()))
-            )
-            server_status = (
-                runtime_state.status
-                if runtime_state is not None
-                else "disabled"
-                if mcp_state.mode != "managed" or not mcp_state.configuration.configured_enabled
-                else "stopped"
-            )
-            mcp_server_details.append(
-                {
-                    "server": server_name,
-                    "status": server_status,
-                    "scope": (runtime_state.scope if runtime_state is not None else getattr(server_config, "scope", "runtime")),
-                    "transport": getattr(server_config, "transport", "stdio"),
-                    "workspace_root": (None if runtime_state is None else runtime_state.workspace_root),
-                    "stage": None if runtime_state is None else runtime_state.stage,
-                    "error": None if runtime_state is None else runtime_state.error,
-                    "command": redact_mcp_command(command),
-                    "retry_available": (False if runtime_state is None else runtime_state.retry_available),
-                }
-            )
-        background_status_counts = self._background_task_supervisor.status_counts()
-        return RuntimeStatusSnapshot(
-            git=git,
-            lsp=CapabilityStatusSnapshot(
-                state=lsp_status,
-                error=lsp_error,
-                details={
-                    "mode": lsp_state.mode,
-                    "configured": bool(lsp_state.configuration.servers),
-                    "configured_enabled": lsp_state.configuration.configured_enabled,
-                    "configured_server_count": len(lsp_state.configuration.servers),
-                    "running_server_count": sum(1 for server in lsp_servers if server.status == "running"),
-                    "failed_server_count": sum(1 for server in lsp_servers if server.status == "failed"),
-                    "servers": lsp_server_details,
-                },
-            ),
-            mcp=CapabilityStatusSnapshot(
-                state=mcp_status,
-                error=mcp_error,
-                details={
-                    "mode": mcp_state.mode,
-                    "configured": bool(mcp_configured_servers),
-                    "configured_enabled": mcp_state.configuration.configured_enabled,
-                    "configured_server_count": len(mcp_configured_servers),
-                    "active_server_count": len(mcp_servers),
-                    "running_server_count": sum(1 for server in mcp_servers if server.status == "running"),
-                    "failed_server_count": sum(1 for server in mcp_servers if server.status == "failed"),
-                    "retry_available": any(server.retry_available for server in mcp_servers),
-                    "servers": mcp_server_details,
-                },
-            ),
-            acp=self._acp_status_snapshot(acp_state),
-            background_tasks=RuntimeBackgroundTaskStatusSnapshot(
-                active_worker_slots=self._background_task_supervisor.active_worker_slots(),
-                queued_count=background_status_counts.get("queued", 0),
-                running_count=background_status_counts.get("running", 0),
-                terminal_count=sum(background_status_counts.get(status, 0) for status in BACKGROUND_TASK_TERMINAL_STATUSES),
-                default_concurrency=self._config.background_task.default_concurrency,
-                provider_concurrency=dict(self._config.background_task.provider_concurrency),
-                model_concurrency=dict(self._config.background_task.model_concurrency),
-                status_counts=background_status_counts,
-            ),
-        )
+        return self._inspection_coordinator.status_snapshot()
 
     @staticmethod
     def _acp_status_snapshot(acp_state: AcpAdapterState) -> CapabilityStatusSnapshot:
@@ -4102,75 +3311,28 @@ class VoidCodeRuntime(RuntimeSurface):
         return self.current_status()
 
     def review_snapshot(self) -> WorkspaceReviewSnapshot:
-        return WorkspaceReviewService(workspace=self._workspace).snapshot(git=self._git_status_snapshot())
+        return self._inspection_coordinator.review_snapshot()
 
     def review_diff(self, path: str) -> ReviewFileDiff:
-        return WorkspaceReviewService(workspace=self._workspace).diff(
-            path=path,
-            git=self._git_status_snapshot(),
-        )
+        return self._inspection_coordinator.review_diff(path)
 
     def _git_status_snapshot(self) -> GitStatusSnapshot:
-        result = subprocess.run(
-            ["git", "-C", str(self._workspace), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            check=False,
-        )
-        stdout = self._decode_subprocess_text_output(result.stdout)
-        stderr = self._decode_subprocess_text_output(result.stderr)
-        if result.returncode == 0:
-            branch_result = subprocess.run(
-                ["git", "-C", str(self._workspace), "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            return GitStatusSnapshot(
-                state="git_ready",
-                root=stdout.strip() or str(self._workspace),
-                branch=branch_result.stdout.strip() or None if branch_result.returncode == 0 else None,
-            )
-        if "not a git repository" in stderr.lower():
-            return GitStatusSnapshot(
-                state="not_git_repo",
-                root=None,
-                branch=None,
-                error=stderr or None,
-            )
-        return GitStatusSnapshot(
-            state="git_error",
-            root=None,
-            error=stderr or stdout.strip() or None,
-            branch=None,
-        )
+        return self._inspection_coordinator._git_status_snapshot()
 
     @staticmethod
     def _decode_subprocess_text_output(value: object) -> str:
-        if isinstance(value, str):
-            return value
-        if isinstance(value, bytes):
-            try:
-                return value.decode("utf-8", errors="replace")
-            except Exception:
-                return value.decode(errors="replace")
-        return ""
+        from .coordinators.inspection import _decode_subprocess_text_output as _shared_decode
+
+        return _shared_decode(value)
 
     def _current_provider_name(self) -> str | None:
-        active_target = self._resolved_provider_config.active_target
-        selection = active_target.selection
-        return selection.provider
+        return self._inspection_coordinator._current_provider_name()
 
     def _provider_is_configured(self, provider_name: str) -> bool:
-        return self._provider_auth_inspector.is_configured(provider_name)
+        return self._inspection_coordinator._provider_is_configured(provider_name)
 
     def web_settings(self) -> dict[str, object]:
-        settings = load_global_web_settings()
-        effective_config = self.effective_runtime_config_from_metadata(None)
-        return {
-            "provider": settings.provider,
-            "provider_api_key_present": settings.provider_api_key_present,
-            "model": effective_config.model,
-        }
+        return self._inspection_coordinator.web_settings()
 
     def update_web_settings(
         self,
@@ -4272,6 +3434,16 @@ class VoidCodeRuntime(RuntimeSurface):
         self._initial_effective_config = effective_config
         self._graph_cache = {}
         self._graph = new_graph
+        self._inspection_coordinator.update_provider_state(
+            config=self._config,
+            model_provider_registry=provider_registry,
+            provider_catalog_cache=provider_catalog_cache,
+            provider_catalog_query=provider_catalog_query,
+            provider_auth_inspector=provider_auth_inspector,
+            provider_auth_resolver=provider_auth_resolver,
+            resolved_provider_config=resolved_provider_config,
+            provider_model=resolved_provider_config.active_target,
+        )
 
     @staticmethod
     def _debug_event(event: EventEnvelope | None) -> RuntimeSessionDebugEvent | None:
@@ -4326,36 +3498,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self,
         result: RuntimeSessionResult,
     ) -> RuntimeProviderContextSnapshot:
-        prompt, tool_results = self._prompt_and_tool_results_from_debug_events(result.transcript)
-        if not prompt:
-            prompt = result.prompt
-        assembled_context = self.assemble_provider_context(
-            prompt=prompt,
-            tool_results=tuple(tool_results),
-            session_metadata=result.session.metadata,
-            skill_prompt_context=self._debug_skill_prompt_context(result.session.metadata),
-        )
-        context_window_metadata = result.session.metadata.get("context_window")
-        if isinstance(context_window_metadata, dict):
-            typed_context_window_metadata = cast(dict[str, object], context_window_metadata)
-            preserved_transform_metadata = typed_context_window_metadata.get("context_transforms")
-            if isinstance(preserved_transform_metadata, dict):
-                assembled_context = RuntimeAssembledContext(
-                    prompt=assembled_context.prompt,
-                    tool_results=assembled_context.tool_results,
-                    continuity_state=assembled_context.continuity_state,
-                    segments=assembled_context.segments,
-                    metadata={
-                        **assembled_context.metadata,
-                        "context_transforms": dict(cast(dict[str, object], preserved_transform_metadata)),
-                    },
-                    loaded_skills=assembled_context.loaded_skills,
-                )
-        effective_config = self.effective_runtime_config_from_metadata(result.session.metadata)
-        return self._provider_context_snapshot_for_assembled_context(
-            assembled_context=assembled_context,
-            effective_config=effective_config,
-        )
+        return self._inspection_coordinator._provider_context_debug_snapshot(result)
 
     def _provider_context_snapshot_for_assembled_context(
         self,
@@ -4394,16 +3537,10 @@ class VoidCodeRuntime(RuntimeSurface):
         graph_request: GraphRunRequest,
         effective_config: EffectiveRuntimeConfig,
     ) -> RuntimeProviderContextPolicyDecision | None:
-        if effective_config.execution_engine != "provider":
-            return None
-        context_window_config = effective_config.context_window or RuntimeContextWindowConfig()
-        if context_window_config.provider_context_diagnostics == "off" and context_window_config.context_transform_failure_policy != "block":
-            return None
-        snapshot = self._provider_context_snapshot_for_assembled_context(
-            assembled_context=cast(RuntimeAssembledContext, graph_request.assembled_context),
+        return self._inspection_coordinator.provider_context_policy_decision_for_graph_request(
+            graph_request=graph_request,
             effective_config=effective_config,
         )
-        return snapshot.policy_decision
 
     @staticmethod
     def _prompt_and_tool_results_from_debug_events(
@@ -4443,31 +3580,7 @@ class VoidCodeRuntime(RuntimeSurface):
         *,
         session_id: str,
     ) -> RuntimeSessionDebugSnapshot:
-        active_metadata = self._active_session_metadata(session_id) or {}
-        request_metadata = active_metadata.get("request_metadata")
-        session_metadata = {
-            **(dict(cast(dict[str, object], request_metadata)) if isinstance(request_metadata, dict) else {}),
-            "workspace": str(self._workspace),
-        }
-        prompt = cast(str, active_metadata["prompt"]) if isinstance(active_metadata.get("prompt"), str) else ""
-        session = SessionState(
-            session=SessionRef(id=session_id),
-            status="running",
-            turn=1,
-            metadata=session_metadata,
-        )
-        return RuntimeSessionDebugSnapshot(
-            session=session,
-            prompt=prompt,
-            persisted_status="running",
-            current_status="running",
-            active=True,
-            resumable=False,
-            replayable=False,
-            terminal=False,
-            suggested_operator_action="wait",
-            operator_guidance="Session is currently active in the runtime.",
-        )
+        return self._inspection_coordinator._active_only_session_debug_snapshot(session_id=session_id)
 
     @staticmethod
     def _should_prefer_active_debug_snapshot(
@@ -4640,6 +3753,30 @@ class VoidCodeRuntime(RuntimeSurface):
             "intent": intent.metadata_payload(),
         }
 
+    @contextmanager
+    def _active_resume_registration(
+        self,
+        session_id: str,
+        *,
+        resume_kind: str,
+        extra_metadata: Mapping[str, object] | None = None,
+    ) -> Generator[tuple[str, ProviderAbortSignal]]:
+        run_id = os.urandom(8).hex()
+        abort_signal = self._register_active_session_id(
+            session_id,
+            run_id=run_id,
+            metadata={
+                "resume": True,
+                "resume_kind": resume_kind,
+                "run_id": run_id,
+                **(dict(extra_metadata) if extra_metadata is not None else {}),
+            },
+        )
+        try:
+            yield run_id, abort_signal
+        finally:
+            self._unregister_active_session_id(session_id, run_id=run_id)
+
     def resume(
         self,
         session_id: str,
@@ -4681,18 +3818,11 @@ class VoidCodeRuntime(RuntimeSurface):
                 session_id=session_id,
                 approval_request_id=approval_request_id,
             )
-            run_id = os.urandom(8).hex()
-            abort_signal = self._register_active_session_id(
+            with self._active_resume_registration(
                 session_id,
-                run_id=run_id,
-                metadata={
-                    "resume": True,
-                    "resume_kind": "approval",
-                    "approval_request_id": approval_request_id,
-                    "run_id": run_id,
-                },
-            )
-            try:
+                resume_kind="approval",
+                extra_metadata={"approval_request_id": approval_request_id},
+            ) as (run_id, abort_signal):
                 _, response = self._resume_coordinator.resume_pending_approval_response(
                     session_id=session_id,
                     approval_request_id=approval_request_id,
@@ -4702,8 +3832,6 @@ class VoidCodeRuntime(RuntimeSurface):
                 )
                 self._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
                 return response
-            finally:
-                self._unregister_active_session_id(session_id, run_id=run_id)
 
     def resume_stream(
         self,
@@ -4717,17 +3845,10 @@ class VoidCodeRuntime(RuntimeSurface):
             checkpoint = self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
             if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
                 self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
-                run_id = os.urandom(8).hex()
-                abort_signal = self._register_active_session_id(
+                with self._active_resume_registration(
                     session_id,
-                    run_id=run_id,
-                    metadata={
-                        "resume": True,
-                        "resume_kind": "provider_failure_retryable",
-                        "run_id": run_id,
-                    },
-                )
-                try:
+                    resume_kind="provider_failure_retryable",
+                ) as (run_id, abort_signal):
                     yield from self._resume_coordinator.resume_provider_failure_stream(
                         session_id=session_id,
                         checkpoint=checkpoint,
@@ -4735,22 +3856,13 @@ class VoidCodeRuntime(RuntimeSurface):
                         abort_signal=abort_signal,
                         finalize_background_task=True,
                     )
-                finally:
-                    self._unregister_active_session_id(session_id, run_id=run_id)
                 return
             if checkpoint is not None and checkpoint.get("kind") == "interrupted":
                 self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
-                run_id = os.urandom(8).hex()
-                abort_signal = self._register_active_session_id(
+                with self._active_resume_registration(
                     session_id,
-                    run_id=run_id,
-                    metadata={
-                        "resume": True,
-                        "resume_kind": "interrupted",
-                        "run_id": run_id,
-                    },
-                )
-                try:
+                    resume_kind="interrupted",
+                ) as (run_id, abort_signal):
                     yield from self._resume_coordinator.resume_interrupted_stream(
                         session_id=session_id,
                         checkpoint=checkpoint,
@@ -4758,8 +3870,6 @@ class VoidCodeRuntime(RuntimeSurface):
                         abort_signal=abort_signal,
                         finalize_background_task=True,
                     )
-                finally:
-                    self._unregister_active_session_id(session_id, run_id=run_id)
                 return
             self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
             response = self._load_replay_response(session_id=session_id)
@@ -4779,18 +3889,11 @@ class VoidCodeRuntime(RuntimeSurface):
                 session_id=session_id,
                 approval_request_id=approval_request_id,
             )
-            run_id = os.urandom(8).hex()
-            abort_signal = self._register_active_session_id(
+            with self._active_resume_registration(
                 session_id,
-                run_id=run_id,
-                metadata={
-                    "resume": True,
-                    "resume_kind": "approval",
-                    "approval_request_id": approval_request_id,
-                    "run_id": run_id,
-                },
-            )
-            try:
+                resume_kind="approval",
+                extra_metadata={"approval_request_id": approval_request_id},
+            ) as (run_id, abort_signal):
                 yield from self._resume_coordinator.resume_pending_approval_stream(
                     session_id=session_id,
                     approval_request_id=approval_request_id,
@@ -4799,8 +3902,6 @@ class VoidCodeRuntime(RuntimeSurface):
                     abort_signal=abort_signal,
                     finalize_background_task=True,
                 )
-            finally:
-                self._unregister_active_session_id(session_id, run_id=run_id)
 
     def _validate_resume_targets_owned_request(
         self,
@@ -4913,18 +4014,11 @@ class VoidCodeRuntime(RuntimeSurface):
             session_id=session_id,
             question_request_id=question_request_id,
         )
-        run_id = os.urandom(8).hex()
-        abort_signal = self._register_active_session_id(
+        with self._active_resume_registration(
             session_id,
-            run_id=run_id,
-            metadata={
-                "resume": True,
-                "resume_kind": "question",
-                "question_request_id": question_request_id,
-                "run_id": run_id,
-            },
-        )
-        try:
+            resume_kind="question",
+            extra_metadata={"question_request_id": question_request_id},
+        ) as (run_id, abort_signal):
             _, response = self._resume_coordinator.answer_pending_question_response(
                 session_id=session_id,
                 question_request_id=question_request_id,
@@ -4934,8 +4028,6 @@ class VoidCodeRuntime(RuntimeSurface):
             )
             self._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
             return response
-        finally:
-            self._unregister_active_session_id(session_id, run_id=run_id)
 
     def answer_question_stream(
         self,
@@ -4949,18 +4041,11 @@ class VoidCodeRuntime(RuntimeSurface):
             session_id=session_id,
             question_request_id=question_request_id,
         )
-        run_id = os.urandom(8).hex()
-        abort_signal = self._register_active_session_id(
+        with self._active_resume_registration(
             session_id,
-            run_id=run_id,
-            metadata={
-                "resume": True,
-                "resume_kind": "question",
-                "question_request_id": question_request_id,
-                "run_id": run_id,
-            },
-        )
-        try:
+            resume_kind="question",
+            extra_metadata={"question_request_id": question_request_id},
+        ) as (run_id, abort_signal):
             yield from self._resume_coordinator.answer_pending_question_stream(
                 session_id=session_id,
                 question_request_id=question_request_id,
@@ -4969,8 +4054,6 @@ class VoidCodeRuntime(RuntimeSurface):
                 abort_signal=abort_signal,
                 finalize_background_task=True,
             )
-        finally:
-            self._unregister_active_session_id(session_id, run_id=run_id)
 
     @staticmethod
     def _replay_response(response: RuntimeResponse) -> Iterator[RuntimeStreamChunk]:
@@ -6105,8 +5188,6 @@ class VoidCodeRuntime(RuntimeSurface):
         selected_preset: str,
         request_agent: RuntimeAgentConfig | None,
     ) -> str | None:
-        if request_agent is not None and request_agent.model is not None:
-            return request_agent.model
         return delegated_model_for_route_from_configs(
             selected_preset=selected_preset,
             request_agent=request_agent,
@@ -6123,19 +5204,12 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> RuntimeProviderFallbackConfig | None:
         if request_agent is not None and request_agent.provider_fallback is not None:
             return request_agent.provider_fallback
-        preset_agent = self._preset_agent_config(selected_preset)
         return provider_fallback_for_agent_selection(
             model=model,
-            preset_agent=preset_agent,
+            preset_agent=(self._config.agents or {}).get(selected_preset),
             base_provider_fallback=self._config.provider_fallback,
         )
 
-    def _preset_agent_config(self, preset: str) -> RuntimeAgentConfig | None:
-        if self._config.agents is None:
-            return None
-        return self._config.agents.get(preset)
-
-    @staticmethod
     def _resolved_hook_preset_snapshot_from_session_metadata(
         metadata: dict[str, object],
     ) -> ResolvedHookPresetSnapshot | None:

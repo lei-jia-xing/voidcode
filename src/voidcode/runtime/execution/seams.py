@@ -15,6 +15,7 @@ from ..config import (
     ExecutionEngineName,
     serialize_runtime_agent_config,
 )
+from .provider_fallback import fallback_allowed
 
 if TYPE_CHECKING:
     from ..config_materializer import EffectiveRuntimeConfig
@@ -86,7 +87,15 @@ def build_runtime_graph(
 
 def cache_key_for_effective_config(
     config: EffectiveRuntimeConfig,
+    *,
+    provider_attempt: int = 0,
 ) -> tuple[ExecutionEngineName, str]:
+    # Key must cover every config field that selection/build reads: engine,
+    # model identity, fallback chain, resolved chain selections, and agent.
+    # Deliberately excluded: providers endpoint configs (they reach the graph
+    # only through the resolved chain selections below), approval/permission
+    # policy, tools, and context window (never read by graph construction, so
+    # sharing across them is correct, not a collision).
     agent_payload = serialize_runtime_agent_config(config.agent, include_runtime_internal=True)
     agent_key = "" if agent_payload is None else str(sorted(agent_payload.items()))
     provider_fallback_key = (
@@ -99,19 +108,33 @@ def cache_key_for_effective_config(
             )
         )
     )
-    return (config.execution_engine, f"{provider_fallback_key}::{agent_key}")
+    chain_key = "|".join(
+        f"{target.selection.provider}/{target.selection.model}/{target.selection.raw_model}"
+        for target in config.resolved_provider.target_chain.all_targets
+    )
+    model_key = config.model or ""
+    reasoning_key = config.reasoning_effort or ""
+    return (config.execution_engine, f"{provider_attempt}::{model_key}::{reasoning_key}::{provider_fallback_key}::{chain_key}::{agent_key}")
 
 
 def select_graph_for_effective_config(
     *,
     config: EffectiveRuntimeConfig,
     provider_attempt: int = 0,
+    cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph] | None = None,
+    force_rebuild: bool = False,
 ) -> RuntimeGraphSelection:
     provider_target = config.resolved_provider.target_chain.target_at(provider_attempt)
     if provider_target is None:
         provider_target = config.resolved_provider.active_target
         provider_attempt = 0
-    return RuntimeGraphSelection(
+    # Key on the effective attempt after clamping, so a clamped request can
+    # never collide with a genuinely different attempt.
+    cache_key = cache_key_for_effective_config(config, provider_attempt=provider_attempt)
+    if cache is not None and not force_rebuild and cache_key in cache:
+        cached = cache[cache_key]
+        return RuntimeGraphSelection(graph=cached, provider_attempt=provider_attempt, provider_target=provider_target)
+    selection = RuntimeGraphSelection(
         graph=build_runtime_graph(
             engine_name=config.execution_engine,
             provider_model=provider_target,
@@ -119,6 +142,9 @@ def select_graph_for_effective_config(
         provider_attempt=provider_attempt,
         provider_target=provider_target,
     )
+    if cache is not None and not force_rebuild:
+        cache[cache_key] = selection.graph
+    return selection
 
 
 def fallback_graph_for_provider_error(
@@ -130,15 +156,7 @@ def fallback_graph_for_provider_error(
 ) -> RuntimeGraphSelection | None:
     next_attempt = provider_attempt + 1
     next_target = provider_chain.target_at(next_attempt)
-    if error.kind not in {
-        "missing_auth",
-        "not_configured",
-        "rate_limit",
-        "invalid_model",
-        "transient_failure",
-        "unsupported_feature",
-        "stream_tool_feedback_shape",
-    }:
+    if not fallback_allowed(error):
         return None
     if next_target is None:
         return None

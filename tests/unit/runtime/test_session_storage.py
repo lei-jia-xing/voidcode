@@ -18,7 +18,7 @@ from voidcode.runtime.background.models import (
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse, UnknownSessionError
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.paths import sessions_db_path, state_home
-from voidcode.runtime.permission import PendingApproval
+from voidcode.runtime.permission import PLAN_MODE_DENIAL_REASON, PendingApproval
 from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SCHEMA_VERSION, SessionSealedError, SqliteSessionStore
@@ -171,7 +171,7 @@ def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path)
                         "mode": "plan",
                         "read_only": True,
                         "decision": "deny",
-                        "reason": "read-only runtime policy denies mutating tools",
+                        "reason": PLAN_MODE_DENIAL_REASON,
                     },
                 },
             ),

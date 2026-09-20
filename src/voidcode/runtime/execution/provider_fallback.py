@@ -22,6 +22,12 @@ PROVIDER_FALLBACK_ALLOWED_KINDS = frozenset(
 )
 
 
+def fallback_allowed(error: ProviderExecutionError) -> bool:
+    if error.fallback_allowed is not None:
+        return error.fallback_allowed
+    return error.kind in PROVIDER_FALLBACK_ALLOWED_KINDS
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderTransientRetryDecision:
     reason: str
@@ -114,9 +120,8 @@ def decide_provider_error_policy(
             },
         )
     default_retryable = error.kind in PROVIDER_TRANSIENT_RETRYABLE_KINDS
-    default_fallback_allowed = error.kind in PROVIDER_FALLBACK_ALLOWED_KINDS
     retryable = default_retryable if error.retryable is None else error.retryable
-    fallback_allowed = default_fallback_allowed if error.fallback_allowed is None else error.fallback_allowed
+    fallback_permitted = fallback_allowed(error)
     if error.kind == "rate_limit" and background_rate_limit_retry and error.retryable is not False and error.fallback_allowed is not False:
         return ProviderTerminalDecision(
             kind="background_rate_limit_retry",
@@ -147,7 +152,7 @@ def decide_provider_error_policy(
             delay_ms=max(0, delay_ms),
             provider_error_details=error.details,
         )
-    if fallback_allowed and fallback_target_provider is not None and fallback_target_model is not None:
+    if fallback_permitted and fallback_target_provider is not None and fallback_target_model is not None:
         return ProviderFallbackDecision(
             reason=error.kind,
             from_provider=error.provider_name,
@@ -157,7 +162,7 @@ def decide_provider_error_policy(
             attempt=current_provider_attempt + 1,
             provider_error_details=error.details,
         )
-    if fallback_allowed:
+    if fallback_permitted:
         return ProviderTerminalDecision(
             kind="fallback_exhausted",
             payload={
@@ -195,6 +200,7 @@ __all__ = [
     "ProviderTerminalDecision",
     "ProviderTransientRetryDecision",
     "decide_provider_error_policy",
+    "fallback_allowed",
     "provider_transient_retry_config",
     "provider_transient_retry_delay_ms",
 ]
@@ -206,45 +212,11 @@ def provider_transient_retry_config(
 ) -> ProviderTransientRetryConfig:
     if providers is None:
         return DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG
-    if provider_name == "opencode-go":
-        provider_config = providers.opencode_go
-    elif provider_name == "openai":
-        provider_config = providers.openai
-    elif provider_name == "anthropic":
-        provider_config = providers.anthropic
-    elif provider_name == "google":
-        provider_config = providers.google
-    elif provider_name == "copilot":
-        provider_config = providers.copilot
-    elif provider_name == "endpoint":
-        provider_config = providers.endpoint
-    elif provider_name == "opencode":
-        provider_config = providers.opencode
-    elif provider_name == "openrouter":
-        provider_config = providers.openrouter
-    elif provider_name == "deepseek":
-        provider_config = providers.deepseek
-    elif provider_name == "zai":
-        provider_config = providers.zai
-    elif provider_name == "zhipuai":
-        provider_config = providers.zhipuai
-    elif provider_name == "grok":
-        provider_config = providers.grok
-    elif provider_name == "minimax":
-        provider_config = providers.minimax
-    elif provider_name == "kimi":
-        provider_config = providers.kimi
-    elif provider_name == "qwen":
-        provider_config = providers.qwen
-    elif provider_name == "groq":
-        provider_config = providers.groq
-    elif provider_name == "together":
-        provider_config = providers.together
-    elif provider_name == "fireworks":
-        provider_config = providers.fireworks
-    elif provider_name == "mistral":
-        provider_config = providers.mistral
-    else:
+    # Built-in ids are ProviderConfigs field names except "opencode-go"
+    # (field "opencode_go"); anything else is a custom endpoint id. A "custom"
+    # lookup must not resolve to the custom mapping itself.
+    provider_config = getattr(providers, provider_name.replace("-", "_"), None)
+    if provider_config is None or isinstance(provider_config, dict):
         provider_config = providers.custom.get(provider_name)
     if provider_config is None or provider_config.transient_retry is None:
         return DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG

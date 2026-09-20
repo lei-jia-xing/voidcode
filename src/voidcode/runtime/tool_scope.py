@@ -4,6 +4,7 @@ from fnmatch import fnmatchcase
 
 from .config import RuntimeAgentConfig
 from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
+from .permission import PLAN_MODE_DENIAL_REASON
 from .tool_provider import scoped_tool_registry_for_agent
 from .tool_registry import ToolPolicyDecision, ToolRegistry
 
@@ -58,7 +59,7 @@ class RuntimeToolScopeResolver:
                 mode=mode,
                 read_only=read_only,
                 decision="deny",
-                reason="read-only runtime policy denies mutating tools",
+                reason=PLAN_MODE_DENIAL_REASON,
             )
         return ToolPolicyDecision(
             tool_name=tool_name,
