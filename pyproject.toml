@@ -133,6 +133,12 @@ exclude = ["scripts"]
 addopts = "-p no:langsmith"
 pythonpath = ["src"]
 testpaths = ["tests"]
+# Upstream google-genai noise: google/genai/types.py uses typing._UnionGenericAlias
+# (deprecated, removal in Python 3.17). Scoped to that exact module + message so no
+# first-party warning can ever match it. Revisit when google-genai > 2.24.0 drops the usage.
+filterwarnings = [
+    "ignore:'_UnionGenericAlias' is deprecated and slated for removal in Python 3\\.17:DeprecationWarning:google\\.genai\\.types",
+]
 
 [tool.coverage.run]
 branch = true
