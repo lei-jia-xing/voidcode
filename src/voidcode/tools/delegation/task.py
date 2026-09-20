@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ...runtime.background.models import BackgroundTaskState
 from ...runtime.contracts import (
@@ -13,7 +13,7 @@ from ...runtime.contracts import (
     runtime_subagent_route_from_metadata,
     validate_runtime_request_metadata,
 )
-from .._pydantic_args import format_validation_error
+from .._pydantic_args import parse_tool_args
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import require_runtime_tool_context
 from .task_control import TaskControlRuntime, TaskControlTool
@@ -260,10 +260,7 @@ class TaskTool:
         if isinstance(call.arguments, dict) and "operation" in call.arguments:
             return self._control.invoke(call, workspace=workspace)
         _ = workspace
-        try:
-            args = _TaskArgs.model_validate(call.arguments)
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        args = parse_tool_args(_TaskArgs, call.arguments, tool_name=self.definition.name)
 
         context = require_runtime_tool_context(self.definition.name)
         delegation_metadata: dict[str, object] = dict(_delegation_metadata(args).items())

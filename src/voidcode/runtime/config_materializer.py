@@ -124,31 +124,13 @@ def serialize_runtime_config_core(config: EffectiveRuntimeConfig) -> dict[str, o
     return runtime_config_metadata
 
 
-def _normalize_persisted_provider_keys(raw_providers: object) -> object:
-    """Rename provider keys that changed after a session was persisted.
-
-    The provider key ``litellm`` became ``endpoint``. Live config rejects the old key,
-    but ``providers`` metadata written by the previous version must stay loadable, so
-    the rename is applied here — at the persisted parsing boundary only — and nowhere
-    else. Every other field of the legacy entry is passed through untouched.
-    """
-    if not isinstance(raw_providers, Mapping):
-        return raw_providers
-    providers = cast(Mapping[object, object], raw_providers)
-    if "litellm" not in providers:
-        return providers
-    if "endpoint" in providers:
-        raise ValueError("persisted runtime_config.providers must not contain both 'litellm' and 'endpoint'")
-    return {("endpoint" if provider_name == "litellm" else provider_name): provider_payload for provider_name, provider_payload in providers.items()}
-
-
 def _format_persisted_provider_error(source: str, reason: str) -> str:
     """Format a persisted provider-config failure without repeating the source prefix.
 
     Parser errors already name the full field path (``<source>.<field>``); prefixing
     them again yields messages like ``invalid provider config: persisted
-    runtime_config.providers persisted runtime_config.providers.litellm is not
-    supported``. A reason that does not name the source is still prefixed for context.
+    runtime_config.providers.team-gateway ...``. A reason that does not name the
+    source is still prefixed for context.
     """
     if reason.startswith(source):
         return f"invalid provider config: {reason}"
@@ -212,10 +194,9 @@ def parse_persisted_runtime_config(
 
     providers = None
     if "providers" in runtime_config:
-        raw_providers = _normalize_persisted_provider_keys(runtime_config.get("providers"))
         try:
             providers = parse_provider_configs_payload(
-                raw_providers,
+                runtime_config.get("providers"),
                 source="persisted runtime_config.providers",
             )
         except ValueError as exc:

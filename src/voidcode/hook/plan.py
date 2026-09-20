@@ -20,7 +20,6 @@ HookPlanPhase = Literal["foreground", "background"]
 # the source of command declarations; no command is inferred from a preset.
 _VALID_SURFACES = frozenset(descriptor.surface for descriptor in HOOK_SURFACE_DESCRIPTORS)
 _BACKGROUND_SURFACES = frozenset(descriptor.surface for descriptor in HOOK_SURFACE_DESCRIPTORS if descriptor.phase == "background")
-_REMOVED_HOOK_BINDING_FIELDS = frozenset({"handler_ref", "priority"})
 
 
 class HookPlanValidationError(ValueError):
@@ -289,9 +288,6 @@ def _binding_from_payload(payload: object) -> HookPlanBinding:
     if not isinstance(payload, Mapping):
         raise HookPlanValidationError("hook plan binding must be an object")
     raw = cast(Mapping[object, object], payload)
-    removed = sorted(field for field in _REMOVED_HOOK_BINDING_FIELDS if field in raw)
-    if removed:
-        raise HookPlanValidationError("hook plan binding contains removed field(s): " + ", ".join(removed))
     command = raw.get("command", raw.get("argv"))
     if not isinstance(command, Sequence) or isinstance(command, (str, bytes)):
         raise HookPlanValidationError("hook plan binding command must be an argv array")

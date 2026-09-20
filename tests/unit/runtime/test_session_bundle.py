@@ -255,7 +255,7 @@ def test_session_bundle_export_redacts_and_bounds_default_payload(tmp_path: Path
     assert "private chain of thought" not in encoded
     assert "Bearer abcdef123456" not in encoded
     assert SESSION_BUNDLE_REDACTED_PLACEHOLDER in encoded
-    assert "truncated by session bundle" in encoded
+    assert "truncated: kept first" in encoded
 
 
 def test_session_bundle_export_redacts_background_task_prompt_and_error(
@@ -277,8 +277,8 @@ def test_session_bundle_export_redacts_background_task_prompt_and_error(
     assert "task-prompt-secret" not in encoded
     assert "taskerrorsecret" not in encoded
     background_tasks = cast(list[dict[str, object]], payload["background_tasks"])
-    assert background_tasks[0]["prompt"] == "delegate with <redacted>"
-    assert background_tasks[0]["error"] == "failed with <redacted>"
+    assert background_tasks[0]["prompt"] == "delegate with api_key=[redacted]"
+    assert background_tasks[0]["error"] == "failed with Bearer [redacted]"
 
 
 def test_session_bundle_json_and_zip_roundtrip(tmp_path: Path) -> None:

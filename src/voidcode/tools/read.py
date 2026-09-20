@@ -14,7 +14,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 from ..runtime.context.rules import RULE_URI_PREFIX as _RULE_URI_PREFIX
 from ..runtime.context.rules import read_rule_uri
-from ..runtime.contracts import validate_session_id
+from ..runtime.contracts import validate_id
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._pydantic_args import format_validation_error
 from ._workspace import suggest_workspace_paths
@@ -166,7 +166,7 @@ def _render_transcript(path: str, *, limit: int) -> _ReadOutcome:
     session_id = path[len(VOIDCODE_TRANSCRIPT_PREFIX) :].strip()
     if not session_id:
         raise ValueError("voidcode://transcript/<session_id> requires a session id")
-    validate_session_id(session_id)
+    validate_id(session_id)
     context = require_runtime_tool_context("read")
     facade = context.transcript
     if facade is None:

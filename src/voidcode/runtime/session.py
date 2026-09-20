@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
-from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
+from .mode import backfill_runtime_policy_mode, runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .policy import runtime_policy_snapshot_from_session_metadata
 
 if TYPE_CHECKING:
@@ -139,16 +139,7 @@ def session_metadata_for_replay(metadata: dict[str, object]) -> dict[str, object
 
 def normalize_persisted_session_metadata(metadata: dict[str, object]) -> dict[str, object]:
     """Validate persisted top-level runtime mode metadata."""
-
-    normalized = dict(metadata)
-    mode = runtime_mode_from_metadata(normalized)
-    raw_runtime_policy = normalized.get("runtime_policy")
-    if isinstance(raw_runtime_policy, dict):
-        runtime_policy = dict(cast(dict[str, object], raw_runtime_policy))
-        if runtime_policy.get("mode") not in {"normal", "plan"}:
-            runtime_policy["mode"] = mode
-        normalized["runtime_policy"] = runtime_policy
-    return normalized
+    return backfill_runtime_policy_mode(metadata)
 
 
 def _event_payload(event: object) -> dict[str, object]:

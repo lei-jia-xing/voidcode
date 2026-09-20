@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
+
+
+def parse_tool_args[M: BaseModel](model: type[M], arguments: Mapping[str, object] | dict[str, object], *, tool_name: str) -> M:
+    try:
+        return model.model_validate(dict(arguments))
+    except ValidationError as exc:
+        raise ValueError(format_validation_error(tool_name, exc)) from exc
 
 
 def format_validation_error(tool_name: str, exc: ValidationError) -> str:

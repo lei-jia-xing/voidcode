@@ -3,7 +3,7 @@ from __future__ import annotations
 from fnmatch import fnmatchcase
 
 from .config import RuntimeAgentConfig
-from .contracts import runtime_mode_from_metadata, runtime_read_only_from_metadata
+from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .tool_provider import scoped_tool_registry_for_agent
 from .tool_registry import ToolPolicyDecision, ToolRegistry
 
@@ -45,8 +45,8 @@ class RuntimeToolScopeResolver:
         metadata: dict[str, object] | None,
     ) -> ToolPolicyDecision:
         # Single shared derivation: mode -> read_only (including explicit
-        # read_only metadata) comes from mode.py's resolve_mode via the
-        # contracts wrappers; this resolver no longer keeps a private copy.
+        # read_only metadata) comes from mode.py's resolve_mode; this
+        # resolver no longer keeps a private copy.
         mode = runtime_mode_from_metadata(metadata)
         read_only = runtime_read_only_from_metadata(metadata)
 

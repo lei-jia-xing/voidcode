@@ -453,9 +453,7 @@ def _previous_continuity_state(
     raw_runtime_state = session_metadata.get("runtime_state")
     if raw_runtime_state is None:
         return None
-    runtime_state = parse_runtime_state_metadata(raw_runtime_state)
-    if "continuity" in runtime_state or "continuity_summary" in runtime_state:
-        raise ValueError("legacy runtime continuity metadata is no longer supported; start a new session")
+    parse_runtime_state_metadata(raw_runtime_state)
     continuity = runtime_state_context_projection(session_metadata)
     if continuity is None:
         return None

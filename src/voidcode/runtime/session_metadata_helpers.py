@@ -20,10 +20,10 @@ from .contracts import (
     ContextProjectionMetadata,
     ContextTransformAppliedStateMetadata,
     PendingToolIntentMetadata,
-    PersistedDelegationMetadata,
     PlanStateMetadata,
     RuntimeResponse,
     RuntimeStateMetadata,
+    RuntimeSubagentRoutingMetadata,
     SkillSnapshotMetadata,
     TodosStateMetadata,
     UnknownSessionError,
@@ -167,7 +167,7 @@ def parse_plan_state_metadata(raw: object) -> PlanStateMetadata:
     return cast(PlanStateMetadata, payload)
 
 
-def parse_delegation_metadata(raw: object) -> PersistedDelegationMetadata:
+def parse_delegation_metadata(raw: object) -> RuntimeSubagentRoutingMetadata:
     """Parse the present ``session.metadata["delegation"]`` payload.
 
     The current schema requires ``mode`` and rejects unknown keys, invalid
@@ -183,7 +183,7 @@ def parse_delegation_metadata(raw: object) -> PersistedDelegationMetadata:
         structure_name="delegation",
     )
     _validate_delegation_metadata_types(payload)
-    return cast(PersistedDelegationMetadata, payload)
+    return cast(RuntimeSubagentRoutingMetadata, payload)
 
 
 def parse_skill_snapshot_metadata(raw: object) -> SkillSnapshotMetadata:
@@ -487,8 +487,6 @@ def session_with_context_window_payload_metadata(
     session: SessionState,
     context_window_payload: dict[str, object],
 ) -> SessionState:
-    if "continuity_state" in context_window_payload:
-        raise ValueError("legacy continuity_state context metadata is no longer supported")
     raw_runtime_state = session.metadata.get("runtime_state")
     if raw_runtime_state is not None and not isinstance(raw_runtime_state, dict):
         raise ValueError("persisted runtime_state must be an object")
@@ -752,7 +750,6 @@ def resume_waiting_reason(response: RuntimeResponse) -> str:
 __all__ = [
     "DELEGATION_METADATA_KEYS",
     "PLAN_STATE_METADATA_KEYS",
-    "PersistedDelegationMetadata",
     "PlanStateMetadata",
     "RUNTIME_STATE_METADATA_KEYS",
     "RuntimeStateMetadata",

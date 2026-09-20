@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from time import sleep, time
-from typing import Final, Protocol, cast, final, runtime_checkable
+from typing import Final, NoReturn, Protocol, cast, final, runtime_checkable
 
 from ..background.models import (
     BackgroundTaskState,
@@ -29,7 +28,7 @@ from ..events import (
     EventSource,
 )
 from ..execution_ownership import EXECUTION_OWNERSHIP
-from ..paths import DB_PATH_ENV, sessions_db_path
+from ..paths import sessions_db_path
 from ..permission import PendingApproval
 from ..question import PendingQuestion
 from ..session import (
@@ -45,9 +44,8 @@ from .resume import _ResumeStorageMixin
 from .revert import _RevertStorageMixin
 from .sessions import SessionEventsAfter, _SessionStorageMixin
 from .shared import SessionSealedError as SessionSealedError
-from .todos import _TodoStorageMixin
 
-SCHEMA_VERSION: Final[int] = 15
+SCHEMA_VERSION: Final[int] = 1
 
 
 @runtime_checkable
@@ -325,28 +323,15 @@ class _SQLitePolicy:
 
 @dataclass(frozen=True, slots=True)
 class _DatabaseBootstrap:
-    """A database file this process already verified against a schema version.
-
-    ``identity`` is the file's ``(st_dev, st_ino)`` at verification time, so a
-    replacement file never inherits another file's verification,
-    ``schema_version`` is the ``PRAGMA user_version`` the verified connection
-    reported, and ``schema_cookie`` is SQLite's ``PRAGMA schema_version`` at that
-    moment — it increments on any DDL in the file, by this process or another
-    one, so any schema change invalidates the entry.
-    """
+    """A verified database file: identity, schema version, and schema cookie."""
 
     identity: tuple[int, int]
     schema_version: int
     schema_cookie: int
 
+    # Verified files skip _ensure_schema while sentinel reads still match.
 
-# Process-level record of verified database files. ``SqliteSessionStore`` runs
-# ``_ensure_schema`` (canonical shape verification, storage-sequence floors, one
-# ``CREATE TABLE IF NOT EXISTS`` per table) for every connection it opens, and
-# every storage read opens a connection — including each API request on the
-# asyncio event loop. The record lets a connection skip that work only when its
-# own cheap sentinel reads prove the file is still the one that was verified;
-# see ``SqliteSessionStore._ensure_schema_once``.
+
 _BOOTSTRAP_LOCK = Lock()
 _BOOTSTRAPPED_DATABASES: dict[str, _DatabaseBootstrap] = {}
 
@@ -358,13 +343,16 @@ class SqliteSessionStore(
     _SessionStorageMixin,
     _ResumeStorageMixin,
     _RevertStorageMixin,
-    _TodoStorageMixin,
     _NotificationStorageMixin,
     _EffectivenessStorageMixin,
     _DiagnosticsStorageMixin,
 ):
     _database_path: Path | None
     _SCHEMA_VERSION = SCHEMA_VERSION
+    _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {}
+    # Forward-only upgrades: _MIGRATIONS[v] migrates user_version v to v + 1,
+    # committed per step. No down-migrations, no ALTER inline in _ensure_schema.
+    # Future 1 -> 2 entries go here; unknown steps fail fast with reset guidance.
     _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal", "interrupted"})
     _SEQUENCE_SCOPES = ("sessions", "background_tasks", "auxiliary")
     _sqlite_policy = _SQLitePolicy()
@@ -397,14 +385,6 @@ class SqliteSessionStore(
             ("event_type", "TEXT", 1, None, 0),
             ("source", "TEXT", 1, None, 0),
             ("payload_json", "TEXT", 1, None, 0),
-        ),
-        "session_todos": (
-            ("workspace_id", "TEXT", 1, None, 1),
-            ("session_id", "TEXT", 1, None, 2),
-            ("position", "INTEGER", 1, None, 3),
-            ("content", "TEXT", 1, None, 0),
-            ("status", "TEXT", 1, None, 0),
-            ("updated_at", "INTEGER", 1, None, 0),
         ),
         "background_tasks": (
             ("task_id", "TEXT", 1, None, 2),
@@ -487,7 +467,6 @@ class SqliteSessionStore(
     _CANONICAL_UNIQUE_INDEXES: dict[str, frozenset[tuple[str, ...]]] = {
         "sessions": frozenset(),
         "session_events": frozenset(),
-        "session_todos": frozenset(),
         "background_tasks": frozenset(),
         "session_notifications": frozenset({("workspace_id", "dedupe_key")}),
         "session_event_deliveries": frozenset(),
@@ -507,48 +486,18 @@ class SqliteSessionStore(
         _ = workspace
         database_path = self._resolve_database_path()
         database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection: sqlite3.Connection | None = None
-        for attempt in range(2):
-            connection = sqlite3.connect(database_path, timeout=self._sqlite_policy.busy_timeout_ms / 1_000, isolation_level=None)
-            try:
-                connection.row_factory = sqlite3.Row
-                self._configure_connection(connection=connection)
-                self._ensure_schema_once(connection=connection, database_path=database_path)
-                break
-            except RuntimeError as exc:
-                should_reset = (
-                    attempt == 0 and self._database_path is None and not os.environ.get(DB_PATH_ENV) and self._is_schema_mismatch_runtime_error(exc)
-                )
-                if should_reset:
-                    self._reset_storage_in_place(connection=connection)
-                    connection.close()
-                    connection = None
-                    continue
-                connection.close()
-                connection = None
-                raise
-        if connection is None:
-            raise RuntimeError("failed to establish sqlite runtime storage connection")
+        connection = sqlite3.connect(database_path, timeout=self._sqlite_policy.busy_timeout_ms / 1_000, isolation_level=None)
+        try:
+            connection.row_factory = sqlite3.Row
+            self._configure_connection(connection=connection)
+            self._ensure_schema_once(connection=connection, database_path=database_path)
+        except RuntimeError:
+            connection.close()
+            raise
         try:
             yield connection
         finally:
             connection.close()
-
-    @staticmethod
-    def _is_schema_mismatch_runtime_error(exc: RuntimeError) -> bool:
-        return str(exc).startswith("sqlite runtime schema mismatch:")
-
-    @staticmethod
-    def _reset_storage_in_place(*, connection: sqlite3.Connection) -> None:
-        table_rows = cast(
-            list[sqlite3.Row],
-            connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").fetchall(),
-        )
-        for row in table_rows:
-            table_name = cast(str, row["name"])
-            _ = connection.execute(f'DROP TABLE IF EXISTS "{table_name}"')
-        _ = connection.execute("PRAGMA user_version = 0")
-        connection.commit()
 
     def _configure_connection(self, *, connection: sqlite3.Connection) -> None:
         deadline = time() + (self._sqlite_policy.busy_timeout_ms / 1_000)
@@ -583,35 +532,12 @@ class SqliteSessionStore(
                 raise
 
     def _ensure_schema_once(self, *, connection: sqlite3.Connection, database_path: Path) -> None:
-        """Verify or bootstrap the canonical schema, at most once per file and version.
+        """Verify or bootstrap the canonical schema, at most once per file.
 
-        ``_ensure_schema`` is idempotent but expensive — canonical shape
-        verification, the storage-sequence floors, and one
-        ``CREATE TABLE IF NOT EXISTS`` per table — and it used to run on every
-        ``_connect``, i.e. on every storage read on the event loop. This gate
-        skips it only when this connection's own cheap reads prove the file is
-        still the one a previous connection in this process verified:
-
-        - ``PRAGMA user_version`` must equal the verified schema version, so a
-          migrated, downgraded, or foreign database always re-enters the
-          fail-fast path;
-        - SQLite's ``PRAGMA schema_version`` cookie must equal the value recorded
-          at verification, so any schema change — a dropped column, a dropped
-          table, an added index — by this process or another one re-runs full
-          verification instead of trusting the cache;
-        - the ``storage_sequences`` rows must still be present, so a database
-          whose sequence rows were removed underneath us is re-bootstrapped
-          (the sequence counters are the only bootstrap state the store reads
-          back on every write, and row deletions do not move the schema cookie);
-        - the file identity (device + inode) must match the verified file, so a
-          replaced database never inherits another file's verification.
-
-        A connection that fails any of these falls back to the unchanged
-        ``_ensure_schema`` path, which still fails fast on every mismatch it
-        detects today. The one schema change the sentinels cannot see is a
-        ``PRAGMA writable_schema`` edit to ``sqlite_master`` that bypasses
-        SQLite's schema cookie entirely; that is direct catalog tampering, and no
-        connection-level check short of full re-verification can observe it.
+        Skips ``_ensure_schema`` only when this connection's sentinel reads
+        (user_version, schema cookie, sequence rows, file identity) prove the
+        file is still the one this process verified. Any mismatch falls back
+        to ``_ensure_schema``, which fails fast on drift it cannot migrate.
         """
         if self._schema_bootstrap_is_valid(connection=connection, database_path=database_path):
             return
@@ -634,13 +560,7 @@ class SqliteSessionStore(
 
     @classmethod
     def _remember_schema_bootstrap(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
-        """Record a successfully verified database file for later connections.
-
-        The cookie is read *after* ``_ensure_schema`` ran, so it records the
-        post-bootstrap value that later connections must report to reuse the
-        entry; ``_ensure_schema`` stamps ``user_version`` with
-        ``_SCHEMA_VERSION`` before returning.
-        """
+        """Record a verified file; cookie is read post-bootstrap."""
         identity = cls._database_file_identity(database_path)
         if identity is None:
             return
@@ -679,8 +599,29 @@ class SqliteSessionStore(
         ).fetchone()
         return int(row[0]) == len(cls._SEQUENCE_SCOPES)
 
+    @classmethod
+    def _migrate_forward(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
+        # Forward-only upgrades; fresh (0) defers to CREATE path, newer fails fast.
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == 0 or version == cls._SCHEMA_VERSION:
+            return
+        if version > cls._SCHEMA_VERSION:
+            cls._raise_schema_mismatch(database_path=database_path, detail=f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}")
+        while version < cls._SCHEMA_VERSION:
+            migrate = cls._MIGRATIONS.get(version)
+            if migrate is None:
+                cls._raise_schema_mismatch(
+                    database_path=database_path, detail=f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}"
+                )
+            migrate(connection)
+            version += 1
+            _ = connection.execute(f"PRAGMA user_version = {version}")
+            connection.commit()
+        with _BOOTSTRAP_LOCK:
+            _BOOTSTRAPPED_DATABASES.pop(str(database_path), None)
+
     def _ensure_schema(self, *, connection: sqlite3.Connection, database_path: Path) -> None:
-        self._assert_existing_schema_version(connection=connection, database_path=database_path)
+        self._migrate_forward(connection=connection, database_path=database_path)
         _ = connection.execute(
             """
             CREATE TABLE IF NOT EXISTS sessions (
@@ -713,19 +654,6 @@ class SqliteSessionStore(
                 source TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 PRIMARY KEY (workspace_id, session_id, sequence)
-            )
-            """
-        )
-        _ = connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS session_todos (
-                workspace_id TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                position INTEGER NOT NULL,
-                content TEXT NOT NULL,
-                status TEXT NOT NULL,
-                updated_at INTEGER NOT NULL,
-                PRIMARY KEY (workspace_id, session_id, position)
             )
             """
         )
@@ -830,10 +758,6 @@ class SqliteSessionStore(
             )
             """
         )
-        # Validate the freshly-created/already-present schema before stamping the
-        # user_version. Stamping after validation keeps schema setup atomic from the
-        # caller's perspective: if any CREATE TABLE / canonical check fails, the
-        # database is never marked as the canonical version.
         self._assert_canonical_schema(connection=connection, database_path=database_path)
         self._ensure_workspace_indexes(connection=connection)
         self._ensure_storage_sequences(connection=connection)
@@ -848,17 +772,7 @@ class SqliteSessionStore(
 
     @staticmethod
     def _ensure_storage_sequences(*, connection: sqlite3.Connection) -> None:
-        """Insert only the missing sequence rows and lift only lagging floors.
-
-        The counters are monotonic and already maintained by every write the
-        store performs, so a verified database needs no rewrite here: a row is
-        inserted only when absent and a floor is written only when it is below an
-        existing timestamp. The insert is a single ``INSERT OR IGNORE`` rather
-        than a read-then-write: bootstrap runs once per verified database file
-        (see ``_ensure_schema_once``) but several processes can verify the same
-        file concurrently, and a ``SELECT``/``INSERT`` pair would race into
-        ``IntegrityError: UNIQUE constraint failed: storage_sequences.scope``.
-        """
+        """Insert missing sequence rows and lift lagging floors (INSERT OR IGNORE race)."""
         for scope in SqliteSessionStore._SEQUENCE_SCOPES:
             _ = connection.execute(
                 "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES (?, 0)",
@@ -922,17 +836,6 @@ class SqliteSessionStore(
         _ = connection.execute(
             "UPDATE storage_sequences SET value = ? WHERE scope = ? AND value < ?",
             (floor, scope, floor),
-        )
-
-    @classmethod
-    def _assert_existing_schema_version(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
-        """Validate persisted ``user_version`` before schema setup."""
-        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version in {0, cls._SCHEMA_VERSION}:
-            return
-        cls._raise_schema_mismatch(
-            database_path=database_path,
-            detail=f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}",
         )
 
     @classmethod
@@ -1061,7 +964,7 @@ class SqliteSessionStore(
         )
 
     @staticmethod
-    def _raise_schema_mismatch(*, database_path: Path, detail: str) -> None:
+    def _raise_schema_mismatch(*, database_path: Path, detail: str) -> NoReturn:
         raise RuntimeError(
             "sqlite runtime schema mismatch: "
             f"{detail}. Reset the runtime database with "

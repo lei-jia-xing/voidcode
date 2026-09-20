@@ -297,10 +297,6 @@ def _provider_config_payload_keys() -> dict[str, str]:
 
 _PROVIDER_CONFIG_PAYLOAD_KEYS: Mapping[str, str] = _provider_config_payload_keys()
 
-# Provider keys renamed after a session was persisted. The persisted parsing
-# boundary migrates these; live config still rejects them, pointing at the new key.
-_RENAMED_PROVIDER_KEY_REPLACEMENTS: Mapping[str, str] = {"litellm": "providers.endpoint"}
-
 
 def _canonicalize_provider_config_payload_keys(
     raw_value: object,
@@ -339,9 +335,6 @@ def _canonical_provider_config_key(raw_key: str, *, field_path: str) -> str:
         return "custom"
     payload_key = _PROVIDER_CONFIG_PAYLOAD_KEYS.get(canonical_key)
     if payload_key is None:
-        replacement = _RENAMED_PROVIDER_KEY_REPLACEMENTS.get(canonical_key)
-        if replacement is not None:
-            raise ValueError(f"{_nested_config_field(field_path, raw_key)} is not supported; use '{replacement}' instead")
         raise ValueError(f"{_nested_config_field(field_path, raw_key)}: {UnknownProviderIdError(raw_key).message}")
     return payload_key
 

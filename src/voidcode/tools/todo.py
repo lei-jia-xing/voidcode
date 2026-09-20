@@ -5,17 +5,9 @@ from typing import ClassVar, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from ..runtime.todos import TODO_STATUSES, TodoStatus
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .runtime_context import current_runtime_tool_context
-
-TodoStatus = Literal["pending", "in_progress", "completed", "abandoned", "blocked"]
-_TODO_STATUSES: tuple[TodoStatus, ...] = (
-    "pending",
-    "in_progress",
-    "completed",
-    "abandoned",
-    "blocked",
-)
 
 
 class _TodoArgsModel(BaseModel):
@@ -56,7 +48,7 @@ def _copy_phases(raw: object) -> list[dict[str, object]]:
             status = raw_task.get("status")
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("runtime todo task content must be non-empty")
-            if status not in _TODO_STATUSES:
+            if status not in TODO_STATUSES:
                 raise ValueError(f"runtime todo task has invalid status: {status}")
             task: dict[str, object] = {"content": content.strip(), "status": status}
             blocker = raw_task.get("blocker")
@@ -95,7 +87,7 @@ def _normalize_in_progress(phases: list[dict[str, object]]) -> None:
 
 
 def _summary(phases: list[dict[str, object]]) -> dict[str, int]:
-    counts = {status: 0 for status in _TODO_STATUSES}
+    counts = {status: 0 for status in TODO_STATUSES}
     for phase in phases:
         for task in cast(list[dict[str, object]], phase["tasks"]):
             counts[cast(TodoStatus, task["status"])] += 1

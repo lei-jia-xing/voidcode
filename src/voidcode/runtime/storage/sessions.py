@@ -14,6 +14,7 @@ from ..contracts import (
     UnknownSessionError,
 )
 from ..events import (
+    RUNTIME_TODO_UPDATED,
     EventEnvelope,
     EventSource,
 )
@@ -25,6 +26,8 @@ from ..session import (
     normalize_persisted_session_metadata,
     session_metadata_for_persistence,
 )
+from ..session_metadata_helpers import runtime_state_todos, session_metadata_with_runtime_state_updates
+from ..todos import runtime_todo_phases_from_payload, todo_state_payload
 from .shared import _assert_terminal_session_events_allowed
 
 if TYPE_CHECKING:
@@ -155,13 +158,35 @@ class _SessionStorageMixin(_MixinBase):
                 created_at_unix_ms,
             ),
         )
-        self._replace_session_todos(
-            connection=connection,
-            workspace=workspace,
-            session_id=session_id,
-            metadata=persisted_metadata,
-        )
         return updated_at
+
+    @staticmethod
+    def _todo_state_from_metadata(metadata: dict[str, object]) -> dict[str, object] | None:
+        todo_state = runtime_state_todos(metadata)
+        if todo_state is None:
+            return None
+        revision = todo_state.get("revision")
+        if not isinstance(revision, int) or revision < 0:
+            raise ValueError("runtime todo revision must be a non-negative integer")
+        return todo_state_payload(runtime_todo_phases_from_payload(todo_state.get("phases")), revision=revision)
+
+    @classmethod
+    def _metadata_with_todo_state(cls, metadata: dict[str, object], todo_state: dict[str, object] | None) -> dict[str, object]:
+        if todo_state is None:
+            return metadata
+        return session_metadata_with_runtime_state_updates(metadata, updates={"todos": todo_state})
+
+    @staticmethod
+    def _todo_state_from_events(events: tuple[EventEnvelope, ...]) -> dict[str, object] | None:
+        for event in reversed(events):
+            if event.event_type != RUNTIME_TODO_UPDATED:
+                continue
+            phases = runtime_todo_phases_from_payload(event.payload.get("phases"))
+            revision = event.payload.get("revision")
+            if not isinstance(revision, int) or revision < 0:
+                raise ValueError("runtime todo revision must be a non-negative integer")
+            return todo_state_payload(phases, revision=revision)
+        return None
 
     @staticmethod
     def _merge_runtime_owned_metadata(
@@ -557,11 +582,10 @@ class _SessionStorageMixin(_MixinBase):
         """Persist a lightweight ``interrupted`` resume checkpoint to the sessions row.
 
         This is a cheap checkpoint of an in-flight run for resume-after-interrupt.
-        Unlike ``save_run`` it does NOT write the ``session_events`` table, does
-        NOT replace ``session_todos``, and does NOT write ``output`` /
-        ``pending_approval_json`` / ``pending_question_json`` (``output`` is only
-        preserved, never overwritten with NULL on the update path). It writes
-        exactly one ``sessions`` row — creating it on first call when
+        Unlike ``save_run`` it does NOT write the ``session_events`` table, and does
+        NOT write ``output`` / ``pending_approval_json`` / ``pending_question_json``
+        (``output`` is only preserved, never overwritten with NULL on the update path).
+        It writes exactly one ``sessions`` row — creating it on first call when
         ``create_if_missing`` is set (mandatory: ``append_session_events`` raises
         ``UnknownSessionError`` when the row is absent, so the row must exist
         before the first event append).
@@ -901,15 +925,7 @@ class _SessionStorageMixin(_MixinBase):
                     (str(workspace), session_id),
                 ).fetchall(),
             )
-            stored_todo_state = self._todo_state_from_rows(
-                connection=connection,
-                workspace=workspace,
-                session_id=session_id,
-            )
-        metadata = self._metadata_with_todo_state(
-            normalize_persisted_session_metadata(cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"])))),
-            stored_todo_state,
-        )
+        metadata = normalize_persisted_session_metadata(cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"]))))
         session = SessionState(
             session=SessionRef(
                 id=cast(str, session_row["session_id"]),

@@ -23,7 +23,6 @@ import hashlib
 import io
 import json
 import platform
-import re
 import sys
 import time
 import zipfile
@@ -33,14 +32,25 @@ from pathlib import Path
 from typing import Final, Literal, cast, final
 
 from .. import __version__ as VOIDCODE_VERSION
+from ..security.redaction import (
+    BUNDLE_TOOL_OUTPUT_PREVIEW_CHARS as _DEFAULT_TOOL_OUTPUT_PREVIEW_CHARS,
+)
+from ..security.redaction import (
+    REDACTED_PLACEHOLDER as SESSION_BUNDLE_REDACTED_PLACEHOLDER,
+)
+from ..security.redaction import (
+    is_sensitive_key,
+    redact_text,
+    redact_value,
+    truncate,
+)
 from ..tools.output import read_tool_output_artifact
 from .background.models import StoredBackgroundTaskSummary
 from .contracts import (
     RuntimeRequest,
     RuntimeResponse,
     UnknownSessionError,
-    validate_session_id,
-    validate_session_reference_id,
+    validate_id,
 )
 from .events import EventEnvelope, EventSource
 from .session import SessionRef, SessionState, SessionStatus, session_metadata_for_persistence
@@ -50,31 +60,8 @@ SESSION_BUNDLE_SCHEMA_NAME: Final[str] = "voidcode.session.bundle.v1"
 SESSION_BUNDLE_SCHEMA_VERSION: Final[int] = 1
 SESSION_BUNDLE_FILE_NAME: Final[str] = "bundle.json"
 SESSION_BUNDLE_DEFAULT_EXTENSION: Final[str] = ".vcsession.zip"
-SESSION_BUNDLE_REDACTED_PLACEHOLDER: Final[str] = "<redacted>"
 
 type SessionBundleFormat = Literal["zip", "json"]
-
-
-_REDACTED_KEY_FRAGMENTS: Final[tuple[str, ...]] = (
-    "api_key",
-    "apikey",
-    "auth",
-    "authorization",
-    "bearer",
-    "cookie",
-    "credential",
-    "password",
-    "secret",
-    "session_token",
-    "token",
-)
-
-
-_REDACTED_VALUE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
-    re.compile(r"sk-[A-Za-z0-9_\-]{6,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9._\-]{6,}", re.IGNORECASE),
-    re.compile(r"(?i)(api[_-]?key|token|secret|password)=([^\s&]+)"),
-)
 
 
 _RAW_PROVIDER_EVENT_TYPES: Final[frozenset[str]] = frozenset(
@@ -131,7 +118,6 @@ _DEFERRED_BUNDLE_DIAGNOSTIC_VALUES: Final[frozenset[str]] = frozenset(
 )
 
 
-_DEFAULT_TOOL_OUTPUT_PREVIEW_CHARS: Final[int] = 2_000
 _BUNDLE_ARTIFACT_READ_LIMIT_LINES: Final[int] = 1_000_000
 
 
@@ -349,34 +335,15 @@ def _diagnostics_payload(diagnostics: SessionBundleDiagnostics) -> dict[str, obj
 
 
 def _looks_like_secret_key(key: str) -> bool:
-    lowered = key.lower()
-    return any(fragment in lowered for fragment in _REDACTED_KEY_FRAGMENTS)
+    return is_sensitive_key(key)
 
 
 def _scrub_secret_text(value: str) -> str:
-    scrubbed = value
-    for pattern in _REDACTED_VALUE_PATTERNS:
-        scrubbed = pattern.sub(SESSION_BUNDLE_REDACTED_PLACEHOLDER, scrubbed)
-    return scrubbed
+    return redact_text(value)
 
 
 def _redact_object(value: object) -> object:
-    if isinstance(value, dict):
-        result: dict[str, object] = {}
-        for raw_key, raw_item in cast(Mapping[object, object], value).items():
-            key = str(raw_key)
-            if _looks_like_secret_key(key):
-                result[key] = SESSION_BUNDLE_REDACTED_PLACEHOLDER
-            else:
-                result[key] = _redact_object(raw_item)
-        return result
-    if isinstance(value, list):
-        return [_redact_object(item) for item in cast(list[object], value)]
-    if isinstance(value, tuple):
-        return tuple(_redact_object(item) for item in value)
-    if isinstance(value, str):
-        return _scrub_secret_text(value)
-    return value
+    return redact_value(value)
 
 
 def _redact_dict(value: dict[str, object]) -> dict[str, object]:
@@ -417,10 +384,7 @@ def _strip_deferred_bundle_diagnostics(value: object) -> object | None:
 
 
 def _truncate_string(value: str, *, limit: int) -> str:
-    if limit <= 0 or len(value) <= limit:
-        return value
-    suffix = f"\n... [truncated by session bundle: kept first {limit} of {len(value)} chars]"
-    return value[:limit] + suffix
+    return truncate(value, limit)
 
 
 def _sanitize_export_text(
@@ -560,7 +524,7 @@ class _SessionBundleBuilder:
         self._clock = clock or (lambda: int(time.time() * 1000))
 
     def build(self, session_id: str) -> SessionBundle:
-        validate_session_id(session_id)
+        validate_id(session_id)
         sessions, event_count = self._collect_sessions(session_id=session_id)
         background_tasks = self._collect_background_tasks(session_id=session_id)
         artifacts = self._collect_artifacts(sessions=sessions)
@@ -968,14 +932,14 @@ def _normalize_event_payload(event: dict[str, object], *, label: str) -> dict[st
 
 def _validate_bundle_session_id(value: str, *, where: str) -> str:
     try:
-        return validate_session_id(value)
+        return validate_id(value)
     except ValueError as exc:
         raise SessionBundleError(f"session bundle {where} is invalid: {exc}") from exc
 
 
 def _validate_bundle_parent_id(value: str, *, where: str) -> str:
     try:
-        return validate_session_reference_id(value, field_name="parent_id")
+        return validate_id(value, field_name="parent_id")
     except ValueError as exc:
         raise SessionBundleError(f"session bundle {where} is invalid: {exc}") from exc
 
@@ -1348,7 +1312,7 @@ def _resolve_target_id(
     resolver: Callable[[str], str],
     reserved: set[str],
 ) -> str:
-    validate_session_id(bundle_session_id)
+    validate_id(bundle_session_id)
     if bundle_session_id not in reserved and not session_store.has_session(workspace=workspace, session_id=bundle_session_id):
         return bundle_session_id
     candidate = resolver(bundle_session_id)
@@ -1359,7 +1323,7 @@ def _resolve_target_id(
     ):
         attempt += 1
         candidate = f"{bundle_session_id}-imported-{attempt}"
-    validate_session_id(candidate)
+    validate_id(candidate)
     return candidate
 
 

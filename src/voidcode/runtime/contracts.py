@@ -164,20 +164,6 @@ class ContextTransformAppliedStateMetadata(TypedDict, total=False):
     last_emitted_run_id: str | None
 
 
-RUNTIME_STATE_METADATA_KEYS = frozenset(
-    {
-        "run_id",
-        "acp",
-        "context_projection",
-        "context_projection_summary",
-        "todos",
-        "pending_tool_intent",
-        "context_compacted",
-        "context_transform_applied",
-    }
-)
-
-
 class RuntimeStateMetadata(TypedDict, total=False):
     run_id: str
     acp: AcpStateMetadata
@@ -189,7 +175,7 @@ class RuntimeStateMetadata(TypedDict, total=False):
     context_transform_applied: ContextTransformAppliedStateMetadata
 
 
-PLAN_STATE_METADATA_KEYS = frozenset({"status", "approval_request_id", "blocked_tool", "last_error"})
+RUNTIME_STATE_METADATA_KEYS = frozenset(RuntimeStateMetadata.__annotations__)
 
 
 class PlanStateMetadata(TypedDict, total=False):
@@ -199,43 +185,10 @@ class PlanStateMetadata(TypedDict, total=False):
     last_error: str
 
 
-DELEGATION_METADATA_KEYS = frozenset(
-    {
-        "mode",
-        "subagent_type",
-        "description",
-        "command",
-        "depth",
-        "remaining_spawn_budget",
-        "selected_preset",
-        "selected_execution_engine",
-        "parallel_group_id",
-        "parallel_group_size",
-        "output_schema",
-        "schema_mode",
-    }
-)
+PLAN_STATE_METADATA_KEYS = frozenset(PlanStateMetadata.__annotations__)
 
 
-class PersistedDelegationMetadata(RuntimeSubagentRoutingMetadata, total=False):
-    """Persisted delegation shape; request-side and persisted keys align.
-
-    Governance fields are resolved before request persistence; selected route
-    fields are filled by routing.
-    """
-
-
-SKILL_SNAPSHOT_METADATA_KEYS = frozenset(
-    {
-        "snapshot_version",
-        "source",
-        "selected_skill_names",
-        "applied_skill_payloads",
-        "skill_prompt_context",
-        "binding_snapshot",
-        "snapshot_hash",
-    }
-)
+DELEGATION_METADATA_KEYS = frozenset(RuntimeSubagentRoutingMetadata.__annotations__)
 
 
 class SkillSnapshotMetadata(TypedDict, total=False):
@@ -248,24 +201,11 @@ class SkillSnapshotMetadata(TypedDict, total=False):
     snapshot_hash: str
 
 
-_STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
-    {
-        "abort_requested",
-        "agent",
-        "command",
-        "context_transform_refs",
-        "delegation",
-        "mode",
-        "read_only",
-        "provider_stream",
-        "reasoning_effort",
-        "show_thinking",
-        "skills",
-        "force_load_skills",
-        "keep_alive",
-    }
-)
-_INTERNAL_RUNTIME_REQUEST_METADATA_KEYS = frozenset({"background_run", "background_rate_limit_retry", "background_task_id", "keep_alive_turn"})
+SKILL_SNAPSHOT_METADATA_KEYS = frozenset(SkillSnapshotMetadata.__annotations__)
+
+
+_STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(RuntimeRequestMetadata.__annotations__)
+_INTERNAL_RUNTIME_REQUEST_METADATA_KEYS = frozenset(InternalRuntimeRequestMetadata.__annotations__) - _STABLE_RUNTIME_REQUEST_METADATA_KEYS
 
 
 def _empty_runtime_request_metadata() -> RuntimeRequestMetadata:
@@ -302,32 +242,11 @@ def _validate_parallel_group_size(value: object) -> int:
     return group_size
 
 
-def parse_runtime_mode(value: object) -> runtime_mode.RuntimeMode:
+def _parse_runtime_mode(value: object) -> runtime_mode.RuntimeMode:
     try:
         return runtime_mode.parse_runtime_mode(value)
     except ValueError as exc:
         raise RuntimeRequestError("request metadata 'mode' must be 'normal' or 'plan'") from exc
-
-
-def runtime_mode_from_metadata(
-    metadata: RuntimeRequestMetadataPayload | dict[str, object] | None,
-) -> runtime_mode.RuntimeMode:
-    try:
-        return runtime_mode.runtime_mode_from_metadata(metadata)
-    except ValueError as exc:
-        raise RuntimeRequestError("request metadata 'mode' must be 'normal' or 'plan'") from exc
-
-
-def runtime_read_only_from_metadata(
-    metadata: RuntimeRequestMetadataPayload | dict[str, object] | None,
-) -> bool:
-    try:
-        return runtime_mode.runtime_read_only_from_metadata(metadata)
-    except ValueError as exc:
-        message = str(exc)
-        if "mode" in message:
-            raise RuntimeRequestError("request metadata 'mode' must be 'normal' or 'plan'") from exc
-        raise RuntimeRequestError("request metadata 'read_only' must be a boolean") from exc
 
 
 def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadata:
@@ -388,7 +307,7 @@ def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadat
         "original_prompt": original_prompt,
     }
     if "mode" in command_payload:
-        normalized["mode"] = parse_runtime_mode(command_payload["mode"])
+        normalized["mode"] = _parse_runtime_mode(command_payload["mode"])
     return normalized
 
 
@@ -583,7 +502,7 @@ def validate_runtime_request_metadata(
         normalized["delegation"] = validate_runtime_subagent_routing_metadata(metadata["delegation"])
 
     if "mode" in metadata:
-        normalized["mode"] = parse_runtime_mode(metadata["mode"])
+        normalized["mode"] = _parse_runtime_mode(metadata["mode"])
 
     if "read_only" in metadata:
         read_only = metadata["read_only"]
@@ -702,16 +621,12 @@ class RuntimeRequest:
         )
 
 
-def validate_session_reference_id(value: str, *, field_name: str = "session_id") -> str:
+def validate_id(value: str, *, field_name: str = "session_id") -> str:
     if not value:
         raise RuntimeRequestError(f"{field_name} must be a non-empty string when provided")
     if "/" in value:
         raise RuntimeRequestError(f"{field_name} must not contain '/'")
     return value
-
-
-def validate_session_id(session_id: str) -> str:
-    return validate_session_reference_id(session_id, field_name="session_id")
 
 
 @dataclass(frozen=True, slots=True)

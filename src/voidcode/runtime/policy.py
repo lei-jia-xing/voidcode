@@ -5,6 +5,19 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from ..security.redaction import (
+    POLICY_DIAGNOSTIC_CHARS as _POLICY_DIAGNOSTIC_CHARS,
+)
+from ..security.redaction import (
+    POLICY_DIAGNOSTIC_LIMIT,
+    is_sensitive_key,
+)
+from ..security.redaction import (
+    POLICY_EXTRA_KEY_FRAGMENTS as _POLICY_EXTRA_KEY_FRAGMENTS,
+)
+from ..security.redaction import (
+    REDACTED_PLACEHOLDER as _REDACTED,
+)
 from .background.routing import CALLABLE_SUBAGENT_PRESETS
 from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
 
@@ -29,20 +42,6 @@ _ALLOWED_HOOK_SCOPES = (
     "turn_progress",
     "stuck_detected",
 )
-_SECRET_KEY_FRAGMENTS = (
-    "api_key",
-    "apikey",
-    "authorization",
-    "bearer",
-    "credential",
-    "env",
-    "password",
-    "prompt",
-    "secret",
-    "skill_body",
-    "token",
-)
-_DIAGNOSTIC_LIMIT = 32
 _INTENT_LABEL_UNSPECIFIED = "unspecified"
 
 
@@ -706,7 +705,8 @@ def _base_precedence_trace() -> list[dict[str, object]]:
 
 
 def _looks_sensitive_key(key: str) -> bool:
-    return any(fragment in key.lower() for fragment in _SECRET_KEY_FRAGMENTS)
+    lowered = key.lower()
+    return is_sensitive_key(key) or any(fragment in lowered for fragment in _POLICY_EXTRA_KEY_FRAGMENTS)
 
 
 def _diagnostics(value: object) -> dict[str, object]:
@@ -714,14 +714,14 @@ def _diagnostics(value: object) -> dict[str, object]:
         return {}
     diagnostics: dict[str, object] = {}
     for index, (raw_key, raw_item) in enumerate(cast(dict[object, object], value).items()):
-        if index >= _DIAGNOSTIC_LIMIT:
+        if index >= POLICY_DIAGNOSTIC_LIMIT:
             diagnostics["truncated"] = True
             break
         key = str(raw_key)
         if _looks_sensitive_key(key):
-            diagnostics[key] = "<redacted>"
+            diagnostics[key] = _REDACTED
         elif isinstance(raw_item, str):
-            diagnostics[key] = raw_item[:256]
+            diagnostics[key] = raw_item[:_POLICY_DIAGNOSTIC_CHARS]
         elif isinstance(raw_item, bool | int | float) or raw_item is None:
             diagnostics[key] = raw_item
         else:

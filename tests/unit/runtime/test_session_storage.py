@@ -552,11 +552,10 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
 
     with closing(sqlite3.connect(database_path)) as connection:
         session_columns = [row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()]
-        todo_columns = [row[1] for row in connection.execute("PRAGMA table_info(session_todos)").fetchall()]
         delivery_columns = [row[1] for row in connection.execute("PRAGMA table_info(session_event_deliveries)").fetchall()]
         schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
         notification_indexes = connection.execute("PRAGMA index_list(session_notifications)").fetchall()
-
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert session_columns == [
         "session_id",
         "parent_session_id",
@@ -574,39 +573,14 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "last_event_sequence",
         "created_at_unix_ms",
     ]
-    assert todo_columns == [
-        "workspace_id",
-        "session_id",
-        "position",
-        "content",
-        "status",
-        "updated_at",
-    ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at", "event_sequence"]
     assert schema_version == SCHEMA_VERSION
-    with closing(sqlite3.connect(database_path)) as connection:
-        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert "session_todos" not in tables
     assert "memories" not in tables
     assert "memory_tags" not in tables
     assert "memory_recall_log" not in tables
     assert "memory_index_status" not in tables
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
-
-
-def test_session_storage_preserves_legacy_memory_tables_without_access(tmp_path: Path) -> None:
-    database_path = tmp_path / "legacy-memory.sqlite3"
-    with closing(sqlite3.connect(database_path)) as connection:
-        connection.execute("CREATE TABLE memories (memory_id TEXT PRIMARY KEY, content TEXT)")
-        connection.execute("INSERT INTO memories VALUES ('legacy', 'must remain untouched')")
-        connection.execute("PRAGMA user_version = 12")
-        connection.commit()
-
-    store = SqliteSessionStore(database_path=database_path)
-    with pytest.raises(RuntimeError, match="schema version mismatch"):
-        store.list_sessions(workspace=tmp_path)
-    with closing(sqlite3.connect(database_path)) as connection:
-        assert connection.execute("SELECT content FROM memories WHERE memory_id = 'legacy'").fetchone() == ("must remain untouched",)
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 12
 
 
 def test_session_storage_bootstraps_sequences_from_existing_timestamps(tmp_path: Path) -> None:
@@ -739,7 +713,7 @@ def test_session_storage_reverifies_schema_after_version_change_with_warm_cache(
     store.list_sessions(workspace=tmp_path)
 
     with closing(sqlite3.connect(database_path)) as connection:
-        connection.execute("PRAGMA user_version = 12")
+        connection.execute("PRAGMA user_version = 999")
         connection.commit()
 
     with pytest.raises(RuntimeError, match="schema version mismatch"):
@@ -766,7 +740,7 @@ def test_session_storage_reverifies_replaced_database_file_with_warm_cache(tmp_p
     foreign_version = tmp_path / "foreign-version.sqlite3"
     with closing(sqlite3.connect(foreign_version)) as connection:
         connection.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, workspace TEXT NOT NULL)")
-        connection.execute("PRAGMA user_version = 12")
+        connection.execute("PRAGMA user_version = 999")
         connection.commit()
     _replace_with(foreign_version)
 
@@ -806,7 +780,6 @@ def test_session_storage_configures_sqlite_operability_pragmas(tmp_path: Path) -
         "background_tasks": 0,
         "session_notifications": 0,
         "session_events": 0,
-        "session_todos": 0,
         "session_event_deliveries": 0,
     }
 

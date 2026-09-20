@@ -94,13 +94,6 @@ class _DiagnosticsStorageMixin(_MixinBase):
                     ids=session_ids,
                     workspace=workspace,
                 ),
-                "session_todos": self._delete_for_ids(
-                    connection=connection,
-                    table="session_todos",
-                    column="session_id",
-                    ids=session_ids,
-                    workspace=workspace,
-                ),
                 "session_event_deliveries": self._delete_for_ids(
                     connection=connection,
                     table="session_event_deliveries",
@@ -212,13 +205,6 @@ class _DiagnosticsStorageMixin(_MixinBase):
         counts["session_events"] = self._count_for_ids(
             connection=connection,
             table="session_events",
-            column="session_id",
-            ids=session_ids,
-            workspace=workspace,
-        )
-        counts["session_todos"] = self._count_for_ids(
-            connection=connection,
-            table="session_todos",
             column="session_id",
             ids=session_ids,
             workspace=workspace,
@@ -462,10 +448,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
         )
         if not pruned_ids and not orphaned_task_ids:
             return 0
-
         for table in (
             "session_events",
-            "session_todos",
             "session_event_deliveries",
             "session_notifications",
             "sessions",

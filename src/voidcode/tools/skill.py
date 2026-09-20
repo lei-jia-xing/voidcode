@@ -3,10 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, field_validator
 
 from ..skills.models import SkillMetadata
-from ._pydantic_args import format_validation_error
+from ._pydantic_args import parse_tool_args
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -68,10 +68,7 @@ class SkillTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
-        try:
-            args = _SkillArgs.model_validate(call.arguments)
-        except ValidationError as exc:
-            raise ValueError(format_validation_error("skill", exc)) from exc
+        args = parse_tool_args(_SkillArgs, call.arguments, tool_name="skill")
 
         skill = self._resolve_skill(args.name)
         content_lines = [

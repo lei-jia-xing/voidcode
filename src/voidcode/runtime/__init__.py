@@ -10,7 +10,6 @@ from .background.models import (
     BackgroundTaskState,
     BackgroundTaskStatus,
     StoredBackgroundTaskSummary,
-    validate_background_task_id,
 )
 from .contracts import (
     BackgroundTaskResult,
@@ -26,6 +25,7 @@ from .contracts import (
     RuntimeStreamChunkKind,
     StreamingRuntimeEntrypoint,
     UnknownBackgroundTaskError,
+    validate_id,
 )
 from .events import (
     DelegatedExecutionPayload,
@@ -83,7 +83,7 @@ __all__ = [
     "ToolRegistry",
     "VoidCodeRuntime",
     "create_runtime_app",
-    "validate_background_task_id",
+    "validate_id",
 ]
 
 

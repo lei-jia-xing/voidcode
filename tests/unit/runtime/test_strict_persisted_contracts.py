@@ -1,19 +1,11 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import cast
 
 import pytest
 
-from voidcode.provider.config import ProviderEndpointConfig, ProviderTransientRetryConfig
 from voidcode.provider.protocol import ProviderTokenUsage
-from voidcode.runtime.config import (
-    RUNTIME_CONFIG_FILE_NAME,
-    RuntimeConfig,
-    RuntimeContextWindowConfig,
-    load_runtime_config,
-)
+from voidcode.runtime.config import RuntimeConfig, RuntimeContextWindowConfig
 from voidcode.runtime.config_materializer import (
     PERSISTED_RUNTIME_CONFIG_KEYS,
     EffectiveRuntimeConfig,
@@ -224,20 +216,6 @@ def test_persisted_runtime_config_preserves_rejection_semantics(
         parse_persisted_runtime_config(payload)
 
 
-def test_persisted_runtime_config_loads_legacy_litellm_provider_block() -> None:
-    """``providers.litellm`` became ``providers.endpoint``; sessions persisted before the
-    rename must still load through the persisted parse entry point."""
-    payload = _current_runtime_config_payload()
-    payload["providers"] = {"litellm": {"transient_retry": {"max_retries": 3, "base_delay_ms": 250.0}}}
-
-    materialized = parse_persisted_runtime_config(payload)
-
-    assert materialized.providers is not None
-    assert materialized.providers.endpoint == ProviderEndpointConfig(
-        transient_retry=ProviderTransientRetryConfig(max_retries=3, base_delay_ms=250.0),
-    )
-
-
 def test_persisted_runtime_config_reports_unknown_provider_key_once() -> None:
     payload = _current_runtime_config_payload()
     payload["providers"] = {"team-gateway": {"transient_retry": {"max_retries": 3}}}
@@ -251,17 +229,6 @@ def test_persisted_runtime_config_reports_unknown_provider_key_once() -> None:
         "mistral, openai, opencode, opencode-go, openrouter, qwen, together, zai, zhipuai; "
         "declare a custom OpenAI-compatible endpoint as providers.custom.team-gateway and reference it as 'team-gateway/<model>'"
     )
-
-
-def test_new_runtime_config_still_rejects_legacy_litellm_provider_key(tmp_path: Path) -> None:
-    """The legacy rename is confined to persisted metadata; config files stay strict."""
-    (tmp_path / RUNTIME_CONFIG_FILE_NAME).write_text(
-        json.dumps({"providers": {"litellm": {"transient_retry": {"max_retries": 3}}}}),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match=r"runtime config field 'providers\.litellm' is not supported"):
-        load_runtime_config(tmp_path, env={})
 
 
 @pytest.mark.parametrize(

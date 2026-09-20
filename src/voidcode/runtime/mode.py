@@ -21,6 +21,18 @@ def runtime_mode_from_metadata(metadata: Mapping[str, object] | None) -> Runtime
     return parse_runtime_mode(metadata.get("mode", "normal"))
 
 
+def backfill_runtime_policy_mode(metadata: dict[str, object]) -> dict[str, object]:
+    """Repair persisted ``runtime_policy.mode`` from the top-level mode."""
+    normalized = dict(metadata)
+    raw_runtime_policy = normalized.get("runtime_policy")
+    if isinstance(raw_runtime_policy, dict):
+        runtime_policy = dict(raw_runtime_policy)
+        if runtime_policy.get("mode") not in {"normal", "plan"}:
+            runtime_policy["mode"] = runtime_mode_from_metadata(normalized)
+        normalized["runtime_policy"] = runtime_policy
+    return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class ModeDefinition:
     """Declarative description of a runtime mode's orthogonal switches.

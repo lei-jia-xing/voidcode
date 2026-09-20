@@ -6,6 +6,14 @@ from collections import defaultdict
 from typing import Literal, cast
 
 from ...provider.model_catalog import ToolFeedbackMode
+from ...security.redaction import (
+    DEBUG_CONTENT_CHARS as _MAX_DEBUG_CONTENT_CHARS,
+)
+from ...security.redaction import (
+    is_sensitive_key,
+    redact_text,
+    truncate,
+)
 from ...tools.contracts import ToolResult
 from ...tools.output import (
     redacted_argument_keys_for_tool,
@@ -24,7 +32,6 @@ from ..contracts import (
 )
 from .window import RuntimeAssembledContext, RuntimeContextSegment, ToolResultView
 
-_MAX_DEBUG_CONTENT_CHARS = 2_000
 _OVERSIZED_TOOL_FEEDBACK_CHARS = 8_000
 _PROVIDER_CONTEXT_POLICY_BLOCKING_CODES = frozenset(
     {
@@ -34,24 +41,6 @@ _PROVIDER_CONTEXT_POLICY_BLOCKING_CODES = frozenset(
         "oversized_tool_feedback",
         "provider_requires_tools_schema",
     }
-)
-_SECRET_KEYS = frozenset(
-    {
-        "access_token",
-        "api_key",
-        "apikey",
-        "authorization",
-        "client_secret",
-        "password",
-        "secret",
-        "token",
-    }
-)
-_SECRET_TEXT_PATTERNS = (
-    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}"),
-    re.compile(r"(?i)(api[_-]?key\s*[=:]\s*)[^\s,;]+"),
-    re.compile(r"(?i)(access[_-]?token\s*[=:]\s*)[^\s,;]+"),
-    re.compile(r"(?i)(client[_-]?secret\s*[=:]\s*)[^\s,;]+"),
 )
 
 
@@ -270,14 +259,11 @@ def _clip_content(content: str | None) -> tuple[str | None, bool]:
     redacted = _redact_debug_text(content)
     if len(redacted) <= _MAX_DEBUG_CONTENT_CHARS:
         return redacted, False
-    return f"{redacted[:_MAX_DEBUG_CONTENT_CHARS]}…", True
+    return truncate(redacted, _MAX_DEBUG_CONTENT_CHARS), True
 
 
 def _redact_debug_text(content: str) -> str:
-    redacted = content
-    for pattern in _SECRET_TEXT_PATTERNS:
-        redacted = pattern.sub(r"\1[redacted]", redacted)
-    return redacted
+    return redact_text(content)
 
 
 def _normalize_tool_call_id(value: str | None, *, fallback: str) -> str:
@@ -291,7 +277,7 @@ def _safe_payload(value: object) -> object:
         clipped, truncated = _clip_content(value)
         return {"text": clipped, "truncated": True} if truncated else clipped
     if isinstance(value, dict):
-        return {str(key): _safe_payload(item) for key, item in cast(dict[object, object], value).items() if str(key).lower() not in _SECRET_KEYS}
+        return {str(key): _safe_payload(item) for key, item in cast(dict[object, object], value).items() if not is_sensitive_key(str(key))}
     if isinstance(value, list | tuple):
         return [_safe_payload(item) for item in cast(list[object] | tuple[object, ...], value)]
     if isinstance(value, bool | int | float) or value is None:

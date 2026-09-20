@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Literal, cast
@@ -12,25 +11,23 @@ from voidcode.agent.prompt_sections import (
     identity_header,
     prompt_activation_guidance_block,
 )
+from voidcode.security.redaction import (
+    PROMPT_ACTIVATION_PREVIEW_CHARS as _PROMPT_ACTIVATION_PREVIEW_CHARS,
+)
+from voidcode.security.redaction import (
+    PROMPT_FRAGMENT_PREVIEW_CHARS as _PROMPT_FRAGMENT_PREVIEW_CHARS,
+)
+from voidcode.security.redaction import (
+    redact_text,
+    truncate,
+)
 
 from .transforms import RuntimeContextTransformResult
-
-_PROMPT_FRAGMENT_PREVIEW_CHARS = 240
-_SECRET_TEXT_PATTERNS = (
-    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}"),
-    re.compile(r"(?i)(api[_-]?key\s*[=:]\s*)[^\s,;]+"),
-    re.compile(r"(?i)(access[_-]?token\s*[=:]\s*)[^\s,;]+"),
-    re.compile(r"(?i)(client[_-]?secret\s*[=:]\s*)[^\s,;]+"),
-    re.compile(r"(?i)(password\s*[=:]\s*)[^\s,;]+"),
-    re.compile(r"(?i)(secret\s*[=:]\s*)[^\s,;]+"),
-    re.compile(r"(?i)(token\s*[=:]\s*)[^\s,;]+"),
-)
 
 _BASE_SAFETY_GUIDANCE = "Follow runtime safety policies. Runtime enforcement is authoritative over prompt text."
 
 
 _TOOL_POLICY_SUMMARY = "Tools: visible list is advisory. Runtime allowlists and policy control execution."
-_PROMPT_ACTIVATION_PREVIEW_CHARS = 160
 
 
 @dataclass(frozen=True, slots=True)
@@ -557,13 +554,11 @@ def _default_layer_for_source(source: str) -> str:
 
 
 def _redacted_preview(content: str) -> tuple[str, bool]:
-    redacted = content
-    for pattern in _SECRET_TEXT_PATTERNS:
-        redacted = pattern.sub(r"\1[redacted]", redacted)
+    redacted = redact_text(content)
     redacted = " ".join(redacted.split())
     if len(redacted) <= _PROMPT_FRAGMENT_PREVIEW_CHARS:
         return redacted, False
-    return f"{redacted[:_PROMPT_FRAGMENT_PREVIEW_CHARS]}...", True
+    return truncate(redacted, _PROMPT_FRAGMENT_PREVIEW_CHARS), True
 
 
 def _metadata_source(metadata: Mapping[str, object], *, fallback: str) -> str:

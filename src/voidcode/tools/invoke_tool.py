@@ -18,9 +18,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar, final
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, field_validator
 
-from ._pydantic_args import format_validation_error
+from ._pydantic_args import parse_tool_args
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -73,10 +73,7 @@ class InvokeTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
-        try:
-            InvokeToolArgs.model_validate(call.arguments)
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        parse_tool_args(InvokeToolArgs, call.arguments, tool_name=self.definition.name)
         raise ValueError(
             "invoke_tool must be dispatched by the runtime run loop; direct invocation is not supported outside the tool-execution boundary"
         )

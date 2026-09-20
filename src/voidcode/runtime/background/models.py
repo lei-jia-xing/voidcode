@@ -253,8 +253,6 @@ class StoredBackgroundTaskSummary:
 
 
 def validate_background_task_id(task_id: str) -> str:
-    if not task_id:
-        raise ValueError("task_id must be a non-empty string")
-    if "/" in task_id:
-        raise ValueError("task_id must not contain '/'")
-    return task_id
+    from ..contracts import validate_id
+
+    return validate_id(task_id, field_name="task_id")

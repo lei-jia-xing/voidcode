@@ -33,7 +33,6 @@ from ..background.models import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
     StoredBackgroundTaskSummary,
-    validate_background_task_id,
 )
 from ..background.routing import (
     SubagentRoutingIdentity,
@@ -69,9 +68,8 @@ from ..contracts import (
     WorkspaceRegistrySnapshot,
     WorkspaceReviewSnapshot,
     WorkspaceSummary,
+    validate_id,
     validate_runtime_request_metadata,
-    validate_session_id,
-    validate_session_reference_id,
 )
 from ..events import (
     DelegatedLifecycleEventPayload,
@@ -398,11 +396,11 @@ def _runtime_request_from(payload: _RunStreamRequestPayload) -> RuntimeRequest:
     """
     session_id = payload.session_id
     if session_id is not None:
-        validate_session_id(session_id)
+        validate_id(session_id)
 
     parent_session_id = payload.parent_session_id
     if parent_session_id is not None:
-        validate_session_reference_id(
+        validate_id(
             parent_session_id,
             field_name="parent_session_id",
         )
@@ -1004,22 +1002,20 @@ class RuntimeTransportApp(FastAPI):
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
 
     @staticmethod
-    def _validated_session_id(session_id: str) -> str:
+    def _validated_id(value: str, *, field_name: str) -> str:
         try:
-            validate_session_id(session_id)
+            validate_id(value, field_name=field_name)
         except ValueError:
-            # An invalid session id stays a 404, exactly as before: it is
-            # indistinguishable from an unknown session on this surface.
             raise HttpError(404, "not found") from None
-        return session_id
+        return value
 
-    @staticmethod
-    def _validated_task_id(task_id: str) -> str:
-        try:
-            validate_background_task_id(task_id)
-        except ValueError:
-            raise HttpError(404, "not found") from None
-        return task_id
+    @classmethod
+    def _validated_session_id(cls, session_id: str) -> str:
+        return cls._validated_id(session_id, field_name="session_id")
+
+    @classmethod
+    def _validated_task_id(cls, task_id: str) -> str:
+        return cls._validated_id(task_id, field_name="task_id")
 
     # ------------------------------------------------------------------- streaming
 

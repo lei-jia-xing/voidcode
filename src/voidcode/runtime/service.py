@@ -112,7 +112,6 @@ from .background.models import (
     BackgroundTaskState,
     StoredBackgroundTaskSummary,
     is_background_task_terminal,
-    validate_background_task_id,
 )
 from .background.process import BackgroundProcessManager, BackgroundProcessPersistence
 from .background.routing import (
@@ -212,12 +211,9 @@ from .contracts import (
     SkillSummary,
     UnknownSessionError,
     WorkspaceReviewSnapshot,
-    runtime_mode_from_metadata,
-    runtime_read_only_from_metadata,
     runtime_subagent_route_from_metadata,
+    validate_id,
     validate_runtime_request_metadata,
-    validate_session_id,
-    validate_session_reference_id,
 )
 from .edit_schema_policy import EditSchema, EditSchemaResolver, select_edit_schema
 from .effectiveness import ToolEffectivenessReport
@@ -270,7 +266,7 @@ from .interaction_queue import drain_runtime_messages, enqueue_runtime_message
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
 from .mcp import McpManager, build_mcp_manager, mcp_server_for_tool_name, release_mcp_session_events
 from .mcp_tool_cache import McpToolCatalogCache
-from .mode import MODE_DEFINITIONS, resolve_mode
+from .mode import MODE_DEFINITIONS, resolve_mode, runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .paths import mcp_tool_catalog_cache_path, provider_catalog_cache_path
 from .permission import (
     PendingApproval,
@@ -2881,7 +2877,7 @@ class VoidCodeRuntime(RuntimeSurface):
     def load_background_task(self, task_id: str) -> BackgroundTaskState:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         self._background_task_supervisor.drain_queued_background_tasks()
-        validate_background_task_id(task_id)
+        validate_id(task_id, field_name="task_id")
         task = self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
         return self._background_task_supervisor.task_with_observability(task)
 
@@ -2951,10 +2947,7 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> BackgroundTaskResult | None:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         self._background_task_supervisor.drain_queued_background_tasks()
-        validated_child_session_id = validate_session_reference_id(
-            child_session_id,
-            field_name="child_session_id",
-        )
+        validated_child_session_id = validate_id(child_session_id, field_name="child_session_id")
         task = self._session_store.load_background_task_by_child_session(
             workspace=self._workspace,
             child_session_id=validated_child_session_id,
@@ -2974,10 +2967,7 @@ class VoidCodeRuntime(RuntimeSurface):
     def list_background_tasks_by_parent_session(self, *, parent_session_id: str) -> tuple[StoredBackgroundTaskSummary, ...]:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         self._background_task_supervisor.drain_queued_background_tasks()
-        validated_parent_session_id = validate_session_reference_id(
-            parent_session_id,
-            field_name="parent_session_id",
-        )
+        validated_parent_session_id = validate_id(parent_session_id, field_name="parent_session_id")
         return self._background_task_supervisor.summaries_with_observability(
             self._session_store.list_background_tasks_by_parent_session(
                 workspace=self._workspace,
@@ -2987,10 +2977,7 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def background_task_roster(self, *, parent_session_id: str) -> dict[str, object]:
         """Return a bounded, prompt/transcript-free task projection for one parent."""
-        validated_parent_session_id = validate_session_reference_id(
-            parent_session_id,
-            field_name="parent_session_id",
-        )
+        validated_parent_session_id = validate_id(parent_session_id, field_name="parent_session_id")
         summaries = self.list_background_tasks_by_parent_session(
             parent_session_id=validated_parent_session_id,
         )
@@ -3095,7 +3082,7 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def replay_session(self, *, session_id: str) -> RuntimeResponse:
         """Read the persisted session transcript without resume semantics."""
-        validate_session_id(session_id)
+        validate_id(session_id)
         response = self._load_stored_response(session_id=session_id)
         projected_metadata = session_metadata_for_replay(response.session.metadata)
         return RuntimeResponse(
@@ -3122,7 +3109,7 @@ class VoidCodeRuntime(RuntimeSurface):
         projection as a full replay, and the projection is only computed when
         the batch actually contains a policy-annotated event.
         """
-        validate_session_id(session_id)
+        validate_id(session_id)
         stored = self._session_store.read_session_events_after(
             workspace=self._workspace,
             session_id=session_id,
@@ -3137,7 +3124,7 @@ class VoidCodeRuntime(RuntimeSurface):
         return SessionEventBatch(status=stored.status, events=events)
 
     def revert_session(self, *, session_id: str, sequence: int) -> RuntimeSessionRevertMarker:
-        validate_session_id(session_id)
+        validate_id(session_id)
         marker = self._session_store.revert_session(
             workspace=self._workspace,
             session_id=session_id,
@@ -3154,7 +3141,7 @@ class VoidCodeRuntime(RuntimeSurface):
         return marker
 
     def undo_session(self, *, session_id: str) -> RuntimeSessionRevertMarker:
-        validate_session_id(session_id)
+        validate_id(session_id)
         marker = self._session_store.undo_session(
             workspace=self._workspace,
             session_id=session_id,
@@ -3170,7 +3157,7 @@ class VoidCodeRuntime(RuntimeSurface):
         return marker
 
     def unrevert_session(self, *, session_id: str) -> RuntimeSessionRevertMarker | None:
-        validate_session_id(session_id)
+        validate_id(session_id)
         marker = self._session_store.unrevert_session(
             workspace=self._workspace,
             session_id=session_id,
@@ -3186,7 +3173,7 @@ class VoidCodeRuntime(RuntimeSurface):
         return marker
 
     def _load_session_result(self, *, session_id: str) -> RuntimeSessionResult:
-        validate_session_id(session_id)
+        validate_id(session_id)
         result = self._session_store.load_session_result(
             workspace=self._workspace,
             session_id=session_id,
@@ -3209,7 +3196,7 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> dict[str, object]:
         """Resolve spilled tool output artifact metadata for a session."""
 
-        validate_session_id(session_id)
+        validate_id(session_id)
         result = self._session_store.load_session_result(
             workspace=self._workspace,
             session_id=session_id,
@@ -3283,7 +3270,7 @@ class VoidCodeRuntime(RuntimeSurface):
         )
 
     def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot:
-        validate_session_id(session_id)
+        validate_id(session_id)
         active = self._is_active_session_id(session_id)
         active_metadata = self._active_session_metadata(session_id) if active else None
         try:
@@ -3455,7 +3442,7 @@ class VoidCodeRuntime(RuntimeSurface):
         session_id: str,
         options: SessionBundleOptions | None = None,
     ) -> SessionBundle:
-        validate_session_id(session_id)
+        validate_id(session_id)
         _ = self._load_session_result(session_id=session_id)
         return build_session_bundle(
             session_store=self._session_store,
@@ -3548,7 +3535,7 @@ class VoidCodeRuntime(RuntimeSurface):
     def effective_runtime_config(self, *, session_id: str | None = None) -> EffectiveRuntimeConfig:
         if session_id is None:
             return self.effective_runtime_config_from_metadata(None)
-        validate_session_id(session_id)
+        validate_id(session_id)
         response = self._load_stored_response(session_id=session_id)
         return self.effective_runtime_config_from_metadata(response.session.metadata)
 
@@ -3589,7 +3576,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 self._config.model,
                 self._config.provider_fallback,
             )
-        validate_session_id(session_id)
+        validate_id(session_id)
         response = self._load_stored_response(session_id=session_id)
         runtime_config = response.session.metadata.get("runtime_config")
         if not isinstance(runtime_config, dict):
@@ -4579,7 +4566,7 @@ class VoidCodeRuntime(RuntimeSurface):
         dedupe_key: str | None = None,
         allow_terminal_completion: bool = False,
     ) -> tuple[dict[str, object], ...]:
-        validate_session_id(session_id)
+        validate_id(session_id)
         response = self._load_stored_response(session_id=session_id)
         # Steering/follow-up is rejected once the session is sealed. A
         # completion interaction is a runtime outbox record created only after
@@ -4609,7 +4596,7 @@ class VoidCodeRuntime(RuntimeSurface):
         *,
         kind: Literal["steering", "follow_up"],
     ) -> tuple[str, ...]:
-        validate_session_id(session_id)
+        validate_id(session_id)
         if not self._session_store.has_session(workspace=self._workspace, session_id=session_id):
             return ()
         response = self._load_stored_response(session_id=session_id)
@@ -4623,7 +4610,7 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def pending_tool_intent(self, session_id: str) -> dict[str, object] | None:
         """Return an unsettled tool intent left by an interrupted process."""
-        validate_session_id(session_id)
+        validate_id(session_id)
         response = self._load_stored_response(session_id=session_id)
         intent = runtime_state_pending_tool_intent(response.session.metadata)
         return cast(dict[str, object], intent) if intent is not None else None
@@ -4660,7 +4647,7 @@ class VoidCodeRuntime(RuntimeSurface):
         approval_request_id: str | None = None,
         approval_decision: PermissionResolution | None = None,
     ) -> RuntimeResponse:
-        validate_session_id(session_id)
+        validate_id(session_id)
         if approval_request_id is None and approval_decision is None:
             _ = self._reconcile_resolved_approval(session_id=session_id)
             checkpoint = self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
@@ -4725,7 +4712,7 @@ class VoidCodeRuntime(RuntimeSurface):
         approval_request_id: str | None = None,
         approval_decision: PermissionResolution | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
-        validate_session_id(session_id)
+        validate_id(session_id)
         if approval_request_id is None and approval_decision is None:
             checkpoint = self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
             if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
@@ -4921,7 +4908,7 @@ class VoidCodeRuntime(RuntimeSurface):
         question_request_id: str,
         responses: tuple[QuestionResponse, ...],
     ) -> RuntimeResponse:
-        validate_session_id(session_id)
+        validate_id(session_id)
         self._validate_question_targets_owned_request(
             session_id=session_id,
             question_request_id=question_request_id,
@@ -4957,7 +4944,7 @@ class VoidCodeRuntime(RuntimeSurface):
         question_request_id: str,
         responses: tuple[QuestionResponse, ...],
     ) -> Iterator[RuntimeStreamChunk]:
-        validate_session_id(session_id)
+        validate_id(session_id)
         self._validate_question_targets_owned_request(
             session_id=session_id,
             question_request_id=question_request_id,
@@ -5046,14 +5033,11 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> RuntimeRequest:
         session_id = request.session_id
         if session_id is not None:
-            session_id = validate_session_id(session_id)
+            session_id = validate_id(session_id)
 
         parent_session_id = request.parent_session_id
         if parent_session_id is not None:
-            parent_session_id = validate_session_reference_id(
-                parent_session_id,
-                field_name="parent_session_id",
-            )
+            parent_session_id = validate_id(parent_session_id, field_name="parent_session_id")
         if session_id is not None and parent_session_id == session_id:
             raise RuntimeRequestError("parent_session_id must not match session_id")
 
@@ -6504,7 +6488,7 @@ class VoidCodeRuntime(RuntimeSurface):
         run_id: str | None = None,
         reason: str | None = None,
     ) -> ActiveRunInterruptResult:
-        validate_session_id(session_id)
+        validate_id(session_id)
         return ACTIVE_SESSION_REGISTRY.interrupt(
             workspace=self._workspace,
             session_id=session_id,

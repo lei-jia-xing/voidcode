@@ -2643,12 +2643,11 @@ def test_runtime_retries_cancelled_background_task(
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     store = _private_attr(runtime, "_session_store")
-    task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
         workspace=tmp_path,
-        task=task_module.BackgroundTaskState(
-            task=task_module.BackgroundTaskRef(id="task-retry-cancelled"),
-            request=task_module.BackgroundTaskRequestSnapshot(prompt="cancelled retry"),
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-retry-cancelled"),
+            request=BackgroundTaskRequestSnapshot(prompt="cancelled retry"),
             created_at=1,
             updated_at=1,
         ),
@@ -2667,12 +2666,11 @@ def test_runtime_retries_cancelled_background_task(
 def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     store = _private_attr(runtime, "_session_store")
-    task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
         workspace=tmp_path,
-        task=task_module.BackgroundTaskState(
-            task=task_module.BackgroundTaskRef(id="task-retry-queued"),
-            request=task_module.BackgroundTaskRequestSnapshot(prompt="queued retry"),
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-retry-queued"),
+            request=BackgroundTaskRequestSnapshot(prompt="queued retry"),
             created_at=1,
             updated_at=1,
         ),
@@ -2699,12 +2697,11 @@ def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) 
 def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     store = _private_attr(runtime, "_session_store")
-    task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
         workspace=tmp_path,
-        task=task_module.BackgroundTaskState(
-            task=task_module.BackgroundTaskRef(id="task-pre-cancel"),
-            request=task_module.BackgroundTaskRequestSnapshot(prompt="background hello"),
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-pre-cancel"),
+            request=BackgroundTaskRequestSnapshot(prompt="background hello"),
             created_at=1,
             updated_at=1,
         ),
@@ -2723,12 +2720,11 @@ def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path
 def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> None:
     first_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     store = _private_attr(first_runtime, "_session_store")
-    task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
         workspace=tmp_path,
-        task=task_module.BackgroundTaskState(
-            task=task_module.BackgroundTaskRef(id="task-orphan"),
-            request=task_module.BackgroundTaskRequestSnapshot(prompt="orphan"),
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-orphan"),
+            request=BackgroundTaskRequestSnapshot(prompt="orphan"),
             created_at=1,
             updated_at=1,
         ),
@@ -2746,12 +2742,11 @@ def test_runtime_status_reconciles_stale_running_background_tasks(
 ) -> None:
     first_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     store = _private_attr(first_runtime, "_session_store")
-    task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
         workspace=tmp_path,
-        task=task_module.BackgroundTaskState(
-            task=task_module.BackgroundTaskRef(id="task-stale-running"),
-            request=task_module.BackgroundTaskRequestSnapshot(prompt="stale running"),
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-stale-running"),
+            request=BackgroundTaskRequestSnapshot(prompt="stale running"),
             created_at=1,
             updated_at=1,
         ),
@@ -2789,12 +2784,11 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
     )
     parent = first_runtime.run(RuntimeRequest(prompt="parent"))
     store = _private_attr(first_runtime, "_session_store")
-    task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
         workspace=tmp_path,
-        task=task_module.BackgroundTaskState(
-            task=task_module.BackgroundTaskRef(id="task-invalid-metadata"),
-            request=task_module.BackgroundTaskRequestSnapshot(
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-invalid-metadata"),
+            request=BackgroundTaskRequestSnapshot(
                 prompt="invalid",
                 metadata={"agent": {"preset": "leader", "model": ""}},
                 parent_session_id=parent.session.session.id,
@@ -2805,9 +2799,9 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
     )
     store.create_background_task(
         workspace=tmp_path,
-        task=task_module.BackgroundTaskState(
-            task=task_module.BackgroundTaskRef(id="task-after-invalid"),
-            request=task_module.BackgroundTaskRequestSnapshot(prompt="background hello"),
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-after-invalid"),
+            request=BackgroundTaskRequestSnapshot(prompt="background hello"),
             created_at=2,
             updated_at=2,
         ),
@@ -2887,12 +2881,11 @@ def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_star
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     runtime._background_task_supervisor.reconciled = True
     store = _private_attr(runtime, "_session_store")
-    task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
         workspace=tmp_path,
-        task=task_module.BackgroundTaskState(
-            task=task_module.BackgroundTaskRef(id="task-race-cancel"),
-            request=task_module.BackgroundTaskRequestSnapshot(prompt="background hello"),
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-race-cancel"),
+            request=BackgroundTaskRequestSnapshot(prompt="background hello"),
             created_at=1,
             updated_at=1,
         ),
@@ -2920,12 +2913,11 @@ def test_runtime_background_task_worker_rechecks_cancel_before_dispatch(tmp_path
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     runtime._background_task_supervisor.reconciled = True
     store = _private_attr(runtime, "_session_store")
-    task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
         workspace=tmp_path,
-        task=task_module.BackgroundTaskState(
-            task=task_module.BackgroundTaskRef(id="task-dispatch-cancel"),
-            request=task_module.BackgroundTaskRequestSnapshot(prompt="background hello"),
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-dispatch-cancel"),
+            request=BackgroundTaskRequestSnapshot(prompt="background hello"),
             created_at=1,
             updated_at=1,
         ),
@@ -2956,13 +2948,12 @@ def test_runtime_reconciliation_preserves_terminal_task_even_if_child_session_di
     initial_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     store = _private_attr(initial_runtime, "_session_store")
-    task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
         workspace=tmp_path,
-        task=task_module.BackgroundTaskState(
-            task=task_module.BackgroundTaskRef(id="task-terminal-truth"),
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-terminal-truth"),
             status="completed",
-            request=task_module.BackgroundTaskRequestSnapshot(
+            request=BackgroundTaskRequestSnapshot(
                 prompt="background child",
                 parent_session_id="leader-session",
             ),
@@ -3036,13 +3027,12 @@ def test_runtime_reconciliation_turns_cancel_requested_running_task_into_cancell
 ) -> None:
     first_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     store = _private_attr(first_runtime, "_session_store")
-    task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
         workspace=tmp_path,
-        task=task_module.BackgroundTaskState(
-            task=task_module.BackgroundTaskRef(id="task-orphan-cancel-request"),
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-orphan-cancel-request"),
             status="running",
-            request=task_module.BackgroundTaskRequestSnapshot(prompt="orphan cancel"),
+            request=BackgroundTaskRequestSnapshot(prompt="orphan cancel"),
             session_id="orphan-cancel-session",
             created_at=1,
             updated_at=1,

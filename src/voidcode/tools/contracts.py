@@ -5,6 +5,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast, runtime_checkable
 
+from ..security.redaction import (
+    DIAGNOSTIC_DEPTH as _MAX_DIAGNOSTIC_DEPTH,
+)
+from ..security.redaction import (
+    DIAGNOSTIC_ITEMS as _MAX_DIAGNOSTIC_ITEMS,
+)
+from ..security.redaction import (
+    DIAGNOSTIC_TEXT_CHARS as _MAX_DIAGNOSTIC_TEXT_CHARS,
+)
+from ..security.redaction import (
+    REDACTED_PLACEHOLDER as _REDACTED,
+)
+from ..security.redaction import (
+    is_sensitive_key,
+    redact_text,
+)
+
 if TYPE_CHECKING:
     from .runtime_context import RuntimeToolInvocationContext
 
@@ -23,39 +40,16 @@ UNCONFIRMED_STOP_CLAUSE = (
     "so it may still be running and the state of its side effects is unknown"
 )
 
-_MAX_DIAGNOSTIC_TEXT_CHARS = 4000
-_MAX_DIAGNOSTIC_DEPTH = 8
-_MAX_DIAGNOSTIC_ITEMS = 256
-_SENSITIVE_DIAGNOSTIC_KEYS = frozenset(
-    {
-        "access_token",
-        "api_key",
-        "authorization",
-        "cookie",
-        "credential",
-        "password",
-        "secret",
-        "token",
-    }
-)
-
 
 def _redact_diagnostic_text(value: str) -> str:
-    """Bound and redact common credential forms before diagnostics persist."""
-    import re
-
-    bounded = value[:_MAX_DIAGNOSTIC_TEXT_CHARS]
-    bounded = re.sub(r"(?i)(bearer\s+)[^\s,;]+", r"\1[REDACTED]", bounded)
-    bounded = re.sub(r"(?i)(api[_-]?key|access[_-]?token|password|secret|token)\s*[:=]\s*[^\s,;]+", r"\1=[REDACTED]", bounded)
-    bounded = re.sub(r"\bsk-[A-Za-z0-9_-]+", "sk-[REDACTED]", bounded)
-    return bounded
+    return redact_text(value[:_MAX_DIAGNOSTIC_TEXT_CHARS])
 
 
 def _sanitize_diagnostic_value(value: object, *, depth: int = 0, key: str | None = None) -> object:
     if depth > _MAX_DIAGNOSTIC_DEPTH:
         raise ValueError("diagnostics details exceed maximum nesting depth")
     if isinstance(value, str):
-        return "[REDACTED]" if key in _SENSITIVE_DIAGNOSTIC_KEYS else _redact_diagnostic_text(value)
+        return _REDACTED if key is not None and is_sensitive_key(key) else _redact_diagnostic_text(value)
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):

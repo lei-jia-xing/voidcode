@@ -10,11 +10,17 @@ from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
+from ..security.redaction import (
+    MODEL_FIELD_CHARS as MAX_MODEL_FIELD_CHARS,
+)
+from ..security.redaction import (
+    TOOL_OUTPUT_BYTES as MAX_TOOL_OUTPUT_BYTES,
+)
+from ..security.redaction import (
+    TOOL_OUTPUT_LINES as MAX_TOOL_OUTPUT_LINES,
+)
 from .contracts import ToolResult
 
-MAX_TOOL_OUTPUT_LINES = 2000
-MAX_TOOL_OUTPUT_BYTES = 50 * 1024
-MAX_MODEL_FIELD_CHARS = 4000
 _SENSITIVE_TEXT_ARGUMENT_KEYS = frozenset(
     {
         "content",

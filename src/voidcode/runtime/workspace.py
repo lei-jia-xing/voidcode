@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
+from .background.models import StoredBackgroundTaskSummary
 from .config import RuntimeConfig, user_runtime_config_path
 from .contracts import WorkspaceRegistrySnapshot, WorkspaceSummary
 from .session import StoredSessionSummary
-from .task import StoredBackgroundTaskSummary
 
 _RECENT_WORKSPACES_LIMIT = 5
 

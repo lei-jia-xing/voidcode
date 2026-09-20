@@ -158,7 +158,7 @@ def test_tool_result_diagnostics_is_bounded_redacted_and_json_safe() -> None:
     )
     payload = diagnostics.as_payload()
     assert payload["kind"] == "tool_timeout"
-    assert payload["details"]["message"] == "Authorization: Bearer [REDACTED]"
+    assert payload["details"]["message"] == "Authorization: Bearer [redacted]"
     assert tools.ToolDiagnostics.from_payload(payload) == diagnostics
     with pytest.raises(ValueError, match="successful results"):
         tools.ToolResult(tool_name="read", status="ok", diagnostics=diagnostics)

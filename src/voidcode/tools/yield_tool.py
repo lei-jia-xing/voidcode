@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ._pydantic_args import format_validation_error
+from ._pydantic_args import parse_tool_args
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .runtime_context import require_runtime_tool_context
 
@@ -261,10 +261,7 @@ class YieldTool:
         context = require_runtime_tool_context(self.definition.name)
         if context.parent_session_id is None:
             raise ValueError("yield is only available to delegated child sessions")
-        try:
-            args = YieldArgs.model_validate(call.arguments)
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        args = parse_tool_args(YieldArgs, call.arguments, tool_name=self.definition.name)
         if not args.is_terminal():
             progress = args.progress_payload()
             content = args.result or json.dumps(progress.get("data", {}), ensure_ascii=False, default=str)

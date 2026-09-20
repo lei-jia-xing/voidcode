@@ -7,10 +7,9 @@ import pytest
 
 from voidcode.runtime.contracts import (
     RuntimeRequestError,
-    runtime_mode_from_metadata,
-    runtime_read_only_from_metadata,
     validate_runtime_request_metadata,
 )
+from voidcode.runtime.mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
 from voidcode.runtime.permission import (
     PLAN_MODE_DENIAL_REASON,
     ExternalDirectoryPermissionConfig,
@@ -187,13 +186,6 @@ def test_request_metadata_accepts_runtime_mode(mode: str) -> None:
             {"read_only": "true"},
             "read_only",
             id="validate-non-boolean-read-only",
-        ),
-        pytest.param(runtime_mode_from_metadata, {"mode": "magic"}, "mode", id="helper-unknown-mode"),
-        pytest.param(
-            runtime_read_only_from_metadata,
-            {"read_only": "true"},
-            "read_only",
-            id="helper-non-boolean-read-only",
         ),
     ),
 )

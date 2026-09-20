@@ -218,17 +218,6 @@ def test_parse_provider_configs_payload_rejects_duplicate_case_variant_provider_
         )
 
 
-def test_parse_provider_configs_payload_rejects_legacy_litellm_block_with_rename_hint() -> None:
-    with pytest.raises(
-        ValueError,
-        match=r"runtime config field 'providers\.litellm' is not supported; use 'providers\.endpoint' instead",
-    ):
-        _ = parse_provider_configs_payload(
-            {"litellm": {}},
-            source="runtime config field 'providers'",
-        )
-
-
 @pytest.mark.parametrize("builtin_name", ["openai", "anthropic", "google", "copilot", "endpoint", "opencode"])
 def test_parse_provider_configs_payload_rejects_custom_provider_name_colliding_with_builtin(
     builtin_name: str,

@@ -61,7 +61,7 @@ from .context.window import (
     ToolResultView,
     continuity_summary_metadata,
 )
-from .contracts import RuntimeProviderContextPolicyDecision, RuntimeStreamChunk, runtime_read_only_from_metadata
+from .contracts import RuntimeProviderContextPolicyDecision, RuntimeStreamChunk
 from .event_envelopes import (
     ReasoningCaptureState,
     envelopes_for_acp_events,
@@ -131,6 +131,7 @@ from .hook_runtime import (
     run_lifecycle_hooks_for_session,
     run_tool_hooks_for_session,
 )
+from .mode import runtime_read_only_from_metadata
 from .permission import PendingApproval, PermissionPolicy, PermissionResolution
 from .question import PendingQuestion
 from .session import SessionState, SessionStatus

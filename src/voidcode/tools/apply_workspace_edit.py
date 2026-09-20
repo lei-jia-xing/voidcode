@@ -4,11 +4,11 @@ import hashlib
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
-from ._pydantic_args import format_validation_error
+from ._pydantic_args import parse_tool_args
 from ._repair import raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .guards import enforce_seen_lines
@@ -72,10 +72,7 @@ class ApplyWorkspaceEditTool:
                         },
                     )
 
-        try:
-            args = _WorkspaceEditArgs.model_validate(call.arguments)
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        args = parse_tool_args(_WorkspaceEditArgs, call.arguments, tool_name=self.definition.name)
 
         originals: dict[Path, str] = {}
         grouped: dict[Path, list[tuple[int, int, str]]] = {}

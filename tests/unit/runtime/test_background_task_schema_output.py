@@ -342,9 +342,6 @@ def test_keep_alive_intermediate_turn_without_handoff_is_not_validated(
     assert store.load_session_status(workspace=tmp_path, session_id=child_session_id) == "interrupted"
 
 
-# ── storage v14 round-trip + migration ──────────────────────────────────────
-
-
 def _task_with_delegation(
     *,
     task_id: str,
