@@ -11,14 +11,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, ClassVar, cast, final
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, field_validator
 
 from ..security.shell_policy import (
     DEFAULT_TIMEOUT_SECONDS,
     non_interactive_shell_env,
     resolve_shell_execution_policy,
 )
-from ._pydantic_args import format_validation_error
+from ._pydantic_args import parse_tool_args
 from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
 from .runtime_context import current_runtime_tool_context
 
@@ -281,15 +281,14 @@ class ShellExecTool:
         workspace: Path,
         runtime_timeout_seconds: int | None,
     ) -> ToolResult:
-        try:
-            args = ShellExecArgs.model_validate(
-                {
-                    "command": call.arguments.get("command"),
-                    "description": call.arguments.get("description"),
-                }
-            )
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        args = parse_tool_args(
+            ShellExecArgs,
+            {
+                "command": call.arguments.get("command"),
+                "description": call.arguments.get("description"),
+            },
+            tool_name=self.definition.name,
+        )
 
         command_text = args.command.strip()
         injected_env = non_interactive_shell_env(command_text)

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ...runtime.background.models import BackgroundTaskState
 from ...runtime.contracts import (
@@ -14,7 +14,7 @@ from ...runtime.contracts import (
     runtime_subagent_route_from_metadata,
     validate_runtime_request_metadata,
 )
-from .._pydantic_args import format_validation_error
+from .._pydantic_args import parse_tool_args
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import require_runtime_tool_context
 
@@ -208,10 +208,7 @@ class TaskBatchTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
-        try:
-            args = _TaskBatchArgs.model_validate(call.arguments)
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        args = parse_tool_args(_TaskBatchArgs, call.arguments, tool_name=self.definition.name)
 
         context = require_runtime_tool_context(self.definition.name)
         if context.remaining_spawn_budget is not None and context.remaining_spawn_budget < len(args.tasks):

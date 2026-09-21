@@ -74,13 +74,13 @@ def test_ast_grep_search_rejects_invalid_arguments_and_workspace_escape(tmp_path
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
     tool = AstGrepTool()
 
-    with pytest.raises(ValueError, match="string pattern"):
+    with pytest.raises(ValueError, match="Validation error"):
         tool.invoke(_search_call(pattern=123), workspace=tmp_path)
 
-    with pytest.raises(ValueError, match="must not be empty"):
+    with pytest.raises(ValueError, match="Validation error"):
         tool.invoke(_search_call(pattern=""), workspace=tmp_path)
 
-    with pytest.raises(ValueError, match="string path"):
+    with pytest.raises(ValueError, match="Validation error"):
         tool.invoke(_search_call(path=123), workspace=tmp_path)
 
     with pytest.raises(ValueError, match="inside the workspace"):

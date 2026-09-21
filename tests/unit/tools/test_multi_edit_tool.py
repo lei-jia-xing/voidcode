@@ -46,7 +46,7 @@ def test_multi_edit_rejects_empty_edits(tmp_path: Path) -> None:
     target.write_text("alpha\n", encoding="utf-8")
     tool = MultiEditTool()
 
-    with pytest.raises(ValueError, match="at least one edit"):
+    with pytest.raises(ValueError, match="Validation error"):
         tool.invoke(
             ToolCall(
                 tool_name="multi_edit",

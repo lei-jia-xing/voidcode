@@ -4,9 +4,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from .._pydantic_args import format_validation_error
+from .._pydantic_args import parse_tool_args
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from .task_cancel import TaskCancelRuntime, TaskCancelTool
 from .task_output import TaskOutputRuntime, TaskOutputTool
@@ -235,10 +235,7 @@ class TaskControlTool:
         self._steer = TaskSteerTool(runtime=runtime)
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        try:
-            args = _TaskControlArgs.model_validate(call.arguments)
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        args = parse_tool_args(_TaskControlArgs, call.arguments, tool_name=self.definition.name)
 
         if args.operation == "output":
             delegate_call = ToolCall(

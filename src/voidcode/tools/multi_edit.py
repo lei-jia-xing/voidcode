@@ -4,7 +4,7 @@ import hashlib
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, field_validator
 
 from ..formatter import (
     FormatterExecutionResult,
@@ -15,6 +15,7 @@ from ..formatter import (
 from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
+from ._pydantic_args import parse_tool_args
 from ._repair import ToolDiagnosticError, raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .edit import EditTool, read_utf8_text, summarize_diff
@@ -91,37 +92,14 @@ class MultiEditTool:
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         raw_path_value = call.arguments.get("path")
 
-        try:
-            args = MultiEditArgs.model_validate(
-                {
-                    "path": raw_path_value,
-                    "edits": call.arguments.get("edits", []),
-                }
-            )
-        except ValidationError as exc:
-            first_error = exc.errors()[0]
-            location = first_error.get("loc", ())
-            field_name = location[0] if location else None
-
-            if field_name == "path":
-                raise ValueError("multi_edit requires a string path argument") from exc
-            if field_name == "edits" and first_error.get("type") == "value_error":
-                raise ValueError("multi_edit requires at least one edit entry") from exc
-            if field_name == "edits" and len(location) == 1:
-                raise ValueError("multi_edit requires an array edits argument") from exc
-            if len(location) >= 2 and location[0] == "edits" and len(location) == 2:
-                idx = int(location[1]) + 1
-                raise ValueError(f"multi_edit edit #{idx} must be an object") from exc
-            if len(location) >= 3 and location[0] == "edits":
-                idx = int(location[1]) + 1
-                item_field = location[2]
-                if item_field == "oldString":
-                    raise ValueError(f"multi_edit edit #{idx} requires string oldString") from exc
-                if item_field == "newString":
-                    raise ValueError(f"multi_edit edit #{idx} requires string newString") from exc
-                if item_field == "replaceAll":
-                    raise ValueError(f"multi_edit edit #{idx} replaceAll must be boolean") from exc
-            raise ValueError("multi_edit requires an array edits argument") from exc
+        args = parse_tool_args(
+            MultiEditArgs,
+            {
+                "path": raw_path_value,
+                "edits": call.arguments.get("edits", []),
+            },
+            tool_name=self.definition.name,
+        )
 
         resolution = resolve_workspace_path(
             workspace=workspace,

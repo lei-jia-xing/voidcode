@@ -62,5 +62,5 @@ def test_view_is_read_only_and_old_payload_is_rejected(tmp_path: Path) -> None:
     result, viewed = _invoke(tool, {"op": "view"}, phases=phases, workspace=tmp_path)
     assert result.data["mutated"] is False
     assert viewed == phases
-    with pytest.raises(ValueError, match="invalid op"):
+    with pytest.raises(ValueError, match="Validation error"):
         tool.invoke(ToolCall(tool_name="todo", arguments={"todos": []}), workspace=tmp_path)

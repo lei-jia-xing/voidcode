@@ -8,9 +8,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 from bs4 import BeautifulSoup, Tag
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, field_validator
 
-from ._pydantic_args import format_validation_error
+from ._pydantic_args import parse_tool_args
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -333,15 +333,14 @@ class WebSearchTool:
         runtime_timeout_seconds: int | None,
     ) -> ToolResult:
         _ = workspace
-        try:
-            args = WebSearchArgs.model_validate(
-                {
-                    "query": call.arguments.get("query"),
-                    "numResults": call.arguments.get("numResults", DEFAULT_NUM_RESULTS),
-                }
-            )
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        args = parse_tool_args(
+            WebSearchArgs,
+            {
+                "query": call.arguments.get("query"),
+                "numResults": call.arguments.get("numResults", DEFAULT_NUM_RESULTS),
+            },
+            tool_name=self.definition.name,
+        )
 
         num_results = min(args.numResults, 20)
 

@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, field_validator
 
 from ...runtime.background.process import BackgroundProcessManager
-from .._pydantic_args import format_validation_error
+from .._pydantic_args import parse_tool_args
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import current_runtime_tool_context
 
@@ -44,10 +44,7 @@ class BackgroundProcessStopTool:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        try:
-            args = _BackgroundProcessStopArgs.model_validate(call.arguments)
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        args = parse_tool_args(_BackgroundProcessStopArgs, call.arguments, tool_name=self.definition.name)
 
         context = current_runtime_tool_context()
         manager = self._runtime.background_process_manager

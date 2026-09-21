@@ -5,13 +5,13 @@ import hashlib
 from pathlib import Path
 from typing import ClassVar, final
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from ..formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
-from ._pydantic_args import format_validation_error
+from ._pydantic_args import parse_tool_args
 from ._repair import raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .guards import enforce_read_before_write, enforce_seen_whole_file
@@ -54,15 +54,14 @@ class WriteTool:
         self._hooks_config = hooks_config
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        try:
-            args = WriteArgs.model_validate(
-                {
-                    "path": call.arguments.get("path"),
-                    "content": call.arguments.get("content"),
-                }
-            )
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        args = parse_tool_args(
+            WriteArgs,
+            {
+                "path": call.arguments.get("path"),
+                "content": call.arguments.get("content"),
+            },
+            tool_name=self.definition.name,
+        )
 
         resolution = resolve_workspace_path(
             workspace=workspace,

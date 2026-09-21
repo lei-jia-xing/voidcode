@@ -52,7 +52,7 @@ from ..provider.snapshot import (
     parse_resolved_provider_snapshot,
     resolved_provider_snapshot,
 )
-from ..skills import SkillRegistry, skill_registry_with_builtins
+from ..skills import SkillRegistry
 from ..tools.contracts import (
     Tool,
     ToolCall,
@@ -62,7 +62,6 @@ from ..tools.contracts import (
 from ..tools.delegation import TaskBatchTool, TaskTool
 from ..tools.process import BackgroundProcessTool
 from ..tools.question import QuestionTool
-from ..tools.runtime_context import current_runtime_tool_context
 from ..tools.skill import SkillTool
 from . import skills
 from .acp import (
@@ -132,7 +131,6 @@ from .config import (
 )
 from .config_materializer import (
     EffectiveRuntimeConfig,
-    apply_request_runtime_config_overrides,
     parse_persisted_runtime_config,
     serialize_runtime_config_core,
 )
@@ -143,7 +141,6 @@ from .context.transforms import (
     RuntimeContextTransformRegistry,
     build_provider_context_transform_result,
     default_runtime_context_transform_registry,
-    validate_runtime_context_transform_refs,
 )
 from .context.window import (
     ContextWindowPolicy,
@@ -152,11 +149,6 @@ from .context.window import (
     RuntimeContextWindow,
     ToolResultView,
     assemble_provider_context,
-    prepare_provider_context,
-)
-from .context.window_policy import (
-    context_window_config_from_policy,
-    context_window_policy_from_config,
 )
 from .contracts import (
     AgentSummary,
@@ -197,6 +189,7 @@ from .contracts import (
     validate_runtime_request_metadata,
 )
 from .coordinators.inspection import InspectionCoordinator
+from .coordinators.stream_prep import StreamPrepCoordinator
 from .edit_schema_policy import EditSchema, EditSchemaResolver, select_edit_schema
 from .effectiveness import ToolEffectivenessReport
 from .event_envelopes import (
@@ -220,7 +213,6 @@ from .execution.provider_execution_metadata import (
 )
 from .execution.seams import (
     provider_model_required_message,
-    resolve_runtime_session_routing,
     select_graph_for_effective_config,
 )
 from .execution.tool_facades import (
@@ -273,7 +265,6 @@ from .provider_inspection import (
 from .provider_metadata import (
     ReasoningEffortCapability,
     tool_feedback_mode,
-    validate_reasoning_effort_capability,
 )
 from .question import PendingQuestion, QuestionResponse
 from .resume import RuntimeResumeCoordinator
@@ -449,7 +440,7 @@ class VoidCodeRuntime(RuntimeSurface):
     _agent_registry: AgentManifestRegistry
     _run_loop_coordinator: RuntimeRunLoopCoordinator
     _resume_coordinator: RuntimeResumeCoordinator
-    _inspection_coordinator: InspectionCoordinator
+    _stream_prep_coordinator: StreamPrepCoordinator
     _background_task_supervisor: RuntimeBackgroundTaskSupervisor
     _background_task_facade: _RuntimeBackgroundTaskFacade
     _background_process_manager: BackgroundProcessManager
@@ -535,7 +526,7 @@ class VoidCodeRuntime(RuntimeSurface):
             tool_catalog_cache=McpToolCatalogCache(path=mcp_tool_catalog_cache_path()),
         )
         self._skill_registry_is_injected = skill_registry is not None
-        self._skill_registry = skill_registry or self._build_skill_registry(self._config.skills)
+        self._skill_registry = skill_registry or StreamPrepCoordinator.build_skill_registry_for_workspace(self._workspace, self._config.skills)
         self._base_tool_registry = tool_registry or self._build_base_tool_registry()
         self._tool_materializer = RuntimeToolMaterializer(self._base_tool_registry)
         self._tool_materialization = self._tool_materializer.base()
@@ -638,6 +629,23 @@ class VoidCodeRuntime(RuntimeSurface):
             is_active_session=self._is_active_session_id,
             active_session_metadata=self._active_session_metadata,
         )
+        self._stream_prep_coordinator = StreamPrepCoordinator(
+            self,
+            default_context_window_policy=self._default_context_window_policy,
+            config_with_request_agent_override=self._config_with_request_agent_override,
+            context_transform_registry_for_agent=self._context_transform_registry_for_agent,
+            context_window_policy_for_provider_attempt=self._context_window_policy_for_provider_attempt,
+            workspace=self._workspace,
+            global_skills_config=self._config.skills,
+            skill_registry=self._skill_registry if self._skill_registry_is_injected else None,
+            skill_registry_is_injected=self._skill_registry_is_injected,
+            lsp_manager=self._lsp_manager,
+            mcp_manager=self._mcp_manager,
+            mcp_manager_is_injected=self._mcp_manager_is_injected,
+            graph_override_present=lambda: self._graph_override is not None,
+            request_lsp=self.request_lsp,
+            request_mcp_tool=self.request_mcp_tool,
+        )
         self._background_process_manager = BackgroundProcessManager(
             persistence=cast(BackgroundProcessPersistence, self._session_store),
             workspace=self._workspace,
@@ -719,8 +727,11 @@ class VoidCodeRuntime(RuntimeSurface):
         return None if tool is None else tool.definition
 
     def _build_base_tool_registry(self) -> ToolRegistry:
+        # __init__-time path: the stream-prep coordinator does not exist yet,
+        # so build the LSP tool through the static constructor directly.
+        lsp_tool = StreamPrepCoordinator.build_lsp_tool_for_manager(self._lsp_manager, request_lsp=self.request_lsp)
         return ToolRegistry.with_defaults(
-            lsp_tool=self._build_lsp_tool(),
+            lsp_tool=lsp_tool,
             hooks_config=self._config.hooks or RuntimeHooksConfig(),
             edit_schema_resolver=self._edit_schema_resolver(),
             skill_tool=SkillTool(
@@ -837,120 +848,34 @@ class VoidCodeRuntime(RuntimeSurface):
         raise RuntimeRequestError(provider_model_required_message())
 
     def runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
-        resolved = self.effective_runtime_config_from_metadata(None)
-        request_agent = request.metadata.get("agent")
-        if request_agent is not None:
-            try:
-                resolved = self._config_with_request_agent_override(
-                    resolved,
-                    request_agent,
-                    allow_subagent_presets=request.subagent_routing is not None,
-                )
-            except ValueError as exc:
-                raise RuntimeRequestError(str(exc)) from exc
-        request_context_transform_refs = request.metadata.get("context_transform_refs")
-        context_transform_refs: tuple[str, ...] | None = None
-        if request_context_transform_refs is not None:
-            assert isinstance(request_context_transform_refs, list)
-            context_transform_refs = tuple(request_context_transform_refs)
-            validate_runtime_context_transform_refs(
-                context_transform_refs,
-                field_path="request metadata 'context_transform_refs'",
-                registry=self._context_transform_registry_for_agent(resolved.agent),
-            )
-        resolved = apply_request_runtime_config_overrides(
-            resolved,
-            reasoning_effort=request.metadata.get("reasoning_effort"),
-            context_transform_refs=context_transform_refs,
-        )
-        try:
-            validate_reasoning_effort_capability(resolved, self.reasoning_effort_capability(resolved))
-        except ValueError as exc:
-            raise RuntimeRequestError(str(exc)) from exc
-        return resolved
+        return self._stream_prep_coordinator.runtime_config_for_request(request)
 
     def _build_skill_registry(self, skills_config: RuntimeSkillsConfig | None) -> SkillRegistry:
-        if skills_config is None or skills_config.enabled is not True:
-            return skill_registry_with_builtins(())
-        if skills_config.paths:
-            discovered = SkillRegistry.discover(
-                workspace=self._workspace,
-                search_paths=skills_config.paths,
-            )
-        else:
-            discovered = SkillRegistry.discover(workspace=self._workspace)
-        return skill_registry_with_builtins(discovered.all())
+        return self._stream_prep_coordinator.build_skill_registry(skills_config)
 
     def _skills_config_for_effective_config(
         self,
         effective_config: EffectiveRuntimeConfig,
     ) -> RuntimeSkillsConfig | None:
-        if effective_config.agent is not None and effective_config.agent.skills is not None:
-            return effective_config.agent.skills
-        return self._config.skills
+        return self._stream_prep_coordinator.skills_config_for_effective_config(effective_config)
 
     def skill_registry_for_effective_config(
         self,
         effective_config: EffectiveRuntimeConfig,
     ) -> SkillRegistry:
-        if self._skill_registry_is_injected:
-            return self._skill_registry
-        return self._build_skill_registry(self._skills_config_for_effective_config(effective_config))
+        return self._stream_prep_coordinator.skill_registry_for_effective_config(effective_config)
 
     def _build_lsp_tool(self) -> Tool | None:
-        if self._lsp_manager.current_state().mode != "managed":
-            return None
-        from ..tools.lsp import LspTool
-
-        return LspTool(requester=self.request_lsp)
+        return self._stream_prep_coordinator.build_lsp_tool()
 
     def _mcp_tools_from_descriptors(self, descriptors: Iterable[McpToolDescriptor]) -> tuple[Tool, ...]:
-        from ..tools.mcp import McpTool
-
-        return tuple(
-            McpTool(
-                server_name=tool.server_name,
-                tool_name=tool.tool_name,
-                description=tool.description,
-                input_schema=tool.input_schema,
-                safety=tool.safety,
-                requester=self.request_mcp_tool,
-            )
-            for tool in descriptors
-            if tool.enabled
-        )
+        return StreamPrepCoordinator.mcp_tools_from_descriptors(descriptors, request_mcp_tool=self.request_mcp_tool)
 
     def _build_mcp_tools(self) -> tuple[Tool, ...]:
-        if self._mcp_manager.current_state().mode != "managed":
-            return ()
-        context = current_runtime_tool_context()
-        return self._mcp_tools_from_descriptors(
-            self._mcp_manager.list_tools(
-                workspace=self._workspace,
-                owner_session_id=context.session_id if context is not None else None,
-            )
-        )
-
-    def _refresh_mcp_tools(self) -> None:
-        if self._mcp_manager.current_state().mode != "managed":
-            return
-        self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._build_mcp_tools())
-        self._tool_registry = self._tool_materialization.registry
+        return self._stream_prep_coordinator.build_mcp_tools()
 
     def mcp_cached_surface(self, *, owner_session_id: str | None) -> McpCachedToolSurface:
-        """Passively remembered MCP surface for the configured servers."""
-        cached_surface = getattr(self._mcp_manager, "cached_surface", None)
-        if cached_surface is None or self._mcp_manager.current_state().mode != "managed":
-            return McpCachedToolSurface()
-        return cast(
-            McpCachedToolSurface,
-            cached_surface(workspace=self._workspace, owner_session_id=owner_session_id),
-        )
-
-    def _materialize_cached_mcp_tools(self, surface: McpCachedToolSurface) -> None:
-        """Advertise a discovered MCP surface without connecting."""
-        self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._mcp_tools_from_descriptors(surface.descriptors()))
-        self._tool_registry = self._tool_materialization.registry
+        return self._stream_prep_coordinator.mcp_cached_surface(owner_session_id=owner_session_id)
 
     def mcp_tools_available_for_run(
         self,
@@ -968,6 +893,12 @@ class VoidCodeRuntime(RuntimeSurface):
                 effective_config=effective_config,
             )
         )
+
+    def _refresh_mcp_tools(self) -> None:
+        if self._mcp_manager.current_state().mode != "managed":
+            return
+        self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._build_mcp_tools())
+        self._tool_registry = self._tool_materialization.registry
 
     def materialize_mcp_tools_for_run(
         self,
@@ -1007,6 +938,11 @@ class VoidCodeRuntime(RuntimeSurface):
             )
         self._materialize_cached_mcp_tools(surface)
         return (), session, sequence, None
+
+    def _materialize_cached_mcp_tools(self, surface: McpCachedToolSurface) -> None:
+        """Advertise a discovered MCP surface without connecting."""
+        self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._mcp_tools_from_descriptors(surface.descriptors()))
+        self._tool_registry = self._tool_materialization.registry
 
     def tool_registry_for_run(
         self,
@@ -1126,12 +1062,10 @@ class VoidCodeRuntime(RuntimeSurface):
         request_metadata: Mapping[str, object],
         effective_config: EffectiveRuntimeConfig,
     ) -> bool:
-        if request_metadata.get("background_run") is not True:
-            return False
-        agent_binding = effective_config.agent.mcp_binding if effective_config.agent is not None else None
-        if agent_binding is not None:
-            return False
-        return True
+        return StreamPrepCoordinator.is_background_child_mcp_deferred(
+            request_metadata=request_metadata,
+            effective_config=effective_config,
+        )
 
     def should_skip_mcp_startup_for_request(
         self,
@@ -1139,29 +1073,13 @@ class VoidCodeRuntime(RuntimeSurface):
         request_metadata: Mapping[str, object],
         effective_config: EffectiveRuntimeConfig,
     ) -> bool:
-        _ = request_metadata
-        if self._mcp_manager_is_injected:
-            return False
-        configured_servers = set(self._mcp_manager.current_state().configuration.servers)
-        builtin_servers = {"context7", "websearch", "grep_app"}
-        if not configured_servers <= builtin_servers:
-            return False
-        # An explicitly supplied graph is already the execution boundary.  Eagerly
-        # discovering the default remote MCP catalog here adds network latency even
-        # though that graph cannot depend on runtime-selected MCP tools.  Keep
-        # discovery enabled when a caller injected an MCP manager so MCP integration
-        # tests and custom managers retain their explicit behavior.
-        return effective_config.execution_engine == "deterministic" or self._graph_override is not None
+        return self._stream_prep_coordinator.should_skip_mcp_startup_for_request(
+            request_metadata=request_metadata,
+            effective_config=effective_config,
+        )
 
     def _build_mcp_tools_for_owner(self, *, owner_session_id: str | None) -> tuple[Tool, ...]:
-        if self._mcp_manager.current_state().mode != "managed":
-            return ()
-        return self._mcp_tools_from_descriptors(
-            self._mcp_manager.list_tools(
-                workspace=self._workspace,
-                owner_session_id=owner_session_id,
-            )
-        )
+        return self._stream_prep_coordinator.build_mcp_tools_for_owner(owner_session_id=owner_session_id)
 
     def tool_registry_for_effective_config(
         self,
@@ -4326,13 +4244,13 @@ class VoidCodeRuntime(RuntimeSurface):
 
     @staticmethod
     def _resolve_session_id(request: RuntimeRequest) -> str:
-        return resolve_runtime_session_routing(request).session_id
+        return StreamPrepCoordinator.resolve_session_id(request)
 
     @staticmethod
     def _context_window_config_from_policy(
         policy: ContextWindowPolicy | None,
     ) -> RuntimeContextWindowConfig | None:
-        return context_window_config_from_policy(policy)
+        return StreamPrepCoordinator.context_window_config_from_policy(policy)
 
     @staticmethod
     def _context_window_policy_from_config(
@@ -4341,7 +4259,7 @@ class VoidCodeRuntime(RuntimeSurface):
         resolved_provider: ResolvedProviderConfig | None,
         provider_attempt: int = 0,
     ) -> ContextWindowPolicy:
-        return context_window_policy_from_config(
+        return StreamPrepCoordinator.context_window_policy_from_config(
             config,
             resolved_provider=resolved_provider,
             provider_attempt=provider_attempt,
@@ -4356,24 +4274,12 @@ class VoidCodeRuntime(RuntimeSurface):
         policy: ContextWindowPolicy | None = None,
         abort_signal: ProviderAbortSignal | None = None,  # noqa: ARG002 — retained by RuntimeSurface protocol for abort-aware callers.
     ) -> RuntimeContextWindow:
-        effective_config = self.effective_runtime_config_from_metadata(session_metadata)
-        provider_attempt = provider_attempt_from_metadata(session_metadata)
-        if policy is None:
-            policy = self._context_window_policy_from_config(
-                effective_config.context_window,
-                resolved_provider=None,
-                provider_attempt=provider_attempt,
-            )
-        policy = self._context_window_policy_for_provider_attempt(
-            policy,
-            resolved_provider=effective_config.resolved_provider,
-            provider_attempt=provider_attempt,
-        )
-        return prepare_provider_context(
+        return self._stream_prep_coordinator.prepare_provider_context_window(
             prompt=prompt,
             tool_results=tool_results,
             session_metadata=session_metadata,
-            policy=policy or self._default_context_window_policy,
+            policy=policy,
+            abort_signal=abort_signal,
         )
 
     def _rehydrated_tool_results_for_existing_session(

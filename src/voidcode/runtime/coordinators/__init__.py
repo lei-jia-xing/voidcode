@@ -11,10 +11,12 @@ from ..background.supervisor import RuntimeBackgroundTaskSupervisor
 from ..resume import RuntimeResumeCoordinator
 from ..run_loop import RuntimeRunLoopCoordinator
 from .inspection import InspectionCoordinator
+from .stream_prep import StreamPrepCoordinator
 
 __all__ = [
     "InspectionCoordinator",
     "RuntimeBackgroundTaskSupervisor",
     "RuntimeResumeCoordinator",
     "RuntimeRunLoopCoordinator",
+    "StreamPrepCoordinator",
 ]

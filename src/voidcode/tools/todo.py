@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..runtime.todos import TODO_STATUSES, TodoStatus
+from ._pydantic_args import parse_tool_args
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .runtime_context import current_runtime_tool_context
 
@@ -307,12 +308,7 @@ class TodoTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
-        try:
-            args = _TodoArgsModel.model_validate(call.arguments)
-        except ValidationError as exc:
-            first = exc.errors()[0]
-            field = first.get("loc", ("argument",))[0]
-            raise ValueError(f"todo invalid {field}: {first.get('msg', 'invalid value')}") from exc
+        args = parse_tool_args(_TodoArgsModel, call.arguments, tool_name=self.definition.name)
         phases = _state_from_runtime()
         _apply(args, phases)
         return ToolResult(

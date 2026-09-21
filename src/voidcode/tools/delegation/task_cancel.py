@@ -3,11 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, field_validator
 
 from ...runtime.background.models import BackgroundTaskState, is_background_task_terminal
 from ...runtime.contracts import UnknownBackgroundTaskError
-from .._pydantic_args import format_validation_error
+from .._pydantic_args import parse_tool_args
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import current_runtime_tool_context
 
@@ -66,10 +66,7 @@ class TaskCancelTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
-        try:
-            args = _TaskCancelArgs.model_validate(call.arguments)
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        args = parse_tool_args(_TaskCancelArgs, call.arguments, tool_name=self.definition.name)
         context = current_runtime_tool_context()
         if context is not None:
             try:

@@ -5,8 +5,9 @@ import subprocess
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, field_validator
 
+from ._pydantic_args import parse_tool_args
 from ._workspace import resolve_workspace_path
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -173,33 +174,18 @@ class AstGrepTool:
         raise ValueError(f"unknown ast_grep mode: {args.mode}")
 
     def _validate_call(self, call: ToolCall) -> AstGrepArgs:
-        try:
-            return AstGrepArgs.model_validate(
-                {
-                    "mode": call.arguments.get("mode", "search"),
-                    "pattern": call.arguments.get("pattern"),
-                    "path": call.arguments.get("path"),
-                    "rewrite": call.arguments.get("rewrite"),
-                    "lang": call.arguments.get("lang"),
-                    "apply": call.arguments.get("apply", False),
-                }
-            )
-        except ValidationError as exc:
-            first_error = exc.errors()[0]
-            field_name = first_error.get("loc", (None,))[0]
-            if field_name == "mode":
-                raise ValueError("ast_grep mode must be one of search, preview, replace") from exc
-            if field_name == "path":
-                raise ValueError("ast_grep requires a string path argument") from exc
-            if field_name == "rewrite":
-                raise ValueError("ast_grep requires a string rewrite argument") from exc
-            if field_name == "lang":
-                raise ValueError("ast_grep requires a string lang argument") from exc
-            if field_name == "apply":
-                raise ValueError("ast_grep apply must be boolean") from exc
-            if first_error.get("type") == "value_error":
-                raise ValueError("ast_grep pattern must not be empty") from exc
-            raise ValueError("ast_grep requires a string pattern argument") from exc
+        return parse_tool_args(
+            AstGrepArgs,
+            {
+                "mode": call.arguments.get("mode", "search"),
+                "pattern": call.arguments.get("pattern"),
+                "path": call.arguments.get("path"),
+                "rewrite": call.arguments.get("rewrite"),
+                "lang": call.arguments.get("lang"),
+                "apply": call.arguments.get("apply", False),
+            },
+            tool_name=self.definition.name,
+        )
 
     def _invoke_search(self, args: AstGrepArgs, *, workspace: Path, timeout_seconds: int) -> ToolResult:
         _, relative_path = _resolve_candidate(workspace=workspace, path_text=args.path)

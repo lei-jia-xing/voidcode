@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, field_validator
 
 from ..runtime.question import PendingQuestionOption, PendingQuestionPrompt, QuestionResponse
-from ._pydantic_args import format_validation_error
+from ._pydantic_args import parse_tool_args
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -72,10 +72,7 @@ class QuestionTool:
 
     @staticmethod
     def parse_prompts(arguments: dict[str, object]) -> tuple[PendingQuestionPrompt, ...]:
-        try:
-            parsed = _QuestionArgsModel.model_validate(arguments)
-        except ValidationError as exc:
-            raise ValueError(format_validation_error("question", exc)) from exc
+        parsed = parse_tool_args(_QuestionArgsModel, arguments, tool_name="question")
         return tuple(
             PendingQuestionPrompt(
                 question=item.question,

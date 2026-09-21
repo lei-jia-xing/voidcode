@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, cast, final
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, field_validator
 
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
-from ._pydantic_args import format_validation_error
+from ._pydantic_args import parse_tool_args
 from ._repair import raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -150,19 +150,18 @@ class GrepTool:
         return before, after
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        try:
-            args = GrepArgs.model_validate(
-                {
-                    "pattern": call.arguments.get("pattern"),
-                    "path": call.arguments.get("path"),
-                    "regex": call.arguments.get("regex", False),
-                    "context": call.arguments.get("context", 0),
-                    "include": call.arguments.get("include"),
-                    "exclude": call.arguments.get("exclude"),
-                }
-            )
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        args = parse_tool_args(
+            GrepArgs,
+            {
+                "pattern": call.arguments.get("pattern"),
+                "path": call.arguments.get("path"),
+                "regex": call.arguments.get("regex", False),
+                "context": call.arguments.get("context", 0),
+                "include": call.arguments.get("include"),
+                "exclude": call.arguments.get("exclude"),
+            },
+            tool_name=self.definition.name,
+        )
 
         resolution = resolve_workspace_path_policy(
             workspace=workspace,

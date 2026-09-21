@@ -10,13 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, final
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, field_validator
 
 from ..runtime.context.rules import RULE_URI_PREFIX as _RULE_URI_PREFIX
 from ..runtime.context.rules import read_rule_uri
 from ..runtime.contracts import validate_id
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
-from ._pydantic_args import format_validation_error
+from ._pydantic_args import parse_tool_args
 from ._workspace import suggest_workspace_paths
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .guidance import guidance_for_tool
@@ -425,16 +425,15 @@ class ReadTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        try:
-            args = ReadArgs.model_validate(
-                {
-                    "path": call.arguments.get("path"),
-                    "offset": call.arguments.get("offset"),
-                    "limit": call.arguments.get("limit"),
-                }
-            )
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        args = parse_tool_args(
+            ReadArgs,
+            {
+                "path": call.arguments.get("path"),
+                "offset": call.arguments.get("offset"),
+                "limit": call.arguments.get("limit"),
+            },
+            tool_name=self.definition.name,
+        )
 
         if args.path.startswith(RULE_URI_PREFIX):
             data = read_rule_uri(

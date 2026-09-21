@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Protocol, cast
 
-from pydantic import BaseModel, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from ...runtime.background.models import BackgroundTaskState, is_background_task_terminal
 from ...runtime.contracts import (
@@ -13,7 +13,7 @@ from ...runtime.contracts import (
     RuntimeSessionResult,
     UnknownSessionError,
 )
-from .._pydantic_args import format_validation_error
+from .._pydantic_args import parse_tool_args
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import current_runtime_tool_context
 
@@ -188,10 +188,7 @@ class TaskOutputTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
-        try:
-            args = _TaskOutputArgs.model_validate(call.arguments)
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
+        args = parse_tool_args(_TaskOutputArgs, call.arguments, tool_name=self.definition.name)
         # Group reads are deliberately runtime-context owned. The runtime
         # validates every selected task against this parent before loading any
         # result, so a model cannot inspect another session's children.
