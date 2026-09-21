@@ -82,7 +82,7 @@ def default_policy_for_tool(tool: ToolDefinition) -> PermissionPolicy:
     return PermissionPolicy(mode="ask")
 
 
-def is_plan_mode_blocked(
+def is_read_only_blocked(
     *,
     read_only: bool,
     tool: ToolDefinition,
@@ -105,6 +105,20 @@ def is_plan_mode_blocked(
     return operation_class in ("write", "execute")
 
 
+def is_plan_mode_blocked(
+    *,
+    read_only: bool,
+    tool: ToolDefinition,
+    operation_class: OperationClass | None = None,
+) -> bool:
+    """Deprecated alias for :func:`is_read_only_blocked`.
+
+    Kept for external compatibility; new code must use
+    :func:`is_read_only_blocked`. Same signature, same behavior.
+    """
+    return is_read_only_blocked(read_only=read_only, tool=tool, operation_class=operation_class)
+
+
 def resolve_permission(
     tool: ToolDefinition,
     tool_call: ToolCall,
@@ -122,7 +136,7 @@ def resolve_permission(
     rule_decision: PermissionDecision | None = None,
     read_only: bool = False,
 ) -> PermissionOutcome:
-    if is_plan_mode_blocked(read_only=read_only, tool=tool, operation_class=operation_class):
+    if is_read_only_blocked(read_only=read_only, tool=tool, operation_class=operation_class):
         pending_approval = build_pending_approval(
             tool_call,
             policy=PermissionPolicy(mode="deny"),
