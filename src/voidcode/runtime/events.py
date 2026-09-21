@@ -5,6 +5,18 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Final, Literal, cast
 
+# Event vocabulary — single source of truth.
+# KnownEventType (CoreEventType | RuntimeEventType) is the authoritative stored/
+# persisted event vocabulary. EMITTED_EVENT_TYPES (Core) and RUNTIME_EVENT_TYPES
+# (Runtime) are disjoint partitions of it; KNOWN_EVENT_TYPES is their
+# concatenation. Rule is additive-only: add new wire strings, never rename or
+# remove one.
+# waiting_approval lives only in DelegatedLifecycleStatus / the delegated event
+# layer and must never be promoted to a stored task/session status.
+# graph.provider_stream is a live-only client transport detail (converted to
+# runtime.reasoning_part, never persisted) and is intentionally NOT a member of
+# KnownEventType; do not add it here.
+
 type EventSource = Literal["runtime", "graph", "tool"]
 
 type CoreEventType = Literal[
