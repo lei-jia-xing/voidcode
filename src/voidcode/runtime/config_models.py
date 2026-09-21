@@ -106,6 +106,9 @@ _AGENT_ID_RE = re.compile(AGENT_PRESET_ID_PATTERN)
 
 #: Context-window schema version accepted by the loader.
 CONTEXT_WINDOW_VERSION = 2
+#: Top-level config schema version accepted by the loader. Additive-only:
+#: absent (or explicit null) backfills to 1; anything else is rejected.
+CONFIG_SCHEMA_VERSION = 1
 DEFAULT_HOOK_TIMEOUT_SECONDS: float = cast(float, RuntimeHooksConfig().timeout_seconds)
 
 
@@ -1721,6 +1724,10 @@ class RuntimeConfigPayload(_PayloadModel):
         alias="$schema",
         description="JSON Schema reference for editor support.",
     )
+    config_schema_version: Literal[1] | None = Field(
+        default=CONFIG_SCHEMA_VERSION,
+        description="Top-level config schema version. Currently only 1 is supported; omit to default to 1.",
+    )
     approval_mode: PermissionDecision | None = Field(
         default=None,
         description="Default approval policy for tool execution.",
@@ -1778,6 +1785,15 @@ class RuntimeConfigPayload(_PayloadModel):
         default=None,
         json_schema_extra={"propertyNames": {"pattern": AGENT_PRESET_ID_PATTERN}},
     )
+
+    @field_validator("config_schema_version", mode="before")
+    @classmethod
+    def _validate_config_schema_version(cls, value: object) -> int:
+        if value is None:
+            return CONFIG_SCHEMA_VERSION
+        if isinstance(value, bool) or not isinstance(value, int) or value != CONFIG_SCHEMA_VERSION:
+            raise ValueError(f"runtime config field 'config_schema_version' must be {CONFIG_SCHEMA_VERSION}")
+        return CONFIG_SCHEMA_VERSION
 
     @field_validator("schema_ref", mode="before")
     @classmethod

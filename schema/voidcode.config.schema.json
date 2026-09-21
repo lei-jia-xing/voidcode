@@ -13,6 +13,18 @@
         "null"
       ]
     },
+    "config_schema_version": {
+      "description": "Top-level config schema version. Currently only 1 is supported; omit to default to 1.",
+      "anyOf": [
+        {
+          "const": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "approval_mode": {
       "description": "Default approval policy for tool execution.",
       "anyOf": [

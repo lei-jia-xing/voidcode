@@ -50,6 +50,7 @@ from voidcode.runtime.config_schema import runtime_config_json_schema
 #: A minimal *valid* payload per top-level section, so a generated variant probes
 #: one leaf instead of tripping over a missing sibling.
 _SECTION_BASELINES: dict[str, object] = {
+    "config_schema_version": 1,
     "approval_mode": "ask",
     "permission": {"external_directory_read": {"*": "allow"}},
     "policy": {"version": "v1", "tool_policy": {"allow": ["read"]}},

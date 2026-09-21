@@ -553,6 +553,7 @@ def test_runtime_config_schema_accepts_null_wherever_the_loader_treats_null_as_u
     schema = runtime_config_json_schema()
     null_payload = {
         "$schema": None,
+        "config_schema_version": None,
         "approval_mode": None,
         "permission": None,
         "policy": None,
@@ -586,12 +587,13 @@ def test_runtime_config_schema_accepts_null_wherever_the_loader_treats_null_as_u
     ("ref", "dataclass_cls", "rename", "schema_only", "runtime_only"),
     [
         # Top-level keys map to RuntimeConfig fields. `fallback_models` is the config-file
-        # key for the dataclass field `provider_fallback`; `$schema` is an editor reference.
+        # key for the dataclass field `provider_fallback`; `$schema` is an editor reference
+        # and `config_schema_version` is a schema-only version marker (const 1).
         (
             "",
             RuntimeConfig,
             {"fallback_models": "provider_fallback"},
-            {"$schema"},
+            {"$schema", "config_schema_version"},
             {"acp"},
         ),
         (

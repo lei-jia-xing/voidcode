@@ -89,6 +89,7 @@ def test_plan_state_rejects_malformed_persisted_value() -> None:
 
 def _accepted_persisted_runtime_config_values() -> dict[str, object]:
     return {
+        "config_schema_version": 1,
         "approval_mode": "deny",
         "permission": {
             "external_directory_read": {"*": "deny"},

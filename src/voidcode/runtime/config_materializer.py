@@ -25,6 +25,7 @@ from .config import (
     serialize_runtime_context_window_config,
     serialize_runtime_tools_config,
 )
+from .config_models import CONFIG_SCHEMA_VERSION
 from .permission import (
     ExternalDirectoryPolicy,
     PatternPermissionRule,
@@ -35,6 +36,7 @@ from .policy import RuntimePolicyConfig, serialize_runtime_policy_config
 
 PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
     {
+        "config_schema_version",
         "approval_mode",
         "permission",
         "policy",
@@ -93,6 +95,7 @@ class PersistedRuntimeConfigMaterialization:
 
 def serialize_runtime_config_core(config: EffectiveRuntimeConfig) -> dict[str, object]:
     runtime_config_metadata: dict[str, object] = {
+        "config_schema_version": CONFIG_SCHEMA_VERSION,
         "approval_mode": config.approval_mode,
         "permission": serialize_external_permission_config(config.permission),
         "execution_engine": config.execution_engine,
@@ -143,6 +146,15 @@ def parse_persisted_runtime_config(
     unknown_runtime_config_keys = sorted(key for key in runtime_config if key not in PERSISTED_RUNTIME_CONFIG_KEYS)
     if unknown_runtime_config_keys:
         raise ValueError(f"persisted runtime_config field '{unknown_runtime_config_keys[0]}' is not supported")
+    persisted_schema_version = runtime_config.get("config_schema_version")
+    if persisted_schema_version is None:
+        persisted_schema_version = CONFIG_SCHEMA_VERSION
+    if (
+        isinstance(persisted_schema_version, bool)
+        or not isinstance(persisted_schema_version, int)
+        or persisted_schema_version != CONFIG_SCHEMA_VERSION
+    ):
+        raise ValueError(f"persisted runtime_config config_schema_version must be {CONFIG_SCHEMA_VERSION}")
     required_runtime_config_keys = {
         "approval_mode",
         "permission",
