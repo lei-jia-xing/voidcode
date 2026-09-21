@@ -128,7 +128,11 @@ def config_schema() -> int:
     return _handle_config_schema_command(ConfigArgs())
 
 
-@config.command(name="init", help="Generate a starter workspace .voidcode.json.")
+@config.command(
+    name="init",
+    help="Generate a starter workspace .voidcode.json. "
+    "Note: approval allow means consent to arbitrary command execution without isolation (no OS-level sandbox in v1).",
+)
 @workspace_option("Workspace root where .voidcode.json should be generated.")
 @click.option("--approval-mode", type=click.Choice(APPROVAL_MODES), default="ask")
 @click.option("--model")

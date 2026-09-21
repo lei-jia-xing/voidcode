@@ -142,7 +142,11 @@ def _handle_run_command(args: RunArgs) -> int:
     return EXIT_SUCCESS
 
 
-@click.command(name="run", help="Run through the local runtime provider or deterministic harness.")
+@click.command(
+    name="run",
+    help="Run through the local runtime provider or deterministic harness. "
+    "Approval allow means consent to arbitrary command execution without isolation (no OS-level sandbox in v1).",
+)
 @click.argument("request")
 @workspace_option("Workspace root used to resolve relative read paths.")
 @click.option("--session-id", help="Optional session identifier used for persisted runs.")
