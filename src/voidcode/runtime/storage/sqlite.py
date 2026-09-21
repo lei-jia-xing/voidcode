@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from time import sleep, time
-from typing import Final, NoReturn, Protocol, cast, final, runtime_checkable
+from typing import Final, Literal, NoReturn, Protocol, cast, final, runtime_checkable
 
 from ..background.models import (
     BackgroundTaskState,
@@ -352,7 +352,10 @@ class SqliteSessionStore(
     _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {}
     # Forward-only upgrades: _MIGRATIONS[v] migrates user_version v to v + 1,
     # committed per step. No down-migrations, no ALTER inline in _ensure_schema.
-    # Future 1 -> 2 entries go here; unknown steps fail fast with reset guidance.
+    # Future 1 -> 2 entries go here; old versions without a known step fail
+    # with the needs-upgrade error (upgrade-in-place intent, reset only as a
+    # last resort), newer versions fail with too-new, and shape drift fails
+    # with corrupt (backup-first reset guidance).
     _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal", "interrupted"})
     _SEQUENCE_SCOPES = ("sessions", "background_tasks", "auxiliary")
     _sqlite_policy = _SQLitePolicy()
@@ -606,12 +609,18 @@ class SqliteSessionStore(
         if version == 0 or version == cls._SCHEMA_VERSION:
             return
         if version > cls._SCHEMA_VERSION:
-            cls._raise_schema_mismatch(database_path=database_path, detail=f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}")
+            cls._raise_schema_mismatch(
+                database_path=database_path,
+                detail=f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}",
+                reason="too-new",
+            )
         while version < cls._SCHEMA_VERSION:
             migrate = cls._MIGRATIONS.get(version)
             if migrate is None:
                 cls._raise_schema_mismatch(
-                    database_path=database_path, detail=f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}"
+                    database_path=database_path,
+                    detail=f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}",
+                    reason="needs-upgrade",
                 )
             migrate(connection)
             version += 1
@@ -846,9 +855,11 @@ class SqliteSessionStore(
             _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
             return
         if version != cls._SCHEMA_VERSION:
+            reason: Literal["needs-upgrade", "too-new"] = "too-new" if version > cls._SCHEMA_VERSION else "needs-upgrade"
             cls._raise_schema_mismatch(
                 database_path=database_path,
                 detail=f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}",
+                reason=reason,
             )
 
     @classmethod
@@ -865,6 +876,7 @@ class SqliteSessionStore(
             cls._raise_schema_mismatch(
                 database_path=database_path,
                 detail=f"missing tables: {', '.join(missing_tables)}",
+                reason="corrupt",
             )
         for table_name, expected_columns in cls._CANONICAL_SCHEMA.items():
             cls._assert_canonical_table_shape(
@@ -898,17 +910,20 @@ class SqliteSessionStore(
             cls._raise_schema_mismatch(
                 database_path=database_path,
                 detail=f"table '{table_name}' missing columns: {', '.join(missing_columns)}",
+                reason="corrupt",
             )
         unexpected_columns = sorted(actual_column_names - expected_column_names)
         if unexpected_columns:
             cls._raise_schema_mismatch(
                 database_path=database_path,
                 detail=(f"table '{table_name}' has unexpected columns: {', '.join(unexpected_columns)}"),
+                reason="corrupt",
             )
         if actual_columns != expected_columns:
             cls._raise_schema_mismatch(
                 database_path=database_path,
                 detail=f"table '{table_name}' shape does not match canonical runtime schema",
+                reason="corrupt",
             )
 
     @classmethod
@@ -928,6 +943,7 @@ class SqliteSessionStore(
         cls._raise_schema_mismatch(
             database_path=database_path,
             detail=(f"table '{table_name}' unique indexes do not match canonical runtime schema: expected [{expected}] got [{actual}]"),
+            reason="corrupt",
         )
 
     @staticmethod
@@ -964,10 +980,34 @@ class SqliteSessionStore(
         )
 
     @staticmethod
-    def _raise_schema_mismatch(*, database_path: Path, detail: str) -> NoReturn:
+    def _raise_schema_mismatch(
+        *,
+        database_path: Path,
+        detail: str,
+        reason: Literal["needs-upgrade", "too-new", "corrupt"],
+    ) -> NoReturn:
+        if reason == "needs-upgrade":
+            raise RuntimeError(
+                "sqlite runtime schema upgrade required: "
+                f"{detail}. This database needs an upgrade in place to schema version "
+                f"{SqliteSessionStore._SCHEMA_VERSION}; no automatic migration step is "
+                "available yet, so upgrade voidcode to a release that provides it and retry. "
+                "Only as a last resort, if the database is expendable and no upgrade path "
+                "exists, `uv run voidcode storage reset` clears local state (this discards sessions)."
+            )
+        if reason == "too-new":
+            raise RuntimeError(
+                "sqlite runtime schema is too new: "
+                f"{detail}. This database was written by a newer voidcode "
+                f"(expected {SqliteSessionStore._SCHEMA_VERSION}); upgrade voidcode to match and retry, "
+                f"do not reset - resetting would discard sessions without closing the version gap. "
+                f"Database: '{database_path}'."
+            )
         raise RuntimeError(
             "sqlite runtime schema mismatch: "
-            f"{detail}. Reset the runtime database with "
+            f"{detail}. backup '{database_path}' plus matching -wal/-shm files "
+            "to a safe location before storage reset. "
+            "Reset the runtime database with "
             f"`uv run voidcode storage reset` or remove '{database_path}' "
             "plus matching -wal/-shm files."
         )

@@ -929,6 +929,49 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
     assert "event_sequence" not in columns
 
 
+def test_session_storage_schema_mismatch_errors_split_three_ways(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(SqliteSessionStore, "_SCHEMA_VERSION", SCHEMA_VERSION + 1)
+    old_version_db = tmp_path / "needs-upgrade.sqlite3"
+    with closing(sqlite3.connect(old_version_db)) as connection:
+        _ = connection.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        _ = connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        connection.commit()
+
+    store = SqliteSessionStore(database_path=old_version_db)
+    with pytest.raises(RuntimeError) as needs_upgrade_exc:
+        store.list_sessions(workspace=tmp_path)
+    needs_upgrade_message = str(needs_upgrade_exc.value)
+    assert "sqlite runtime schema upgrade required" in needs_upgrade_message
+    assert "needs an upgrade in place" in needs_upgrade_message
+    assert needs_upgrade_message.lower().count("reset") == 1
+    assert "last resort" in needs_upgrade_message
+
+    too_new_db = tmp_path / "too-new.sqlite3"
+    with closing(sqlite3.connect(too_new_db)) as connection:
+        _ = connection.execute("PRAGMA user_version = 999")
+        connection.commit()
+    store = SqliteSessionStore(database_path=too_new_db)
+    with pytest.raises(RuntimeError) as too_new_exc:
+        store.list_sessions(workspace=tmp_path)
+    too_new_message = str(too_new_exc.value)
+    assert "sqlite runtime schema is too new" in too_new_message
+    assert "do not reset" in too_new_message
+    assert "upgrade voidcode" in too_new_message
+
+    corrupt_db = tmp_path / "corrupt-shape.sqlite3"
+    with closing(sqlite3.connect(corrupt_db)) as connection:
+        _ = connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+        _ = connection.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        connection.commit()
+    store = SqliteSessionStore(database_path=corrupt_db)
+    with pytest.raises(RuntimeError) as corrupt_exc:
+        store.list_sessions(workspace=tmp_path)
+    corrupt_message = str(corrupt_exc.value)
+    assert "sqlite runtime schema mismatch" in corrupt_message
+    assert f"backup '{corrupt_db}' plus matching -wal/-shm files" in corrupt_message
+    assert "`uv run voidcode storage reset`" in corrupt_message
+
+
 def test_tool_results_from_events_keeps_success_payloads_with_null_error() -> None:
     tool_results_from_events: Any = _private_attr(SqliteSessionStore, "_tool_results_from_events")
     tool_results = tool_results_from_events(
