@@ -10,6 +10,7 @@ from typing import Literal, cast
 from ...agent.prompt_sections import dynamic_boundary_marker
 from ...tools.contracts import ToolDiagnostics, ToolResult, ToolResultStatus
 from ..todos import render_provider_todo_state
+from .projection import project_summary
 from .prompt_assembly import (
     PromptAssemblyPlan,
     PromptAssemblySection,
@@ -22,6 +23,8 @@ from .transforms import (
 )
 
 _CONTINUITY_OBJECTIVE_PREVIEW_CHARS = 160
+_COMPACTION_PREVIEW_ITEM_LIMIT = 8
+_COMPACTION_PREVIEW_CHAR_LIMIT = 240
 
 
 def _empty_tool_limits() -> dict[str, int]:
@@ -963,19 +966,77 @@ def prepare_provider_context(
     session_metadata: dict[str, object],
     policy: ContextWindowPolicy | None = None,
     summary_projector: Callable[[Mapping[str, object]], str] | None = None,
+    context_window: int | None = None,
+    threshold_tokens: int | None = None,
+    threshold_percent: int | float | None = None,
+    reserve_tokens: int | None = None,
+    compaction_enabled: bool = True,
 ) -> RuntimeContextWindow:
-    _ = session_metadata, summary_projector
     effective_policy = policy or ContextWindowPolicy()
     projection = project_tool_results_for_context_window(tool_results=tool_results, policy=effective_policy)
+    usage_tokens = estimate_tokens_for_chars(len(prompt) + sum(len(result.content or "") for result in projection.prepared_results))
+    if not should_compact(
+        usage_tokens,
+        context_window,
+        enabled=compaction_enabled,
+        strategy=effective_policy.summary_strategy,
+        threshold_tokens=threshold_tokens,
+        threshold_percent=threshold_percent,
+        reserve_tokens=reserve_tokens,
+    ):
+        return RuntimeContextWindow(
+            prompt=prompt,
+            tool_results=projection.retained_results,
+            compacted=False,
+            compaction_reason=None,
+            original_tool_result_count=len(tool_results),
+            retained_tool_result_count=len(projection.retained_results),
+            truncated_tool_result_count=projection.truncated_count,
+            summary_strategy="deterministic",
+        )
+    threshold = resolve_threshold_tokens(
+        context_window,
+        threshold_tokens=threshold_tokens,
+        threshold_percent=threshold_percent,
+        reserve_tokens=reserve_tokens,
+    )
+    continuity_state = _build_continuity_state(
+        prompt=prompt,
+        session_metadata=session_metadata,
+        dropped_results=projection.dropped_results,
+        dropped_result_indexes=projection.dropped_indexes,
+        retained_results=projection.retained_results,
+        retained_count=len(projection.retained_results),
+        preview_item_limit=_COMPACTION_PREVIEW_ITEM_LIMIT,
+        preview_char_limit=_COMPACTION_PREVIEW_CHAR_LIMIT,
+    )
+    deterministic_summary = _continuity_summary_text(continuity_state)
+    summary_text, actual_strategy, fallback_reason = project_summary(
+        strategy=effective_policy.summary_strategy,
+        facts={
+            "prompt": prompt,
+            "deterministic_summary": deterministic_summary,
+            "dropped_tool_result_count": continuity_state.dropped_tool_result_count,
+            "retained_tool_result_count": continuity_state.retained_tool_result_count,
+        },
+        deterministic_summary=deterministic_summary,
+        projector=summary_projector,
+    )
+    continuity_state = replace(continuity_state, summary_text=summary_text)
+    summary_anchor, summary_source = continuity_summary_metadata(continuity_state)
     return RuntimeContextWindow(
         prompt=prompt,
         tool_results=projection.retained_results,
-        compacted=False,
-        compaction_reason=None,
+        compacted=True,
+        compaction_reason=f"token_budget_exceeded:usage_tokens={usage_tokens}:threshold_tokens={threshold}",
         original_tool_result_count=len(tool_results),
         retained_tool_result_count=len(projection.retained_results),
         truncated_tool_result_count=projection.truncated_count,
-        summary_strategy="deterministic",
+        continuity_state=continuity_state,
+        summary_anchor=summary_anchor,
+        summary_source=summary_source,
+        summary_strategy=actual_strategy,
+        summary_fallback_reason=fallback_reason,
     )
 
 
@@ -1204,3 +1265,133 @@ def _add_prompt_cache_metadata(
         "stable_section_count": boundary_index + 1,
         "dynamic_section_count": len(contents) - boundary_index - 1,
     }
+
+
+# Token estimator seam (deterministic-first, no tokenizer dependency).
+
+_TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4
+_TOKEN_RESERVE_NUMERATOR = 15
+_TOKEN_RESERVE_DENOMINATOR = 100
+
+
+@dataclass(frozen=True, slots=True)
+class TokenBudgetCheck:
+    """Verdict from :func:`check_token_budget`."""
+
+    fits: bool
+    tokens: int
+    exact: bool = False
+
+
+def estimate_tokens_for_chars(chars: int, chars_per_token: int = _TOKEN_ESTIMATE_CHARS_PER_TOKEN) -> int:
+    """Ceiling char/4 guess; non-positive input estimates to 0."""
+    if chars <= 0:
+        return 0
+    if chars_per_token <= 0:
+        raise ValueError("chars_per_token must be >= 1")
+    return -(-chars // chars_per_token)
+
+
+def effective_reserve_tokens(context_window: int | None, floor: int = 0) -> int:
+    """15% output reserve over the catalog window; None/degenerate → floor, never raises."""
+    safe_floor = max(0, floor) if isinstance(floor, int) and not isinstance(floor, bool) else 0
+    if context_window is None or isinstance(context_window, bool) or not isinstance(context_window, int) or context_window <= 0:
+        return safe_floor
+    return max(
+        safe_floor,
+        (context_window * _TOKEN_RESERVE_NUMERATOR) // _TOKEN_RESERVE_DENOMINATOR,
+    )
+
+
+def resolve_budget_reserve_tokens(
+    context_window: int | None,
+    *,
+    reserve_tokens: int | None = None,
+    floor: int = 0,
+) -> int:
+    """Explicit override wins; otherwise derive from the catalog window (None → floor)."""
+    if reserve_tokens is not None and isinstance(reserve_tokens, int) and not isinstance(reserve_tokens, bool) and reserve_tokens >= 0:
+        return reserve_tokens
+    return effective_reserve_tokens(context_window, floor)
+
+
+def check_token_budget(
+    text: str | Sequence[str] | None,
+    budget_tokens: int,
+    *,
+    chars_per_token: int = _TOKEN_ESTIMATE_CHARS_PER_TOKEN,
+) -> TokenBudgetCheck:
+    """Cheap-first probe: byte length is a hard upper bound, so a fitting bound skips estimation."""
+    if text is None:
+        combined = ""
+    elif isinstance(text, str):
+        combined = text
+    else:
+        combined = "".join(text)
+    budget = budget_tokens if isinstance(budget_tokens, int) and not isinstance(budget_tokens, bool) else 0
+    byte_len = len(combined.encode("utf-8"))
+    if byte_len <= budget:
+        return TokenBudgetCheck(fits=True, tokens=byte_len, exact=False)
+    estimated = estimate_tokens_for_chars(len(combined), chars_per_token)
+    return TokenBudgetCheck(fits=estimated <= budget, tokens=estimated, exact=False)
+
+
+def _clamp_threshold(value: int, context_window: int) -> int:
+    upper = max(1, context_window - 1)
+    return max(1, min(value, upper))
+
+
+def _coerce_threshold_int(value: int | None) -> int | None:
+    if value is None or isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def resolve_threshold_tokens(
+    context_window: int | None,
+    *,
+    threshold_tokens: int | None = None,
+    threshold_percent: int | float | None = None,
+    reserve_tokens: int | None = None,
+    floor: int = 0,
+) -> int:
+    """Fixed tokens (clamped [1, cw-1]) beat percent (clamped [1, 99]); else cw minus reserve."""
+    if context_window is None or isinstance(context_window, bool) or not isinstance(context_window, int) or context_window <= 0:
+        return 0
+    fixed = _coerce_threshold_int(threshold_tokens)
+    if fixed is not None:
+        return _clamp_threshold(fixed, context_window)
+    if threshold_percent is not None and isinstance(threshold_percent, (int, float)) and not isinstance(threshold_percent, bool):
+        clamped_percent = max(1, min(int(threshold_percent), 99))
+        return _clamp_threshold((context_window * clamped_percent) // 100, context_window)
+    reserve = resolve_budget_reserve_tokens(context_window, reserve_tokens=reserve_tokens, floor=floor)
+    return max(1, context_window - reserve)
+
+
+def should_compact(
+    context_tokens: int | None,
+    context_window: int | None,
+    *,
+    enabled: bool = True,
+    strategy: str = "deterministic",
+    threshold_tokens: int | None = None,
+    threshold_percent: int | float | None = None,
+    reserve_tokens: int | None = None,
+) -> bool:
+    """True when usage reaches the compaction threshold; disabled/off/degenerate never compacts."""
+    if not enabled:
+        return False
+    if isinstance(strategy, str) and strategy.lower() in {"off", "disabled"}:
+        return False
+    tokens = _coerce_threshold_int(context_tokens)
+    if tokens is None or tokens < 0:
+        return False
+    threshold = resolve_threshold_tokens(
+        context_window,
+        threshold_tokens=threshold_tokens,
+        threshold_percent=threshold_percent,
+        reserve_tokens=reserve_tokens,
+    )
+    if threshold <= 0:
+        return False
+    return tokens >= threshold

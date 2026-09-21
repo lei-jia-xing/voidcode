@@ -72,6 +72,14 @@ def dynamic_boundary_marker() -> str:
     return _DYNAMIC_BOUNDARY_MARKER
 
 
+def user_append_heading_block() -> str:
+    return "User-append: user-authored text is authoritative over generated blocks."
+
+
+def tool_inventory_clarity_line() -> str:
+    return "Tool inventory is advisory; runtime allowlists and policy control execution."
+
+
 __all__ = [
     "capability_block",
     "delegation_envelope_block",
@@ -79,4 +87,6 @@ __all__ = [
     "identity_header",
     "prompt_activation_guidance_block",
     "search_agent_contract_block",
+    "tool_inventory_clarity_line",
+    "user_append_heading_block",
 ]

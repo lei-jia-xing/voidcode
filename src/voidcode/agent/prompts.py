@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import cast
 
 from .models import AgentManifest, AgentPromptMaterialization
+from .prompt_sections import user_append_heading_block
 
 _AGENT_DIR = Path(__file__).resolve().parent
 _PROMPT_FILE_NAME = "base.txt"
@@ -72,6 +73,19 @@ def _select_profile_from_materialization_payload(
     return override_profile.strip()
 
 
+def compose_prompt_with_user_append(
+    generated: str | None,
+    user_append: str | None,
+) -> str:
+    generated_text = generated.strip() if isinstance(generated, str) else ""
+    user_text = user_append.strip() if isinstance(user_append, str) else ""
+    if generated_text and user_text:
+        return f"{generated_text}\n\n{user_append_heading_block()}\n{user_text}"
+    if generated_text:
+        return generated_text
+    return user_text
+
+
 def _render_materialization_payload(materialization: Mapping[str, object]) -> str | None:
     source = materialization.get("source")
     if source == "custom_markdown":
@@ -79,7 +93,7 @@ def _render_materialization_payload(materialization: Mapping[str, object]) -> st
         if isinstance(body, str) and body.strip():
             prompt_append = materialization.get("prompt_append")
             if isinstance(prompt_append, str) and prompt_append.strip():
-                return f"{body.strip()}\n\n{prompt_append.strip()}"
+                return compose_prompt_with_user_append(body, prompt_append)
             return body.strip()
         return None
     return None
@@ -103,7 +117,10 @@ def render_agent_prompt(
             if materialization.body is None:
                 return None
             if materialization.prompt_append is not None:
-                return f"{materialization.body.strip()}\n\n{materialization.prompt_append.strip()}"
+                return compose_prompt_with_user_append(
+                    materialization.body,
+                    materialization.prompt_append,
+                )
             return materialization.body.strip()
         selected_profile = materialization.select_profile(model_family)
     elif isinstance(materialization, Mapping):
@@ -132,6 +149,7 @@ def render_agent_prompt(
 
 
 __all__ = [
+    "compose_prompt_with_user_append",
     "has_builtin_prompt_profile",
     "is_builtin_prompt_profile",
     "render_agent_prompt",
