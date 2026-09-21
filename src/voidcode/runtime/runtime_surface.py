@@ -231,3 +231,17 @@ class RuntimeSurface(Protocol):
         request: RuntimeRequest,
         response: RuntimeResponse,
     ) -> None: ...
+
+    def save_interrupted_checkpoint(
+        self,
+        *,
+        session_id: str,
+        prompt: str,
+        session_metadata: dict[str, object],
+        tool_results: tuple[dict[str, object], ...] | list[dict[str, object]],
+        last_event_sequence: int,
+        output: str | None,
+        create_if_missing: bool = False,
+        turn: int | None = None,
+        parent_session_id: str | None = None,
+    ) -> None: ...
