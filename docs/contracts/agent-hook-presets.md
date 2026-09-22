@@ -83,6 +83,14 @@ Hook policy cannot grant tools, widen tool defaults, create child sessions, rewr
 - MCP / ACP lifecycle；
 - 自动 continuation loop。
 
+## YAGNI DECLINE: subagent pre-spawn hook gate (S3)
+
+**Decision: DECLINE.** No `pre_spawn` / `spawn` hook surface, config, or executor gate.
+
+1. Delegation routing stays runtime-owned and closed (`task` tool + `RuntimePolicySnapshot.delegation_policy`; see [`background-task-delegation.md`](./background-task-delegation.md)).
+2. It overlaps the forbidden preset actions `create_child_task` / `enable_product_delegation` (`src/voidcode/hook/presets.py`); a pre-spawn gate would reintroduce that authority through hooks.
+3. The background-task contract already owns lifecycle truth (hooks are post-truth observers only); a pre-spawn gate would split that truth.
+
 ## 验收检查点
 
 实现满足这份契约时，至少应能验证：
