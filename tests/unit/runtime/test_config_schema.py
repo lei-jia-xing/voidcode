@@ -394,9 +394,8 @@ def test_runtime_config_json_schema_exposes_policy_config_contract() -> None:
     allowed_scopes = cast(dict[str, object], hook_properties["allowed_event_scopes"])
     allowed_scope_items = cast(dict[str, object], allowed_scopes["items"])
     # The enum is generated from ``policy.runtime_policy_allowed_hook_scopes()``,
-    # the same table the loader validates against. It therefore carries
-    # ``session_idle`` and does not carry ``background_task_interrupted``, which
-    # has a hook surface but is rejected by the policy scope table today.
+    # the same table the loader validates against. It therefore covers all 20
+    # executable hook surfaces.
     assert allowed_scope_items["enum"] == [
         "session_start",
         "session_end",
@@ -409,11 +408,15 @@ def test_runtime_config_json_schema_exposes_policy_config_contract() -> None:
         "background_task_completed",
         "background_task_failed",
         "background_task_cancelled",
+        "background_task_interrupted",
         "background_task_notification_enqueued",
         "background_task_result_read",
         "delegated_result_available",
         "turn_progress",
         "stuck_detected",
+        "approval_requested",
+        "question_asked",
+        "before_compact",
     ]
 
 

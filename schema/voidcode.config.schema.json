@@ -713,6 +713,15 @@
             }
           ]
         },
+        "pre_tool_match": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "post_tool": {
           "anyOf": [
             {
@@ -721,6 +730,15 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "post_tool_match": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
           ]
         },
         "on_session_start": {
@@ -1218,11 +1236,15 @@
               "background_task_completed",
               "background_task_failed",
               "background_task_cancelled",
+              "background_task_interrupted",
               "background_task_notification_enqueued",
               "background_task_result_read",
               "delegated_result_available",
               "turn_progress",
-              "stuck_detected"
+              "stuck_detected",
+              "approval_requested",
+              "question_asked",
+              "before_compact"
             ],
             "type": "string"
           },

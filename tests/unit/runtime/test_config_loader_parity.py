@@ -98,3 +98,44 @@ def test_formatter_languages_merge_over_the_hooks_override(tmp_path: Path) -> No
 
     assert config.hooks is not None
     assert config.hooks.formatter_presets["python"].command == ("other-fmt",)
+
+
+def _load_workspace_with_user_config(
+    workspace: Path,
+    user_config_home: Path,
+    repo_payload: dict[str, object],
+    user_payload: dict[str, object],
+):
+    (workspace / ".voidcode.json").write_text(json.dumps(repo_payload), encoding="utf-8")
+    user_config_path = user_config_home / "voidcode" / "config.json"
+    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    user_config_path.write_text(json.dumps(user_payload), encoding="utf-8")
+    return load_runtime_config(workspace, env={"XDG_CONFIG_HOME": str(user_config_home)})
+
+
+def test_user_global_hooks_concatenate_before_repo_local(tmp_path: Path) -> None:
+    """User-global hook commands run before repo-local ones on the same surface."""
+    config = _load_workspace_with_user_config(
+        tmp_path,
+        tmp_path / "user-config",
+        {"hooks": {"pre_tool": [["echo", "repo-pre"]], "timeout_seconds": 12.5}},
+        {"hooks": {"pre_tool": [["echo", "user-pre"]], "on_session_start": [["echo", "user-start"]]}},
+    )
+
+    assert config.hooks is not None
+    assert config.hooks.pre_tool == (("echo", "user-pre"), ("echo", "repo-pre"))
+    assert config.hooks.on_session_start == (("echo", "user-start"),)
+    # Scalar governance stays repo-local.
+    assert config.hooks.timeout_seconds == 12.5
+
+
+def test_user_only_hooks_load_without_repo_local(tmp_path: Path) -> None:
+    """User-global hooks alone produce an executable hooks config."""
+    user_config_path = tmp_path / "user-config" / "voidcode" / "config.json"
+    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    user_config_path.write_text(json.dumps({"hooks": {"pre_tool": [["echo", "user-pre"]]}}), encoding="utf-8")
+
+    config = load_runtime_config(tmp_path, env={"XDG_CONFIG_HOME": str(tmp_path / "user-config")})
+
+    assert config.hooks is not None
+    assert config.hooks.pre_tool == (("echo", "user-pre"),)

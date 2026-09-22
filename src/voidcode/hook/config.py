@@ -1,6 +1,16 @@
+"""Hook configuration plus the tool-name glob integration point.
+
+``hook_tool_matches`` is the single seam the tool-hook loops use to decide
+whether a ``pre_tool``/``post_tool`` binding fires for a tool name.
+Empty patterns match every tool (backcompat); otherwise stdlib
+``fnmatch.fnmatchcase`` applies, so ``write*`` matches ``write`` and
+``write_file`` but not ``read``, and matching is case-sensitive.
+"""
+
 from __future__ import annotations
 
-from collections.abc import Mapping
+import fnmatch
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
@@ -24,7 +34,11 @@ class RuntimeHooksConfig:
     timeout_seconds: float | None = 30.0
     failure_mode: RuntimeHookFailureMode = "warn"
     pre_tool: tuple[tuple[str, ...], ...] = ()
+    #: Optional tool-name glob filters for the tool-hook surfaces. Empty means
+    #: "match every tool" (backcompat); non-empty filters with stdlib fnmatch.
+    pre_tool_match: tuple[str, ...] = ()
     post_tool: tuple[tuple[str, ...], ...] = ()
+    post_tool_match: tuple[str, ...] = ()
     on_session_start: tuple[tuple[str, ...], ...] = ()
     on_session_end: tuple[tuple[str, ...], ...] = ()
     on_session_idle: tuple[tuple[str, ...], ...] = ()
@@ -51,3 +65,16 @@ class RuntimeHooksConfig:
 
     def resolve_formatter(self, file_path: Path) -> tuple[str, RuntimeFormatterPresetConfig] | None:
         return resolve_formatter_preset(self.formatter_presets, file_path)
+
+
+def hook_tool_matches(patterns: Sequence[str], tool_name: str) -> bool:
+    """Return True when ``tool_name`` passes the surface glob filter.
+
+    Wired into ``run_tool_hooks`` for the ``pre_tool``/``post_tool`` surfaces;
+    that loop calls this with the surface's ``*_match`` tuple before running
+    each binding. Empty patterns match all (backcompat), otherwise stdlib
+    ``fnmatch.fnmatchcase`` applies and is case-sensitive.
+    """
+    if not patterns:
+        return True
+    return any(fnmatch.fnmatchcase(tool_name, pattern) for pattern in patterns)

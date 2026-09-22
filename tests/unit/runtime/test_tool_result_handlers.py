@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
+
+import pytest
 
 from voidcode.graph.contracts import GraphRunRequest
 from voidcode.hook.typed import (
@@ -10,7 +13,7 @@ from voidcode.hook.typed import (
     ToolResultHandlerDecision,
     ToolResultHandlerRegistry,
 )
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
+from voidcode.runtime.config import RuntimeConfig, RuntimeHooksConfig, RuntimeMcpConfig
 from voidcode.runtime.context.window import ToolResultView
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.permission import PermissionPolicy
@@ -271,3 +274,78 @@ def test_tool_result_view_isolates_authoritative_result_and_data() -> None:
 
     assert source.data == {"nested": {"secret": "value"}}
     assert view.result.data == {"nested": {"secret": "result mutation"}}
+
+
+def _invoke_runtime(
+    workspace: Path,
+    *,
+    hooks: RuntimeHooksConfig,
+) -> tuple[VoidCodeRuntime, _ObserveGraph]:
+    """Drive an ``invoke_tool`` dispatch so the inner pre_tool hook runs."""
+    tool = _ResultTool(ToolResult(tool_name="capture", status="ok", content="source"))
+    graph = _ObserveGraph(ToolCall(tool_name="invoke_tool", arguments={"name": "capture", "arguments": {}}))
+    runtime = VoidCodeRuntime(
+        workspace=workspace,
+        tool_registry=ToolRegistry.from_tools(cast(Any, [InvokeTool(), tool])),
+        graph=cast(Any, graph),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            approval_mode="allow",
+            mcp=RuntimeMcpConfig(enabled=False),
+            hooks=hooks,
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    return runtime, graph
+
+
+def test_invoke_dispatch_pre_tool_hook_failure_honors_failure_mode(tmp_path: Path) -> None:
+    """invoke_tool dispatch must escalate `fail` like the primary pre_tool path."""
+    crash = (sys.executable, "-c", "raise SystemExit(5)")
+
+    warn_runtime, _ = _invoke_runtime(
+        tmp_path / "warn",
+        hooks=RuntimeHooksConfig(enabled=True, failure_mode="warn", pre_tool=(crash,)),
+    )
+    warn_response = warn_runtime.run(RuntimeRequest(prompt="run", session_id="invoke-warn"))
+
+    # warn: the dispatch degrades to model-visible tool feedback, run continues.
+    assert warn_response.session.status == "completed"
+    completed = [event for event in warn_response.events if event.event_type == "runtime.tool_completed"]
+    assert completed
+    failure = completed[-1].payload
+    assert failure["tool"] == "capture"
+    assert failure["status"] == "error"
+    assert "tool pre-hook failed" in str(failure["content"])
+
+    fail_runtime, _ = _invoke_runtime(
+        tmp_path / "fail",
+        hooks=RuntimeHooksConfig(enabled=True, failure_mode="fail", pre_tool=(crash,)),
+    )
+    with pytest.raises(RuntimeError, match="pre-hook failed"):
+        _ = fail_runtime.run(RuntimeRequest(prompt="run", session_id="invoke-fail"))
+
+
+def test_invoke_dispatch_pre_tool_cancel_stays_tool_feedback_in_both_modes(tmp_path: Path) -> None:
+    """Deliberate asymmetry vs executor failure: a hook cancel on the inner dispatch
+    yields model-visible tool feedback and the run continues, even under `fail`.
+    """
+    cancel = (sys.executable, "-c", 'print(\'{"action": "cancel", "diagnostic": "operator_hold"}\')')
+
+    for mode in ("warn", "fail"):
+        (tmp_path / mode).mkdir()
+        runtime, _ = _invoke_runtime(
+            tmp_path / mode,
+            hooks=RuntimeHooksConfig(enabled=True, failure_mode=mode, pre_tool=(cancel,)),
+        )
+        response = runtime.run(RuntimeRequest(prompt="run", session_id=f"invoke-cancel-{mode}"))
+
+        # Cancel surfaces as model-visible tool feedback, not a run failure.
+        assert response.session.status == "completed"
+        completed = [event for event in response.events if event.event_type == "runtime.tool_completed"]
+        assert completed
+        feedback = completed[-1].payload
+        assert feedback["tool"] == "capture"
+        assert feedback["status"] == "error"
+        assert feedback["error"] == "tool 'capture' blocked: operator_hold"
+        assert feedback["diagnostics"]["kind"] == "hook_cancelled"

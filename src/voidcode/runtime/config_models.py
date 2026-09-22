@@ -849,7 +849,9 @@ class HooksPayload(_PayloadModel):
     timeout_seconds: float | None = Field(default=DEFAULT_HOOK_TIMEOUT_SECONDS, ge=1)
     failure_mode: RuntimeHookFailureMode = "warn"
     pre_tool: CommandList | None = None
+    pre_tool_match: tuple[str, ...] | None = None
     post_tool: CommandList | None = None
+    post_tool_match: tuple[str, ...] | None = None
     on_session_start: CommandList | None = None
     on_session_end: CommandList | None = None
     on_session_idle: CommandList | None = None
@@ -903,6 +905,17 @@ class HooksPayload(_PayloadModel):
     @classmethod
     def _validate_formatter_presets(cls, value: object) -> dict[str, FormatterPresetPayload]:
         return validate_formatter_preset_map(value, field_path="hooks.formatter_presets") or {}
+
+    @field_validator("pre_tool_match", "post_tool_match", mode="before")
+    @classmethod
+    def _validate_tool_match(cls, value: object, info: ValidationInfo) -> tuple[str, ...]:
+        patterns = _parse_string_list(value, field_path=f"hooks.{info.field_name}")
+        # An empty glob matches nothing, which would silently disable the hook;
+        # an omitted or empty list is the documented "match every tool" form.
+        for index, pattern in enumerate(patterns):
+            if not pattern.strip():
+                raise ValueError(f"runtime config field 'hooks.{info.field_name}[{index}]' must be a non-empty string")
+        return patterns
 
 
 # ---------------------------------------------------------------------------
@@ -1872,6 +1885,8 @@ class UserConfigPayload(_PayloadModel):
     #: so it stays untyped here: any value is accepted exactly as HEAD accepted it.
     web: object | None = None
     providers: ProviderConfigsPayload | None = None
+    #: User-global hook commands, concatenated before repo-local commands per surface.
+    hooks: HooksPayload | None = None
 
     @field_validator("tui", "providers", mode="before")
     @classmethod
@@ -1880,6 +1895,15 @@ class UserConfigPayload(_PayloadModel):
             return None
         if not isinstance(value, dict):
             raise ValueError(f"runtime config field '{info.field_name}' must be an object when provided")
+        return value
+
+    @field_validator("hooks", mode="before")
+    @classmethod
+    def _validate_user_hooks_shape(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("runtime config field 'hooks' must be an object when provided")
         return value
 
     @field_validator("schema_ref", mode="before")

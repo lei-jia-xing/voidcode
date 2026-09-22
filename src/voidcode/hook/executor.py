@@ -1,19 +1,52 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, cast
+from typing import Final, Literal, cast
 
 from ..runtime.events import RUNTIME_TOOL_HOOK_POST, RUNTIME_TOOL_HOOK_PRE
 from ..security.shell_policy import non_interactive_shell_env
-from .config import RuntimeHooksConfig, RuntimeHookSurface
+from .config import RuntimeHooksConfig, RuntimeHookSurface, hook_tool_matches
 from .plan import ResolvedHookPlan
 from .surfaces import hook_surface_descriptor
+
+logger = logging.getLogger(__name__)
+
+#: Surfaces where a hook ``cancel`` action takes effect. Gate surfaces
+#: short-circuit the loop on first cancel; every other surface treats cancel
+#: as continue (diagnostic + guidance kept, loop continues).
+_CANCEL_HONORING_SURFACES: Final[frozenset[str]] = frozenset(
+    {
+        "pre_tool",
+        "post_tool",
+        "turn_progress",
+        "stuck_detected",
+        "approval_requested",
+        "before_compact",
+    }
+)
+
+#: Diagnostic accumulation bound; mirrors ``_MAX_DIAGNOSTICS`` in ``typed.py``.
+#: The first 32 items are kept, then one sentinel; newer items are dropped.
+_MAX_DIAGNOSTICS: Final[int] = 32
+_DIAGNOSTICS_OMITTED_SENTINEL: Final[str] = "[additional diagnostics omitted]"
+
+
+def _surface_honors_cancel(surface: str) -> bool:
+    return surface in _CANCEL_HONORING_SURFACES
+
+
+def _append_diagnostic(diagnostics: list[str], diagnostic: str) -> None:
+    if len(diagnostics) < _MAX_DIAGNOSTICS:
+        diagnostics.append(diagnostic)
+    elif len(diagnostics) == _MAX_DIAGNOSTICS:
+        diagnostics.append(_DIAGNOSTICS_OMITTED_SENTINEL)
 
 
 def _empty_payload() -> Mapping[str, object]:
@@ -93,6 +126,12 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
         assert hooks is not None
         commands = hooks.pre_tool if request.phase == "pre" else hooks.post_tool
         timeout_seconds = hooks.timeout_seconds
+    if hooks is not None:
+        # Tool glob filters are config-only: plan bindings carry no match field,
+        # so a plan-scoped filter would need `HookPlanBinding` to carry one.
+        match_patterns = hooks.pre_tool_match if request.phase == "pre" else hooks.post_tool_match
+        if not hook_tool_matches(match_patterns, request.tool_name):
+            return HookExecutionOutcome(events=(), last_sequence=request.sequence_start)
     last_sequence = request.sequence_start
     events: list[HookExecutionEvent] = []
     diagnostics: list[str] = []
@@ -134,6 +173,33 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
             )
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             error_text = f"tool {request.phase}-hook failed for {request.tool_name}: {exc}"
+            if request.phase == "pre":
+                # Fail-closed gate: crash/timeout blocks the tool (cancel +
+                # failed_error both set); the error text rides diagnostic and
+                # guidance so the reason reaches the prompt buffer.
+                _append_diagnostic(diagnostics, error_text)
+                return HookExecutionOutcome(
+                    events=(
+                        *events,
+                        HookExecutionEvent(
+                            sequence=last_sequence,
+                            event_type=_event_type_for_phase(request.phase),
+                            payload={
+                                "phase": request.phase,
+                                "tool_name": request.tool_name,
+                                "session_id": request.session_id,
+                                "status": "error",
+                                "error": error_text,
+                                "diagnostic": error_text,
+                                "guidance": error_text,
+                            },
+                        ),
+                    ),
+                    last_sequence=last_sequence,
+                    failed_error=error_text,
+                    action="cancel",
+                    diagnostics=tuple(diagnostics),
+                )
             return HookExecutionOutcome(
                 events=(
                     *events,
@@ -158,7 +224,7 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
         diagnostic = action_payload.diagnostic
         guidance = action_payload.guidance
         if diagnostic is not None:
-            diagnostics.append(diagnostic)
+            _append_diagnostic(diagnostics, diagnostic)
         events.append(
             HookExecutionEvent(
                 sequence=last_sequence,
@@ -281,7 +347,10 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
         diagnostic = action_payload.diagnostic
         guidance = action_payload.guidance
         if diagnostic is not None:
-            diagnostics.append(diagnostic)
+            _append_diagnostic(diagnostics, diagnostic)
+        if action == "cancel" and not _surface_honors_cancel(request.surface):
+            logger.debug("ignoring cancel from advisory surface %s", request.surface)
+            action = "continue"
         events.append(
             HookExecutionEvent(
                 sequence=last_sequence,

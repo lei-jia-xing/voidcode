@@ -6,7 +6,7 @@ import re
 import sys
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -39,6 +39,7 @@ from .config_models import (
     AGENT_RUNTIME_INTERNAL_CONFIG_KEY,
     DEFAULT_HOOK_TIMEOUT_SECONDS,
     ENV_SETTINGS_LOCK,
+    HOOK_COMMAND_FIELDS,
     TOP_LEVEL_ENV_VARS,
     AgentMcpBindingPayload,
     AgentPayload,
@@ -496,7 +497,7 @@ def load_runtime_config(
             repo_local=repo_local.reasoning_effort,
             environment=env_overrides.reasoning_effort,
         ),
-        hooks=repo_local.hooks,
+        hooks=_merge_hooks_configs(user=global_config.hooks, repo_local=repo_local.hooks),
         formatter=repo_local.formatter,
         tools=repo_local.tools,
         skills=repo_local.skills,
@@ -646,6 +647,7 @@ def _load_user_config(env: Mapping[str, str]) -> RuntimeConfigOverrides:
     return RuntimeConfigOverrides(
         tui=_tui_config_from_payload(config_payload.tui),
         providers=providers,
+        hooks=_hooks_config_from_payload(config_payload.hooks),
     )
 
 
@@ -673,7 +675,9 @@ def _hooks_config_from_payload(payload: HooksPayload | None) -> RuntimeHooksConf
         timeout_seconds=payload.timeout_seconds if payload.timeout_seconds is not None else DEFAULT_HOOK_TIMEOUT_SECONDS,
         failure_mode=payload.failure_mode,
         pre_tool=payload.pre_tool or (),
+        pre_tool_match=payload.pre_tool_match or (),
         post_tool=payload.post_tool or (),
+        post_tool_match=payload.post_tool_match or (),
         on_session_start=payload.on_session_start or (),
         on_session_end=payload.on_session_end or (),
         on_session_idle=payload.on_session_idle or (),
@@ -702,6 +706,27 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
     return _hooks_config_from_payload(
         validate_config_section(HooksPayload, raw_hooks, field_path="hooks"),
     )
+
+
+def _merge_hooks_configs(
+    *,
+    user: RuntimeHooksConfig | None,
+    repo_local: RuntimeHooksConfig | None,
+) -> RuntimeHooksConfig | None:
+    """Concatenate user-global hook commands before repo-local ones, per surface.
+
+    Scalar governance (``enabled``/``timeout_seconds``/``failure_mode``) stays
+    repo-local: user config only contributes command tuples.
+    """
+    if user is None:
+        return repo_local
+    if repo_local is None:
+        return user
+    merged = {field_name: (*getattr(user, field_name), *getattr(repo_local, field_name)) for field_name in HOOK_COMMAND_FIELDS}
+    # Match filters concatenate user-first like commands; empty still matches all.
+    merged["pre_tool_match"] = (*user.pre_tool_match, *repo_local.pre_tool_match)
+    merged["post_tool_match"] = (*user.post_tool_match, *repo_local.post_tool_match)
+    return replace(repo_local, **merged)
 
 
 def _formatter_config_from_payload(payload: FormatterPayload | None) -> RuntimeFormatterConfig | None:
@@ -748,7 +773,9 @@ def _apply_formatter_config(
         timeout_seconds=base_hooks.timeout_seconds,
         failure_mode=base_hooks.failure_mode,
         pre_tool=base_hooks.pre_tool,
+        pre_tool_match=base_hooks.pre_tool_match,
         post_tool=base_hooks.post_tool,
+        post_tool_match=base_hooks.post_tool_match,
         on_session_start=base_hooks.on_session_start,
         on_session_end=base_hooks.on_session_end,
         on_session_idle=base_hooks.on_session_idle,

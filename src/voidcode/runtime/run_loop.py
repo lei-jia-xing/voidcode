@@ -130,6 +130,7 @@ from .execution.tool_result_projection import (
 from .hook_runtime import (
     HOOK_RECURSION_ENV_VAR,
     before_compact_input_from_hook_outcome,
+    hook_blocked_reason,
     hook_execution_policy_from_metadata,
     run_lifecycle_hooks_for_session,
     run_tool_hooks_for_session,
@@ -950,7 +951,7 @@ class RuntimeRunLoopCoordinator:
                 chunk_builders.failed_chunk(
                     session=session,
                     sequence=sequence + 1,
-                    error="run cancelled by pre-tool hook",
+                    error=hook_blocked_reason(pre_hook_outcome, tool_name=tool_call.tool_name),
                     payload={"kind": "hook_cancelled", "surface": "pre_tool"},
                 )
             )
@@ -1570,7 +1571,6 @@ class RuntimeRunLoopCoordinator:
                 sequence=sequence,
                 tool_name=plan_tool_call.tool_name,
                 phase="pre",
-                cancel_message="run cancelled by pre-tool hook",
             )
             if verdict == "cancel":
                 return
@@ -1636,7 +1636,6 @@ class RuntimeRunLoopCoordinator:
                     sequence=sequence,
                     tool_name=plan_tool_call.tool_name,
                     phase="post",
-                    cancel_message="run cancelled by post-tool hook",
                 )
                 if verdict == "cancel":
                     return
@@ -2939,7 +2938,6 @@ class RuntimeRunLoopCoordinator:
         sequence: int,
         tool_name: str,
         phase: Literal["pre", "post"],
-        cancel_message: str,
     ) -> Generator[RuntimeStreamChunk, None, tuple[int, str]]:
         hook_outcome = run_tool_hooks_for_session(
             hooks=self._config.hooks,
@@ -2973,7 +2971,7 @@ class RuntimeRunLoopCoordinator:
                 chunk_builders.failed_chunk(
                     session=session,
                     sequence=sequence + 1,
-                    error=cancel_message,
+                    error=(hook_blocked_reason(hook_outcome, tool_name=tool_name) if phase == "pre" else f"run cancelled by {phase}-tool hook"),
                     payload={"kind": "hook_cancelled", "surface": f"{phase}_tool"},
                 )
             )
@@ -3274,7 +3272,6 @@ class RuntimeRunLoopCoordinator:
                 },
             )
             yield RuntimeStreamChunk(kind="event", session=waiting_session, event=envelope)
-            hook_cancel_reason: str | None = None
             try:
                 hook_outcome = run_lifecycle_hooks_for_session(
                     hooks=self._config.hooks,
@@ -3302,29 +3299,6 @@ class RuntimeRunLoopCoordinator:
             if hook_outcome.failed_error is not None:
                 return True
             self._note_hook_guidance(hook_outcome.guidance)
-            if hook_outcome.action == "cancel":
-                for chunk in hook_outcome.chunks:
-                    payload = chunk.event.payload if chunk.event is not None else None
-                    if not isinstance(payload, dict):
-                        continue
-                    for key in ("diagnostic", "message", "guidance", "reason"):
-                        value = payload.get(key)
-                        if isinstance(value, str) and value.strip():
-                            hook_cancel_reason = value
-                            break
-                    if hook_cancel_reason is not None:
-                        break
-                if not isinstance(hook_cancel_reason, str) or not hook_cancel_reason.strip():
-                    hook_cancel_reason = "hook blocked question"
-                failed_chunk, _ = self._persist_chunk(
-                    chunk_builders.failed_chunk(
-                        session=waiting_session,
-                        sequence=envelope.sequence + 1,
-                        error=hook_cancel_reason,
-                        payload={"kind": "hook_cancelled", "surface": "question_asked"},
-                    )
-                )
-                yield failed_chunk
             return True
         return False
 
@@ -3493,7 +3467,10 @@ class RuntimeRunLoopCoordinator:
         policy, runtime policy (allowlist / read-only), permission resolution
         (approval pause for mutating tools), pre/post hooks, and the shared
         tool executor. Tool-level failures (unknown name, denied, cancelled)
-        never terminate the run.
+        surface as model-visible feedback rather than terminating the run, with
+        one exception: a pre-tool hook failing under ``hooks.failure_mode="fail"``
+        escalates like the primary pre_tool path, so the gate cannot silently
+        degrade.
         """
         runtime = self._surface
         try:
@@ -3683,6 +3660,22 @@ class RuntimeRunLoopCoordinator:
             fallback_sequence=pre_hook_outcome.last_sequence,
         )
         if pre_hook_outcome.failed_error is not None:
+            if chunk_builders.hook_failures_are_fatal(self._config.hooks):
+                # Honor hooks.failure_mode=fail exactly like the primary pre_tool
+                # path: persist the failure visibly, then escalate out of the
+                # graph loop so the run fails instead of silently degrading the
+                # gate. `warn` keeps the tool-level feedback below.
+                failed_chunk = chunk_builders.lifecycle_hook_failure_chunk(
+                    session=session,
+                    sequence=sequence,
+                    surface="pre_tool",
+                    error=pre_hook_outcome.failed_error,
+                    hooks=self._config.hooks,
+                )
+                if failed_chunk is not None:
+                    persisted_failed, _ = self._persist_chunk(failed_chunk)
+                    yield persisted_failed
+                raise RuntimeError(pre_hook_outcome.failed_error)
             yield from self._dispatch_error_feedback_chunks(
                 session=session,
                 tool_name=inner_name,
@@ -3701,7 +3694,7 @@ class RuntimeRunLoopCoordinator:
                 tool_call_id=outer_call_id,
                 arguments=dict(inner_call.arguments),
                 tool_results=tool_results,
-                error="run cancelled by pre-tool hook",
+                error=hook_blocked_reason(pre_hook_outcome, tool_name=inner_name),
                 error_kind="hook_cancelled",
             )
             return session, sequence

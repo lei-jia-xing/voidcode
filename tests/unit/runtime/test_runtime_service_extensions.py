@@ -5561,3 +5561,137 @@ def test_runtime_session_idle_hook_failure_warn_does_not_fail_waiting_session(
 
 
 # ── Context window projection contract tests ────────────────────────────────
+
+
+# ── pre_tool conflict semantics: blocked reason + fail-closed gate (§2) ──────
+
+
+class _WriteOnceGraph:
+    """Issues one ``write`` call, then finishes; the tool must never run when blocked."""
+
+    def __init__(self, target: Path) -> None:
+        self._target = target
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: GraphSession,
+    ) -> _StubStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write",
+                    arguments={"path": self._target.as_posix(), "content": "blocked"},
+                )
+            )
+        return _StubStep(output="done", is_finished=True)
+
+
+def test_pre_tool_hook_cancel_blocks_tool_with_llm_visible_reason(tmp_path: Path) -> None:
+    target = tmp_path / "blocked.txt"
+    stdout = json.dumps({"action": "cancel", "diagnostic": "operator_hold"})
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_WriteOnceGraph(target),
+        config=RuntimeConfig(
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                pre_tool=(("echo", stdout),),
+            )
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="write it", session_id="pre-tool-block"))
+
+    # warn mode: the tool is blocked, the run continues, and the reason is visible.
+    assert not target.exists()
+    cancelled = [event for event in response.events if event.payload.get("kind") == "hook_cancelled"]
+    assert cancelled
+    assert cancelled[0].payload["error"] == "tool 'write' blocked: operator_hold"
+
+
+def test_pre_tool_hook_failure_warn_blocks_tool_and_fail_escalates(tmp_path: Path) -> None:
+    """Design §2: pre_tool is fail-closed — `warn` blocks, `fail` raises."""
+    warn_target = tmp_path / "warn.txt"
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_WriteOnceGraph(warn_target),
+        config=RuntimeConfig(
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                failure_mode="warn",
+                pre_tool=((sys.executable, "-c", "raise SystemExit(5)"),),
+            )
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="write it", session_id="pre-tool-crash"))
+
+    assert not warn_target.exists()
+    cancelled = [event for event in response.events if event.payload.get("kind") == "hook_cancelled"]
+    assert cancelled
+    assert cancelled[0].payload["error"].startswith("tool 'write' blocked: ")
+
+    fail_target = tmp_path / "fail.txt"
+    fail_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_WriteOnceGraph(fail_target),
+        config=RuntimeConfig(
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                failure_mode="fail",
+                pre_tool=((sys.executable, "-c", "raise SystemExit(5)"),),
+            )
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    with pytest.raises(RuntimeError, match="pre-hook failed"):
+        _ = fail_runtime.run(RuntimeRequest(prompt="write it", session_id="pre-tool-fail"))
+    assert not fail_target.exists()
+
+
+def test_pre_tool_match_filter_applies_on_plan_path(tmp_path: Path) -> None:
+    """The runtime always carries a resolved plan; the config filter must still gate.
+
+    ``run_tool_hooks`` takes the ``plan is not None`` branch for commands but the
+    ``hooks is not None`` branch for the match filter, so this pins the real
+    production path against a refactor silently dropping the filter.
+    """
+    filtered_target = tmp_path / "filtered.txt"
+    stdout = json.dumps({"action": "cancel", "diagnostic": "operator_hold"})
+    filtered = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_WriteOnceGraph(filtered_target),
+        config=RuntimeConfig(hooks=RuntimeHooksConfig(enabled=True, pre_tool=(("echo", stdout),), pre_tool_match=("read*",))),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = filtered.run(RuntimeRequest(prompt="write it", session_id="pre-tool-unmatched"))
+
+    # `write` is filtered out, so the hook never runs and the tool completes.
+    assert filtered_target.exists()
+    assert [event for event in response.events if event.payload.get("kind") == "hook_cancelled"] == []
+
+
+def test_pre_tool_match_filter_runs_hook_for_matching_tool_on_plan_path(tmp_path: Path) -> None:
+    """The matching half: a tool inside the glob does get gated on the plan path."""
+    matched_target = tmp_path / "matched.txt"
+    stdout = json.dumps({"action": "cancel", "diagnostic": "operator_hold"})
+    matched = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_WriteOnceGraph(matched_target),
+        config=RuntimeConfig(hooks=RuntimeHooksConfig(enabled=True, pre_tool=(("echo", stdout),), pre_tool_match=("write*",))),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = matched.run(RuntimeRequest(prompt="write it", session_id="pre-tool-matched"))
+
+    assert not matched_target.exists()
+    cancelled = [event for event in response.events if event.payload.get("kind") == "hook_cancelled"]
+    assert cancelled
+    assert cancelled[0].payload["error"] == "tool 'write' blocked: operator_hold"

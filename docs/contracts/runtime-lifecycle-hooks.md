@@ -63,7 +63,7 @@
 - `src/voidcode/runtime/storage.py`
 - `src/voidcode/runtime/task.py`
 
-17 个 surface 的内部配置字段、phase 与事件映射以
+20 个 surface 的内部配置字段、phase 与事件映射以
 `src/voidcode/hook/surfaces.py::HOOK_SURFACE_DESCRIPTORS` 为单一描述源；这只减少
 runtime 内部重复映射，不改变既有外部配置字段、argv 执行协议、失败策略或事件顺序。
 
@@ -154,6 +154,12 @@ Hook 命令 stdout 可返回 JSON：
 
 也就是说，`session_idle` 负责说明 runtime 何时可以考虑 reminder eligibility，但它不改变 task/session truth，也不把 hook 变成 authority。提醒逻辑只能消费这层 truth，不能自己发明新的空闲判定。
 
+#### `cancel` 语义：advisory（被忽略）
+
+`session_idle` 是 post-settle observer：它不在 `_CANCEL_HONORING_SURFACES` 中，因此 hook 返回 `cancel` 一律按 `continue` 处理（记 debug log），diagnostic + guidance 保留并继续执行后续 commands。理由：runtime 目前没有 idle poller，settle 决策在观察点已经成立，推迟 settle 需要先发明一套重新驱动的执行循环——在存在这样的消费者之前，只提供无消费者的 veto 计数是惰性能力，因此不做。
+
+executor 错误（`OSError` / `CalledProcessError` / `TimeoutExpired`）在该 surface 上仍按 `hooks.failure_mode` 处理：`warn` 记录诊断并保持 waiting，`fail` 经 runtime-owned failure path 把 session 落为 `failed`。
+
 ### `background_task_registered`
 
 触发点：
@@ -227,6 +233,44 @@ Hook 命令 stdout 可返回 JSON：
 
 ## Failure 语义
 
+### `cancel` 生效面（verb table）
+
+executor 循环在所有 surface 上形状一致：按 plan 顺序执行、累积 `diagnostic` 与 `guidance`、首个 `cancel` 停止循环、subprocess/policy 失败带 `failed_error` 停止循环。区别只在于 `cancel` 是否被消费（唯一的 verb table，位于 `hook/executor.py::_CANCEL_HONORING_SURFACES`）：
+
+| surface | `cancel` 语义 |
+|---|---|
+| `pre_tool` / `post_tool` | gate：短路（`pre_tool` 下工具永不执行） |
+| `turn_progress` / `stuck_detected` | gate：终止本次 run |
+| `approval_requested` | gate：以 diagnostic 作为 deny reason |
+| `before_compact` | gate：跳过本次 compaction |
+| `session_start` / `session_end` / `session_idle` / `question_asked` / `delegated_result_available` / `background_task_*` | advisory：`cancel` 被忽略并记日志，diagnostic + guidance 保留，循环继续 |
+
+行为差异（相对早期实现）：`session_start`、`session_end`、`session_idle`、`background_task_*`、`question_asked`、`delegated_result_available` 上的 `cancel` 不再短路。诊断按执行顺序累积，上限 32 条（超出后追加一条 omission sentinel，对齐 `typed.py::_MAX_DIAGNOSTICS`）。
+
+### `pre_tool` fail-closed
+
+`pre_tool` 是 gate surface，其 executor 失败（`OSError` / `CalledProcessError` / `TimeoutExpired`）**fail-closed**：executor 返回 `action="cancel"` 且同时设置 `failed_error`，错误文本同时进入 error event 的 `diagnostic` 与 `guidance`。runtime 侧据此：
+
+- `warn`：工具被阻断（不执行），持久化的 `hook_cancelled` 文案为 `tool '<name>' blocked: <failed_error 或首个 diagnostic>`，理由对 LLM 可见，run 继续。
+- `fail`：在写入失败事件后按既有路径 raise（语义不变）。
+
+read-only policy 跳过的 bindings 走 `skipped` 分支继续循环，不产生 cancel。`post_tool` 与 turn surfaces 保持既有 `failed_error → lifecycle_hook_failure_chunk → warn/fail`；`approval_requested`、`before_compact`、background supervisor 仍 fail-open。
+
+#### `invoke_tool` dispatch 中的一致性
+
+`invoke_tool` 的 on-demand dispatch 走独立反馈路径，但 pre-tool hook **executor 失败**（crash/timeout）现在与主路径一致地尊重 `failure_mode`：`fail` 下持久化失败事件并 raise（run 失败），`warn` 下退化为 model-visible 的 tool feedback 并继续 run。
+
+`cancel` 是有意的不对称：两种模式下都只产生 tool-level feedback（`tool '<name>' blocked: <reason>`），不终止外层 run。理由：cancel 不是故障，而是 hook 对**这一次内层调用**的策略决定；`invoke_tool` 的设计前提就是未知工具与 denial 以 tool-level feedback 呈现、run 继续，让内层调用取消掉整个外层 run 会违背该契约。executor 失败则相反——它是 gate 本身失效，`fail` 语义要求它必须可见地终止。
+
+### `before_compact` 贡献语义
+
+`before_compact` 的 `cancel` 跳过本次 compaction（reason 取自 diagnostic，既有行为）。非 cancel 时，hook 输出按 **last-wins** 映射到 compaction 输入：
+
+- 最后一个非空 `guidance` → `custom_summary`（240 字符上限不变）。这是相对早期 first-wins 的行为变化。
+- 其余非空 `guidance` 项按执行顺序 → `BeforeCompactInput.extra_context`，拼接后追加在 summary slot 之后，总长上限 2000 字符（对齐 `prompt_assembly.py::_MAX_HOOK_GUIDANCE_CHARS`）。
+
+可达性说明：这两个字段写入 `summary_facts`，而 `summary_facts` 只在 `summary_strategy="model_assisted"` **且** 传入了 `summary_projector` 时才被读取（见 `context/projection.py::project_summary`）。runtime 目前没有生产调用点传入 projector，因此默认路径下 hook guidance 不会进入 provider view——它只是为 projector 准备好输入，供显式配置该 strategy 的调用方消费。`extra_context` 是纯文本 blob；hook 无法指定要保留的事实、控制 summary prompt 或与 summary 排序。
+
 ### Runtime execution gates
 
 `session_start`、`session_idle` 等发生在 foreground execution path 中、且尚未形成最终 action truth 的 hooks，继续按 `hooks.failure_mode` 处理：`warn` 记录诊断并继续，`fail` 必须通过 runtime-owned failure path 对外可见并阻止/终止后续 action。
@@ -294,6 +338,26 @@ lifecycle hook 的 payload 通过环境变量注入，当前约定如下：
 - `VOIDCODE_HOOK_PAYLOAD_JSON`：完整、权威、无损的 payload JSON
 
 hook payload 只通过 `VOIDCODE_HOOK_PAYLOAD_JSON` 传递，不生成逐字段环境变量镜像。
+
+## User-global hooks layering
+
+`~/.config/voidcode/config.json` 的 `hooks` block 提供 user-global hook commands，
+与 workspace `.voidcode.json` 的 repo-local commands 按 surface 拼接：同一 surface
+的执行顺序是 user-global commands 在前、repo-local commands 在后。Scalar 治理
+（`enabled` / `timeout_seconds` / `failure_mode`）保持 repo-local，不被 user-global 覆盖。
+
+## Tool-name glob filters
+
+`pre_tool` / `post_tool` 接受可选的 `pre_tool_match` / `post_tool_match` glob 过滤器
+（`hooks` block 同名字段）。空数组（或不配置）表示匹配所有 tool（backcompat 默认）；
+非空时用 stdlib `fnmatch.fnmatchcase` 匹配 tool 名（大小写敏感），任一 pattern 命中即
+执行；空字符串 pattern 会被拒绝，因为它匹配不到任何 tool。User-global 与 repo-local 的
+match filters 同 commands 一样按 user-first 拼接。
+
+当前状态：`hook_tool_matches(patterns, tool_name)` 已接入 executor 的 `run_tool_hooks`
+`pre_tool` / `post_tool` 执行路径（在 plan 或 config 解析出命令之后、执行每条 binding 之前
+过滤）。Plan bindings 仍不携带 match 数据，因此 plan 路径复用同一份 config filter；需要
+plan 级 filter 时必须先扩展 `HookPlanBinding`。
 
 ## Typed tool input hook
 

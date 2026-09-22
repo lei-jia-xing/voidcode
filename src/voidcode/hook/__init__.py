@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ..formatter import RuntimeFormatterPresetConfig
-from .config import RuntimeHooksConfig, RuntimeHookSurface
+from .config import RuntimeHooksConfig, RuntimeHookSurface, hook_tool_matches
 from .executor import (
     HookExecutionEvent,
     HookExecutionOutcome,
@@ -77,6 +77,7 @@ __all__ = [
     "HookSurfaceDescriptor",
     "HookSurfacePhase",
     "hook_surface_descriptor",
+    "hook_tool_matches",
     "RuntimeHooksConfig",
     "ToolInputAction",
     "ToolInputDecision",

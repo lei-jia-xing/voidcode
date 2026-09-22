@@ -41,7 +41,7 @@ hook 已经是相对独立的能力层，是后续 capability-layer 文档化的
 
 ## Surface catalog
 
-17 个 runtime hook surface 的配置字段、foreground/background phase 与事件名称由
+20 个 runtime hook surface 的配置字段、foreground/background phase 与事件名称由
 `src/voidcode/hook/surfaces.py` 的 `HOOK_SURFACE_DESCRIPTORS` 统一描述。`RuntimeHooksConfig`
 仍保留现有 `pre_tool`、`on_session_start`、`on_background_task_*` 等外部字段，catalog
 只负责内部查找，不改变配置形状、argv 执行、失败策略或事件顺序。`plan.py` 与

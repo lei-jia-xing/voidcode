@@ -150,3 +150,49 @@ def test_executor_cancel_action_parses_for_before_compact(tmp_path: Path) -> Non
     )
     assert outcome.action == "cancel"
     assert outcome.events and outcome.events[0].event_type == "runtime.before_compact"
+
+
+def test_guidance_last_wins_and_prior_items_become_extra_context() -> None:
+    """Design §3: last non-empty guidance wins the summary; the rest is extra context."""
+    before_compact = before_compact_input_from_hook_outcome(
+        _outcome(payloads=({"guidance": "first note"}, {"guidance": "final summary"})),
+    )
+    assert before_compact is not None
+    assert before_compact.custom_summary == "final summary"
+    assert before_compact.extra_context == ("first note",)
+
+
+def test_extra_context_is_bounded_and_carried_to_projector_input() -> None:
+    seen: dict[str, object] = {}
+
+    def _projector(facts: Mapping[str, object]) -> str:
+        seen.update(facts)
+        return "model summary"
+
+    before_compact = before_compact_input_from_hook_outcome(
+        _outcome(payloads=({"guidance": "x" * 5_000}, {"guidance": "tail"})),
+    )
+    assert before_compact is not None
+    assert sum(len(item) for item in before_compact.extra_context) <= 2000
+
+    window = prepare_provider_context(
+        prompt="Summarize the workspace changes.",
+        tool_results=_over_budget_results(),
+        session_metadata={},
+        policy=ContextWindowPolicy(summary_strategy="model_assisted"),
+        summary_projector=_projector,
+        context_window=100,
+        before_compact=before_compact,
+    )
+    assert window.compacted is True
+    assert seen.get("custom_summary") == "tail"
+    assert "x" * 100 in str(seen.get("hook_extra_context"))
+
+
+def test_single_guidance_item_leaves_extra_context_empty() -> None:
+    before_compact = before_compact_input_from_hook_outcome(
+        _outcome(payloads=({"guidance": "only"},)),
+    )
+    assert before_compact is not None
+    assert before_compact.custom_summary == "only"
+    assert before_compact.extra_context == ()

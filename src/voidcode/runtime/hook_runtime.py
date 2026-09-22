@@ -63,26 +63,71 @@ def hook_guidance_from_outcome(outcome: HookExecutionOutcome) -> tuple[str, ...]
 #: so projector input cannot grow past existing limits.
 BEFORE_COMPACT_GUIDANCE_CHAR_LIMIT = 240
 
+#: Bound for hook-provided compaction extra context: mirrors
+#: ``_MAX_HOOK_GUIDANCE_CHARS`` in ``context/prompt_assembly.py``.
+BEFORE_COMPACT_EXTRA_CONTEXT_CHAR_LIMIT = 2000
+
 #: Fallback compaction-skip reason when a cancelling hook carries no diagnostic.
 BEFORE_COMPACT_DEFAULT_CANCEL_REASON = "hook cancelled compaction"
+
+
+def hook_cancel_reason(outcome: RuntimeHookOutcome, *, default: str) -> str:
+    """First non-empty diagnostic/guidance/message/reason carried by ``outcome``.
+
+    One key order for every cancel surface (mirrors ``service.py``
+    ``_hook_cancel_reason``); ``failed_error`` wins when the executor set it.
+    """
+    if outcome.failed_error is not None and outcome.failed_error.strip():
+        return outcome.failed_error
+    for chunk in outcome.chunks:
+        event = chunk.event
+        payload = event.payload if event is not None else None
+        if not isinstance(payload, dict):
+            continue
+        for key in ("diagnostic", "message", "guidance", "reason"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    return default
+
+
+def hook_blocked_reason(outcome: RuntimeHookOutcome, *, tool_name: str) -> str:
+    """LLM-visible reason for a pre-tool hook blocking ``tool_name``."""
+    return f"tool '{tool_name}' blocked: " + hook_cancel_reason(
+        outcome,
+        default="cancelled by pre-tool hook",
+    )
 
 
 def before_compact_input_from_hook_outcome(outcome: RuntimeHookOutcome) -> BeforeCompactInput | None:
     """Map one foreground hook outcome onto the ``BeforeCompactInput`` seam.
 
     ``cancel`` skips compaction with the hook diagnostic as reason;
-    ``guidance`` becomes the bounded custom summary for the projector input.
-    Executor errors (``failed_error``) and anything else fail open: the seam
-    is untouched (``None``) so compaction proceeds as configured.
+    ``guidance`` last-wins into ``custom_summary`` (bounded) while every other
+    non-empty item becomes projector ``extra_context`` (bounded). Executor
+    errors (``failed_error``) and anything else fail open: the seam is
+    untouched (``None``) so compaction proceeds as configured.
     """
     if outcome.failed_error is not None:
         return None
     if outcome.action == "cancel":
         return BeforeCompactInput(cancel=True, reason=_before_compact_cancel_reason(outcome))
-    for guidance in outcome.guidance:
-        if guidance.strip():
-            return BeforeCompactInput(custom_summary=guidance[:BEFORE_COMPACT_GUIDANCE_CHAR_LIMIT])
-    return None
+    items = [guidance for guidance in outcome.guidance if guidance.strip()]
+    if not items:
+        return None
+    # ponytail: text-only blobs appended after summary; structured retention
+    # (named facts, summary prompt control) needs the compact_contribution upgrade.
+    extra: list[str] = []
+    remaining = BEFORE_COMPACT_EXTRA_CONTEXT_CHAR_LIMIT
+    for item in items[:-1]:
+        if remaining <= 0:
+            break
+        extra.append(item[:remaining])
+        remaining -= len(extra[-1])
+    return BeforeCompactInput(
+        custom_summary=items[-1][:BEFORE_COMPACT_GUIDANCE_CHAR_LIMIT],
+        extra_context=tuple(extra),
+    )
 
 
 def _before_compact_cancel_reason(outcome: RuntimeHookOutcome) -> str:
@@ -185,9 +230,13 @@ def run_lifecycle_hooks_for_session(
 
 
 __all__ = [
+    "BEFORE_COMPACT_EXTRA_CONTEXT_CHAR_LIMIT",
+    "BEFORE_COMPACT_GUIDANCE_CHAR_LIMIT",
     "HOOK_RECURSION_ENV_VAR",
     "RuntimeHookOutcome",
     "before_compact_input_from_hook_outcome",
+    "hook_blocked_reason",
+    "hook_cancel_reason",
     "hook_execution_policy_from_metadata",
     "hook_guidance_from_outcome",
     "run_lifecycle_hooks_for_session",

@@ -167,6 +167,7 @@ class BeforeCompactInput:
     cancel: bool = False
     reason: str | None = None
     custom_summary: str | None = None
+    extra_context: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1051,6 +1052,8 @@ def prepare_provider_context(
     }
     if before_compact is not None and before_compact.custom_summary:
         summary_facts["custom_summary"] = before_compact.custom_summary
+    if before_compact is not None and before_compact.extra_context:
+        summary_facts["hook_extra_context"] = "\n\n".join(item for item in before_compact.extra_context if item.strip())
     summary_text, actual_strategy, fallback_reason = project_summary(
         strategy=effective_policy.summary_strategy,
         facts=summary_facts,
