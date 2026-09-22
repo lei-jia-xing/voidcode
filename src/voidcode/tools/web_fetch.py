@@ -162,7 +162,6 @@ class WebFetchTool:
         data: bytes = b""
         mime: str = ""
 
-        # Build Accept header according to requested format to be friendlier for servers
         accept_by_format = {
             "markdown": ("text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1"),
             "text": ("text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1"),

@@ -550,13 +550,6 @@ class RuntimeBackgroundTaskSupervisor:
                 f"(current session: {parent_session_id or 'unknown'})"
             )
 
-    def summary_with_observability(self, summary: StoredBackgroundTaskSummary) -> StoredBackgroundTaskSummary:
-        task = self._session_store.load_background_task(
-            workspace=self._workspace,
-            task_id=summary.task.id,
-        )
-        return replace(summary, observability=self.task_observability(task))
-
     def summaries_with_observability(
         self,
         summaries: tuple[StoredBackgroundTaskSummary, ...],

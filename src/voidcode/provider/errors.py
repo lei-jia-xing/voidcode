@@ -484,23 +484,6 @@ def format_invalid_provider_config_error(field_path: str, reason: str) -> str:
     return f"invalid provider config: {field_path} {reason}"
 
 
-def format_fallback_exhausted_error(*, provider_name: str, model_name: str, attempt: int) -> str:
-    return f"provider fallback exhausted after {provider_name}/{model_name} failed at attempt {attempt}"
-
-
-def format_provider_retry_exhausted_error(
-    *,
-    provider_name: str,
-    model_name: str,
-    retry_attempts: int,
-) -> str:
-    return (
-        f"transient provider error on {provider_name}/{model_name}; "
-        "same-target retry exhausted after "
-        f"{retry_attempts} retries and no fallback target available"
-    )
-
-
 def classify_provider_error(exc: Exception) -> ProviderError | None:
     message = str(exc).lower()
     context_limit_markers = (

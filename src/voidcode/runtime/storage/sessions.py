@@ -761,23 +761,6 @@ class _SessionStorageMixin(_MixinBase):
             )
         return row is not None
 
-    def read_recent_tool_results(self, *, workspace: Path, session_id: str) -> str | None:
-        with self._connect(workspace) as connection:
-            row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
-                    SELECT recent_tool_results_json
-                    FROM sessions
-                    WHERE workspace_id = ? AND session_id = ?
-                    """,
-                    (str(workspace), session_id),
-                ).fetchone(),
-            )
-        if row is None:
-            return None
-        return cast(str | None, row["recent_tool_results_json"])
-
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse:
         """Return ALL persisted events for a session, unfiltered except for revert markers.
 

@@ -336,18 +336,6 @@ def _response_metadata(payload: Mapping[str, object]) -> dict[str, object]:
     return metadata
 
 
-def _content_text(content: object) -> str:
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts: list[str] = []
-    for item in content:
-        if isinstance(item, Mapping) and item.get("type") == "text" and isinstance(item.get("text"), str):
-            parts.append(cast(str, item["text"]))
-    return "".join(parts)
-
-
 @dataclass(frozen=True, slots=True)
 class _ToolAccumulator:
     tool_call_id: str | None = None

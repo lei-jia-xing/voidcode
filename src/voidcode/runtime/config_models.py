@@ -128,15 +128,6 @@ def _format_runtime_config_field_error(field_path: str) -> str:
     return f"runtime config field '{field_path}'"
 
 
-def reject_unknown_config_keys(payload: Mapping[str, object], *, allowed_keys: frozenset[str], field_path: str) -> None:
-    unknown_keys = sorted(key for key in payload if key not in allowed_keys)
-    if not unknown_keys:
-        return
-    first_key = unknown_keys[0]
-    full_path = f"{field_path}.{first_key}" if field_path else first_key
-    raise ValueError(f"runtime config field '{full_path}' is not supported")
-
-
 def config_model_keys(model_type: type[BaseModel]) -> frozenset[str]:
     """The input keys ``model_type`` accepts, derived from the model itself.
 
@@ -179,13 +170,6 @@ def _config_field_source(info: ValidationInfo, field_name: str) -> str:
 def _parse_optional_bool(raw_value: object, *, field_path: str) -> bool | None:
     if raw_value is None:
         return None
-    if not isinstance(raw_value, bool):
-        raise ValueError(f"runtime config field '{field_path}' must be a boolean when provided")
-    return raw_value
-
-
-def _parse_non_null_optional_bool(raw_value: object, *, field_path: str) -> bool | None:
-    """Optional boolean whose explicit ``null`` is rejected (key absent means unset)."""
     if not isinstance(raw_value, bool):
         raise ValueError(f"runtime config field '{field_path}' must be a boolean when provided")
     return raw_value

@@ -41,13 +41,11 @@ class RuntimeConfigKwargs(TypedDict, total=False):
     reasoning_effort: str | None
 
 
-def close_runtime(runtime: object) -> None:
-    exit_method = getattr(runtime, "__exit__", None)
-    if callable(exit_method):
-        try:
-            exit_method(None, None, None)
-        except Exception as exc:
-            print(f"warning: runtime cleanup error: {exc}", file=sys.stderr)
+def close_runtime(runtime: VoidCodeRuntime) -> None:
+    try:
+        runtime.__exit__(None, None, None)
+    except Exception as exc:
+        print(f"warning: runtime cleanup error: {exc}", file=sys.stderr)
 
 
 @contextmanager

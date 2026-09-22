@@ -30,7 +30,7 @@ def _background_task_fields(task: BackgroundTaskState) -> list[tuple[str, object
         fields.append(("cancellation_cause", task.cancellation_cause))
     if task.error is not None:
         fields.append(("error", task.error))
-    observability = getattr(task, "observability", None)
+    observability = task.observability
     if observability is not None:
         fields.append(("waiting_reason", observability.waiting_reason))
         if observability.queue_position is not None:
@@ -71,11 +71,13 @@ def _background_task_routing_payload(routing: object | None) -> dict[str, object
     }
 
 
-def _background_task_observability_payload(task_or_result: object) -> dict[str, object] | None:
-    observability = getattr(task_or_result, "observability", None)
+def _background_task_observability_payload(
+    task_or_result: BackgroundTaskState | BackgroundTaskResult | StoredBackgroundTaskSummary,
+) -> dict[str, object] | None:
+    observability = task_or_result.observability
     if observability is None:
         return None
-    return cast(dict[str, object], observability.as_payload())
+    return observability.as_payload()
 
 
 def _background_task_error_type(error: str | None) -> str | None:
@@ -154,8 +156,8 @@ def background_task_next_steps(
 
 
 def background_task_state_payload(task: BackgroundTaskState, *, workspace: Path) -> dict[str, object]:
-    error = getattr(task, "error", None)
-    cancellation_cause = getattr(task, "cancellation_cause", None)
+    error = task.error
+    cancellation_cause = task.cancellation_cause
     error_type = _background_task_error_type(error)
     next_steps = background_task_next_steps(
         task_id=task.task.id,
@@ -184,17 +186,17 @@ def background_task_state_payload(task: BackgroundTaskState, *, workspace: Path)
         "error_type": error_type,
         "routing": _background_task_routing_payload(task.routing_identity),
         "observability": _background_task_observability_payload(task),
-        "output_schema": getattr(task, "output_schema", None),
-        "schema_mode": getattr(task, "schema_mode", "permissive"),
-        "structured_output": getattr(task, "structured_output", None),
-        "schema_validation": _background_task_schema_validation_payload(getattr(task, "schema_validation", None)),
+        "output_schema": task.output_schema,
+        "schema_mode": task.schema_mode,
+        "structured_output": task.structured_output,
+        "schema_validation": _background_task_schema_validation_payload(task.schema_validation),
         "next_steps": next_steps,
     }
     return payload
 
 
 def background_task_result_payload(result: BackgroundTaskResult, *, workspace: Path) -> dict[str, object]:
-    cancellation_cause = getattr(result, "cancellation_cause", None)
+    cancellation_cause = result.cancellation_cause
     error_type = _background_task_error_type(result.error)
     next_steps = background_task_next_steps(
         task_id=result.task_id,
@@ -222,8 +224,8 @@ def background_task_result_payload(result: BackgroundTaskResult, *, workspace: P
         "cancellation_cause": cancellation_cause,
         "routing": _background_task_routing_payload(result.routing),
         "observability": _background_task_observability_payload(result),
-        "structured_output": getattr(result, "structured_output", None),
-        "schema_validation": _background_task_schema_validation_payload(getattr(result, "schema_validation", None)),
+        "structured_output": result.structured_output,
+        "schema_validation": _background_task_schema_validation_payload(result.schema_validation),
         "next_steps": next_steps,
     }
 
@@ -238,7 +240,7 @@ def _background_task_schema_validation_payload(schema_validation: object | None)
 
 
 def background_task_summary_payload(task: StoredBackgroundTaskSummary) -> dict[str, object]:
-    error = getattr(task, "error", None)
+    error = task.error
     return {
         "task_id": task.task.id,
         "status": task.status,
@@ -248,8 +250,8 @@ def background_task_summary_payload(task: StoredBackgroundTaskSummary) -> dict[s
         "prompt": task.prompt,
         "keep_alive": task.keep_alive,
         "steer_prompt": task.steer_prompt,
-        "output_schema": getattr(task, "output_schema", None),
-        "schema_mode": getattr(task, "schema_mode", "permissive"),
+        "output_schema": task.output_schema,
+        "schema_mode": task.schema_mode,
         "error": error,
         "error_type": _background_task_error_type(error),
         "observability": _background_task_observability_payload(task),
@@ -287,10 +289,10 @@ def _background_task_result_fields(result: BackgroundTaskResult) -> list[tuple[s
         fields.append(("summary_output", repr(result.summary_output)))
     if result.error is not None:
         fields.append(("error", result.error))
-    cancellation_cause = getattr(result, "cancellation_cause", None)
+    cancellation_cause = result.cancellation_cause
     if cancellation_cause is not None:
         fields.append(("cancellation_cause", cancellation_cause))
-    observability = getattr(result, "observability", None)
+    observability = result.observability
     if observability is not None:
         fields.append(("waiting_reason", observability.waiting_reason))
         if observability.queue_position is not None:
@@ -331,10 +333,10 @@ def format_background_task_summary(task: StoredBackgroundTaskSummary) -> str:
         ("updated_at", task.updated_at),
         ("prompt", repr(task.prompt)),
     ]
-    error = getattr(task, "error", None)
+    error = task.error
     if error is not None:
         fields.append(("error", error))
-    observability = getattr(task, "observability", None)
+    observability = task.observability
     if observability is not None:
         fields.append(("waiting_reason", observability.waiting_reason))
         if observability.queue_position is not None:

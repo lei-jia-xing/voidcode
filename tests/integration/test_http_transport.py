@@ -356,22 +356,6 @@ def _event_by_type(
     raise AssertionError(f"missing event type: {event_type}")
 
 
-def _sse_event_by_type(
-    payloads: list[dict[str, object]],
-    event_type: str,
-    *,
-    reverse: bool = False,
-) -> dict[str, object]:
-    source = reversed(payloads) if reverse else iter(payloads)
-    for payload in source:
-        event = payload.get("event")
-        if isinstance(event, dict):
-            typed_event = cast(dict[str, object], event)
-            if typed_event.get("event_type") == event_type:
-                return typed_event
-    raise AssertionError(f"missing SSE event type: {event_type}")
-
-
 def _assert_runtime_session_metadata(
     metadata: object,
     *,
@@ -397,21 +381,6 @@ def _assert_runtime_session_metadata(
 
 def _multi_step_prompt() -> str:
     return "read source.txt\nwrite copied.txt copied marker\ngrep copied copied.txt"
-
-
-def _run_non_http_scope(app: TransportAppLike, scope_type: str) -> RuntimeError:
-    async def _receive() -> dict[str, object]:
-        return {"type": f"{scope_type}.startup"}
-
-    async def _send(message: dict[str, object]) -> None:
-        raise AssertionError(f"send should not be called for {scope_type!r}: {message}")
-
-    try:
-        asyncio.run(app({"type": scope_type}, _receive, _send))
-    except RuntimeError as exc:
-        return exc
-
-    raise AssertionError(f"expected RuntimeError for unsupported scope {scope_type!r}")
 
 
 def _run_lifespan(app: TransportAppLike) -> list[dict[str, object]]:

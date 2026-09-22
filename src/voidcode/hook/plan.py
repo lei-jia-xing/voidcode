@@ -113,10 +113,6 @@ class ResolvedHookPlan:
         _validate_surface(surface)
         return tuple(binding.command for binding in self.bindings if binding.event == surface)
 
-    def binding_for_execution(self, surface: str) -> tuple[HookPlanBinding, ...]:
-        _validate_surface(surface)
-        return tuple(binding for binding in self.bindings if binding.event == surface)
-
     @classmethod
     def from_payload(cls, payload: object) -> ResolvedHookPlan:
         """Materialize a validated runtime-owned snapshot; execution remains elsewhere."""

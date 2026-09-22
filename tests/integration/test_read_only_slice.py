@@ -223,21 +223,12 @@ class AssembledContextLike(Protocol):
     metadata: dict[str, object]
 
 
-class AvailableToolLike(Protocol):
-    name: str
-
-
 class ProviderRequestLike(Protocol):
     assembled_context: AssembledContextLike
-    available_tools: tuple[AvailableToolLike, ...]
 
 
 def _assembled_context(request: object) -> AssembledContextLike:
     return cast(ProviderRequestLike, request).assembled_context
-
-
-def _available_tools(request: object) -> tuple[AvailableToolLike, ...]:
-    return cast(ProviderRequestLike, request).available_tools
 
 
 class EventEnvelopeFactory(Protocol):
@@ -518,36 +509,6 @@ def _approval_runtime(
     return runtime_request, runtime
 
 
-def _provider_runtime(
-    tmp_path: Path,
-    *,
-    mode: str = "ask",
-) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
-    runtime_request, runtime_class = _load_runtime_types()
-    permission_module = importlib.import_module("voidcode.runtime.permission")
-    config_module = importlib.import_module("voidcode.runtime.config")
-    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
-    permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
-    policy = permission_policy(mode=mode)
-    runtime = cast(
-        RuntimeRunner,
-        cast(
-            object,
-            runtime_class(
-                workspace=tmp_path,
-                graph=_ProviderRuntimeParityGraph(),
-                config=runtime_config(
-                    approval_mode=mode,
-                    execution_engine="provider",
-                    model="opencode/gpt-5.4",
-                ),
-                permission_policy=policy,
-            ),
-        ),
-    )
-    return runtime_request, runtime
-
-
 @dataclass(frozen=True, slots=True)
 class _ScriptedModelProvider:
     name: str
@@ -571,41 +532,6 @@ class _ScriptedModelProvider:
                 return outcome
 
         return _Provider()
-
-
-class _ProviderRuntimeParityGraph:
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
-        _ = session
-        prompt = cast(RuntimeRequestLike, request).prompt
-        tool_call_factory = cast(
-            ToolCallFactory,
-            importlib.import_module("voidcode.tools.contracts").ToolCall,
-        )
-        if not tool_results:
-            if prompt.startswith("write danger.txt "):
-                content = prompt.removeprefix("write danger.txt ")
-                return _GraphStep(
-                    events=(),
-                    tool_call=tool_call_factory(
-                        tool_name="write",
-                        arguments={"path": "danger.txt", "content": content},
-                    ),
-                )
-            return _GraphStep(
-                events=(),
-                tool_call=tool_call_factory(
-                    tool_name="read",
-                    arguments={"path": "sample.txt"},
-                ),
-            )
-        if prompt.startswith("write danger.txt "):
-            return _GraphStep(
-                events=(),
-                tool_call=None,
-                output="Wrote file successfully: danger.txt",
-                is_finished=True,
-            )
-        return _GraphStep(events=(), tool_call=None, output="alpha\nbeta", is_finished=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -857,17 +783,6 @@ class _BackgroundOutputGuardrailProvider:
         return _Provider()
 
 
-def _request_text(request: object) -> str:
-    assembled_context = _assembled_context(request)
-    segments = assembled_context.segments
-    parts: list[str] = [assembled_context.prompt]
-    for segment in segments:
-        content = segment.content
-        if isinstance(content, str):
-            parts.append(content)
-    return "\n".join(parts)
-
-
 def _is_delegated_child_request(request: object) -> bool:
     assembled_context = _assembled_context(request)
     metadata = assembled_context.metadata
@@ -895,10 +810,6 @@ def _wait_for_background_task_status(
     raise AssertionError(
         f"background task {task_id} did not reach {sorted(statuses)}; last_status={last_task.status if last_task is not None else None!r}"
     )
-
-
-def _event_types(chunks: Iterable[StreamChunkLike]) -> list[str]:
-    return [chunk.event.event_type for chunk in chunks if chunk.event is not None]
 
 
 def _assert_ordered_event_types(actual: Iterable[str], expected: Iterable[str]) -> None:
@@ -1004,79 +915,6 @@ class _McpEchoGraph:
                 ),
             )
         return _GraphStep(events=(), tool_call=None, output="mcp parent done", is_finished=True)
-
-
-def _write_echo_mcp_server(server_script: Path) -> None:
-    server_script.write_text(
-        r"""
-from __future__ import annotations
-
-import json
-import sys
-
-
-def send(message: dict[str, object]) -> None:
-    sys.stdout.write(json.dumps(message) + "\n")
-    sys.stdout.flush()
-
-
-for raw_line in sys.stdin:
-    line = raw_line.strip()
-    if not line:
-        continue
-    message = json.loads(line)
-    method = message.get("method")
-    if method == "initialize":
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": message["id"],
-                "result": {
-                    "protocolVersion": "2025-11-25",
-                    "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "echo-mcp", "version": "0.1.0"},
-                },
-            }
-        )
-        continue
-    if method == "notifications/initialized":
-        continue
-    if method == "tools/list":
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": message["id"],
-                "result": {
-                    "tools": [
-                        {
-                            "name": "echo",
-                            "description": "Echo text.",
-                            "annotations": {"readOnlyHint": True, "destructiveHint": False},
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {"text": {"type": "string"}},
-                            },
-                        }
-                    ]
-                },
-            }
-        )
-        continue
-    if method == "tools/call":
-        params = message.get("params", {})
-        arguments = params.get("arguments", {}) if isinstance(params, dict) else {}
-        text = arguments.get("text", "") if isinstance(arguments, dict) else ""
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": message["id"],
-                "result": {"content": [{"type": "text", "text": f"echo:{text}"}], "isError": False},
-            }
-        )
-        continue
-""",
-        encoding="utf-8",
-    )
 
 
 def test_runtime_background_restart_reconcile_reloads_terminal_delegated_result(

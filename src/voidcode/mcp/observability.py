@@ -3,9 +3,6 @@ MCP Observability - Diagnostics and Event Interfaces
 
 This module provides interfaces and utilities for MCP runtime observability,
 including diagnostic information and event logging.
-
-Last Updated: 2026-04-14
-Issue: https://github.com/lei-jia-xing/voidcode/issues/107
 """
 
 from __future__ import annotations
@@ -13,18 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
-
-
-class McpEventType(StrEnum):
-    """MCP runtime event types."""
-
-    SERVER_STARTED = "runtime.mcp_server_started"
-    SERVER_STOPPED = "runtime.mcp_server_stopped"
-    TOOL_LIST_START = "mcp.tool_list_start"
-    TOOL_LIST_COMPLETE = "mcp.tool_list_complete"
-    TOOL_CALL_START = "mcp.tool_call_start"
-    TOOL_CALL_COMPLETE = "mcp.tool_call_complete"
-    ERROR = "mcp.error"
 
 
 class McpDiagnosticSeverity(StrEnum):
@@ -51,20 +36,6 @@ class McpDiagnosticsCollector(Protocol):
     """Protocol for collecting MCP diagnostics."""
 
     def record_diagnostic(self, diagnostic: McpDiagnostic) -> None: ...
-    def get_diagnostics(self) -> list[McpDiagnostic]: ...
-
-
-class InMemoryMcpDiagnosticsCollector:
-    """Simple diagnostics collector suitable for runtime state and tests."""
-
-    def __init__(self) -> None:
-        self._diagnostics: list[McpDiagnostic] = []
-
-    def record_diagnostic(self, diagnostic: McpDiagnostic) -> None:
-        self._diagnostics.append(diagnostic)
-
-    def get_diagnostics(self) -> list[McpDiagnostic]:
-        return list(self._diagnostics)
 
 
 # Standard diagnostic messages

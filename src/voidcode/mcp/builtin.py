@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,17 +33,6 @@ class BuiltinMcpDescriptor:
         if self.skill_name is not None:
             payload["skill_name"] = self.skill_name
         return payload
-
-
-@dataclass(frozen=True, slots=True)
-class BuiltinMcpDescriptorRegistry:
-    descriptors: Mapping[str, BuiltinMcpDescriptor] = field(default_factory=dict)
-
-    def get(self, name: str) -> BuiltinMcpDescriptor | None:
-        return self.descriptors.get(name)
-
-    def list_descriptors(self) -> tuple[BuiltinMcpDescriptor, ...]:
-        return tuple(self.descriptors.values())
 
 
 _BUILTIN_MCP_DESCRIPTORS: dict[str, BuiltinMcpDescriptor] = {
@@ -96,25 +84,8 @@ def get_builtin_mcp_descriptor(name: str) -> BuiltinMcpDescriptor | None:
     return _BUILTIN_MCP_DESCRIPTORS.get(name)
 
 
-def load_builtin_mcp_descriptor_registry() -> BuiltinMcpDescriptorRegistry:
-    return BuiltinMcpDescriptorRegistry(descriptors=dict(_BUILTIN_MCP_DESCRIPTORS))
-
-
-def builtin_mcp_descriptor_names() -> tuple[str, ...]:
-    return tuple(_BUILTIN_MCP_DESCRIPTORS)
-
-
-def known_mcp_server_names(configured_server_names: Iterable[str] = ()) -> tuple[str, ...]:
-    merged = dict.fromkeys((*_BUILTIN_MCP_DESCRIPTORS.keys(), *tuple(configured_server_names)))
-    return tuple(merged)
-
-
 __all__ = [
     "BuiltinMcpDescriptor",
-    "BuiltinMcpDescriptorRegistry",
-    "builtin_mcp_descriptor_names",
     "get_builtin_mcp_descriptor",
-    "known_mcp_server_names",
     "list_builtin_mcp_descriptors",
-    "load_builtin_mcp_descriptor_registry",
 ]

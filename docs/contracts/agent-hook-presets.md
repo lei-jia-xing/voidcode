@@ -107,6 +107,6 @@ Hook policy cannot grant tools, widen tool defaults, create child sessions, rewr
 - `src/voidcode/hook/__init__.py`
 - `src/voidcode/agent/builtin.py`
 - `src/voidcode/runtime/config.py`
-- `tests/unit/hook/test_presets.py`
+- `tests/unit/hook/test_preset_forbidden_actions.py`
 - `tests/unit/agent/test_builtin.py`
 - `tests/unit/runtime/test_runtime_config.py`

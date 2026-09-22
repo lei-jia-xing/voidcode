@@ -225,18 +225,6 @@ def _reasoning_output_diagnostic(
     }
 
 
-def _context_transform_applied_payloads(
-    *,
-    context_metadata: Mapping[str, object],
-    tool_result_count: int,
-) -> tuple[tuple[str, dict[str, object]], ...]:
-    """Preserve the historical private entry point for runtime callers."""
-    return context_transform_applied_payloads(
-        context_metadata=context_metadata,
-        tool_result_count=tool_result_count,
-    )
-
-
 def _unseen_context_transform_payloads(
     *,
     session: SessionState,
@@ -4025,22 +4013,6 @@ class RuntimeRunLoopCoordinator:
             )
         )
         return envelope.sequence
-
-    @staticmethod
-    def _current_session_state(session: SessionState) -> SessionState:
-        return session
-
-    @staticmethod
-    def _current_run_id(session: SessionState) -> str | None:
-        run_id = runtime_state_run_id(session.metadata)
-        return run_id if run_id else None
-
-    @staticmethod
-    def _current_provider_attempt(session: SessionState) -> int:
-        raw_provider_attempt = session.metadata.get("provider_attempt", 0)
-        if isinstance(raw_provider_attempt, int) and not isinstance(raw_provider_attempt, bool):
-            return raw_provider_attempt
-        return 0
 
     @staticmethod
     def _build_context_compacted_payload(

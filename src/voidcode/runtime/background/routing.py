@@ -101,17 +101,6 @@ class ResolvedSubagentRoute:
     selected_preset: SubagentExecutablePreset
     execution_engine: Literal["provider"] = "provider"
 
-    @property
-    def selected_identity(self) -> dict[str, object]:
-        return {
-            "preset": self.selected_preset,
-            "mode": "subagent",
-            "requested_mode": self.requested.mode,
-            **({"requested_subagent_type": self.requested.subagent_type} if self.requested.subagent_type is not None else {}),
-            **({"description": self.requested.description} if self.requested.description is not None else {}),
-            **({"command": self.requested.command} if self.requested.command is not None else {}),
-        }
-
 
 CALLABLE_SUBAGENT_PRESETS: tuple[str, ...] = ("advisor", "explore", "researcher", "worker", "product")
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Protocol
 
@@ -91,10 +90,6 @@ def scoped_tool_registry_for_agent[ToolRegistryT: ScopedToolRegistry](
             scoped_registry = scoped_registry.filtered(agent.tools.default)
 
     return scoped_registry
-
-
-def tool_name_matches_patterns(tool_name: str, patterns: Iterable[str]) -> bool:
-    return any(fnmatchcase(tool_name, pattern) for pattern in patterns if pattern)
 
 
 class _NoArgToolFactory(Protocol):
@@ -256,7 +251,6 @@ class BuiltinToolProvider:
 
         tools.extend(self._mcp_tools)
 
-        # Add optional tools if available.
         if _ApplyPatchTool is not None:
             tools.append(_ApplyPatchTool(hooks_config=self._hooks_config))
         if _AstGrepTool is not None:

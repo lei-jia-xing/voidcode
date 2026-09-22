@@ -419,10 +419,6 @@ def _replace(
             details={"content_empty": True},
         )
 
-    if replace_all:
-        # For replaceAll we still need to verify at least one match exists via smart replacers
-        pass
-
     if edit_schema is EditSchema.STRICT:
         # Strict profile: exact-match only. The simple replacer is the sole
         # strategy; any non-exact input fails with the ``ambiguous_match``
@@ -435,24 +431,11 @@ def _replace(
             BlockAnchorReplacer,
             WhitespaceNormalizedReplacer,
             IndentationFlexibleReplacer,
-            # EscapeNormalizedReplacer to be added below after class definitions
-            # MultiOccurrenceReplacer, TrimmedBoundaryReplacer, ContextAwareReplacer
+            EscapeNormalizedReplacer,
+            MultiOccurrenceReplacer,
+            TrimmedBoundaryReplacer,
+            ContextAwareReplacer,
         ]
-
-    # The actual smart replacers will be defined later in file; to avoid forward reference issues,
-    # we attempt to import them lazily from globals() after their definitions. If not yet defined,
-    # we will skip them for the initial pass.
-    smart_names = [
-        "EscapeNormalizedReplacer",
-        "MultiOccurrenceReplacer",
-        "TrimmedBoundaryReplacer",
-        "ContextAwareReplacer",
-    ]
-    # Build dynamic replacer list by checking their presence in globals
-    if edit_schema is not EditSchema.STRICT:
-        for name in smart_names:
-            if name in globals():
-                replacers.append(globals()[name])
 
     # Helper to perform a replacement given a matched substring
     # If replace_all is requested we attempt to replace all occurrences found by any replacer
@@ -748,16 +731,13 @@ class EditTool:
         normalized_new = _normalize_line_endings(new_string)
         normalized_content = _normalize_line_endings(content_old)
 
-        try:
-            new_content, match_count, match_ranges = _replace(
-                normalized_content,
-                normalized_old,
-                normalized_new,
-                replace_all=replace_all,
-                edit_schema=self._edit_schema_for_current_model(),
-            )
-        except ValueError:
-            raise
+        new_content, match_count, match_ranges = _replace(
+            normalized_content,
+            normalized_old,
+            normalized_new,
+            replace_all=replace_all,
+            edit_schema=self._edit_schema_for_current_model(),
+        )
 
         for start_line, end_line in match_ranges:
             enforce_seen_lines(

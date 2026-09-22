@@ -55,7 +55,7 @@ def provider_readiness_payload(readiness: ProviderReadinessResult) -> dict[str, 
         "context_window": readiness.context_window,
         "max_output_tokens": readiness.max_output_tokens,
         "fallback_chain": list(readiness.fallback_chain),
-        "reasoning_controls": getattr(readiness, "reasoning_controls", {}),
+        "reasoning_controls": readiness.reasoning_controls,
     }
 
 

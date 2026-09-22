@@ -121,7 +121,6 @@ from .config import (
     RuntimeContextWindowConfig,
     RuntimeHooksConfig,
     RuntimeProviderFallbackConfig,
-    RuntimeSkillsConfig,
     RuntimeWebSettings,
     load_runtime_config,
     parse_runtime_agent_payload,
@@ -165,7 +164,6 @@ from .contracts import (
     ProviderSummary,
     ProviderValidationResult,
     ReviewFileDiff,
-    RuntimeHookPresetSnapshot,
     RuntimeNotification,
     RuntimeProviderContextPolicyDecision,
     RuntimeProviderContextSnapshot,
@@ -222,10 +220,8 @@ from .execution.tool_facades import (
 )
 from .execution.tool_replay import ToolExecutionIntent, recovery_action
 from .hook_preset_metadata import (
-    debug_hook_preset_snapshot,
     hook_preset_event_payload_from_session_metadata,
     hook_preset_refs_for_agent,
-    resolved_hook_preset_snapshot_from_session_metadata,
 )
 from .hook_runtime import (
     HOOK_RECURSION_ENV_VAR,
@@ -273,7 +269,6 @@ from .runtime_debug import (
     debug_failure,
     last_tool_summary,
     operator_guidance,
-    payload_with_artifact_status,
     prompt_and_tool_results_from_debug_events,
     provider_visible_tool_result_data,
 )
@@ -298,9 +293,7 @@ from .session_metadata_helpers import (
     session_with_plan_state,
 )
 from .skill_metadata import (
-    available_runtime_contexts,
     effective_selected_skill_names,
-    force_loaded_skill_payloads,
     fresh_request_metadata,
     persisted_selected_skill_names,
     request_skill_names_from_metadata,
@@ -922,23 +915,11 @@ class VoidCodeRuntime(RuntimeSurface):
     def runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
         return self._stream_prep_coordinator.runtime_config_for_request(request)
 
-    def _build_skill_registry(self, skills_config: RuntimeSkillsConfig | None) -> SkillRegistry:
-        return self._stream_prep_coordinator.build_skill_registry(skills_config)
-
-    def _skills_config_for_effective_config(
-        self,
-        effective_config: EffectiveRuntimeConfig,
-    ) -> RuntimeSkillsConfig | None:
-        return self._stream_prep_coordinator.skills_config_for_effective_config(effective_config)
-
     def skill_registry_for_effective_config(
         self,
         effective_config: EffectiveRuntimeConfig,
     ) -> SkillRegistry:
         return self._stream_prep_coordinator.skill_registry_for_effective_config(effective_config)
-
-    def _build_lsp_tool(self) -> Tool | None:
-        return self._stream_prep_coordinator.build_lsp_tool()
 
     def _mcp_tools_from_descriptors(self, descriptors: Iterable[McpToolDescriptor]) -> tuple[Tool, ...]:
         return StreamPrepCoordinator.mcp_tools_from_descriptors(descriptors, request_mcp_tool=self.request_mcp_tool)
@@ -2248,30 +2229,6 @@ class VoidCodeRuntime(RuntimeSurface):
             graph_loop_error=graph_loop_error,
         )
 
-    @staticmethod
-    def _request_for_persisted_response(
-        request: RuntimeRequest,
-        response: RuntimeResponse,
-    ) -> RuntimeRequest:
-        """Use the startup-drained follow-up prompt for checkpoint identity.
-
-        The public request still carries the caller's prompt, while startup
-        replaces it with the queued follow-up before emitting the request
-        event. A single request event is an unambiguous current-turn marker;
-        steering keeps the original request prefix and therefore remains on
-        the existing checkpoint path.
-        """
-        request_events = tuple(event for event in response.events if event.event_type == "runtime.request_received")
-        if len(request_events) != 1:
-            return request
-        event_prompt = request_events[0].payload.get("prompt")
-        if not isinstance(event_prompt, str) or event_prompt == request.prompt:
-            return request
-        steering_prefix = f"{request.prompt}\n\nRuntime steering messages:"
-        if event_prompt.startswith(steering_prefix):
-            return request
-        return replace(request, prompt=event_prompt)
-
     def persist_response(self, *, request: RuntimeRequest, response: RuntimeResponse) -> None:
         self._finalize_coordinator.persist_response(request=request, response=response)
 
@@ -3254,11 +3211,6 @@ class VoidCodeRuntime(RuntimeSurface):
     def _last_tool_summary(result: RuntimeSessionResult) -> RuntimeSessionDebugToolSummary | None:
         return last_tool_summary(result)
 
-    @classmethod
-    def _payload_with_artifact_status(cls, payload: dict[str, object]) -> dict[str, object]:
-        _ = cls
-        return payload_with_artifact_status(payload)
-
     def _provider_context_debug_snapshot(
         self,
         result: RuntimeSessionResult,
@@ -3945,28 +3897,6 @@ class VoidCodeRuntime(RuntimeSurface):
             allocate_session_id=request.allocate_session_id,
         )
 
-    def _request_with_inherited_child_policy(self, request: RuntimeRequest) -> RuntimeRequest:
-        if request.parent_session_id is None:
-            return request
-        parent_metadata = self._parent_policy_metadata(request.parent_session_id)
-        if parent_metadata is None:
-            return request
-
-        child_metadata = dict(request.metadata)
-        inherited_metadata = self._metadata_with_inherited_child_policy(
-            child_metadata=child_metadata,
-            parent_metadata=parent_metadata,
-        )
-        if inherited_metadata == child_metadata:
-            return request
-        return RuntimeRequest(
-            prompt=request.prompt,
-            session_id=request.session_id,
-            parent_session_id=request.parent_session_id,
-            metadata=cast(RuntimeRequestMetadataPayload, inherited_metadata),
-            allocate_session_id=request.allocate_session_id,
-        )
-
     def _parent_policy_metadata(self, parent_session_id: str) -> dict[str, object] | None:
         parent_response = self._load_existing_session_if_present(session_id=parent_session_id)
         if parent_response is not None:
@@ -4183,18 +4113,6 @@ class VoidCodeRuntime(RuntimeSurface):
             output=stored.output,
             provider_visible_tool_result_data=provider_visible_tool_result_data,
         )
-
-    @staticmethod
-    def _next_sequence_for_existing_session(
-        *,
-        stored: RuntimeResponse | None,
-        parent_session_id: str | None,
-    ) -> int:
-        if stored is None:
-            return 1
-        if parent_session_id is not None and stored.session.session.parent_id != parent_session_id:
-            return 1
-        return (stored.events[-1].sequence + 1) if stored.events else 1
 
     @staticmethod
     def _eligible_rehydrated_tool_results(
@@ -4660,12 +4578,6 @@ class VoidCodeRuntime(RuntimeSurface):
         combined = tuple(dict.fromkeys((*refs, *mode_transform_refs)))
         return self._context_transform_registry.filtered(combined)
 
-    @staticmethod
-    def _force_loaded_skill_payloads(
-        snapshot: SkillExecutionSnapshot,
-    ) -> tuple[dict[str, object], ...]:
-        return force_loaded_skill_payloads(snapshot)
-
     def _skill_snapshot_from_metadata(
         self,
         metadata: dict[str, object],
@@ -4694,13 +4606,6 @@ class VoidCodeRuntime(RuntimeSurface):
         metadata: dict[str, object],
     ) -> tuple[str, ...] | None:
         return persisted_selected_skill_names(metadata)
-
-    @staticmethod
-    def _available_runtime_contexts(
-        skill_registry: SkillRegistry,
-        skill_names: Iterable[str],
-    ) -> tuple[SkillRuntimeContext, ...]:
-        return available_runtime_contexts(skill_registry, skill_names)
 
     def _runtime_config_metadata(
         self,
@@ -4967,11 +4872,6 @@ class VoidCodeRuntime(RuntimeSurface):
             base_provider_fallback=self._config.provider_fallback,
         )
 
-    def _resolved_hook_preset_snapshot_from_session_metadata(
-        metadata: dict[str, object],
-    ) -> ResolvedHookPresetSnapshot | None:
-        return resolved_hook_preset_snapshot_from_session_metadata(metadata)
-
     @classmethod
     def _hook_preset_event_payload_from_session_metadata(
         cls,
@@ -4979,14 +4879,6 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> dict[str, object] | None:
         _ = cls
         return hook_preset_event_payload_from_session_metadata(metadata)
-
-    @classmethod
-    def _debug_hook_preset_snapshot(
-        cls,
-        metadata: dict[str, object],
-    ) -> RuntimeHookPresetSnapshot | None:
-        _ = cls
-        return debug_hook_preset_snapshot(metadata)
 
     @staticmethod
     def _waiting_request_id_from_response(
@@ -5211,18 +5103,6 @@ class VoidCodeRuntime(RuntimeSurface):
         return ACTIVE_SESSION_REGISTRY.metadata(
             workspace=self._workspace,
             session_id=session_id,
-        )
-
-    def _active_run_abort_signal(
-        self,
-        *,
-        session_id: str,
-        run_id: str,
-    ) -> ProviderAbortSignal | None:
-        return ACTIVE_SESSION_REGISTRY.abort_signal(
-            workspace=self._workspace,
-            session_id=session_id,
-            run_id=run_id,
         )
 
     def interrupt_active_run(

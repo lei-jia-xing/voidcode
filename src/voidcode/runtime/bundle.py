@@ -39,7 +39,6 @@ from ..security.redaction import (
     REDACTED_PLACEHOLDER as SESSION_BUNDLE_REDACTED_PLACEHOLDER,
 )
 from ..security.redaction import (
-    is_sensitive_key,
     redact_text,
     redact_value,
     truncate,
@@ -332,10 +331,6 @@ def _diagnostics_payload(diagnostics: SessionBundleDiagnostics) -> dict[str, obj
     if diagnostics.provider_summary is not None:
         payload["provider_summary"] = dict(diagnostics.provider_summary)
     return payload
-
-
-def _looks_like_secret_key(key: str) -> bool:
-    return is_sensitive_key(key)
 
 
 def _scrub_secret_text(value: str) -> str:

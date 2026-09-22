@@ -1,7 +1,7 @@
 # Testing policy
 
 The Python suite is intentionally core-only. `mise run test` runs the entire
-suite (unit + integration in parallel, currently ~1450 tests in well under a
+suite (unit + integration in parallel, well under a
 minute). There are no marker lanes: no `slow`/`fuzz`/`integration` selection and
 no fast/slow split to keep in sync.
 

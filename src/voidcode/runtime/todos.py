@@ -133,18 +133,6 @@ def runtime_todo_phases_from_payload(raw_phases: object) -> tuple[RuntimeTodoPha
     return _parse_phases(raw_phases)
 
 
-def runtime_todo_phases_equal(
-    current: tuple[RuntimeTodoPhase, ...],
-    *,
-    raw_phases: object,
-) -> bool:
-    try:
-        candidate = _parse_phases(raw_phases)
-    except ValueError:
-        return False
-    return candidate == current
-
-
 def todo_state_payload(
     phases: tuple[RuntimeTodoPhase, ...],
     *,

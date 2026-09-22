@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from typing import Protocol
 
 from ..cli_support import EXIT_SUCCESS, print_json
 from ..runtime.contracts import CapabilityStatusSnapshot
@@ -14,13 +15,20 @@ def safe_detail(value: object, *, limit: int = 160) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+class JsonOutputArgs(Protocol):
+    """Minimal shape of an Args dataclass exposing the ``json`` flag."""
+
+    @property
+    def json(self) -> bool: ...
+
+
 def emit_output(
-    args: object,
+    args: JsonOutputArgs,
     payload: object,
     plain_printer: Callable[[], object],
 ) -> int:
     """Emit handler output as JSON (when --json) or via the plain printer."""
-    if getattr(args, "json", False):
+    if args.json:
         print_json(payload)
     else:
         plain_printer()

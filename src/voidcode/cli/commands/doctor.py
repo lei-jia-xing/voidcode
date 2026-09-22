@@ -32,7 +32,6 @@ def _handle_doctor_command(args: DoctorArgs) -> int:
     verbose = args.verbose
     json_output = args.json
 
-    # Load runtime config to get all capability settings
     config_error: str | None = None
     config: RuntimeConfig | None = None
     results: list[CapabilityCheckResult] = []
@@ -63,20 +62,14 @@ def _handle_doctor_command(args: DoctorArgs) -> int:
                 error_message=config_error,
             )
         )
-    except Exception:
-        # OSError (permissions, path not found) and other unexpected errors
-        # should propagate so they are not silently swallowed.
-        raise
 
     if config_error is not None:
         print(f"WARN runtime config error: {config_error}", file=sys.stderr, flush=True)
 
     if config is not None:
-        # Create doctor with full config
         doctor = create_doctor_for_config(workspace, config)
         results = doctor.run_all_checks()
 
-    # Create and format report
     report = create_report(results, workspace=workspace)
 
     if json_output:

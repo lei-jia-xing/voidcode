@@ -117,10 +117,6 @@ class McpToolCatalogCache:
             return None
         return entry[1]
 
-    def descriptors_for(self, *, server_name: str, identity: str) -> tuple[McpToolDescriptor, ...]:
-        """Return cached descriptors for a server, or ``()`` when unknown/stale."""
-        return self.entry_for(server_name=server_name, identity=identity) or ()
-
     def store(
         self,
         *,

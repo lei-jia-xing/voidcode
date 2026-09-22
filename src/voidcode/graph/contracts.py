@@ -10,7 +10,6 @@ from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 type GraphEventSource = Literal["graph"]
 type GraphEventType = str
-type AppliedSkill = dict[str, str]
 type ToolCallPreviewBuilder = Callable[[str, tuple[str, ...], dict[str, object] | None], dict[str, object] | None]
 
 GRAPH_LOOP_STEP: Final[GraphEventType] = "graph.loop_step"

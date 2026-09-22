@@ -23,13 +23,7 @@ type RuntimeContextTransformFailurePolicy = Literal["ignore", "warn", "block"]
 type RuntimeContextTransformScope = Literal["provider_context"]
 type RuntimeContextTransformVersion = str
 
-_MAX_TRACE_TEXT_CHARS = 256
 _MAX_TRACE_ITEMS = 32
-
-
-def _bounded_trace_text(value: str) -> str:
-    text = value.strip()
-    return text if len(text) <= _MAX_TRACE_TEXT_CHARS else f"{text[:_MAX_TRACE_TEXT_CHARS]}…"
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,9 +248,9 @@ class RuntimeContextTransformRegistry:
         if len(set(provider_ids)) != len(provider_ids):
             raise ValueError("context transform provider ids must be unique")
         for provider in self.providers:
-            version = getattr(provider, "provider_version", "1")
-            scope = getattr(provider, "scope", "provider_context")
-            policy = getattr(provider, "failure_policy", "warn")
+            version = provider.provider_version
+            scope = provider.scope
+            policy = provider.failure_policy
             if not isinstance(version, str) or not version.strip():
                 raise ValueError(f"context transform provider '{provider.provider_id}' version must be non-empty")
             if scope != "provider_context":
@@ -312,8 +306,8 @@ class RuntimeContextTransformRegistry:
             traces.extend(
                 RuntimeContextTransformTrace(
                     provider_id=trace.provider_id,
-                    provider_version=getattr(provider, "provider_version", "1"),
-                    scope=getattr(provider, "scope", "provider_context"),
+                    provider_version=provider.provider_version,
+                    scope=provider.scope,
                     status=trace.status,
                     priority=provider.priority,
                     execution_index=execution_index,
@@ -321,7 +315,7 @@ class RuntimeContextTransformRegistry:
                     provider_order=ordered_provider_ids,
                     sources=trace.sources,
                     diagnostics=trace.diagnostics,
-                    failure_policy=getattr(provider, "failure_policy", request.failure_policy),
+                    failure_policy=provider.failure_policy,
                     error=trace.error,
                 )
                 for trace in result.traces

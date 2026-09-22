@@ -739,15 +739,6 @@ def _coerce_optional_int(payload: Mapping[str, object], key: str) -> int | None:
     raise ValueError(f"context window policy field '{key}' must be an integer")
 
 
-def _coerce_int(payload: Mapping[str, object], key: str, *, default: int) -> int:
-    if key not in payload:
-        return default
-    value = _coerce_optional_int(payload, key)
-    if value is None:
-        raise ValueError(f"context window policy field '{key}' must be an integer")
-    return value
-
-
 def normalize_read_output(content: str | None) -> str | None:
     if not content:
         return content

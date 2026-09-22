@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import cast
 
-from ..skills import SkillRegistry
 from .config import RuntimeAgentConfig
 from .session_metadata_helpers import parse_skill_snapshot_metadata
 from .skills import (
     SkillExecutionSnapshot,
-    SkillRuntimeContext,
-    build_runtime_context,
     snapshot_from_payload,
     snapshot_payload,
 )
@@ -106,21 +102,6 @@ def snapshot_to_session_metadata(snapshot: SkillExecutionSnapshot) -> dict[str, 
     }
 
 
-def force_loaded_skill_payloads(
-    snapshot: SkillExecutionSnapshot,
-) -> tuple[dict[str, object], ...]:
-    payloads: list[dict[str, object]] = []
-    for payload in snapshot.applied_skill_payloads:
-        payloads.append(
-            {
-                "name": payload.get("name"),
-                "source": "force_load",
-                "source_path": payload.get("source_path"),
-            }
-        )
-    return tuple(payloads)
-
-
 def skill_snapshot_from_metadata(
     metadata: dict[str, object],
 ) -> SkillExecutionSnapshot | None:
@@ -168,23 +149,8 @@ def skill_binding_snapshot_from_agent_capability_snapshot(
     return snapshot
 
 
-def available_runtime_contexts(
-    skill_registry: SkillRegistry,
-    skill_names: Iterable[str],
-) -> tuple[SkillRuntimeContext, ...]:
-    contexts: list[SkillRuntimeContext] = []
-    for skill_name in skill_names:
-        skill = skill_registry.skills.get(skill_name)
-        if skill is None:
-            continue
-        contexts.append(build_runtime_context(skill))
-    return tuple(contexts)
-
-
 __all__ = [
-    "available_runtime_contexts",
     "effective_selected_skill_names",
-    "force_loaded_skill_payloads",
     "fresh_request_metadata",
     "persisted_selected_skill_names",
     "request_skill_names_from_metadata",

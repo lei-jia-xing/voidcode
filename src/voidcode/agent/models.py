@@ -160,25 +160,3 @@ class AgentManifest:
     mcp_binding: AgentMcpBindingIntent | None = None
     top_level_selectable: bool = False
     prompt_materialization: AgentPromptMaterialization | None = None
-
-    @property
-    def live_default_fields(self) -> tuple[str, ...]:
-        fields: list[str] = []
-        if self.prompt_profile is not None:
-            fields.append("prompt_profile")
-        if self.execution_engine is not None:
-            fields.append("execution_engine")
-        if self.model_preference is not None:
-            fields.append("model_preference")
-        if self.fallback_models:
-            fields.append("fallback_models")
-        if self.tool_allowlist:
-            fields.append("tool_allowlist")
-        if self.preset_hook_refs:
-            fields.append("preset_hook_refs")
-        if self.mcp_binding is not None:
-            fields.append("mcp_binding")
-        fields.append("top_level_selectable")
-        if self.prompt_materialization is not None:
-            fields.append("prompt_materialization")
-        return tuple(fields)

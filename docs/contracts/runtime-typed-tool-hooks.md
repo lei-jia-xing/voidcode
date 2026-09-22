@@ -15,7 +15,7 @@
   `ToolInputHandlerBinding`、`ToolInputHandlerRegistry`、builtin composition helpers
 - `src/voidcode/runtime/service.py`：默认 builtin registry 与显式 runtime 注入
 - `src/voidcode/runtime/run_loop.py`：native tool 与 `invoke_tool` inner target 接入
-- `tests/unit/hook/test_typed.py`
+- `tests/unit/hook/test_percall_contract.py`
 - `tests/unit/runtime/test_typed_tool_hooks.py`
 
 ## 目的与边界

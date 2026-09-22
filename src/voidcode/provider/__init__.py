@@ -31,7 +31,6 @@ from .errors import (
     ProviderContextLimitError,
     ProviderError,
     classify_provider_error,
-    format_fallback_exhausted_error,
     format_invalid_provider_config_error,
 )
 from .fireworks import FireworksModelProvider
@@ -142,7 +141,6 @@ __all__ = [
     "QwenModelProvider",
     "TogetherModelProvider",
     "classify_provider_error",
-    "format_fallback_exhausted_error",
     "format_invalid_provider_config_error",
     "parse_resolved_provider_snapshot",
     "parse_provider_configs_payload",

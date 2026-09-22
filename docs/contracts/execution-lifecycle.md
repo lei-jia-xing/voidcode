@@ -134,5 +134,5 @@
 | --- | --- | --- |
 | 工具超时取消 / 回收 / 事实 | `runtime/tool_execution.py`、`tools/contracts.py` | `tests/unit/runtime/test_tool_execution_timeout.py` |
 | 执行所有权 / late write（含诊断按拒绝线程归属） | `runtime/execution_ownership.py`、`runtime/background/supervisor.py`、`runtime/storage/sqlite.py`、`runtime/tool_execution.py` | `tests/unit/runtime/test_tool_execution_ownership.py`、`tests/unit/runtime/test_late_writes_after_seizure.py`、`tests/integration/test_keep_alive_subagent.py` |
-| 进程崩溃 / resume（含首个工具调用中崩溃、无绑定记录时的具名拒绝） | `runtime/resume.py`、`runtime/run_loop.py`、`runtime/service.py` | `tests/integration/test_process_crash_tool_resume.py`（4 个用例）、`tests/integration/test_read_only_slice.py`（crash / orphan tail） |
+| 进程崩溃 / resume（含首个工具调用中崩溃、无绑定记录时的具名拒绝） | `runtime/resume.py`、`runtime/run_loop.py`、`runtime/service.py` | `tests/integration/test_process_crash_tool_resume.py`、`tests/integration/test_read_only_slice.py`（crash / orphan tail） |
 | 同 session re-entry | `runtime/resume.py`、`runtime/service.py` | `tests/unit/runtime/test_same_session_reentry.py`、`tests/unit/runtime/test_session_lifecycle_seal.py` |

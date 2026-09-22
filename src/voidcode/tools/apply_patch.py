@@ -1355,7 +1355,6 @@ class ApplyPatchTool:
             mode_only = _looks_like_mode_only_patch(patch_text)
             mode_only_before = _capture_mode_only_state(changes=changes, workspace=workspace) if mode_only else {}
 
-            # Apply patch
             apply = _run_git_command(["git", "apply", str(patch_path)], workspace)
             if apply.returncode != 0:
                 error = apply.stdout or "Patch apply failed"

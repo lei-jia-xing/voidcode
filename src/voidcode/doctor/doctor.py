@@ -210,7 +210,6 @@ def create_doctor_for_config(
     """
     doctor = CapabilityDoctor(workspace=workspace, config=config)
 
-    # Check ast-grep
     doctor.add_executable_check(
         "ast-grep",
         "ast-grep",
@@ -226,7 +225,6 @@ def create_doctor_for_config(
         for preset_name, preset in hooks_config.formatter_presets.items():
             doctor.add_formatter_preset_check(preset_name, preset)
 
-    # Check LSP servers unless explicitly disabled (unset enabled defaults to on).
     lsp_config = config.lsp
     if lsp_config is not None and lsp_config.enabled is not False and lsp_config.servers:
         from ..lsp.presets import get_builtin_lsp_server_preset

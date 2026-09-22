@@ -1,8 +1,7 @@
 """Typed frozen argument shapes for CLI handler command groups.
 
-Field names match the Click command param names. The ``command`` and
-``<group>_command`` keys are carried for subcommand routing and defaulted
-per command group.
+Field names match the Click command param names; the ``command`` key
+defaults to the owning command group name.
 """
 
 from __future__ import annotations
@@ -37,7 +36,6 @@ class RunArgs:
 class SessionsArgs:
     """Arguments for the ``sessions`` command group."""
 
-    sessions_command: str | None = None
     command: str = "sessions"
     workspace: Path = field(default_factory=Path.cwd)
     session_id: str | None = None
@@ -65,7 +63,6 @@ class SessionsArgs:
 class TasksArgs:
     """Arguments for the ``tasks`` command group."""
 
-    tasks_command: str | None = None
     command: str = "tasks"
     workspace: Path = field(default_factory=Path.cwd)
     task_id: str | None = None
@@ -78,7 +75,6 @@ class TasksArgs:
 class StorageArgs:
     """Arguments for the ``storage`` command group."""
 
-    storage_command: str | None = None
     command: str = "storage"
     workspace: Path = field(default_factory=Path.cwd)
     json: bool = False
@@ -91,7 +87,6 @@ class StorageArgs:
 class StatsArgs:
     """Arguments for the ``stats`` command group."""
 
-    stats_command: str | None = None
     command: str = "stats"
     workspace: Path = field(default_factory=Path.cwd)
     json: bool = False
@@ -101,7 +96,6 @@ class StatsArgs:
 class ConfigArgs:
     """Arguments for the ``config`` command group."""
 
-    config_command: str | None = None
     command: str = "config"
     workspace: Path = field(default_factory=Path.cwd)
     session_id: str | None = None
@@ -117,7 +111,6 @@ class ConfigArgs:
 class ProviderArgs:
     """Arguments for the ``provider`` command group."""
 
-    provider_command: str | None = None
     command: str = "provider"
     workspace: Path = field(default_factory=Path.cwd)
     provider: str | None = None
@@ -128,7 +121,6 @@ class ProviderArgs:
 class CommandsArgs:
     """Arguments for the ``commands`` command group."""
 
-    commands_command: str | None = None
     command: str = "commands"
     workspace: Path = field(default_factory=Path.cwd)
     user_commands_dir: Path | None = None
@@ -185,7 +177,6 @@ class ServerArgs:
 class AgentsArgs:
     """Arguments for the ``agents`` command group."""
 
-    agents_command: str | None = None
     command: str = "agents"
     workspace: Path = field(default_factory=Path.cwd)
     json: bool = False
@@ -195,7 +186,6 @@ class AgentsArgs:
 class McpArgs:
     """Arguments for the ``mcp`` command group."""
 
-    mcp_command: str | None = None
     command: str = "mcp"
     workspace: Path = field(default_factory=Path.cwd)
     json: bool = False

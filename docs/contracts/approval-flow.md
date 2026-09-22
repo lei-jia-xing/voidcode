@@ -188,7 +188,7 @@ Payload 字段意图：
 
 ### Non-goal (v1): OS-level sandbox
 
-当前已移除基于命令字符串的危险操作识别与文件路径推断。前台 shell 与后台命令统一按任意执行能力授权，默认 `ask`，显式 `allow` 不再附加危险命令黑名单；显式 command 匹配规则仍可用于授权，但不是文件隔离保证。Non-goal (v1): OS-level sandbox（syscall 拦截与访问控制等执行隔离手段）在 v1 明确为非目标，跟踪 Issue 占位：TODO(<repo-issue>)；当前没有工作区 sandbox。approval `allow` 是用户对任意命令执行的同意，不是隔离（consent, not containment）；`permission.rules` / 路径范围 / 操作分类仅为防误触的 UX 手段，不是安全边界。
+当前已移除基于命令字符串的危险操作识别与文件路径推断。前台 shell 与后台命令统一按任意执行能力授权，默认 `ask`，显式 `allow` 不再附加危险命令黑名单；显式 command 匹配规则仍可用于授权，但不是文件隔离保证。Non-goal (v1): OS-level sandbox（syscall 拦截与访问控制等执行隔离手段）在 v1 明确为非目标；当前没有工作区 sandbox。approval `allow` 是用户对任意命令执行的同意，不是隔离（consent, not containment）；`permission.rules` / 路径范围 / 操作分类仅为防误触的 UX 手段，不是安全边界。
 
 - 统一覆盖前台 shell、后台进程及其子进程；不能通过更换执行工具绕过同一权限边界。
 - 区分 syscall 观察与强制执行：仅记录调用（如 `strace`）不足以阻止访问，必须在有副作用的操作发生前实施授权或拒绝。

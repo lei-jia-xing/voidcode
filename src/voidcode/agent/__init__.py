@@ -11,7 +11,6 @@ from .builtin import (
     list_top_level_selectable_agent_manifests,
     validate_builtin_agent_manifests,
 )
-from .leader import render_leader_prompt
 from .models import (
     AgentExecutionEngineName,
     AgentManifest,
@@ -66,7 +65,6 @@ __all__ = [
     "validate_builtin_agent_manifests",
     "render_agent_prompt",
     "render_builtin_prompt_profile",
-    "render_leader_prompt",
     "select_prompt_profile_for_manifest",
     "agent_manifest_id_from_name",
     "is_valid_agent_manifest_id",

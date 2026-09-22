@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
 from voidcode.cli import app
 from voidcode.cli_support import EXIT_RUNTIME_ERROR, EXIT_SUCCESS
+from voidcode.runtime.background.models import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+)
 
 from ._cli_harness import StubRuntime, cli_boundary, deterministic_config, run_cli
 
@@ -23,21 +26,24 @@ from ._cli_harness import StubRuntime, cli_boundary, deterministic_config, run_c
 class _TaskStateRuntime(StubRuntime):
     """Stub runtime that serves one fixed background-task state."""
 
-    def __init__(self, state: SimpleNamespace) -> None:
+    def __init__(self, state: BackgroundTaskState) -> None:
         super().__init__()
         self._state = state
 
-    def load_background_task(self, task_id: str) -> Any:
+    def load_background_task(self, task_id: str) -> BackgroundTaskState:
         return self._state
 
 
-def _task_state(**overrides: object) -> SimpleNamespace:
+def _task_state(**overrides: object) -> BackgroundTaskState:
     fields: dict[str, object] = {
-        "task": SimpleNamespace(id="task-1"),
+        "task": BackgroundTaskRef(id="task-1"),
         "status": "waiting",
-        "parent_session_id": "leader-session",
-        "request": SimpleNamespace(session_id="requested-child"),
-        "child_session_id": "child-session",
+        "request": BackgroundTaskRequestSnapshot(
+            prompt="",
+            session_id="requested-child",
+            parent_session_id="leader-session",
+        ),
+        "session_id": "child-session",
         "approval_request_id": "approval-1",
         "question_request_id": None,
         "result_available": False,
@@ -45,10 +51,9 @@ def _task_state(**overrides: object) -> SimpleNamespace:
         "steer_prompt": None,
         "cancellation_cause": None,
         "error": None,
-        "routing_identity": None,
     }
     fields.update(overrides)
-    return SimpleNamespace(**fields)
+    return BackgroundTaskState(**fields)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +135,7 @@ def test_tasks_unknown_task_is_clean_runtime_error(tmp_path: Path, subcommand: s
 def test_tasks_blocked_on_decision_next_steps_are_copyable_commands(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    state: SimpleNamespace,
+    state: BackgroundTaskState,
     expected_blocked: bool,
     expected_commands: list[str],
 ) -> None:

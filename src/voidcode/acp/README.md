@@ -149,8 +149,8 @@
 
 当前 ACP 边界由以下测试共同覆盖：
 
-- `tests/unit/acp/test_acp.py`
-- `tests/unit/runtime/test_acp.py`
+- `tests/unit/runtime/test_session_metadata_typing.py`
+- `tests/unit/runtime/test_runtime_events.py`
 - `tests/unit/runtime/test_runtime_service_extensions.py`
 
 这些测试的意义不是证明 ACP 已经是成熟控制面，而是证明：

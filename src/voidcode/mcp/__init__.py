@@ -13,12 +13,8 @@ from __future__ import annotations
 # Config - static configuration models
 from .builtin import (
     BuiltinMcpDescriptor,
-    BuiltinMcpDescriptorRegistry,
-    builtin_mcp_descriptor_names,
     get_builtin_mcp_descriptor,
-    known_mcp_server_names,
     list_builtin_mcp_descriptors,
-    load_builtin_mcp_descriptor_registry,
 )
 from .config import (
     DEFAULT_MCP_TRANSPORT,
@@ -42,11 +38,9 @@ from .contract import (
 
 # Observability - diagnostics interfaces
 from .observability import (
-    InMemoryMcpDiagnosticsCollector,
     McpDiagnostic,
     McpDiagnosticsCollector,
     McpDiagnosticSeverity,
-    McpEventType,
     create_diagnostic,
     diagnostic_message,
 )
@@ -80,12 +74,8 @@ __all__ = [
     "McpToolDescriptor",
     "McpToolSafety",
     "BuiltinMcpDescriptor",
-    "BuiltinMcpDescriptorRegistry",
-    "builtin_mcp_descriptor_names",
     "get_builtin_mcp_descriptor",
-    "known_mcp_server_names",
     "list_builtin_mcp_descriptors",
-    "load_builtin_mcp_descriptor_registry",
     "MCP_CLIENT_NAME",
     "MCP_CLIENT_VERSION",
     "MCP_PROTOCOL_VERSION",
@@ -105,11 +95,9 @@ __all__ = [
     "SUPPORTED_CAPABILITIES",
     "SUPPORTED_PROTOCOL_VERSIONS",
     # Observability
-    "InMemoryMcpDiagnosticsCollector",
     "McpDiagnostic",
     "McpDiagnosticSeverity",
     "McpDiagnosticsCollector",
-    "McpEventType",
     "create_diagnostic",
     "diagnostic_message",
     "format_redacted_mcp_command",

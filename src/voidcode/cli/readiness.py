@@ -14,6 +14,7 @@ from ..doctor import (
     DoctorCheckType,
     create_report,
 )
+from ..doctor.reporter import FirstTaskReadiness
 from ..runtime.contracts import ProviderReadinessResult
 from ..runtime.provider_inspection import (
     guidance_for_provider_error_kind,
@@ -99,7 +100,7 @@ def _provider_remediation(
 
 
 def _run_readiness_actions(
-    readiness: object,
+    readiness: FirstTaskReadiness,
     *,
     workspace: Path,
 ) -> list[dict[str, str]]:
@@ -108,8 +109,7 @@ def _run_readiness_actions(
     The commands are always runnable as printed; the messages are the runtime's
     own guidance for that provider status.
     """
-    readiness_details = getattr(readiness, "details", {})
-    details = readiness_details if isinstance(readiness_details, dict) else {}
+    details = readiness.details
     provider_name = details.get("provider")
     workspace_arg = f"--workspace {shlex.quote(str(workspace))}"
     actions: list[dict[str, str]] = []

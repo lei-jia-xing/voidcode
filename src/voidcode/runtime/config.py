@@ -68,15 +68,12 @@ from .config_models import (
     ToolsPayload,
     TuiPayload,
     UserConfigPayload,
-    config_model_keys,
     format_environment_validation_error,
     parse_approval_mode,
     parse_reasoning_effort,
     parse_tool_timeout_seconds,
-    reject_unknown_config_keys,
     validate_config_model,
     validate_config_section,
-    validate_formatter_preset_map,
 )
 from .config_models import (
     APPROVAL_MODE_ENV_VAR as APPROVAL_MODE_ENV_VAR,
@@ -539,11 +536,6 @@ def _load_repo_local_config(
         raise ValueError(f"runtime config file must contain a JSON object: {config_path}")
 
     payload = cast(dict[str, object], raw_payload)
-    reject_unknown_config_keys(
-        payload,
-        allowed_keys=config_model_keys(RuntimeConfigPayload),
-        field_path="",
-    )
 
     # Sections whose validator lives in another module keep the first word: the
     # policy and provider parsers own their contract messages.
@@ -614,14 +606,6 @@ def _permission_config_from_payload(payload: PermissionPayload | None) -> Extern
     )
 
 
-def _parse_permission_config(raw_permission: object) -> ExternalDirectoryPermissionConfig | None:
-    if raw_permission is None:
-        return None
-    return _permission_config_from_payload(
-        validate_config_section(PermissionPayload, raw_permission, field_path="permission"),
-    )
-
-
 def _load_user_config(env: Mapping[str, str]) -> RuntimeConfigOverrides:
     config_path = _user_runtime_config_path_from_env(env)
     if not config_path.exists():
@@ -636,11 +620,6 @@ def _load_user_config(env: Mapping[str, str]) -> RuntimeConfigOverrides:
         raise ValueError(f"runtime config file must contain a JSON object: {config_path}")
 
     payload = cast(dict[str, object], raw_payload)
-    reject_unknown_config_keys(
-        payload,
-        allowed_keys=config_model_keys(UserConfigPayload),
-        field_path="",
-    )
     # The provider parser owns its messages, so it sees the raw payload.
     providers = _parse_providers_config(payload.get("providers"), env=env)
     config_payload = validate_config_model(UserConfigPayload, payload)
@@ -700,14 +679,6 @@ def _hooks_config_from_payload(payload: HooksPayload | None) -> RuntimeHooksConf
     )
 
 
-def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
-    if raw_hooks is None:
-        return None
-    return _hooks_config_from_payload(
-        validate_config_section(HooksPayload, raw_hooks, field_path="hooks"),
-    )
-
-
 def _merge_hooks_configs(
     *,
     user: RuntimeHooksConfig | None,
@@ -741,14 +712,6 @@ def _formatter_config_from_payload(payload: FormatterPayload | None) -> RuntimeF
         enabled=payload.enabled,
         format_on_write=payload.format_on_write,
         languages=languages,
-    )
-
-
-def _parse_formatter_config(raw_formatter: object) -> RuntimeFormatterConfig | None:
-    if raw_formatter is None:
-        return None
-    return _formatter_config_from_payload(
-        validate_config_section(FormatterPayload, raw_formatter, field_path="formatter"),
     )
 
 
@@ -814,13 +777,6 @@ def _formatter_presets_from_payload(
             base_preset=builtin_preset,
         )
     return parsed_presets
-
-
-def _parse_formatter_presets_config(raw_value: object, *, field_path: str) -> dict[str, RuntimeFormatterPresetConfig]:
-    return _formatter_presets_from_payload(
-        validate_formatter_preset_map(raw_value, field_path=field_path),
-        field_path=field_path,
-    )
 
 
 def _formatter_preset_from_payload(
@@ -891,14 +847,6 @@ def _skills_config_from_payload(payload: SkillsPayload | None) -> RuntimeSkillsC
     return RuntimeSkillsConfig(enabled=payload.enabled, paths=payload.paths or ())
 
 
-def _parse_skills_config(raw_skills: object) -> RuntimeSkillsConfig | None:
-    if raw_skills is None:
-        return None
-    return _skills_config_from_payload(
-        validate_config_section(SkillsPayload, raw_skills, field_path="skills"),
-    )
-
-
 def _context_window_config_from_payload(payload: ContextWindowPayload | None) -> RuntimeContextWindowConfig | None:
     if payload is None:
         return None
@@ -927,14 +875,6 @@ def _lsp_config_from_payload(payload: LspPayload | None) -> RuntimeLspConfig | N
         enabled=payload.enabled,
         servers=_lsp_servers_from_payload(payload.servers),
         diagnostics_on_write=payload.diagnostics_on_write is True,
-    )
-
-
-def _parse_lsp_config(raw_lsp: object) -> RuntimeLspConfig | None:
-    if raw_lsp is None:
-        return None
-    return _lsp_config_from_payload(
-        validate_config_section(LspPayload, raw_lsp, field_path="lsp"),
     )
 
 
@@ -1010,14 +950,6 @@ def _mcp_config_from_payload(payload: McpPayload | None) -> RuntimeMcpConfig | N
     return parsed
 
 
-def _parse_mcp_config(raw_mcp: object) -> RuntimeMcpConfig | None:
-    if raw_mcp is None:
-        return None
-    return _mcp_config_from_payload(
-        validate_config_section(McpPayload, raw_mcp, field_path="mcp"),
-    )
-
-
 def _tui_config_from_payload(payload: TuiPayload | None) -> RuntimeTuiConfig | None:
     if payload is None:
         return None
@@ -1063,14 +995,6 @@ def _background_task_config_from_payload(payload: BackgroundTaskPayload | None) 
         model_concurrency=dict(payload.model_concurrency or {}),
         delegated_reminders_enabled=payload.delegated_reminders_enabled is not False,
         delegated_reminder_cooldown_seconds=payload.delegated_reminder_cooldown_seconds,
-    )
-
-
-def _parse_background_task_config(raw_value: object) -> RuntimeBackgroundTaskConfig | None:
-    if raw_value is None:
-        return None
-    return _background_task_config_from_payload(
-        validate_config_section(BackgroundTaskPayload, raw_value, field_path="background_task"),
     )
 
 
