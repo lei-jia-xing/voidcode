@@ -21,6 +21,9 @@ RuntimeHookSurface = Literal[
     "delegated_result_available",
     "turn_progress",
     "stuck_detected",
+    "approval_requested",
+    "question_asked",
+    "before_compact",
 ]
 HookSurfacePhase = Literal["foreground", "background"]
 
@@ -63,6 +66,9 @@ HOOK_SURFACE_DESCRIPTORS: Final[tuple[HookSurfaceDescriptor, ...]] = (
     HookSurfaceDescriptor("delegated_result_available", "on_delegated_result_available", "background", "runtime.delegated_result_available"),
     HookSurfaceDescriptor("turn_progress", "on_turn_progress", "foreground", "runtime.turn_progress"),
     HookSurfaceDescriptor("stuck_detected", "on_stuck_detected", "foreground", "runtime.stuck_detected"),
+    HookSurfaceDescriptor("approval_requested", "on_approval_requested", "foreground", "runtime.approval_requested"),
+    HookSurfaceDescriptor("question_asked", "on_question_asked", "foreground", "runtime.question_requested"),
+    HookSurfaceDescriptor("before_compact", "on_before_compact", "foreground", "runtime.before_compact"),
 )
 
 _SURFACE_DESCRIPTORS: Final[dict[str, HookSurfaceDescriptor]] = {descriptor.surface: descriptor for descriptor in HOOK_SURFACE_DESCRIPTORS}

@@ -689,6 +689,9 @@ def _hooks_config_from_payload(payload: HooksPayload | None) -> RuntimeHooksConf
         on_delegated_result_available=payload.on_delegated_result_available or (),
         on_turn_progress=payload.on_turn_progress or (),
         on_stuck_detected=payload.on_stuck_detected or (),
+        on_approval_requested=payload.on_approval_requested or (),
+        on_question_asked=payload.on_question_asked or (),
+        on_before_compact=payload.on_before_compact or (),
         formatter_presets=_formatter_presets_from_payload(payload.formatter_presets, field_path="hooks.formatter_presets"),
     )
 
@@ -761,6 +764,9 @@ def _apply_formatter_config(
         on_delegated_result_available=base_hooks.on_delegated_result_available,
         on_turn_progress=base_hooks.on_turn_progress,
         on_stuck_detected=base_hooks.on_stuck_detected,
+        on_approval_requested=base_hooks.on_approval_requested,
+        on_question_asked=base_hooks.on_question_asked,
+        on_before_compact=base_hooks.on_before_compact,
         formatter_presets=formatter_presets,
     )
 

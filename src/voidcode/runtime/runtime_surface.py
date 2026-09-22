@@ -12,7 +12,7 @@ from its private ``_xxx`` form); the bodies are unchanged.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -23,6 +23,7 @@ from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
 from .config import RuntimeAgentConfig
 from .config_materializer import EffectiveRuntimeConfig
 from .context.window import (
+    BeforeCompactInput,
     ContextWindowPolicy,
     RuntimeAssembledContext,
     RuntimeContextSegment,
@@ -109,6 +110,7 @@ class RuntimeSurface(Protocol):
         session_metadata: dict[str, object],
         policy: ContextWindowPolicy | None = None,
         abort_signal: ProviderAbortSignal | None = None,
+        before_compact: BeforeCompactInput | None = None,
     ) -> RuntimeContextWindow: ...
 
     def assemble_provider_context(
@@ -120,6 +122,7 @@ class RuntimeSurface(Protocol):
         skill_prompt_context: str = "",
         replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
         tool_registry: ToolRegistry | None = None,
+        hook_guidance: Iterable[str] | None = None,
     ) -> RuntimeAssembledContext: ...
     def replayed_conversation_segments_for_existing_session(
         self,

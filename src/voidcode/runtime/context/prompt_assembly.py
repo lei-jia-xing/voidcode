@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Literal, cast
@@ -28,6 +29,59 @@ _BASE_SAFETY_GUIDANCE = "Follow runtime safety policies. Runtime enforcement is 
 
 
 _TOOL_POLICY_SUMMARY = "Tools: visible list is advisory. Runtime allowlists and policy control execution."
+
+
+# ponytail: fixed caps (8 items x 2000 chars); combine into one section or size by token budget if pressure matters.
+_MAX_HOOK_GUIDANCE_ITEMS = 8
+_MAX_HOOK_GUIDANCE_CHARS = 2000
+_HOOK_GUIDANCE_TRUNCATION_MARKER = "…[truncated]"
+_HOOK_GUIDANCE_SOURCE = "hook_argv_guidance"
+
+
+def _bounded_hook_guidance_items(guidance: Iterable[str] | None) -> tuple[tuple[str, dict[str, object]], ...]:
+    """Normalize already-parsed argv hook guidance into bounded (content, provenance) pairs.
+
+    Fail-open: any unexpected shape returns no items so the prompt is unchanged.
+    Provenance carries sha256/keys only, never raw bodies.
+    """
+    try:
+        if guidance is None:
+            return ()
+        if isinstance(guidance, str):
+            candidates: list[object] = [guidance]
+        else:
+            candidates = list(guidance)
+    except TypeError:
+        return ()
+    items: list[tuple[str, dict[str, object]]] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        if not isinstance(raw, str):
+            continue
+        normalized = raw.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        if len(normalized) > _MAX_HOOK_GUIDANCE_CHARS:
+            normalized = f"{normalized[:_MAX_HOOK_GUIDANCE_CHARS]}{_HOOK_GUIDANCE_TRUNCATION_MARKER}"
+            truncated = True
+        else:
+            truncated = False
+        items.append(
+            (
+                normalized,
+                {
+                    "source": _HOOK_GUIDANCE_SOURCE,
+                    "guidance_sha256": digest,
+                    "guidance_index": len(items),
+                    "truncated": truncated,
+                },
+            )
+        )
+        if len(items) >= _MAX_HOOK_GUIDANCE_ITEMS:
+            break
+    return tuple(items)
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +285,7 @@ def build_prompt_assembly_plan(
     prompt_profile_name: str | None = None,
     prompt_activation_section: PromptAssemblySection | None = None,
     tool_catalog_context: str = "",
+    hook_guidance: Iterable[str] | None = None,
 ) -> PromptAssemblyPlan:
     sections: list[PromptAssemblySection] = []
     seen_system_contents: set[str] = set()
@@ -396,6 +451,14 @@ def build_prompt_assembly_plan(
                 layer="hook_injected_context",
                 metadata=injection.metadata,
             )
+    for guidance_content, guidance_metadata in _bounded_hook_guidance_items(hook_guidance):
+        append_system(
+            guidance_content,
+            source=_HOOK_GUIDANCE_SOURCE,
+            tier="workspace",
+            layer="hook_injected_context",
+            metadata=guidance_metadata,
+        )
     if pending_state_section is not None:
         if pending_state_section.role == "system":
             append_system(
@@ -542,7 +605,7 @@ def _default_layer_for_source(source: str) -> str:
         return "persona_profile"
     if source == "skill_prompt":
         return "skills"
-    if source in {"context_transform", "hook_preset_guidance"}:
+    if source in {"context_transform", "hook_preset_guidance", "hook_argv_guidance"}:
         return "hook_injected_context"
     if source == "runtime_tool_policy_summary":
         return "tool_policy_summary"

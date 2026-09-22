@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, cast
 
 from ...agent.prompt_sections import dynamic_boundary_marker
+from ...hook.percall import PerCallChain
 from ...tools.contracts import ToolDiagnostics, ToolResult, ToolResultStatus
 from ..todos import render_provider_todo_state
+from .percall import (
+    apply_percall_chain,
+    percall_wire_cache_prefix,
+    percall_wire_segments,
+    segments_to_percall_messages,
+)
 from .projection import project_summary
 from .prompt_assembly import (
     PromptAssemblyPlan,
@@ -154,6 +161,15 @@ class ContextWindowPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class BeforeCompactInput:
+    """Thin cancellable input consulted before compacting; engine untouched."""
+
+    cancel: bool = False
+    reason: str | None = None
+    custom_summary: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeContextWindow:
     prompt: str
     tool_results: tuple[ToolResult | ToolResultView, ...] = ()
@@ -259,6 +275,8 @@ class RuntimeAssembledContext:
     segments: tuple[RuntimeContextSegment, ...]
     metadata: dict[str, object]
     loaded_skills: tuple[dict[str, object], ...] = ()
+    # Per-call-only wire segments: visible to one provider call, never persisted.
+    percall_wire_segments: tuple[RuntimeContextSegment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -971,6 +989,7 @@ def prepare_provider_context(
     threshold_percent: int | float | None = None,
     reserve_tokens: int | None = None,
     compaction_enabled: bool = True,
+    before_compact: BeforeCompactInput | None = None,
 ) -> RuntimeContextWindow:
     effective_policy = policy or ContextWindowPolicy()
     projection = project_tool_results_for_context_window(tool_results=tool_results, policy=effective_policy)
@@ -1000,6 +1019,19 @@ def prepare_provider_context(
         threshold_percent=threshold_percent,
         reserve_tokens=reserve_tokens,
     )
+    # ponytail: sync-only seam, no executor calls; custom_summary capped by
+    # existing preview/projector limits, add explicit max chars if projector input grows.
+    if before_compact is not None and before_compact.cancel:
+        return RuntimeContextWindow(
+            prompt=prompt,
+            tool_results=projection.retained_results,
+            compacted=False,
+            compaction_reason=before_compact.reason,
+            original_tool_result_count=len(tool_results),
+            retained_tool_result_count=len(projection.retained_results),
+            truncated_tool_result_count=projection.truncated_count,
+            summary_strategy="deterministic",
+        )
     continuity_state = _build_continuity_state(
         prompt=prompt,
         session_metadata=session_metadata,
@@ -1011,14 +1043,17 @@ def prepare_provider_context(
         preview_char_limit=_COMPACTION_PREVIEW_CHAR_LIMIT,
     )
     deterministic_summary = _continuity_summary_text(continuity_state)
+    summary_facts: dict[str, object] = {
+        "prompt": prompt,
+        "deterministic_summary": deterministic_summary,
+        "dropped_tool_result_count": continuity_state.dropped_tool_result_count,
+        "retained_tool_result_count": continuity_state.retained_tool_result_count,
+    }
+    if before_compact is not None and before_compact.custom_summary:
+        summary_facts["custom_summary"] = before_compact.custom_summary
     summary_text, actual_strategy, fallback_reason = project_summary(
         strategy=effective_policy.summary_strategy,
-        facts={
-            "prompt": prompt,
-            "deterministic_summary": deterministic_summary,
-            "dropped_tool_result_count": continuity_state.dropped_tool_result_count,
-            "retained_tool_result_count": continuity_state.retained_tool_result_count,
-        },
+        facts=summary_facts,
         deterministic_summary=deterministic_summary,
         projector=summary_projector,
     )
@@ -1058,6 +1093,8 @@ def assemble_provider_context(
     replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
     summary_projector: Callable[[Mapping[str, object]], str] | None = None,
     tool_catalog_context: str = "",
+    percall_chain: PerCallChain | None = None,
+    hook_guidance: Iterable[str] | None = None,
 ) -> RuntimeAssembledContext:
     context_window = prepare_provider_context(
         prompt=prompt,
@@ -1156,6 +1193,7 @@ def assemble_provider_context(
         prompt_profile_name=prompt_profile_name,
         prompt_activation_section=activation_decision.section,
         tool_catalog_context=tool_catalog_context,
+        hook_guidance=hook_guidance if hook_guidance else None,
     )
     metadata_payload["prompt_stack"] = assembly_plan.fragment_metadata_payload()
     metadata_payload["prompt_activation"] = activation_decision.metadata
@@ -1232,6 +1270,18 @@ def assemble_provider_context(
         "protected_tiers": ["instruction", "workspace", "task"],
         "compaction_target": "recent",
     }
+    percall_outcome = apply_percall_chain(
+        segments_to_percall_messages(tuple(segments)),
+        chain=percall_chain,
+    )
+    wire_segments = percall_wire_segments(percall_outcome)
+    metadata_payload["percall"] = {
+        "version": 1,
+        "handler_names": list(percall_outcome.handler_names),
+        "changed": percall_outcome.changed,
+        "wire_segment_count": len(wire_segments),
+    }
+    metadata_payload["percall_cache_prefix"] = percall_wire_cache_prefix(percall_outcome)
     return RuntimeAssembledContext(
         prompt=prompt,
         tool_results=context_window.tool_results,
@@ -1239,6 +1289,7 @@ def assemble_provider_context(
         segments=tuple(segments),
         metadata=metadata_payload,
         loaded_skills=loaded_skills,
+        percall_wire_segments=wire_segments,
     )
 
 

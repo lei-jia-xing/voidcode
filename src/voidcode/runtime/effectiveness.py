@@ -232,7 +232,8 @@ def project_tool_effectiveness(
             compaction_count += 1
             continue
         if event.event_type == "runtime.approval_requested":
-            approval_request_count += 1
+            if event.payload.get("hook_status") is None:
+                approval_request_count += 1
             continue
         if event.event_type != "runtime.tool_completed":
             continue

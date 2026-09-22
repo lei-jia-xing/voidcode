@@ -838,6 +838,9 @@ HOOK_COMMAND_FIELDS: tuple[str, ...] = (
     "on_delegated_result_available",
     "on_turn_progress",
     "on_stuck_detected",
+    "on_approval_requested",
+    "on_question_asked",
+    "on_before_compact",
 )
 
 
@@ -862,6 +865,9 @@ class HooksPayload(_PayloadModel):
     on_delegated_result_available: CommandList | None = None
     on_turn_progress: CommandList | None = None
     on_stuck_detected: CommandList | None = None
+    on_approval_requested: CommandList | None = None
+    on_question_asked: CommandList | None = None
+    on_before_compact: CommandList | None = None
     formatter_presets: dict[str, FormatterPresetPayload] | None = None
 
     @field_validator("enabled", mode="before")

@@ -217,6 +217,50 @@ def test_result_handler_failure_falls_back_to_source_and_records_bounded_provena
     assert "raw failure" not in str(provenance)
 
 
+def test_builtin_truncation_keeps_stored_truth_intact() -> None:
+    from voidcode.hook.typed import builtin_tool_result_handler_registry
+
+    source = ToolResult(tool_name="capture", status="ok", content="x" * 20000)
+    snapshot = ToolResult(tool_name="capture", status="ok", content="x" * 20000)
+    registry = builtin_tool_result_handler_registry()
+
+    outcome = registry.apply(result=ToolResultView(result=source, content=source.content))
+
+    assert outcome.action == "rewrite"
+    assert outcome.view.content is not None
+    assert len(outcome.view.content) < len(snapshot.content or "")
+    assert "truncated" in outcome.view.content
+    assert source == snapshot
+
+    small = ToolResult(tool_name="capture", status="ok", content="small")
+    small_outcome = registry.apply(result=ToolResultView(result=small, content=small.content))
+    assert small_outcome.action == "unchanged"
+    assert small_outcome.view.content == "small"
+
+
+def test_builtin_truncation_chain_is_last_wins() -> None:
+    from voidcode.hook.typed import (
+        ToolResultHandlerBinding,
+        builtin_tool_result_handler_registry,
+        compose_tool_result_handler_registry,
+    )
+
+    def override(result: ToolResultView) -> ToolResultHandlerDecision:
+        _ = result
+        return ToolResultHandlerDecision(action="rewrite", content="override")
+
+    builtin = builtin_tool_result_handler_registry().bindings
+    registry = compose_tool_result_handler_registry(
+        builtin,
+        (ToolResultHandlerBinding(name="override", handler=override, priority=1),),
+    )
+    source = ToolResult(tool_name="capture", status="ok", content="y" * 20000)
+    outcome = registry.apply(result=ToolResultView(result=source, content=source.content))
+
+    assert outcome.view.content == "override"
+    assert source.content == "y" * 20000
+
+
 def test_tool_result_view_isolates_authoritative_result_and_data() -> None:
     source = ToolResult(tool_name="capture", status="ok", content="source", data={"nested": {"secret": "value"}})
     view = ToolResultView(result=source, content=source.content)

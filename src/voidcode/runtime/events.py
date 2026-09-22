@@ -90,6 +90,7 @@ type RuntimeEventType = Literal[
     "runtime.reasoning_diagnostic",
     "runtime.turn_progress",
     "runtime.stuck_detected",
+    "runtime.before_compact",
     "runtime.tool_input_processed",
     "runtime.tool_timeout",
     "runtime.provider_context_policy",
@@ -216,6 +217,7 @@ RUNTIME_REASONING_PART: Final[RuntimeEventType] = "runtime.reasoning_part"
 RUNTIME_REASONING_DIAGNOSTIC: Final[RuntimeEventType] = "runtime.reasoning_diagnostic"
 RUNTIME_TURN_PROGRESS: Final[RuntimeEventType] = "runtime.turn_progress"
 RUNTIME_STUCK_DETECTED: Final[RuntimeEventType] = "runtime.stuck_detected"
+RUNTIME_BEFORE_COMPACT: Final[RuntimeEventType] = "runtime.before_compact"
 RUNTIME_TOOL_INPUT_PROCESSED: Final[RuntimeEventType] = "runtime.tool_input_processed"
 RUNTIME_TOOL_TIMEOUT: Final[RuntimeEventType] = "runtime.tool_timeout"
 RUNTIME_PROVIDER_CONTEXT_POLICY: Final[RuntimeEventType] = "runtime.provider_context_policy"
@@ -300,6 +302,7 @@ RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
     RUNTIME_REASONING_DIAGNOSTIC,
     RUNTIME_TURN_PROGRESS,
     RUNTIME_STUCK_DETECTED,
+    RUNTIME_BEFORE_COMPACT,
     RUNTIME_TOOL_INPUT_PROCESSED,
     RUNTIME_TOOL_TIMEOUT,
     RUNTIME_PROVIDER_CONTEXT_POLICY,

@@ -33,6 +33,7 @@ from ..config_materializer import (
 )
 from ..context.transforms import validate_runtime_context_transform_refs
 from ..context.window import (
+    BeforeCompactInput,
     ContextWindowPolicy,
     RuntimeContextWindow,
     ToolResultView,
@@ -161,6 +162,7 @@ class StreamPrepCoordinator:
         session_metadata: dict[str, object],
         policy: ContextWindowPolicy | None = None,
         abort_signal: ProviderAbortSignal | None = None,  # noqa: ARG002 — retained by RuntimeSurface protocol for abort-aware callers.
+        before_compact: BeforeCompactInput | None = None,
     ) -> RuntimeContextWindow:
         effective_config = self._surface.effective_runtime_config_from_metadata(session_metadata)
         provider_attempt = provider_attempt_from_metadata(session_metadata)
@@ -180,6 +182,7 @@ class StreamPrepCoordinator:
             tool_results=tool_results,
             session_metadata=session_metadata,
             policy=policy or self._default_context_window_policy,
+            before_compact=before_compact,
         )
 
     @staticmethod

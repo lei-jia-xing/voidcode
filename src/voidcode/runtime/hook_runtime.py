@@ -15,6 +15,7 @@ from ..hook.executor import (
     run_tool_hooks,
 )
 from ..hook.plan import hook_plan_from_session_metadata
+from .context.window import BeforeCompactInput
 from .contracts import RuntimeStreamChunk
 from .events import EventEnvelope
 from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
@@ -29,6 +30,72 @@ class RuntimeHookOutcome:
     last_sequence: int
     failed_error: str | None = None
     action: Literal["continue", "cancel"] = "continue"
+    guidance: tuple[str, ...] = ()
+
+
+def hook_guidance_from_outcome(outcome: HookExecutionOutcome) -> tuple[str, ...]:
+    """Collect argv hook ``guidance`` strings from an executor outcome.
+
+    Guidance travels in hook event payloads only (``outcome.diagnostics``
+    carries diagnostic text, never guidance). Fail-open: any unexpected
+    shape yields no items so the prompt is unchanged.
+    """
+    try:
+        events = outcome.events
+    except AttributeError:
+        return ()
+    collected: list[str] = []
+    try:
+        for event in events:
+            payload = event.payload
+            if not isinstance(payload, dict):
+                continue
+            guidance = payload.get("guidance")
+            if isinstance(guidance, str) and guidance.strip():
+                collected.append(guidance)
+    except AttributeError, TypeError:
+        return ()
+    return tuple(collected)
+
+
+#: Bound for hook-provided custom summaries: mirrors the context-window seam
+#: preview cap (``_COMPACTION_PREVIEW_CHAR_LIMIT`` in ``context/window.py``)
+#: so projector input cannot grow past existing limits.
+BEFORE_COMPACT_GUIDANCE_CHAR_LIMIT = 240
+
+#: Fallback compaction-skip reason when a cancelling hook carries no diagnostic.
+BEFORE_COMPACT_DEFAULT_CANCEL_REASON = "hook cancelled compaction"
+
+
+def before_compact_input_from_hook_outcome(outcome: RuntimeHookOutcome) -> BeforeCompactInput | None:
+    """Map one foreground hook outcome onto the ``BeforeCompactInput`` seam.
+
+    ``cancel`` skips compaction with the hook diagnostic as reason;
+    ``guidance`` becomes the bounded custom summary for the projector input.
+    Executor errors (``failed_error``) and anything else fail open: the seam
+    is untouched (``None``) so compaction proceeds as configured.
+    """
+    if outcome.failed_error is not None:
+        return None
+    if outcome.action == "cancel":
+        return BeforeCompactInput(cancel=True, reason=_before_compact_cancel_reason(outcome))
+    for guidance in outcome.guidance:
+        if guidance.strip():
+            return BeforeCompactInput(custom_summary=guidance[:BEFORE_COMPACT_GUIDANCE_CHAR_LIMIT])
+    return None
+
+
+def _before_compact_cancel_reason(outcome: RuntimeHookOutcome) -> str:
+    for chunk in outcome.chunks:
+        event = chunk.event
+        payload = event.payload if event is not None else None
+        if not isinstance(payload, dict):
+            continue
+        for key in ("diagnostic", "message", "reason"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    return BEFORE_COMPACT_DEFAULT_CANCEL_REASON
 
 
 def hook_execution_policy_from_metadata(metadata: dict[str, object] | None) -> HookExecutionPolicy:
@@ -57,6 +124,7 @@ def _hook_outcome_from_execution(session: SessionState, outcome: HookExecutionOu
         last_sequence=outcome.last_sequence,
         failed_error=outcome.failed_error,
         action=outcome.action,
+        guidance=hook_guidance_from_outcome(outcome),
     )
 
 
@@ -119,7 +187,9 @@ def run_lifecycle_hooks_for_session(
 __all__ = [
     "HOOK_RECURSION_ENV_VAR",
     "RuntimeHookOutcome",
+    "before_compact_input_from_hook_outcome",
     "hook_execution_policy_from_metadata",
+    "hook_guidance_from_outcome",
     "run_lifecycle_hooks_for_session",
     "run_tool_hooks_for_session",
 ]

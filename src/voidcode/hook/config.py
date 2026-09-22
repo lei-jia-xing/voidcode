@@ -40,6 +40,9 @@ class RuntimeHooksConfig:
     on_delegated_result_available: tuple[tuple[str, ...], ...] = ()
     on_turn_progress: tuple[tuple[str, ...], ...] = ()
     on_stuck_detected: tuple[tuple[str, ...], ...] = ()
+    on_approval_requested: tuple[tuple[str, ...], ...] = ()
+    on_question_asked: tuple[tuple[str, ...], ...] = ()
+    on_before_compact: tuple[tuple[str, ...], ...] = ()
     formatter_presets: Mapping[str, RuntimeFormatterPresetConfig] = field(default_factory=default_formatter_presets)
 
     def commands_for_surface(self, surface: RuntimeHookSurface) -> tuple[tuple[str, ...], ...]:

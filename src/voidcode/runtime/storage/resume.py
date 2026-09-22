@@ -399,7 +399,11 @@ class _ResumeStorageMixin(_MixinBase):
                 for row in event_rows
             )
             request_events = [
-                event for event in events if event.event_type == "runtime.approval_requested" and event.payload.get("request_id") == request_id
+                event
+                for event in events
+                if event.event_type == "runtime.approval_requested"
+                and event.payload.get("request_id") == request_id
+                and event.payload.get("hook_status") is None
             ]
             resolution_events = [
                 event for event in events if event.event_type == "runtime.approval_resolved" and event.payload.get("request_id") == request_id

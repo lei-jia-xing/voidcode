@@ -1625,7 +1625,11 @@ class RuntimeResumeCoordinator:
     ) -> str | None:
         approval_index: int | None = None
         for index, event in enumerate(stored_events):
-            if event.event_type == "runtime.approval_requested" and event.payload.get("request_id") == pending.request_id:
+            if (
+                event.event_type == "runtime.approval_requested"
+                and event.payload.get("request_id") == pending.request_id
+                and event.payload.get("hook_status") is None
+            ):
                 approval_index = index
                 break
         if approval_index is None:

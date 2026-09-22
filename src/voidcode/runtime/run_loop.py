@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Generator, Iterator, Mapping
+from collections.abc import Generator, Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, cast
@@ -17,6 +17,7 @@ from ..hook.typed import (
     ToolInputHandlerRegistry,
     ToolInputHookOutcome,
     ToolResultHandlerRegistry,
+    tool_input_arguments_sha256,
     tool_input_rewrite_metadata,
     tool_result_handler_metadata,
     validate_tool_input_schema,
@@ -55,6 +56,7 @@ from .config_materializer import EffectiveRuntimeConfig
 from .context.continuity import replayed_conversation_segments_from_segments
 from .context.transforms import context_transform_applied_payloads
 from .context.window import (
+    BeforeCompactInput,
     ContextProjection,
     RuntimeContextSegment,
     RuntimeContextWindow,
@@ -127,6 +129,7 @@ from .execution.tool_result_projection import (
 )
 from .hook_runtime import (
     HOOK_RECURSION_ENV_VAR,
+    before_compact_input_from_hook_outcome,
     hook_execution_policy_from_metadata,
     run_lifecycle_hooks_for_session,
     run_tool_hooks_for_session,
@@ -477,10 +480,22 @@ class RuntimeRunLoopCoordinator:
         self._tool_input_handler_registry = tool_input_handler_registry
         self._tool_result_handler_registry = tool_result_handler_registry
         self._tool_executor = tool_executor
+        self._pending_hook_guidance: list[str] = []
 
     def update_provider_catalog_query(self, provider_catalog_query: RuntimeProviderCatalogQuery) -> None:
         """Publish the provider catalog query used by reasoning diagnostics."""
         self._provider_catalog_query = provider_catalog_query
+
+    def _note_hook_guidance(self, guidance: Iterable[str]) -> None:
+        # ponytail: run-local buffer drained at each turn assembly; prompt consumer bounds to 8 items x 2000 chars.
+        for item in guidance:
+            if isinstance(item, str) and item.strip():
+                self._pending_hook_guidance.append(item)
+
+    def _drain_pending_hook_guidance(self) -> tuple[str, ...]:
+        drained = tuple(self._pending_hook_guidance)
+        del self._pending_hook_guidance[:]
+        return drained
 
     def _tool_call_preview(
         self,
@@ -929,6 +944,7 @@ class RuntimeRunLoopCoordinator:
                 persisted_failed, _ = self._persist_chunk(failed_chunk)
                 yield persisted_failed
                 raise RuntimeError(pre_hook_outcome.failed_error)
+        self._note_hook_guidance(pre_hook_outcome.guidance)
         if pre_hook_outcome.action == "cancel":
             failed_chunk, _ = self._persist_chunk(
                 chunk_builders.failed_chunk(
@@ -1247,6 +1263,7 @@ class RuntimeRunLoopCoordinator:
                 )
                 yield failed_chunk
                 return
+            self._note_hook_guidance(post_hook_outcome.guidance)
 
         tool_results.append(
             replace(
@@ -1283,6 +1300,7 @@ class RuntimeRunLoopCoordinator:
         pending_provider_attempt_reset: _ProviderAttemptReset | None = None
         first_iteration = True
         stuck_detected_emitted = False
+        self._pending_hook_guidance = []
         checkpoint_tool_result_count = len(tool_results)
         replayed_result_count = (
             len(tool_results) if graph_request.metadata.get("runtime_resume") is True or graph_request.metadata.get("resume") is True else 0
@@ -1331,7 +1349,7 @@ class RuntimeRunLoopCoordinator:
             current_metadata: dict[str, object] = current_graph_request.metadata
             current_abort_signal: ProviderAbortSignal | None = current_graph_request.abort_signal
             turn_index = run_step
-            sequence, terminated, stuck_detected_emitted = yield from self._run_turn_hooks(
+            sequence, terminated, stuck_detected_emitted, turn_hook_guidance = yield from self._run_turn_hooks(
                 session=session,
                 sequence=sequence,
                 tool_results=tool_results,
@@ -1351,17 +1369,24 @@ class RuntimeRunLoopCoordinator:
                     session,
                     metadata={**session.metadata, "tool_result_handlers": handler_provenance},
                 )
+            sequence, before_compact_input = yield from self._run_before_compact_hook_phase(
+                session=session,
+                sequence=sequence,
+                tool_results=provider_tool_results,
+            )
             context_window, first_iteration = self._resolve_turn_context_window(
                 active_graph_request=active_graph_request,
                 tool_results=provider_tool_results,
                 session=session,
                 continuity_to_reinject=continuity_to_reinject,
                 first_iteration=first_iteration,
+                before_compact=before_compact_input,
             )
             session, assembled_context = yield from self._assemble_turn_context(
                 active_graph_request=active_graph_request,
                 context_window=context_window,
                 session=session,
+                hook_guidance=turn_hook_guidance,
             )
             active_graph_request = graph_request_for_session(
                 GraphRunRequest(
@@ -1826,7 +1851,7 @@ class RuntimeRunLoopCoordinator:
         surface: RuntimeHookSurface,
         payload: dict[str, object],
         cancel_message: str,
-    ) -> Generator[RuntimeStreamChunk, None, tuple[int, bool]]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[int, bool, tuple[str, ...]]]:
         hook = run_lifecycle_hooks_for_session(
             hooks=self._config.hooks,
             workspace=self._workspace,
@@ -1852,7 +1877,7 @@ class RuntimeRunLoopCoordinator:
             if failed_chunk is not None:
                 persisted_failed, _ = self._persist_chunk(failed_chunk)
                 yield persisted_failed
-                return sequence, True
+                return sequence, True, ()
         if hook.action == "cancel":
             failed_chunk, _ = self._persist_chunk(
                 chunk_builders.failed_chunk(
@@ -1863,8 +1888,8 @@ class RuntimeRunLoopCoordinator:
                 )
             )
             yield failed_chunk
-            return sequence, True
-        return sequence, False
+            return sequence, True, ()
+        return sequence, False, hook.guidance
 
     def _run_turn_hooks(
         self,
@@ -1876,22 +1901,23 @@ class RuntimeRunLoopCoordinator:
         provider_attempt: int,
         provider_retry_attempt: int,
         stuck_detected_emitted: bool,
-    ) -> Generator[RuntimeStreamChunk, None, tuple[int, bool, bool]]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[int, bool, bool, tuple[str, ...]]]:
         turn_progress_payload: dict[str, object] = {
             "turn": turn_index,
             "tool_result_count": len(tool_results),
             "provider_attempt": provider_attempt,
             "provider_retry_attempt": provider_retry_attempt,
         }
-        sequence, terminated = yield from self._run_turn_hook_phase(
+        sequence, terminated, turn_guidance = yield from self._run_turn_hook_phase(
             session=session,
             sequence=sequence,
             surface="turn_progress",
             payload=turn_progress_payload,
             cancel_message="run cancelled by turn-progress hook",
         )
+        collected_guidance = list(turn_guidance)
         if terminated:
-            return sequence, True, stuck_detected_emitted
+            return sequence, True, stuck_detected_emitted, ()
         if not stuck_detected_emitted and self._is_stuck_tool_loop(
             turn=turn_index,
             tool_results=tool_results,
@@ -1902,16 +1928,47 @@ class RuntimeRunLoopCoordinator:
                 "reason": "repeated_tool_loop",
             }
             stuck_detected_emitted = True
-            sequence, terminated = yield from self._run_turn_hook_phase(
+            sequence, terminated, stuck_guidance = yield from self._run_turn_hook_phase(
                 session=session,
                 sequence=sequence,
                 surface="stuck_detected",
                 payload=stuck_payload,
                 cancel_message="run cancelled by stuck-detected hook",
             )
+            collected_guidance.extend(stuck_guidance)
             if terminated:
-                return sequence, True, stuck_detected_emitted
-        return sequence, False, stuck_detected_emitted
+                return sequence, True, stuck_detected_emitted, ()
+        return sequence, False, stuck_detected_emitted, tuple(collected_guidance)
+
+    def _run_before_compact_hook_phase(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        tool_results: tuple[ToolResult | ToolResultView, ...],
+    ) -> Generator[RuntimeStreamChunk, None, tuple[int, BeforeCompactInput | None]]:
+        try:
+            hook = run_lifecycle_hooks_for_session(
+                hooks=self._config.hooks,
+                workspace=self._workspace,
+                session=session,
+                sequence=sequence,
+                surface="before_compact",
+                payload={
+                    "tool_result_count": len(tool_results),
+                    "tool_names": sorted({result.tool_name for result in tool_results}),
+                },
+                recursion_env_var=HOOK_RECURSION_ENV_VAR,
+                policy=hook_execution_policy_from_metadata(session.metadata),
+            )
+        except Exception as exc:
+            logger.warning("before_compact hook failed: %s", exc)
+            return sequence, None
+        sequence = yield from self._persist_chunks(
+            hook.chunks,
+            fallback_sequence=hook.last_sequence,
+        )
+        return sequence, before_compact_input_from_hook_outcome(hook)
 
     def _resolve_turn_context_window(
         self,
@@ -1921,6 +1978,7 @@ class RuntimeRunLoopCoordinator:
         session: SessionState,
         continuity_to_reinject: ContextProjection | None,
         first_iteration: bool,
+        before_compact: BeforeCompactInput | None = None,
     ) -> tuple[RuntimeContextWindow, bool]:
         runtime = self._surface
         current_graph_request = active_graph_request
@@ -1930,7 +1988,11 @@ class RuntimeRunLoopCoordinator:
         if first_iteration:
             prebuilt_context = cast(RuntimeContextWindow, current_graph_request.context_window)
             first_iteration = False
-            if prebuilt_context.original_tool_result_count == len(tool_results) and prebuilt_context.tool_results == tuple(tool_results):
+            if (
+                before_compact is None
+                and prebuilt_context.original_tool_result_count == len(tool_results)
+                and prebuilt_context.tool_results == tuple(tool_results)
+            ):
                 base_context = prebuilt_context
             else:
                 base_context = runtime.prepare_provider_context_window(
@@ -1938,6 +2000,7 @@ class RuntimeRunLoopCoordinator:
                     tool_results=tuple(tool_results),
                     session_metadata=current_session_metadata,
                     abort_signal=current_abort_signal,
+                    before_compact=before_compact,
                 )
         else:
             base_context = runtime.prepare_provider_context_window(
@@ -1945,6 +2008,7 @@ class RuntimeRunLoopCoordinator:
                 tool_results=tuple(tool_results),
                 session_metadata=current_session_metadata,
                 abort_signal=current_abort_signal,
+                before_compact=before_compact,
             )
         reinjected_continuity = continuity_to_reinject
         if reinjected_continuity is not None:
@@ -1971,6 +2035,7 @@ class RuntimeRunLoopCoordinator:
         active_graph_request: GraphRunRequest,
         context_window: RuntimeContextWindow,
         session: SessionState,
+        hook_guidance: Iterable[str] | None = None,
     ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, ProviderAssembledContext]]:
         runtime = self._surface
         current_graph_request = active_graph_request
@@ -1997,6 +2062,7 @@ class RuntimeRunLoopCoordinator:
             session_metadata=session.metadata,
             skill_prompt_context=skill_prompt_context,
             replayed_conversation_segments=_replayed_conversation_segments(current_graph_request),
+            hook_guidance=(*self._drain_pending_hook_guidance(), *(hook_guidance or ())) or None,
         )
         handler_provenance = session.metadata.get("tool_result_handlers")
         if isinstance(handler_provenance, dict):
@@ -2901,6 +2967,7 @@ class RuntimeRunLoopCoordinator:
                 persisted_failed, _ = self._persist_chunk(failed_chunk)
                 yield persisted_failed
                 raise RuntimeError(hook_outcome.failed_error)
+        self._note_hook_guidance(hook_outcome.guidance)
         if hook_outcome.action == "cancel":
             failed_chunk, _ = self._persist_chunk(
                 chunk_builders.failed_chunk(
@@ -3207,6 +3274,57 @@ class RuntimeRunLoopCoordinator:
                 },
             )
             yield RuntimeStreamChunk(kind="event", session=waiting_session, event=envelope)
+            hook_cancel_reason: str | None = None
+            try:
+                hook_outcome = run_lifecycle_hooks_for_session(
+                    hooks=self._config.hooks,
+                    workspace=self._workspace,
+                    session=session,
+                    surface="question_asked",
+                    recursion_env_var=HOOK_RECURSION_ENV_VAR,
+                    sequence=envelope.sequence,
+                    payload={
+                        "request_id": pending_question.request_id,
+                        "tool": pending_question.tool_name,
+                        "question_count": len(pending_question.prompts),
+                        "argument_keys": sorted(dict(plan_tool_call.arguments)),
+                        "arguments_sha256": tool_input_arguments_sha256(dict(plan_tool_call.arguments)),
+                    },
+                    policy=hook_execution_policy_from_metadata(session.metadata),
+                )
+            except Exception as exc:
+                logging.getLogger(__name__).warning("question_asked hook failed: %s", exc)
+                return True
+            yield from self._persist_chunks(
+                hook_outcome.chunks,
+                fallback_sequence=hook_outcome.last_sequence,
+            )
+            if hook_outcome.failed_error is not None:
+                return True
+            self._note_hook_guidance(hook_outcome.guidance)
+            if hook_outcome.action == "cancel":
+                for chunk in hook_outcome.chunks:
+                    payload = chunk.event.payload if chunk.event is not None else None
+                    if not isinstance(payload, dict):
+                        continue
+                    for key in ("diagnostic", "message", "guidance", "reason"):
+                        value = payload.get(key)
+                        if isinstance(value, str) and value.strip():
+                            hook_cancel_reason = value
+                            break
+                    if hook_cancel_reason is not None:
+                        break
+                if not isinstance(hook_cancel_reason, str) or not hook_cancel_reason.strip():
+                    hook_cancel_reason = "hook blocked question"
+                failed_chunk, _ = self._persist_chunk(
+                    chunk_builders.failed_chunk(
+                        session=waiting_session,
+                        sequence=envelope.sequence + 1,
+                        error=hook_cancel_reason,
+                        payload={"kind": "hook_cancelled", "surface": "question_asked"},
+                    )
+                )
+                yield failed_chunk
             return True
         return False
 
@@ -3575,6 +3693,7 @@ class RuntimeRunLoopCoordinator:
                 error_kind="hook_failed",
             )
             return session, sequence
+        self._note_hook_guidance(pre_hook_outcome.guidance)
         if pre_hook_outcome.action == "cancel":
             yield from self._dispatch_error_feedback_chunks(
                 session=session,
@@ -3788,6 +3907,7 @@ class RuntimeRunLoopCoordinator:
                 )
                 yield failed_chunk
                 return session, sequence
+            self._note_hook_guidance(post_hook_outcome.guidance)
 
         tool_results.append(
             replace(

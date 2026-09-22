@@ -31,6 +31,7 @@ from ..hook.typed import (
     ToolInputHandlerRegistry,
     ToolResultHandlerRegistry,
     builtin_tool_input_handler_registry,
+    tool_input_arguments_sha256,
 )
 from ..mcp import McpCachedToolSurface, McpToolDescriptor
 from ..provider.auth import (
@@ -142,6 +143,7 @@ from .context.transforms import (
     default_runtime_context_transform_registry,
 )
 from .context.window import (
+    BeforeCompactInput,
     ContextWindowPolicy,
     RuntimeAssembledContext,
     RuntimeContextSegment,
@@ -399,6 +401,70 @@ def _coerce_bool_like(value: object | None, default: bool) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() not in {"false", "0", "no", "off", ""}
+
+
+def _approval_requested_hook_payload(pending: PendingApproval) -> dict[str, object]:
+    keys = sorted(pending.arguments)
+    if len(keys) > 64:
+        keys = [*keys[:64], "[additional argument keys omitted]"]
+    payload: dict[str, object] = {
+        "request_id": pending.request_id,
+        "tool": pending.tool_name,
+        "target_summary": pending.target_summary,
+        "reason": pending.reason,
+        "policy": {"mode": pending.policy_mode},
+        "argument_keys": keys,
+        "arguments_sha256": tool_input_arguments_sha256(pending.arguments),
+    }
+    if pending.path_scope is not None:
+        payload["path_scope"] = pending.path_scope
+    if pending.operation_class is not None:
+        payload["operation_class"] = pending.operation_class
+    if pending.policy_surface is not None:
+        payload["policy_surface"] = pending.policy_surface
+    return payload
+
+
+def _hook_cancel_reason(outcome: object, *, default: str) -> str:
+    for chunk in getattr(outcome, "chunks", ()):
+        event = getattr(chunk, "event", None)
+        payload = getattr(event, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        for key in ("diagnostic", "message", "guidance", "reason"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    return default
+
+
+def _permission_chunks_with_hook_reason(
+    chunks: tuple[RuntimeStreamChunk, ...],
+    reason: str,
+) -> tuple[RuntimeStreamChunk, ...]:
+    rebuilt: list[RuntimeStreamChunk] = []
+    for chunk in chunks:
+        event = chunk.event
+        if event is None:
+            rebuilt.append(chunk)
+            continue
+        payload = dict(event.payload)
+        payload.setdefault("hook_cancel_reason", reason)
+        payload.setdefault("reason", reason)
+        rebuilt.append(
+            RuntimeStreamChunk(
+                kind=chunk.kind,
+                session=chunk.session,
+                event=EventEnvelope(
+                    session_id=event.session_id,
+                    sequence=event.sequence,
+                    event_type=event.event_type,
+                    source=event.source,
+                    payload=payload,
+                ),
+            )
+        )
+    return tuple(rebuilt)
 
 
 @final
@@ -1606,7 +1672,7 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         if tooling is None:
             return
-        session, sequence, tool_registry, skill_registry = tooling
+        session, sequence, tool_registry, skill_registry, start_hook_guidance = tooling
         startup = yield from self._start_stream_acp_and_skills(
             prepared,
             session,
@@ -1614,6 +1680,7 @@ class VoidCodeRuntime(RuntimeSurface):
             tool_registry,
             skill_registry,
             abort_signal=abort_signal,
+            hook_guidance=start_hook_guidance,
         )
         if startup is None:
             return
@@ -1870,7 +1937,7 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def _start_stream_mcp_and_tooling(
         self, prep: _PreparedStreamSession, session: SessionState, sequence: int
-    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, ToolRegistry, SkillRegistry] | None]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, ToolRegistry, SkillRegistry, tuple[str, ...]] | None]:
         request = prep.request
         effective_config = prep.effective_config
         request_metadata = prep.request_metadata
@@ -1934,7 +2001,7 @@ class VoidCodeRuntime(RuntimeSurface):
             if failed_chunk is not None:
                 yield self._persist_emitted_chunk(failed_chunk)
                 return None
-        return session, sequence, tool_registry, skill_registry
+        return session, sequence, tool_registry, skill_registry, start_hook_outcome.guidance
 
     def _refresh_run_checkpoint(self, *, session: SessionState, prompt: str, sequence: int) -> None:
         """Record the run's replayable bindings in its resumable checkpoint.
@@ -1969,6 +2036,7 @@ class VoidCodeRuntime(RuntimeSurface):
         skill_registry: SkillRegistry,
         *,
         abort_signal: ProviderAbortSignal | None,
+        hook_guidance: tuple[str, ...] = (),
     ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, RuntimeGraph, GraphRunRequest, list[ToolResult]] | None]:
         request = prep.request
         effective_config = prep.effective_config
@@ -2089,6 +2157,7 @@ class VoidCodeRuntime(RuntimeSurface):
             skill_prompt_context=skill_prompt_context,
             replayed_conversation_segments=rehydrated_conversation_segments,
             tool_registry=tool_registry,
+            hook_guidance=hook_guidance or None,
         )
         session = session_with_context_window_payload_metadata(
             session,
@@ -2231,6 +2300,35 @@ class VoidCodeRuntime(RuntimeSurface):
             parent_session_id=parent_session_id,
         )
 
+    def _approval_requested_hook_chunks(
+        self,
+        *,
+        session: SessionState,
+        pending: PendingApproval,
+        sequence: int,
+    ) -> tuple[tuple[RuntimeStreamChunk, ...], int, str | None]:
+        """Run the ``approval_requested`` foreground observer (fail-open, cancel blocks)."""
+        try:
+            outcome = run_lifecycle_hooks_for_session(
+                hooks=self._config.hooks,
+                workspace=self._workspace,
+                session=session,
+                surface="approval_requested",
+                recursion_env_var=HOOK_RECURSION_ENV_VAR,
+                sequence=sequence,
+                payload=_approval_requested_hook_payload(pending),
+                policy=hook_execution_policy_from_metadata(session.metadata),
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).warning("approval_requested hook failed for %s: %s", pending.tool_name, exc)
+            return (), sequence, None
+        if outcome.failed_error is not None:
+            # Fail-open observer: keep the error event, never block on executor failure.
+            return outcome.chunks, outcome.last_sequence, None
+        if outcome.action != "cancel":
+            return outcome.chunks, outcome.last_sequence, None
+        return outcome.chunks, outcome.last_sequence, _hook_cancel_reason(outcome, default="hook blocked approval")
+
     def resolve_permission(
         self,
         *,
@@ -2361,8 +2459,35 @@ class VoidCodeRuntime(RuntimeSurface):
             payload=request_payload,
         )
         pending = replace(pending, request_event_sequence=request_event.sequence)
+        approval_chunk = RuntimeStreamChunk(kind="event", session=waiting_session, event=request_event)
+        hook_chunks, hook_last_sequence, hook_cancel_reason = self._approval_requested_hook_chunks(
+            session=waiting_session,
+            pending=pending,
+            sequence=sequence,
+        )
+        if hook_cancel_reason is not None:
+            blocked_pending = replace(pending, reason=hook_cancel_reason)
+            deny_outcome = self.approval_resolution_outcome(
+                session=session,
+                pending=blocked_pending,
+                decision="deny",
+                sequence=hook_last_sequence + 1,
+            )
+            deny_chunks = _permission_chunks_with_hook_reason(deny_outcome.chunks, hook_cancel_reason)
+            return PermissionOutcome(
+                chunks=(approval_chunk, *hook_chunks, *deny_chunks),
+                last_sequence=deny_outcome.last_sequence,
+                denied=True,
+                denied_approval=blocked_pending,
+            )
+        if hook_chunks:
+            return PermissionOutcome(
+                chunks=(approval_chunk, *hook_chunks),
+                last_sequence=hook_last_sequence,
+                pending_approval=pending,
+            )
         return PermissionOutcome(
-            chunks=(RuntimeStreamChunk(kind="event", session=waiting_session, event=request_event),),
+            chunks=(approval_chunk,),
             last_sequence=sequence,
             pending_approval=pending,
         )
@@ -3995,6 +4120,7 @@ class VoidCodeRuntime(RuntimeSurface):
         session_metadata: dict[str, object],
         policy: ContextWindowPolicy | None = None,
         abort_signal: ProviderAbortSignal | None = None,  # noqa: ARG002 — retained by RuntimeSurface protocol for abort-aware callers.
+        before_compact: BeforeCompactInput | None = None,
     ) -> RuntimeContextWindow:
         return self._stream_prep_coordinator.prepare_provider_context_window(
             prompt=prompt,
@@ -4002,6 +4128,7 @@ class VoidCodeRuntime(RuntimeSurface):
             session_metadata=session_metadata,
             policy=policy,
             abort_signal=abort_signal,
+            before_compact=before_compact,
         )
 
     def _rehydrated_tool_results_for_existing_session(
@@ -4094,6 +4221,7 @@ class VoidCodeRuntime(RuntimeSurface):
         skill_prompt_context: str = "",
         replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
         tool_registry: ToolRegistry | None = None,
+        hook_guidance: Iterable[str] | None = None,
     ) -> RuntimeAssembledContext:
         # Mode guidance flows through the context transform registry: resolve
         # the effective mode once, render its guidance text, and let the
@@ -4206,6 +4334,7 @@ class VoidCodeRuntime(RuntimeSurface):
             replay_retained_tool_messages=tool_feedback_mode != "synthetic_user_message",
             replayed_conversation_segments=replayed_conversation_segments,
             tool_catalog_context=tool_catalog_context,
+            hook_guidance=hook_guidance if hook_guidance else None,
         )
         raw_delegation = session_metadata.get("delegation")
         if raw_delegation is None:

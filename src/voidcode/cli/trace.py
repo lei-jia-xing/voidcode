@@ -114,6 +114,10 @@ class TracePrinter:
             target = _trace_string(payload.get("target_summary"))
             suffix = f" for {target}" if target else ""
             print(f"\n⚠ Approval required: {tool}{suffix}", flush=True)
+            if payload.get("action") == "cancel":
+                reason = _trace_string(payload.get("diagnostic")) or _trace_string(payload.get("message")) or _trace_string(payload.get("reason"))
+                if reason:
+                    print(f"  Blocked by hook: {reason}", flush=True)
             return
         if event.event_type == "runtime.question_requested":
             self._close_open_streams()

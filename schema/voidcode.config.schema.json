@@ -873,6 +873,36 @@
             }
           ]
         },
+        "on_approval_requested": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_question_asked": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_before_compact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/commandList"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "formatter_presets": {
           "additionalProperties": {
             "$ref": "#/$defs/formatterPresetConfig"

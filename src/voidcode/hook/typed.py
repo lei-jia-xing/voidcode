@@ -10,6 +10,7 @@ from typing import Literal, Protocol
 import jsonschema
 
 from ..runtime.context.window import ToolResultView
+from ..security.shell_policy import non_interactive_shell_env
 from ..tools.contracts import ToolCall, ToolDefinition, ToolDiagnostics
 
 ToolInputAction = Literal["unchanged", "rewrite", "block", "diagnostic"]
@@ -194,10 +195,24 @@ class ToolInputHandlerRegistry:
         )
 
 
-def builtin_tool_input_handler_registry() -> ToolInputHandlerRegistry:
-    """Return intentionally empty production builtin registry."""
+def _shell_non_interactive_env_handler(event: ToolInputEvent, /) -> ToolInputDecision:
+    if event.tool_call.tool_name != "shell_exec":
+        return ToolInputDecision(action="unchanged")
+    command = event.tool_call.arguments.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return ToolInputDecision(action="unchanged")
+    keys = tuple(non_interactive_shell_env(command))
+    if not keys:
+        return ToolInputDecision(action="unchanged")
+    return ToolInputDecision(action="diagnostic", diagnostic=f"shell non-interactive env injected: {', '.join(keys)}")
 
-    return ToolInputHandlerRegistry.empty()
+
+def builtin_tool_input_handler_registry() -> ToolInputHandlerRegistry:
+    """Return the production builtin registry (shell env policy as composed hook)."""
+    # ponytail: diagnostic-only on purpose; Popen env merge stays in
+    # ShellExecTool/hook executor (one line each). Add a typed env channel
+    # only if a handler ever needs to change keys, not just announce them.
+    return ToolInputHandlerRegistry((ToolInputHandlerBinding(name="shell-non-interactive-env", handler=_shell_non_interactive_env_handler),))
 
 
 def compose_tool_input_handler_registry(
@@ -350,6 +365,33 @@ class ToolResultHandlerRegistry:
         return ToolResultHandlerOutcome(view=current, action="rewrite" if current != source else "unchanged", handler_names=tuple(names))
 
 
+# ponytail: fixed 8000-char cap; per-tool limits or token-based budgets only if provider pressure data demands it.
+_RESULT_OUTPUT_CHAR_LIMIT = 8000
+
+
+def _result_output_truncation_handler(view: ToolResultView, /) -> ToolResultHandlerDecision:
+    content = view.content
+    if not isinstance(content, str) or len(content) <= _RESULT_OUTPUT_CHAR_LIMIT:
+        return ToolResultHandlerDecision(action="unchanged")
+    omitted = len(content) - _RESULT_OUTPUT_CHAR_LIMIT
+    truncated = f"{content[:_RESULT_OUTPUT_CHAR_LIMIT].rstrip()}\n[... output truncated: {omitted} chars omitted]"
+    return ToolResultHandlerDecision(action="rewrite", content=truncated, error=view.error, diagnostics=view.diagnostics)
+
+
+def builtin_tool_result_handler_registry() -> ToolResultHandlerRegistry:
+    """Return the production builtin registry (provider-view output truncation)."""
+    return ToolResultHandlerRegistry((ToolResultHandlerBinding(name="result-output-truncation", handler=_result_output_truncation_handler),))
+
+
+def compose_tool_result_handler_registry(
+    builtin_bindings: Iterable[ToolResultHandlerBinding] = (),
+    configured_bindings: Iterable[ToolResultHandlerBinding] = (),
+) -> ToolResultHandlerRegistry:
+    """Compose builtin and explicit bindings through one stable registry."""
+
+    return ToolResultHandlerRegistry((*builtin_bindings, *configured_bindings))
+
+
 def tool_result_handler_metadata(*, original: ToolResultView, outcome: ToolResultHandlerOutcome) -> dict[str, object]:
     """Return bounded, text-free provenance for a provider-view transform."""
     return {
@@ -410,7 +452,9 @@ __all__ = [
     "ToolResultHandlerOutcome",
     "ToolResultHandlerRegistry",
     "builtin_tool_input_handler_registry",
+    "builtin_tool_result_handler_registry",
     "compose_tool_input_handler_registry",
+    "compose_tool_result_handler_registry",
     "tool_input_arguments_sha256",
     "tool_input_rewrite_metadata",
     "tool_result_handler_metadata",

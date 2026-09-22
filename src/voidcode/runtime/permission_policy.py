@@ -50,7 +50,7 @@ def operation_class_or_none(value: object) -> OperationClass | None:
 
 def pending_approval_from_response(response: RuntimeResponse) -> PendingApproval:
     approval_event = next(
-        (event for event in reversed(response.events) if event.event_type == RUNTIME_APPROVAL_REQUESTED),
+        (event for event in reversed(response.events) if event.event_type == RUNTIME_APPROVAL_REQUESTED and event.payload.get("hook_status") is None),
         None,
     )
     if approval_event is None:
@@ -111,6 +111,8 @@ def request_event_and_resolution_state(
     request_event: EventEnvelope | None = None
     resolved = False
     for event in events:
+        if event.payload.get("hook_status") is not None:
+            continue
         event_request_id = event.payload.get("request_id")
         if event_request_id != request_id:
             continue
@@ -129,6 +131,8 @@ def pending_question_from_response(response: RuntimeResponse) -> PendingQuestion
     }
     for event in reversed(response.events):
         if event.event_type != RUNTIME_QUESTION_REQUESTED:
+            continue
+        if event.payload.get("hook_status") is not None:
             continue
         payload = event.payload
         request_id = str(payload["request_id"])
