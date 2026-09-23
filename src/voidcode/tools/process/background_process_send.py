@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, field_validator
 
-from ...runtime.background.process import BackgroundProcessManager
 from .._pydantic_args import NonEmptyProcessId, parse_tool_args
-from ..contracts import ToolCall, ToolDefinition, ToolResult
+from ..contracts import ToolCall, ToolResult
 from ..runtime_context import current_runtime_tool_context
+
+if TYPE_CHECKING:
+    from .background_process import BackgroundProcessRuntime
 
 
 class _BackgroundProcessSendArgs(BaseModel):
@@ -24,37 +26,14 @@ class _BackgroundProcessSendArgs(BaseModel):
         return value
 
 
-class BackgroundProcessSendRuntime(Protocol):
-    @property
-    def background_process_manager(self) -> BackgroundProcessManager: ...
-
-
 class BackgroundProcessSendTool:
-    definition = ToolDefinition(
-        name="background_process_send",
-        description="Write interactive input to a running background process's stdin.",
-        input_schema={
-            "process_id": {
-                "type": "string",
-                "description": "Process id returned by background_process with op=start",
-            },
-            "input": {
-                "type": "string",
-                "description": "Text to write to the process's stdin",
-            },
-            "newline": {
-                "type": "boolean",
-                "description": "Append a trailing newline so the input is treated as a completed line (default: true)",
-            },
-        },
-        read_only=False,
-    )
+    name = "background_process_send"
 
-    def __init__(self, *, runtime: BackgroundProcessSendRuntime) -> None:
+    def __init__(self, *, runtime: BackgroundProcessRuntime) -> None:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        args = parse_tool_args(_BackgroundProcessSendArgs, call.arguments, tool_name=self.definition.name)
+        args = parse_tool_args(_BackgroundProcessSendArgs, call.arguments, tool_name=self.name)
 
         text = args.input if not args.newline else f"{args.input}\n"
         context = current_runtime_tool_context()
@@ -70,7 +49,7 @@ class BackgroundProcessSendTool:
         if state.prior_runtime:
             message = state.reconciliation_reason or ("Prior-runtime process is externally managed/unavailable to this runtime")
             return ToolResult(
-                tool_name=self.definition.name,
+                tool_name=self.name,
                 status="error",
                 content=message,
                 error=message,
@@ -93,7 +72,7 @@ class BackgroundProcessSendTool:
             enforce_owner=context is not None,
         )
         return ToolResult(
-            tool_name=self.definition.name,
+            tool_name=self.name,
             status="ok",
             content=f"Sent input to background process {args.process_id}.",
             data={"process_id": args.process_id, "input": args.input, "newline": args.newline},

@@ -149,9 +149,7 @@ class WriteTool:
             paths=[display_path],
         )
         if lsp_diagnostics:
-            current_diagnostics = data.get("diagnostics")
-            existing = current_diagnostics if isinstance(current_diagnostics, list) else []
-            data["diagnostics"] = [*existing, *lsp_diagnostics]
+            data["diagnostics"] = [*diagnostics, *lsp_diagnostics]
 
         return ToolResult(
             tool_name=self.definition.name,

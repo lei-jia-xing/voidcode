@@ -329,7 +329,7 @@ class TaskTool:
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            content=output if isinstance(output, str) and output else f"Delegated session {child_session.id}",
+            content=output,
             data={
                 "session_id": child_session.id,
                 "parent_session_id": context.session_id,

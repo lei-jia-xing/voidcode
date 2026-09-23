@@ -7,8 +7,8 @@ from pydantic import BaseModel, field_validator
 
 from ...runtime.background.models import BackgroundTaskState, is_background_task_terminal
 from ...runtime.contracts import UnknownBackgroundTaskError
-from .._pydantic_args import parse_tool_args
-from ..contracts import ToolCall, ToolDefinition, ToolResult
+from .._pydantic_args import parse_tool_args, validate_non_empty_stripped
+from ..contracts import ToolCall, ToolResult
 from ..runtime_context import current_runtime_tool_context
 
 
@@ -39,34 +39,18 @@ def _unknown_task_result(task_id: str, message: str) -> ToolResult:
 class _TaskCancelArgs(BaseModel):
     taskId: str
 
-    @field_validator("taskId", mode="after")
-    @classmethod
-    def _validate_task_id(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("taskId must be a non-empty string")
-        return stripped
+    _validate_task_id = field_validator("taskId", mode="after")(validate_non_empty_stripped)
 
 
 class TaskCancelTool:
-    definition = ToolDefinition(
-        name="task_cancel",
-        description="Cancel a running background task by id.",
-        input_schema={
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {"taskId": {"type": "string", "minLength": 1}},
-            "required": ["taskId"],
-        },
-        read_only=True,
-    )
+    name = "task_cancel"
 
     def __init__(self, *, runtime: TaskCancelRuntime) -> None:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
-        args = parse_tool_args(_TaskCancelArgs, call.arguments, tool_name=self.definition.name)
+        args = parse_tool_args(_TaskCancelArgs, call.arguments, tool_name=self.name)
         context = current_runtime_tool_context()
         if context is not None:
             try:
@@ -90,7 +74,7 @@ class TaskCancelTool:
         else:
             content = f"Background task {task.task.id}: {task.status}"
         return ToolResult(
-            tool_name=self.definition.name,
+            tool_name=self.name,
             status="ok",
             content=content,
             data={

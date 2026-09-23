@@ -167,10 +167,10 @@ def _preview_text(content: str, *, max_lines: int, max_bytes: int) -> str:
     return _utf8_prefix(line_limited, max_bytes=max_bytes)
 
 
-def _safe_artifact_segment(value: str | None, *, fallback: str) -> str:
+def _safe_artifact_segment(value: str | None, *, fallback: str = "") -> str:
     raw = value if value else fallback
     safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in raw)
-    return safe[:96] or fallback
+    return safe[:96]
 
 
 def _diagnostics_with(existing_data: dict[str, object], diagnostic: dict[str, object]) -> list[object]:
@@ -246,7 +246,7 @@ def _tool_output_artifact_path(
     temp_root = tool_output_artifact_temp_root()
     session_segment = _safe_artifact_segment(session_id, fallback="unknown-session")
     call_segment = _safe_artifact_segment(tool_call_id, fallback="unknown-tool-call")
-    tool_segment = _safe_artifact_segment(tool_name, fallback="tool")
+    tool_segment = _safe_artifact_segment(tool_name)
     return temp_root / session_segment / f"{call_segment}-{tool_segment}-{artifact_id}.txt"
 
 

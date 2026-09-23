@@ -168,7 +168,7 @@ class WebFetchTool:
             "html": ("text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1"),
         }
 
-        accept_header = accept_by_format.get(format_value, "*/*")
+        accept_header = accept_by_format[format_value]
 
         # Use a more realistic User-Agent to avoid bot detection on some servers
         ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) VoidCode/1.0 Chrome/110.0.5481.100 Safari/537.36"
@@ -236,31 +236,6 @@ class WebFetchTool:
             output = _extract_text_from_html(content)
         elif format_value == "markdown":
             if mime and mime.startswith("image/"):
-                b64 = base64.b64encode(data).decode("ascii")
-                data_uri = f"data:{mime};base64,{b64}"
-                return ToolResult(
-                    tool_name=self.definition.name,
-                    status="ok",
-                    content="",
-                    data={
-                        "url": url_value,
-                        "content_type": mime,
-                        "format": format_value,
-                        "byte_count": len(data),
-                        "timeout_seconds": timeout,
-                        "attachment": {"mime": mime, "data_uri": data_uri},
-                    },
-                    truncated=False,
-                    partial=False,
-                    timeout_seconds=timeout,
-                )
-            if "text/html" in mime:
-                output = _html_to_markdown_or_text(content, url=url_value)
-            else:
-                output = content
-        else:
-            if mime and mime.startswith("image/"):
-                # Image handling: return as base64 attachment instead of text output
                 b64 = base64.b64encode(data).decode("ascii")
                 data_uri = f"data:{mime};base64,{b64}"
                 return ToolResult(

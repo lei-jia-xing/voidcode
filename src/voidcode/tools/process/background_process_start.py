@@ -1,24 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from ...runtime.background.process import BackgroundProcessManager
 from .._pydantic_args import NonEmptyCommand, OptionalDescription, parse_tool_args
-from ..contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
+from ..contracts import RuntimeToolTimeoutError, ToolCall, ToolResult
 from ..runtime_context import current_runtime_tool_context
+
+if TYPE_CHECKING:
+    from .background_process import BackgroundProcessRuntime
 
 
 class _BackgroundProcessStartArgs(BaseModel):
     command: NonEmptyCommand
     description: OptionalDescription = None
-
-
-class BackgroundProcessStartRuntime(Protocol):
-    @property
-    def background_process_manager(self) -> BackgroundProcessManager: ...
 
 
 def _background_process_start_guidance(*, process_id: str, reused: bool, stale_process_id: str | None = None) -> str:
@@ -40,21 +37,13 @@ def _background_process_start_guidance(*, process_id: str, reused: bool, stale_p
 
 
 class BackgroundProcessStartTool:
-    definition = ToolDefinition(
-        name="background_process_start",
-        description="Start a long-running non-interactive process without blocking the current turn.",
-        input_schema={
-            "command": {"type": "string", "description": "Shell command to start as a long-running background process"},
-            "description": {"type": "string", "description": "Human-readable description"},
-        },
-        read_only=False,
-    )
+    name = "background_process_start"
 
-    def __init__(self, *, runtime: BackgroundProcessStartRuntime) -> None:
+    def __init__(self, *, runtime: BackgroundProcessRuntime) -> None:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        args = parse_tool_args(_BackgroundProcessStartArgs, call.arguments, tool_name=self.definition.name)
+        args = parse_tool_args(_BackgroundProcessStartArgs, call.arguments, tool_name=self.name)
         runtime_context = current_runtime_tool_context()
         if runtime_context is not None and runtime_context.abort_signal is not None and runtime_context.abort_signal.cancelled:
             raise RuntimeToolTimeoutError("background_process_start aborted before launching process")
@@ -87,7 +76,7 @@ class BackgroundProcessStartTool:
             stale_process_id=stale_process_id,
         )
         return ToolResult(
-            tool_name=self.definition.name,
+            tool_name=self.name,
             status="ok",
             content=(
                 f"{'Reusing' if reused else 'Started'} background process {state.process_id} "
@@ -106,4 +95,4 @@ class BackgroundProcessStartTool:
         )
 
 
-__all__ = ["BackgroundProcessStartRuntime", "BackgroundProcessStartTool"]
+__all__ = ["BackgroundProcessStartTool"]

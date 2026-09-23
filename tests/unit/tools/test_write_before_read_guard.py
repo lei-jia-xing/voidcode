@@ -9,7 +9,7 @@ import pytest
 from voidcode.tools import ApplyPatchTool, EditTool, MultiEditTool, ReadTool, ToolCall, WriteTool
 from voidcode.tools._repair import ToolDiagnosticError
 from voidcode.tools.contracts import ToolResult
-from voidcode.tools.guards import ReadTracking, read_paths_for_tool_results, read_tracking_for_tool_results
+from voidcode.tools.guards import ReadTracking, read_tracking_for_tool_results
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
@@ -21,7 +21,7 @@ def test_read_paths_for_tool_results_collects_successful_workspace_reads(tmp_pat
     target = tmp_path / "sample.txt"
     target.write_text("sample", encoding="utf-8")
 
-    paths = read_paths_for_tool_results(
+    paths = read_tracking_for_tool_results(
         tool_results=(
             ToolResult(
                 tool_name="read",
@@ -31,7 +31,7 @@ def test_read_paths_for_tool_results_collects_successful_workspace_reads(tmp_pat
             ),
         ),
         workspace=tmp_path,
-    )
+    ).read_paths
 
     assert paths == frozenset({target.resolve().as_posix()})
 

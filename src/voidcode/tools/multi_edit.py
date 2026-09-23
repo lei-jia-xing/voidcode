@@ -15,7 +15,7 @@ from ..formatter import (
 from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
-from ._pydantic_args import parse_tool_args
+from ._pydantic_args import parse_tool_args, validate_non_empty
 from ._repair import ToolDiagnosticError, raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .edit import EditTool, read_utf8_text, summarize_diff
@@ -32,12 +32,7 @@ class MultiEditArgs(BaseModel):
     path: str
     edits: list[MultiEditItemArgs]
 
-    @field_validator("path", mode="after")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("path must not be empty")
-        return value
+    _validate_path = field_validator("path", mode="after")(validate_non_empty)
 
     @field_validator("edits", mode="after")
     @classmethod
@@ -232,9 +227,7 @@ class MultiEditTool:
             paths=[display_path],
         )
         if lsp_diagnostics:
-            current_diagnostics = data.get("diagnostics")
-            existing = current_diagnostics if isinstance(current_diagnostics, list) else []
-            data["diagnostics"] = [*existing, *lsp_diagnostics]
+            data["diagnostics"] = [*diagnostics, *lsp_diagnostics]
 
         return ToolResult(
             tool_name=self.definition.name,

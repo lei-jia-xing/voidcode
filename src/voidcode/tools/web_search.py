@@ -10,7 +10,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 from pydantic import BaseModel, field_validator
 
-from ._pydantic_args import parse_tool_args
+from ._pydantic_args import parse_tool_args, validate_non_empty
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -18,12 +18,7 @@ class WebSearchArgs(BaseModel):
     query: str
     numResults: int = 8
 
-    @field_validator("query", mode="after")
-    @classmethod
-    def _validate_query(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("query must not be empty")
-        return value
+    _validate_query = field_validator("query", mode="after")(validate_non_empty)
 
     @field_validator("numResults", mode="after")
     @classmethod
@@ -42,10 +37,10 @@ def _search_exa(
     query: str,
     num_results: int = DEFAULT_NUM_RESULTS,
     timeout: int = DEFAULT_TIMEOUT,
-) -> str | None:
+) -> tuple[str | None, str | None]:
     api_key = os.environ.get("EXA_API_KEY")
     if not api_key:
-        return None
+        return None, None
 
     try:
         request_data: dict[str, object] = {
@@ -70,23 +65,27 @@ def _search_exa(
             results = data["results"]
             output_lines: list[str] = []
 
-            for i, result in enumerate(results[:num_results], 1):
-                title = result.get("title", "Untitled")
-                url = result.get("url", "")
+            index = 0
+            for result in results[:num_results]:
+                title = result.get("title")
+                url = result.get("url")
+                if not isinstance(title, str) or not title or not isinstance(url, str) or not url:
+                    continue
+                index += 1
                 snippet = result.get("snippet", "")
 
-                output_lines.append(f"{i}. {title}")
+                output_lines.append(f"{index}. {title}")
                 output_lines.append(f"   {url}")
                 if snippet:
                     output_lines.append(f"   {snippet[:200]}...")
                 output_lines.append("")
 
-            return "\n".join(output_lines)
+            return "\n".join(output_lines), None
 
-    except Exception:
-        pass
+    except Exception as exc:
+        return None, f"exa search failed: {exc}"
 
-    return None
+    return None, None
 
 
 def _search_fallback(
@@ -119,11 +118,11 @@ def _search_fallback(
             "duckduckgo fallback returned no parseable results",
         )
 
-    except Exception:
+    except Exception as exc:
         return (
-            DUCKDUCKGO_EMPTY_MESSAGE,
+            f"Web search failed: {exc}",
             "duckduckgo-error",
-            "duckduckgo fallback failed before parsing results",
+            f"duckduckgo fallback failed: {exc}",
         )
 
 
@@ -312,6 +311,8 @@ class WebSearchTool:
             "query": {"type": "string", "description": "The search query"},
             "numResults": {
                 "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
                 "description": "Number of results to return (default: 8)",
             },
             "required": ["query"],
@@ -353,7 +354,7 @@ class WebSearchTool:
             )
         )
 
-        exa_results = _search_exa(args.query, num_results, timeout)
+        exa_results, exa_failure = _search_exa(args.query, num_results, timeout)
 
         if exa_results:
             output = exa_results
@@ -361,11 +362,14 @@ class WebSearchTool:
             fallback_reason = None
         else:
             output, source, fallback_reason = _search_fallback(args.query, num_results, timeout)
+            fallback_reason = exa_failure or fallback_reason
 
+        failed = source == "duckduckgo-error"
         return ToolResult(
             tool_name=self.definition.name,
-            status="ok",
-            content=f"Found web results for {args.query} using {source}.",
+            status="error" if failed else "ok",
+            content=output if failed else f"Found web results for {args.query} using {source}.",
+            error=output if failed else None,
             data={
                 "query": args.query,
                 "num_results": num_results,

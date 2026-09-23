@@ -8,7 +8,7 @@ import json
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, final
+from typing import ClassVar, cast, final
 
 from pydantic import BaseModel, field_validator
 
@@ -16,7 +16,7 @@ from ..runtime.context.rules import RULE_URI_PREFIX as _RULE_URI_PREFIX
 from ..runtime.context.rules import read_rule_uri
 from ..runtime.contracts import validate_id
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
-from ._pydantic_args import parse_tool_args
+from ._pydantic_args import parse_tool_args, validate_non_empty
 from ._workspace import suggest_workspace_paths
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .guidance import guidance_for_tool
@@ -141,7 +141,7 @@ def _render_artifact(path: str, *, offset: int, limit: int) -> _ReadOutcome:
             "type": "artifact",
             "artifact_id": artifact_id,
             "status": status,
-            "line_count": line_count if isinstance(line_count, int) else len(rendered_lines),
+            "line_count": cast(int, line_count),
             "offset": offset,
             "limit": limit,
             "next_offset": next_offset,
@@ -203,12 +203,7 @@ class ReadArgs(BaseModel):
     offset: int | None = None
     limit: int | None = None
 
-    @field_validator("path", mode="after")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("path must not be empty")
-        return value
+    _validate_path = field_validator("path", mode="after")(validate_non_empty)
 
     @field_validator("offset", mode="after")
     @classmethod
@@ -416,6 +411,7 @@ class ReadTool:
             "limit": {
                 "type": "integer",
                 "minimum": 1,
+                "maximum": DEFAULT_READ_LIMIT,
                 "description": "Maximum lines to return; use data.next_offset to continue when truncated.",
             },
             "required": ["path"],
@@ -442,14 +438,14 @@ class ReadTool:
                 offset=args.offset or 1,
                 limit=args.limit or DEFAULT_READ_LIMIT,
             )
-            truncated = bool(data.get("truncated", False))
+            truncated = bool(data["truncated"])
             return ToolResult(
                 tool_name=self.definition.name,
                 status="ok",
                 content=(f"Read rule {data['rule']} from {args.path}" + ("; output is truncated; continue with next_offset." if truncated else ".")),
                 data=data,
                 truncated=truncated,
-                partial=bool(data.get("partial", False)),
+                partial=bool(data["partial"]),
             )
         if args.path.startswith(VOIDCODE_TOOL_DOC_PREFIX):
             outcome = _render_tool_documentation(args.path)
@@ -473,8 +469,8 @@ class ReadTool:
                 status="ok",
                 content=outcome.content,
                 data=outcome.data,
-                truncated=bool(outcome.data.get("truncated", False)),
-                partial=bool(outcome.data.get("partial", False)),
+                truncated=bool(outcome.data["truncated"]),
+                partial=bool(outcome.data["partial"]),
             )
 
         if args.path.startswith(VOIDCODE_TRANSCRIPT_PREFIX):
@@ -487,8 +483,8 @@ class ReadTool:
                 status="ok",
                 content=outcome.content,
                 data=outcome.data,
-                truncated=bool(outcome.data.get("transcript_truncated", False)),
-                partial=bool(outcome.data.get("transcript_truncated", False)),
+                truncated=bool(outcome.data["transcript_truncated"]),
+                partial=bool(outcome.data["transcript_truncated"]),
             )
 
         resolution = resolve_workspace_path_policy(

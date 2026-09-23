@@ -264,7 +264,7 @@ class YieldTool:
         args = parse_tool_args(YieldArgs, call.arguments, tool_name=self.definition.name)
         if not args.is_terminal():
             progress = args.progress_payload()
-            content = args.result or json.dumps(progress.get("data", {}), ensure_ascii=False, default=str)
+            content = args.result or json.dumps(progress["data"], ensure_ascii=False, default=str)
             return ToolResult(
                 tool_name=self.definition.name,
                 status="ok",

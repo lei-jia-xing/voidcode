@@ -46,17 +46,6 @@ def read_tracking_for_tool_results(
     )
 
 
-def read_paths_for_tool_results(
-    *,
-    tool_results: tuple[ToolResult, ...],
-    workspace: Path,
-) -> frozenset[str]:
-    return read_tracking_for_tool_results(
-        tool_results=tool_results,
-        workspace=workspace,
-    ).read_paths
-
-
 def _read_result_lines(result: ToolResult) -> frozenset[int] | None:
     """Extract the 1-based line numbers revealed by a read result.
 
@@ -252,6 +241,5 @@ __all__ = [
     "enforce_read_before_write",
     "enforce_seen_lines",
     "enforce_seen_whole_file",
-    "read_paths_for_tool_results",
     "read_tracking_for_tool_results",
 ]

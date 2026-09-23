@@ -1,24 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from ...runtime.background.process import BackgroundProcessManager
 from .._pydantic_args import NonEmptyProcessId, parse_tool_args
-from ..contracts import ToolCall, ToolDefinition, ToolResult
+from ..contracts import ToolCall, ToolResult
 from ..output import _artifact_metadata
 from ..runtime_context import current_runtime_tool_context
+
+if TYPE_CHECKING:
+    from .background_process import BackgroundProcessRuntime
 
 
 class _BackgroundProcessLogsArgs(BaseModel):
     process_id: NonEmptyProcessId
-
-
-class BackgroundProcessLogsRuntime(Protocol):
-    @property
-    def background_process_manager(self) -> BackgroundProcessManager: ...
 
 
 def _background_process_logs_guidance(*, running: bool) -> str:
@@ -37,23 +34,13 @@ def _background_process_logs_guidance(*, running: bool) -> str:
 
 
 class BackgroundProcessLogsTool:
-    definition = ToolDefinition(
-        name="background_process_logs",
-        description="Read accumulated stdout/stderr from a background process.",
-        input_schema={
-            "process_id": {
-                "type": "string",
-                "description": "Process id returned by background_process with op=start",
-            }
-        },
-        read_only=True,
-    )
+    name = "background_process_logs"
 
-    def __init__(self, *, runtime: BackgroundProcessLogsRuntime) -> None:
+    def __init__(self, *, runtime: BackgroundProcessRuntime) -> None:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        args = parse_tool_args(_BackgroundProcessLogsArgs, call.arguments, tool_name=self.definition.name)
+        args = parse_tool_args(_BackgroundProcessLogsArgs, call.arguments, tool_name=self.name)
 
         context = current_runtime_tool_context()
         state = self._runtime.background_process_manager.load(
@@ -70,7 +57,7 @@ class BackgroundProcessLogsTool:
                 "and is externally managed/unavailable to this runtime."
             )
             return ToolResult(
-                tool_name=self.definition.name,
+                tool_name=self.name,
                 status="error",
                 content=message,
                 error=message,
@@ -92,7 +79,7 @@ class BackgroundProcessLogsTool:
             stdout_artifact = _artifact_metadata(
                 session_id=None,
                 tool_call_id=state.process_id,
-                tool_name=self.definition.name,
+                tool_name=self.name,
                 content="".join(state.stdout_chunks),
                 kind="content",
             )
@@ -101,7 +88,7 @@ class BackgroundProcessLogsTool:
             stderr_artifact = _artifact_metadata(
                 session_id=None,
                 tool_call_id=state.process_id,
-                tool_name=self.definition.name,
+                tool_name=self.name,
                 content="".join(state.stderr_chunks),
                 kind="error",
             )
@@ -126,7 +113,7 @@ class BackgroundProcessLogsTool:
         guidance = _background_process_logs_guidance(running=running)
         output = f"{output}\n\nGuidance: {guidance}" if output else f"Guidance: {guidance}"
         return ToolResult(
-            tool_name=self.definition.name,
+            tool_name=self.name,
             status="ok",
             content=output,
             data={

@@ -7,8 +7,8 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, field_validator
 
-from ._pydantic_args import parse_tool_args
-from ._workspace import resolve_workspace_path
+from ..security.path_policy import resolve_workspace_path
+from ._pydantic_args import parse_tool_args, validate_non_empty
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 # ── Unified args model for merged AstGrepTool ───────────────────────────────
@@ -29,12 +29,7 @@ class AstGrepArgs(BaseModel):
             raise ValueError("mode must be one of search, preview, replace")
         return value
 
-    @field_validator("pattern", mode="after")
-    @classmethod
-    def _validate_pattern(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("pattern must not be empty")
-        return value
+    _validate_pattern = field_validator("pattern", mode="after")(validate_non_empty)
 
     @field_validator("path", mode="after")
     @classmethod
@@ -54,10 +49,10 @@ class AstGrepArgs(BaseModel):
 
 
 def _resolve_candidate(*, workspace: Path, path_text: str) -> tuple[Path, str]:
-    candidate, relative_path = resolve_workspace_path(workspace=workspace, raw_path=path_text)
-    if not candidate.exists():
+    resolution = resolve_workspace_path(workspace=workspace, raw_path=path_text)
+    if not resolution.candidate.exists():
         raise ValueError(f"ast_grep target does not exist: {path_text}")
-    return candidate, relative_path
+    return resolution.candidate, resolution.relative_path
 
 
 def _parse_stream_output(stdout: str) -> list[dict[str, Any]]:
@@ -223,14 +218,13 @@ class AstGrepTool:
     def _invoke_preview_replace(self, args: AstGrepArgs, *, workspace: Path, timeout_seconds: int) -> ToolResult:
         if args.mode == "replace" and not args.apply:
             raise ValueError("ast_grep replace mode requires apply=True")
-        if args.mode == "replace" and args.rewrite is None:
-            raise ValueError("ast_grep replace mode requires rewrite")
-        if args.mode == "preview" and args.rewrite is None:
-            raise ValueError("ast_grep preview mode requires rewrite")
+        rewrite = args.rewrite
+        if rewrite is None:
+            raise ValueError(f"ast_grep {args.mode} mode requires rewrite")
 
         preview = _run_preview_replace(
             pattern=args.pattern,
-            rewrite=args.rewrite or "",
+            rewrite=rewrite,
             path_text=args.path,
             lang=args.lang,
             workspace=workspace,
@@ -258,7 +252,7 @@ class AstGrepTool:
                 },
             )
 
-        apply_cmd = ["ast-grep", "run", "-p", args.pattern, "-r", (args.rewrite or "")]
+        apply_cmd = ["ast-grep", "run", "-p", args.pattern, "-r", rewrite]
         if args.lang:
             apply_cmd.extend(["--lang", args.lang])
         apply_cmd.extend(["-U", relative_path])

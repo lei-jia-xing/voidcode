@@ -6,8 +6,8 @@ from typing import Protocol
 from pydantic import BaseModel, field_validator
 
 from ...runtime.background.models import BackgroundTaskState, is_background_task_terminal
-from .._pydantic_args import NonEmptyPrompt, parse_tool_args
-from ..contracts import ToolCall, ToolDefinition, ToolResult
+from .._pydantic_args import NonEmptyPrompt, parse_tool_args, validate_non_empty_stripped
+from ..contracts import ToolCall, ToolResult
 from ..runtime_context import require_runtime_tool_context
 
 
@@ -23,50 +23,20 @@ class _TaskSteerArgs(BaseModel):
     task_id: str
     prompt: NonEmptyPrompt
 
-    @field_validator("task_id", mode="after")
-    @classmethod
-    def _validate_task_id(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("task_id must be a non-empty string")
-        return stripped
+    _validate_task_id = field_validator("task_id", mode="after")(validate_non_empty_stripped)
 
 
 class TaskSteerTool:
-    definition = ToolDefinition(
-        name="task_steer",
-        description=(
-            "Dispatch a new worker turn for a keep-alive background task created with "
-            "task(keep_alive=true, run_in_background=true). The task must be idle "
-            "(awaiting_steer) or interrupted (resumable breakpoint after a process "
-            "restart); a task with a turn in flight cannot be steered (no pipelining). "
-            "Only the task's parent session may steer it. After each steer turn the "
-            "worker parks back as idle unless it submits its final result, which "
-            "completes the task."
-        ),
-        input_schema={
-            "task_id": {
-                "type": "string",
-                "description": "Background task id returned by the task tool.",
-                "minLength": 1,
-            },
-            "prompt": {
-                "type": "string",
-                "description": "Next instruction for the keep-alive worker turn.",
-                "minLength": 1,
-            },
-        },
-        read_only=True,
-    )
+    name = "task_steer"
 
     def __init__(self, *, runtime: TaskSteerRuntime) -> None:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
-        args = parse_tool_args(_TaskSteerArgs, call.arguments, tool_name=self.definition.name)
+        args = parse_tool_args(_TaskSteerArgs, call.arguments, tool_name=self.name)
 
-        context = require_runtime_tool_context(self.definition.name)
+        context = require_runtime_tool_context(self.name)
         self._runtime.authorize_background_task_owner(
             args.task_id,
             parent_session_id=context.session_id,
@@ -89,7 +59,7 @@ class TaskSteerTool:
         else:
             content = f"Background task {task.task.id} after steer: {task.status}"
         return ToolResult(
-            tool_name=self.definition.name,
+            tool_name=self.name,
             status="ok",
             content=content,
             data={

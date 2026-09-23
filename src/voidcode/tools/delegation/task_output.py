@@ -13,8 +13,8 @@ from ...runtime.contracts import (
     RuntimeSessionResult,
     UnknownSessionError,
 )
-from .._pydantic_args import parse_tool_args
-from ..contracts import ToolCall, ToolDefinition, ToolResult
+from .._pydantic_args import MessageLimit, TimeoutMs, parse_tool_args
+from ..contracts import ToolCall, ToolResult
 from ..runtime_context import current_runtime_tool_context
 
 
@@ -66,9 +66,9 @@ class _TaskOutputArgs(BaseModel):
     block: bool = False
     # Blocking waits use runtime lifecycle notifications and express timeout in milliseconds.
     # timeout is ignored for non-blocking reads; block=true requires at least one second.
-    timeout: int = 60000
+    timeout: TimeoutMs = 60000
     full_session: bool = False
-    message_limit: int = 20
+    message_limit: MessageLimit = 20
 
     @model_validator(mode="after")
     def _validate_selectors(self) -> _TaskOutputArgs:
@@ -109,86 +109,16 @@ class _TaskOutputArgs(BaseModel):
             normalized.append(stripped)
         return normalized
 
-    @field_validator("timeout", mode="after")
-    @classmethod
-    def _validate_timeout(cls, value: int) -> int:
-        if value < 0:
-            raise ValueError("timeout must be a non-negative integer number of milliseconds")
-        return value
-
-    @field_validator("message_limit", mode="after")
-    @classmethod
-    def _validate_message_limit(cls, value: int) -> int:
-        return min(max(value, 1), 100)
-
 
 class TaskOutputTool:
-    definition = ToolDefinition(
-        name="task_output",
-        description=(
-            "Read background task status and optionally bounded child session results. "
-            "Provide exactly one selector: task_id, task_ids, or parallel_group_id. "
-            "block=true waits through the runtime lifecycle API; timeout is milliseconds and "
-            "must be at least 1000ms for a blocking wait."
-        ),
-        input_schema={
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "task_id": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Single background task selector; mutually exclusive with the aggregate selectors.",
-                },
-                "task_ids": {
-                    "type": "array",
-                    "items": {"type": "string", "minLength": 1},
-                    "minItems": 1,
-                    "maxItems": 100,
-                    "uniqueItems": True,
-                    "description": "Explicit task ids to aggregate; mutually exclusive with task_id and parallel_group_id.",
-                },
-                "parallel_group_id": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Runtime-owned parallel group selector; mutually exclusive with task_id and task_ids.",
-                },
-                "block": {
-                    "type": "boolean",
-                    "description": "When true, wait once through the runtime lifecycle API; when false, return an immediate snapshot.",
-                },
-                "timeout": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "description": "Milliseconds for block=true only; block=true requires at least 1000ms. Ignored for non-blocking reads.",
-                },
-                "full_session": {
-                    "type": "boolean",
-                    "description": (
-                        "For task_id only, include bounded child session metadata and transcript preview; "
-                        "aggregate selectors remain no-transcript projections."
-                    ),
-                },
-                "message_limit": {
-                    "type": "integer",
-                    "description": "Maximum bounded transcript events for full_session; clamped to 1-100.",
-                },
-            },
-            "oneOf": [
-                {"required": ["task_id"], "not": {"anyOf": [{"required": ["task_ids"]}, {"required": ["parallel_group_id"]}]}},
-                {"required": ["task_ids"], "not": {"anyOf": [{"required": ["task_id"]}, {"required": ["parallel_group_id"]}]}},
-                {"required": ["parallel_group_id"], "not": {"anyOf": [{"required": ["task_id"]}, {"required": ["task_ids"]}]}},
-            ],
-        },
-        read_only=True,
-    )
+    name = "task_output"
 
     def __init__(self, *, runtime: TaskOutputRuntime) -> None:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
-        args = parse_tool_args(_TaskOutputArgs, call.arguments, tool_name=self.definition.name)
+        args = parse_tool_args(_TaskOutputArgs, call.arguments, tool_name=self.name)
         # Group reads are deliberately runtime-context owned. The runtime
         # validates every selected task against this parent before loading any
         # result, so a model cannot inspect another session's children.
@@ -354,7 +284,7 @@ class TaskOutputTool:
             content = f"{content}\n\nGuidance: {guidance}"
 
         return ToolResult(
-            tool_name=self.definition.name,
+            tool_name=self.name,
             status="ok",
             content=content,
             data=payload,
@@ -388,12 +318,7 @@ def _background_group_tool_result(group: BackgroundTaskGroupResult) -> ToolResul
     """Render only bounded per-task result metadata; never copy transcripts."""
     status = "completed" if group.complete else "running"
     failures = [result for result in group.results if result.status in {"failed", "cancelled", "interrupted"}]
-    error = (
-        "; ".join(
-            f"{result.task_id}: {_bounded_text(result.error or result.cancellation_cause or result.status) or result.status}" for result in failures
-        )
-        or None
-    )
+    error = "; ".join(f"{result.task_id}: {_bounded_text(result.error or result.cancellation_cause or result.status)}" for result in failures) or None
     results: list[dict[str, object]] = []
     lines = [
         f"Background task group result: {group.parallel_group_id or 'explicit task ids'}",
@@ -418,7 +343,7 @@ def _background_group_tool_result(group: BackgroundTaskGroupResult) -> ToolResul
         results.append(item)
         lines.append(f"- {result.task_id}: {result.status}; summary={summary or 'none'}")
     content = "\n".join(lines)
-    content = _bounded_text(content, limit=_MAX_GROUP_CONTENT_CHARS) or "Background task group result"
+    content = _bounded_text(content, limit=_MAX_GROUP_CONTENT_CHARS)
     payload: dict[str, object] = {
         "parallel_group_id": group.parallel_group_id,
         "task_ids": list(group.task_ids),
@@ -603,5 +528,5 @@ def _provider_failure_details_from_session_result(
             details["model"] = model
         if isinstance(provider_error_details, dict):
             details["provider_error_details"] = provider_error_details
-        return details or None
+        return details
     return None

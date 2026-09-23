@@ -1,43 +1,30 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from ...runtime.background.process import BackgroundProcessManager
 from .._pydantic_args import NonEmptyProcessId, parse_tool_args
-from ..contracts import ToolCall, ToolDefinition, ToolResult
+from ..contracts import ToolCall, ToolResult
 from ..runtime_context import current_runtime_tool_context
+
+if TYPE_CHECKING:
+    from .background_process import BackgroundProcessRuntime
 
 
 class _BackgroundProcessStopArgs(BaseModel):
     process_id: NonEmptyProcessId
 
 
-class BackgroundProcessStopRuntime(Protocol):
-    @property
-    def background_process_manager(self) -> BackgroundProcessManager: ...
-
-
 class BackgroundProcessStopTool:
-    definition = ToolDefinition(
-        name="background_process_stop",
-        description="Stop a background process by id.",
-        input_schema={
-            "process_id": {
-                "type": "string",
-                "description": "Process id returned by background_process with op=start",
-            }
-        },
-        read_only=False,
-    )
+    name = "background_process_stop"
 
-    def __init__(self, *, runtime: BackgroundProcessStopRuntime) -> None:
+    def __init__(self, *, runtime: BackgroundProcessRuntime) -> None:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        args = parse_tool_args(_BackgroundProcessStopArgs, call.arguments, tool_name=self.definition.name)
+        args = parse_tool_args(_BackgroundProcessStopArgs, call.arguments, tool_name=self.name)
 
         context = current_runtime_tool_context()
         manager = self._runtime.background_process_manager
@@ -52,7 +39,7 @@ class BackgroundProcessStopTool:
         if state.prior_runtime:
             message = state.reconciliation_reason or ("Prior-runtime process is externally managed/unavailable to this runtime")
             return ToolResult(
-                tool_name=self.definition.name,
+                tool_name=self.name,
                 status="error",
                 content=message,
                 error=message,
@@ -74,7 +61,7 @@ class BackgroundProcessStopTool:
             enforce_owner=context is not None,
         )
         return ToolResult(
-            tool_name=self.definition.name,
+            tool_name=self.name,
             status="ok",
             content=f"Stopped background process {state.process_id}.",
             data={"process_id": state.process_id, "exit_code": state.process.poll(), "running": state.process.poll() is None},

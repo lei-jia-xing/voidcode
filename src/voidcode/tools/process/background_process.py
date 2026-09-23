@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Literal, Protocol
 
@@ -198,20 +199,7 @@ class BackgroundProcessTool:
 
     @staticmethod
     def _rename(result: ToolResult) -> ToolResult:
-        return ToolResult(
-            tool_name="background_process",
-            status=result.status,
-            content=result.content,
-            data=result.data,
-            error=result.error,
-            diagnostics=result.diagnostics,
-            truncated=result.truncated,
-            partial=result.partial,
-            timeout_seconds=result.timeout_seconds,
-            source=result.source,
-            fallback_reason=result.fallback_reason,
-            reference=result.reference,
-        )
+        return replace(result, tool_name="background_process")
 
 
 __all__ = ["BackgroundProcessRuntime", "BackgroundProcessTool", "_MAX_BACKGROUND_PROCESS_ROWS"]

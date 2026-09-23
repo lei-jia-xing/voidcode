@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ..runtime.todos import TODO_STATUSES, TodoStatus
 from ._pydantic_args import parse_tool_args
 from .contracts import ToolCall, ToolDefinition, ToolResult
-from .runtime_context import current_runtime_tool_context
+from .runtime_context import require_runtime_tool_context
 
 
 class _TodoArgsModel(BaseModel):
@@ -64,8 +64,7 @@ def _copy_phases(raw: object) -> list[dict[str, object]]:
 
 
 def _state_from_runtime() -> list[dict[str, object]]:
-    context = current_runtime_tool_context()
-    return _copy_phases(context.todo_phases if context is not None else ())
+    return _copy_phases(require_runtime_tool_context("todo").todo_phases)
 
 
 def _normalize_in_progress(phases: list[dict[str, object]]) -> None:

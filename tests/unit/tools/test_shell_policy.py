@@ -11,7 +11,6 @@ from voidcode.runtime.permission_engine import PermissionEngine
 from voidcode.security.shell_policy import non_interactive_shell_env
 from voidcode.tools.contracts import ToolCall, ToolDefinition
 from voidcode.tools.process.background_process import BackgroundProcessTool
-from voidcode.tools.process.background_process_start import BackgroundProcessStartTool
 from voidcode.tools.shell_exec import ShellExecTool
 
 
@@ -55,7 +54,6 @@ def test_command_execution_entrypoints_share_authorization(tmp_path: Path, mode:
     engine = PermissionEngine(RuntimePermissionContextResolver(workspace=tmp_path), ExternalDirectoryPermissionConfig())
     tools = (
         ShellExecTool(),
-        BackgroundProcessStartTool(runtime=cast(Any, SimpleNamespace())),
         BackgroundProcessTool(runtime=cast(Any, SimpleNamespace())),
     )
     for tool in tools:
@@ -82,7 +80,6 @@ def test_explicit_command_rule_applies_to_all_execution_entrypoints(tmp_path: Pa
     engine = PermissionEngine(RuntimePermissionContextResolver(workspace=tmp_path), ExternalDirectoryPermissionConfig())
     tools = (
         ShellExecTool(),
-        BackgroundProcessStartTool(runtime=cast(Any, SimpleNamespace())),
         BackgroundProcessTool(runtime=cast(Any, SimpleNamespace())),
     )
     for tool in tools:

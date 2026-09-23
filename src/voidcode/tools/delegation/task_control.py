@@ -6,35 +6,12 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from .._pydantic_args import parse_tool_args
-from ..contracts import ToolCall, ToolDefinition, ToolResult
+from .._pydantic_args import MessageLimit, TimeoutMs, parse_tool_args
+from ..contracts import ToolCall, ToolResult
 from .task_cancel import TaskCancelRuntime, TaskCancelTool
 from .task_output import TaskOutputRuntime, TaskOutputTool
 from .task_ps import TaskPsRuntime, TaskPsTool
 from .task_steer import TaskSteerRuntime, TaskSteerTool
-
-
-def _rewrite_background_reference(value: object) -> object:
-    """Rewrite internal delegate guidance before it crosses the model boundary."""
-    if isinstance(value, str):
-        replacements = (
-            ("task_output(task_id=", 'task(operation="output", task_id='),
-            ("task_output(task_ids=", 'task(operation="output", task_ids='),
-            ("task_output(parallel_group_id=", 'task(operation="output", parallel_group_id='),
-            ("task_output(block=true)", 'task(operation="output", block=true)'),
-            ("task_output", 'task(operation="output")'),
-            ("task_cancel", 'task(operation="cancel")'),
-            ("task_ps", 'task(operation="ps")'),
-            ("task_steer", 'task(operation="steer")'),
-        )
-        for old, new in replacements:
-            value = value.replace(old, new)
-        return value
-    if isinstance(value, list):
-        return [_rewrite_background_reference(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _rewrite_background_reference(item) for key, item in value.items()}
-    return value
 
 
 class TaskControlRuntime(TaskOutputRuntime, TaskCancelRuntime, TaskPsRuntime, TaskSteerRuntime, Protocol):
@@ -49,9 +26,9 @@ class _TaskControlArgs(BaseModel):
     task_ids: list[str] | None = None
     parallel_group_id: str | None = None
     block: bool = False
-    timeout: int = 60000
+    timeout: TimeoutMs = 60000
     full_session: bool = False
-    message_limit: int = 20
+    message_limit: MessageLimit = 20
     prompt: str | None = None
 
     @field_validator("task_id", "parallel_group_id", "prompt", mode="after")
@@ -82,18 +59,6 @@ class _TaskControlArgs(BaseModel):
         if len(set(normalized)) != len(normalized):
             raise ValueError("task_ids must not contain duplicates")
         return normalized
-
-    @field_validator("timeout", mode="after")
-    @classmethod
-    def _validate_timeout(cls, value: int) -> int:
-        if value < 0:
-            raise ValueError("timeout must be a non-negative integer number of milliseconds")
-        return value
-
-    @field_validator("message_limit", mode="after")
-    @classmethod
-    def _validate_message_limit(cls, value: int) -> int:
-        return min(max(value, 1), 100)
 
     @model_validator(mode="after")
     def _validate_operation_arguments(self) -> _TaskControlArgs:
@@ -130,103 +95,10 @@ class _TaskControlArgs(BaseModel):
         return self
 
 
-_OUTPUT_PROPERTIES: dict[str, object] = {
-    "operation": {"const": "output"},
-    "task_id": {"type": "string", "minLength": 1},
-    "task_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 100, "uniqueItems": True},
-    "parallel_group_id": {"type": "string", "minLength": 1},
-    "block": {"type": "boolean"},
-    "timeout": {
-        "type": "integer",
-        "minimum": 0,
-        "description": "Milliseconds for block=true only; block=true requires at least 1000ms. Ignored for non-blocking reads.",
-    },
-    "full_session": {
-        "type": "boolean",
-        "description": "Include bounded child-session metadata and transcript preview; only true with a single task_id.",
-    },
-    "message_limit": {
-        "type": "integer",
-        "description": "Maximum bounded transcript events for full_session; clamped to 1-100.",
-    },
-}
-
-
 class TaskControlTool:
     """Unified model-facing control surface for runtime-owned tasks."""
 
-    definition = ToolDefinition(
-        name="task",
-        description=(
-            "Control a runtime-owned delegated task with operation output, cancel, ps, or steer. "
-            "Output reads one task or a bounded task group; ps lists the parent's bounded roster; "
-            "cancel requests cancellation; steer dispatches the next turn for a keep-alive task."
-        ),
-        input_schema={
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "operation": {"type": "string", "enum": ["output", "cancel", "ps", "steer"]},
-                "task_id": {"type": "string", "minLength": 1},
-                "task_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 100, "uniqueItems": True},
-                "parallel_group_id": {"type": "string", "minLength": 1},
-                "block": {"type": "boolean"},
-                "timeout": {"type": "integer", "minimum": 0},
-                "full_session": {"type": "boolean"},
-                "message_limit": {"type": "integer"},
-                "prompt": {"type": "string", "minLength": 1},
-            },
-            "oneOf": [
-                {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": _OUTPUT_PROPERTIES,
-                    "required": ["operation"],
-                    "oneOf": [
-                        {"required": ["task_id"]},
-                        {"required": ["task_ids"]},
-                        {"required": ["parallel_group_id"]},
-                    ],
-                    "allOf": [
-                        {
-                            "if": {"required": ["full_session"], "properties": {"full_session": {"const": True}}},
-                            "then": {"required": ["task_id"]},
-                        },
-                        {
-                            "if": {"required": ["block"], "properties": {"block": {"const": True}}},
-                            "then": {"properties": {"timeout": {"type": "integer", "minimum": 1000}}},
-                        },
-                    ],
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {"operation": {"const": "cancel"}, "task_id": {"type": "string", "minLength": 1}},
-                    "required": ["operation", "task_id"],
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {"operation": {"const": "ps"}},
-                    "required": ["operation"],
-                },
-                {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "operation": {"const": "steer"},
-                        "task_id": {"type": "string", "minLength": 1},
-                        "prompt": {"type": "string", "minLength": 1},
-                    },
-                    "required": ["operation", "task_id", "prompt"],
-                },
-            ],
-        },
-        # The operation classifier supplies read/write/execute semantics before
-        # invocation; this definition must therefore not advertise the whole
-        # facade as read-only.
-        read_only=False,
-    )
+    name = "task"
 
     def __init__(self, *, runtime: TaskControlRuntime) -> None:
         self._output = TaskOutputTool(runtime=runtime)
@@ -235,7 +107,7 @@ class TaskControlTool:
         self._steer = TaskSteerTool(runtime=runtime)
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        args = parse_tool_args(_TaskControlArgs, call.arguments, tool_name=self.definition.name)
+        args = parse_tool_args(_TaskControlArgs, call.arguments, tool_name=self.name)
 
         if args.operation == "output":
             delegate_call = ToolCall(
@@ -268,13 +140,7 @@ class TaskControlTool:
                 ),
                 workspace=workspace,
             )
-        return replace(
-            result,
-            tool_name=self.definition.name,
-            content=_rewrite_background_reference(result.content),
-            data=_rewrite_background_reference(result.data),
-            error=_rewrite_background_reference(result.error),
-        )
+        return replace(result, tool_name=self.name)
 
 
 __all__ = ["TaskControlRuntime", "TaskControlTool"]

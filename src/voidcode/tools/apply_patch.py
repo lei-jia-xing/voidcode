@@ -33,7 +33,7 @@ class _MarkerChunk:
 class _MarkerHunk:
     action: str
     path: str
-    contents: str | None = None
+    contents: str = ""
     move_path: str | None = None
     chunks: tuple[_MarkerChunk, ...] = ()
 
@@ -42,7 +42,7 @@ class _MarkerHunk:
 class _PreparedMarkerChange:
     status: str
     path: str
-    content: str | None = None
+    content: str = ""
     old_path: str | None = None
 
 
@@ -413,8 +413,8 @@ def _apply_marker_patch(
             if target.exists() or hunk.path in planned_add_paths:
                 raise ValueError(f"Add File destination already exists: {hunk.path}")
             planned_add_paths.add(hunk.path)
-            staged_contents[hunk.path] = hunk.contents or ""
-            prepared.append(_PreparedMarkerChange(status="A", path=hunk.path, content=hunk.contents or ""))
+            staged_contents[hunk.path] = hunk.contents
+            prepared.append(_PreparedMarkerChange(status="A", path=hunk.path, content=hunk.contents))
         elif hunk.action == "delete":
             target = workspace / hunk.path
             if not target.exists():
@@ -517,7 +517,7 @@ def _apply_marker_patch(
         target = workspace / change.path
         if change.status in {"A", "M", "R"}:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(change.content or "", encoding="utf-8", newline="\n")
+            target.write_text(change.content, encoding="utf-8", newline="\n")
         if change.status in {"D", "R"}:
             old_target = workspace / (change.old_path or change.path)
             old_target.unlink()
@@ -916,7 +916,7 @@ def _with_formatter_feedback(
         workspace=workspace,
         hooks_config=hooks_config,
     )
-    changed_paths = [cast(str, change["path"]) for change in changes if isinstance(change.get("path"), str)]
+    changed_paths = [cast(str, change["path"]) for change in changes]
     # Independent write-path feedback: LSP post-edit diagnostics are collected
     # regardless of formatter feedback.
     lsp_diagnostics = post_edit_lsp_diagnostics(
@@ -931,9 +931,7 @@ def _with_formatter_feedback(
     if diagnostics:
         data["diagnostics"] = diagnostics
     if lsp_diagnostics:
-        current_diagnostics = data.get("diagnostics")
-        existing = current_diagnostics if isinstance(current_diagnostics, list) else []
-        data["diagnostics"] = [*existing, *lsp_diagnostics]
+        data["diagnostics"] = [*diagnostics, *lsp_diagnostics]
     content = result.content
     if content is not None and diagnostics:
         content += f"\nFormatter warning: {diagnostics[0]['message']}"
@@ -976,10 +974,7 @@ def _enforce_patch_seen_ranges(
     tool_name: str,
 ) -> None:
     """Require every source line each unified-diff hunk touches to be seen."""
-    try:
-        patch_set = PatchSet(patch_text)
-    except UnidiffParseError, ValueError:
-        return
+    patch_set = PatchSet(patch_text)
 
     for patched_file in patch_set:
         old_path = None if patched_file.source_file == "/dev/null" else _strip_diff_prefix(patched_file.source_file)

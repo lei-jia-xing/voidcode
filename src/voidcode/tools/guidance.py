@@ -38,11 +38,7 @@ def guidance_filename_for_tool(tool_name: str) -> str | None:
 
 @cache
 def load_tool_guidance(filename: str) -> str:
-    path = _GUIDANCE_DIR / filename
-    try:
-        return path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return ""
+    return (_GUIDANCE_DIR / filename).read_text(encoding="utf-8")
 
 
 def guidance_for_tool(tool_name: str) -> str:

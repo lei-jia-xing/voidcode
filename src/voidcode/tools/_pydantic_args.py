@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, ValidationError
+from pydantic import AfterValidator, BaseModel, ValidationError, ValidationInfo
 
 
 def validate_command(value: str) -> str:
@@ -31,10 +31,35 @@ def validate_prompt(value: str) -> str:
     return stripped
 
 
+def validate_non_empty(value: str, info: ValidationInfo) -> str:
+    if not value.strip():
+        raise ValueError(f"{info.field_name} must not be empty")
+    return value
+
+
+def validate_non_empty_stripped(value: str, info: ValidationInfo) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{info.field_name} must be a non-empty string")
+    return stripped
+
+
+def validate_timeout_ms(value: int) -> int:
+    if value < 0:
+        raise ValueError("timeout must be a non-negative integer number of milliseconds")
+    return value
+
+
+def validate_message_limit(value: int) -> int:
+    return min(max(value, 1), 100)
+
+
 type NonEmptyCommand = Annotated[str, AfterValidator(validate_command)]
 type OptionalDescription = Annotated[str | None, AfterValidator(validate_description)]
 type NonEmptyProcessId = Annotated[str, AfterValidator(validate_process_id)]
 type NonEmptyPrompt = Annotated[str, AfterValidator(validate_prompt)]
+type TimeoutMs = Annotated[int, AfterValidator(validate_timeout_ms)]
+type MessageLimit = Annotated[int, AfterValidator(validate_message_limit)]
 
 
 def parse_tool_args[M: BaseModel](model: type[M], arguments: Mapping[str, object] | dict[str, object], *, tool_name: str) -> M:

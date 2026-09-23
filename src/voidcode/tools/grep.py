@@ -9,7 +9,7 @@ from typing import ClassVar, cast, final
 from pydantic import BaseModel, field_validator
 
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
-from ._pydantic_args import parse_tool_args
+from ._pydantic_args import parse_tool_args, validate_non_empty
 from ._repair import raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -22,19 +22,8 @@ class GrepArgs(BaseModel):
     include: list[str] | None = None
     exclude: list[str] | None = None
 
-    @field_validator("pattern", mode="after")
-    @classmethod
-    def _validate_pattern(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("pattern must not be empty")
-        return value
-
-    @field_validator("path", mode="after")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("path must not be empty")
-        return value
+    _validate_pattern = field_validator("pattern", mode="after")(validate_non_empty)
+    _validate_path = field_validator("path", mode="after")(validate_non_empty)
 
     @field_validator("context", mode="after")
     @classmethod

@@ -147,7 +147,7 @@ class GlobTool:
                 data=data,
                 error=error_message,
                 truncated=truncated,
-                partial=truncated or True,
+                partial=True,
             )
 
         return ToolResult(

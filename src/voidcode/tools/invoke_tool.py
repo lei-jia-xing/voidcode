@@ -20,7 +20,7 @@ from typing import ClassVar, final
 
 from pydantic import BaseModel, field_validator
 
-from ._pydantic_args import parse_tool_args
+from ._pydantic_args import parse_tool_args, validate_non_empty_stripped
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -28,13 +28,7 @@ class InvokeToolArgs(BaseModel):
     name: str
     arguments: dict[str, object] | None = None
 
-    @field_validator("name", mode="after")
-    @classmethod
-    def _validate_name(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("name must be a non-empty string")
-        return stripped
+    _validate_name = field_validator("name", mode="after")(validate_non_empty_stripped)
 
     @field_validator("arguments", mode="after")
     @classmethod

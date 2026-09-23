@@ -140,7 +140,10 @@ def test_websearch_tool_reports_truthful_metadata_when_ddg_parsing_fails() -> No
             workspace=Path("/tmp"),
         )
 
-    assert result.status == "ok"
+    assert result.status == "error"
     assert result.data["source"] == "duckduckgo-error"
-    assert result.fallback_reason == "duckduckgo fallback failed before parsing results"
-    assert result.content == "Found web results for test using duckduckgo-error."
+    assert result.error is not None
+    assert result.error.startswith("Web search failed:")
+    assert result.content == result.error
+    assert result.fallback_reason is not None
+    assert result.fallback_reason.startswith("duckduckgo fallback failed:")
