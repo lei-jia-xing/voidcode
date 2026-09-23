@@ -17,7 +17,7 @@ Bun/Vite/React frontend shell. The app now has a minimal live runtime transport 
 | Types | `src/lib/runtime/types.ts` | runtime data shapes; backend-owned ones are bindings to `src/lib/runtime/generated/api.d.ts` |
 | Generated backend types | `src/lib/runtime/generated/api.d.ts` | committed, never hand-edited; `mise run frontend:api:generate` rewrites it, `mise run frontend:api:check` fails when it is stale |
 | Tooling | `package.json` | `bun run` command surface |
-| Vite wiring | `vite.config.ts` | dev/build config, future proxy surface |
+| Vite wiring | `vite.config.ts` | dev proxy config |
 
 ## STRUCTURE
 ```text
@@ -50,7 +50,7 @@ bun install
 bun run dev
 bun run lint
 bun run typecheck
-bun run test:run
+bun run test
 bun run test:e2e
 bun run build
 ```

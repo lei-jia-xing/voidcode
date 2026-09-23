@@ -30,7 +30,6 @@ bun run preview
 - `bun run typecheck` - 运行 TypeScript 类型检查
 - `bun run test` - 使用 Vitest 在 jsdom 环境中运行一次测试
 - `bun run test:watch` - 使用 Vitest 进入监听模式
-- `bun run test:run` - 运行一次测试（不进入监听模式）
 - `bun run test:coverage` - 运行测试并生成覆盖率报告
 - `bun run test:e2e` - 使用 Playwright 运行 Web launcher 端到端测试
   > 不要使用裸 `bun test` 运行 Vitest 测试；它会调用 Bun 原生 runner，绕过 Vite/Vitest 的 jsdom 配置。
@@ -57,7 +56,6 @@ frontend/
 │   ├── i18n/             # 国际化初始化与文案
 │   ├── lib/runtime/      # 运行时 HTTP/SSE 客户端
 │   ├── store/            # Zustand 状态存储
-│   ├── types/            # 前端类型定义（re-export 运行时类型）
 │   └── index.css         # 全局样式入口
 ├── public/               # 静态资源
 └── index.html            # 入口 HTML
@@ -115,6 +113,6 @@ uv run voidcode web --workspace . --port 8000 --no-open
 - 从仓库根目录操作时，优先使用根目录的 `mise run frontend:*` 任务；在 `frontend/` 目录直接使用 `bun install` 和 `bun run ...` 也是等价的。
 - 提交前运行 `bun run lint`
 - 运行 `bun run typecheck` 以确保类型安全
-- 针对组件覆盖率变更运行 `bun run test:run`
+- 针对组件覆盖率变更运行 `bun run test`
 - 针对 launcher / 浏览器路径变更运行 `bun run test:e2e`
 - 遵循现有的代码风格
