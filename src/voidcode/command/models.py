@@ -55,24 +55,5 @@ class CommandResolution:
     invocation: CommandInvocation
 
 
-@dataclass(frozen=True, slots=True)
-class UICommandDefinition:
-    """A command palette action that executes locally in the TUI."""
-
-    id: str
-    title: str
-    description: str
-    enabled: bool = True
-    hidden: bool = False
-
-    def __post_init__(self) -> None:
-        if not self.id.strip():
-            raise ValueError("UI command id must be a non-empty string")
-        if not self.title.strip():
-            raise ValueError("UI command title must be a non-empty string")
-        if not self.description.strip():
-            raise ValueError("UI command description must be a non-empty string")
-
-
 def normalize_command_name(name: str) -> str:
     return name.strip().removeprefix("/").replace("\\", "/")

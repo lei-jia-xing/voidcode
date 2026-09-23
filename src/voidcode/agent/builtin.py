@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import MappingProxyType
 
 from ..hook.presets import validate_hook_preset_refs
-from .models import AgentManifest, AgentManifestId, AgentPromptMaterialization
+from .models import AgentManifest, AgentPromptMaterialization
 from .prompts import render_builtin_prompt_profile
 
 _WORKSPACE_DISCOVERY_TOOLS = (
@@ -269,38 +269,8 @@ _BUILTIN_AGENT_MANIFESTS: dict[str, AgentManifest] = {manifest.id: manifest for 
 
 
 def get_builtin_agent_manifest(agent_id: str) -> AgentManifest | None:
-    manifest_id = _parse_builtin_agent_manifest_id(agent_id)
-    if manifest_id is None:
-        return None
-    return _BUILTIN_AGENT_MANIFESTS[manifest_id]
-
-
-def _parse_builtin_agent_manifest_id(agent_id: str) -> AgentManifestId | None:
-    if agent_id == "leader":
-        return "leader"
-    if agent_id == "worker":
-        return "worker"
-    if agent_id == "advisor":
-        return "advisor"
-    if agent_id == "explore":
-        return "explore"
-    if agent_id == "researcher":
-        return "researcher"
-    if agent_id == "product":
-        return "product"
-    return None
+    return _BUILTIN_AGENT_MANIFESTS.get(agent_id)
 
 
 def list_builtin_agent_manifests() -> tuple[AgentManifest, ...]:
     return tuple(_BUILTIN_AGENT_MANIFESTS.values())
-
-
-def is_agent_top_level_selectable(agent_id: str) -> bool:
-    manifest = get_builtin_agent_manifest(agent_id)
-    if manifest is None:
-        return False
-    return manifest.top_level_selectable
-
-
-def list_top_level_selectable_agent_manifests() -> tuple[AgentManifest, ...]:
-    return tuple(manifest for manifest in _BUILTIN_AGENT_MANIFESTS.values() if manifest.top_level_selectable)

@@ -10,7 +10,7 @@ from typing import Literal
 
 from ..frontmatter import load_frontmatter_mapping, split_frontmatter
 from ..hook.presets import validate_hook_preset_refs
-from .builtin import get_builtin_agent_manifest, list_builtin_agent_manifests
+from .builtin import list_builtin_agent_manifests
 from .models import (
     AgentManifest,
     AgentMcpBindingIntent,
@@ -54,9 +54,6 @@ class AgentManifestRegistry:
 
     def list_manifests(self) -> tuple[AgentManifest, ...]:
         return (*self.builtin.values(), *self.custom.values())
-
-    def list_top_level_selectable(self) -> tuple[AgentManifest, ...]:
-        return tuple(manifest for manifest in self.list_manifests() if manifest.top_level_selectable)
 
     def executable_primary_ids(self) -> frozenset[str]:
         return frozenset(manifest.id for manifest in self.list_manifests() if manifest.mode == "primary" and manifest.top_level_selectable)
@@ -277,16 +274,9 @@ def _parse_mcp_binding(value: object) -> AgentMcpBindingIntent | None:
     )
 
 
-def assert_not_builtin_agent_id(agent_id: str, *, source_path: str | None = None) -> None:
-    if get_builtin_agent_manifest(agent_id) is not None:
-        source = f" in {source_path}" if source_path else ""
-        raise ValueError(f"custom agent manifest{source} uses builtin id '{agent_id}'; builtin agent manifests cannot be replaced")
-
-
 __all__ = [
     "AgentManifestRegistry",
     "agent_manifest_id_from_name",
-    "assert_not_builtin_agent_id",
     "is_valid_agent_manifest_id",
     "load_agent_manifest_registry",
     "manifest_from_markdown_file",

@@ -284,10 +284,6 @@ _BUILTIN_LSP_SERVER_PRESETS: tuple[LspServerPreset, ...] = (
 _BUILTIN_LSP_SERVER_PRESET_MAP = {preset.id: preset for preset in _BUILTIN_LSP_SERVER_PRESETS}
 
 
-def builtin_lsp_server_presets() -> tuple[LspServerPreset, ...]:
-    return _BUILTIN_LSP_SERVER_PRESETS
-
-
 def get_builtin_lsp_server_preset(server_id: str) -> LspServerPreset | None:
     return _BUILTIN_LSP_SERVER_PRESET_MAP.get(server_id)
 

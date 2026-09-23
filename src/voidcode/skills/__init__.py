@@ -13,11 +13,9 @@ from .discovery import (
 from .manifest import (
     SUPPORTED_FRONTMATTER_KEYS,
     SkillManifestParseError,
-    parse_skill_body,
-    parse_skill_frontmatter,
     parse_skill_manifest,
 )
-from .models import SkillManifest, SkillManifestFrontmatter, SkillMetadata
+from .models import SkillMetadata
 from .registry import SkillRegistry
 
 __all__ = [
@@ -25,16 +23,12 @@ __all__ = [
     "LocalSkillMetadataLoader",
     "SKILL_ENTRY_FILE_NAME",
     "SkillLoadError",
-    "SkillManifest",
-    "SkillManifestFrontmatter",
     "SkillManifestParseError",
     "SUPPORTED_FRONTMATTER_KEYS",
     "SkillMetadata",
     "SkillRegistry",
     "list_builtin_skills",
     "load_builtin_skill_registry",
-    "parse_skill_body",
-    "parse_skill_frontmatter",
     "parse_skill_manifest",
     "resolve_workspace_relative_path",
     "skill_registry_with_builtins",

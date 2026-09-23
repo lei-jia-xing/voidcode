@@ -86,8 +86,7 @@ class DeterministicGraph:
         planned = self._plan_turn_node(state)
         state["events"].extend(cast(list[GraphEvent], planned.get("events", [])))
         state["tool_calls"].extend(cast(list[ToolCall], planned.get("tool_calls", [])))
-        if "current_turn" in planned:
-            state["current_turn"] = cast(int, planned["current_turn"])
+        state["current_turn"] = cast(int, planned["current_turn"])
         if "output" in planned:
             state["output"] = cast(str | None, planned["output"])
         if "error" in planned:
@@ -239,12 +238,11 @@ class DeterministicGraph:
         step_index = current_run_tool_result_count
         if step_index >= len(commands):
             return None
-        resolution = resolve_tool_instruction(
+        return resolve_tool_instruction(
             commands[step_index],
             available_tools,
             unavailable_message_suffix="graph execution",
         )
-        return resolution.tool_call
 
     @staticmethod
     def _graph_event(event_type: str, payload: dict[str, object]) -> GraphEvent:

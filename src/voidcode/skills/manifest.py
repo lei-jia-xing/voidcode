@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..frontmatter import load_frontmatter_mapping, split_frontmatter
-from .models import SkillManifest, SkillManifestFrontmatter
+from .models import SkillMetadata
 
 SUPPORTED_FRONTMATTER_KEYS = frozenset({"name", "description"})
 
@@ -43,41 +44,20 @@ def _parse_skill_frontmatter_fields(contents: str) -> dict[str, str]:
     return parsed
 
 
-def parse_skill_frontmatter(
-    contents: str,
-    *,
-    path: str | None = None,
-) -> SkillManifestFrontmatter:
+def parse_skill_manifest(contents: str, *, entry_path: Path) -> SkillMetadata:
     try:
         parsed = _parse_skill_frontmatter_fields(contents)
-        return SkillManifestFrontmatter(
+        _raw_frontmatter, body = split_frontmatter(contents)
+        if not body.strip():
+            raise ValueError("content must be a non-empty string")
+        return SkillMetadata(
             name=parsed["name"],
             description=parsed["description"],
+            content=body,
+            directory=entry_path.parent,
+            entry_path=entry_path,
         )
     except ValueError as exc:
         if isinstance(exc, SkillManifestParseError):
-            raise SkillManifestParseError(exc.message, path=path) from exc
-        raise SkillManifestParseError(str(exc), path=path) from exc
-
-
-def parse_skill_body(contents: str, *, path: str | None = None) -> str:
-    try:
-        _raw_frontmatter, body = split_frontmatter(contents)
-    except ValueError as exc:
-        raise SkillManifestParseError(str(exc), path=path) from exc
-    return body
-
-
-def parse_skill_manifest(contents: str, *, path: str | None = None) -> SkillManifest:
-    frontmatter = parse_skill_frontmatter(contents, path=path)
-    body = parse_skill_body(contents, path=path)
-    try:
-        if not body.strip():
-            raise ValueError("content must be a non-empty string")
-        return SkillManifest(
-            name=frontmatter.name,
-            description=frontmatter.description,
-            content=body,
-        )
-    except ValueError as exc:
-        raise SkillManifestParseError(str(exc), path=path) from exc
+            raise SkillManifestParseError(exc.message, path=str(entry_path)) from exc
+        raise SkillManifestParseError(str(exc), path=str(entry_path)) from exc

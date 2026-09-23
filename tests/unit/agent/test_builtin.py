@@ -4,9 +4,7 @@ import pytest
 
 from voidcode.agent import (
     get_builtin_agent_manifest,
-    is_agent_top_level_selectable,
     list_builtin_agent_manifests,
-    list_top_level_selectable_agent_manifests,
     render_agent_prompt,
     render_builtin_prompt_profile,
 )
@@ -91,14 +89,6 @@ def test_builtin_agent_manifests_declare_top_level_selectability() -> None:
     assert [manifest.id for manifest in manifests if manifest.top_level_selectable] == [
         "leader",
     ]
-    assert is_agent_top_level_selectable("leader") is True
-    assert is_agent_top_level_selectable("product") is False
-    assert is_agent_top_level_selectable("worker") is False
-    assert is_agent_top_level_selectable("advisor") is False
-    assert is_agent_top_level_selectable("explore") is False
-    assert is_agent_top_level_selectable("researcher") is False
-    assert is_agent_top_level_selectable("missing") is False
-    assert tuple(manifest.id for manifest in list_top_level_selectable_agent_manifests()) == ("leader",)
 
 
 def test_builtin_delegated_only_agent_manifests_are_not_top_level_selectable() -> None:
@@ -108,7 +98,6 @@ def test_builtin_delegated_only_agent_manifests_are_not_top_level_selectable() -
         assert manifest is not None
         assert manifest.mode == "subagent"
         assert manifest.top_level_selectable is False
-        assert is_agent_top_level_selectable(preset) is False
 
 
 def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:

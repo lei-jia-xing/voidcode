@@ -6,9 +6,7 @@ from .builtin import (
     RESEARCHER_AGENT_MANIFEST,
     WORKER_AGENT_MANIFEST,
     get_builtin_agent_manifest,
-    is_agent_top_level_selectable,
     list_builtin_agent_manifests,
-    list_top_level_selectable_agent_manifests,
     validate_builtin_agent_manifests,
 )
 from .models import (
@@ -27,7 +25,6 @@ from .prompts import (
     is_builtin_prompt_profile,
     render_agent_prompt,
     render_builtin_prompt_profile,
-    select_prompt_profile_for_manifest,
 )
 from .registry import (
     AgentManifestRegistry,
@@ -58,14 +55,11 @@ __all__ = [
     "RESEARCHER_AGENT_MANIFEST",
     "WORKER_AGENT_MANIFEST",
     "get_builtin_agent_manifest",
-    "is_agent_top_level_selectable",
     "is_builtin_prompt_profile",
     "list_builtin_agent_manifests",
-    "list_top_level_selectable_agent_manifests",
     "validate_builtin_agent_manifests",
     "render_agent_prompt",
     "render_builtin_prompt_profile",
-    "select_prompt_profile_for_manifest",
     "agent_manifest_id_from_name",
     "is_valid_agent_manifest_id",
     "load_agent_manifest_registry",

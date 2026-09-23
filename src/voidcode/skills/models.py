@@ -35,9 +35,13 @@ def _validated_skill_origin(value: object) -> SkillOrigin:
 
 
 @dataclass(frozen=True, slots=True)
-class SkillManifestFrontmatter:
+class SkillMetadata:
     name: str
     description: str
+    content: str
+    directory: Path
+    entry_path: Path
+    origin: SkillOrigin = "workspace"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _validated_non_empty_string(self.name, field_name="name"))
@@ -46,29 +50,11 @@ class SkillManifestFrontmatter:
             "description",
             _validated_non_empty_string(self.description, field_name="description"),
         )
-
-
-@dataclass(frozen=True, slots=True)
-class SkillManifest(SkillManifestFrontmatter):
-    content: str
-
-    def __post_init__(self) -> None:
-        SkillManifestFrontmatter.__post_init__(self)
         object.__setattr__(
             self,
             "content",
             _validated_string(self.content, field_name="content"),
         )
-
-
-@dataclass(frozen=True, slots=True)
-class SkillMetadata(SkillManifest):
-    directory: Path
-    entry_path: Path
-    origin: SkillOrigin = "workspace"
-
-    def __post_init__(self) -> None:
-        SkillManifest.__post_init__(self)
         directory = _validated_path(self.directory, field_name="directory")
         entry_path = _validated_path(self.entry_path, field_name="entry_path")
         origin = _validated_skill_origin(self.origin)

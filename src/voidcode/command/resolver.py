@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 
 from ..tools.contracts import ToolCall, ToolDefinition
 from .models import CommandInvocation, CommandResolution
@@ -17,11 +16,6 @@ UNSUPPORTED_TOOL_COMMAND_MESSAGE = (
     "'grep <pattern> <relative-path>', 'run <command>', or "
     "'write <relative-path> <content>'"
 )
-
-
-@dataclass(frozen=True, slots=True)
-class ToolCommandResolution:
-    tool_call: ToolCall
 
 
 def is_prompt_command(prompt: str) -> bool:
@@ -61,14 +55,14 @@ def resolve_tool_instruction(
     available_tools: tuple[ToolDefinition, ...],
     *,
     unavailable_message_suffix: str,
-) -> ToolCommandResolution:
+) -> ToolCall:
     read_match = READ_REQUEST_PATTERN.match(instruction)
     if read_match is not None:
         path_text = read_match.group("path").strip()
         if not path_text:
             raise ValueError("request path must not be empty")
         _ensure_tool(available_tools, "read", read_only=True, suffix=unavailable_message_suffix)
-        return ToolCommandResolution(ToolCall(tool_name="read", arguments={"path": path_text}))
+        return ToolCall(tool_name="read", arguments={"path": path_text})
 
     grep_match = GREP_REQUEST_PATTERN.match(instruction)
     if grep_match is not None:
@@ -79,7 +73,7 @@ def resolve_tool_instruction(
         if not path_text:
             raise ValueError("request path must not be empty")
         _ensure_tool(available_tools, "grep", read_only=True, suffix=unavailable_message_suffix)
-        return ToolCommandResolution(ToolCall(tool_name="grep", arguments={"pattern": pattern_text, "path": path_text}))
+        return ToolCall(tool_name="grep", arguments={"pattern": pattern_text, "path": path_text})
 
     run_match = RUN_REQUEST_PATTERN.match(instruction)
     if run_match is not None:
@@ -87,7 +81,7 @@ def resolve_tool_instruction(
         if not command_text:
             raise ValueError("request command must not be empty")
         _ensure_tool(available_tools, "shell_exec", read_only=False, suffix=unavailable_message_suffix)
-        return ToolCommandResolution(ToolCall(tool_name="shell_exec", arguments={"command": command_text}))
+        return ToolCall(tool_name="shell_exec", arguments={"command": command_text})
 
     write_match = WRITE_REQUEST_PATTERN.match(instruction)
     if write_match is not None:
@@ -98,7 +92,7 @@ def resolve_tool_instruction(
         if not content_text:
             raise ValueError("request content must not be empty")
         _ensure_tool(available_tools, "write", read_only=False, suffix=unavailable_message_suffix)
-        return ToolCommandResolution(ToolCall(tool_name="write", arguments={"path": path_text, "content": content_text}))
+        return ToolCall(tool_name="write", arguments={"path": path_text, "content": content_text})
 
     raise ValueError(UNSUPPORTED_TOOL_COMMAND_MESSAGE)
 

@@ -1,6 +1,5 @@
 from .contracts import LspServerConfigOverride, LspServerPreset, ResolvedLspServerConfig
 from .presets import (
-    builtin_lsp_server_presets,
     get_builtin_lsp_server_preset,
     has_builtin_lsp_server_preset,
 )
@@ -16,7 +15,6 @@ __all__ = [
     "LspServerConfigOverride",
     "LspServerPreset",
     "ResolvedLspServerConfig",
-    "builtin_lsp_server_presets",
     "derive_workspace_lsp_defaults",
     "get_builtin_lsp_server_preset",
     "has_builtin_lsp_server_preset",

@@ -26,17 +26,6 @@ def capability_block(capabilities: list[str]) -> str:
 </capabilities>"""
 
 
-def delegation_envelope_block() -> str:
-    return """<delegation_envelope>
-Use this structure when handing work to another bounded executor:
-- [CONTEXT] Facts, files, constraints, prior results.
-- [GOAL] Concrete outcome and acceptance criteria.
-- [DOWNSTREAM] Evidence or follow-up the caller needs.
-- [REQUEST] Immediate scoped action.
-Keep delegation narrow and verifiable.
-</delegation_envelope>"""
-
-
 def search_agent_contract_block() -> str:
     return """<search_agent_contract>
 Return repository or research discovery in this format:
@@ -82,7 +71,6 @@ def tool_inventory_clarity_line() -> str:
 
 __all__ = [
     "capability_block",
-    "delegation_envelope_block",
     "dynamic_boundary_marker",
     "identity_header",
     "prompt_activation_guidance_block",

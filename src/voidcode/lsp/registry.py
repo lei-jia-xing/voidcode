@@ -97,14 +97,7 @@ def _resolve_preset(
 
 
 def _merge_string_sequences(base: Iterable[str], extra: Iterable[str]) -> tuple[str, ...]:
-    merged: list[str] = []
-    seen: set[str] = set()
-    for item in (*tuple(base), *tuple(extra)):
-        if item in seen:
-            continue
-        seen.add(item)
-        merged.append(item)
-    return tuple(merged)
+    return tuple(dict.fromkeys((*base, *extra)))
 
 
 def _normalize_extensions(values: Iterable[str]) -> tuple[str, ...]:

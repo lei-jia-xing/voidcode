@@ -52,8 +52,7 @@
   - `SkillMetadata`
 
 - [manifest.py](./manifest.py)
-  - `parse_skill_frontmatter()`
-  - `parse_skill_body()`
+  - `parse_skill_manifest()`
   - frontmatter *语法*（分隔符、安全 YAML 加载、重复 key 与大小边界）由 [`voidcode/frontmatter.py`](../frontmatter.py) 共享；本层只拥有 `name` / `description` 白名单、必填与非空字符串校验
   - 写 `SKILL.md` 时的规则：frontmatter 是标准 YAML，未加引号的标量中 ` #` 会开始注释（`description: Fix bug #42` 实际读作 `Fix bug`），需要保留字面文本时必须加引号（`description: "Fix bug #42"`）；值中间出现 `: ` 或以 YAML 指示符（`&`、`*`、`!`、`%`、`@`、反引号）开头时同样要加引号。`name` / `description` 必须是非空字符串（未加引号的 `yes`、日期等 YAML 隐式类型会被拒绝）
 

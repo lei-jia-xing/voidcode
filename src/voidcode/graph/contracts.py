@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import operator
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Annotated, Final, Literal, Protocol, TypedDict, runtime_checkable
+from typing import Final, Literal, Protocol, TypedDict, runtime_checkable
 
 from ..provider.protocol import ProviderAbortSignal, ProviderAssembledContext, ProviderContextWindow, ProviderTokenUsage
 from ..runtime.context.window import ToolResultView
@@ -39,10 +38,6 @@ class GraphSessionSnapshot:
     metadata: Mapping[str, object] = field(default_factory=dict)
 
 
-def _update_or_replace(current: object, new: object) -> object:
-    return new if new is not None else current
-
-
 @dataclass(frozen=True, slots=True)
 class GraphEvent:
     event_type: GraphEventType
@@ -53,14 +48,14 @@ class GraphEvent:
 class GraphLoopState(TypedDict):
     prompt: str
     metadata: dict[str, object]
-    current_turn: Annotated[int, _update_or_replace]
-    tool_calls: Annotated[list[ToolCall], operator.add]
-    tool_results: Annotated[list[ToolResult | ToolResultView], operator.add]
+    current_turn: int
+    tool_calls: list[ToolCall]
+    tool_results: list[ToolResult | ToolResultView]
     available_tools: tuple[ToolDefinition, ...]
-    events: Annotated[list[GraphEvent], operator.add]
-    output: Annotated[str | None, _update_or_replace]
-    error: Annotated[str | None, _update_or_replace]
-    approval_request_id: Annotated[str | None, _update_or_replace]
+    events: list[GraphEvent]
+    output: str | None
+    error: str | None
+    approval_request_id: str | None
 
 
 @dataclass(frozen=True, slots=True)

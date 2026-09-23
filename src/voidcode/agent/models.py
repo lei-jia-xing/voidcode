@@ -66,8 +66,9 @@ class AgentPromptMaterialization:
     `model_family_overrides` declares an optional mapping from a model-family
     hint (for example `"opencode"` or `"anthropic"`) to a builtin prompt
     profile name. Runtime callers may pass a model-family hint into
-    `select_prompt_profile_for_manifest` to pick a family-tuned profile while
-    still falling back to the default profile when no override is declared.
+    `AgentPromptMaterialization.select_profile` to pick a family-tuned profile
+    while still falling back to the default profile when no override is
+    declared.
     """
 
     profile: str

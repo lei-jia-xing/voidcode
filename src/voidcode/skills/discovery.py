@@ -42,18 +42,9 @@ class LocalSkillMetadataLoader:
         except OSError as exc:
             raise SkillLoadError(f"failed to read skill file {resolved_entry_path}: {exc}") from exc
         try:
-            manifest = parse_skill_manifest(contents, path=str(resolved_entry_path))
-            return SkillMetadata(
-                name=manifest.name,
-                description=manifest.description,
-                directory=resolved_entry_path.parent,
-                entry_path=resolved_entry_path,
-                content=manifest.content,
-            )
+            return parse_skill_manifest(contents, entry_path=resolved_entry_path)
         except SkillManifestParseError as exc:
             raise SkillLoadError(str(exc)) from exc
-        except ValueError as exc:
-            raise SkillLoadError(f"{resolved_entry_path}: {exc}") from exc
 
 
 def resolve_workspace_relative_path(*, workspace: Path, configured_path: str) -> Path:
@@ -62,8 +53,6 @@ def resolve_workspace_relative_path(*, workspace: Path, configured_path: str) ->
         return candidate_path.resolve()
 
     resolved_path = (workspace / candidate_path).resolve()
-    try:
-        resolved_path.relative_to(workspace)
-    except ValueError as exc:
-        raise ValueError(f"skill search path escapes workspace: {configured_path}") from exc
+    if not resolved_path.is_relative_to(workspace):
+        raise ValueError(f"skill search path escapes workspace: {configured_path}")
     return resolved_path

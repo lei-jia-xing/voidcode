@@ -611,8 +611,16 @@ class ProviderGraph:
                 raw_arguments = "".join(cast(list[str], state["fragments"]))
                 try:
                     parsed_arguments = json.loads(raw_arguments)
-                except json.JSONDecodeError:
-                    continue
+                except json.JSONDecodeError as exc:
+                    raise self._provider_execution_error(
+                        kind="transient_failure",
+                        model_name=turn_request.model_name,
+                        message="provider stream emitted malformed tool payload",
+                        details={
+                            "source": "graph_stream",
+                            "reason": "malformed_tool_payload",
+                        },
+                    ) from exc
             if not isinstance(parsed_arguments, dict):
                 continue
             explicit_call = ToolCall(

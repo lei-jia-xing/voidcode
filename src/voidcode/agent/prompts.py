@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from functools import cache
 from pathlib import Path
 
-from .models import AgentManifest, AgentPromptMaterialization
+from .models import AgentPromptMaterialization
 from .prompt_sections import user_append_heading_block
 
 _AGENT_DIR = Path(__file__).resolve().parent
@@ -41,16 +41,6 @@ def render_builtin_prompt_profile(prompt_profile: str) -> str | None:
     if not is_builtin_prompt_profile(normalized_prompt_profile):
         return None
     return _render_known_builtin_prompt_profile(normalized_prompt_profile)
-
-
-def select_prompt_profile_for_manifest(
-    manifest: AgentManifest,
-    model_family: str | None = None,
-) -> str | None:
-    materialization = manifest.prompt_materialization
-    if materialization is not None:
-        return materialization.select_profile(model_family)
-    return manifest.prompt_profile
 
 
 def _select_profile_from_materialization_payload(
@@ -153,5 +143,4 @@ __all__ = [
     "is_builtin_prompt_profile",
     "render_agent_prompt",
     "render_builtin_prompt_profile",
-    "select_prompt_profile_for_manifest",
 ]
