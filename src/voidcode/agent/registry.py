@@ -180,7 +180,7 @@ def _manifest_from_payload(
     scope: AgentSourceScope,
 ) -> AgentManifest:
     name = _required_string(payload, "name")
-    manifest_id = _optional_string(payload, "id") or agent_manifest_id_from_name(name)
+    manifest_id = _require_optional_string(payload, "id") or agent_manifest_id_from_name(name)
     if not is_valid_agent_manifest_id(manifest_id):
         raise ValueError(f"frontmatter field 'id' value '{manifest_id}' must match {_AGENT_ID_PATTERN.pattern!r}")
     mode = _parse_mode(_required_string(payload, "mode"))
@@ -190,7 +190,7 @@ def _manifest_from_payload(
         _string_list(payload.get("preset_hook_refs"), field="preset_hook_refs"),
         field_path=f"custom agent manifest {path} preset_hook_refs",
     )
-    prompt_append = _optional_string(payload, "prompt_append")
+    prompt_append = _require_optional_string(payload, "prompt_append")
     return AgentManifest(
         id=manifest_id,
         name=name,
@@ -200,7 +200,7 @@ def _manifest_from_payload(
         source_path=str(path),
         prompt_profile=manifest_id,
         execution_engine="provider",
-        model_preference=_optional_string(payload, "model"),
+        model_preference=_require_optional_string(payload, "model"),
         fallback_models=_string_list(payload.get("fallback_models"), field="fallback_models"),
         tool_allowlist=tool_allowlist,
         skill_refs=skill_refs,
@@ -235,7 +235,7 @@ def _required_string(payload: Mapping[str, object], field: str) -> str:
     return value.strip()
 
 
-def _optional_string(payload: Mapping[str, object], field: str) -> str | None:
+def _require_optional_string(payload: Mapping[str, object], field: str) -> str | None:
     value = payload.get(field)
     if value is None:
         return None

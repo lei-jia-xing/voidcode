@@ -217,12 +217,12 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         stop_condition = cls._parse_delegated_reminder_stop_condition(decoded.get("stop_condition"))
         return DelegatedReminderState(
             task_id=task_id,
-            parent_session_id=cls._optional_string(decoded.get("parent_session_id")),
-            child_session_id=cls._optional_string(decoded.get("child_session_id")),
-            idle_episode_id=cls._optional_string(decoded.get("idle_episode_id")),
-            idle_detected_at_unix_ms=cls._optional_int(decoded.get("idle_detected_at_unix_ms")),
-            reminder_sent_at_unix_ms=cls._optional_int(decoded.get("reminder_sent_at_unix_ms")),
-            stopped_at_unix_ms=cls._optional_int(decoded.get("stopped_at_unix_ms")),
+            parent_session_id=cls._require_optional_string(decoded.get("parent_session_id")),
+            child_session_id=cls._require_optional_string(decoded.get("child_session_id")),
+            idle_episode_id=cls._require_optional_string(decoded.get("idle_episode_id")),
+            idle_detected_at_unix_ms=cls._require_optional_int(decoded.get("idle_detected_at_unix_ms")),
+            reminder_sent_at_unix_ms=cls._require_optional_int(decoded.get("reminder_sent_at_unix_ms")),
+            stopped_at_unix_ms=cls._require_optional_int(decoded.get("stopped_at_unix_ms")),
             stop_condition=stop_condition,
         )
 

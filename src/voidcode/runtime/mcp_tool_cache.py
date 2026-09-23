@@ -67,7 +67,7 @@ def _descriptor_payload(descriptor: McpToolDescriptor) -> dict[str, object]:
     }
 
 
-def _optional_bool(payload: Mapping[str, object], key: str) -> bool | None:
+def _optional_bool_or_none(payload: Mapping[str, object], key: str) -> bool | None:
     value = payload.get(key)
     return value if isinstance(value, bool) else None
 
@@ -89,9 +89,9 @@ def _descriptor_from_payload(server_name: str, payload: object) -> McpToolDescri
         input_schema=cast(dict[str, object], input_schema),
         safety=McpToolSafety(
             read_only=safety_payload.get("read_only") is True,
-            destructive=_optional_bool(safety_payload, "destructive"),
-            idempotent=_optional_bool(safety_payload, "idempotent"),
-            open_world=_optional_bool(safety_payload, "open_world"),
+            destructive=_optional_bool_or_none(safety_payload, "destructive"),
+            idempotent=_optional_bool_or_none(safety_payload, "idempotent"),
+            open_world=_optional_bool_or_none(safety_payload, "open_world"),
             source=(cast(str, safety_payload["source"]) if isinstance(safety_payload.get("source"), str) else "default-deny"),
         ),
         enabled=entry.get("enabled") is not False,

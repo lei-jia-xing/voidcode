@@ -25,7 +25,11 @@ from .config import (
     serialize_runtime_context_window_config,
     serialize_runtime_tools_config,
 )
-from .config_models import CONFIG_SCHEMA_VERSION
+from .config_models import (
+    CONFIG_SCHEMA_VERSION,
+    PersistedRuntimeConfigPayload,
+    config_model_keys,
+)
 from .permission import (
     ExternalDirectoryPolicy,
     PatternPermissionRule,
@@ -34,28 +38,10 @@ from .permission import (
 from .permission_policy import permission_decision_or_none
 from .policy import RuntimePolicyConfig, serialize_runtime_policy_config
 
-PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
-    {
-        "config_schema_version",
-        "approval_mode",
-        "permission",
-        "policy",
-        "execution_engine",
-        "tool_timeout_seconds",
-        "reasoning_effort",
-        "model",
-        "fallback_models",
-        "providers",
-        "resolved_provider",
-        "resolved_hook_presets",
-        "tools",
-        "agent",
-        "agents",
-        "context_window",
-        "lsp",
-        "mcp",
-    }
-)
+#: Accepted and required persisted ``runtime_config`` keys, derived from the
+#: payload model that declares the surface (``PersistedRuntimeConfigPayload``).
+PERSISTED_RUNTIME_CONFIG_KEYS = config_model_keys(PersistedRuntimeConfigPayload)
+PERSISTED_RUNTIME_CONFIG_REQUIRED_KEYS = config_model_keys(PersistedRuntimeConfigPayload, required_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,14 +141,7 @@ def parse_persisted_runtime_config(
         or persisted_schema_version != CONFIG_SCHEMA_VERSION
     ):
         raise ValueError(f"persisted runtime_config config_schema_version must be {CONFIG_SCHEMA_VERSION}")
-    required_runtime_config_keys = {
-        "approval_mode",
-        "permission",
-        "execution_engine",
-        "tool_timeout_seconds",
-        "fallback_models",
-    }
-    missing_runtime_config_keys = sorted(required_runtime_config_keys - runtime_config.keys())
+    missing_runtime_config_keys = sorted(PERSISTED_RUNTIME_CONFIG_REQUIRED_KEYS - runtime_config.keys())
     if missing_runtime_config_keys:
         raise ValueError("persisted runtime_config is missing required field(s): " + ", ".join(missing_runtime_config_keys))
 

@@ -34,7 +34,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal, cast, overload
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -117,15 +117,19 @@ DEFAULT_HOOK_TIMEOUT_SECONDS: float = cast(float, RuntimeHooksConfig().timeout_s
 # ---------------------------------------------------------------------------
 
 
-def config_model_keys(model_type: type[BaseModel]) -> frozenset[str]:
+def config_model_keys(model_type: type[BaseModel], *, required_only: bool = False) -> frozenset[str]:
     """The input keys ``model_type`` accepts, derived from the model itself.
 
     Payload models are declared with the config-file key as the field name (or
     as its ``validation_alias``, e.g. ``$schema`` and ``opencode-go``), so the
     accepted key set needs no hand-maintained whitelist beside the model.
+    ``required_only`` narrows the result to the keys a payload must carry, i.e.
+    the fields that declare no default.
     """
     keys: set[str] = set()
     for name, model_field in model_type.model_fields.items():
+        if required_only and not model_field.is_required():
+            continue
         alias = model_field.validation_alias
         keys.add(alias if isinstance(alias, str) else name)
     return frozenset(keys)
@@ -159,6 +163,11 @@ def _config_field_source(info: ValidationInfo, field_name: str) -> str:
 def _parse_optional_bool(raw_value: object, *, field_path: str) -> bool | None:
     if raw_value is None:
         return None
+    return _parse_non_null_bool(raw_value, field_path=field_path)
+
+
+def _parse_non_null_bool(raw_value: object, *, field_path: str) -> bool:
+    """Parse a boolean whose ``None`` case the caller has already handled."""
     if not isinstance(raw_value, bool):
         raise ValueError(f"runtime config field '{field_path}' must be a boolean when provided")
     return raw_value
@@ -279,6 +288,10 @@ def _parse_execution_engine_name(value: object, *, source: str) -> ExecutionEngi
     raise ValueError(f"{source} must be one of: {allowed}")
 
 
+@overload
+def parse_approval_mode(raw_value: object, *, source: str, allow_none: Literal[False]) -> PermissionDecision: ...
+@overload
+def parse_approval_mode(raw_value: object, *, source: str, allow_none: Literal[True]) -> PermissionDecision | None: ...
 def parse_approval_mode(raw_value: object, *, source: str, allow_none: bool) -> PermissionDecision | None:
     if raw_value is None and allow_none:
         return None
@@ -568,7 +581,6 @@ class PermissionRulePayload(_PayloadModel):
             source=f"runtime config field '{field_path}.decision'",
             allow_none=False,
         )
-        assert parsed_decision is not None
         return {**raw_payload, "decision": parsed_decision}
 
 
@@ -607,7 +619,6 @@ class PermissionPayload(_PayloadModel):
                 source=f"runtime config field '{field_path}.{raw_pattern}'",
                 allow_none=False,
             )
-            assert parsed_decision is not None
             parsed[raw_pattern] = parsed_decision
         return parsed
 
@@ -850,9 +861,7 @@ class HooksPayload(_PayloadModel):
     def _validate_enabled(cls, value: object) -> bool:
         if value is None:
             raise ValueError("runtime config field 'hooks.enabled' must be a boolean when provided")
-        parsed = _parse_optional_bool(value, field_path="hooks.enabled")
-        assert parsed is not None
-        return parsed
+        return _parse_non_null_bool(value, field_path="hooks.enabled")
 
     @field_validator("timeout_seconds", mode="before")
     @classmethod
@@ -1115,9 +1124,10 @@ class ContextWindowPayload(_PayloadModel):
         for raw_key, raw_limit in value.items():
             if not isinstance(raw_key, str) or not raw_key:
                 raise ValueError("runtime config field 'context_window.per_tool_result_chars' keys must be non-empty strings")
-            limit = _parse_optional_positive_int(raw_limit, field_path=f"context_window.per_tool_result_chars.{raw_key}")
-            assert limit is not None
-            parsed[raw_key] = limit
+            parsed[raw_key] = _parse_non_null_positive_int(
+                raw_limit,
+                field_path=f"context_window.per_tool_result_chars.{raw_key}",
+            )
         return parsed
 
     @field_validator("summary_strategy", mode="before")
@@ -1512,9 +1522,7 @@ class BackgroundTaskPayload(_PayloadModel):
     def _validate_delegated_reminders_enabled(cls, value: object) -> bool:
         if value is None:
             return True
-        parsed = _parse_optional_bool(value, field_path="background_task.delegated_reminders_enabled")
-        assert parsed is not None
-        return parsed
+        return _parse_non_null_bool(value, field_path="background_task.delegated_reminders_enabled")
 
     @field_validator("delegated_reminder_cooldown_seconds", mode="before")
     @classmethod
@@ -1847,6 +1855,40 @@ class RuntimeConfigPayload(_PayloadModel):
     @classmethod
     def _validate_reasoning_effort(cls, value: object) -> str | None:
         return parse_reasoning_effort(value, allow_none=True)
+
+
+class PersistedRuntimeConfigPayload(_PayloadModel):
+    """The persisted session-snapshot ``runtime_config`` input surface.
+
+    The snapshot written by ``serialize_runtime_config_core`` adds the
+    runtime-owned ``resolved_provider``/``resolved_hook_presets`` keys and drops
+    the workspace-only ``$schema``/``hooks``/``formatter``/``skills``/``tui``/
+    ``background_task`` entries, so it is declared separately; the materializer
+    derives its accepted-key and required-key sets from this model.
+
+    ``resolved_provider``, ``resolved_hook_presets``, ``agent``, ``agents``,
+    ``lsp`` and ``mcp`` stay ``object``: the materializer passes them through
+    opaquely, so nothing here may claim a shape no parser checks.
+    """
+
+    config_schema_version: Literal[1] | None = None
+    approval_mode: PermissionDecision
+    permission: PermissionPayload
+    policy: PolicyPayload | None = None
+    execution_engine: ExecutionEngineName
+    tool_timeout_seconds: int | None
+    reasoning_effort: ReasoningEffort | None = None
+    model: str | None = None
+    fallback_models: tuple[str, ...] | None
+    providers: ProviderConfigsPayload | None = None
+    resolved_provider: object | None = None
+    resolved_hook_presets: object | None = None
+    tools: ToolsPayload | None = None
+    agent: object | None = None
+    agents: object | None = None
+    context_window: ContextWindowPayload | None = None
+    lsp: object | None = None
+    mcp: object | None = None
 
 
 class UserConfigPayload(_PayloadModel):

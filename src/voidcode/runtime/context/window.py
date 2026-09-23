@@ -251,6 +251,10 @@ class ToolResultView:
         return self.result.reference
 
     @property
+    def source(self) -> str | None:
+        return self.result.source
+
+    @property
     def diagnostics(self) -> ToolDiagnostics | None:
         return self.result.diagnostics
 
@@ -319,7 +323,7 @@ def _tool_result_preview(result: ToolResult | ToolResultView, *, max_preview_cha
     if artifact_id is not None:
         parts.append(f"artifact_id={artifact_id}")
         parts.append(f"uri=voidcode://artifact/{artifact_id}")
-        tool_call_id = _optional_tool_string(result, "tool_call_id")
+        tool_call_id = _optional_tool_string_or_none(result, "tool_call_id")
         if tool_call_id is not None:
             parts.append(f"tool_call_id={tool_call_id}")
         byte_count = _artifact_metadata_int(result, "byte_count")
@@ -363,12 +367,12 @@ def _metadata_string_tuple(payload: Mapping[str, object], key: str) -> tuple[str
     return tuple(values)
 
 
-def _optional_entry_string(entry: Mapping[str, object], key: str) -> str | None:
+def _optional_entry_string_or_none(entry: Mapping[str, object], key: str) -> str | None:
     value = entry.get(key)
     return value if isinstance(value, str) and value else None
 
 
-def _optional_entry_int(entry: Mapping[str, object], key: str) -> int | None:
+def _optional_entry_int_or_none(entry: Mapping[str, object], key: str) -> int | None:
     value = entry.get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
@@ -396,14 +400,14 @@ def _dropped_tool_diagnostics_from_metadata_payload(
                 tool_name=tool_name,
                 status=status,
                 index=index,
-                tool_call_id=_optional_entry_string(entry, "tool_call_id"),
-                artifact_id=_optional_entry_string(entry, "artifact_id"),
-                artifact_status=_optional_entry_string(entry, "artifact_status"),
-                artifact_byte_count=_optional_entry_int(entry, "artifact_byte_count"),
-                artifact_line_count=_optional_entry_int(entry, "artifact_line_count"),
-                reference=_optional_entry_string(entry, "reference"),
-                path=_optional_entry_string(entry, "path"),
-                command=_optional_entry_string(entry, "command"),
+                tool_call_id=_optional_entry_string_or_none(entry, "tool_call_id"),
+                artifact_id=_optional_entry_string_or_none(entry, "artifact_id"),
+                artifact_status=_optional_entry_string_or_none(entry, "artifact_status"),
+                artifact_byte_count=_optional_entry_int_or_none(entry, "artifact_byte_count"),
+                artifact_line_count=_optional_entry_int_or_none(entry, "artifact_line_count"),
+                reference=_optional_entry_string_or_none(entry, "reference"),
+                path=_optional_entry_string_or_none(entry, "path"),
+                command=_optional_entry_string_or_none(entry, "command"),
                 diagnostics=(entry["diagnostics"] if isinstance(entry.get("diagnostics"), dict) else None),
                 truncated=entry.get("truncated") is True,
                 partial=entry.get("partial") is True,
@@ -604,12 +608,12 @@ def _provider_continuity_summary(summary_text: str, *, prompt: str) -> str:
     return "\n\n".join(retained).strip()
 
 
-def _optional_tool_string(result: ToolResult | ToolResultView, key: str) -> str | None:
+def _optional_tool_string_or_none(result: ToolResult | ToolResultView, key: str) -> str | None:
     value = result.data.get(key)
     return value if isinstance(value, str) and value else None
 
 
-def _optional_tool_int(result: ToolResult | ToolResultView, key: str) -> int | None:
+def _optional_tool_int_or_none(result: ToolResult | ToolResultView, key: str) -> int | None:
     value = result.data.get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
@@ -646,14 +650,14 @@ def _dropped_tool_diagnostics(
                 tool_name=result.tool_name,
                 status=result.status,
                 index=index,
-                tool_call_id=_optional_tool_string(result, "tool_call_id"),
+                tool_call_id=_optional_tool_string_or_none(result, "tool_call_id"),
                 artifact_id=_artifact_metadata_string(result, "artifact_id"),
-                artifact_status=_artifact_metadata_string(result, "status") or _optional_tool_string(result, "artifact_status"),
-                artifact_byte_count=_artifact_metadata_int(result, "byte_count") or _optional_tool_int(result, "original_byte_count"),
-                artifact_line_count=_artifact_metadata_int(result, "line_count") or _optional_tool_int(result, "original_line_count"),
+                artifact_status=_artifact_metadata_string(result, "status") or _optional_tool_string_or_none(result, "artifact_status"),
+                artifact_byte_count=_artifact_metadata_int(result, "byte_count") or _optional_tool_int_or_none(result, "original_byte_count"),
+                artifact_line_count=_artifact_metadata_int(result, "line_count") or _optional_tool_int_or_none(result, "original_line_count"),
                 reference=result.reference,
-                path=_optional_tool_string(result, "path"),
-                command=_optional_tool_string(result, "command"),
+                path=_optional_tool_string_or_none(result, "path"),
+                command=_optional_tool_string_or_none(result, "command"),
                 diagnostics=(result.diagnostics.as_payload() if result.diagnostics is not None else None),
                 truncated=result.truncated,
                 partial=result.partial,
@@ -728,15 +732,6 @@ def _truncated_view_for_result(
         ),
         True,
     )
-
-
-def _coerce_optional_int(payload: Mapping[str, object], key: str) -> int | None:
-    value = payload.get(key)
-    if value is None:
-        return None
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    raise ValueError(f"context window policy field '{key}' must be an integer")
 
 
 def normalize_read_output(content: str | None) -> str | None:
@@ -1220,7 +1215,7 @@ def assemble_provider_context(
             # them here would place previous-run tool messages after the new
             # prompt, making the model believe it is mid-turn and continue the
             # previous task instead of answering the new request.
-            if getattr(result, "source", None) == "replayed_conversation":
+            if result.source == "replayed_conversation":
                 continue
             raw_tool_call_id = result.data.get("tool_call_id")
             tool_call_id = raw_tool_call_id if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip() else f"voidcode_tool_{index}"

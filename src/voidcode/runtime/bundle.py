@@ -29,7 +29,7 @@ import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final, Literal, cast, final
+from typing import Final, Literal, cast, final, overload
 
 from .. import __version__ as VOIDCODE_VERSION
 from ..security.redaction import (
@@ -382,6 +382,10 @@ def _truncate_string(value: str, *, limit: int) -> str:
     return truncate(value, limit)
 
 
+@overload
+def _sanitize_export_text(value: str, *, options: SessionBundleOptions, truncate_when_tool_output_hidden: bool = False) -> str: ...
+@overload
+def _sanitize_export_text(value: str | None, *, options: SessionBundleOptions, truncate_when_tool_output_hidden: bool = False) -> str | None: ...
 def _sanitize_export_text(
     value: str | None,
     *,
@@ -642,7 +646,6 @@ class _SessionBundleBuilder:
             self._session_prompt(session_id=response.session.session.id),
             options=self._options,
         )
-        assert prompt is not None
         raw_events = tuple(self._build_event_payload(event) for event in response.events)
         events = tuple(payload for payload in raw_events if payload is not None)
         metadata = _apply_payload_options(
@@ -847,9 +850,9 @@ def parse_session_bundle(payload: object) -> SessionBundle:
         tasks.append(_parse_task_payload(task_dict, index=index))
     diagnostics_payload = _ensure_dict(root.get("diagnostics"), where="diagnostics")
     diagnostics = SessionBundleDiagnostics(
-        storage=_optional_dict(diagnostics_payload.get("storage")),
-        config_summary=_optional_dict(diagnostics_payload.get("config_summary")),
-        provider_summary=_optional_dict(diagnostics_payload.get("provider_summary")),
+        storage=_ensure_optional_dict(diagnostics_payload.get("storage")),
+        config_summary=_ensure_optional_dict(diagnostics_payload.get("config_summary")),
+        provider_summary=_ensure_optional_dict(diagnostics_payload.get("provider_summary")),
     )
     artifacts_raw = _ensure_list(root.get("artifacts"), where="artifacts")
     artifacts: list[SessionBundleArtifactPayload] = []
@@ -865,7 +868,7 @@ def parse_session_bundle(payload: object) -> SessionBundle:
     )
 
 
-def _optional_dict(value: object) -> dict[str, object] | None:
+def _ensure_optional_dict(value: object) -> dict[str, object] | None:
     if value is None:
         return None
     if not isinstance(value, dict):

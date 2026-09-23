@@ -1573,60 +1573,65 @@ def _resolve_tui_config(global_tui: RuntimeTuiConfig | None, workspace_tui: Runt
         if workspace_tui is not None and workspace_tui.keymap is not None
         else (global_tui.keymap if global_tui is not None else None)
     )
-    preferences = _merge_tui_preferences(
+    theme, reading = _merged_tui_theme_and_reading(
         global_tui.preferences if global_tui is not None else None,
         workspace_tui.preferences if workspace_tui is not None else None,
     )
-    return RuntimeTuiConfig(leader_key=leader_key, keymap=keymap, preferences=preferences)
+    return RuntimeTuiConfig(
+        leader_key=leader_key,
+        keymap=keymap,
+        preferences=RuntimeTuiPreferences(theme=theme, reading=reading),
+    )
 
 
-def _merge_tui_preferences(
+def _merged_tui_theme_and_reading(
     global_preferences: RuntimeTuiPreferences | None,
     workspace_preferences: RuntimeTuiPreferences | None,
-) -> RuntimeTuiPreferences:
+) -> tuple[RuntimeTuiThemePreferences, RuntimeTuiReadingPreferences]:
+    """Merge the two preference surfaces; both halves are always populated.
+
+    The wire shape declares ``theme``/``reading`` optional, so returning the two
+    concrete halves keeps callers from having to re-assert that this merge
+    always fills them.
+    """
     global_theme = global_preferences.theme if global_preferences is not None else None
     workspace_theme = workspace_preferences.theme if workspace_preferences is not None else None
     global_reading = global_preferences.reading if global_preferences is not None else None
     workspace_reading = workspace_preferences.reading if workspace_preferences is not None else None
-    return RuntimeTuiPreferences(
-        theme=RuntimeTuiThemePreferences(
-            name=(workspace_theme.name if workspace_theme is not None else None)
-            or (global_theme.name if global_theme is not None else None)
-            or _BUILTIN_TUI_THEME_DEFAULTS["auto"],
-            mode=(workspace_theme.mode if workspace_theme is not None else None)
-            or (global_theme.mode if global_theme is not None else None)
-            or "auto",
+    theme = RuntimeTuiThemePreferences(
+        name=(workspace_theme.name if workspace_theme is not None else None)
+        or (global_theme.name if global_theme is not None else None)
+        or _BUILTIN_TUI_THEME_DEFAULTS["auto"],
+        mode=(workspace_theme.mode if workspace_theme is not None else None) or (global_theme.mode if global_theme is not None else None) or "auto",
+    )
+    reading = RuntimeTuiReadingPreferences(
+        wrap=(
+            workspace_reading.wrap
+            if workspace_reading is not None and workspace_reading.wrap is not None
+            else (global_reading.wrap if global_reading is not None and global_reading.wrap is not None else True)
         ),
-        reading=RuntimeTuiReadingPreferences(
-            wrap=(
-                workspace_reading.wrap
-                if workspace_reading is not None and workspace_reading.wrap is not None
-                else (global_reading.wrap if global_reading is not None and global_reading.wrap is not None else True)
-            ),
-            sidebar_collapsed=(
-                workspace_reading.sidebar_collapsed
-                if workspace_reading is not None and workspace_reading.sidebar_collapsed is not None
-                else (global_reading.sidebar_collapsed if global_reading is not None and global_reading.sidebar_collapsed is not None else False)
-            ),
+        sidebar_collapsed=(
+            workspace_reading.sidebar_collapsed
+            if workspace_reading is not None and workspace_reading.sidebar_collapsed is not None
+            else (global_reading.sidebar_collapsed if global_reading is not None and global_reading.sidebar_collapsed is not None else False)
         ),
     )
+    return theme, reading
 
 
 def merge_runtime_tui_preferences(
     base_preferences: RuntimeTuiPreferences | None,
     override_preferences: RuntimeTuiPreferences | None,
 ) -> RuntimeTuiPreferences:
-    return _merge_tui_preferences(base_preferences, override_preferences)
+    theme, reading = _merged_tui_theme_and_reading(base_preferences, override_preferences)
+    return RuntimeTuiPreferences(theme=theme, reading=reading)
 
 
 def effective_runtime_tui_preferences(
     preferences: RuntimeTuiPreferences | None,
 ) -> EffectiveRuntimeTuiPreferences:
-    merged_preferences = _merge_tui_preferences(None, preferences)
-    assert merged_preferences.theme is not None
-    assert merged_preferences.reading is not None
-    resolved_theme = _resolve_theme_preferences(merged_preferences.theme)
-    return EffectiveRuntimeTuiPreferences(theme=resolved_theme, reading=merged_preferences.reading)
+    theme, reading = _merged_tui_theme_and_reading(None, preferences)
+    return EffectiveRuntimeTuiPreferences(theme=_resolve_theme_preferences(theme), reading=reading)
 
 
 def _resolve_theme_preferences(

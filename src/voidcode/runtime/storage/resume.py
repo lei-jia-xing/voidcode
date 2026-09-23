@@ -110,7 +110,7 @@ class _ResumeStorageMixin(_MixinBase):
         return checkpoint
 
     @staticmethod
-    def _optional_string(value: object) -> str | None:
+    def _require_optional_string(value: object) -> str | None:
         if value is None:
             return None
         if not isinstance(value, str) or not value:
@@ -118,7 +118,7 @@ class _ResumeStorageMixin(_MixinBase):
         return value
 
     @staticmethod
-    def _optional_int(value: object) -> int | None:
+    def _require_optional_int(value: object) -> int | None:
         if value is None:
             return None
         if not isinstance(value, int) or isinstance(value, bool):
@@ -245,10 +245,12 @@ class _ResumeStorageMixin(_MixinBase):
             "matched_rule",
             "policy_surface",
         )
+        nullable_strings: dict[str, str | None] = {}
         for field_name in nullable_string_fields:
             value = data[field_name]
             if value is not None and not isinstance(value, str):
                 raise RuntimeError(f"persisted pending approval {field_name} must be a string or null")
+            nullable_strings[field_name] = value
         path_scope = _pending_path_scope(data["path_scope"])
         if data["path_scope"] is not None and path_scope is None:
             raise RuntimeError("persisted pending approval path_scope is invalid")
@@ -263,14 +265,14 @@ class _ResumeStorageMixin(_MixinBase):
             reason=reason,
             policy_mode=policy_mode,
             request_event_sequence=request_event_sequence,
-            owner_session_id=(data["owner_session_id"] if isinstance(data["owner_session_id"], str) else None),
-            owner_parent_session_id=(data["owner_parent_session_id"] if isinstance(data["owner_parent_session_id"], str) else None),
-            delegated_task_id=(data["delegated_task_id"] if isinstance(data["delegated_task_id"], str) else None),
+            owner_session_id=nullable_strings["owner_session_id"],
+            owner_parent_session_id=nullable_strings["owner_parent_session_id"],
+            delegated_task_id=nullable_strings["delegated_task_id"],
             path_scope=path_scope,
             operation_class=operation_class,
-            canonical_path=(data["canonical_path"] if isinstance(data["canonical_path"], str) else None),
-            matched_rule=(data["matched_rule"] if isinstance(data["matched_rule"], str) else None),
-            policy_surface=(data["policy_surface"] if isinstance(data["policy_surface"], str) else None),
+            canonical_path=nullable_strings["canonical_path"],
+            matched_rule=nullable_strings["matched_rule"],
+            policy_surface=nullable_strings["policy_surface"],
         )
 
     def claim_pending_approval(self, *, workspace: Path, session_id: str, request_id: str) -> bool:

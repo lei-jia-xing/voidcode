@@ -123,9 +123,9 @@ def _load_markdown_command(path: Path, *, root: Path, source: CommandSource) -> 
         description=description.strip(),
         template=template,
         source=source,
-        agent=_optional_string(metadata.get("agent")),
-        mode=_optional_string(metadata.get("mode")),
-        model=_optional_string(metadata.get("model")),
+        agent=_require_optional_string(metadata.get("agent")),
+        mode=_require_optional_string(metadata.get("mode")),
+        model=_require_optional_string(metadata.get("model")),
         subtask=_metadata_bool(metadata.get("subtask"), default=False),
         enabled=_metadata_bool(metadata.get("enabled"), default=True),
         hidden=_metadata_bool(metadata.get("hidden"), default=False),
@@ -133,7 +133,7 @@ def _load_markdown_command(path: Path, *, root: Path, source: CommandSource) -> 
     )
 
 
-def _optional_string(value: object) -> str | None:
+def _require_optional_string(value: object) -> str | None:
     if value is None:
         return None
     if isinstance(value, str) and value.strip():
