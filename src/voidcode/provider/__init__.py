@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from .anthropic import AnthropicModelProvider
 from .anthropic_native import AnthropicMessagesProvider, AnthropicMessagesTransport, AnthropicTransport
 from .auth import (
     ProviderAuthAuthorizeRequest,
@@ -25,7 +24,6 @@ from .config import (
     serialize_provider_fallback_config,
 )
 from .copilot import CopilotModelProvider
-from .deepseek import DeepSeekModelProvider
 from .endpoint import OpenAIEndpointProvider
 from .errors import (
     ProviderContextLimitError,
@@ -33,13 +31,7 @@ from .errors import (
     classify_provider_error,
     format_invalid_provider_config_error,
 )
-from .fireworks import FireworksModelProvider
 from .google import GoogleModelProvider
-from .grok import GrokModelProvider
-from .groq import GroqModelProvider
-from .kimi import KimiModelProvider
-from .minimax import MiniMaxModelProvider
-from .mistral import MistralModelProvider
 from .model_catalog import (
     ProviderModelCatalog,
     ProviderModelMetadata,
@@ -67,8 +59,11 @@ from .protocol import (
     StubTurnProvider,
     TurnProvider,
 )
-from .qwen import QwenModelProvider
-from .registry import ModelProviderRegistry, StaticModelProvider
+from .registry import (
+    AnthropicCompatibleModelProvider,
+    ModelProviderRegistry,
+    OpenAICompatibleModelProvider,
+)
 from .resolution import (
     resolve_provider_chain,
     resolve_provider_config,
@@ -78,22 +73,14 @@ from .snapshot import (
     parse_resolved_provider_snapshot,
     resolved_provider_snapshot,
 )
-from .together import TogetherModelProvider
-from .zai import ZAIModelProvider
-from .zhipuai import ZhipuAIModelProvider
 
 __all__ = [
     "AnthropicMessagesProvider",
     "AnthropicMessagesTransport",
     "AnthropicTransport",
-    "AnthropicModelProvider",
+    "AnthropicCompatibleModelProvider",
     "CopilotModelProvider",
-    "DeepSeekModelProvider",
     "GoogleModelProvider",
-    "FireworksModelProvider",
-    "GroqModelProvider",
-    "MistralModelProvider",
-    "GrokModelProvider",
     "OpenAIEndpointProvider",
     "ModelTurnProvider",
     "ProviderModelCatalog",
@@ -104,6 +91,7 @@ __all__ = [
     "OpenAIChatCompletionsTransport",
     "OpenAITransport",
     "OpenAIModelProvider",
+    "OpenAICompatibleModelProvider",
     "OpenCodeModelProvider",
     "ProviderAuthAuthorizeRequest",
     "ProviderAuthAuthorizeResult",
@@ -131,15 +119,8 @@ __all__ = [
     "ProviderError",
     "OpenAICompatibleProviderConfig",
     "ProviderEndpointConfig",
-    "StaticModelProvider",
     "StubTurnProvider",
-    "ZAIModelProvider",
-    "ZhipuAIModelProvider",
-    "MiniMaxModelProvider",
-    "KimiModelProvider",
     "OpenCodeGoModelProvider",
-    "QwenModelProvider",
-    "TogetherModelProvider",
     "classify_provider_error",
     "format_invalid_provider_config_error",
     "parse_resolved_provider_snapshot",

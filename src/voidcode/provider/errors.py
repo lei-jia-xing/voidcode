@@ -267,7 +267,7 @@ def _extract_retry_after(payload: dict[str, Any]) -> float | None:
 def _is_context_overflow(message: str, status_code: int | None, code: str | None) -> bool:
     if status_code == 413:
         return True
-    if isinstance(code, str) and code.lower() == "context_length_exceeded":
+    if code is not None and code.lower() == "context_length_exceeded":
         return True
     return any(pattern.search(message) is not None for pattern in _CONTEXT_OVERFLOW_PATTERNS)
 
@@ -281,10 +281,11 @@ def _classify_api_error_kind(
     if _is_context_overflow(message, status_code, code):
         return "context_limit"
 
-    if status_code == 429 or (isinstance(code, str) and code.lower() in {"rate_limit", "rate_limit_exceeded"}):
+    normalized_code = None if code is None else code.lower()
+    if status_code == 429 or normalized_code in {"rate_limit", "rate_limit_exceeded"}:
         return "rate_limit"
 
-    if isinstance(code, str) and code.lower() in {
+    if normalized_code in {
         "missing_api_key",
         "invalid_api_key",
         "authentication_error",
@@ -292,7 +293,7 @@ def _classify_api_error_kind(
     }:
         return "missing_auth"
 
-    if isinstance(code, str) and code.lower() in {
+    if normalized_code in {
         "invalid_model",
         "model_not_found",
         "insufficient_quota",

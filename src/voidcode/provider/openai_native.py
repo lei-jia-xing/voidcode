@@ -506,7 +506,8 @@ class OpenAIChatCompletionsProvider:
             # ``provider_configs_from_env`` already resolves that variable into
             # ``providers.openai``. A missing key means "send no credential" -- the
             # transport still hands the SDK a placeholder so it never sends an empty one.
-            base_url = cast(str | None, self._config_value("base_url"))
+            config = self.config
+            base_url = None if config is None else config.base_url
             if not base_url:
                 # A provider whose config names no endpoint resolves to its own
                 # vendor default; one without a default must not borrow another
@@ -525,7 +526,10 @@ class OpenAIChatCompletionsProvider:
                 )
             owned.value = OpenAIChatCompletionsTransport(
                 base_url=base_url,
-                api_key=cast(str | None, self._config_value("api_key")),
+                api_key=None if config is None else config.api_key,
+                # The two config shapes spell these two credentials differently:
+                # OpenAI's own config names them ``organization``/``project``, an
+                # endpoint config ``openai_organization``/``openai_project``.
                 organization=cast(str | None, self._config_value("organization", self._config_value("openai_organization"))),
                 project=cast(str | None, self._config_value("project", self._config_value("openai_project"))),
                 auth_header=cast(str | None, self._config_value("auth_header")),
@@ -591,7 +595,10 @@ class OpenAIChatCompletionsProvider:
                         ),
                         "tool_calls": [
                             {
-                                "id": _normalize_tool_call_id(segment.tool_call_id, fallback=segment.tool_name),
+                                # Ingest normalised this id once; render it verbatim
+                                # rather than substituting the tool name, which two
+                                # calls to the same tool would share.
+                                "id": segment.tool_call_id,
                                 "type": "function",
                                 "function": {"name": original_to_provider.get(segment.tool_name, segment.tool_name), "arguments": arguments},
                             }
@@ -615,7 +622,7 @@ class OpenAIChatCompletionsProvider:
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": _normalize_tool_call_id(segment.tool_call_id, fallback=segment.tool_name or "voidcode_tool"),
+                        "tool_call_id": segment.tool_call_id,
                         "content": json.dumps(result, ensure_ascii=False, sort_keys=True),
                     }
                 )
@@ -792,8 +799,8 @@ class OpenAIChatCompletionsProvider:
         return payload
 
     def _timeout(self) -> float:
-        configured = self._config_value("timeout_seconds")
-        return _DEFAULT_TIMEOUT_SECONDS if not isinstance(configured, int | float) else float(configured)
+        configured = None if self.config is None else self.config.timeout_seconds
+        return _DEFAULT_TIMEOUT_SECONDS if configured is None else configured
 
     @staticmethod
     def _response_payload(value: object) -> dict[str, object]:

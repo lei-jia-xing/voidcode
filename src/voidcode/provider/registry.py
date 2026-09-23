@@ -3,25 +3,21 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
-from .anthropic import AnthropicModelProvider
+from .anthropic_native import AnthropicMessagesProvider
+from .auth import ANTHROPIC_COMPATIBLE_BUILTIN_FIELDS, OPENAI_COMPATIBLE_BUILTIN_FIELDS
 from .config import (
     AnthropicProviderConfig,
     CopilotProviderConfig,
     GoogleProviderConfig,
+    OpenAICompatibleProviderConfig,
     OpenAIProviderConfig,
     ProviderConfigs,
     ProviderEndpointConfig,
+    openai_compatible_endpoint_config,
 )
 from .copilot import CopilotModelProvider
-from .deepseek import DeepSeekModelProvider
 from .endpoint import OpenAIEndpointProvider
-from .fireworks import FireworksModelProvider
 from .google import GoogleModelProvider
-from .grok import GrokModelProvider
-from .groq import GroqModelProvider
-from .kimi import KimiModelProvider
-from .minimax import MiniMaxModelProvider
-from .mistral import MistralModelProvider
 from .model_catalog import (
     ProviderModelCatalog,
     ProviderModelMetadata,
@@ -31,28 +27,56 @@ from .model_catalog import (
 from .models import ProviderResolutionSource
 from .naming import UnknownProviderIdError, canonical_provider_id
 from .openai import OpenAIModelProvider
+from .openai_native import OpenAIChatCompletionsProvider
 from .opencode import OpenCodeModelProvider
 from .opencode_go import OpenCodeGoModelProvider
 from .openrouter import OpenRouterModelProvider
-from .protocol import ModelTurnProvider, StubTurnProvider, TurnProvider
+from .protocol import ModelTurnProvider, TurnProvider
 from .provider_config import (
-    anthropic_provider_config,
+    anthropic_compatible_endpoint_config,
     copilot_provider_config,
     google_provider_config,
     openai_provider_config,
 )
-from .qwen import QwenModelProvider
-from .together import TogetherModelProvider
-from .zai import ZAIModelProvider
-from .zhipuai import ZhipuAIModelProvider
 
 
 @dataclass(frozen=True, slots=True)
-class StaticModelProvider:
+class OpenAICompatibleModelProvider:
+    """A named vendor whose wire is the OpenAI chat-completions protocol.
+
+    A vendor is a table entry, not a module: ``name`` selects its endpoint
+    defaults -- base URL, discovery URL and credential environment variable --
+    inside ``openai_compatible_endpoint_config``, which owns the vendor table and
+    rejects a name that is not in it.
+    """
+
     name: str
+    config: OpenAICompatibleProviderConfig | None = None
+
+    def provider_config(self) -> ProviderEndpointConfig:
+        return openai_compatible_endpoint_config(self.name, self.config)
 
     def turn_provider(self) -> TurnProvider:
-        return StubTurnProvider(name=self.name)
+        return OpenAIChatCompletionsProvider(name=self.name, config=self.provider_config())
+
+
+@dataclass(frozen=True, slots=True)
+class AnthropicCompatibleModelProvider:
+    """A named vendor whose wire is the Anthropic Messages protocol.
+
+    Same contract as the OpenAI-compatible adapter: ``name`` selects the vendor's
+    endpoint defaults inside ``anthropic_compatible_endpoint_config``, which owns
+    the Anthropic-wire vendor table and rejects a name that is not in it.
+    """
+
+    name: str
+    config: AnthropicProviderConfig | None = None
+
+    def provider_config(self) -> ProviderEndpointConfig:
+        return anthropic_compatible_endpoint_config(self.name, self.config)
+
+    def turn_provider(self) -> TurnProvider:
+        return AnthropicMessagesProvider(name=self.name, config=self.config)
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +94,9 @@ def _discovery_config(config: object) -> ProviderEndpointConfig | None:
     if isinstance(config, OpenAIProviderConfig):
         return openai_provider_config(config)
     if isinstance(config, AnthropicProviderConfig):
-        return anthropic_provider_config(config)
+        # This config shape is the Anthropic-wire vendor's own: the derived
+        # vendor table maps it to exactly one id.
+        return anthropic_compatible_endpoint_config("anthropic", config)
     if isinstance(config, GoogleProviderConfig):
         return google_provider_config(config)
     if isinstance(config, CopilotProviderConfig):
@@ -87,28 +113,32 @@ class ModelProviderRegistry:
     @classmethod
     def with_defaults(cls, *, provider_configs: ProviderConfigs | None = None) -> ModelProviderRegistry:
         configs = provider_configs or ProviderConfigs()
+        # Adapters that are not shared per-wire ones: a gateway that routes per
+        # model, a credential flow of its own, or a wire of its own.
+        providers: dict[str, ModelTurnProvider] = {
+            "opencode": OpenCodeModelProvider(config=configs.opencode),
+            "openai": OpenAIModelProvider(config=configs.openai),
+            "google": GoogleModelProvider(config=configs.google),
+            "copilot": CopilotModelProvider(config=configs.copilot),
+            "endpoint": OpenAIEndpointProvider(name="endpoint", config=configs.endpoint),
+            "openrouter": OpenRouterModelProvider(config=configs.openrouter),
+            "opencode-go": OpenCodeGoModelProvider(config=configs.opencode_go),
+        }
+        # Every remaining built-in id is a vendor on one shared wire adapter. The
+        # ids and their ``ProviderConfigs`` fields both come from the payload
+        # schema, so a new vendor is a table entry plus a config field, never a
+        # module; an id already registered above keeps its own adapter.
+        shared_wire_vendors = (
+            (AnthropicCompatibleModelProvider, ANTHROPIC_COMPATIBLE_BUILTIN_FIELDS),
+            (OpenAICompatibleModelProvider, OPENAI_COMPATIBLE_BUILTIN_FIELDS),
+        )
+        for adapter, vendor_fields in shared_wire_vendors:
+            for provider_name, field_name in vendor_fields.items():
+                if provider_name in providers:
+                    continue
+                providers[provider_name] = adapter(name=provider_name, config=getattr(configs, field_name))
         return cls(
-            providers={
-                "opencode": OpenCodeModelProvider(config=configs.opencode),
-                "openai": OpenAIModelProvider(config=configs.openai),
-                "anthropic": AnthropicModelProvider(config=configs.anthropic),
-                "google": GoogleModelProvider(config=configs.google),
-                "copilot": CopilotModelProvider(config=configs.copilot),
-                "endpoint": OpenAIEndpointProvider(name="endpoint", config=configs.endpoint),
-                "deepseek": DeepSeekModelProvider(config=configs.deepseek),
-                "openrouter": OpenRouterModelProvider(config=configs.openrouter),
-                "zai": ZAIModelProvider(config=configs.zai),
-                "zhipuai": ZhipuAIModelProvider(config=configs.zhipuai),
-                "grok": GrokModelProvider(config=configs.grok),
-                "minimax": MiniMaxModelProvider(config=configs.minimax),
-                "kimi": KimiModelProvider(config=configs.kimi),
-                "opencode-go": OpenCodeGoModelProvider(config=configs.opencode_go),
-                "qwen": QwenModelProvider(config=configs.qwen),
-                "groq": GroqModelProvider(config=configs.groq),
-                "together": TogetherModelProvider(config=configs.together),
-                "fireworks": FireworksModelProvider(config=configs.fireworks),
-                "mistral": MistralModelProvider(config=configs.mistral),
-            },
+            providers=providers,
             custom_provider_configs=configs.custom,
             model_catalog={},
         )

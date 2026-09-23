@@ -4,8 +4,13 @@ import random
 from dataclasses import dataclass
 from typing import Literal
 
-from ...provider.config import DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG, ProviderTransientRetryConfig
+from ...provider.config import (
+    DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG,
+    ProviderConfigEntry,
+    ProviderTransientRetryConfig,
+)
 from ...provider.errors import ProviderExecutionError
+from ...provider.naming import canonical_provider_id
 from ..config import RuntimeProvidersConfig
 
 PROVIDER_TRANSIENT_RETRYABLE_KINDS = frozenset({"rate_limit", "transient_failure"})
@@ -212,12 +217,12 @@ def provider_transient_retry_config(
 ) -> ProviderTransientRetryConfig:
     if providers is None:
         return DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG
-    # Built-in ids are ProviderConfigs field names except "opencode-go"
-    # (field "opencode_go"); anything else is a custom endpoint id. A "custom"
-    # lookup must not resolve to the custom mapping itself.
-    provider_config = getattr(providers, provider_name.replace("-", "_"), None)
-    if provider_config is None or isinstance(provider_config, dict):
-        provider_config = providers.custom.get(provider_name)
+    # Built-in ids come from the ProviderConfigs field the id names; anything
+    # else is a custom endpoint id. A ``custom`` lookup must not resolve to the
+    # custom mapping itself, which is why the id goes through the same lookup.
+    provider_config: ProviderConfigEntry | None = providers.entry(provider_name)
+    if provider_config is None:
+        provider_config = providers.custom.get(canonical_provider_id(provider_name))
     if provider_config is None or provider_config.transient_retry is None:
         return DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG
     return provider_config.transient_retry

@@ -46,7 +46,7 @@ class WireRouting:
 def _routed_model(model_map: Mapping[str, str], model_name: str) -> str:
     """Resolve one provider ``model_map`` alias exactly as the wire adapters do."""
     mapped = model_map.get(model_name)
-    return mapped if isinstance(mapped, str) and mapped else model_name
+    return mapped if mapped else model_name
 
 
 @dataclass(frozen=True, slots=True)

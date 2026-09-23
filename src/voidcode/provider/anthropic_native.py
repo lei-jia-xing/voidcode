@@ -38,6 +38,7 @@ from .protocol import (
     ProviderWireMaterialization,
     WirePrefixDescriptor,
 )
+from .provider_config import anthropic_wire_default_base_url
 from .reasoning_effort import clamp_effort_to_supported, normalize_reasoning_effort
 from .trace import write_provider_trace
 
@@ -401,8 +402,23 @@ class AnthropicMessagesProvider:
         owned = self._owned_transport
         if owned.value is None:
             config = self.config
+            # A provider whose config names no endpoint resolves to its own vendor
+            # default from the Anthropic wire table; one without a default must not
+            # borrow Anthropic's host just because its SDK has one. That class
+            # default is for direct construction only, never a provider-level
+            # fallback, so an endpoint-less provider fails here instead.
+            base_url = config.base_url if config and config.base_url else anthropic_wire_default_base_url(self.name)
+            if not base_url:
+                raise ProviderExecutionError(
+                    kind="not_configured",
+                    provider_name=self.name,
+                    model_name="unknown",
+                    message=f"provider '{self.name}' has no endpoint configured; set providers.{self.name}.base_url and its API key",
+                    retryable=False,
+                    fallback_allowed=True,
+                )
             owned.value = AnthropicMessagesTransport(
-                base_url=config.base_url if config and config.base_url else _DEFAULT_ANTHROPIC_BASE_URL,
+                base_url=base_url,
                 api_key=(config.api_key if config else None) or os.environ.get("ANTHROPIC_API_KEY"),
                 version=config.version if config and config.version else _DEFAULT_ANTHROPIC_VERSION,
                 beta_headers=config.beta_headers if config else (),
@@ -452,7 +468,10 @@ class AnthropicMessagesProvider:
                 arguments = self._visible_arguments(segment.tool_name, segment.tool_arguments or {})
                 block: dict[str, object] = {
                     "type": "tool_use",
-                    "id": _normalize_tool_call_id(segment.tool_call_id, fallback=segment.tool_name),
+                    # Ingest normalised this id once; render it verbatim rather than
+                    # substituting the tool name, which two calls to the same tool
+                    # would share.
+                    "id": segment.tool_call_id,
                     "name": original_to_provider.get(segment.tool_name, segment.tool_name),
                     "input": arguments,
                 }
@@ -481,7 +500,7 @@ class AnthropicMessagesProvider:
                 result_text = segment.content or (json.dumps(result_data, ensure_ascii=False, sort_keys=True) if result_data else "")
                 block = {
                     "type": "tool_result",
-                    "tool_use_id": _normalize_tool_call_id(segment.tool_call_id, fallback=segment.tool_name or "voidcode_tool"),
+                    "tool_use_id": segment.tool_call_id,
                     "content": result_text,
                 }
                 if metadata.get("status") == "error":

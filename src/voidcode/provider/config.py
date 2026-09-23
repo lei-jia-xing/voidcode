@@ -284,18 +284,32 @@ class _ProviderFallbackPayload(_ProviderPayloadModel):
     fallback_models: BoundaryStringList = ()
 
 
-def _provider_config_payload_keys() -> dict[str, str]:
-    """Canonical provider id -> the ``providers`` payload key that carries it."""
-    keys: dict[str, str] = {}
+def _provider_config_fields() -> dict[str, tuple[str, str]]:
+    """Canonical provider id -> (``ProviderConfigs`` field name, ``providers`` payload key).
+
+    A payload field name and its ``ProviderConfigs`` field are one name -- the
+    parser builds the config from the payload by keyword -- so the payload model
+    is the one place the id -> field relationship is stated.
+    """
+    fields: dict[str, tuple[str, str]] = {}
     for field_name, model_field in ProviderConfigsPayload.model_fields.items():
         if field_name == "custom":
             continue
         payload_key = model_field.validation_alias if isinstance(model_field.validation_alias, str) else field_name
-        keys[canonical_provider_id(payload_key)] = payload_key
-    return keys
+        fields[canonical_provider_id(payload_key)] = (field_name, payload_key)
+    return fields
 
 
-_PROVIDER_CONFIG_PAYLOAD_KEYS: Mapping[str, str] = _provider_config_payload_keys()
+_PROVIDER_CONFIG_FIELD_ENTRIES: Mapping[str, tuple[str, str]] = _provider_config_fields()
+
+#: Canonical built-in provider id -> the ``providers`` payload key that carries it.
+_PROVIDER_CONFIG_PAYLOAD_KEYS: Mapping[str, str] = {
+    provider_id: payload_key for provider_id, (_, payload_key) in _PROVIDER_CONFIG_FIELD_ENTRIES.items()
+}
+
+#: Canonical built-in provider id -> the ``ProviderConfigs`` field holding its
+#: configuration. Custom providers live in the ``custom`` mapping instead.
+PROVIDER_CONFIG_FIELDS: Mapping[str, str] = {provider_id: field_name for provider_id, (field_name, _) in _PROVIDER_CONFIG_FIELD_ENTRIES.items()}
 
 
 def _canonicalize_provider_config_payload_keys(
@@ -578,6 +592,19 @@ class CopilotProviderConfig:
     transient_retry: ProviderTransientRetryConfig | None = None
 
 
+#: Any configuration entry a built-in provider id can resolve to. Every member
+#: carries a ``base_url`` and a ``transient_retry``, which is what the readers of
+#: an entry actually ask it for.
+type ProviderConfigEntry = (
+    OpenAIProviderConfig
+    | AnthropicProviderConfig
+    | GoogleProviderConfig
+    | CopilotProviderConfig
+    | ProviderEndpointConfig
+    | OpenAICompatibleProviderConfig
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderEndpointConfig:
     api_key: str | None = None
@@ -625,6 +652,17 @@ class ProviderConfigs:
     fireworks: OpenAICompatibleProviderConfig | None = None
     mistral: OpenAICompatibleProviderConfig | None = None
     custom: dict[str, ProviderEndpointConfig] = field(default_factory=dict)
+
+    def entry(self, provider_name: str) -> ProviderConfigEntry | None:
+        """The configuration entry of one built-in provider id, ``None`` if it is not built-in.
+
+        Provider ids are case-insensitive: ``MiniMax`` reads the ``minimax``
+        entry. An id nothing declares, and a provider under ``custom``, return
+        ``None``: the entry's field name is derived from the payload model, so
+        there is no second list of provider ids to keep in step.
+        """
+        field_name = PROVIDER_CONFIG_FIELDS.get(canonical_provider_id(provider_name))
+        return None if field_name is None else getattr(self, field_name)
 
 
 _OPENAI_API_KEY_ENV_VAR = "OPENAI_API_KEY"

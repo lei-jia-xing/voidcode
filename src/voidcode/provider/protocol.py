@@ -357,7 +357,7 @@ def wrap_provider_stream(
         yield ProviderStreamEvent(kind="done", done_reason="unknown")
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class ProviderExecutionError(ValueError):
     kind: ProviderErrorKind
     provider_name: str
@@ -370,15 +370,6 @@ class ProviderExecutionError(ValueError):
     fallback_allowed: bool | None = None
     retry_after: float | None = None
     details: dict[str, object] | None = None
-
-    def __setattr__(self, name: str, value: object) -> None:
-        immutable_fields = {"kind", "provider_name", "model_name", "message", "retryable", "fallback_allowed", "retry_after", "details"}
-        if name in immutable_fields and hasattr(self, name):
-            raise AttributeError(f"ProviderExecutionError field '{name}' is immutable")
-        super().__setattr__(name, value)
-
-    def __hash__(self) -> int:
-        return hash((self.kind, self.provider_name, self.model_name, self.message, self.retryable, self.fallback_allowed, self.retry_after))
 
     def __str__(self) -> str:
         return self.message

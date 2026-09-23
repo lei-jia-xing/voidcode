@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from voidcode.provider.anthropic import AnthropicModelProvider
 from voidcode.provider.config import (
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
@@ -15,10 +14,13 @@ from voidcode.provider.config import (
 from voidcode.provider.copilot import CopilotModelProvider
 from voidcode.provider.endpoint import OpenAIEndpointProvider
 from voidcode.provider.google import GoogleModelProvider
-from voidcode.provider.minimax import MiniMaxModelProvider
 from voidcode.provider.naming import UnknownProviderIdError
 from voidcode.provider.openai import OpenAIModelProvider
-from voidcode.provider.registry import ModelProviderRegistry
+from voidcode.provider.registry import (
+    AnthropicCompatibleModelProvider,
+    ModelProviderRegistry,
+    OpenAICompatibleModelProvider,
+)
 from voidcode.provider.resolution import resolve_provider_model
 
 
@@ -26,7 +28,7 @@ def test_registry_registers_concrete_provider_adapters() -> None:
     registry = ModelProviderRegistry.with_defaults()
 
     assert isinstance(registry.resolve("openai"), OpenAIModelProvider)
-    assert isinstance(registry.resolve("anthropic"), AnthropicModelProvider)
+    assert isinstance(registry.resolve("anthropic"), AnthropicCompatibleModelProvider)
     assert isinstance(registry.resolve("google"), GoogleModelProvider)
     assert isinstance(registry.resolve("copilot"), CopilotModelProvider)
     assert isinstance(registry.resolve("endpoint"), OpenAIEndpointProvider)
@@ -37,7 +39,8 @@ def test_registry_canonicalises_provider_id_case() -> None:
 
     resolved = registry.resolve_with_metadata("MiniMax")
 
-    assert isinstance(resolved.provider, MiniMaxModelProvider)
+    assert isinstance(resolved.provider, OpenAICompatibleModelProvider)
+    assert resolved.provider.name == "minimax"
     assert resolved.provider_name == "minimax"
     assert resolved.source == "builtin"
 

@@ -29,6 +29,15 @@ _DEFAULT_OPENAI_WIRE_BASE_URLS: dict[str, str] = {
     "copilot": _DEFAULT_COPILOT_BASE_URL,
 }
 
+# Vendor defaults for the providers whose wire is the Anthropic Messages
+# protocol. Same contract as the OpenAI wire table above: a provider absent from
+# this table has no default of its own, so a caller must refuse to run rather
+# than point the wire at a host it does not own. The Anthropic SDK transport in
+# ``anthropic_native`` keeps its own construction default for direct use only.
+_DEFAULT_ANTHROPIC_WIRE_BASE_URLS: dict[str, str] = {
+    "anthropic": "https://api.anthropic.com",
+}
+
 # The endpoint provider is a user-supplied OpenAI-compatible gateway. Without
 # configuration it assumes the conventional local gateway, mirroring the
 # discovery default documented for `providers.endpoint`.
@@ -75,13 +84,33 @@ def openai_provider_config(config: OpenAIProviderConfig | None) -> ProviderEndpo
     )
 
 
-def anthropic_provider_config(config: AnthropicProviderConfig | None) -> ProviderEndpointConfig:
+def anthropic_wire_default_base_url(provider_name: str) -> str | None:
+    """Vendor default base URL for an Anthropic-wire provider that names none.
+
+    ``None`` means the provider has no default endpoint of its own, so a caller
+    must refuse to run rather than point the wire at a host it does not own.
+    """
+    return _DEFAULT_ANTHROPIC_WIRE_BASE_URLS.get(provider_name)
+
+
+def anthropic_compatible_endpoint_config(provider_name: str, config: AnthropicProviderConfig | None) -> ProviderEndpointConfig:
+    """Normalize one Anthropic-wire vendor's configuration.
+
+    The vendor default base URL and the discovery host both come from tables
+    keyed by ``provider_name``, so a gateway route that pins its own host (the
+    OpenCode adapters) keeps that host while an unconfigured vendor resolves to
+    its own endpoint instead of borrowing Anthropic's.
+    """
+    vendor_default_base_url = anthropic_wire_default_base_url(provider_name)
+    if vendor_default_base_url is None:
+        raise ValueError(f"Unknown Anthropic-wire provider: {provider_name!r}")
+    configured_base_url = None if config is None else config.base_url
     return ProviderEndpointConfig(
         api_key=None if config is None else config.api_key,
-        base_url=None if config is None else config.base_url,
+        base_url=configured_base_url or vendor_default_base_url,
         discovery_base_url=default_discovery_base_url(
-            "anthropic",
-            configured_base_url=None if config is None else config.base_url,
+            provider_name,
+            configured_base_url=configured_base_url,
             configured_discovery_base_url=None if config is None else config.discovery_base_url,
         ),
         timeout_seconds=None if config is None else config.timeout_seconds,

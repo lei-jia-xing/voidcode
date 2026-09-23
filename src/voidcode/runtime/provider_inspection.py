@@ -9,7 +9,7 @@ from ..provider.auth import (
     ProviderAuthResolutionError,
     ProviderAuthResolver,
 )
-from ..provider.config import ProviderConfigs, ProviderEndpointConfig
+from ..provider.config import PROVIDER_CONFIG_FIELDS, ProviderConfigEntry, ProviderConfigs, ProviderEndpointConfig
 from ..provider.errors import guidance_for_provider_error_kind
 from ..provider.naming import canonical_provider_id
 from ..provider.openai_native import normalize_openai_base_url
@@ -23,49 +23,24 @@ from .contracts import (
     ProviderValidationResult,
 )
 
-# Builtin provider id -> ``ProviderConfigs`` field. Custom providers use the
-# ``custom`` mapping instead, keyed by provider name.
-_PROVIDER_CONFIG_FIELDS: dict[str, str] = {
-    "openai": "openai",
-    "anthropic": "anthropic",
-    "google": "google",
-    "copilot": "copilot",
-    "endpoint": "endpoint",
-    "opencode": "opencode",
-    "openrouter": "openrouter",
-    "deepseek": "deepseek",
-    "zai": "zai",
-    "zhipuai": "zhipuai",
-    "grok": "grok",
-    "minimax": "minimax",
-    "kimi": "kimi",
-    "opencode-go": "opencode_go",
-    "qwen": "qwen",
-    "groq": "groq",
-    "together": "together",
-    "fireworks": "fireworks",
-    "mistral": "mistral",
-}
 
-
-def provider_config_entry(providers: ProviderConfigs | None, provider_name: str) -> object | None:
+def provider_config_entry(providers: ProviderConfigs | None, provider_name: str) -> ProviderConfigEntry | None:
     """Return the raw ``provider_name`` config entry, or ``None`` when unconfigured.
 
     Provider ids are case-insensitive: ``MiniMax`` reads the ``minimax`` entry.
     """
     if providers is None:
         return None
-    canonical_name = canonical_provider_id(provider_name)
-    field_name = _PROVIDER_CONFIG_FIELDS.get(canonical_name)
-    if field_name is not None:
-        return getattr(providers, field_name)
-    return providers.custom.get(canonical_name)
+    entry = providers.entry(provider_name)
+    if entry is not None:
+        return entry
+    return providers.custom.get(canonical_provider_id(provider_name))
 
 
 def provider_credentials_config_path(provider_name: str) -> str:
     """Runtime config path that holds one provider's credentials."""
     canonical_name = canonical_provider_id(provider_name)
-    field_name = _PROVIDER_CONFIG_FIELDS.get(canonical_name)
+    field_name = PROVIDER_CONFIG_FIELDS.get(canonical_name)
     if field_name is None:
         return f"providers.custom.{canonical_name}.api_key"
     return f"providers.{field_name}.api_key"
@@ -225,8 +200,9 @@ class RuntimeProviderEndpointInspector:
         return normalize_openai_base_url(endpoint_config.base_url)
 
     def _source(self, provider_name: str, endpoint_config: ProviderEndpointConfig | None) -> ProviderEndpointSource:
-        configured = getattr(provider_config_entry(self._providers, provider_name), "base_url", None)
-        if isinstance(configured, str) and configured.strip():
+        entry = provider_config_entry(self._providers, provider_name)
+        configured = None if entry is None else entry.base_url
+        if configured is not None and configured.strip():
             return "config"
         if endpoint_config is not None and endpoint_config.base_url == DEFAULT_ENDPOINT_BASE_URL:
             # Nothing configured: the generic endpoint provider's documented

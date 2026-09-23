@@ -243,7 +243,7 @@ class GoogleGenAIProvider:
                 parts.append(
                     {
                         "function_response": {
-                            "name": segment.tool_name or "voidcode_tool",
+                            "name": segment.tool_name,
                             "response": {"content": segment.content or ""},
                         }
                     }

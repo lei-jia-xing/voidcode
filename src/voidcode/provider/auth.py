@@ -12,6 +12,7 @@ from .config import (
     ProviderConfigs,
     ProviderConfigsPayload,
     ProviderEndpointConfig,
+    _AnthropicProviderConfigPayload,
     _OpenAICompatibleProviderConfigPayload,
     _ProviderEndpointConfigPayload,
 )
@@ -139,6 +140,9 @@ ENDPOINT_SHAPED_BUILTIN_IDS: frozenset[str] = frozenset(ENDPOINT_SHAPED_BUILTIN_
 
 #: OpenAI-compatible built-ins: canonical provider id -> ``ProviderConfigs`` field.
 OPENAI_COMPATIBLE_BUILTIN_FIELDS: Mapping[str, str] = _provider_id_field_map(_OpenAICompatibleProviderConfigPayload)
+
+#: Anthropic-wire built-ins: canonical provider id -> ``ProviderConfigs`` field.
+ANTHROPIC_COMPATIBLE_BUILTIN_FIELDS: Mapping[str, str] = _provider_id_field_map(_AnthropicProviderConfigPayload)
 
 
 class ProviderAuthResolver:
