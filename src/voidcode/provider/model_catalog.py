@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from importlib.resources import files as _resource_files
@@ -456,7 +456,7 @@ def _optional_str(value: object) -> str | None:
 def _modalities(value: object) -> tuple[str, ...] | None:
     if not isinstance(value, list):
         return None
-    raw_items = cast(Iterable[object], value)
+    raw_items = value
     modalities = tuple(item for item in raw_items if isinstance(item, str) and item)
     return modalities or None
 

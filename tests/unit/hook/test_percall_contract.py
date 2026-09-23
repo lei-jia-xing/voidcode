@@ -7,6 +7,7 @@ from voidcode.hook.percall import (
     PerCallHandlerBinding,
     PerCallMessage,
     PerCallRewriteDecision,
+    RewritePerCall,
     percall_cache_prefix,
     percall_messages_sha256,
     percall_persistent_messages,
@@ -16,8 +17,7 @@ from voidcode.hook.percall import (
 def _append(tag: str):  # type: ignore[no-untyped-def]
     def handler(messages: tuple[PerCallMessage, ...]) -> PerCallRewriteDecision:
         seen = [m.content for m in messages]
-        return PerCallRewriteDecision(
-            action="rewrite",
+        return RewritePerCall(
             messages=(*messages, PerCallMessage(role="ctx", content=f"{tag}:{'+'.join(seen)}")),
         )
 

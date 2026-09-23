@@ -75,7 +75,7 @@ def _parse_boundary_string_list(value: object) -> tuple[str, ...]:
     if not isinstance(value, list):
         raise ValueError("must be an array when provided")
     parsed_items: list[str] = []
-    for index, item in enumerate(cast(list[object], value)):
+    for index, item in enumerate(value):
         if not isinstance(item, str):
             raise ValueError(f"[{index}] must be a string")
         parsed_items.append(item)
@@ -88,7 +88,7 @@ def _parse_boundary_string_mapping(value: object) -> dict[str, str]:
     if not isinstance(value, dict):
         raise ValueError("must be an object when provided")
     mapping: dict[str, str] = {}
-    for raw_key, raw_item in cast(dict[object, object], value).items():
+    for raw_key, raw_item in value.items():
         if not isinstance(raw_key, str):
             raise ValueError(" keys must be strings")
         if not raw_key:
@@ -314,7 +314,7 @@ def _canonicalize_provider_config_payload_keys(
         return raw_value
     canonicalized: dict[str, object] = {}
     spelled: dict[str, str] = {}
-    for raw_key, value in cast(dict[object, object], raw_value).items():
+    for raw_key, value in raw_value.items():
         if not isinstance(raw_key, str) or not raw_key:
             raise ValueError(f"{field_path} keys must be non-empty strings")
         payload_key = _canonical_provider_config_key(raw_key, field_path=field_path)
@@ -946,11 +946,11 @@ def _extend_config_field_path(field_path: str, loc: tuple[object, ...]) -> str:
 
 
 def _validation_reason_from_error(error: dict[str, object]) -> str:
-    error_type = cast(str, error.get("type", ""))
+    error_type = error.get("type", "")
     if error_type == "value_error":
         context = error.get("ctx")
         if isinstance(context, dict):
-            nested_error = cast(dict[str, object], context).get("error")
+            nested_error = context.get("error")
             if isinstance(nested_error, ValueError):
                 return str(nested_error)
     return cast(str, error.get("msg", "is invalid"))
@@ -963,7 +963,7 @@ def _format_provider_payload_validation_error(
     object_when_provided: bool = True,
 ) -> str:
     loc = tuple(cast(tuple[object, ...], error.get("loc", ())))
-    error_type = cast(str, error.get("type", ""))
+    error_type = error.get("type", "")
     target = _extend_config_field_path(field_path, loc)
     if error_type in {"model_type", "dict_type"}:
         suffix = " when provided" if object_when_provided else ""
@@ -1864,7 +1864,7 @@ def _parse_custom_endpoint_provider_configs(
     if not isinstance(raw_value, dict):
         raise ValueError(f"{field_path} must be an object when provided")
 
-    payload = cast(dict[object, object], raw_value)
+    payload = raw_value
     parsed: dict[str, ProviderEndpointConfig] = {}
     spelled: dict[str, str] = {}
     for raw_provider_name, provider_payload in payload.items():

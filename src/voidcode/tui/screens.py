@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, cast
+from typing import Literal
 
 from rich.text import Text
 from textual import events
@@ -195,12 +195,12 @@ class QuestionModal(ModalScreen[tuple[QuestionResponse, ...] | None]):
             return ()
         questions: list[_QuestionPage] = []
         for index, raw_question in enumerate(raw_questions):
-            question = cast(dict[str, object], raw_question) if isinstance(raw_question, dict) else {}
+            question = raw_question if isinstance(raw_question, dict) else {}
             raw_options = question.get("options")
             options: list[_QuestionOption] = []
             if isinstance(raw_options, list):
                 for raw_option in raw_options:
-                    option = cast(dict[str, object], raw_option) if isinstance(raw_option, dict) else {}
+                    option = raw_option if isinstance(raw_option, dict) else {}
                     label = option.get("label")
                     if not isinstance(label, str) or not label.strip():
                         continue

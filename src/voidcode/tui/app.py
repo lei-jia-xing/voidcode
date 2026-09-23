@@ -941,7 +941,7 @@ class VoidCodeTUI(App[int]):
     def _extract_display(payload: dict[str, object]) -> dict[str, object] | None:
         raw = payload.get("display")
         if isinstance(raw, dict):
-            return cast(dict[str, object], raw)
+            return raw
         return None
 
     @staticmethod
@@ -958,7 +958,7 @@ class VoidCodeTUI(App[int]):
         copyable = display.get("copyable")
         if not isinstance(copyable, dict):
             return None
-        path = cast(dict[str, object], copyable).get("path")
+        path = copyable.get("path")
         return path if isinstance(path, str) and path else None
 
     def _render_tool_request_line(self, tool_name: str, display: dict[str, object] | None) -> Text:
@@ -1001,7 +1001,7 @@ class VoidCodeTUI(App[int]):
         copyable = display.get("copyable")
         if not isinstance(copyable, dict):
             return None
-        command = cast(dict[str, object], copyable).get("command")
+        command = copyable.get("command")
         return command if isinstance(command, str) and command else None
 
     def _buffer_tool_progress(self, payload: dict[str, object]) -> None:
@@ -1248,7 +1248,7 @@ class VoidCodeTUI(App[int]):
         cw = metadata["context_window"]
         if not isinstance(cw, dict):
             return "Unknown"
-        context_window = cast(dict[str, object], cw)
+        context_window = cw
 
         retained = self._context_int_value(context_window, "retained_tool_result_count")
         text = f"{retained} results"

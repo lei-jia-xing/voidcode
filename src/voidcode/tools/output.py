@@ -93,10 +93,10 @@ def _sanitize_value(value: object, *, key: str | None = None, argument: bool = F
                 key=str(item_key),
                 argument=argument,
             )
-            for item_key, item_value in cast(dict[object, object], value).items()
+            for item_key, item_value in value.items()
         }
     if isinstance(value, list):
-        return [_sanitize_value(item, key=key, argument=argument) for item in cast(list[object], value)]
+        return [_sanitize_value(item, key=key, argument=argument) for item in value]
     if isinstance(value, tuple):
         return [_sanitize_value(item, key=key, argument=argument) for item in value]
     return value
@@ -114,7 +114,7 @@ def sanitize_tool_result_data(data: dict[str, object]) -> dict[str, object]:
     sanitized = sanitize_tool_data(data)
     raw_arguments = data.get("arguments")
     if isinstance(raw_arguments, dict):
-        sanitized["arguments"] = sanitize_tool_arguments(cast(dict[str, object], raw_arguments))
+        sanitized["arguments"] = sanitize_tool_arguments(raw_arguments)
     return sanitized
 
 
@@ -136,7 +136,7 @@ def strip_redaction_sentinels(
     """Return a schema-safe copy with sanitizer-created redaction placeholders removed."""
 
     if isinstance(value, dict):
-        raw_value = cast(dict[object, object], value)
+        raw_value = value
         if key in redacted_keys and _is_sanitizer_redaction_placeholder(raw_value):
             return ""
         return {
@@ -148,7 +148,7 @@ def strip_redaction_sentinels(
             for item_key, item in raw_value.items()
         }
     if isinstance(value, list):
-        return [strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key) for item in cast(list[object], value)]
+        return [strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key) for item in value]
     if isinstance(value, tuple):
         return [strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key) for item in value]
     return value
@@ -353,13 +353,13 @@ def _line_count(path: Path) -> int:
 
 def _event_payload(event: object) -> Mapping[str, object] | None:
     if isinstance(event, Mapping):
-        event_mapping = cast(Mapping[str, object], event)
+        event_mapping = event
         payload = event_mapping.get("payload")
     else:
         payload = getattr(event, "payload", None)
     if not isinstance(payload, Mapping):
         return None
-    return cast(Mapping[str, object], payload)
+    return payload
 
 
 def resolve_tool_output_artifact(
@@ -374,14 +374,14 @@ def resolve_tool_output_artifact(
         raise ValueError("artifact_id or tool_call_id is required")
     if not isinstance(events, list | tuple):
         return None
-    for event in cast(list[object] | tuple[object, ...], events):
+    for event in events:
         payload = _event_payload(event)
         if payload is None:
             continue
         artifact = payload.get("artifact")
         if not isinstance(artifact, Mapping):
             continue
-        artifact_mapping = cast(Mapping[str, object], artifact)
+        artifact_mapping = artifact
         if artifact_id is not None and artifact_mapping.get("artifact_id") != artifact_id:
             continue
         if tool_call_id is not None and artifact_mapping.get("tool_call_id") != tool_call_id:

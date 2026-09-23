@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from string import Template
-from typing import BinaryIO, cast, final
+from typing import BinaryIO, final
 
 from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolDiagnostics, ToolResult
 from .runtime_context import current_runtime_tool_context
@@ -101,7 +101,7 @@ def _load_local_custom_tool_manifest(path: Path, *, workspace: Path) -> LocalCus
         raise ValueError(f"invalid local custom tool manifest at {path}") from exc
     if not isinstance(raw_payload, dict):
         raise ValueError(f"local custom tool manifest must be an object: {path}")
-    payload = cast(dict[str, object], raw_payload)
+    payload = raw_payload
     allowed_keys = {"name", "description", "input_schema", "command", "read_only", "path_argument_keys"}
     unknown_keys = sorted(key for key in payload if key not in allowed_keys)
     if unknown_keys:
@@ -141,7 +141,7 @@ def _parse_manifest_command(value: object, *, manifest_path: Path) -> tuple[str,
     if not isinstance(value, list):
         raise ValueError(f"local custom tool manifest {manifest_path} command must be an array")
     command: list[str] = []
-    for index, item in enumerate(cast(list[object], value)):
+    for index, item in enumerate(value):
         if not isinstance(item, str) or item == "":
             raise ValueError(f"local custom tool manifest {manifest_path} command[{index}] must be a non-empty string")
         command.append(item)
@@ -154,7 +154,7 @@ def _parse_path_argument_keys(value: object, *, manifest_path: Path) -> tuple[st
     if not isinstance(value, list):
         raise ValueError(f"local custom tool manifest {manifest_path} path_argument_keys must be an array")
     path_argument_keys: list[str] = []
-    for index, item in enumerate(cast(list[object], value)):
+    for index, item in enumerate(value):
         if not isinstance(item, str) or not item:
             raise ValueError(f"local custom tool manifest {manifest_path} path_argument_keys[{index}] must be a non-empty string")
         path_argument_keys.append(item)
@@ -164,7 +164,7 @@ def _parse_path_argument_keys(value: object, *, manifest_path: Path) -> tuple[st
 def _parse_input_schema(value: object, *, manifest_path: Path) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"local custom tool manifest {manifest_path} input_schema must be an object")
-    schema = cast(dict[str, object], value)
+    schema = value
     try:
         json.dumps(schema)
     except TypeError as exc:

@@ -7,8 +7,9 @@ import socket
 import webbrowser
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
+from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 from .runtime.config import RuntimeConfig
 from .runtime.transport.http import create_runtime_app
@@ -36,7 +37,7 @@ def _run_runtime_server(
     listener_socket: socket.socket | None = None,
 ) -> None:
     app = create_runtime_app(workspace=workspace, config=config, frontend_dist=frontend_dist)
-    uvicorn = cast(UvicornModule, importlib.import_module("uvicorn"))
+    uvicorn = importlib.import_module("uvicorn")
     if listener_socket is None:
         uvicorn.run(app, host=host, port=port, lifespan="auto")
         return
@@ -74,7 +75,7 @@ _PACKAGED_FRONTEND_DIST = "_web_dist"
 _REPO_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 
-def _packaged_frontend_dist() -> object | None:
+def _packaged_frontend_dist() -> Traversable | None:
     package_root = importlib_resources.files("voidcode")
     frontend_dist = package_root.joinpath(_PACKAGED_FRONTEND_DIST)
     if frontend_dist.is_dir() and frontend_dist.joinpath("index.html").is_file():
@@ -89,8 +90,7 @@ def _frontend_dist_context() -> Iterator[Path]:
         return
     packaged_frontend_dist = _packaged_frontend_dist()
     if packaged_frontend_dist is not None:
-        packaged_traversable = cast(Any, packaged_frontend_dist)
-        with importlib_resources.as_file(packaged_traversable) as frontend_dist:
+        with importlib_resources.as_file(packaged_frontend_dist) as frontend_dist:
             yield frontend_dist
         return
     raise SystemExit(
@@ -139,7 +139,7 @@ def web(
     try:
         selected_port: int
         if listener_socket is not None:
-            selected_port = cast(int, listener_socket.getsockname()[1])
+            selected_port = listener_socket.getsockname()[1]
         else:
             selected_port = cast(int, port)
         url = f"http://{host}:{selected_port}"

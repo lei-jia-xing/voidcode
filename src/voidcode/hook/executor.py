@@ -8,7 +8,7 @@ import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Literal, cast
+from typing import Final, Literal
 
 from ..runtime.events import RUNTIME_TOOL_HOOK_POST, RUNTIME_TOOL_HOOK_PRE
 from ..security.shell_policy import non_interactive_shell_env
@@ -416,7 +416,7 @@ def _hook_action_payload_from_stdout(stdout: str) -> _HookActionPayload:
         return _HookActionPayload()
     if not isinstance(raw_payload, dict):
         return _HookActionPayload()
-    payload = cast(dict[str, object], raw_payload)
+    payload = raw_payload
     action = payload.get("action")
     diagnostic = payload.get("diagnostic") or payload.get("message")
     guidance = payload.get("guidance")

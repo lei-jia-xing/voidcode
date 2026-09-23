@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Final, Literal, cast
+from typing import Final, Literal
 
 # Event vocabulary — single source of truth.
 # KnownEventType (CoreEventType | RuntimeEventType) is the authoritative stored/
@@ -84,7 +84,6 @@ type RuntimeEventType = Literal[
     "runtime.background_task_result_read",
     "runtime.delegated_result_available",
     "runtime.skill_loaded",
-    "runtime.policy_materialized",
     "runtime.todo_updated",
     "runtime.reasoning_part",
     "runtime.reasoning_diagnostic",
@@ -211,7 +210,6 @@ RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED: Final[RuntimeEventType] = "runtim
 RUNTIME_BACKGROUND_TASK_RESULT_READ: Final[RuntimeEventType] = "runtime.background_task_result_read"
 RUNTIME_DELEGATED_RESULT_AVAILABLE: Final[RuntimeEventType] = "runtime.delegated_result_available"
 RUNTIME_SKILL_LOADED: Final[RuntimeEventType] = "runtime.skill_loaded"
-RUNTIME_POLICY_MATERIALIZED: Final[RuntimeEventType] = "runtime.policy_materialized"
 RUNTIME_TODO_UPDATED: Final[RuntimeEventType] = "runtime.todo_updated"
 RUNTIME_REASONING_PART: Final[RuntimeEventType] = "runtime.reasoning_part"
 RUNTIME_REASONING_DIAGNOSTIC: Final[RuntimeEventType] = "runtime.reasoning_diagnostic"
@@ -296,7 +294,6 @@ RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
     RUNTIME_BACKGROUND_TASK_RESULT_READ,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
     RUNTIME_SKILL_LOADED,
-    RUNTIME_POLICY_MATERIALIZED,
     RUNTIME_TODO_UPDATED,
     RUNTIME_REASONING_PART,
     RUNTIME_REASONING_DIAGNOSTIC,
@@ -456,7 +453,7 @@ def _bounded_diagnostics(value: object) -> dict[str, object]:
     if not isinstance(value, Mapping):
         return {}
     diagnostics: dict[str, object] = {}
-    bounded_items = list(cast(Mapping[str, object], value).items())[:POLICY_OBSERVABILITY_LIST_LIMIT]
+    bounded_items = list(value.items())[:POLICY_OBSERVABILITY_LIST_LIMIT]
     for key, raw in bounded_items:
         if not isinstance(key, str):
             continue
@@ -486,7 +483,7 @@ def runtime_reasoning_part_from_provider_stream(
     }
     raw_metadata = payload.get("metadata")
     if isinstance(raw_metadata, Mapping):
-        for key, value in cast(Mapping[str, object], raw_metadata).items():
+        for key, value in raw_metadata.items():
             if key not in _SAFE_PROVIDER_REASONING_METADATA_KEYS:
                 continue
             if isinstance(value, str) and value:
@@ -606,10 +603,10 @@ def _bool_or_default(value: object, *, default: bool = False) -> bool:
 def _mapping_or_none(value: object) -> Mapping[str, object] | None:
     if not isinstance(value, Mapping):
         return None
-    mapping = cast(Mapping[object, object], value)
+    mapping = value
     if not all(isinstance(key, str) for key in mapping):
         return None
-    return cast(Mapping[str, object], value)
+    return value
 
 
 def _delegated_lifecycle_message_payload(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import NoReturn
 
 from ..security.path_policy import resolve_workspace_path
 from ._repair import raise_tool_diagnostic
@@ -224,7 +224,7 @@ def _raise_unseen_range(
 def _read_result_path(result: ToolResult) -> str | None:
     raw_arguments = result.data.get("arguments")
     if isinstance(raw_arguments, dict):
-        arguments = cast(dict[str, object], raw_arguments)
+        arguments = raw_arguments
         raw_path = arguments.get("path")
         if isinstance(raw_path, str) and raw_path.strip():
             return raw_path

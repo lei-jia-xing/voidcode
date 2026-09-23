@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
@@ -271,9 +271,9 @@ class TaskControlTool:
         return replace(
             result,
             tool_name=self.definition.name,
-            content=cast(str | None, _rewrite_background_reference(result.content)),
-            data=cast(dict[str, object], _rewrite_background_reference(result.data)),
-            error=cast(str | None, _rewrite_background_reference(result.error)),
+            content=_rewrite_background_reference(result.content),
+            data=_rewrite_background_reference(result.data),
+            error=_rewrite_background_reference(result.error),
         )
 
 

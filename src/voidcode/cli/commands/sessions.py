@@ -51,12 +51,12 @@ def parse_question_responses(
         raw_payload = json.loads(response_json)
         if not isinstance(raw_payload, list) or not raw_payload:
             raise ValueError("--response-json must be a non-empty JSON array")
-        raw_items = cast(list[object], raw_payload)
+        raw_items = raw_payload
         parsed: list[QuestionResponse] = []
         for index, raw_item in enumerate(raw_items):
             if not isinstance(raw_item, dict):
                 raise ValueError(f"--response-json[{index}] must be an object")
-            item = cast(dict[str, object], raw_item)
+            item = raw_item
             raw_header = item.get("header")
             if not isinstance(raw_header, str) or not raw_header.strip():
                 raise ValueError(f"--response-json[{index}].header must be a non-empty string")

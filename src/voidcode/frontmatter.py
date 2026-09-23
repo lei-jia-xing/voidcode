@@ -16,7 +16,7 @@ Location: shared syntax, deliberately outside ``runtime/`` (no governance),
 
 from __future__ import annotations
 
-from typing import Final, cast
+from typing import Final
 
 import yaml
 
@@ -135,7 +135,7 @@ def load_frontmatter_mapping(raw: str | None, *, source: str | None = None) -> d
         return {}
     if not isinstance(loaded, dict):
         raise FrontmatterError(_located(source, f"frontmatter must be a mapping, not {type(loaded).__name__}"))
-    return cast("dict[str, object]", loaded)
+    return loaded
 
 
 class _FrontmatterSyntaxError(Exception):
@@ -168,7 +168,7 @@ class _FrontmatterLoader(yaml.SafeLoader):
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[object, object]:
         if isinstance(node, yaml.MappingNode):
             _check_mapping_keys(self, node)
-        return cast("dict[object, object]", super().construct_mapping(node, deep=deep))
+        return super().construct_mapping(node, deep=deep)
 
 
 def _yaml_error_message(exc: yaml.YAMLError) -> str:

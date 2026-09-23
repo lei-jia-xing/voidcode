@@ -7,8 +7,6 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-PerCallRewriteAction = Literal["unchanged", "rewrite"]
-
 _MAX_HANDLERS = 16
 
 # ponytail: bounded chain length (16), sync-only handlers; go async/bigger only with measured need.
@@ -23,33 +21,34 @@ class PerCallMessage:
     per_call: bool = False
 
     def __post_init__(self) -> None:
-        if not isinstance(self.role, str) or not self.role.strip():
+        if not self.role.strip():
             raise ValueError("per-call message role must be non-empty")
-        if not isinstance(self.content, str):
-            raise ValueError("per-call message content must be a string")
-        if not isinstance(self.per_call, bool):
-            raise ValueError("per-call marker must be a boolean")
 
 
 @dataclass(frozen=True, slots=True)
-class PerCallRewriteDecision:
-    """Small result vocabulary for one chained handler."""
+class UnchangedPerCall:
+    """Handler leaves the message list untouched."""
 
-    action: PerCallRewriteAction
-    messages: tuple[PerCallMessage, ...] | None = None
+    action: Literal["unchanged"] = "unchanged"
+
+
+@dataclass(frozen=True, slots=True)
+class RewritePerCall:
+    """Handler replaces the message list; the payload is part of the type."""
+
+    messages: tuple[PerCallMessage, ...]
+    action: Literal["rewrite"] = "rewrite"
 
     def __post_init__(self) -> None:
-        if self.action not in {"unchanged", "rewrite"}:
-            raise ValueError(f"unsupported per-call handler action: {self.action}")
-        if self.action == "unchanged":
-            if self.messages is not None:
-                raise ValueError("unchanged per-call decision cannot provide messages")
-            return
-        if not isinstance(self.messages, tuple) or not self.messages:
+        if not self.messages:
             raise ValueError("per-call rewrite must provide a non-empty message tuple")
         if not all(isinstance(m, PerCallMessage) for m in self.messages):
             raise ValueError("per-call rewrite messages must be PerCallMessage items")
         object.__setattr__(self, "messages", tuple(self.messages))
+
+
+# Small result vocabulary for one chained handler.
+type PerCallRewriteDecision = UnchangedPerCall | RewritePerCall
 
 
 class PerCallHandler(Protocol):
@@ -65,12 +64,10 @@ class PerCallHandlerBinding:
     priority: int = 0
 
     def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or not self.name.strip():
+        if not self.name.strip():
             raise ValueError("per-call handler name must be non-empty")
-        if not isinstance(self.priority, int) or isinstance(self.priority, bool):
+        if isinstance(self.priority, bool):
             raise ValueError("per-call handler priority must be an integer")
-        if not callable(self.handler):
-            raise ValueError("per-call handler must be callable")
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,12 +84,8 @@ class PerCallChain:
     bindings: tuple[PerCallHandlerBinding, ...] = ()
 
     def __post_init__(self) -> None:
-        if not isinstance(self.bindings, tuple):
-            raise ValueError("per-call chain bindings must be a tuple")
         if len(self.bindings) > _MAX_HANDLERS:
             raise ValueError(f"per-call chain exceeds {_MAX_HANDLERS} handlers")
-        if not all(isinstance(b, PerCallHandlerBinding) for b in self.bindings):
-            raise ValueError("per-call chain bindings must be PerCallHandlerBinding items")
         names = [b.name for b in self.bindings]
         if len(set(names)) != len(names):
             raise ValueError(f"duplicate per-call handler name: {names}")
@@ -100,20 +93,15 @@ class PerCallChain:
 
     def apply(self, *, messages: Sequence[PerCallMessage]) -> PerCallRewriteOutcome:
         """Chain handlers over a deep clone; input history is never mutated."""
-        if not isinstance(messages, (tuple, list)) or not all(isinstance(m, PerCallMessage) for m in messages):
-            raise ValueError("per-call apply requires PerCallMessage items")
         current = deepcopy(tuple(messages))
         names: list[str] = []
         changed = False
         for binding in self.bindings:
             names.append(binding.name)
             decision = binding.handler(deepcopy(current))
-            if not isinstance(decision, PerCallRewriteDecision):
-                raise ValueError(f"per-call handler '{binding.name}' returned an invalid decision")
             if decision.action == "unchanged":
                 continue
-            assert decision.messages is not None
-            nxt = deepcopy(tuple(decision.messages))
+            nxt = deepcopy(decision.messages)
             changed = changed or nxt != current
             current = nxt
         return PerCallRewriteOutcome(messages=current, handler_names=tuple(names), changed=changed)
@@ -141,9 +129,10 @@ __all__ = [
     "PerCallHandler",
     "PerCallHandlerBinding",
     "PerCallMessage",
-    "PerCallRewriteAction",
     "PerCallRewriteDecision",
     "PerCallRewriteOutcome",
+    "RewritePerCall",
+    "UnchangedPerCall",
     "percall_cache_prefix",
     "percall_messages_sha256",
     "percall_persistent_messages",

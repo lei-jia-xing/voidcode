@@ -176,7 +176,7 @@ def validate_runtime_policy_config_payload(
         return None
     if not isinstance(raw_policy, dict):
         raise ValueError(f"{source} must be an object when provided")
-    payload = cast(dict[str, object], raw_policy)
+    payload = raw_policy
     allowed_keys = {
         "enabled",
         "version",
@@ -285,7 +285,7 @@ def _validate_policy_list_section(
 ) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"{source} must be an object when provided")
-    payload = cast(dict[str, object], value)
+    payload = value
     _reject_unknown_keys(payload, allowed_keys=allowed_keys, source=source)
     normalized: dict[str, object] = {}
     for key in sorted(allowed_keys):
@@ -304,7 +304,7 @@ def _validate_policy_list_section(
 def _validate_hook_policy_config(value: object, *, source: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"{source} must be an object when provided")
-    payload = cast(dict[str, object], value)
+    payload = value
     _reject_unknown_keys(payload, allowed_keys={"allowed_event_scopes", "actions"}, source=source)
     normalized: dict[str, object] = {}
     if "allowed_event_scopes" in payload:
@@ -325,7 +325,7 @@ def _validate_hook_policy_config(value: object, *, source: str) -> dict[str, obj
 def _validate_prompt_activation_config(value: object, *, source: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"{source} must be an object when provided")
-    payload = cast(dict[str, object], value)
+    payload = value
     _reject_unknown_keys(payload, allowed_keys={"enabled", "profile_refs"}, source=source)
     normalized: dict[str, object] = {}
     if "enabled" in payload:
@@ -347,7 +347,7 @@ def serialize_runtime_policy_config(config: object) -> dict[str, object] | None:
     if isinstance(config, RuntimePolicyConfig):
         return config.as_payload()
     if isinstance(config, dict):
-        return _json_safe_dict(cast(dict[str, object], config))
+        return _json_safe_dict(config)
     return None
 
 
@@ -587,7 +587,7 @@ def _child_snapshot_from_parent(
 
 
 def _mapping(value: object) -> dict[str, object]:
-    return dict(cast(dict[str, object], value)) if isinstance(value, dict) else {}
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def _existing_snapshot(value: object) -> Mapping[str, object] | None:
@@ -596,7 +596,7 @@ def _existing_snapshot(value: object) -> Mapping[str, object] | None:
     if isinstance(value, RuntimePolicySnapshot):
         return value.as_payload()
     if isinstance(value, dict):
-        return cast(dict[str, object], value)
+        return value
     raise ValueError("persisted runtime policy snapshot must be an object")
 
 
@@ -628,7 +628,7 @@ def _intent_metadata_trace() -> dict[str, object]:
 def _agent_preset_from_config(payload: Mapping[str, object]) -> str | None:
     agent = payload.get("agent")
     if isinstance(agent, dict):
-        preset = cast(dict[str, object], agent).get("preset")
+        preset = agent.get("preset")
         if isinstance(preset, str) and preset:
             return preset
     return None
@@ -717,7 +717,7 @@ def _diagnostics(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         return {}
     diagnostics: dict[str, object] = {}
-    for index, (raw_key, raw_item) in enumerate(cast(dict[object, object], value).items()):
+    for index, (raw_key, raw_item) in enumerate(value.items()):
         if index >= POLICY_DIAGNOSTIC_LIMIT:
             diagnostics["truncated"] = True
             break
@@ -737,7 +737,7 @@ def _diagnostics(value: object) -> dict[str, object]:
 
 def _json_safe(value: object) -> object:
     if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in cast(dict[object, object], value).items()}
+        return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_json_safe(item) for item in value]
     if isinstance(value, tuple):

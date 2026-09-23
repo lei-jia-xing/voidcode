@@ -22,7 +22,7 @@ def _handle_tui_command(args: TuiArgs) -> int:
 
     from ...tui import VoidCodeTUI
 
-    app = cast(TuiAppProtocol, VoidCodeTUI(workspace=workspace, approval_mode=approval_mode))
+    app = VoidCodeTUI(workspace=workspace, approval_mode=approval_mode)
     app.run()
     return 0
 

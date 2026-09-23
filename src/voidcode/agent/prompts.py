@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from functools import cache
 from pathlib import Path
-from typing import cast
 
 from .models import AgentManifest, AgentPromptMaterialization
 from .prompt_sections import user_append_heading_block
@@ -66,7 +65,7 @@ def _select_profile_from_materialization_payload(
     raw_overrides = materialization.get("model_family_overrides")
     if not isinstance(raw_overrides, Mapping):
         return profile.strip()
-    overrides = cast(Mapping[object, object], raw_overrides)
+    overrides = raw_overrides
     override_profile = overrides.get(model_family.strip())
     if not isinstance(override_profile, str) or not override_profile.strip():
         return profile.strip()
@@ -124,7 +123,7 @@ def render_agent_prompt(
             return materialization.body.strip()
         selected_profile = materialization.select_profile(model_family)
     elif isinstance(materialization, Mapping):
-        materialization_payload = cast(Mapping[str, object], materialization)
+        materialization_payload = materialization
         rendered_payload = _render_materialization_payload(materialization_payload)
         if rendered_payload is not None:
             return rendered_payload

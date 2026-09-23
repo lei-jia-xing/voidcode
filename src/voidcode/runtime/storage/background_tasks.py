@@ -61,12 +61,12 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         raw_delegation = task.request.metadata.get("delegation")
         if not isinstance(raw_delegation, dict):
             return None, "permissive"
-        delegation = cast(dict[str, object], raw_delegation)
+        delegation = raw_delegation
         raw_output_schema = delegation.get("output_schema")
         if not isinstance(raw_output_schema, dict):
             return None, "permissive"
         raw_schema_mode = delegation.get("schema_mode")
-        schema_mode = cast(Literal["permissive", "strict"], raw_schema_mode if raw_schema_mode in ("permissive", "strict") else "permissive")
+        schema_mode = raw_schema_mode if raw_schema_mode in ("permissive", "strict") else "permissive"
         return json.dumps(raw_output_schema, sort_keys=True), schema_mode
 
     @staticmethod
@@ -76,9 +76,9 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):
             return None
-        payload = cast(dict[str, object], parsed)
+        payload = parsed
         raw_mode = payload.get("schema_mode")
-        schema_mode = cast(Literal["permissive", "strict"], raw_mode if raw_mode in ("permissive", "strict") else "permissive")
+        schema_mode = raw_mode if raw_mode in ("permissive", "strict") else "permissive"
         raw_source = payload.get("schema_source")
         raw_error = payload.get("error")
         return SchemaValidation(
@@ -95,17 +95,17 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         parsed = json.loads(payload)
         if not isinstance(parsed, dict):
             return None
-        request_id = cast(dict[str, object], parsed).get("request_id")
+        request_id = parsed.get("request_id")
         return request_id if isinstance(request_id, str) else None
 
     @classmethod
     def _background_task_runtime_state_from_session_row(cls, row: sqlite3.Row | None) -> dict[str, object]:
         if row is None:
             return cls._background_task_runtime_state_defaults()
-        status = cast(str, row["status"])
+        status = row["status"]
         return {
-            "approval_request_id": cls._request_id_from_pending_payload(cast(str | None, row["pending_approval_json"])),
-            "question_request_id": cls._request_id_from_pending_payload(cast(str | None, row["pending_question_json"])),
+            "approval_request_id": cls._request_id_from_pending_payload(row["pending_approval_json"]),
+            "question_request_id": cls._request_id_from_pending_payload(row["pending_question_json"]),
             "cancellation_cause": None,
             "result_available": 1 if status in {"waiting", "completed", "failed"} else 0,
         }
@@ -113,20 +113,20 @@ class _BackgroundTaskStorageMixin(_MixinBase):
     @classmethod
     def _background_task_summary_from_row(cls, row: sqlite3.Row) -> StoredBackgroundTaskSummary:
         return StoredBackgroundTaskSummary(
-            task=BackgroundTaskRef(id=cast(str, row["task_id"])),
-            status=cls._parse_background_task_status(cast(str, row["status"])),
-            prompt=cast(str, row["prompt"]),
-            session_id=cast(str | None, row["session_id"]),
-            error=cast(str | None, row["error"]),
-            created_at=cast(int, row["created_at"]),
-            updated_at=cast(int, row["updated_at"]),
-            created_at_unix_ms=cast(int | None, row["created_at_unix_ms"]),
-            keep_alive=bool(cast(int, row["keep_alive"])),
-            steer_prompt=cast(str | None, row["steer_prompt"]),
+            task=BackgroundTaskRef(id=row["task_id"]),
+            status=cls._parse_background_task_status(row["status"]),
+            prompt=row["prompt"],
+            session_id=row["session_id"],
+            error=row["error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            created_at_unix_ms=row["created_at_unix_ms"],
+            keep_alive=bool(row["keep_alive"]),
+            steer_prompt=row["steer_prompt"],
             output_schema=_BackgroundTaskStorageMixin._output_schema_from_json(
-                cast(str | None, row["output_schema_json"]),
+                row["output_schema_json"],
             ),
-            schema_mode=cast(Literal["permissive", "strict"], cast(str, row["schema_mode"]) or "permissive"),
+            schema_mode=row["schema_mode"] or "permissive",
         )
 
     @staticmethod
@@ -136,16 +136,16 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):
             return None
-        return cast(dict[str, object], parsed)
+        return parsed
 
     def _background_task_durable_payload(self, row: sqlite3.Row) -> dict[str, object]:
         durable_payload: dict[str, object] = {
-            "task_id": cast(str, row["task_id"]),
-            "parent_session_id": cast(str | None, row["request_parent_session_id"]),
-            "status": cast(str, row["status"]),
-            "result_available": bool(cast(int, row["result_available"])),
+            "task_id": row["task_id"],
+            "parent_session_id": row["request_parent_session_id"],
+            "status": row["status"],
+            "result_available": bool(row["result_available"]),
         }
-        reminder_state = self._delegated_reminder_state_from_payload(cast(str | None, row["delegated_reminder_json"]))
+        reminder_state = self._delegated_reminder_state_from_payload(row["delegated_reminder_json"])
         if reminder_state is not None:
             durable_payload["delegated_reminder"] = self._delegated_reminder_state_payload(reminder_state)
         optional_fields: tuple[tuple[str, str], ...] = (
@@ -162,7 +162,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         for payload_key, row_key in optional_fields:
             value = row[row_key]
             if value is not None:
-                durable_payload[payload_key] = cast(object, value)
+                durable_payload[payload_key] = value
         return durable_payload
 
     @staticmethod
@@ -572,7 +572,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 workspace=workspace,
                 task_id=task_id,
             )
-            current_status = self._parse_background_task_status(cast(str, current["status"]))
+            current_status = self._parse_background_task_status(current["status"])
             if not is_background_task_transition_allowed(
                 current_status=current_status,
                 next_status="running",
@@ -623,21 +623,21 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 workspace=workspace,
                 task_id=task_id,
             )
-            current_status = self._parse_background_task_status(cast(str, current["status"]))
+            current_status = self._parse_background_task_status(current["status"])
             if not is_background_task_transition_allowed(
                 current_status=current_status,
                 next_status=status,
             ):
                 connection.commit()
                 return self._background_task_state_from_row(current)
-            cancellation_cause = cast(str | None, current["cancellation_cause"])
+            cancellation_cause = current["cancellation_cause"]
             if status == "cancelled" and error is not None:
                 cancellation_cause = error
             result_available = 1 if status in ("completed", "failed", "interrupted") else 0
             updated_at = self._next_background_task_timestamp(connection=connection)
             finished_at_unix_ms = self._current_unix_ms()
             delegated_reminder_json = self._stop_delegated_reminder_state(
-                existing_payload=cast(str | None, current["delegated_reminder_json"]),
+                existing_payload=current["delegated_reminder_json"],
                 stop_condition="terminal_status",
                 stopped_at_unix_ms=finished_at_unix_ms,
             )
@@ -683,7 +683,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 workspace=workspace,
                 task_id=task_id,
             )
-            current_status = self._parse_background_task_status(cast(str, current["status"]))
+            current_status = self._parse_background_task_status(current["status"])
             if not is_background_task_transition_allowed(
                 current_status=current_status,
                 next_status="idle",
@@ -726,7 +726,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 workspace=workspace,
                 task_id=task_id,
             )
-            current_status = self._parse_background_task_status(cast(str, current["status"]))
+            current_status = self._parse_background_task_status(current["status"])
             if not is_background_task_transition_allowed(
                 current_status=current_status,
                 next_status="running",
@@ -769,7 +769,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 workspace=workspace,
                 task_id=task_id,
             )
-            current_status = self._parse_background_task_status(cast(str, current["status"]))
+            current_status = self._parse_background_task_status(current["status"])
             if is_background_task_terminal(current_status):
                 connection.commit()
                 return self._background_task_state_from_row(current)
@@ -777,7 +777,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 updated_at = self._next_background_task_timestamp(connection=connection)
                 stopped_at_unix_ms = self._current_unix_ms()
                 delegated_reminder_json = self._stop_delegated_reminder_state(
-                    existing_payload=cast(str | None, current["delegated_reminder_json"]),
+                    existing_payload=current["delegated_reminder_json"],
                     stop_condition="cancellation",
                     stopped_at_unix_ms=stopped_at_unix_ms,
                 )
@@ -812,13 +812,13 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     workspace=workspace,
                     task_id=task_id,
                 )
-                current_status = self._parse_background_task_status(cast(str, current["status"]))
+                current_status = self._parse_background_task_status(current["status"])
                 if is_background_task_terminal(current_status):
                     connection.commit()
                     return self._background_task_state_from_row(current)
             updated_at = self._next_background_task_timestamp(connection=connection)
             delegated_reminder_json = self._stop_delegated_reminder_state(
-                existing_payload=cast(str | None, current["delegated_reminder_json"]),
+                existing_payload=current["delegated_reminder_json"],
                 stop_condition="cancellation",
                 stopped_at_unix_ms=self._current_unix_ms(),
             )
@@ -855,11 +855,11 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 workspace=workspace,
                 task_id=task_id,
             )
-            current_status = self._parse_background_task_status(cast(str, current["status"]))
+            current_status = self._parse_background_task_status(current["status"])
             if is_background_task_terminal(current_status):
                 connection.commit()
                 return self._background_task_state_from_row(current)
-            existing_state = self._delegated_reminder_state_from_payload(cast(str | None, current["delegated_reminder_json"]))
+            existing_state = self._delegated_reminder_state_from_payload(current["delegated_reminder_json"])
             if existing_state is not None and existing_state.stop_condition in {
                 "result_read",
                 "explicit_retry",
@@ -873,7 +873,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 return self._background_task_state_from_row(current)
             reminder_state = DelegatedReminderState(
                 task_id=task_id,
-                parent_session_id=cast(str | None, current["request_parent_session_id"]),
+                parent_session_id=current["request_parent_session_id"],
                 child_session_id=child_session_id,
                 idle_episode_id=idle_episode_id,
                 idle_detected_at_unix_ms=idle_detected_at_unix_ms,
@@ -918,7 +918,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 workspace=workspace,
                 task_id=task_id,
             )
-            reminder_state = self._delegated_reminder_state_from_payload(cast(str | None, current["delegated_reminder_json"]))
+            reminder_state = self._delegated_reminder_state_from_payload(current["delegated_reminder_json"])
             if reminder_state is None or reminder_state.idle_episode_id != idle_episode_id:
                 connection.commit()
                 return self._background_task_state_from_row(current)
@@ -972,11 +972,11 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 task_id=task_id,
             )
             delegated_reminder_json = self._stop_delegated_reminder_state(
-                existing_payload=cast(str | None, current["delegated_reminder_json"]),
+                existing_payload=current["delegated_reminder_json"],
                 stop_condition=stop_condition,
                 stopped_at_unix_ms=self._current_unix_ms(),
             )
-            if delegated_reminder_json == cast(str | None, current["delegated_reminder_json"]):
+            if delegated_reminder_json == current["delegated_reminder_json"]:
                 connection.commit()
                 return self._background_task_state_from_row(current)
             updated_at = self._next_background_task_timestamp(connection=connection)
@@ -1035,12 +1035,12 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 return ()
             reconciled_task_ids: list[str] = []
             for row in rows:
-                task_id = cast(str, row["task_id"])
-                cancel_requested_at = cast(int | None, row["cancel_requested_at"])
+                task_id = row["task_id"]
+                cancel_requested_at = row["cancel_requested_at"]
                 updated_at = self._next_background_task_timestamp(connection=connection)
                 if cancel_requested_at is not None:
                     delegated_reminder_json = self._stop_delegated_reminder_state(
-                        existing_payload=cast(str | None, row["delegated_reminder_json"]),
+                        existing_payload=row["delegated_reminder_json"],
                         stop_condition="cancellation",
                         stopped_at_unix_ms=self._current_unix_ms(),
                     )
@@ -1071,7 +1071,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     )
                 else:
                     delegated_reminder_json = self._stop_delegated_reminder_state(
-                        existing_payload=cast(str | None, row["delegated_reminder_json"]),
+                        existing_payload=row["delegated_reminder_json"],
                         stop_condition="terminal_status",
                         stopped_at_unix_ms=self._current_unix_ms(),
                     )
@@ -1119,7 +1119,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 workspace=workspace,
                 task_id=task_id,
             )
-            if is_background_task_terminal(self._parse_background_task_status(cast(str, current["status"]))):
+            if is_background_task_terminal(self._parse_background_task_status(current["status"])):
                 connection.commit()
                 return self._background_task_state_from_row(current)
             updated_at = self._next_background_task_timestamp(connection=connection)
@@ -1134,10 +1134,10 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 WHERE workspace_id = ? AND task_id = ?
                 """,
                 (
-                    approval_request_id if approval_request_id is not None else cast(str | None, current["approval_request_id"]),
-                    question_request_id if question_request_id is not None else cast(str | None, current["question_request_id"]),
-                    cancellation_cause if cancellation_cause is not None else cast(str | None, current["cancellation_cause"]),
-                    (1 if result_available else 0 if result_available is not None else cast(int, current["result_available"])),
+                    approval_request_id if approval_request_id is not None else current["approval_request_id"],
+                    question_request_id if question_request_id is not None else current["question_request_id"],
+                    cancellation_cause if cancellation_cause is not None else current["cancellation_cause"],
+                    (1 if result_available else 0 if result_available is not None else current["result_available"]),
                     updated_at,
                     str(workspace),
                     task_id,
@@ -1183,41 +1183,41 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             connection.commit()
 
     def _background_task_state_from_row(self, row: sqlite3.Row) -> BackgroundTaskState:
-        metadata = json.loads(cast(str, row["request_metadata_json"]))
+        metadata = json.loads(row["request_metadata_json"])
         if not isinstance(metadata, dict):
             raise ValueError("background task metadata must decode to an object")
-        metadata = normalize_persisted_session_metadata(cast(dict[str, object], metadata))
+        metadata = normalize_persisted_session_metadata(metadata)
         return BackgroundTaskState(
-            task=BackgroundTaskRef(id=cast(str, row["task_id"])),
-            status=self._parse_background_task_status(cast(str, row["status"])),
+            task=BackgroundTaskRef(id=row["task_id"]),
+            status=self._parse_background_task_status(row["status"]),
             request=BackgroundTaskRequestSnapshot(
-                prompt=cast(str, row["prompt"]),
-                session_id=cast(str | None, row["request_session_id"]),
-                parent_session_id=cast(str | None, row["request_parent_session_id"]),
+                prompt=row["prompt"],
+                session_id=row["request_session_id"],
+                parent_session_id=row["request_parent_session_id"],
                 metadata=metadata,
-                allocate_session_id=bool(cast(int, row["allocate_session_id"])),
+                allocate_session_id=bool(row["allocate_session_id"]),
             ),
-            session_id=cast(str | None, row["session_id"]),
-            approval_request_id=cast(str | None, row["approval_request_id"]),
-            question_request_id=cast(str | None, row["question_request_id"]),
-            cancellation_cause=cast(str | None, row["cancellation_cause"]),
-            result_available=bool(cast(int, row["result_available"])),
-            error=cast(str | None, row["error"]),
-            created_at=cast(int, row["created_at"]),
-            updated_at=cast(int, row["updated_at"]),
-            started_at=cast(int | None, row["started_at"]),
-            finished_at=cast(int | None, row["finished_at"]),
-            created_at_unix_ms=cast(int | None, row["created_at_unix_ms"]),
-            started_at_unix_ms=cast(int | None, row["started_at_unix_ms"]),
-            finished_at_unix_ms=cast(int | None, row["finished_at_unix_ms"]),
-            cancel_requested_at=cast(int | None, row["cancel_requested_at"]),
-            delegated_reminder=self._delegated_reminder_state_from_payload(cast(str | None, row["delegated_reminder_json"])),
-            keep_alive=bool(cast(int, row["keep_alive"])),
-            steer_prompt=cast(str | None, row["steer_prompt"]),
-            output_schema=self._output_schema_from_json(cast(str | None, row["output_schema_json"])),
-            schema_mode=cast(Literal["permissive", "strict"], cast(str, row["schema_mode"]) or "permissive"),
-            structured_output=self._output_schema_from_json(cast(str | None, row["structured_output_json"])),
-            schema_validation=self._schema_validation_from_json(cast(str | None, row["schema_validation_json"])),
+            session_id=row["session_id"],
+            approval_request_id=row["approval_request_id"],
+            question_request_id=row["question_request_id"],
+            cancellation_cause=row["cancellation_cause"],
+            result_available=bool(row["result_available"]),
+            error=row["error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+            created_at_unix_ms=row["created_at_unix_ms"],
+            started_at_unix_ms=row["started_at_unix_ms"],
+            finished_at_unix_ms=row["finished_at_unix_ms"],
+            cancel_requested_at=row["cancel_requested_at"],
+            delegated_reminder=self._delegated_reminder_state_from_payload(row["delegated_reminder_json"]),
+            keep_alive=bool(row["keep_alive"]),
+            steer_prompt=row["steer_prompt"],
+            output_schema=self._output_schema_from_json(row["output_schema_json"]),
+            schema_mode=row["schema_mode"] or "permissive",
+            structured_output=self._output_schema_from_json(row["structured_output_json"]),
+            schema_validation=self._schema_validation_from_json(row["schema_validation_json"]),
         )
 
     def _background_task_runtime_row(
@@ -1269,7 +1269,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
     @staticmethod
     def _background_task_status_counts(*, connection: sqlite3.Connection, workspace: Path) -> dict[str, int]:
         return {
-            cast(str, row["status"]): cast(int, row["count"])
+            row["status"]: row["count"]
             for row in cast(
                 list[sqlite3.Row],
                 connection.execute(

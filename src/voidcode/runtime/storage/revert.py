@@ -29,7 +29,7 @@ class _RevertStorageMixin(_MixinBase):
         raw_marker = metadata.get("conversation_revert")
         if not isinstance(raw_marker, dict):
             return None
-        marker_payload = cast(dict[object, object], raw_marker)
+        marker_payload = raw_marker
         raw_sequence = marker_payload.get("sequence")
         if not isinstance(raw_sequence, int) or isinstance(raw_sequence, bool) or raw_sequence < 1:
             return None
@@ -110,15 +110,15 @@ class _RevertStorageMixin(_MixinBase):
         events = tuple(
             EventEnvelope(
                 session_id=session_id,
-                sequence=cast(int, row["sequence"]),
-                event_type=cast(str, row["event_type"]),
-                source=self._parse_event_source(cast(str, row["source"])),
-                payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
+                sequence=row["sequence"],
+                event_type=row["event_type"],
+                source=self._parse_event_source(row["source"]),
+                payload=json.loads(row["payload_json"]),
             )
             for row in event_rows
         )
         return (
-            normalize_persisted_session_metadata(cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"])))),
+            normalize_persisted_session_metadata(json.loads(cast(str, session_row["metadata_json"]))),
             events,
         )
 

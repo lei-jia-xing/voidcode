@@ -169,17 +169,10 @@ class FinalizeCoordinator:
         """Return the terminal status sealing ``session_id``, or None when mutable."""
         if self._is_active_session_fn(session_id):
             return None
-        load_status = getattr(self._session_store, "load_session_status", None)
-        if callable(load_status):
-            try:
-                status = load_status(workspace=self._workspace, session_id=session_id)
-            except UnknownSessionError:
-                return None
-        else:
-            try:
-                status = self.load_stored_response(session_id=session_id).session.status
-            except UnknownSessionError:
-                return None
+        try:
+            status = self._session_store.load_session_status(workspace=self._workspace, session_id=session_id)
+        except UnknownSessionError:
+            return None
         if is_session_status_terminal(status):
             return status
         return None

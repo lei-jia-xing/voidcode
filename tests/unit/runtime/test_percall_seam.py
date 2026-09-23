@@ -9,6 +9,7 @@ from voidcode.hook.percall import (
     PerCallHandlerBinding,
     PerCallMessage,
     PerCallRewriteDecision,
+    RewritePerCall,
     percall_cache_prefix,
 )
 from voidcode.runtime.context.window import (
@@ -19,8 +20,7 @@ from voidcode.tools.contracts import ToolResult
 
 
 def _inject_ephemeral(messages: tuple[PerCallMessage, ...]) -> PerCallRewriteDecision:
-    return PerCallRewriteDecision(
-        action="rewrite",
+    return RewritePerCall(
         messages=(*messages, PerCallMessage(role="system", content="per-call-only-hint", per_call=True)),
     )
 

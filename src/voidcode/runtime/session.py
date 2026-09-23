@@ -95,7 +95,7 @@ def _bounded_redacted(value: object, *, key: str | None = None) -> object:
         return _REDACTED
     if isinstance(value, dict):
         result: dict[str, object] = {}
-        for index, (raw_key, item) in enumerate(cast(dict[object, object], value).items()):
+        for index, (raw_key, item) in enumerate(value.items()):
             if index >= _PERSISTED_DICT_LIMIT:
                 result["__truncated__"] = True
                 break
@@ -103,7 +103,7 @@ def _bounded_redacted(value: object, *, key: str | None = None) -> object:
             result[item_key] = _bounded_redacted(item, key=item_key)
         return result
     if isinstance(value, list):
-        result = [_bounded_redacted(item) for item in cast(list[object], value[:_PERSISTED_LIST_LIMIT])]
+        result = [_bounded_redacted(item) for item in value[:_PERSISTED_LIST_LIMIT]]
         if len(value) > _PERSISTED_LIST_LIMIT:
             result.append({"__truncated__": True, "original_length": len(value)})
         return result
@@ -126,7 +126,7 @@ def session_metadata_for_replay(metadata: dict[str, object]) -> dict[str, object
     raw_runtime_policy = projected.get("runtime_policy")
     if not isinstance(raw_runtime_policy, dict):
         return projected
-    runtime_policy = dict(cast(dict[str, object], raw_runtime_policy))
+    runtime_policy = dict(raw_runtime_policy)
     raw_prompt_activation = runtime_policy.get("prompt_activation")
     if isinstance(raw_prompt_activation, dict):
         runtime_policy["prompt_activation"] = {
@@ -144,7 +144,7 @@ def normalize_persisted_session_metadata(metadata: dict[str, object]) -> dict[st
 
 def _event_payload(event: object) -> dict[str, object]:
     payload = getattr(event, "payload", None)
-    return cast(dict[str, object], payload) if isinstance(payload, dict) else {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _event_type(event: object) -> str:

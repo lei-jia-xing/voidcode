@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 from .runtime_context import RuntimeLspToolFacade, current_runtime_tool_context
 
@@ -39,22 +38,22 @@ def post_edit_lsp_diagnostics(*, workspace: Path, paths: list[str]) -> list[dict
             continue
 
         response = payload.get("lsp_response")
-        response_dict = cast(dict[str, object], response) if isinstance(response, dict) else None
+        response_dict = response if isinstance(response, dict) else None
         result = response_dict.get("result") if response_dict is not None else None
         if not isinstance(result, dict):
             continue
-        result_dict = cast(dict[str, object], result)
+        result_dict = result
         items = result_dict.get("items")
         if not isinstance(items, list):
             continue
-        for item in cast(list[object], items):
+        for item in items:
             if not isinstance(item, dict):
                 continue
-            diagnostic = cast(dict[str, object], item)
+            diagnostic = item
             start = diagnostic.get("range")
-            start_dict = cast(dict[str, object], start) if isinstance(start, dict) else None
+            start_dict = start if isinstance(start, dict) else None
             start_position = start_dict.get("start") if start_dict is not None else None
-            start_position_dict = cast(dict[str, object], start_position) if isinstance(start_position, dict) else None
+            start_position_dict = start_position if isinstance(start_position, dict) else None
             diagnostics.append(
                 {
                     "path": raw_path,
@@ -63,12 +62,12 @@ def post_edit_lsp_diagnostics(*, workspace: Path, paths: list[str]) -> list[dict
                     "message": diagnostic.get("message"),
                     "code": diagnostic.get("code"),
                     "line": (
-                        cast(int, start_position_dict.get("line")) + 1
+                        start_position_dict.get("line") + 1
                         if start_position_dict is not None and isinstance(start_position_dict.get("line"), int)
                         else None
                     ),
                     "character": (
-                        cast(int, start_position_dict.get("character")) + 1
+                        start_position_dict.get("character") + 1
                         if start_position_dict is not None and isinstance(start_position_dict.get("character"), int)
                         else None
                     ),

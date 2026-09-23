@@ -38,7 +38,7 @@ class _ResolvedProviderSnapshotPayload(BaseModel):
     def _validate_targets_array(cls, value: object) -> list[object]:
         if not isinstance(value, list):
             raise ValueError("must be an array")
-        return cast(list[object], value)
+        return value
 
     @field_validator("targets", mode="after")
     @classmethod
@@ -53,7 +53,7 @@ class _ResolvedProviderSnapshotPayload(BaseModel):
 
 def _format_snapshot_validation_error(*, source: str, error: dict[str, object]) -> str:
     loc = tuple(cast(tuple[object, ...], error.get("loc", ())))
-    error_type = cast(str, error.get("type", ""))
+    error_type = error.get("type", "")
     field_path = source
     for item in loc:
         if isinstance(item, int):
@@ -66,7 +66,7 @@ def _format_snapshot_validation_error(*, source: str, error: dict[str, object]) 
     if error_type == "value_error":
         context = error.get("ctx")
         if isinstance(context, dict):
-            nested_error = cast(dict[str, object], context).get("error")
+            nested_error = context.get("error")
             if isinstance(nested_error, ValueError):
                 reason = str(nested_error)
     return format_invalid_provider_config_error(field_path, reason)
@@ -78,19 +78,19 @@ def resolved_provider_snapshot(
     if resolved_provider is None:
         return None
     if isinstance(resolved_provider, Mapping):
-        provider_snapshot = cast(Mapping[str, object], resolved_provider)
+        provider_snapshot = resolved_provider
         raw_active_target = provider_snapshot.get("active_target")
         raw_targets = provider_snapshot.get("targets")
         if not isinstance(raw_active_target, Mapping) or not isinstance(raw_targets, list):
             return None
-        active_target = _snapshot_target_payload(cast(Mapping[str, object], raw_active_target))
+        active_target = _snapshot_target_payload(raw_active_target)
         if active_target is None:
             return None
         normalized_targets: list[dict[str, str]] = []
-        for item in cast(list[object], raw_targets):
+        for item in raw_targets:
             if not isinstance(item, Mapping):
                 return None
-            target = _snapshot_target_payload(cast(Mapping[str, object], item))
+            target = _snapshot_target_payload(item)
             if target is None:
                 return None
             normalized_targets.append(target)

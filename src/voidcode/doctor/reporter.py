@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from ..provider.naming import provider_label
 from ..runtime.config import RUNTIME_CONFIG_FILE_NAME
@@ -153,7 +153,7 @@ def _create_first_task_readiness(results: list[CapabilityCheckResult], workspace
             next_step=_next_step_for_provider_status(
                 provider_status,
                 workspace_arg,
-                provider=cast(str | None, provider_details.get("provider")),
+                provider=provider_details.get("provider"),
             ),
             blockers=[blocker],
             details=_first_task_details(provider_result, results),
@@ -292,9 +292,9 @@ def format_report(report: CapabilityReport, *, verbose: bool = False) -> str:
         local_tools = details.get("local_tools")
         if isinstance(local_tools, list) and local_tools:
             lines.append("  local_tools:")
-            for tool in cast(list[object], local_tools):
+            for tool in local_tools:
                 if isinstance(tool, dict):
-                    tool_map = cast(dict[str, object], tool)
+                    tool_map = tool
                     lines.append(f"    - {tool_map.get('name')}: {tool_map.get('status')}")
         if readiness.blockers:
             lines.append("  blockers:")

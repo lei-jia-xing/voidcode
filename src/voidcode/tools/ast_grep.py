@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, field_validator
 
@@ -71,7 +71,7 @@ def _parse_stream_output(stdout: str) -> list[dict[str, Any]]:
         except json.JSONDecodeError as exc:
             raise ValueError(f"ast-grep returned invalid JSON stream output: {stripped}") from exc
         if isinstance(parsed, dict):
-            matches.append(cast(dict[str, Any], parsed))
+            matches.append(parsed)
     return matches
 
 

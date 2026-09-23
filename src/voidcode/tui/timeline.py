@@ -160,7 +160,7 @@ class TimelineView(VerticalScroll):
     @staticmethod
     def _plain_text(renderable: object) -> str:
         console = Console(record=True, width=120, color_system=None, file=StringIO())
-        console.print(cast(RenderableType, renderable), end="")
+        console.print(renderable, end="")
         return console.export_text(clear=False)
 
     @staticmethod

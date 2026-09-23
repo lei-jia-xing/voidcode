@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from typing import cast
 
 from ..events import EventEnvelope
 from ..session_metadata_helpers import parse_runtime_state_metadata
@@ -78,7 +77,7 @@ def replayed_conversation_segments_from_events(
         raw_tool_call_id = payload.get("tool_call_id")
         tool_call_id = raw_tool_call_id if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip() else f"voidcode_replayed_tool_{tool_index}"
         raw_arguments = payload.get("arguments")
-        tool_arguments = cast(dict[str, object], raw_arguments) if isinstance(raw_arguments, dict) else {}
+        tool_arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
         error_value = payload.get("error")
         is_error = error_value is not None
         raw_content = payload.get("content")
@@ -159,7 +158,7 @@ def replayed_conversation_segments_from_segments(
                 tool_call_id=getattr(segment, "tool_call_id", None),
                 tool_name=getattr(segment, "tool_name", None),
                 tool_arguments=getattr(segment, "tool_arguments", None),
-                metadata=dict(cast(dict[str, object], metadata)),
+                metadata=dict(metadata),
             )
         )
     return tuple(replayed)

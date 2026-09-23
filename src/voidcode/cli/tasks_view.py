@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import shlex
 from pathlib import Path
-from typing import cast
 
 from ..runtime.background.models import BackgroundTaskState, StoredBackgroundTaskSummary
 from ..runtime.contracts import BackgroundTaskResult
@@ -265,7 +264,7 @@ def print_background_task_guidance(payload: dict[str, object]) -> None:
     next_steps = payload.get("next_steps")
     if isinstance(next_steps, list) and next_steps:
         print("NEXT")
-        for index, step in enumerate(cast(list[str], next_steps), start=1):
+        for index, step in enumerate(next_steps, start=1):
             print(f"  {index}. {step}")
 
 

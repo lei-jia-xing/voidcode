@@ -118,7 +118,7 @@ class ResolvedHookPlan:
         """Materialize a validated runtime-owned snapshot; execution remains elsewhere."""
         if not isinstance(payload, Mapping):
             raise HookPlanValidationError("persisted hook plan must be an object")
-        raw = cast(Mapping[object, object], payload)
+        raw = payload
         required = {"schema_version", "plan_id", "revision", "bindings", "enabled", "failure_mode", "timeout_seconds", "metadata", "plan_hash"}
         missing = sorted(key for key in required if key not in raw)
         if missing:
@@ -143,14 +143,14 @@ class ResolvedHookPlan:
         if not isinstance(plan_hash, str) or not plan_hash:
             raise HookPlanValidationError("hook plan plan_hash must be a non-empty string")
         return cls(
-            schema_version=cast(int, raw["schema_version"]),
+            schema_version=raw["schema_version"],
             plan_id=raw["plan_id"],
             revision=raw["revision"],
             bindings=bindings,
             enabled=raw["enabled"],
-            failure_mode=cast(RuntimeHookFailureMode, raw["failure_mode"]),
-            timeout_seconds=cast(float | None, timeout),
-            metadata=cast(Mapping[str, object], metadata),
+            failure_mode=raw["failure_mode"],
+            timeout_seconds=timeout,
+            metadata=metadata,
             plan_hash=plan_hash,
         )
 
@@ -283,7 +283,7 @@ def _validate_plan_bindings(bindings: Sequence[HookPlanBinding]) -> None:
 def _binding_from_payload(payload: object) -> HookPlanBinding:
     if not isinstance(payload, Mapping):
         raise HookPlanValidationError("hook plan binding must be an object")
-    raw = cast(Mapping[object, object], payload)
+    raw = payload
     command = raw.get("command", raw.get("argv"))
     if not isinstance(command, Sequence) or isinstance(command, (str, bytes)):
         raise HookPlanValidationError("hook plan binding command must be an argv array")
@@ -295,17 +295,17 @@ def _binding_from_payload(payload: object) -> HookPlanBinding:
         raise HookPlanValidationError("hook plan binding event must be a string")
     return HookPlanBinding(
         binding_id=cast(str, raw.get("binding_id")),
-        event=cast(RuntimeHookSurface, event),
-        command=tuple(cast(str, arg) for arg in command),
+        event=event,
+        command=tuple(arg for arg in command),
         order=cast(int, raw.get("order")),
-        scope=cast(HookPlanScope, raw.get("scope", "session")),
-        source=cast(str, raw.get("source", "runtime_config")),
-        agent_source=cast(str | None, raw.get("agent_source")),
-        failure_mode=cast(RuntimeHookFailureMode, raw.get("failure_mode", "warn")),
-        timeout_seconds=cast(float | None, raw.get("timeout_seconds")),
-        payload_schema=cast(str, raw.get("payload_schema", HOOK_PAYLOAD_SCHEMA)),
-        phase=cast(HookPlanPhase, raw.get("phase", "foreground")),
-        metadata=cast(Mapping[str, object], metadata),
+        scope=raw.get("scope", "session"),
+        source=raw.get("source", "runtime_config"),
+        agent_source=raw.get("agent_source"),
+        failure_mode=raw.get("failure_mode", "warn"),
+        timeout_seconds=raw.get("timeout_seconds"),
+        payload_schema=raw.get("payload_schema", HOOK_PAYLOAD_SCHEMA),
+        phase=raw.get("phase", "foreground"),
+        metadata=metadata,
     )
 
 
@@ -322,7 +322,7 @@ def _json_safe_mapping(value: Mapping[str, object]) -> dict[str, object]:
         raise HookPlanValidationError("hook plan metadata must be JSON-serializable") from exc
     if not isinstance(parsed, dict):
         raise HookPlanValidationError("hook plan metadata must be an object")
-    return cast(dict[str, object], parsed)
+    return parsed
 
 
 __all__ = [

@@ -4,9 +4,9 @@ import json
 import logging
 import queue
 import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
-from typing import Any, Final, Literal, cast
+from typing import Final, Literal, cast
 
 from ..provider.errors import parse_provider_stream_error
 from ..provider.models import ResolvedProviderModel
@@ -275,7 +275,7 @@ class ProviderGraph:
 
         if request.abort_signal is None:
             self._abort_signal.set_cancelled(should_abort)
-            abort_signal = cast(ProviderAbortSignal, self._abort_signal)
+            abort_signal = self._abort_signal
         else:
             abort_signal = request.abort_signal
             if should_abort and hasattr(abort_signal, "set_cancelled"):
@@ -442,7 +442,7 @@ class ProviderGraph:
         current_turn: int,
         session_id: str,
         run_id: str | None,
-        stream_event_sink: object | None = None,
+        stream_event_sink: Callable[[GraphEvent], None] | None = None,
         tool_call_preview: ToolCallPreviewBuilder | None = None,
     ) -> ProviderStep:
         stream_events: list[GraphEvent] = []
@@ -453,7 +453,7 @@ class ProviderGraph:
         done_reason: str | None = None
         raw_finish_reason: str | None = None
         provider_usage: ProviderTokenUsage | None = None
-        stream_provider = cast(StreamableTurnProvider, cast(object, self._provider))
+        stream_provider = cast(StreamableTurnProvider, self._provider)
         for stream_event_index, stream_event in enumerate(stream_provider.stream_turn(turn_request)):
             preview: dict[str, object] | None = None
             preview_tool_name: str | None = stream_event.tool_name
@@ -520,7 +520,7 @@ class ProviderGraph:
             if stream_event_sink is None:
                 stream_events.append(graph_event)
             else:
-                cast(Any, stream_event_sink)(graph_event)
+                stream_event_sink(graph_event)
             provider_usage = stream_event.usage or provider_usage
             if stream_event.kind in {"delta", "content"} and stream_event.channel == "text":
                 if stream_event.text is not None:
@@ -544,7 +544,7 @@ class ProviderGraph:
                     except json.JSONDecodeError:
                         error_payload = {"message": stream_event.error}
                     else:
-                        error_payload = cast(dict[str, object], raw_payload) if isinstance(raw_payload, dict) else {"message": stream_event.error}
+                        error_payload = raw_payload if isinstance(raw_payload, dict) else {"message": stream_event.error}
                 else:
                     error_payload = {"message": "provider stream error"}
 
@@ -627,7 +627,7 @@ class ProviderGraph:
                 continue
             explicit_call = ToolCall(
                 tool_name=cast(str, state["tool_name"]),
-                arguments=cast(dict[str, object], parsed_arguments),
+                arguments=parsed_arguments,
                 tool_call_id=cast(str, state["tool_call_id"]),
             )
             ordered_tool_calls.append(
@@ -739,12 +739,12 @@ class ProviderGraph:
                 ) from exc
 
         if isinstance(raw_tool_payload, list):
-            tool_payloads = cast(list[object], raw_tool_payload)
+            tool_payloads = raw_tool_payload
         elif isinstance(raw_tool_payload, dict):
-            raw_payload = cast(dict[str, Any], raw_tool_payload)
+            raw_payload = raw_tool_payload
             raw_tool_calls = raw_payload.get("tool_calls")
             if isinstance(raw_tool_calls, list):
-                tool_payloads = cast(list[object], raw_tool_calls)
+                tool_payloads = raw_tool_calls
             else:
                 tool_payloads = [raw_payload]
         else:
@@ -767,7 +767,7 @@ class ProviderGraph:
                     message="provider stream tool payload entries must be JSON objects",
                     details={"source": "graph_stream", "reason": "tool_payload_entry_not_object"},
                 )
-            tool_payload = cast(dict[str, Any], payload_obj)
+            tool_payload = payload_obj
             tool_call_id_obj = tool_payload.get("tool_call_id")
             tool_name_obj = tool_payload.get("tool_name")
             arguments_obj = tool_payload.get("arguments")
@@ -794,7 +794,7 @@ class ProviderGraph:
             parsed_tool_calls.append(
                 ToolCall(
                     tool_name=tool_name_obj,
-                    arguments=cast(dict[str, object], arguments_obj),
+                    arguments=arguments_obj,
                     tool_call_id=tool_call_id_obj if isinstance(tool_call_id_obj, str) else None,
                 )
             )

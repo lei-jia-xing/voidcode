@@ -55,19 +55,17 @@ class _EffectivenessStorageMixin(_MixinBase):
                 ).fetchall(),
             )
 
-        session_ids = tuple(cast(str, row["session_id"]) for row in session_rows)
-        session_metadata = {
-            cast(str, row["session_id"]): cast(dict[str, object], json.loads(cast(str, row["metadata_json"]))) for row in session_rows
-        }
+        session_ids = tuple(row["session_id"] for row in session_rows)
+        session_metadata = {row["session_id"]: json.loads(row["metadata_json"]) for row in session_rows}
         events = tuple(
             ToolEffectivenessEvent(
-                session_id=cast(str, row["session_id"]),
+                session_id=row["session_id"],
                 event=EventEnvelope(
-                    session_id=cast(str, row["session_id"]),
-                    sequence=cast(int, row["sequence"]),
-                    event_type=cast(str, row["event_type"]),
-                    source=self._parse_event_source(cast(str, row["source"])),
-                    payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
+                    session_id=row["session_id"],
+                    sequence=row["sequence"],
+                    event_type=row["event_type"],
+                    source=self._parse_event_source(row["source"]),
+                    payload=json.loads(row["payload_json"]),
                 ),
             )
             for row in event_rows

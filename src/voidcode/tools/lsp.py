@@ -261,7 +261,7 @@ class LspTool:
                 ),
             )
         else:
-            params = cast(dict[str, object], {"textDocument": {"uri": candidate.as_uri()}})
+            params = {"textDocument": {"uri": candidate.as_uri()}}
         if operation == LspOperation.WORKSPACE_SYMBOL:
             params = cast(
                 dict[str, object],
@@ -294,14 +294,14 @@ class LspTool:
             prepare_payload = prepare_response.get("result")
             item: dict[str, object] | None = None
             if isinstance(prepare_payload, list) and prepare_payload:
-                first = cast(object, prepare_payload[0])
+                first = prepare_payload[0]
                 if isinstance(first, dict):
-                    item = cast(dict[str, object], first)
+                    item = first
             elif isinstance(prepare_payload, dict):
-                item = cast(dict[str, object], prepare_payload)
+                item = prepare_payload
             if item is None:
                 raise ValueError("LSP prepareCallHierarchy returned no item")
-            params = cast(dict[str, object], {"item": item})
+            params = {"item": item}
 
             response = self._invoke_requester(
                 self._requester,

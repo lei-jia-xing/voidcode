@@ -1333,8 +1333,8 @@ class RuntimeRunLoopCoordinator:
                         ),
                     )
             current_graph_request: Any = active_graph_request
-            current_prompt: str = cast(str, current_graph_request.prompt)
-            current_available_tools: tuple[ToolDefinition, ...] = cast(tuple[ToolDefinition, ...], current_graph_request.available_tools)
+            current_prompt: str = current_graph_request.prompt
+            current_available_tools: tuple[ToolDefinition, ...] = current_graph_request.available_tools
             current_metadata: dict[str, object] = current_graph_request.metadata
             current_abort_signal: ProviderAbortSignal | None = current_graph_request.abort_signal
             turn_index = run_step
@@ -2276,7 +2276,7 @@ class RuntimeRunLoopCoordinator:
                                     workspace=self._workspace,
                                     tool_name=tool_name,
                                     argument_text="".join(fragments),
-                                    parsed_arguments=cast(dict[str, object] | None, parsed),
+                                    parsed_arguments=parsed,
                                 )
                             except Exception:
                                 diff_preview = None
@@ -3321,7 +3321,7 @@ class RuntimeRunLoopCoordinator:
         if plan_tool_call.tool_name == "skill" and tool_result.status == "ok":
             skill_payload = completed_payload.get("skill")
             if isinstance(skill_payload, dict):
-                typed_skill_payload = cast(dict[str, object], skill_payload)
+                typed_skill_payload = skill_payload
                 skill_name: object | None = typed_skill_payload.get("name")
                 skill_source_path: object | None = typed_skill_payload.get("source_path")
                 envelope = self._persist_event(

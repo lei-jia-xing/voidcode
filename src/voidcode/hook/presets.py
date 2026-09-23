@@ -368,16 +368,16 @@ def resolve_hook_preset_refs(refs: tuple[str, ...]) -> ResolvedHookPresetSnapsho
 def hook_preset_snapshot_from_payload(payload: object) -> ResolvedHookPresetSnapshot | None:
     if not isinstance(payload, dict):
         return None
-    payload_items = cast(dict[object, object], payload)
+    payload_items = payload
     raw_presets = payload_items.get("presets")
     if not isinstance(raw_presets, list):
         return None
     refs: list[str] = []
     presets: list[dict[str, object]] = []
-    for index, raw_preset in enumerate(cast(list[object], raw_presets)):
+    for index, raw_preset in enumerate(raw_presets):
         if not isinstance(raw_preset, dict):
             raise ValueError(f"persisted hook preset snapshot presets[{index}] must be an object")
-        preset_payload = cast(dict[object, object], raw_preset)
+        preset_payload = raw_preset
         ref = preset_payload.get("ref")
         kind = preset_payload.get("kind")
         source = preset_payload.get("source")
@@ -401,11 +401,11 @@ def hook_preset_snapshot_from_payload(payload: object) -> ResolvedHookPresetSnap
         if not all(isinstance(item, str) for item in raw_allowed_actions):
             raise ValueError(f"persisted hook preset snapshot presets[{index}].allowed_actions entries must be strings")
         event_scopes = validate_hook_preset_event_scopes(
-            tuple(cast(list[str], raw_event_scopes)),
+            tuple(raw_event_scopes),
             field_path=f"persisted hook preset snapshot presets[{index}].event_scopes",
         )
         allowed_actions = validate_hook_preset_actions(
-            tuple(cast(list[str], raw_allowed_actions)),
+            tuple(raw_allowed_actions),
             field_path=f"persisted hook preset snapshot presets[{index}].allowed_actions",
         )
         builtin = get_builtin_hook_preset(ref)

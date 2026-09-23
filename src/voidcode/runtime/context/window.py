@@ -355,7 +355,7 @@ def _metadata_string_tuple(payload: Mapping[str, object], key: str) -> tuple[str
     raw = payload.get(key)
     if not isinstance(raw, list | tuple):
         return ()
-    raw_items = cast(list[object] | tuple[object, ...], raw)
+    raw_items = raw
     values: list[str] = []
     for item in raw_items:
         if isinstance(item, str) and item.strip():
@@ -380,10 +380,10 @@ def _dropped_tool_diagnostics_from_metadata_payload(
     if not isinstance(raw, list | tuple):
         return ()
     diagnostics: list[DroppedToolResultDiagnostic] = []
-    for item in cast(list[object] | tuple[object, ...], raw):
+    for item in raw:
         if not isinstance(item, dict):
             continue
-        entry = cast(dict[str, object], item)
+        entry = item
         tool_name = entry.get("tool_name")
         status = entry.get("status")
         index = entry.get("index")
@@ -404,7 +404,7 @@ def _dropped_tool_diagnostics_from_metadata_payload(
                 reference=_optional_entry_string(entry, "reference"),
                 path=_optional_entry_string(entry, "path"),
                 command=_optional_entry_string(entry, "command"),
-                diagnostics=(cast(dict[str, object], entry["diagnostics"]) if isinstance(entry.get("diagnostics"), dict) else None),
+                diagnostics=(entry["diagnostics"] if isinstance(entry.get("diagnostics"), dict) else None),
                 truncated=entry.get("truncated") is True,
                 partial=entry.get("partial") is True,
             )
@@ -617,7 +617,7 @@ def _optional_tool_int(result: ToolResult | ToolResultView, key: str) -> int | N
 def _artifact_metadata_value(result: ToolResult | ToolResultView, key: str) -> object:
     artifact = result.data.get("artifact")
     if isinstance(artifact, Mapping):
-        value = cast(Mapping[str, object], artifact).get(key)
+        value = artifact.get(key)
         if value is not None:
             return value
     return result.data.get(key)
@@ -1227,7 +1227,7 @@ def assemble_provider_context(
             raw_arguments = result.data.get("arguments")
             tool_arguments: dict[str, object]
             if isinstance(raw_arguments, dict):
-                tool_arguments = dict(cast(dict[str, object], raw_arguments))
+                tool_arguments = dict(raw_arguments)
             else:
                 tool_arguments = {}
             segments.append(

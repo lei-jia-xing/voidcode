@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, runtime_checkable
 
 from ..security.redaction import (
     DIAGNOSTIC_DEPTH as _MAX_DIAGNOSTIC_DEPTH,
@@ -91,7 +91,6 @@ class ToolDiagnostics:
         if not isinstance(self.details, dict):
             raise ValueError("diagnostics details must be an object")
         sanitized = _sanitize_diagnostic_value(self.details)
-        assert isinstance(sanitized, dict)
         object.__setattr__(self, "details", sanitized)
 
     def as_payload(self) -> dict[str, object]:
@@ -118,7 +117,7 @@ class ToolDiagnostics:
         if not isinstance(details, dict):
             raise ValueError("diagnostics details must be an object")
         values = {name: payload.get(name) for name in ("kind", "summary", "guidance")}
-        return cls(details=cast(dict[str, object], details), **values)
+        return cls(details=details, **values)
 
 
 class RuntimeToolTimeoutError(TimeoutError):

@@ -93,8 +93,8 @@ class BackgroundProcessLogsTool:
                     "controllable": False,
                 },
             )
-        stdout_artifact = getattr(state, "stdout_artifact", None)
-        stderr_artifact = getattr(state, "stderr_artifact", None)
+        stdout_artifact = state.stdout_artifact
+        stderr_artifact = state.stderr_artifact
         if state.stdout_dropped_lines > 0 and stdout_artifact is None:
             stdout_artifact = _artifact_metadata(
                 session_id=None,

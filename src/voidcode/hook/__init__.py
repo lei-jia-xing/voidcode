@@ -36,6 +36,9 @@ from .surfaces import (
     hook_surface_descriptor,
 )
 from .typed import (
+    BlockDecision,
+    DiagnosticDecision,
+    RewriteDecision,
     ToolInputAction,
     ToolInputDecision,
     ToolInputEvent,
@@ -48,6 +51,7 @@ from .typed import (
     ToolResultHandlerDecision,
     ToolResultHandlerOutcome,
     ToolResultHandlerRegistry,
+    UnchangedDecision,
     builtin_tool_input_handler_registry,
     builtin_tool_result_handler_registry,
     compose_tool_input_handler_registry,
@@ -85,6 +89,10 @@ __all__ = [
     "ToolInputHandler",
     "ToolInputHandlerRegistry",
     "ToolInputHookOutcome",
+    "BlockDecision",
+    "DiagnosticDecision",
+    "RewriteDecision",
+    "UnchangedDecision",
     "ToolResultHandler",
     "ToolResultHandlerAction",
     "ToolResultHandlerBinding",

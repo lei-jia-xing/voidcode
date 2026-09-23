@@ -402,10 +402,7 @@ class BackgroundProcessManager:
     def _register(self, state: BackgroundProcessState) -> None:
         if self._persistence is None:
             return
-        register = getattr(self._persistence, "register_background_process", None)
-        if not callable(register):
-            return
-        register(
+        self._persistence.register_background_process(
             workspace=Path(state.cwd),
             process_id=state.process_id,
             owner_session_id=state.owner_session_id,
@@ -420,17 +417,15 @@ class BackgroundProcessManager:
 
     def _reconcile(self) -> None:
         assert self._workspace is not None
-        list_processes = getattr(self._persistence, "list_background_processes", None)
-        if not callable(list_processes):
+        if self._persistence is None:
             return
-        for record in list_processes(workspace=self._workspace):
+        for record in self._persistence.list_background_processes(workspace=self._workspace):
             self._restore_record(record, workspace=self._workspace)
 
     def _restore_one(self, process_id: str, workspace: Path) -> None:
-        load_process = getattr(self._persistence, "load_background_process", None)
-        if not callable(load_process):
+        if self._persistence is None:
             return
-        record = load_process(workspace=workspace, process_id=process_id)
+        record = self._persistence.load_background_process(workspace=workspace, process_id=process_id)
         if record is not None:
             self._restore_record(record, workspace=workspace)
 
@@ -505,15 +500,13 @@ class BackgroundProcessManager:
             state.status = "stale"
             state.reconciliation_reason = reason
             if self._persistence is not None:
-                mark_exit = getattr(self._persistence, "mark_background_process_exit", None)
-                if callable(mark_exit):
-                    mark_exit(
-                        workspace=Path(state.cwd),
-                        process_id=state.process_id,
-                        status="stale",
-                        exit_code=None,
-                        reconciliation_reason=reason,
-                    )
+                self._persistence.mark_background_process_exit(
+                    workspace=Path(state.cwd),
+                    process_id=state.process_id,
+                    status="stale",
+                    exit_code=None,
+                    reconciliation_reason=reason,
+                )
 
     def _authorize(
         self,
@@ -560,15 +553,13 @@ class BackgroundProcessManager:
             state.reconciliation_reason = reconciliation_reason
         if self._persistence is None:
             return
-        mark_exit = getattr(self._persistence, "mark_background_process_exit", None)
-        if callable(mark_exit):
-            mark_exit(
-                workspace=Path(state.cwd),
-                process_id=state.process_id,
-                status=status,
-                exit_code=state.process.poll(),
-                reconciliation_reason=reconciliation_reason,
-            )
+        self._persistence.mark_background_process_exit(
+            workspace=Path(state.cwd),
+            process_id=state.process_id,
+            status=status,
+            exit_code=state.process.poll(),
+            reconciliation_reason=reconciliation_reason,
+        )
 
     @staticmethod
     def _start_reader(state: BackgroundProcessState, *, stream_name: str) -> None:

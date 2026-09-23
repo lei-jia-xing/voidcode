@@ -140,7 +140,7 @@ def _read_pipe_incrementally(
         while True:
             reader = getattr(pipe, "read1", None)
             if callable(reader):
-                chunk = cast(bytes, reader(_SHELL_PROGRESS_CHUNK_BYTES))
+                chunk = reader(_SHELL_PROGRESS_CHUNK_BYTES)
             else:
                 chunk = pipe.read(_SHELL_PROGRESS_CHUNK_BYTES)
             if not chunk:

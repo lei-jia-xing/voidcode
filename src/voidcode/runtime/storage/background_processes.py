@@ -115,21 +115,21 @@ class _BackgroundProcessStorageMixin(_MixinBase):
     @staticmethod
     def _background_process_from_row(row: sqlite3.Row) -> dict[str, object]:
         return {
-            "process_id": cast(str, row["process_id"]),
-            "workspace_id": cast(str, row["workspace_id"]),
-            "owner_session_id": cast(str | None, row["owner_session_id"]),
-            "command": cast(str, row["command"]),
-            "cwd": cast(str, row["cwd"]),
-            "pid": cast(int, row["pid"]),
-            "process_group_id": cast(int | None, row["process_group_id"]),
-            "process_identity": cast(str | None, row["process_identity"]),
-            "stdout_path": cast(str, row["stdout_path"]),
-            "stderr_path": cast(str, row["stderr_path"]),
-            "status": cast(str, row["status"]),
-            "exit_code": cast(int | None, row["exit_code"]),
-            "reconciliation_reason": cast(str | None, row["reconciliation_reason"]),
-            "created_at": cast(int, row["created_at"]),
-            "updated_at": cast(int, row["updated_at"]),
+            "process_id": row["process_id"],
+            "workspace_id": row["workspace_id"],
+            "owner_session_id": row["owner_session_id"],
+            "command": row["command"],
+            "cwd": row["cwd"],
+            "pid": row["pid"],
+            "process_group_id": row["process_group_id"],
+            "process_identity": row["process_identity"],
+            "stdout_path": row["stdout_path"],
+            "stderr_path": row["stderr_path"],
+            "status": row["status"],
+            "exit_code": row["exit_code"],
+            "reconciliation_reason": row["reconciliation_reason"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
         }
 
 

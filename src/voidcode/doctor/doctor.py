@@ -318,9 +318,7 @@ def create_doctor_for_config(
             return doctor
         finally:
             if runtime is not None:
-                exit_method = getattr(runtime, "__exit__", None)
-                if callable(exit_method):
-                    exit_method(None, None, None)
+                runtime.__exit__(None, None, None)
         status = CapabilityCheckStatus.READY if readiness.ok else CapabilityCheckStatus.ERROR
         doctor.add_result(
             CapabilityCheckResult(

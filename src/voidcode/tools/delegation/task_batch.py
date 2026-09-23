@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from ...runtime.background.models import BackgroundTaskState
 from ...runtime.contracts import (
@@ -58,12 +58,12 @@ class _BatchItemArgs(BaseModel):
 
     @field_validator("subagent_type", "description", "command", mode="after")
     @classmethod
-    def _strip_strings(cls, value: str | None, info: object) -> str | None:
+    def _strip_strings(cls, value: str | None, info: ValidationInfo) -> str | None:
         if value is None:
             return None
         stripped = value.strip()
         if not stripped:
-            if getattr(info, "field_name", None) == "subagent_type":
+            if info.field_name == "subagent_type":
                 raise ValueError("subagent_type must be a non-empty string")
             return None
         return stripped

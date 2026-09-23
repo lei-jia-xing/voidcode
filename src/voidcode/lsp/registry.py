@@ -3,7 +3,6 @@ from __future__ import annotations
 import shutil
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import cast
 
 from .contracts import LspServerConfigOverride, LspServerPreset, ResolvedLspServerConfig
 from .presets import get_builtin_lsp_server_preset, has_builtin_lsp_server_preset
@@ -143,8 +142,8 @@ def _deep_merge_dicts(
         current = merged.get(key)
         if isinstance(current, dict) and isinstance(value, dict):
             merged[key] = _deep_merge_dicts(
-                cast(dict[str, object], current),
-                cast(dict[str, object], value),
+                current,
+                value,
             )
             continue
         merged[key] = value

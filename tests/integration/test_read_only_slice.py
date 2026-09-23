@@ -1558,6 +1558,9 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
         def list_sessions(self, *, workspace: Path) -> tuple[object, ...]:
             return base_store.list_sessions(workspace=workspace)
 
+        def list_background_processes(self, *, workspace: Path) -> tuple[dict[str, object], ...]:
+            return base_store.list_background_processes(workspace=workspace)
+
         def load_session(self, *, workspace: Path, session_id: str) -> object:
             return base_store.load_session(workspace=workspace, session_id=session_id)
 

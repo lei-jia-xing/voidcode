@@ -76,7 +76,7 @@ def _message_from_container(value: object) -> str | None:
     if isinstance(value, str):
         return value.strip() or None
     if isinstance(value, dict):
-        mapping = cast(dict[str, Any], value)
+        mapping = value
         direct = mapping.get("message")
         if isinstance(direct, str) and direct.strip():
             return direct
@@ -126,7 +126,7 @@ def _redact_secret_text(value: str) -> str:
 def _redact_provider_error_detail(value: object) -> object:
     if isinstance(value, dict):
         redacted: dict[str, object] = {}
-        for raw_key, raw_item in cast(dict[object, object], value).items():
+        for raw_key, raw_item in value.items():
             key = str(raw_key)
             lowered = key.lower()
             if any(marker in lowered for marker in _SENSITIVE_DETAIL_KEY_MARKERS):
@@ -135,7 +135,7 @@ def _redact_provider_error_detail(value: object) -> object:
                 redacted[key] = _redact_provider_error_detail(raw_item)
         return redacted
     if isinstance(value, list):
-        return [_redact_provider_error_detail(item) for item in cast(list[object], value)]
+        return [_redact_provider_error_detail(item) for item in value]
     if isinstance(value, str):
         return _redact_secret_text(value)
     return value
@@ -220,7 +220,7 @@ def _extract_error_code(payload: dict[str, Any]) -> str | None:
         return code
     error_obj = payload.get("error")
     if isinstance(error_obj, dict):
-        error_payload = dict(cast(dict[str, Any], error_obj))
+        error_payload = dict(error_obj)
         nested_code = error_payload.get("code")
         if isinstance(nested_code, str) and nested_code.strip():
             return nested_code

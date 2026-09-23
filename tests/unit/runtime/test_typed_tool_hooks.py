@@ -7,7 +7,7 @@ from typing import Literal
 import pytest
 
 from voidcode.graph.contracts import GraphEvent, GraphRunRequest
-from voidcode.hook.typed import ToolInputDecision, ToolInputEvent, ToolInputHandlerBinding, ToolInputHandlerRegistry
+from voidcode.hook.typed import BlockDecision, RewriteDecision, ToolInputDecision, ToolInputEvent, ToolInputHandlerBinding, ToolInputHandlerRegistry
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.permission import PermissionPolicy
@@ -85,7 +85,7 @@ def _canonicalizer(path: str, calls: list[str] | None = None):
     def canonicalize(event: ToolInputEvent) -> ToolInputDecision:
         if calls is not None:
             calls.append(event.tool_call.tool_name)
-        return ToolInputDecision(action="rewrite", arguments={"path": path})
+        return RewriteDecision(arguments={"path": path})
 
     return canonicalize
 
@@ -94,7 +94,7 @@ def _blocker(reason: str, calls: list[str] | None = None):
     def block(event: ToolInputEvent) -> ToolInputDecision:
         if calls is not None:
             calls.append(event.tool_call.tool_name)
-        return ToolInputDecision(action="block", reason=reason)
+        return BlockDecision(reason=reason)
 
     return block
 

@@ -5,7 +5,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 from urllib.parse import unquote
 
 RULE_FILE_NAME = "AGENTS.md"
@@ -100,14 +100,14 @@ def _touched_paths_from_tool_results(tool_results: tuple[_ToolResultLike, ...]) 
         add(result.data.get("output_path"))
         raw_arguments = result.data.get("arguments")
         if isinstance(raw_arguments, dict):
-            arguments = cast(dict[str, object], raw_arguments)
+            arguments = raw_arguments
             add(arguments.get("path"))
         raw_matches = result.data.get("matches")
         if isinstance(raw_matches, list | tuple):
             for raw_match in raw_matches:
                 if not isinstance(raw_match, dict):
                     continue
-                match = cast(dict[str, object], raw_match)
+                match = raw_match
                 add(match.get("file"))
                 add(match.get("path"))
         raw_changes = result.data.get("changes")
@@ -115,7 +115,7 @@ def _touched_paths_from_tool_results(tool_results: tuple[_ToolResultLike, ...]) 
             for raw_change in raw_changes:
                 if not isinstance(raw_change, dict):
                     continue
-                change = cast(dict[str, object], raw_change)
+                change = raw_change
                 add(change.get("path"))
     return tuple(sorted(paths))
 
@@ -272,10 +272,10 @@ def rulebook_snapshot_from_payload(payload: object) -> RulebookSnapshot:
     if not isinstance(raw_entries, list):
         raise ValueError("persisted rulebook_snapshot entries must be a list")
     entries: list[RuleMetadata] = []
-    for raw in cast(list[object], raw_entries):
+    for raw in raw_entries:
         if not isinstance(raw, dict):
             raise ValueError("persisted rulebook_snapshot entries must be objects")
-        item = cast(dict[str, object], raw)
+        item = raw
         fields = ("name", "description", "application", "scope", "precedence", "uri", "content_hash")
         if any(field not in item for field in fields):
             raise ValueError("persisted rulebook_snapshot entry is incomplete")
@@ -290,17 +290,17 @@ def rulebook_snapshot_from_payload(payload: object) -> RulebookSnapshot:
         valid_scope = scope in {"workspace", "repo"}
         if not isinstance(precedence, int) or isinstance(precedence, bool) or not valid_application or not valid_scope:
             raise ValueError("persisted rulebook_snapshot entry has invalid metadata")
-        if uri != f"{RULE_URI_PREFIX}{name}" or not _RULE_NAME_PATTERN.fullmatch(cast(str, name)):
+        if uri != f"{RULE_URI_PREFIX}{name}" or not _RULE_NAME_PATTERN.fullmatch(name):
             raise ValueError("persisted rulebook_snapshot entry has invalid rule URI")
         entries.append(
             RuleMetadata(
-                cast(str, name),
-                cast(str, description),
-                cast(RuleApplication, application),
-                cast(RuleScope, scope),
+                name,
+                description,
+                application,
+                scope,
                 precedence,
                 "",
-                cast(str, content_hash),
+                content_hash,
             )
         )
     normalized = tuple(sorted(entries, key=_rule_sort_key))
@@ -308,7 +308,7 @@ def rulebook_snapshot_from_payload(payload: object) -> RulebookSnapshot:
     snapshot_hash = payload.get("snapshot_hash")
     if snapshot_hash != expected_hash:
         raise ValueError("persisted rulebook_snapshot hash does not match its payload")
-    return RulebookSnapshot(entries=normalized, snapshot_hash=cast(str, snapshot_hash))
+    return RulebookSnapshot(entries=normalized, snapshot_hash=snapshot_hash)
 
 
 def _rule_sort_key(metadata: RuleMetadata) -> tuple[int, int, str]:

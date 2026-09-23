@@ -13,7 +13,7 @@ import fnmatch
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 from ..formatter.config import (
     RuntimeFormatterPresetConfig,
@@ -61,7 +61,7 @@ class RuntimeHooksConfig:
 
     def commands_for_surface(self, surface: RuntimeHookSurface) -> tuple[tuple[str, ...], ...]:
         descriptor = hook_surface_descriptor(surface)
-        return cast(tuple[tuple[str, ...], ...], getattr(self, descriptor.config_attribute))
+        return getattr(self, descriptor.config_attribute)
 
     def resolve_formatter(self, file_path: Path) -> tuple[str, RuntimeFormatterPresetConfig] | None:
         return resolve_formatter_preset(self.formatter_presets, file_path)

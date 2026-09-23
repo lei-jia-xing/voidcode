@@ -137,14 +137,14 @@ class AnthropicMessagesTransport:
         payload: dict[str, object] = {}
         body = getattr(exc, "body", None)
         if isinstance(body, Mapping):
-            payload.update(cast(Mapping[str, object], body))
+            payload.update(body)
         response = getattr(exc, "response", None)
         status_code = getattr(response, "status_code", None)
         if isinstance(status_code, int):
             payload["status_code"] = status_code
         headers = getattr(response, "headers", None)
         if isinstance(headers, Mapping):
-            payload.setdefault("headers", dict(cast(Mapping[str, object], headers)))
+            payload.setdefault("headers", dict(headers))
         payload.setdefault("message", str(exc))
         return payload
 
@@ -318,13 +318,13 @@ def _normalize_tool_call_id(value: str | None, *, fallback: str) -> str:
 
 def _parse_arguments(value: object) -> dict[str, object]:
     if isinstance(value, Mapping):
-        return dict(cast(Mapping[str, object], value))
+        return dict(value)
     if not isinstance(value, str) or not value.strip():
         raise ValueError("tool input was empty")
     decoded = json.loads(value)
     if not isinstance(decoded, dict):
         raise ValueError("tool input was not an object")
-    return dict(cast(dict[str, object], decoded))
+    return dict(decoded)
 
 
 def _response_metadata(payload: Mapping[str, object]) -> dict[str, object]:
@@ -428,7 +428,7 @@ class AnthropicMessagesProvider:
     def _visible_arguments(tool_name: str | None, arguments: dict[str, object]) -> dict[str, object]:
         sanitized = sanitize_tool_arguments(arguments)
         stripped = strip_redaction_sentinels(sanitized, redacted_keys=redacted_argument_keys_for_tool(tool_name))
-        return cast(dict[str, object], stripped) if isinstance(stripped, dict) else {}
+        return stripped if isinstance(stripped, dict) else {}
 
     def _messages_and_system(self, request: ProviderTurnRequest) -> tuple[str | None, list[dict[str, object]]]:
         original_to_provider, _ = self._tool_maps(request)
@@ -476,7 +476,7 @@ class AnthropicMessagesProvider:
             if segment.role == "tool":
                 metadata = segment.metadata or {}
                 raw_data = metadata.get("data")
-                data = sanitize_tool_result_data(cast(dict[str, object], raw_data)) if isinstance(raw_data, dict) else {}
+                data = sanitize_tool_result_data(raw_data) if isinstance(raw_data, dict) else {}
                 result_data = {key: value for key, value in data.items() if key not in {"tool_call_id", "arguments"}}
                 result_text = segment.content or (json.dumps(result_data, ensure_ascii=False, sort_keys=True) if result_data else "")
                 block = {
@@ -570,12 +570,12 @@ class AnthropicMessagesProvider:
     @staticmethod
     def _response_payload(value: object) -> dict[str, object]:
         if isinstance(value, Mapping):
-            return dict(cast(Mapping[str, object], value))
+            return dict(value)
         model_dump = getattr(value, "model_dump", None)
         if callable(model_dump):
             dumped = model_dump()
             if isinstance(dumped, Mapping):
-                return dict(cast(Mapping[str, object], dumped))
+                return dict(dumped)
         raise ValueError("provider response must be a mapping")
 
     @staticmethod
@@ -610,9 +610,9 @@ class AnthropicMessagesProvider:
                 continue
             block_type = raw.get("type")
             if block_type == "text" and isinstance(raw.get("text"), str):
-                text_parts.append(cast(str, raw["text"]))
+                text_parts.append(raw["text"])
             elif block_type == "thinking" and isinstance(raw.get("thinking"), str):
-                thinking_parts.append(cast(str, raw["thinking"]))
+                thinking_parts.append(raw["thinking"])
             elif block_type == "tool_use" and isinstance(raw.get("name"), str):
                 try:
                     args = _parse_arguments(raw.get("input"))
@@ -620,7 +620,7 @@ class AnthropicMessagesProvider:
                     args = {}
                 calls.append(
                     ToolCall(
-                        tool_name=cast(str, raw["name"]),
+                        tool_name=raw["name"],
                         arguments=args,
                         tool_call_id=_normalize_tool_call_id(
                             raw.get("id") if isinstance(raw.get("id"), str) else None, fallback=f"tool_call_{index + 1}"
@@ -657,7 +657,7 @@ class AnthropicMessagesProvider:
             if done_reason == "unknown" and finish_reason_reported:
                 # The token was reported but is not one we map; keep it for the
                 # graph's debug resolution.
-                metadata["finish_reason_raw"] = cast(str, stop_reason)
+                metadata["finish_reason_raw"] = stop_reason
             write_provider_trace(
                 request=payload,
                 response=response,
@@ -705,7 +705,7 @@ class AnthropicMessagesProvider:
             stop_reason: str | None = None
             message_stopped = False
             for raw_chunk in _iter_stream_with_timeout(
-                cast(Iterator[object], raw_stream), timeout_seconds=self._timeout(), provider_name=provider_name, model_name=model_name
+                raw_stream, timeout_seconds=self._timeout(), provider_name=provider_name, model_name=model_name
             ):
                 if request.abort_signal is not None and request.abort_signal.cancelled:
                     yield ProviderStreamEvent(kind="error", channel="error", error="provider stream cancelled", error_kind="cancelled")
@@ -747,13 +747,11 @@ class AnthropicMessagesProvider:
                         continue
                     delta_type = delta.get("type")
                     if delta_type == "text_delta" and isinstance(delta.get("text"), str):
-                        yield ProviderStreamEvent(kind="delta", channel="text", text=cast(str, delta["text"]))
+                        yield ProviderStreamEvent(kind="delta", channel="text", text=delta["text"])
                     elif delta_type == "thinking_delta" and isinstance(delta.get("thinking"), str):
-                        yield ProviderStreamEvent(
-                            kind="delta", channel="reasoning", text=cast(str, delta["thinking"]), metadata={"source": "delta.thinking"}
-                        )
+                        yield ProviderStreamEvent(kind="delta", channel="reasoning", text=delta["thinking"], metadata={"source": "delta.thinking"})
                     elif delta_type == "input_json_delta" and isinstance(delta.get("partial_json"), str):
-                        fragment = cast(str, delta["partial_json"])
+                        fragment = delta["partial_json"]
                         prior = accumulators.get(index, _ToolAccumulator())
                         accumulators[index] = _ToolAccumulator(prior.tool_call_id, prior.tool_name, prior.fragments + (fragment,), prior.started)
                         if prior.tool_call_id:
@@ -768,7 +766,7 @@ class AnthropicMessagesProvider:
                 elif event_type == "message_delta":
                     delta = chunk.get("delta")
                     if isinstance(delta, Mapping) and isinstance(delta.get("stop_reason"), str):
-                        stop_reason = cast(str, delta["stop_reason"])
+                        stop_reason = delta["stop_reason"]
                     latest_usage = _merge_usage(latest_usage, _usage(chunk))
                 elif event_type == "message_stop":
                     message_stopped = True

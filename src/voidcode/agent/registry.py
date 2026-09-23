@@ -6,7 +6,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 from ..frontmatter import load_frontmatter_mapping, split_frontmatter
 from ..hook.presets import validate_hook_preset_refs
@@ -250,7 +250,7 @@ def _string_list(value: object, *, field: str) -> tuple[str, ...]:
     if not isinstance(value, list):
         raise ValueError(f"frontmatter field '{field}' must be a string array")
     parsed: list[str] = []
-    for index, item in enumerate(cast(list[object], value)):
+    for index, item in enumerate(value):
         if not isinstance(item, str) or not item.strip():
             raise ValueError(f"frontmatter field '{field}[{index}]' must be a non-empty string")
         parsed.append(item.strip())
@@ -264,7 +264,7 @@ def _parse_mcp_binding(value: object) -> AgentMcpBindingIntent | None:
         return None
     if not isinstance(value, dict):
         raise ValueError("frontmatter field 'mcp_binding' must be an object")
-    payload = cast(dict[str, object], value)
+    payload = value
     unknown = sorted(key for key in payload if key not in {"profile", "servers"})
     if unknown:
         raise ValueError(f"frontmatter field 'mcp_binding' has unsupported key(s): {', '.join(unknown)}")

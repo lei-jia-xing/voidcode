@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -198,41 +198,28 @@ class TaskOutputTool:
                 raise RuntimeError("task output group reads require an active runtime tool invocation context")
             selected_ids = tuple(args.task_ids or ())
             group_id = args.parallel_group_id
-            load_group = getattr(self._runtime, "load_background_task_group_result", None)
-            wait_group = getattr(self._runtime, "wait_for_background_task_group", None)
-            if not callable(load_group) or not callable(wait_group):
-                raise RuntimeError("task output group reads require runtime group result support")
             timeout_seconds = max(args.timeout, 0) / 1000
             group_timed_out = False
-            group = cast(
-                BackgroundTaskGroupResult,
-                load_group(
-                    task_ids=selected_ids,
-                    parallel_group_id=group_id,
-                    parent_session_id=context.session_id,
-                    emit_result_read_hook=not args.block,
-                ),
+            group = self._runtime.load_background_task_group_result(
+                task_ids=selected_ids,
+                parallel_group_id=group_id,
+                parent_session_id=context.session_id,
+                emit_result_read_hook=not args.block,
             )
             if args.block and not group.complete:
-                group = cast(
-                    BackgroundTaskGroupResult,
-                    wait_group(
-                        task_ids=selected_ids,
-                        parallel_group_id=group_id,
-                        parent_session_id=context.session_id,
-                        timeout_seconds=timeout_seconds,
-                        emit_result_read_hook=False,
-                    ),
-                )
-                group_timed_out = group.timed_out
-            group = cast(
-                BackgroundTaskGroupResult,
-                load_group(
+                group = self._runtime.wait_for_background_task_group(
                     task_ids=selected_ids,
                     parallel_group_id=group_id,
                     parent_session_id=context.session_id,
-                    emit_result_read_hook=True,
-                ),
+                    timeout_seconds=timeout_seconds,
+                    emit_result_read_hook=False,
+                )
+                group_timed_out = group.timed_out
+            group = self._runtime.load_background_task_group_result(
+                task_ids=selected_ids,
+                parallel_group_id=group_id,
+                parent_session_id=context.session_id,
+                emit_result_read_hook=True,
             )
             if group_timed_out:
                 group = BackgroundTaskGroupResult(
@@ -243,7 +230,6 @@ class TaskOutputTool:
                 )
             return _background_group_tool_result(group)
 
-        assert args.task_id is not None
         timeout_seconds = max(args.timeout, 0) / 1000
         context = current_runtime_tool_context()
         if context is not None:

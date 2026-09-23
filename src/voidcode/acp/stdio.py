@@ -7,7 +7,7 @@ import threading
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, TextIO, cast
+from typing import Protocol, TextIO
 from uuid import uuid4
 
 from .. import __version__
@@ -105,7 +105,7 @@ class StdioAcpServer:
                 respond_without_id=True,
             )
             return
-        payload = cast(dict[object, object], request)
+        payload = request
         request_id, invalid_request_id = _request_id(payload.get("id"))
         if invalid_request_id:
             self._write_error(
@@ -128,7 +128,7 @@ class StdioAcpServer:
         if not isinstance(params, dict):
             self._write_error(request_id, _ERROR_INVALID_PARAMS, "params must be an object")
             return
-        typed_params = cast(dict[str, object], params)
+        typed_params = params
 
         try:
             if method == "initialize":
@@ -460,10 +460,10 @@ def _prompt_text(value: object) -> str:
         return _validate_prompt_length(value)
     if isinstance(value, list):
         parts: list[str] = []
-        for index, item in enumerate(cast(list[object], value)):
+        for index, item in enumerate(value):
             if not isinstance(item, dict):
                 raise ValueError(f"params.prompt[{index}] must be an object")
-            block = cast(dict[object, object], item)
+            block = item
             if block.get("type") != "text":
                 raise ValueError("only text prompt blocks are supported")
             text = block.get("text")
@@ -499,7 +499,7 @@ def _optional_attr(value: object, name: str) -> object:
 def _mapping_attr(value: object, name: str) -> JsonObject:
     raw = getattr(value, name, {})
     if isinstance(raw, dict):
-        return cast(JsonObject, raw)
+        return raw
     return {}
 
 

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
-from typing import Final, cast
+from typing import Final
 
 #: Canonical placeholder for redacted secret text/values.
 REDACTED_PLACEHOLDER: Final[str] = "[redacted]"
@@ -81,7 +80,7 @@ def redact_value(value: object, *, placeholder: str = REDACTED_PLACEHOLDER) -> o
         return redact_text(value, placeholder=placeholder)
     if isinstance(value, dict):
         result: dict[str, object] = {}
-        for raw_key, raw_item in cast(Mapping[object, object], value).items():
+        for raw_key, raw_item in value.items():
             key = str(raw_key)
             if is_sensitive_key(key):
                 result[key] = placeholder
@@ -89,7 +88,7 @@ def redact_value(value: object, *, placeholder: str = REDACTED_PLACEHOLDER) -> o
                 result[key] = redact_value(raw_item, placeholder=placeholder)
         return result
     if isinstance(value, list):
-        return [redact_value(item, placeholder=placeholder) for item in cast(list[object], value)]
+        return [redact_value(item, placeholder=placeholder) for item in value]
     if isinstance(value, tuple):
         return tuple(redact_value(item, placeholder=placeholder) for item in value)
     return value

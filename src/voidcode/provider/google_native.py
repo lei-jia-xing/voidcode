@@ -218,7 +218,7 @@ class GoogleGenAIProvider:
     def _visible_arguments(tool_name: str | None, arguments: Mapping[str, object]) -> dict[str, object]:
         sanitized = sanitize_tool_arguments(dict(arguments))
         stripped = strip_redaction_sentinels(sanitized, redacted_keys=redacted_argument_keys_for_tool(tool_name))
-        return cast(dict[str, object], stripped) if isinstance(stripped, dict) else {}
+        return stripped if isinstance(stripped, dict) else {}
 
     def _contents(self, request: ProviderTurnRequest) -> tuple[str | None, list[dict[str, object]]]:
         system: list[str] = []

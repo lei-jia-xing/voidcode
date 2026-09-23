@@ -246,7 +246,7 @@ def _apply(args: _TodoArgsModel, phases: list[dict[str, object]]) -> None:
             raise ValueError("append requires phase")
         if args.items is None or not args.items:
             raise ValueError("append requires non-empty items")
-        existing = {cast(str, task["content"]) for phase in phases for task in cast(list[dict[str, object]], phase["tasks"])}
+        existing = {task["content"] for phase in phases for task in cast(list[dict[str, object]], phase["tasks"])}
         normalized_items: list[str] = []
         for item in args.items:
             content = item.strip()
@@ -258,7 +258,7 @@ def _apply(args: _TodoArgsModel, phases: list[dict[str, object]]) -> None:
             normalized_items.append(content)
         target = _phase_by_name(phases, args.phase.strip())
         if target is None:
-            target = {"name": args.phase.strip(), "tasks": cast(list[dict[str, object]], [])}
+            target = {"name": args.phase.strip(), "tasks": []}
             phases.append(cast(dict[str, object], target))
         target_tasks = cast(list[dict[str, object]], target["tasks"])
         target_tasks.extend({"content": content, "status": "pending"} for content in normalized_items)
@@ -268,7 +268,7 @@ def _apply(args: _TodoArgsModel, phases: list[dict[str, object]]) -> None:
 
 
 def _render(phases: list[dict[str, object]], op: str) -> str:
-    if not any(cast(list[dict[str, object]], phase["tasks"]) for phase in phases):
+    if not any(phase["tasks"] for phase in phases):
         return "Todo list is empty." if op == "view" else "Todo list cleared."
     lines = [f"Todo {op} applied."]
     for phase in phases:

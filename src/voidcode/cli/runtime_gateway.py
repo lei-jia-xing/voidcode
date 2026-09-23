@@ -284,7 +284,7 @@ def prompt_for_question(event: EventEnvelope) -> tuple[QuestionResponse, ...]:
         raw_questions = [{"header": "response", "question": "Answer"}]
     responses: list[QuestionResponse] = []
     for index, raw_question in enumerate(raw_questions, start=1):
-        question = cast(dict[str, object], raw_question) if isinstance(raw_question, dict) else {}
+        question = raw_question if isinstance(raw_question, dict) else {}
         header = safe_detail(question.get("header") or f"question-{index}", limit=64)
         text = safe_detail(question.get("question") or "Answer", limit=240)
         options = question.get("options")

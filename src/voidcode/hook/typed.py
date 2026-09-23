@@ -34,37 +34,53 @@ class ToolInputEvent:
 
 
 @dataclass(frozen=True, slots=True)
-class ToolInputDecision:
-    """The deliberately small result vocabulary for typed input handlers."""
+class UnchangedDecision:
+    """Handler leaves the tool call untouched."""
 
-    action: ToolInputAction
-    arguments: Mapping[str, object] | None = None
-    reason: str | None = None
-    diagnostic: str | None = None
+    action: Literal["unchanged"] = "unchanged"
+
+
+@dataclass(frozen=True, slots=True)
+class RewriteDecision:
+    """Handler replaces the tool arguments; the payload is part of the type."""
+
+    arguments: Mapping[str, object]
+    action: Literal["rewrite"] = "rewrite"
 
     def __post_init__(self) -> None:
-        if self.action not in {"unchanged", "rewrite", "block", "diagnostic"}:
-            raise ValueError(f"unsupported tool input handler action: {self.action}")
-        if self.action == "rewrite":
-            if not isinstance(self.arguments, Mapping):
-                raise ValueError("tool input rewrite must provide an arguments mapping")
-            if not all(isinstance(key, str) and key for key in self.arguments):
-                raise ValueError("tool input rewrite argument keys must be non-empty strings")
-            object.__setattr__(self, "arguments", dict(self.arguments))
-        elif self.arguments is not None:
-            raise ValueError(f"tool input handler action {self.action} cannot provide arguments")
-        if self.action == "block" and not _safe_text(self.reason):
+        if not all(isinstance(key, str) and key for key in self.arguments):
+            raise ValueError("tool input rewrite argument keys must be non-empty strings")
+        object.__setattr__(self, "arguments", dict(self.arguments))
+
+
+@dataclass(frozen=True, slots=True)
+class BlockDecision:
+    """Handler blocks the tool call; the reason is part of the type."""
+
+    reason: str
+    action: Literal["block"] = "block"
+
+    def __post_init__(self) -> None:
+        if not _safe_text(self.reason):
             raise ValueError("tool input block must provide a reason")
-        if self.action != "block" and self.reason is not None:
-            raise ValueError(f"tool input handler action {self.action} cannot provide a block reason")
-        if self.action == "diagnostic" and not _safe_text(self.diagnostic):
+        object.__setattr__(self, "reason", _safe_text(self.reason))
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticDecision:
+    """Handler reports a diagnostic without changing the call."""
+
+    diagnostic: str
+    action: Literal["diagnostic"] = "diagnostic"
+
+    def __post_init__(self) -> None:
+        if not _safe_text(self.diagnostic):
             raise ValueError("tool input diagnostic must provide diagnostic text")
-        if self.action != "diagnostic" and self.diagnostic is not None:
-            raise ValueError(f"tool input handler action {self.action} cannot provide diagnostic text")
-        if self.diagnostic is not None:
-            object.__setattr__(self, "diagnostic", _safe_text(self.diagnostic))
-        if self.reason is not None:
-            object.__setattr__(self, "reason", _safe_text(self.reason))
+        object.__setattr__(self, "diagnostic", _safe_text(self.diagnostic))
+
+
+# The deliberately small result vocabulary for typed input handlers.
+type ToolInputDecision = UnchangedDecision | RewriteDecision | BlockDecision | DiagnosticDecision
 
 
 class ToolInputHandler(Protocol):
@@ -80,9 +96,9 @@ class ToolInputHandlerBinding:
     priority: int = 0
 
     def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or not self.name.strip():
+        if not self.name.strip():
             raise ValueError("tool input handler name must be non-empty")
-        if not isinstance(self.priority, int) or isinstance(self.priority, bool):
+        if isinstance(self.priority, bool):
             raise ValueError("tool input handler priority must be an integer")
 
 
@@ -150,17 +166,7 @@ class ToolInputHandlerRegistry:
                     blocked_reason=_safe_text(f"tool input handler '{binding.name}' failed: {exc}"),
                     _original_arguments=original_arguments,
                 )
-            if not isinstance(decision, ToolInputDecision):
-                return ToolInputHookOutcome(
-                    tool_call=current_call,
-                    action="block",
-                    diagnostics=tuple(diagnostics),
-                    handler_names=tuple(names),
-                    blocked_reason=_safe_text(f"tool input handler '{binding.name}' returned an invalid decision"),
-                    _original_arguments=original_arguments,
-                )
             if decision.action == "diagnostic":
-                assert decision.diagnostic is not None
                 if len(diagnostics) < _MAX_DIAGNOSTICS:
                     diagnostics.append(decision.diagnostic)
                 elif len(diagnostics) == _MAX_DIAGNOSTICS:
@@ -169,13 +175,10 @@ class ToolInputHandlerRegistry:
             if decision.action == "unchanged":
                 continue
             if decision.action == "rewrite":
-                assert decision.arguments is not None
                 next_arguments = deepcopy(dict(decision.arguments))
                 changed = changed or next_arguments != current_call.arguments
                 current_call = replace(current_call, arguments=next_arguments)
                 continue
-            assert decision.action == "block"
-            assert decision.reason is not None
             return ToolInputHookOutcome(
                 tool_call=current_call,
                 action="block",
@@ -197,14 +200,14 @@ class ToolInputHandlerRegistry:
 
 def _shell_non_interactive_env_handler(event: ToolInputEvent, /) -> ToolInputDecision:
     if event.tool_call.tool_name != "shell_exec":
-        return ToolInputDecision(action="unchanged")
+        return UnchangedDecision()
     command = event.tool_call.arguments.get("command")
     if not isinstance(command, str) or not command.strip():
-        return ToolInputDecision(action="unchanged")
+        return UnchangedDecision()
     keys = tuple(non_interactive_shell_env(command))
     if not keys:
-        return ToolInputDecision(action="unchanged")
-    return ToolInputDecision(action="diagnostic", diagnostic=f"shell non-interactive env injected: {', '.join(keys)}")
+        return UnchangedDecision()
+    return DiagnosticDecision(diagnostic=f"shell non-interactive env injected: {', '.join(keys)}")
 
 
 def builtin_tool_input_handler_registry() -> ToolInputHandlerRegistry:
@@ -300,9 +303,9 @@ class ToolResultHandlerBinding:
     priority: int = 0
 
     def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or not self.name.strip():
+        if not self.name.strip():
             raise ValueError("tool result handler name must be non-empty")
-        if not isinstance(self.priority, int) or isinstance(self.priority, bool):
+        if isinstance(self.priority, bool):
             raise ValueError("tool result handler priority must be an integer")
 
 
@@ -346,10 +349,6 @@ class ToolResultHandlerRegistry:
             except Exception:
                 return ToolResultHandlerOutcome(
                     view=source, action="error", handler_names=tuple(names), failure_reason=f"handler '{binding.name}' failed"
-                )
-            if not isinstance(decision, ToolResultHandlerDecision):
-                return ToolResultHandlerOutcome(
-                    view=source, action="error", handler_names=tuple(names), failure_reason=f"handler '{binding.name}' returned invalid decision"
                 )
             if decision.action == "unchanged":
                 continue
@@ -439,12 +438,16 @@ def _safe_text(value: object | None) -> str:
 
 
 __all__ = [
+    "BlockDecision",
+    "DiagnosticDecision",
+    "RewriteDecision",
     "ToolInputAction",
     "ToolInputDecision",
     "ToolInputEvent",
     "ToolInputHandler",
     "ToolInputHandlerRegistry",
     "ToolInputHookOutcome",
+    "UnchangedDecision",
     "ToolResultHandler",
     "ToolResultHandlerAction",
     "ToolResultHandlerBinding",

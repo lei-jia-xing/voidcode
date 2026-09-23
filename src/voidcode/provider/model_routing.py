@@ -111,5 +111,5 @@ class RoutedTurnProvider:
         provider, routed = self._dispatch(request)
         # Wire factories only produce streamable sub-providers; the cast mirrors
         # ``graph/provider_graph.py``'s handling of the same seam.
-        streamable = cast(StreamableTurnProvider, cast(object, provider))
+        streamable = cast(StreamableTurnProvider, provider)
         return streamable.stream_turn(routed)

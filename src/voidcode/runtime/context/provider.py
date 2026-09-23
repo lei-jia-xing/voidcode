@@ -194,16 +194,16 @@ def _transform_diagnostics(
     raw_transforms = context_metadata.get("context_transforms")
     if not isinstance(raw_transforms, dict):
         return ()
-    transform_payload = cast(dict[str, object], raw_transforms)
+    transform_payload = raw_transforms
     failure_policy = transform_payload.get("failure_policy")
     applied = transform_payload.get("applied")
     if not isinstance(applied, list):
         return ()
     diagnostics: list[RuntimeProviderContextDiagnostic] = []
-    for raw_trace in cast(list[object], applied):
+    for raw_trace in applied:
         if not isinstance(raw_trace, dict):
             continue
-        trace = cast(dict[str, object], raw_trace)
+        trace = raw_trace
         provider_id = trace.get("provider_id")
         status = trace.get("status")
         if not isinstance(provider_id, str) or not provider_id:
@@ -277,9 +277,9 @@ def _safe_payload(value: object) -> object:
         clipped, truncated = _clip_content(value)
         return {"text": clipped, "truncated": True} if truncated else clipped
     if isinstance(value, dict):
-        return {str(key): _safe_payload(item) for key, item in cast(dict[object, object], value).items() if not is_sensitive_key(str(key))}
+        return {str(key): _safe_payload(item) for key, item in value.items() if not is_sensitive_key(str(key))}
     if isinstance(value, list | tuple):
-        return [_safe_payload(item) for item in cast(list[object] | tuple[object, ...], value)]
+        return [_safe_payload(item) for item in value]
     if isinstance(value, bool | int | float) or value is None:
         return value
     return str(value)
@@ -294,7 +294,7 @@ def _segment_snapshot(
     raw_data = metadata.get("data")
     safe_metadata = {key: value for key, value in metadata.items() if key not in {"data"}}
     if isinstance(raw_data, dict):
-        safe_metadata["data"] = _sanitize_debug_data(cast(dict[str, object], raw_data))
+        safe_metadata["data"] = _sanitize_debug_data(raw_data)
     return RuntimeProviderContextSegmentSnapshot(
         index=index,
         role=segment.role,
@@ -428,12 +428,12 @@ def _synthetic_tool_feedback_message_snapshots(
 def _tool_payload_json(segment: RuntimeContextSegment) -> str:
     metadata = segment.metadata or {}
     raw_data = metadata.get("data")
-    sanitized_data = _sanitize_debug_data(cast(dict[str, object], raw_data)) if isinstance(raw_data, dict) else {}
+    sanitized_data = _sanitize_debug_data(raw_data) if isinstance(raw_data, dict) else {}
     raw_arguments = sanitized_data.get("arguments")
     sanitized_arguments = (
         _provider_visible_debug_arguments(
             segment.tool_name,
-            cast(dict[str, object], raw_arguments),
+            raw_arguments,
         )
         if isinstance(raw_arguments, dict)
         else {}
@@ -460,7 +460,7 @@ def _tool_result_payload_json(result: ToolResult | ToolResultView) -> str:
     sanitized_arguments = (
         _provider_visible_debug_arguments(
             result.tool_name,
-            cast(dict[str, object], raw_arguments),
+            raw_arguments,
         )
         if isinstance(raw_arguments, dict)
         else {}
@@ -496,7 +496,7 @@ def _provider_visible_debug_arguments(
         redacted_keys=redacted_argument_keys_for_tool(tool_name),
     )
     safe = _safe_payload(stripped)
-    return cast(dict[str, object], safe) if isinstance(safe, dict) else {}
+    return safe if isinstance(safe, dict) else {}
 
 
 def _sanitize_debug_data(data: dict[str, object]) -> dict[str, object]:
@@ -698,7 +698,7 @@ def _context_window_diagnostics(
             )
         )
     continuity = context_metadata.get("projection")
-    continuity_payload = cast(dict[str, object], continuity) if isinstance(continuity, dict) else None
+    continuity_payload = continuity if isinstance(continuity, dict) else None
     if continuity_payload is not None and not continuity_payload.get("summary_text") and dropped:
         diagnostics.append(
             RuntimeProviderContextDiagnostic(

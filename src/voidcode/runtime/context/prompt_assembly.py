@@ -176,7 +176,7 @@ def _activation_key(*, activation_id: str, mode: str, intent_slot: str) -> str:
 
 
 def _mapping_value(value: object) -> dict[str, object]:
-    return dict(cast(Mapping[str, object], value)) if isinstance(value, Mapping) else {}
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _metadata_string(metadata: Mapping[str, object], key: str) -> str | None:
@@ -196,7 +196,7 @@ def _activation_records(value: object) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
     for item in value:
         if isinstance(item, Mapping):
-            record = dict(cast(Mapping[str, object], item))
+            record = dict(item)
             if isinstance(record.get("key"), str):
                 records.append(record)
     return records

@@ -4,7 +4,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from ...tools.contracts import ToolResult
 from .rules import (
@@ -388,7 +388,7 @@ def context_transform_applied_payloads(
     raw_transforms = context_metadata.get("context_transforms")
     if not isinstance(raw_transforms, Mapping):
         return ()
-    transforms = cast(Mapping[str, object], raw_transforms)
+    transforms = raw_transforms
     raw_applied = transforms.get("applied")
     if not isinstance(raw_applied, list):
         return ()
@@ -398,7 +398,7 @@ def context_transform_applied_payloads(
     for raw_trace in raw_applied:
         if not isinstance(raw_trace, Mapping):
             continue
-        trace = cast(Mapping[str, object], raw_trace)
+        trace = raw_trace
         provider_id = trace.get("provider_id")
         if provider_id == "hook_preset_guidance":
             continue

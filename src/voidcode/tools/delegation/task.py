@@ -331,7 +331,7 @@ class TaskTool:
 
         response = self._runtime.run(request)
         session = response.session
-        output = getattr(response, "output", None)
+        output = response.output
         status = session.status
         child_session = session.session
         return ToolResult(

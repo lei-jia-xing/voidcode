@@ -908,9 +908,9 @@ def _with_formatter_feedback(
     if not isinstance(raw_changes, list):
         return result
     changes: list[dict[str, object]] = []
-    for item in cast(list[object], raw_changes):
+    for item in raw_changes:
         if isinstance(item, dict):
-            changes.append(cast(dict[str, object], item))
+            changes.append(item)
     formatter_results, diagnostics = _formatter_feedback_for_changes(
         changes,
         workspace=workspace,
@@ -1269,7 +1269,7 @@ class ApplyPatchTool:
         elif isinstance(raw_expected_hashes, dict) and all(
             isinstance(key, str) and isinstance(value, str) for key, value in raw_expected_hashes.items()
         ):
-            expected_hashes = cast(dict[str, str], raw_expected_hashes)
+            expected_hashes = raw_expected_hashes
         else:
             raise ValueError("apply_patch expectedHashes must be an object mapping path strings to SHA-256 hash strings")
 

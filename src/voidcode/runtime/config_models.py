@@ -145,7 +145,7 @@ def config_model_keys(model_type: type[BaseModel]) -> frozenset[str]:
 def _validation_context_field_path(info: ValidationInfo, *, default: str) -> str:
     context = info.context
     if isinstance(context, dict):
-        field_path = cast(dict[str, object], context).get("field_path")
+        field_path = context.get("field_path")
         if isinstance(field_path, str):
             return field_path
     return default
@@ -161,7 +161,7 @@ def _config_field_source(info: ValidationInfo, field_name: str) -> str:
     base = f"runtime config field '{field_name}'"
     context = info.context
     if isinstance(context, dict):
-        config_file = cast(dict[str, object], context).get("config_file")
+        config_file = context.get("config_file")
         if isinstance(config_file, str):
             return f"{base} in {config_file}"
     return base
@@ -181,7 +181,7 @@ def _parse_string_list(raw_value: object, *, field_path: str) -> tuple[str, ...]
     if not isinstance(raw_value, list):
         raise ValueError(f"{_format_runtime_config_field_error(field_path)} must be an array when provided")
 
-    raw_items = cast(list[object], raw_value)
+    raw_items = raw_value
     parsed_items: list[str] = []
     for index, item in enumerate(raw_items):
         if not isinstance(item, str):
@@ -196,14 +196,14 @@ def _parse_command_list(raw_value: object, *, field_path: str) -> tuple[tuple[st
     if not isinstance(raw_value, list):
         raise ValueError(f"runtime config field '{field_path}' must be an array when provided")
 
-    raw_commands = cast(list[object], raw_value)
+    raw_commands = raw_value
     parsed_commands: list[tuple[str, ...]] = []
     for command_index, raw_command in enumerate(raw_commands):
         if not isinstance(raw_command, list):
             raise ValueError(f"runtime config field '{field_path}[{command_index}]' must be an array")
         command_field_path = f"{field_path}[{command_index}]"
         parsed_command = _parse_string_list(
-            cast(list[object], raw_command),
+            raw_command,
             field_path=command_field_path,
         )
         if not parsed_command:
@@ -240,7 +240,7 @@ def _parse_concurrency_map(value: object, *, field_path: str) -> dict[str, int]:
     if not isinstance(value, dict):
         raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
     parsed: dict[str, int] = {}
-    for raw_key, raw_limit in cast(dict[object, object], value).items():
+    for raw_key, raw_limit in value.items():
         if not isinstance(raw_key, str) or not raw_key.strip():
             raise ValueError(f"runtime config field '{field_path}' keys must be non-empty strings")
         parsed[raw_key] = _parse_concurrency_limit(
@@ -447,7 +447,7 @@ def validate_config_section[T: BaseModel](
         raise ValueError(shape_message or f"runtime config field '{field_path}' must be an object when provided")
     return validate_config_model(
         model_type,
-        cast(dict[str, object], raw_value),
+        raw_value,
         context={"field_path": field_path},
     )
 
@@ -571,7 +571,7 @@ class PermissionRulePayload(_PayloadModel):
         if not isinstance(payload, dict):
             return payload
         field_path = _validation_context_field_path(info, default="permission.rules")
-        raw_payload = cast(dict[str, object], payload)
+        raw_payload = payload
         if "decision" not in raw_payload:
             raise ValueError(f"runtime config field '{field_path}.decision' is required")
         parsed_decision = parse_approval_mode(
@@ -610,7 +610,7 @@ class PermissionPayload(_PayloadModel):
         if not isinstance(value, dict):
             raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
         parsed: dict[str, PermissionDecision] = {}
-        for raw_pattern, raw_decision in cast(dict[object, object], value).items():
+        for raw_pattern, raw_decision in value.items():
             if not isinstance(raw_pattern, str) or not raw_pattern.strip():
                 raise ValueError(f"runtime config field '{field_path}' keys must be non-empty strings")
             parsed_decision = parse_approval_mode(
@@ -630,7 +630,7 @@ class PermissionPayload(_PayloadModel):
         if not isinstance(value, list):
             raise ValueError("runtime config field 'permission.rules' must be an array when provided")
         parsed_rules: list[PermissionRulePayload] = []
-        for index, raw_rule in enumerate(cast(list[object], value)):
+        for index, raw_rule in enumerate(value):
             parsed_rules.append(
                 validate_config_section(
                     PermissionRulePayload,
@@ -736,7 +736,7 @@ def validate_formatter_preset_map(
     if not isinstance(raw_presets, dict):
         raise ValueError(f"runtime config field '{field_path}' must be an object when provided")
     parsed_presets: dict[str, FormatterPresetPayload] = {}
-    for preset_name, raw_preset in cast(dict[object, object], raw_presets).items():
+    for preset_name, raw_preset in raw_presets.items():
         if not isinstance(preset_name, str):
             raise ValueError(f"runtime config field '{field_path}' keys must be strings")
         parsed_presets[preset_name] = validate_config_section(
@@ -977,7 +977,7 @@ class ToolsPayload(_PayloadModel):
             return None
         if not isinstance(value, dict):
             raise ValueError("runtime config field 'tools.builtin' must be an object when provided")
-        return cast(dict[str, object], value)
+        return value
 
     @field_validator("local", mode="before")
     @classmethod
@@ -1017,7 +1017,7 @@ class AgentToolsPayload(_PayloadModel):
             return None
         if not isinstance(value, dict):
             raise ValueError("runtime config field 'agent.tools.builtin' must be an object when provided")
-        return cast(dict[str, object], value)
+        return value
 
     @field_validator("allowlist", "default", mode="before")
     @classmethod
@@ -1123,7 +1123,7 @@ class ContextWindowPayload(_PayloadModel):
         if not isinstance(value, dict):
             raise ValueError("runtime config field 'context_window.per_tool_result_chars' must be an object")
         parsed: dict[str, int] = {}
-        for raw_key, raw_limit in cast(dict[object, object], value).items():
+        for raw_key, raw_limit in value.items():
             if not isinstance(raw_key, str) or not raw_key:
                 raise ValueError("runtime config field 'context_window.per_tool_result_chars' keys must be non-empty strings")
             limit = _parse_optional_positive_int(raw_limit, field_path=f"context_window.per_tool_result_chars.{raw_key}")
@@ -1179,7 +1179,7 @@ class LspServerPayload(_PayloadModel):
         field_path = _validation_context_field_path(info, default="lsp.servers")
         if not isinstance(value, dict):
             raise ValueError(f"runtime config field '{field_path}.{info.field_name}' must be an object when provided")
-        return cast(dict[str, object], value)
+        return value
 
 
 class LspPayload(_PayloadModel):
@@ -1209,7 +1209,7 @@ class LspPayload(_PayloadModel):
         if not isinstance(value, dict):
             raise ValueError("runtime config field 'lsp.servers' must be an object when provided")
         parsed_servers: dict[str, LspServerPayload] = {}
-        for server_name, raw_server in cast(dict[object, object], value).items():
+        for server_name, raw_server in value.items():
             if not isinstance(server_name, str):
                 raise ValueError("runtime config field 'lsp.servers' keys must be strings")
             parsed_servers[server_name] = validate_config_section(
@@ -1258,7 +1258,7 @@ class McpServerPayload(_PayloadModel):
         if value is None:
             return ()
         if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
-            return cast(tuple[str, ...], value)
+            return value
         return _parse_string_list(value, field_path=f"{field_path}.command")
 
     @field_validator("env", mode="before")
@@ -1271,7 +1271,7 @@ class McpServerPayload(_PayloadModel):
             raise ValueError(f"runtime config field '{field_path}.env' must be an object")
 
         parsed_env: dict[str, str] = {}
-        for key, item in cast(dict[object, object], value).items():
+        for key, item in value.items():
             if not isinstance(key, str):
                 raise ValueError(f"runtime config field '{field_path}.env' keys must be strings")
             if not isinstance(item, str):
@@ -1344,7 +1344,7 @@ class McpPayload(_PayloadModel):
             raise ValueError("runtime config field 'mcp.servers' must be an object when provided")
 
         parsed_servers: dict[str, McpServerPayload] = {}
-        for server_name, raw_server in cast(dict[object, object], value).items():
+        for server_name, raw_server in value.items():
             if not isinstance(server_name, str):
                 raise ValueError("runtime config field 'mcp.servers' keys must be strings")
             if not isinstance(raw_server, dict):
@@ -1355,7 +1355,7 @@ class McpPayload(_PayloadModel):
             # below so a shorthand entry validates like the fully written one.
             server_payload = _merge_builtin_mcp_server_defaults(
                 server_name,
-                cast(dict[str, object], raw_server),
+                raw_server,
             )
             transport = server_payload.get("transport")
             if transport is None:
@@ -1440,7 +1440,7 @@ class TuiPreferencesPayload(_PayloadModel):
             return None
         if not isinstance(value, dict):
             raise ValueError("runtime config field 'tui.preferences.theme' must be an object when provided")
-        return cast(dict[str, object], value)
+        return value
 
     @field_validator("reading", mode="before")
     @classmethod
@@ -1449,7 +1449,7 @@ class TuiPreferencesPayload(_PayloadModel):
             return None
         if not isinstance(value, dict):
             raise ValueError("runtime config field 'tui.preferences.reading' must be an object when provided")
-        return cast(dict[str, object], value)
+        return value
 
 
 class TuiPayload(_PayloadModel):
@@ -1475,7 +1475,7 @@ class TuiPayload(_PayloadModel):
             raise ValueError("runtime config field 'tui.keymap' must be an object when provided")
 
         parsed_keymap: dict[str, str] = {}
-        for key, item in cast(dict[object, object], value).items():
+        for key, item in value.items():
             if not isinstance(key, str):
                 raise ValueError("runtime config field 'tui.keymap' keys must be strings")
             if not isinstance(item, str):
@@ -1493,7 +1493,7 @@ class TuiPayload(_PayloadModel):
             return None
         if not isinstance(value, dict):
             raise ValueError("runtime config field 'tui.preferences' must be an object when provided")
-        return cast(dict[str, object], value)
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -1557,7 +1557,7 @@ class AgentRuntimeInternalPayload(_PayloadModel):
             return None
         if not isinstance(value, dict):
             raise ValueError("runtime config field 'agent.runtime_internal.prompt_materialization' must be an object when provided")
-        return cast(dict[str, object], value)
+        return value
 
     @field_validator("manifest_tool_allowlist", "manifest_skill_refs", "manifest_hook_refs", mode="before")
     @classmethod
@@ -1668,7 +1668,7 @@ class AgentPayload(_PayloadModel):
         field_path = _validation_context_field_path(info, default="agent")
         if not isinstance(value, dict):
             raise ValueError(f"runtime config field '{field_path}.{info.field_name}' must be an object when provided")
-        return cast(dict[str, object], value)
+        return value
 
 
 class PersistedAgentPayload(AgentPayload):
@@ -1684,7 +1684,7 @@ class PersistedAgentPayload(AgentPayload):
             return None
         if not isinstance(value, dict):
             raise ValueError("runtime config field 'agent.runtime_internal' must be an object when provided")
-        return cast(dict[str, object], value)
+        return value
 
     @field_validator("execution_engine", mode="before")
     @classmethod
@@ -1822,7 +1822,7 @@ class RuntimeConfigPayload(_PayloadModel):
         if not isinstance(value, dict):
             raise ValueError("runtime config field 'agents' must be an object when provided")
         parsed: dict[str, AgentPayload] = {}
-        for raw_key, entry in cast(dict[object, object], value).items():
+        for raw_key, entry in value.items():
             if not isinstance(raw_key, str):
                 raise ValueError("runtime config field 'agents' keys must be strings")
             # A per-entry context path makes a defect report under the entry key

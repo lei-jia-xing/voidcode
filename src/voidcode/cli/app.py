@@ -6,7 +6,6 @@ import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
 
 import click
 
@@ -42,7 +41,7 @@ def _run_click_command(command: click.Command, argv: Sequence[str] | None) -> in
             prog_name="voidcode",
             standalone_mode=False,
         )
-        return EXIT_SUCCESS if result is None else cast(int, result)
+        return EXIT_SUCCESS if result is None else result
     except click.exceptions.Exit as exc:
         return exc.exit_code
     except click.ClickException as exc:

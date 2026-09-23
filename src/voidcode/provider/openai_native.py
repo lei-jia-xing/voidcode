@@ -248,7 +248,7 @@ class OpenAIChatCompletionsTransport:
         if any(name.lower() == "authorization" for name in auth_headers):
             return kwargs
         extra = kwargs.get("extra_headers")
-        merged: dict[str, object] = dict(cast(Mapping[str, object], extra)) if isinstance(extra, Mapping) else {}
+        merged: dict[str, object] = dict(extra) if isinstance(extra, Mapping) else {}
         if not any(str(name).lower() == "authorization" for name in merged):
             merged["Authorization"] = omit
             kwargs["extra_headers"] = merged
@@ -278,7 +278,7 @@ class OpenAIChatCompletionsTransport:
         payload: dict[str, object] = {}
         body = getattr(exc, "body", None)
         if isinstance(body, Mapping):
-            payload.update(cast(Mapping[str, object], body))
+            payload.update(body)
         elif isinstance(body, str) and body:
             payload["message"] = body
         response = getattr(exc, "response", None)
@@ -287,7 +287,7 @@ class OpenAIChatCompletionsTransport:
             payload["status_code"] = status_code
         headers = getattr(response, "headers", None)
         if isinstance(headers, Mapping):
-            payload.setdefault("headers", dict(cast(Mapping[str, object], headers)))
+            payload.setdefault("headers", dict(headers))
         payload.setdefault("message", str(exc))
         return payload
 
@@ -406,14 +406,14 @@ def _reasoning(message: Mapping[str, object]) -> str | None:
 
 def _parse_arguments(value: object) -> dict[str, object]:
     if isinstance(value, Mapping):
-        return dict(cast(Mapping[str, object], value))
+        return dict(value)
     if not isinstance(value, str) or not value.strip():
         return {}
     try:
         decoded = json.loads(value)
     except json.JSONDecodeError:
         return {}
-    return dict(cast(dict[str, object], decoded)) if isinstance(decoded, dict) else {}
+    return dict(decoded) if isinstance(decoded, dict) else {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -553,7 +553,7 @@ class OpenAIChatCompletionsProvider:
     def _visible_arguments(tool_name: str | None, arguments: dict[str, object]) -> dict[str, object]:
         sanitized = sanitize_tool_arguments(arguments)
         stripped = strip_redaction_sentinels(sanitized, redacted_keys=redacted_argument_keys_for_tool(tool_name))
-        return cast(dict[str, object], stripped) if isinstance(stripped, dict) else {}
+        return stripped if isinstance(stripped, dict) else {}
 
     def _messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         original_to_provider, _ = self._tool_maps(request)
@@ -601,7 +601,7 @@ class OpenAIChatCompletionsProvider:
             elif segment.role == "tool":
                 metadata = segment.metadata or {}
                 raw_data = metadata.get("data")
-                data = sanitize_tool_result_data(cast(dict[str, object], raw_data)) if isinstance(raw_data, dict) else {}
+                data = sanitize_tool_result_data(raw_data) if isinstance(raw_data, dict) else {}
                 result = {
                     "tool_name": original_to_provider.get(segment.tool_name or "", segment.tool_name),
                     "content": segment.content or "",
@@ -647,9 +647,7 @@ class OpenAIChatCompletionsProvider:
             raw_data = result.data
             sanitized_data = sanitize_tool_result_data(raw_data) if isinstance(raw_data, dict) else {}
             raw_arguments = sanitized_data.get("arguments")
-            sanitized_arguments = (
-                self._visible_arguments(result.tool_name, cast(dict[str, object], raw_arguments)) if isinstance(raw_arguments, dict) else {}
-            )
+            sanitized_arguments = self._visible_arguments(result.tool_name, raw_arguments) if isinstance(raw_arguments, dict) else {}
             payload = {
                 "tool_name": original_to_provider.get(result.tool_name, result.tool_name),
                 "arguments": sanitized_arguments,
@@ -779,8 +777,8 @@ class OpenAIChatCompletionsProvider:
                 merged: dict[str, object] = {}
                 existing = payload.get("extra_body")
                 if isinstance(existing, dict):
-                    merged.update(cast(dict[str, object], existing))
-                merged.update(cast(dict[str, object], extra_body))
+                    merged.update(existing)
+                merged.update(extra_body)
                 payload["extra_body"] = merged
             else:
                 payload.update(mapped)
@@ -800,12 +798,12 @@ class OpenAIChatCompletionsProvider:
     @staticmethod
     def _response_payload(value: object) -> dict[str, object]:
         if isinstance(value, Mapping):
-            return dict(cast(Mapping[str, object], value))
+            return dict(value)
         model_dump = getattr(value, "model_dump", None)
         if callable(model_dump):
             dumped = model_dump()
             if isinstance(dumped, Mapping):
-                return dict(cast(Mapping[str, object], dumped))
+                return dict(dumped)
         raise ValueError("provider response must be a mapping")
 
     @staticmethod
@@ -849,10 +847,10 @@ class OpenAIChatCompletionsProvider:
         for index, item in enumerate(raw_calls):
             if not isinstance(item, Mapping) or not isinstance(item.get("function"), Mapping):
                 continue
-            function = cast(Mapping[str, object], item["function"])
+            function = item["function"]
             if not isinstance(function.get("name"), str):
                 continue
-            provider_name = cast(str, function["name"])
+            provider_name = function["name"]
             runtime_name = reverse.get(provider_name, provider_name)
             explicit_id = item.get("id") if isinstance(item.get("id"), str) else None
             fallback = f"{runtime_name}_{index + 1}" if len(raw_calls) > 1 else runtime_name
@@ -878,9 +876,9 @@ class OpenAIChatCompletionsProvider:
             choices = response_payload.get("choices")
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
                 return ProviderTurnResult(output="", usage=usage, metadata=metadata)
-            choice = cast(Mapping[str, object], choices[0])
+            choice = choices[0]
             message = choice.get("message")
-            message_mapping = cast(Mapping[str, object], message) if isinstance(message, Mapping) else {}
+            message_mapping = message if isinstance(message, Mapping) else {}
             content = message_mapping.get("content")
             raw_finish_reason = choice.get("finish_reason")
             done_reason = _done_reason(raw_finish_reason)
@@ -922,7 +920,7 @@ class OpenAIChatCompletionsProvider:
             raw_finish_reason_token: str | None = None
             accumulators: dict[int, _ToolAccumulator] = {}
             for raw_chunk in _iter_stream_with_timeout(
-                cast(Iterator[object], stream),
+                stream,
                 timeout_seconds=self._timeout(),
                 provider_name=provider_name,
                 model_name=model_name,
@@ -939,7 +937,7 @@ class OpenAIChatCompletionsProvider:
                 choices = chunk.get("choices")
                 if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
                     continue
-                choice = cast(Mapping[str, object], choices[0])
+                choice = choices[0]
                 raw_finish_reason = choice.get("finish_reason")
                 if isinstance(raw_finish_reason, str) and raw_finish_reason.strip():
                     finish_reason_reported = True
@@ -970,9 +968,9 @@ class OpenAIChatCompletionsProvider:
                     fragment: str | None = None
                     if isinstance(function, Mapping):
                         if isinstance(function.get("name"), str):
-                            name = cast(str, function["name"])
+                            name = function["name"]
                         if isinstance(function.get("arguments"), str):
-                            fragment = cast(str, function["arguments"])
+                            fragment = function["arguments"]
                     complete_first = False
                     if fragment and not previous.fragments:
                         try:
@@ -1033,7 +1031,7 @@ class OpenAIChatCompletionsProvider:
                     details={"tool_name": accumulator.tool_name, "tool_call_id": accumulator.tool_call_id},
                 )
             runtime_name = reverse.get(accumulator.tool_name, accumulator.tool_name)
-            completed.append((index, accumulator, cast(dict[str, object], parsed), runtime_name))
+            completed.append((index, accumulator, parsed, runtime_name))
         if raw_finish_reason_token is not None:
             _raise_finish_reason_error(raw_finish_reason_token, provider_name=provider_name, model_name=model_name)
         if any(accumulator.explicit_streaming for _index, accumulator, _parsed, _name in completed):

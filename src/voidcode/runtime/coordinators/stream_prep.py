@@ -284,10 +284,9 @@ class StreamPrepCoordinator:
         """Passively remembered MCP surface for the configured servers."""
         if self._mcp_manager is None:
             return McpCachedToolSurface()
-        cached_surface = getattr(self._mcp_manager, "cached_surface", None)
-        if cached_surface is None or self._mcp_manager.current_state().mode != "managed":
+        if self._mcp_manager.current_state().mode != "managed":
             return McpCachedToolSurface()
-        return cached_surface(workspace=self._workspace, owner_session_id=owner_session_id)
+        return self._mcp_manager.cached_surface(workspace=self._workspace, owner_session_id=owner_session_id)
 
     @staticmethod
     def is_background_child_mcp_deferred(

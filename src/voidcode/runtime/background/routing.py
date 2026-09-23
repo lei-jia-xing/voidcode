@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from ..config import RuntimeAgentConfig, RuntimeProviderFallbackConfig
@@ -135,7 +135,7 @@ def parse_subagent_routing_identity(metadata: object) -> SubagentRoutingIdentity
     if not isinstance(metadata, Mapping):
         raise ValueError("delegation metadata must be an object")
 
-    routing_items = cast(dict[object, object], metadata)
+    routing_items = metadata
     non_string_keys = sorted(repr(key) for key in routing_items if not isinstance(key, str))
     if non_string_keys:
         joined = ", ".join(non_string_keys)

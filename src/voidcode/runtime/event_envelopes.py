@@ -45,7 +45,7 @@ def envelopes_for_lsp_events(
     sequence = start_sequence
     for raw_event in lsp_events:
         if isinstance(raw_event, dict):
-            raw_event_dict = cast(dict[str, object], raw_event)
+            raw_event_dict = raw_event
             event_type = raw_event_dict.get("event_type")
             payload = raw_event_dict.get("payload")
         else:
@@ -57,9 +57,9 @@ def envelopes_for_lsp_events(
             EventEnvelope(
                 session_id=session_id,
                 sequence=sequence,
-                event_type=cast(str, event_type),
+                event_type=event_type,
                 source="runtime",
-                payload=cast(dict[str, object], payload),
+                payload=payload,
             )
         )
         sequence += 1
@@ -80,14 +80,14 @@ def envelopes_for_acp_events(
         acp_parent_session_id: str | None = None
         acp_delegation: AcpDelegatedExecution | None = None
         if isinstance(raw_event, dict):
-            raw_event_dict = cast(dict[str, object], raw_event)
+            raw_event_dict = raw_event
             event_type = raw_event_dict.get("event_type")
             payload = raw_event_dict.get("payload")
         else:
             event_type = getattr(raw_event, "event_type", None)
             payload = getattr(raw_event, "payload", None)
-            acp_session_id = cast(str | None, getattr(raw_event, "session_id", None))
-            acp_parent_session_id = cast(str | None, getattr(raw_event, "parent_session_id", None))
+            acp_session_id = getattr(raw_event, "session_id", None)
+            acp_parent_session_id = getattr(raw_event, "parent_session_id", None)
             acp_delegation = cast(
                 AcpDelegatedExecution | None,
                 getattr(raw_event, "delegation", None),
@@ -98,7 +98,7 @@ def envelopes_for_acp_events(
             EventEnvelope(
                 session_id=session_id,
                 sequence=sequence,
-                event_type=cast(str, event_type),
+                event_type=event_type,
                 source="runtime",
                 payload={
                     **cast(dict[str, object], payload),
@@ -132,7 +132,7 @@ def envelopes_for_mcp_events(
     sequence = start_sequence
     for raw_event in mcp_events:
         if isinstance(raw_event, dict):
-            raw_event_dict = cast(dict[str, object], raw_event)
+            raw_event_dict = raw_event
             event_type = raw_event_dict.get("event_type")
             payload = raw_event_dict.get("payload")
         else:
@@ -144,9 +144,9 @@ def envelopes_for_mcp_events(
             EventEnvelope(
                 session_id=session_id,
                 sequence=sequence,
-                event_type=cast(str, event_type),
+                event_type=event_type,
                 source="runtime",
-                payload=cast(dict[str, object], payload),
+                payload=payload,
             )
         )
         sequence += 1
