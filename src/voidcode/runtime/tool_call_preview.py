@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from ..security.path_policy import resolve_workspace_path
+from ..tools._repair import ToolDiagnosticError
 
 # A preview is an observation for the live stream, not a second write path. Keep
 # both the workspace read and the client projection bounded independently.
@@ -361,8 +362,7 @@ def _preview_patch(
             _validate_unified_patch_paths(patch, workspace=workspace)
             changes = _changes_from_patch(patch)
     except Exception as exc:
-        error_details = getattr(exc, "error_details", {})
-        reason = error_details.get("reason") if isinstance(error_details, Mapping) else None
+        reason = exc.error_details.get("reason") if isinstance(exc, ToolDiagnosticError) else None
         if reason == "unsafe_patch_path":
             return _degraded(tool_name="apply_patch", reason="unsafe_path", phase=phase)
         if reason == "malformed_patch_path":

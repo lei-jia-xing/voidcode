@@ -1580,8 +1580,7 @@ class RuntimeResumeCoordinator:
             session_id=session_id,
             approval_request_id=approval_request_id,
         )
-        claim = getattr(self._session_store, "claim_pending_approval", None)
-        if callable(claim) and not claim(
+        if not self._session_store.claim_pending_approval(
             workspace=self._workspace,
             session_id=session_id,
             request_id=approval_request_id,

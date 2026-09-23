@@ -99,6 +99,8 @@ class _StubStep:
         self.is_finished = is_finished
         self.tool_call = tool_call
         self.reasoning: str | None = None
+        self.provider_usage: object | None = None
+        self.events: tuple[object, ...] = ()
 
 
 def _wait_for_terminal(runtime: VoidCodeRuntime, task_id: str, *, timeout: float = 5.0) -> BackgroundTaskState:

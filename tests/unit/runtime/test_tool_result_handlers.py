@@ -30,6 +30,8 @@ class _Step:
     output: str | None = None
     is_finished: bool = False
     reasoning: str | None = None
+    provider_usage: object | None = None
+    events: tuple[object, ...] = ()
 
 
 class _ObserveGraph:

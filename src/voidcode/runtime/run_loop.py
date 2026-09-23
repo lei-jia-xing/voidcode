@@ -272,7 +272,7 @@ def _finalized_step_session(
     """
     session = session_with_provider_usage_metadata(
         session,
-        getattr(graph_step, "provider_usage", None),
+        graph_step.provider_usage,
     )
     if provider_retry_attempt_from_metadata(session.metadata) != 0:
         session = SessionState(
@@ -292,8 +292,7 @@ def _replayed_conversation_segments(
     request: GraphRunRequest,
 ) -> tuple[RuntimeContextSegment, ...]:
     assembled_context = request.assembled_context
-    segments = getattr(assembled_context, "segments", ())
-    return replayed_conversation_segments_from_segments(segments)
+    return replayed_conversation_segments_from_segments(assembled_context.segments)
 
 
 def _graph_request_without_provider_attempt(
@@ -1765,7 +1764,7 @@ class RuntimeRunLoopCoordinator:
             "graph.tool_call_delta",
             "graph.tool_call_end",
         }
-        step_events = tuple(event for event in getattr(graph_step, "events", ()) if event.event_type not in live_only_event_types)
+        step_events = tuple(event for event in graph_step.events if event.event_type not in live_only_event_types)
         renumbered_events = renumber_events(
             step_events,
             session_id=session.session.id,
@@ -1803,7 +1802,7 @@ class RuntimeRunLoopCoordinator:
                 payload=reasoning_diagnostic,
             )
             yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-        if getattr(graph_step, "output", None) is not None:
+        if graph_step.output is not None:
             yield RuntimeStreamChunk(
                 kind="output",
                 session=session,
@@ -2182,7 +2181,7 @@ class RuntimeRunLoopCoordinator:
         provider_attempt: int,
         tool_results: list[ToolResult],
     ) -> Generator[RuntimeStreamChunk, None, tuple[bool, SessionState, SessionState, int, bool]]:
-        is_final_step = getattr(graph_step, "is_finished", False) or getattr(graph_step, "output", None) is not None
+        is_final_step = graph_step.is_finished or graph_step.output is not None
         # New delegated children must finish through the terminal ``yield``
         # tool. Keep-alive turns are the only exception: they park as
         # resumable ``interrupted`` sessions without a terminal yield.
@@ -2701,7 +2700,7 @@ class RuntimeRunLoopCoordinator:
         is_resume: bool = False,
     ) -> Generator[RuntimeStreamChunk, None, tuple[ToolCall, Tool, str, int, ToolInputHookOutcome]]:
         runtime = self._surface
-        plan_tool_call = getattr(graph_step, "tool_call", None)
+        plan_tool_call = graph_step.tool_call
         if plan_tool_call is None:
             failed_chunk, _ = self._persist_chunk(
                 chunk_builders.failed_chunk(

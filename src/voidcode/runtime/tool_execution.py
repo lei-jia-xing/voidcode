@@ -371,7 +371,7 @@ class RuntimeToolExecutor:
                 item = progress_queue.get(timeout=poll_timeout)
             except queue.Empty:
                 if invocation.context.abort_signal is not None and invocation.context.abort_signal.cancelled:
-                    reason = getattr(invocation.context.abort_signal, "reason", None)
+                    reason = invocation.context.abort_signal.reason
                     terminal_item = _ToolExceptionItem(RuntimeError(reason if isinstance(reason, str) else "run interrupted"))
                     break
                 if runtime_timeout is not None and time.monotonic() >= deadline:

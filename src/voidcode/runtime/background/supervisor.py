@@ -2169,13 +2169,11 @@ class RuntimeBackgroundTaskSupervisor:
                 f"type={progress.get('type', 'progress')}. "
                 f"{result_text if isinstance(result_text, str) else 'Structured progress is available via task(operation="output").'}"
             )
-            queue_progress = getattr(self._surface, "queue_progress_interaction", None)
-            if callable(queue_progress):
-                queue_progress(
-                    parent_session_id,
-                    message[:4_096],
-                    dedupe_key=f"background-task-progress:{task.task.id}:{child_event.sequence}",
-                )
+            self._surface.queue_progress_interaction(
+                parent_session_id,
+                message[:4_096],
+                dedupe_key=f"background-task-progress:{task.task.id}:{child_event.sequence}",
+            )
         except UnknownSessionError, SessionSealedError, ValueError:
             logger.debug("dropping incremental background progress for unavailable parent: %s", parent_session_id)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
+from ...provider.protocol import ProviderContextSegmentLike
 from ..events import EventEnvelope
 from ..session_metadata_helpers import parse_runtime_state_metadata
 from .window import RuntimeContextSegment
@@ -131,7 +132,7 @@ def replayed_conversation_segments_from_events(
 
 
 def replayed_conversation_segments_from_segments(
-    segments: Iterable[object],
+    segments: Iterable[ProviderContextSegmentLike],
 ) -> tuple[RuntimeContextSegment, ...]:
     """Retain provider-context segments belonging to replayed conversation history.
 
@@ -140,24 +141,24 @@ def replayed_conversation_segments_from_segments(
     """
     replayed: list[RuntimeContextSegment] = []
     for segment in segments:
-        metadata = getattr(segment, "metadata", None)
+        metadata = segment.metadata
         if not isinstance(metadata, dict):
             continue
         if metadata.get("source") != "replayed_conversation":
             continue
-        content = getattr(segment, "content", None)
+        content = segment.content
         if content is not None and not isinstance(content, str):
             continue
-        role = getattr(segment, "role", None)
+        role = segment.role
         if role not in {"system", "user", "assistant", "tool"}:
             continue
         replayed.append(
             RuntimeContextSegment(
                 role=role,
                 content=content,
-                tool_call_id=getattr(segment, "tool_call_id", None),
-                tool_name=getattr(segment, "tool_name", None),
-                tool_arguments=getattr(segment, "tool_arguments", None),
+                tool_call_id=segment.tool_call_id,
+                tool_name=segment.tool_name,
+                tool_arguments=segment.tool_arguments,
                 metadata=dict(metadata),
             )
         )

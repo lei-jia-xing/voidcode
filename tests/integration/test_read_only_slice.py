@@ -335,6 +335,7 @@ class _GraphStep:
     output: str | None = None
     is_finished: bool = False
     reasoning: str | None = None
+    provider_usage: object | None = None
 
 
 class _NoopMcpManager:
@@ -1558,6 +1559,12 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
 
         def list_sessions(self, *, workspace: Path) -> tuple[object, ...]:
             return base_store.list_sessions(workspace=workspace)
+
+        def list_background_tasks_by_parent_session(self, *, workspace: Path, parent_session_id: str) -> tuple[object, ...]:
+            return base_store.list_background_tasks_by_parent_session(workspace=workspace, parent_session_id=parent_session_id)
+
+        def claim_pending_approval(self, *, workspace: Path, session_id: str, request_id: str) -> bool:
+            return base_store.claim_pending_approval(workspace=workspace, session_id=session_id, request_id=request_id)
 
         def list_background_processes(self, *, workspace: Path) -> tuple[dict[str, object], ...]:
             return base_store.list_background_processes(workspace=workspace)

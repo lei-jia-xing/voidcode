@@ -55,6 +55,7 @@ class _GraphStep:
         self.output = output
         self.is_finished = is_finished
         self.reasoning: str | None = None
+        self.provider_usage: object | None = None
 
 
 class _SingleToolGraph:

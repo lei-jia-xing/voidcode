@@ -19,6 +19,7 @@ class _Step:
     events: tuple[GraphEvent, ...] = ()
     is_finished: bool = False
     reasoning: str | None = None
+    provider_usage: object | None = None
 
 
 class _QuestionThenWriteGraph:

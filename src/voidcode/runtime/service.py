@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
+from collections.abc import Generator, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -3630,11 +3630,8 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         if pending is None:
             return False
-        reconcile = getattr(self._session_store, "reconcile_resolved_approval", None)
-        if not callable(reconcile):
-            return False
         return bool(
-            reconcile(
+            self._session_store.reconcile_resolved_approval(
                 workspace=self._workspace,
                 session_id=session_id,
                 request_id=pending.request_id,
@@ -3671,34 +3668,25 @@ class VoidCodeRuntime(RuntimeSurface):
             if request_kind == "approval"
             else "question answer must target the child session that owns the question request"
         )
-        list_by_parent = cast(
-            Callable[..., tuple[StoredBackgroundTaskSummary, ...]] | None,
-            getattr(
-                self._session_store,
-                "list_background_tasks_by_parent_session",
-                None,
-            ),
-        )
-        if callable(list_by_parent):
-            for task_summary in list_by_parent(
+        for task_summary in self._session_store.list_background_tasks_by_parent_session(
+            workspace=self._workspace,
+            parent_session_id=session_id,
+        ):
+            task = self._session_store.load_background_task(
                 workspace=self._workspace,
-                parent_session_id=session_id,
-            ):
-                task = self._session_store.load_background_task(
-                    workspace=self._workspace,
-                    task_id=task_summary.task.id,
+                task_id=task_summary.task.id,
+            )
+            child_response = self._background_task_supervisor.load_background_task_child_response(task=task)
+            owned_request_id = (
+                self._waiting_request_id_from_response(
+                    child_response,
+                    request_kind=request_kind,
                 )
-                child_response = self._background_task_supervisor.load_background_task_child_response(task=task)
-                owned_request_id = (
-                    self._waiting_request_id_from_response(
-                        child_response,
-                        request_kind=request_kind,
-                    )
-                    if child_response is not None
-                    else (task.approval_request_id if request_kind == "approval" else task.question_request_id)
-                )
-                if owned_request_id == request_id:
-                    raise ValueError(wrong_target_error)
+                if child_response is not None
+                else (task.approval_request_id if request_kind == "approval" else task.question_request_id)
+            )
+            if owned_request_id == request_id:
+                raise ValueError(wrong_target_error)
 
     def answer_question(
         self,

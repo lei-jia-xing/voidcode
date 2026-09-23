@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from ..agent.models import AgentManifest
 from .background.routing import CALLABLE_SUBAGENT_PRESETS
 from .config import RuntimeAgentConfig
 from .session_metadata_helpers import parse_delegation_metadata
@@ -59,16 +60,15 @@ def validate_agent_capability_snapshot(
 
 def agent_capability_agent_snapshot(
     agent: RuntimeAgentConfig | None,
-    manifest: object | None,
+    manifest: AgentManifest | None,
 ) -> dict[str, object]:
     if agent is None:
         return {"preset": None}
     internal = agent.runtime_internal
-    manifest_id = getattr(manifest, "id", None)
     return {
         "preset": agent.preset,
-        "manifest_id": manifest_id if isinstance(manifest_id, str) else None,
-        "mode": getattr(manifest, "mode", None),
+        "manifest_id": manifest.id if manifest is not None else None,
+        "mode": manifest.mode if manifest is not None else None,
         "source": "manifest" if manifest is not None else "runtime_config",
         "source_scope": internal.manifest_source_scope if internal is not None else None,
         "source_path": internal.manifest_source_path if internal is not None else None,
@@ -77,7 +77,7 @@ def agent_capability_agent_snapshot(
 
 def agent_capability_prompt_snapshot(
     agent: RuntimeAgentConfig | None,
-    manifest: object | None,
+    manifest: AgentManifest | None,
     runtime_config_payload: dict[str, object],
 ) -> dict[str, object]:
     internal = agent.runtime_internal if agent is not None else None
@@ -94,7 +94,7 @@ def agent_capability_prompt_snapshot(
             if isinstance(raw_materialization, dict):
                 prompt["materialization"] = cast(dict[str, object], raw_materialization)
     if "materialization" not in prompt and manifest is not None:
-        materialization = getattr(manifest, "prompt_materialization", None)
+        materialization = manifest.prompt_materialization
         if materialization is not None:
             materialization_profile = agent.prompt_profile if agent is not None else None
             prompt["materialization"] = materialization.to_payload(profile=materialization_profile)
@@ -156,9 +156,9 @@ def agent_capability_delegation_snapshot(
 
 def agent_mcp_binding_payload(
     agent: RuntimeAgentConfig | None,
-    manifest: object | None,
+    manifest: AgentManifest | None,
 ) -> dict[str, object]:
     binding = agent.mcp_binding if agent is not None else None
     if binding is None and manifest is not None:
-        binding = getattr(manifest, "mcp_binding", None)
+        binding = manifest.mcp_binding
     return binding.to_payload() if binding is not None else {}

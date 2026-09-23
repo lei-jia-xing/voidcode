@@ -72,6 +72,8 @@ class _StubStep:
     output: str | None = None
     is_finished: bool = False
     reasoning: str | None = None
+    provider_usage: object | None = None
+    events: tuple[object, ...] = ()
 
 
 def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session") -> RuntimeRequest:

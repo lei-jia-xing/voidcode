@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Annotated, Final, Literal, Protocol, TypedDict, runtime_checkable
 
-from ..provider.protocol import ProviderAbortSignal, ProviderAssembledContext, ProviderContextWindow
+from ..provider.protocol import ProviderAbortSignal, ProviderAssembledContext, ProviderContextWindow, ProviderTokenUsage
 from ..runtime.context.window import ToolResultView
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -95,6 +95,9 @@ class GraphStep(Protocol):
 
     @property
     def reasoning(self) -> str | None: ...
+
+    @property
+    def provider_usage(self) -> ProviderTokenUsage | None: ...
 
 
 type GraphStreamItem = GraphEvent | GraphStep

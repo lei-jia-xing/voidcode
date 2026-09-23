@@ -17,6 +17,8 @@ from ..runtime.contracts import (
     RuntimeStreamChunk,
     validate_runtime_request_metadata,
 )
+from ..runtime.events import EventEnvelope
+from ..runtime.session import SessionState
 from ..runtime.session_metadata_helpers import runtime_state_run_id
 
 JSON_RPC_VERSION = "2.0"
@@ -256,11 +258,11 @@ class StdioAcpServer:
                     binding.runtime_session_id = chunk.session.session.id
                 if binding.active_run_id is None:
                     binding.active_run_id = _session_run_id(chunk.session)
-                final_session_status = getattr(chunk.session, "status", None)
+                final_session_status = chunk.session.status
                 if chunk.event is not None:
-                    if _optional_attr(chunk.event, "event_type") == "runtime.failed":
+                    if chunk.event.event_type == "runtime.failed":
                         failed_execution = True
-                        failure_message = _runtime_failure_summary(_mapping_attr(chunk.event, "payload"))
+                        failure_message = _runtime_failure_summary(chunk.event.payload)
                     self._write_runtime_event_update(
                         acp_session_id=acp_session_id,
                         runtime_session_id=chunk.session.session.id,
@@ -338,13 +340,13 @@ class StdioAcpServer:
         acp_session_id: str,
         runtime_session_id: str,
         binding: AcpSessionBinding,
-        event: object,
+        event: EventEnvelope,
     ) -> None:
-        event_type = _optional_attr(event, "event_type")
-        payload = _mapping_attr(event, "payload")
+        event_type = event.event_type
+        payload = event.payload
         if event_type == "graph.tool_request_created":
             tool_name = _string_payload(payload, "tool", default="tool")
-            tool_call_id = f"{runtime_session_id}:{tool_name}:{_optional_attr(event, 'sequence')}"
+            tool_call_id = f"{runtime_session_id}:{tool_name}:{event.sequence}"
             binding.tool_call_ids_by_tool[tool_name] = tool_call_id
             self._write_session_update(
                 acp_session_id,
@@ -482,29 +484,18 @@ def _validate_prompt_length(prompt: str) -> str:
     return prompt
 
 
-def _event_payload(event: object) -> JsonObject:
+def _event_payload(event: EventEnvelope) -> JsonObject:
     return {
-        "sessionId": _optional_attr(event, "session_id"),
-        "sequence": _optional_attr(event, "sequence"),
-        "type": _optional_attr(event, "event_type"),
-        "source": _optional_attr(event, "source"),
-        "payload": _mapping_attr(event, "payload"),
+        "sessionId": event.session_id,
+        "sequence": event.sequence,
+        "type": event.event_type,
+        "source": event.source,
+        "payload": event.payload,
     }
 
 
-def _optional_attr(value: object, name: str) -> object:
-    return getattr(value, name, None)
-
-
-def _mapping_attr(value: object, name: str) -> JsonObject:
-    raw = getattr(value, name, {})
-    if isinstance(raw, dict):
-        return raw
-    return {}
-
-
-def _session_run_id(session: object) -> str | None:
-    metadata = _mapping_attr(session, "metadata")
+def _session_run_id(session: SessionState) -> str | None:
+    metadata = session.metadata
     run_id = runtime_state_run_id(metadata)
     return run_id if run_id else None
 

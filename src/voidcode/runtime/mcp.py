@@ -1472,14 +1472,8 @@ def release_mcp_session_events(
     session_id: str,
     start_sequence: int,
 ) -> tuple[EventEnvelope, ...]:
-    release_session = getattr(mcp_manager, "release_session", None)
-    if release_session is None:
-        return ()
     return envelopes_for_mcp_events(
         session_id=session_id,
         start_sequence=start_sequence,
-        mcp_events=cast(
-            tuple[object, ...],
-            release_session(session_id=session_id),
-        ),
+        mcp_events=mcp_manager.release_session(session_id=session_id),
     )

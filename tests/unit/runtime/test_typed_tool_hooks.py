@@ -24,6 +24,7 @@ class _Step:
     is_finished: bool = False
     events: tuple[GraphEvent, ...] = ()
     reasoning: str | None = None
+    provider_usage: object | None = None
 
 
 class _OneToolGraph:

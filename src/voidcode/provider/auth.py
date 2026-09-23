@@ -10,7 +10,10 @@ from .config import (
     GoogleProviderConfig,
     OpenAICompatibleProviderConfig,
     ProviderConfigs,
+    ProviderConfigsPayload,
     ProviderEndpointConfig,
+    _OpenAICompatibleProviderConfigPayload,
+    _ProviderEndpointConfigPayload,
 )
 from .naming import canonical_provider_id
 
@@ -121,6 +124,23 @@ _ENDPOINT_AUTH_METHODS: tuple[ProviderAuthMethod, ...] = (
 _OPENAI_COMPATIBLE_AUTH_METHODS: tuple[ProviderAuthMethod, ...] = (ProviderAuthMethod(id="api_key", label="API Key"),)
 
 
+def _provider_id_field_map(payload_type: type) -> Mapping[str, str]:
+    """Canonical provider id -> payload/``ProviderConfigs`` field name for one payload shape."""
+    return {
+        canonical_provider_id(model_field.validation_alias if isinstance(model_field.validation_alias, str) else field_name): field_name
+        for field_name, model_field in ProviderConfigsPayload.model_fields.items()
+        if model_field.annotation == (payload_type | None)
+    }
+
+
+#: Endpoint-shaped built-ins: canonical provider id -> ``ProviderConfigs`` field.
+ENDPOINT_SHAPED_BUILTIN_FIELDS: Mapping[str, str] = _provider_id_field_map(_ProviderEndpointConfigPayload)
+ENDPOINT_SHAPED_BUILTIN_IDS: frozenset[str] = frozenset(ENDPOINT_SHAPED_BUILTIN_FIELDS)
+
+#: OpenAI-compatible built-ins: canonical provider id -> ``ProviderConfigs`` field.
+OPENAI_COMPATIBLE_BUILTIN_FIELDS: Mapping[str, str] = _provider_id_field_map(_OpenAICompatibleProviderConfigPayload)
+
+
 class ProviderAuthResolver:
     def __init__(
         self,
@@ -135,6 +155,19 @@ class ProviderAuthResolver:
     def _custom_provider_config(self, provider: str) -> ProviderEndpointConfig | None:
         return self._providers.custom.get(provider)
 
+    def _endpoint_provider_config(self, provider: str) -> ProviderEndpointConfig | None:
+        """Config for the endpoint-shaped built-ins, by provider id.
+
+        ``None`` means "not one of these provider ids": an endpoint-shaped
+        built-in whose config block is absent still answers here, with an empty
+        config, so it is reported as missing credentials instead of falling
+        through to the custom-provider branch.
+        """
+        field_name = ENDPOINT_SHAPED_BUILTIN_FIELDS.get(provider)
+        if field_name is None:
+            return None
+        return getattr(self._providers, field_name) or ProviderEndpointConfig()
+
     def _openai_compatible_provider_config(self, provider: str) -> OpenAICompatibleProviderConfig | None:
         """Config for a known OpenAI-compatible provider, empty when unconfigured.
 
@@ -142,23 +175,10 @@ class ProviderAuthResolver:
         config block is absent still answers here, with an empty config, so it is
         reported as missing credentials instead of as an unsupported provider.
         """
-        provider_map = {
-            "deepseek": self._providers.deepseek,
-            "zai": self._providers.zai,
-            "zhipuai": self._providers.zhipuai,
-            "grok": self._providers.grok,
-            "minimax": self._providers.minimax,
-            "kimi": self._providers.kimi,
-            "opencode-go": self._providers.opencode_go,
-            "qwen": self._providers.qwen,
-            "groq": self._providers.groq,
-            "together": self._providers.together,
-            "fireworks": self._providers.fireworks,
-            "mistral": self._providers.mistral,
-        }
-        if provider not in provider_map:
+        field_name = OPENAI_COMPATIBLE_BUILTIN_FIELDS.get(provider)
+        if field_name is None:
             return None
-        return provider_map[provider] or OpenAICompatibleProviderConfig()
+        return getattr(self._providers, field_name) or OpenAICompatibleProviderConfig()
 
     def methods(self, provider: ProviderAuthProvider) -> ProviderAuthMethodsResponse:
         provider = canonical_provider_id(provider)
@@ -192,27 +212,23 @@ class ProviderAuthResolver:
                 methods=_COPILOT_METHODS,
                 default_method=configured or "token",
             )
-        if provider in {"endpoint", "opencode", "openrouter"}:
-            configured = getattr(self._providers, provider)
+        endpoint_config = self._endpoint_provider_config(provider)
+        if endpoint_config is not None:
             default_method = "none"
-            if configured is not None and configured.auth_scheme == "none":
+            if endpoint_config.auth_scheme == "none":
                 default_method = "none"
-            elif configured is not None and configured.api_key is not None:
+            elif endpoint_config.api_key is not None:
                 default_method = "api_key"
             return ProviderAuthMethodsResponse(
                 provider=provider,
                 methods=_ENDPOINT_AUTH_METHODS,
                 default_method=default_method,
             )
-        compatible_config = self._openai_compatible_provider_config(provider)
-        if compatible_config is not None:
-            default_method = "api_key"
-            if compatible_config.api_key is not None:
-                default_method = "api_key"
+        if self._openai_compatible_provider_config(provider) is not None:
             return ProviderAuthMethodsResponse(
                 provider=provider,
                 methods=_OPENAI_COMPATIBLE_AUTH_METHODS,
-                default_method=default_method,
+                default_method="api_key",
             )
         custom_config = self._custom_provider_config(provider)
         if custom_config is not None:
@@ -242,11 +258,12 @@ class ProviderAuthResolver:
             return self._authorize_google(request)
         if request.provider == "copilot":
             return self._authorize_copilot(request)
-        if request.provider in {"endpoint", "opencode", "openrouter"}:
+        endpoint_config = self._endpoint_provider_config(request.provider)
+        if endpoint_config is not None:
             return self._authorize_endpoint_compatible(
                 request=request,
                 provider_name=request.provider,
-                provider_config=getattr(self._providers, request.provider),
+                provider_config=endpoint_config,
             )
         compatible_config = self._openai_compatible_provider_config(request.provider)
         if compatible_config is not None:

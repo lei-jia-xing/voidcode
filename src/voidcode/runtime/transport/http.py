@@ -171,13 +171,10 @@ _SESSION_EVENT_FOLLOW_POLL_SECONDS = 1.0
 _STREAM_WORKER_JOIN_SECONDS = 0.05
 
 
-async def _aclose_async_iterator(iterator: AsyncIterator[object]) -> None:
+async def _aclose_async_iterator(iterator: AsyncGenerator[object]) -> None:
     """Close an async generator that a response owns, swallowing teardown noise."""
-    aclose = getattr(iterator, "aclose", None)
-    if aclose is None:
-        return
     with suppress(BaseException):
-        await aclose()
+        await iterator.aclose()
 
 
 def _chunk_reports_failure(chunk: RuntimeStreamChunk) -> bool:
@@ -1055,7 +1052,7 @@ class RuntimeTransportApp(FastAPI):
 
     async def _run_stream_frames(
         self,
-        stream: AsyncIterator[RuntimeStreamChunk],
+        stream: AsyncGenerator[RuntimeStreamChunk],
         first_chunk: RuntimeStreamChunk,
         *,
         completion: StreamCompletion,

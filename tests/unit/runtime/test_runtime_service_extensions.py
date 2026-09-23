@@ -198,6 +198,10 @@ class _NoopMcpManager:
     def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
         return ()
 
+    def release_session(self, *, session_id: str) -> tuple[McpRuntimeEvent, ...]:
+        _ = session_id
+        return ()
+
     def retry_connections(self, *, workspace: Path) -> None:
         _ = workspace
 
@@ -225,6 +229,7 @@ class _StubStep:
     events: tuple[EventEnvelope, ...] = ()
     is_finished: bool = False
     reasoning: str | None = None
+    provider_usage: object | None = None
 
 
 class _SkillCapturingStubGraph:

@@ -28,6 +28,8 @@ class WorkspaceRuntimeHandle(Protocol):
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None: ...
+
 
 class WorkspaceRuntimeFactory(Protocol):
     def __call__(self, workspace: Path) -> WorkspaceRuntimeHandle: ...
@@ -94,9 +96,7 @@ class WorkspaceRuntimeCoordinator:
             self._runtime = None
         if runtime is None:
             return
-        exit_method = getattr(runtime, "__exit__", None)
-        if callable(exit_method):
-            exit_method(None, None, None)
+        runtime.__exit__(None, None, None)
 
     @contextmanager
     def active_request(self) -> Iterator[None]:
@@ -134,9 +134,7 @@ class WorkspaceRuntimeCoordinator:
             self._current_workspace = candidate
             self._remember_workspace_locked(candidate)
         if previous_runtime is not None:
-            exit_method = getattr(previous_runtime, "__exit__", None)
-            if callable(exit_method):
-                exit_method(None, None, None)
+            previous_runtime.__exit__(None, None, None)
         return self.snapshot()
 
     def _assert_idle_locked(self) -> None:

@@ -108,6 +108,19 @@ class ExecutionLease:
             self._revocation_reason = reason
 
 
+class _ThreadBinding(threading.local):
+    """Per-thread lease slot.
+
+    A plain ``threading.local`` carries no declared attributes, so reading the
+    bound lease would need a ``getattr`` probe; the typed subclass declares the
+    slot instead. ``__init__`` runs per thread, so an unbound thread reads
+    ``None`` exactly as the probe's default did.
+    """
+
+    def __init__(self) -> None:
+        self.lease: ExecutionLease | None = None
+
+
 def _lease_key(*, workspace: Path, task_id: str) -> tuple[str, str]:
     return (str(workspace), task_id)
 
@@ -125,7 +138,7 @@ class ExecutionOwnershipRegistry:
         self._current: dict[tuple[str, str], ExecutionLease] = {}
         self._generations: dict[tuple[str, str], int] = {}
         self._late_writes: OrderedDict[tuple[str, int, str, str], LateWriteDiagnostic] = OrderedDict()
-        self._thread_binding = threading.local()
+        self._thread_binding = _ThreadBinding()
 
     # ------------------------------------------------------------------ #
     # Issuance / revocation (supervisor control plane)
@@ -255,8 +268,7 @@ class ExecutionOwnershipRegistry:
 
     def bound_lease(self) -> ExecutionLease | None:
         """Return the lease bound to the current thread, if any."""
-        lease = getattr(self._thread_binding, "lease", None)
-        return lease if isinstance(lease, ExecutionLease) else None
+        return self._thread_binding.lease
 
     # ------------------------------------------------------------------ #
     # Observability

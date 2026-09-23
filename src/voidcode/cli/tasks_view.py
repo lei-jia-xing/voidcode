@@ -5,7 +5,8 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 
-from ..runtime.background.models import BackgroundTaskState, StoredBackgroundTaskSummary
+from ..runtime.background.models import BackgroundTaskState, SchemaValidation, StoredBackgroundTaskSummary
+from ..runtime.background.routing import SubagentRoutingIdentity
 from ..runtime.contracts import BackgroundTaskResult
 from .output import format_named_record
 
@@ -55,16 +56,16 @@ def _background_task_fields(task: BackgroundTaskState) -> list[tuple[str, object
     return fields
 
 
-def _background_task_routing_payload(routing: object | None) -> dict[str, object] | None:
+def _background_task_routing_payload(routing: SubagentRoutingIdentity | None) -> dict[str, object] | None:
     if routing is None:
         return None
     return {
         key: value
         for key, value in {
-            "mode": getattr(routing, "mode", None),
-            "subagent_type": getattr(routing, "subagent_type", None),
-            "description": getattr(routing, "description", None),
-            "command": getattr(routing, "command", None),
+            "mode": routing.mode,
+            "subagent_type": routing.subagent_type,
+            "description": routing.description,
+            "command": routing.command,
         }.items()
         if value is not None
     }
@@ -229,13 +230,10 @@ def background_task_result_payload(result: BackgroundTaskResult, *, workspace: P
     }
 
 
-def _background_task_schema_validation_payload(schema_validation: object | None) -> dict[str, object] | None:
-    as_payload = getattr(schema_validation, "as_payload", None)
-    if callable(as_payload):
-        return as_payload()
-    if isinstance(schema_validation, dict):
-        return schema_validation
-    return None
+def _background_task_schema_validation_payload(schema_validation: SchemaValidation | None) -> dict[str, object] | None:
+    if schema_validation is None:
+        return None
+    return schema_validation.as_payload()
 
 
 def background_task_summary_payload(task: StoredBackgroundTaskSummary) -> dict[str, object]:

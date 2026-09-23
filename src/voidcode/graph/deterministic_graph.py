@@ -65,6 +65,10 @@ class DeterministicReadOnlyStep:
     def reasoning(self) -> str | None:
         return None
 
+    @property
+    def provider_usage(self) -> None:
+        return None
+
 
 class DeterministicGraph:
     def step(
