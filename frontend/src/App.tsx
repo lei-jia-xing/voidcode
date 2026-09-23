@@ -9,12 +9,10 @@ import {
   refreshDelegatedTaskSurfaces,
   resolveProviderModelReference,
   resolveSelectedReviewPath,
-  useAcknowledgeNotification,
   useAgentsQuery,
   useBackgroundTaskAction,
   useBackgroundTasksQuery,
   useCommandsQuery,
-  useNotificationsQuery,
   useProviderCatalogQuery,
   useProviderValidation,
   useRetryMcpConnections,
@@ -76,8 +74,8 @@ const SCROLL_FOLLOW_KEYS: Record<string, true> = {
   " ": true,
 };
 
-// Pushed delegated-task frames are coalesced into a single background-task (and
-// notification) refresh per window, instead of one request pair per frame.
+// Pushed delegated-task frames are coalesced into a single background-task
+// refresh per window, instead of one request pair per frame.
 const DELEGATED_REFRESH_INTERVAL_MS = 250;
 
 function SubsessionTimelineHeader({
@@ -334,17 +332,6 @@ function App() {
   const sessionsStatus = asyncStatusFromQuery(sessionsQuery);
   const sessionsError = queryErrorMessage(sessionsQuery);
 
-  const notificationsQuery = useNotificationsQuery(scope);
-  const notifications = useMemo(
-    () => notificationsQuery.data ?? [],
-    [notificationsQuery.data],
-  );
-  const notificationsStatus = asyncStatusFromQuery(notificationsQuery);
-  const notificationsError = queryErrorMessage(notificationsQuery);
-  const { acknowledge: acknowledgeNotification, isPending: isAcking } =
-    useAcknowledgeNotification(scope);
-  const notificationsBusy = notificationsQuery.isFetching || isAcking;
-
   const settingsQuery = useSettingsQuery(scope);
   const settings = settingsQuery.data ?? null;
   const {
@@ -455,11 +442,6 @@ function App() {
     }
     return undefined;
   }, [currentSessionEvents]);
-  const pendingNotifications = useMemo(
-    () =>
-      notifications.filter((notification) => notification.status === "unread"),
-    [notifications],
-  );
   const currentSessionResumable =
     currentSessionState?.status === "interrupted" ||
     (currentSessionState?.status === "failed" &&
@@ -636,29 +618,23 @@ function App() {
     let appliedEvents = 0;
     let appliedSessionState = false;
     let refreshTimer: number | undefined;
-    let notificationsDirty = false;
     let lastDelegatedRefreshAt = 0;
 
-    // Delegated task/notification state is refreshed once per window no matter
-    // how many background-task frames the run pushes (a delegated child emits
-    // progress continuously). The refresh is fire-and-forget and never awaited
+    // Delegated task state is refreshed once per window no matter how many
+    // background-task frames the run pushes (a delegated child emits progress
+    // continuously, and pushes `runtime.background_task_notification_enqueued`
+    // among those frames). The refresh is fire-and-forget and never awaited
     // inside the SSE loop, so a slow request cannot stall event delivery; the
     // child output is allowed to lag by this window.
-    const scheduleDelegatedRefresh = (notifications: boolean) => {
-      notificationsDirty = notificationsDirty || notifications;
+    const scheduleDelegatedRefresh = () => {
       if (controller.signal.aborted) return;
       window.clearTimeout(refreshTimer);
       refreshTimer = window.setTimeout(
         () => {
           lastDelegatedRefreshAt = Date.now();
           if (controller.signal.aborted) return;
-          const refreshNotifications = notificationsDirty;
-          notificationsDirty = false;
           void refreshDelegatedTaskSurfaces(
-            {
-              outputId: selectedBackgroundTaskOutputIdRef.current,
-              notifications: refreshNotifications,
-            },
+            { outputId: selectedBackgroundTaskOutputIdRef.current },
             scope,
           );
         },
@@ -689,10 +665,7 @@ function App() {
               appliedEvents += 1;
             }
             if (chunk.event.event_type.startsWith("runtime.background_task_")) {
-              scheduleDelegatedRefresh(
-                chunk.event.event_type ===
-                  "runtime.background_task_notification_enqueued",
-              );
+              scheduleDelegatedRefresh();
             }
           }
         }
@@ -1186,61 +1159,6 @@ function App() {
               >
                 <div className="vc-model-working-bar" />
               </output>
-            )}
-            {(notificationsStatus !== "idle" ||
-              pendingNotifications.length > 0) && (
-              <section
-                aria-label={t("runtimeOps.notifications")}
-                className="shrink-0 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-2"
-              >
-                <div className="mx-auto flex max-w-[var(--vc-chat-content-width)] flex-col gap-2 text-xs">
-                  {notificationsStatus === "loading" ? (
-                    <p className="text-[var(--vc-text-muted)]">
-                      {t("runtimeOps.loading")}
-                    </p>
-                  ) : null}
-                  {notificationsError ? (
-                    <p className="text-[var(--vc-danger-text)]">
-                      {notificationsError}
-                    </p>
-                  ) : null}
-                  {notificationsStatus === "success" &&
-                  pendingNotifications.length === 0 ? (
-                    <p className="text-[var(--vc-text-muted)]">
-                      {t("runtimeOps.noNotifications")}
-                    </p>
-                  ) : null}
-                  {pendingNotifications.map((notification) => (
-                    <div
-                      key={notification.id}
-                      className="flex flex-wrap items-center justify-between gap-3"
-                    >
-                      <button
-                        type="button"
-                        className="min-w-0 flex-1 text-left text-[var(--vc-text-primary)] hover:underline"
-                        onClick={() =>
-                          void selectSession(notification.session.id, scope)
-                        }
-                      >
-                        <span className="mr-2 rounded bg-[var(--vc-surface-2)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--vc-text-subtle)]">
-                          {notification.kind}
-                        </span>
-                        {notification.summary}
-                      </button>
-                      <ControlButton
-                        compact
-                        variant="ghost"
-                        onClick={() => {
-                          acknowledgeNotification(notification.id);
-                        }}
-                        disabled={notificationsBusy}
-                      >
-                        {t("runtimeOps.acknowledge")}
-                      </ControlButton>
-                    </div>
-                  ))}
-                </div>
-              </section>
             )}
             {currentSessionResumable && !displayedIsChildSession ? (
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-2 text-xs">

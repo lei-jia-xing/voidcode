@@ -124,12 +124,10 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
     loaded = store.load_session(workspace=tmp_path, session_id="child-session")
     listed = store.list_sessions(workspace=tmp_path)
     result = store.load_session_result(workspace=tmp_path, session_id="child-session")
-    notifications = store.list_notifications(workspace=tmp_path)
 
     assert loaded.session.session.parent_id == "leader-session"
     assert listed[0].session.parent_id == "leader-session"
     assert result.session.session.parent_id == "leader-session"
-    assert notifications[0].session.parent_id == "leader-session"
 
 
 def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path) -> None:
@@ -554,7 +552,6 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         session_columns = [row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()]
         delivery_columns = [row[1] for row in connection.execute("PRAGMA table_info(session_event_deliveries)").fetchall()]
         schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
-        notification_indexes = connection.execute("PRAGMA index_list(session_notifications)").fetchall()
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert session_columns == [
         "session_id",
@@ -580,7 +577,6 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
     assert "memory_tags" not in tables
     assert "memory_recall_log" not in tables
     assert "memory_index_status" not in tables
-    assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
 
 
 def test_session_storage_bootstraps_sequences_from_existing_timestamps(tmp_path: Path) -> None:
@@ -778,7 +774,6 @@ def test_session_storage_configures_sqlite_operability_pragmas(tmp_path: Path) -
     assert diagnostics["counts"] == {
         "sessions": 0,
         "background_tasks": 0,
-        "session_notifications": 0,
         "session_events": 0,
         "session_event_deliveries": 0,
     }
@@ -816,7 +811,7 @@ def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path)
         RuntimeError,
         match=rf"schema version mismatch: expected {SCHEMA_VERSION} got 999.*future-runtime\.sqlite3",
     ):
-        store.list_notifications(workspace=tmp_path)
+        store.list_sessions(workspace=tmp_path)
 
 
 def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
@@ -852,24 +847,6 @@ def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
                 source TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 PRIMARY KEY (workspace_id, session_id, sequence)
-            )
-            """
-        )
-        _ = connection.execute(
-            """
-            CREATE TABLE session_notifications (
-                notification_id TEXT PRIMARY KEY,
-                workspace_id TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                status TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                payload_json TEXT NOT NULL,
-                event_sequence INTEGER NOT NULL,
-                dedupe_key TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                acknowledged_at INTEGER,
-                UNIQUE(workspace_id, dedupe_key)
             )
             """
         )
@@ -923,7 +900,7 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
         connection.execute("ALTER TABLE session_event_deliveries DROP COLUMN event_sequence")
         connection.commit()
     with pytest.raises(RuntimeError, match="table 'session_event_deliveries' missing columns: event_sequence"):
-        store.list_notifications(workspace=tmp_path)
+        store.list_sessions(workspace=tmp_path)
     with closing(sqlite3.connect(database_path)) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(session_event_deliveries)")}
     assert "event_sequence" not in columns
@@ -1452,7 +1429,6 @@ def test_session_storage_prunes_terminal_sessions_and_dependent_rows(tmp_path: P
 
     assert counts["sessions"] == 1
     assert counts["session_events"] == 1
-    assert counts["session_notifications"] == 1
     assert [session.session.id for session in store.list_sessions(workspace=tmp_path)] == [
         "waiting-session",
         "new-terminal",
@@ -1531,16 +1507,11 @@ def test_session_storage_persists_pending_question_across_store_reopen(
         workspace=tmp_path,
         session_id="question-reopen-session",
     )
-    notifications = reopened_store.list_notifications(workspace=tmp_path)
 
     assert loaded_question == pending_question
     assert checkpoint is not None
     assert checkpoint["kind"] == "question_wait"
     assert checkpoint["pending_question_request_id"] == "question-reopen-1"
-    assert len(notifications) == 1
-    assert notifications[0].kind == "question_blocked"
-    assert notifications[0].status == "unread"
-    assert notifications[0].payload["request_id"] == "question-reopen-1"
 
 
 def test_session_storage_persists_pending_approval_across_store_reopen(
@@ -1596,16 +1567,11 @@ def test_session_storage_persists_pending_approval_across_store_reopen(
         workspace=tmp_path,
         session_id="approval-reopen-session",
     )
-    notifications = reopened_store.list_notifications(workspace=tmp_path)
 
     assert loaded_approval == pending_approval
     assert checkpoint is not None
     assert checkpoint["kind"] == "approval_wait"
     assert checkpoint["pending_approval_request_id"] == "approval-reopen-1"
-    assert len(notifications) == 1
-    assert notifications[0].kind == "approval_blocked"
-    assert notifications[0].status == "unread"
-    assert notifications[0].payload["request_id"] == "approval-reopen-1"
 
 
 def test_session_storage_fail_incomplete_background_tasks_keeps_question_waiting_children(

@@ -40,8 +40,6 @@ const runtimeClientMocks = vi.hoisted(() => ({
   listSkillsMock: vi.fn(),
   listCommandsMock: vi.fn(),
   listSessionsMock: vi.fn(),
-  listNotificationsMock: vi.fn(),
-  ackNotificationMock: vi.fn(),
   getStatusMock: vi.fn(),
   retryMcpConnectionsMock: vi.fn(),
   getReviewMock: vi.fn(),
@@ -69,8 +67,6 @@ vi.mock("../runtime/client", async () => {
       listSkills: runtimeClientMocks.listSkillsMock,
       listCommands: runtimeClientMocks.listCommandsMock,
       listSessions: runtimeClientMocks.listSessionsMock,
-      listNotifications: runtimeClientMocks.listNotificationsMock,
-      ackNotification: runtimeClientMocks.ackNotificationMock,
       getStatus: runtimeClientMocks.getStatusMock,
       retryMcpConnections: runtimeClientMocks.retryMcpConnectionsMock,
       getReview: runtimeClientMocks.getReviewMock,
@@ -251,7 +247,6 @@ function installDefaultMocks() {
   runtimeClientMocks.listAgentsMock.mockResolvedValue([]);
   runtimeClientMocks.listSkillsMock.mockResolvedValue([]);
   runtimeClientMocks.listCommandsMock.mockResolvedValue([]);
-  runtimeClientMocks.listNotificationsMock.mockResolvedValue([]);
   runtimeClientMocks.getStatusMock.mockResolvedValue(statusSnapshot);
   runtimeClientMocks.retryMcpConnectionsMock.mockResolvedValue(
     retriedStatusSnapshot,

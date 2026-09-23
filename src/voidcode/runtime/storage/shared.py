@@ -14,7 +14,6 @@ from ..background.models import (
     StoredBackgroundTaskSummary,
 )
 from ..contracts import (
-    RuntimeNotification,
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSessionRevertMarker,
@@ -162,9 +161,6 @@ class _StorageMixinBase(Protocol):
     _RESUME_CHECKPOINT_KINDS: frozenset[str]
 
     def _active_revert_metadata(self, metadata: dict[str, object], *, events: tuple[EventEnvelope, ...]) -> dict[str, object]: ...
-    def _approval_notification_candidate(
-        self, *, request: RuntimeRequest, response: RuntimeResponse, pending_approval: PendingApproval, last_event_sequence: int | None = None
-    ) -> dict[str, object]: ...
     def _approval_wait_resume_checkpoint(
         self, *, request: RuntimeRequest, response: RuntimeResponse, pending_approval: PendingApproval, last_event_sequence: int | None = None
     ) -> dict[str, object]: ...
@@ -230,18 +226,6 @@ class _StorageMixinBase(Protocol):
     @staticmethod
     def _next_sequence_value(*, connection: sqlite3.Connection, scope: str) -> int: ...
     def _next_timestamp(self, *, connection: sqlite3.Connection) -> int: ...
-    def _notification_candidate(
-        self,
-        *,
-        request: RuntimeRequest,
-        response: RuntimeResponse,
-        pending_approval: PendingApproval | None,
-        pending_question: PendingQuestion | None,
-        notification_run_id: int,
-        last_event_sequence: int | None = None,
-    ) -> dict[str, object] | None: ...
-    @staticmethod
-    def _notification_from_row(row: sqlite3.Row) -> RuntimeNotification: ...
     @staticmethod
     def _optional_int(value: object) -> int | None: ...
     @staticmethod
@@ -275,9 +259,6 @@ class _StorageMixinBase(Protocol):
         older_than: int | None,
         protected_session_ids: tuple[str, ...] = (),
     ) -> tuple[str, ...]: ...
-    def _question_notification_candidate(
-        self, *, request: RuntimeRequest, response: RuntimeResponse, pending_question: PendingQuestion, last_event_sequence: int | None = None
-    ) -> dict[str, object]: ...
     def _question_wait_resume_checkpoint(
         self, *, request: RuntimeRequest, response: RuntimeResponse, pending_question: PendingQuestion, last_event_sequence: int | None = None
     ) -> dict[str, object]: ...
@@ -319,21 +300,6 @@ class _StorageMixinBase(Protocol):
         approval_request_id: str | None = None,
         question_request_id: str | None = None,
     ) -> None: ...
-    def _sync_notifications(
-        self,
-        *,
-        connection: sqlite3.Connection,
-        workspace: Path,
-        request: RuntimeRequest,
-        response: RuntimeResponse,
-        pending_approval: PendingApproval | None,
-        pending_question: PendingQuestion | None = None,
-        notification_run_id: int,
-        last_event_sequence: int | None = None,
-    ) -> None: ...
-    def _terminal_notification_candidate(
-        self, *, request: RuntimeRequest, response: RuntimeResponse, notification_run_id: int, last_event_sequence: int | None = None
-    ) -> dict[str, object] | None: ...
     @staticmethod
     def _todo_state_from_events(events: tuple[EventEnvelope, ...]) -> dict[str, object] | None: ...
     @staticmethod

@@ -156,7 +156,7 @@ class _ResumeStorageMixin(_MixinBase):
                 workspace=workspace,
                 session_id=response.session.session.id,
             )
-            updated_at = self._write_session_snapshot(
+            self._write_session_snapshot(
                 connection=connection,
                 workspace=workspace,
                 request=request,
@@ -176,15 +176,6 @@ class _ResumeStorageMixin(_MixinBase):
                 request=request,
                 response=response,
                 approval_request_id=pending_approval.request_id,
-            )
-            self._sync_notifications(
-                connection=connection,
-                workspace=workspace,
-                request=request,
-                response=response,
-                pending_approval=pending_approval,
-                notification_run_id=updated_at,
-                last_event_sequence=persisted_last_sequence,
             )
             connection.commit()
 
@@ -500,7 +491,7 @@ class _ResumeStorageMixin(_MixinBase):
                 workspace=workspace,
                 session_id=response.session.session.id,
             )
-            updated_at = self._write_session_snapshot(
+            self._write_session_snapshot(
                 connection=connection,
                 workspace=workspace,
                 request=request,
@@ -520,16 +511,6 @@ class _ResumeStorageMixin(_MixinBase):
                 request=request,
                 response=response,
                 question_request_id=pending_question.request_id,
-            )
-            self._sync_notifications(
-                connection=connection,
-                workspace=workspace,
-                request=request,
-                response=response,
-                pending_approval=None,
-                pending_question=pending_question,
-                notification_run_id=updated_at,
-                last_event_sequence=persisted_last_sequence,
             )
             connection.commit()
 

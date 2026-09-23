@@ -63,7 +63,6 @@ from voidcode.runtime.contracts import (
     ReviewTreeNode,
     RuntimeBackgroundTaskStatusSnapshot,
     RuntimeHookPresetSnapshot,
-    RuntimeNotification,
     RuntimeProviderContextDiagnostic,
     RuntimeProviderContextPolicyDecision,
     RuntimeProviderContextSegmentSnapshot,
@@ -463,20 +462,6 @@ def _debug_snapshot(rich: bool) -> RuntimeSessionDebugSnapshot:
     )
 
 
-def _notification(rich: bool) -> RuntimeNotification:
-    return RuntimeNotification(
-        id="note-1",
-        session=_session_ref(rich),
-        kind="completion",
-        status="acknowledged" if rich else "unread",
-        summary="Session completed",
-        event_sequence=2,
-        created_at=1000,
-        acknowledged_at=2000 if rich else None,
-        payload={"task_id": "task-1"} if rich else {},
-    )
-
-
 def _provider_models(rich: bool) -> ProviderModelsResult:
     metadata = (
         {
@@ -711,13 +696,6 @@ class _FixtureRuntime:
         _ = task_id, content
         return _background_task_state(self.rich)
 
-    def list_notifications(self) -> tuple[RuntimeNotification, ...]:
-        return (_notification(self.rich),)
-
-    def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-        _ = notification_id
-        return _notification(self.rich)
-
     def web_settings(self) -> dict[str, object]:
         return {"provider": _OPENCODE if self.rich else None, "provider_api_key_present": self.rich, "model": "gpt-5.4" if self.rich else None}
 
@@ -905,7 +883,6 @@ def _openapi_document(app: object) -> dict[str, Any]:
 _PATH_PARAMETERS: dict[str, str] = {
     "session_id": "sess-1",
     "task_id": "task-1",
-    "notification_id": "note-1",
     "provider_name": _OPENCODE,
     "path": "src/sample.py",
 }
@@ -919,7 +896,6 @@ _BODIES: dict[tuple[str, str], dict[str, object]] = {
     ("POST", "/api/tasks/{task_id}/steer"): {"prompt": "keep going"},
     ("POST", "/api/tasks/{task_id}/retry"): {},
     ("POST", "/api/tasks/{task_id}/cancel"): {},
-    ("POST", "/api/notifications/{notification_id}/ack"): {},
     ("POST", "/api/sessions/{session_id}/approval"): {"request_id": "req-1", "decision": "allow"},
     ("POST", "/api/sessions/{session_id}/question"): {"request_id": "req-1", "responses": [{"header": "Pick one", "answers": ["a"]}]},
     ("POST", "/api/sessions/{session_id}/revert"): {"sequence": 1},

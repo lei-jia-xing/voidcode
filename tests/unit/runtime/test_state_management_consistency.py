@@ -9,8 +9,8 @@ Defends the fixed invariants:
 3. Event-less dangling-parent terminal children (no task reference) are pruned;
    children with events or a task reference survive.
 4. The session seal watermark never exceeds the persisted event log
-   (``last_event_sequence``, terminal checkpoint, and terminal notification all
-   reference durable truth).
+   (``last_event_sequence`` and the terminal checkpoint both reference durable
+   truth).
 5. ``save_interrupted_checkpoint`` persists ``parent_session_id`` on both the
    insert and update paths.
 6. Restart/worker-death reconciliation: a ``running`` task with no live worker
@@ -344,15 +344,12 @@ def test_save_run_never_inflates_last_event_sequence_beyond_persisted_events(
 
     loaded = store.load_session(workspace=tmp_path, session_id=session_id)
     checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id=session_id)
-    notifications = store.list_notifications(workspace=tmp_path)
 
     assert loaded.session.status == "failed"
     # The persisted event log has exactly 3 events.
     assert [event.sequence for event in loaded.events] == [1, 2, 3]
     assert checkpoint is not None
     assert checkpoint["last_event_sequence"] == 3
-    assert len(notifications) == 1
-    assert notifications[0].event_sequence == 3
 
 
 # ── 5. save_interrupted_checkpoint persists parent ─────────────────────────

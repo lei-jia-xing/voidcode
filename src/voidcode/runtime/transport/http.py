@@ -54,7 +54,6 @@ from ..contracts import (
     ReviewChangedFile,
     ReviewFileDiff,
     ReviewTreeNode,
-    RuntimeNotification,
     RuntimeRequest,
     RuntimeRequestError,
     RuntimeResponse,
@@ -118,7 +117,6 @@ from .http_models import (
     BackgroundTaskSummaryBody,
     CommandSummaryBody,
     ErrorEnvelope,
-    NotificationBody,
     ProviderInspectBody,
     ProviderModelsBody,
     ProviderSummaryBody,
@@ -366,10 +364,6 @@ class RuntimeTransport(Protocol):
 
     def unrevert_session(self, *, session_id: str) -> RuntimeSessionRevertMarker | None: ...
 
-    def list_notifications(self) -> tuple[RuntimeNotification, ...]: ...
-
-    def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification: ...
-
     def resume(
         self,
         session_id: str,
@@ -419,8 +413,8 @@ def _runtime_request_from(payload: _RunStreamRequestPayload) -> RuntimeRequest:
 # catch-all. The catch-all also keeps FastAPI from advertising the 422 it adds by
 # default: this transport answers validation failures with 400.
 _ERROR_ENVELOPE_DESCRIPTION = (
-    "Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, "
-    "task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure."
+    "Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or "
+    "task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure."
 )
 
 # The frames of a server-sent-events route are not expressible as an OpenAPI
@@ -647,14 +641,6 @@ class RuntimeTransportApp(FastAPI):
             error_statuses=(400,),
         )
         route(
-            "/api/notifications",
-            self._handle_list_notifications,
-            methods=["GET"],
-            tag="notifications",
-            summary="List notifications",
-            response_model=list[NotificationBody],
-        )
-        route(
             "/api/settings",
             self._handle_get_settings,
             methods=["GET"],
@@ -754,15 +740,6 @@ class RuntimeTransportApp(FastAPI):
             summary="Read one file diff",
             response_model=ReviewFileDiffBody,
             error_statuses=(400, 404),
-        )
-        route(
-            "/api/notifications/{notification_id:path}/ack",
-            self._handle_acknowledge_notification,
-            methods=["POST"],
-            tag="notifications",
-            summary="Acknowledge a notification",
-            response_model=NotificationBody,
-            error_statuses=(404,),
         )
         route(
             "/api/tasks/{task_id}",
@@ -1414,11 +1391,6 @@ class RuntimeTransportApp(FastAPI):
             )
         return json_response(result.as_payload())
 
-    async def _handle_list_notifications(self) -> Response:
-        with self._runtime_lease() as runtime:
-            payload = [self._serialize_notification(item) for item in runtime.list_notifications()]
-        return json_response(payload)
-
     async def _handle_get_settings(self) -> Response:
         with self._runtime_lease() as runtime:
             payload = runtime.web_settings()
@@ -1683,16 +1655,6 @@ class RuntimeTransportApp(FastAPI):
         except ValueError as exc:
             raise HttpError(404, str(exc), code=error_code(exc)) from None
         return json_response(self._serialize_runtime_response(response, show_thinking=show_thinking))
-
-    async def _handle_acknowledge_notification(self, notification_id: str) -> Response:
-        if not notification_id:
-            raise HttpError(404, "not found")
-        with self._runtime_lease() as runtime:
-            try:
-                notification = runtime.acknowledge_notification(notification_id=notification_id)
-            except ValueError as exc:
-                raise HttpError(404, str(exc)) from None
-        return json_response(self._serialize_notification(notification))
 
     # --------------------------------------------------------------------- static
 
@@ -2184,20 +2146,6 @@ class RuntimeTransportApp(FastAPI):
             "path": diff.path,
             "state": diff.state,
             "diff": diff.diff,
-        }
-
-    @staticmethod
-    def _serialize_notification(notification: RuntimeNotification) -> dict[str, object]:
-        return {
-            "id": notification.id,
-            "session": RuntimeTransportApp._serialize_session_ref(notification.session),
-            "kind": notification.kind,
-            "status": notification.status,
-            "summary": notification.summary,
-            "event_sequence": notification.event_sequence,
-            "created_at": notification.created_at,
-            "acknowledged_at": notification.acknowledged_at,
-            "payload": notification.payload,
         }
 
     @staticmethod

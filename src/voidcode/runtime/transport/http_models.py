@@ -50,8 +50,6 @@ from ..contracts import (
     GitStatusState,
     ReviewFileDiffState,
     ReviewTreeNodeKind,
-    RuntimeNotificationKind,
-    RuntimeNotificationStatus,
     RuntimeProviderContextDiagnosticPolicyAction,
     RuntimeProviderContextDiagnosticPolicyMode,
 )
@@ -802,25 +800,6 @@ class BackgroundTaskSteerBody(ResponseModel):
 
     steer_prompt: str
     task: BackgroundTaskStateBody
-
-
-@final
-class NotificationBody(ResponseModel):
-    """``_serialize_notification``: one runtime notification.
-
-    ``payload`` is dynamic: it carries the event-owned details the notification
-    was derived from.
-    """
-
-    id: str
-    session: SessionRefBody
-    kind: RuntimeNotificationKind
-    status: RuntimeNotificationStatus
-    summary: str
-    event_sequence: int
-    created_at: int
-    acknowledged_at: int | None = None
-    payload: dict[str, object]
 
 
 # ------------------------------------------------------------------------- settings

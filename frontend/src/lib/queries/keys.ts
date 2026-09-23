@@ -60,9 +60,6 @@ export const queryKeys = {
   reviewDiff: (scope: WorkspaceScope, path: string) =>
     [...queryKeys.workspaceScope(scope), "review-diff", path] as const,
 
-  notifications: (scope: WorkspaceScope) =>
-    [...queryKeys.workspaceScope(scope), "notifications"] as const,
-
   /** Prefix of every background-task list (one entry per session scope). */
   backgroundTasksRoot: (scope: WorkspaceScope) =>
     [...queryKeys.workspaceScope(scope), "background-tasks"] as const,

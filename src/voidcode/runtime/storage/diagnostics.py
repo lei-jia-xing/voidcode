@@ -101,13 +101,6 @@ class _DiagnosticsStorageMixin(_MixinBase):
                     ids=session_ids,
                     workspace=workspace,
                 ),
-                "session_notifications": self._delete_for_ids(
-                    connection=connection,
-                    table="session_notifications",
-                    column="session_id",
-                    ids=session_ids,
-                    workspace=workspace,
-                ),
                 "sessions": self._delete_for_ids(
                     connection=connection,
                     table="sessions",
@@ -182,7 +175,7 @@ class _DiagnosticsStorageMixin(_MixinBase):
         return {name: path.stat().st_size if path.exists() else 0 for name, path in candidates.items()}
 
     def _storage_table_counts(self, *, connection: sqlite3.Connection, workspace: Path) -> dict[str, int]:
-        scoped_tables = ("sessions", "background_tasks", "session_notifications")
+        scoped_tables = ("sessions", "background_tasks")
         counts = {
             table: int(
                 connection.execute(
@@ -451,7 +444,6 @@ class _DiagnosticsStorageMixin(_MixinBase):
         for table in (
             "session_events",
             "session_event_deliveries",
-            "session_notifications",
             "sessions",
         ):
             self._delete_for_ids(

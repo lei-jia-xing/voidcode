@@ -193,8 +193,6 @@ MVP 生命周期：
 - `POST /api/tasks/{id}/cancel` — 取消 task；成功 `200`；错误 `404`、`405`
 - `POST /api/tasks/{id}/retry` — 重试 terminal task（复用旧请求创建新的 queued task handle）；成功 `201`；错误 `400`、`404`、`405`
 - `POST /api/tasks/{id}/steer` — 向 keep-alive task 派发下一 worker turn；成功 `200`；错误 `400`、`404`、`405`
-- `GET /api/notifications` — 列出通知；成功 `200`；错误 `405`
-- `POST /api/notifications/{id}/ack` — 确认通知；成功 `200`；错误 `404`、`405`
 - `GET /api/settings` — 读取运行时设置；成功 `200`；错误 `405`
 - `POST /api/settings` — 更新运行时设置；成功 `200`；错误 `400`、`405`
 - `GET /api/workspaces` — 列出 workspace registry 快照；成功 `200`；错误 `405`
@@ -263,7 +261,7 @@ pydantic 模型描述，并通过 `response_model=` 接到路由上，因此
 | 模型 | 动态字段 | 原因 |
 |---|---|---|
 | `EventBody` / `SessionDebugEventBody` | `payload` | 每个事件类型拥有自己的 payload 形状（见 `runtime-events.md`），客户端按 `event_type` 路由 |
-| `SessionStateBody` / `BackgroundTaskRequestSnapshotBody` / `NotificationBody` / `BackgroundTaskResultBody.hook_reminder` | `metadata` / `payload` / `hook_reminder` | 持久化的 runtime/session 元数据 blob，由 runtime 自己投影与约束 |
+| `SessionStateBody` / `BackgroundTaskRequestSnapshotBody` / `BackgroundTaskResultBody.hook_reminder` | `metadata` / `payload` / `hook_reminder` | 持久化的 runtime/session 元数据 blob，由 runtime 自己投影与约束 |
 | `RuntimePolicyBody` | `diagnostics`、`precedence_trace` 条目、以及 `schema_version`/`policy_version`/`mode`/`read_only`/`agent_preset`/`agent_manifest_id`/`intent.label`/`intent.confidence` | runtime policy 快照的 bounded 投影；标量的类型来自其唯一写入者（`runtime/policy.py`），传输层不再做二次校验 |
 | `ProviderContextBody.context_window` | `context_window` | `runtime/context` 拥有的窗口预算投影 |
 | `ProviderReadinessBody.reasoning_controls` | `reasoning_controls` | provider 特有的 reasoning 控制项 |
@@ -319,7 +317,7 @@ JSON route 与 SSE 帧都在**测试期**校验，热路径不做逐帧/逐响�
 | `no_pending_question` | 对没有待回答问题的会话提交回答 | `409` | `NoPendingQuestionError`（`runtime/contracts.py`） |
 | `delegated_context_missing` | 该会话没有 delegated 子会话上下文（`/api/sessions/{id}/delegated-context`） | `404` | 传输层（runtime 返回 `None` 即该语义） |
 
-`null` 覆盖其余全部错误：未知会话/task/通知（`404`）、方法不允许（`405`）、未匹配路径
+`null` 覆盖其余全部错误：未知会话/task（`404`）、方法不允许（`405`）、未匹配路径
 （`404`）、请求体与查询参数校验（`400`）、provider 未配置或校验失败（`409`）、凭据类
 `ValueError`（`400`）等。这些是"输入/状态不对"的统一拒绝，不构成需要客户端区分语义的
 机器可读原因。

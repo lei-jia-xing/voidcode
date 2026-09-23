@@ -84,7 +84,6 @@ from ..contracts import (
     ProviderValidationResult,
     ReviewFileDiff,
     RuntimeBackgroundTaskStatusSnapshot,
-    RuntimeNotification,
     RuntimeProviderContextPolicyDecision,
     RuntimeProviderContextSnapshot,
     RuntimeRequestMetadataPayload,
@@ -810,21 +809,6 @@ class InspectionCoordinator:
             case_sensitive=case_sensitive,
             limit=limit,
         )
-
-    def list_notifications(self) -> tuple[RuntimeNotification, ...]:
-        notifications = self._session_store.list_notifications(workspace=self._workspace)
-        return tuple(notification for notification in notifications if self._session_belongs_to_workspace(notification.session.id))
-
-    def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-        if not notification_id:
-            raise ValueError("notification_id must be a non-empty string")
-        notification = self._session_store.acknowledge_notification(
-            workspace=self._workspace,
-            notification_id=notification_id,
-        )
-        if not self._session_belongs_to_workspace(notification.session.id):
-            raise ValueError(f"unknown notification: {notification_id}")
-        return notification
 
     def storage_diagnostics(self) -> dict[str, object]:
         return self._session_store.storage_diagnostics(workspace=self._workspace)

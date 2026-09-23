@@ -55,40 +55,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/notifications": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List notifications */
-        get: operations["_handle_list_notifications_api_notifications_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/notifications/{notification_id}/ack": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Acknowledge a notification */
-        post: operations["_handle_acknowledge_notification_api_notifications__notification_id__ack_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/providers": {
         parameters: {
             query?: never;
@@ -1094,32 +1060,6 @@ export interface components {
             source: string;
         };
         /**
-         * NotificationBody
-         * @description ``_serialize_notification``: one runtime notification.
-         *
-         *     ``payload`` is dynamic: it carries the event-owned details the notification
-         *     was derived from.
-         */
-        NotificationBody: {
-            /** Acknowledged At */
-            acknowledged_at?: number | null;
-            /** Created At */
-            created_at: number;
-            /** Event Sequence */
-            event_sequence: number;
-            /** Id */
-            id: string;
-            kind: components["schemas"]["RuntimeNotificationKind"];
-            /** Payload */
-            payload: {
-                [key: string]: unknown;
-            };
-            session: components["schemas"]["SessionRefBody"];
-            status: components["schemas"]["RuntimeNotificationStatus"];
-            /** Summary */
-            summary: string;
-        };
-        /**
          * ProviderContextBody
          * @description ``serialize_provider_context_snapshot``: what the model was actually sent.
          *
@@ -1521,10 +1461,6 @@ export interface components {
             /** Terminal Count */
             terminal_count: number;
         };
-        /** @enum {string} */
-        RuntimeNotificationKind: "completion" | "failure" | "cancellation" | "approval_blocked" | "question_blocked";
-        /** @enum {string} */
-        RuntimeNotificationStatus: "unread" | "acknowledged";
         /**
          * RuntimePolicyBody
          * @description ``runtime_policy_observability_payload``: the bounded policy projection.
@@ -2237,7 +2173,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["AgentSummaryBody"][];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2266,76 +2202,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["CommandSummaryBody"][];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    _handle_list_notifications_api_notifications_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["NotificationBody"][];
-                };
-            };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    _handle_acknowledge_notification_api_notifications__notification_id__ack_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                notification_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["NotificationBody"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2364,7 +2231,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ProviderSummaryBody"][];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2413,7 +2280,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ProviderInspectBody"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2453,7 +2320,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ProviderModelsBody"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2502,7 +2369,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ProviderValidationBody"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2531,7 +2398,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["WorkspaceReviewBody"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2580,7 +2447,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2625,7 +2492,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2654,7 +2521,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["SessionSummaryBody"][];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2697,7 +2564,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2762,7 +2629,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2815,7 +2682,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2858,7 +2725,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2901,7 +2768,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -2957,7 +2824,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3022,7 +2889,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3065,7 +2932,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3108,7 +2975,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3161,7 +3028,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3223,7 +3090,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3263,7 +3130,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3303,7 +3170,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3343,7 +3210,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3372,7 +3239,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["WebSettingsBody"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3414,7 +3281,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3443,7 +3310,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["SkillSummaryBody"][];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3472,7 +3339,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["RuntimeStatusBody"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3510,7 +3377,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3539,7 +3406,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["BackgroundTaskSummaryBody"][];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3581,7 +3448,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3621,7 +3488,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3661,7 +3528,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3704,7 +3571,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3753,7 +3620,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3806,7 +3673,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3844,7 +3711,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;
@@ -3904,7 +3771,7 @@ export interface operations {
                     "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session, task or notification, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
             default: {
                 headers: {
                     [name: string]: unknown;

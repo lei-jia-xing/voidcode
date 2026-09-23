@@ -16,7 +16,6 @@ from ..background.models import (
     StoredBackgroundTaskSummary,
 )
 from ..contracts import (
-    RuntimeNotification,
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSessionResult,
@@ -39,7 +38,6 @@ from .background_processes import _BackgroundProcessStorageMixin
 from .background_tasks import _BackgroundTaskStorageMixin
 from .diagnostics import _DiagnosticsStorageMixin
 from .effectiveness import _EffectivenessStorageMixin
-from .notifications import _NotificationStorageMixin
 from .resume import _ResumeStorageMixin
 from .revert import _RevertStorageMixin
 from .sessions import SessionEventsAfter, _SessionStorageMixin
@@ -99,10 +97,6 @@ class SessionStore(Protocol):
     def undo_session(self, *, workspace: Path, session_id: str) -> RuntimeSessionRevertMarker: ...
 
     def unrevert_session(self, *, workspace: Path, session_id: str) -> RuntimeSessionRevertMarker | None: ...
-
-    def list_notifications(self, *, workspace: Path) -> tuple[RuntimeNotification, ...]: ...
-
-    def acknowledge_notification(self, *, workspace: Path, notification_id: str) -> RuntimeNotification: ...
 
     def save_pending_approval(
         self,
@@ -343,7 +337,6 @@ class SqliteSessionStore(
     _SessionStorageMixin,
     _ResumeStorageMixin,
     _RevertStorageMixin,
-    _NotificationStorageMixin,
     _EffectivenessStorageMixin,
     _DiagnosticsStorageMixin,
 ):
@@ -442,19 +435,6 @@ class SqliteSessionStore(
             ("created_at", "INTEGER", 1, None, 0),
             ("updated_at", "INTEGER", 1, None, 0),
         ),
-        "session_notifications": (
-            ("notification_id", "TEXT", 0, None, 1),
-            ("workspace_id", "TEXT", 1, None, 0),
-            ("session_id", "TEXT", 1, None, 0),
-            ("kind", "TEXT", 1, None, 0),
-            ("status", "TEXT", 1, None, 0),
-            ("summary", "TEXT", 1, None, 0),
-            ("payload_json", "TEXT", 1, None, 0),
-            ("event_sequence", "INTEGER", 1, None, 0),
-            ("dedupe_key", "TEXT", 1, None, 0),
-            ("created_at", "INTEGER", 1, None, 0),
-            ("acknowledged_at", "INTEGER", 0, None, 0),
-        ),
         "session_event_deliveries": (
             ("workspace_id", "TEXT", 1, None, 1),
             ("session_id", "TEXT", 1, None, 2),
@@ -471,7 +451,6 @@ class SqliteSessionStore(
         "sessions": frozenset(),
         "session_events": frozenset(),
         "background_tasks": frozenset(),
-        "session_notifications": frozenset({("workspace_id", "dedupe_key")}),
         "session_event_deliveries": frozenset(),
         "storage_sequences": frozenset(),
     }
@@ -731,24 +710,6 @@ class SqliteSessionStore(
         )
         _ = connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS session_notifications (
-                notification_id TEXT PRIMARY KEY,
-                workspace_id TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                status TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                payload_json TEXT NOT NULL,
-                event_sequence INTEGER NOT NULL,
-                dedupe_key TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                acknowledged_at INTEGER,
-                UNIQUE(workspace_id, dedupe_key)
-            )
-            """
-        )
-        _ = connection.execute(
-            """
             CREATE TABLE IF NOT EXISTS session_event_deliveries (
                 workspace_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
@@ -777,7 +738,6 @@ class SqliteSessionStore(
     def _ensure_workspace_indexes(*, connection: sqlite3.Connection) -> None:
         _ = connection.execute("CREATE INDEX IF NOT EXISTS sessions_workspace_idx ON sessions(workspace_id, status, updated_at DESC)")
         _ = connection.execute("CREATE INDEX IF NOT EXISTS background_tasks_workspace_idx ON background_tasks(workspace_id, status, updated_at DESC)")
-        _ = connection.execute("CREATE INDEX IF NOT EXISTS session_notifications_workspace_idx ON session_notifications(workspace_id, session_id)")
 
     @staticmethod
     def _ensure_storage_sequences(*, connection: sqlite3.Connection) -> None:
@@ -819,11 +779,6 @@ class SqliteSessionStore(
                     connection=connection,
                     table="sessions",
                     columns=("created_at",),
-                ),
-                SqliteSessionStore._max_existing_timestamp(
-                    connection=connection,
-                    table="session_notifications",
-                    columns=("created_at", "acknowledged_at"),
                 ),
                 SqliteSessionStore._max_existing_timestamp(
                     connection=connection,

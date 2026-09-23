@@ -50,7 +50,6 @@ vi.mock("./lib/runtime/client", () => ({
     listAgents: vi.fn(async () => []),
     listSkills: vi.fn(async () => []),
     listCommands: vi.fn(async () => []),
-    listNotifications: vi.fn(async () => []),
     listBackgroundTasks: vi.fn(async () => []),
     listSessionBackgroundTasks: vi.fn(async () => []),
     getStatus: vi.fn(async () => statusSnapshot),

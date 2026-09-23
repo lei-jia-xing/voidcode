@@ -30,7 +30,7 @@ from .events import (
     EventEnvelope,
 )
 from .question import QuestionResponse
-from .session import SessionRef, SessionState, SessionStatus
+from .session import SessionState, SessionStatus
 
 
 class RuntimeRequestError(ValueError):
@@ -869,16 +869,6 @@ class WorkspaceReviewSnapshot:
     tree: tuple[ReviewTreeNode, ...] = ()
 
 
-type RuntimeNotificationKind = Literal[
-    "completion",
-    "failure",
-    "cancellation",
-    "approval_blocked",
-    "question_blocked",
-]
-type RuntimeNotificationStatus = Literal["unread", "acknowledged"]
-
-
 @dataclass(frozen=True, slots=True)
 class RuntimeSessionDebugEvent:
     sequence: int
@@ -1204,19 +1194,6 @@ class BackgroundTaskGroupResult:
     def counts(self) -> dict[str, int]:
         statuses = ("queued", "running", "idle", "completed", "failed", "cancelled", "interrupted")
         return {status: sum(result.status == status for result in self.results) for status in statuses}
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeNotification:
-    id: str
-    session: SessionRef
-    kind: RuntimeNotificationKind
-    status: RuntimeNotificationStatus
-    summary: str
-    event_sequence: int
-    created_at: int
-    acknowledged_at: int | None = None
-    payload: dict[str, object] = field(default_factory=dict)
 
 
 type RuntimeStreamChunkKind = Literal["event", "output"]

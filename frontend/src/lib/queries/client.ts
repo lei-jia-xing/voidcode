@@ -29,8 +29,8 @@ import { RuntimeClientError } from "../runtime/client";
  *
  * Why mutations never retry: every mutation in this app is an agent-control
  * call — run cancellation, approval and question resolution, workspace open,
- * background-task cancel/retry/steer, settings save, credential validation, MCP
- * retry, notification ack. A silent retry after a lost response would replay a
+ * background-task cancel/retry/steer, settings save, credential validation and
+ * MCP retry. A silent retry after a lost response would replay a
  * state transition the runtime may already have applied (double-cancel,
  * double-approve, double-steer), so mutations fail loudly to the caller instead.
  */

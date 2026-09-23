@@ -14,8 +14,6 @@ from unittest.mock import patch
 
 import pytest
 
-from voidcode.runtime.contracts import RuntimeNotification
-
 pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
 
 
@@ -721,9 +719,6 @@ def test_transport_session_result_redacts_reasoning_until_query_opt_in() -> None
             assert session_id == "reasoning-session"
             return result
 
-        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
-
         def __exit__(self, *_: object) -> None:
             return None
 
@@ -782,9 +777,6 @@ def test_transport_replay_response_redacts_reasoning_until_query_opt_in() -> Non
         def replay_session(self, *, session_id: str) -> object:
             assert session_id == "reasoning-session"
             return response
-
-        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
         def __exit__(self, *_: object) -> None:
             return None
@@ -860,9 +852,6 @@ def test_transport_background_task_output_redacts_reasoning_until_query_opt_in()
         def session_result(self, *, session_id: str) -> object:
             assert session_id == "child-session"
             return session_result
-
-        def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
         def __exit__(self, *_: object) -> None:
             return None
@@ -953,33 +942,6 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
         ],
     )
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
-
-
-@pytest.mark.parametrize(
-    ("method", "path", "expected_status", "expected_error"),
-    (
-        ("POST", "/api/notifications", 405, "method not allowed"),
-        ("GET", "/api/notifications/missing-notification/ack", 405, "method not allowed"),
-        ("POST", "/api/notifications/missing-notification/ack", 404, "unknown notification: missing-notification"),
-    ),
-)
-def test_transport_notification_routes_enforce_methods_and_workspace_ownership(
-    tmp_path: Path,
-    method: str,
-    path: str,
-    expected_status: int,
-    expected_error: str,
-) -> None:
-    """Notification reads and writes stay within the active workspace boundary."""
-    create_runtime_app = _load_transport_app_factory()
-    response = _run_app(
-        create_runtime_app(workspace=tmp_path),
-        method=method,
-        path=path,
-    )
-
-    assert response.status == expected_status
-    assert response.json() == _error_body(expected_error)
 
 
 def test_transport_stream_preserves_tool_display_metadata(tmp_path: Path) -> None:

@@ -49,8 +49,6 @@ export type EventSource = Schemas["EventSource"];
 export type GitStatusState = Schemas["GitStatusState"];
 export type CapabilityState = Schemas["CapabilityState"];
 export type ReviewTreeNodeKind = Schemas["ReviewTreeNodeKind"];
-export type RuntimeNotificationKind = Schemas["RuntimeNotificationKind"];
-export type RuntimeNotificationStatus = Schemas["RuntimeNotificationStatus"];
 export type BackgroundTaskStatus = Schemas["BackgroundTaskStatus"];
 
 export type SessionRef = Schemas["SessionRefBody"];
@@ -77,7 +75,6 @@ export type RuntimeResponse = Schemas["RuntimeResponseBody"];
 export type RuntimeInterruptResult = Schemas["SessionCancelBody"];
 /** `POST /api/sessions/{id}/steer`: how many messages the queue accepted. */
 export type SessionSteerResult = Schemas["SessionSteerBody"];
-export type RuntimeNotification = Schemas["NotificationBody"];
 export type BackgroundTaskRequestSnapshot =
   Schemas["BackgroundTaskRequestSnapshotBody"];
 export type BackgroundTaskRouting = Schemas["SubagentRoutingBody"];

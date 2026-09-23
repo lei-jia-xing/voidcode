@@ -164,7 +164,6 @@ from .contracts import (
     ProviderSummary,
     ProviderValidationResult,
     ReviewFileDiff,
-    RuntimeNotification,
     RuntimeProviderContextPolicyDecision,
     RuntimeProviderContextSnapshot,
     RuntimeRequest,
@@ -2808,12 +2807,6 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot:
         return self._inspection_coordinator.session_debug_snapshot(session_id=session_id)
-
-    def list_notifications(self) -> tuple[RuntimeNotification, ...]:
-        return self._inspection_coordinator.list_notifications()
-
-    def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-        return self._inspection_coordinator.acknowledge_notification(notification_id=notification_id)
 
     def storage_diagnostics(self) -> dict[str, object]:
         return self._inspection_coordinator.storage_diagnostics()

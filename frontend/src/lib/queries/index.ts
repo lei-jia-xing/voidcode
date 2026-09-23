@@ -42,10 +42,6 @@ export {
 } from "./review";
 export { useSessionDebugQuery, useSessionsQuery } from "./sessions";
 export {
-  useAcknowledgeNotification,
-  useNotificationsQuery,
-} from "./notifications";
-export {
   backgroundTaskIdFromControlResponse,
   useBackgroundTaskAction,
   useBackgroundTasksQuery,

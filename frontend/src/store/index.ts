@@ -44,8 +44,8 @@ import {
  * question, replay and resume state machines that own them.
  *
  * What does not live here: every plain-HTTP payload. Providers, agents, skills,
- * commands, sessions, status, review, workspaces, tasks, notifications, settings
- * and the per-session debug snapshot are read from the TanStack Query cache (see
+ * commands, sessions, status, review, workspaces, tasks, settings and the
+ * per-session debug snapshot are read from the TanStack Query cache (see
  * `lib/queries`), so a payload has exactly one home. This module reads those
  * entries where its own logic needs them (the session list for the
  * delegated-context routing decision, the provider catalog to build a run
@@ -659,7 +659,7 @@ export const useAppStore = create<AppState>()(
                 replayError: null,
               });
               await refreshAfterMutation(
-                { backgroundTasks: true, notifications: true },
+                { backgroundTasks: true },
                 workspaceScope,
               );
               return;
@@ -705,10 +705,7 @@ export const useAppStore = create<AppState>()(
             replayError: null,
             replayTargetSessionId: null,
           });
-          await refreshAfterMutation(
-            { backgroundTasks: true, notifications: true },
-            workspaceScope,
-          );
+          await refreshAfterMutation({ backgroundTasks: true }, workspaceScope);
         } catch (err) {
           if (
             get().replayRequestId !== requestId ||
@@ -797,7 +794,6 @@ export const useAppStore = create<AppState>()(
           });
           await refreshAfterMutation({
             sessions: true,
-            notifications: true,
             backgroundTasks: true,
           });
         } catch (err) {
@@ -980,7 +976,6 @@ export const useAppStore = create<AppState>()(
               status: true,
               review: true,
               backgroundTasks: true,
-              notifications: true,
               debug: true,
               sessionId: get().currentSessionId,
             },

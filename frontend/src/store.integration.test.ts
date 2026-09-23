@@ -12,7 +12,6 @@ import type {
   ProviderModelsResult,
   QuestionAnswer,
   ReviewFileDiff,
-  RuntimeNotification,
   RuntimeResponse,
   RuntimeSessionDebugSnapshot,
   RuntimeStatusSnapshot,
@@ -210,9 +209,6 @@ const runtimeClientMocks = vi.hoisted(() => ({
   listSkillsMock: vi.fn<() => Promise<[]>>(),
   listCommandsMock: vi.fn<() => Promise<[]>>(),
   listSessionsMock: vi.fn<() => Promise<StoredSessionSummary[]>>(),
-  listNotificationsMock: vi.fn<() => Promise<RuntimeNotification[]>>(),
-  ackNotificationMock:
-    vi.fn<(notificationId: string) => Promise<RuntimeNotification>>(),
   resumeSessionMock: vi.fn<(sessionId: string) => Promise<RuntimeResponse>>(),
   getSessionReplayMock:
     vi.fn<(sessionId: string) => Promise<RuntimeResponse>>(),
@@ -286,8 +282,6 @@ vi.mock("./lib/runtime/client", () => ({
     listSkills: runtimeClientMocks.listSkillsMock,
     listCommands: runtimeClientMocks.listCommandsMock,
     listSessions: runtimeClientMocks.listSessionsMock,
-    listNotifications: runtimeClientMocks.listNotificationsMock,
-    ackNotification: runtimeClientMocks.ackNotificationMock,
     resumeSession: runtimeClientMocks.resumeSessionMock,
     getSessionReplay: runtimeClientMocks.getSessionReplayMock,
     getStatus: runtimeClientMocks.getStatusMock,
@@ -411,7 +405,6 @@ async function resetStoreForTest() {
   vi.clearAllMocks();
   localStorage.clear();
   vi.resetModules();
-  runtimeClientMocks.listNotificationsMock.mockResolvedValue([]);
   runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
   runtimeClientMocks.getChildSessionContextMock.mockRejectedValue(
     NO_DELEGATED_CONTEXT,

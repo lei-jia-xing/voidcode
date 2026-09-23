@@ -116,8 +116,7 @@ class _SessionStorageMixin(_MixinBase):
         # trailing events were only locally sequenced (resume paths resequence
         # client-only events like MCP/hook/release chunks that are never
         # appended) can never inflate the watermark beyond the durable event
-        # log — a phantom sequence would break replay, resume truncation, and
-        # notification reference-integrity.
+        # log — a phantom sequence would break replay and resume truncation.
         last_event_sequence = max(
             self._read_last_event_sequence(
                 connection=connection,
@@ -266,14 +265,14 @@ class _SessionStorageMixin(_MixinBase):
         session_id = response.session.session.id
         with self._write_connect(workspace) as connection:
             # The durable event-log watermark — see ``_write_session_snapshot``.
-            # The resume checkpoint and the terminal notification must reference
-            # this persisted truth, never a locally-resequenced response tail.
+            # The resume checkpoint must reference this persisted truth, never a
+            # locally-resequenced response tail.
             persisted_last_sequence = self._max_persisted_event_sequence(
                 connection=connection,
                 workspace=workspace,
                 session_id=session_id,
             )
-            updated_at = self._write_session_snapshot(
+            self._write_session_snapshot(
                 connection=connection,
                 workspace=workspace,
                 request=request,
@@ -300,15 +299,6 @@ class _SessionStorageMixin(_MixinBase):
                 workspace=workspace,
                 request=request,
                 response=response,
-            )
-            self._sync_notifications(
-                connection=connection,
-                workspace=workspace,
-                request=request,
-                response=response,
-                pending_approval=None,
-                notification_run_id=updated_at,
-                last_event_sequence=persisted_last_sequence,
             )
             connection.commit()
 
@@ -1004,3 +994,50 @@ class _SessionStorageMixin(_MixinBase):
                     return f"Failed: {error[:120]}", error
             return "Failed", None
         return f"{response.session.status.capitalize()} session", None
+
+    def _read_created_at(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int:
+        row = cast(
+            sqlite3.Row | None,
+            connection.execute(
+                "SELECT created_at FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            ).fetchone(),
+        )
+        if row is not None:
+            return cast(int, row["created_at"])
+        return self._next_auxiliary_timestamp(connection=connection)
+
+    def _read_created_at_unix_ms(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int | None:
+        row = cast(
+            sqlite3.Row | None,
+            connection.execute(
+                "SELECT created_at_unix_ms FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            ).fetchone(),
+        )
+        if row is not None and row["created_at_unix_ms"] is not None:
+            return cast(int, row["created_at_unix_ms"])
+        return None
+
+    @staticmethod
+    def _read_last_event_sequence(*, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int:
+        row = cast(
+            sqlite3.Row | None,
+            connection.execute(
+                "SELECT last_event_sequence FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            ).fetchone(),
+        )
+        if row is not None:
+            return cast(int, row["last_event_sequence"])
+        return 0
+
+    @staticmethod
+    def _max_persisted_event_sequence(*, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int:
+        row = connection.execute(
+            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE workspace_id = ? AND session_id = ?",
+            (str(workspace), session_id),
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row[0])

@@ -14,7 +14,6 @@ import {
   QuestionAnswer,
   ReviewFileDiff,
   RuntimeInterruptResult,
-  RuntimeNotification,
   RuntimeRequest,
   RuntimeResponse,
   RuntimeSessionDebugSnapshot,
@@ -56,8 +55,6 @@ const ROUTES = {
   delegatedContext: "/api/sessions/{session_id}/delegated-context",
   workspaces: "/api/workspaces",
   workspacesOpen: "/api/workspaces/open",
-  notifications: "/api/notifications",
-  notificationAck: "/api/notifications/{notification_id}/ack",
   providers: "/api/providers",
   providerModels: "/api/providers/{provider_name}/models",
   providerValidate: "/api/providers/{provider_name}/validate",
@@ -237,27 +234,6 @@ export class RuntimeClient {
       body: JSON.stringify({ path }),
     });
     await expectOk(res, "Failed to open workspace");
-    return res.json();
-  }
-
-  static async listNotifications(
-    signal?: AbortSignal,
-  ): Promise<RuntimeNotification[]> {
-    const res = await fetchQuery(ROUTES.notifications, signal);
-    await expectOk(res, "Failed to load notifications");
-    return res.json();
-  }
-
-  static async ackNotification(
-    notificationId: string,
-  ): Promise<RuntimeNotification> {
-    const res = await fetch(
-      apiPath(ROUTES.notificationAck, {
-        notification_id: encodeURIComponent(notificationId),
-      }),
-      { method: "POST" },
-    );
-    await expectOk(res, "Failed to acknowledge notification");
     return res.json();
   }
 

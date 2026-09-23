@@ -8,7 +8,6 @@ export interface MutationRefresh {
   status?: boolean;
   review?: boolean;
   backgroundTasks?: boolean;
-  notifications?: boolean;
   debug?: boolean;
   sessionId?: string | null;
 }
@@ -59,13 +58,6 @@ export async function refreshAfterMutation(
       }),
     );
   }
-  if (refresh.notifications) {
-    pending.push(
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.notifications(scope),
-      }),
-    );
-  }
   if (refresh.debug && refresh.sessionId) {
     pending.push(
       queryClient.invalidateQueries({
@@ -80,7 +72,6 @@ export async function refreshAfterMutation(
 /** What a delegated-task push can have changed since the last read. */
 export interface DelegatedTaskRefresh {
   outputId?: string | null;
-  notifications?: boolean;
 }
 
 /**
@@ -89,9 +80,8 @@ export interface DelegatedTaskRefresh {
  * The shell's follow stream coalesces a burst of `runtime.background_task_*`
  * frames into one of these per window, which is the one place an SSE frame
  * changes *server data* rather than the run projection — so it invalidates the
- * task list (every session scope in this workspace), the task output the reader
- * has selected, and the notification inbox, instead of loading them into the
- * store.
+ * task list (every session scope in this workspace) and the task output the
+ * reader has selected, instead of loading them into the store.
  */
 export async function refreshDelegatedTaskSurfaces(
   refresh: DelegatedTaskRefresh = {},
@@ -107,13 +97,6 @@ export async function refreshDelegatedTaskSurfaces(
     pending.push(
       queryClient.invalidateQueries({
         queryKey: queryKeys.taskOutput(scope, refresh.outputId),
-      }),
-    );
-  }
-  if (refresh.notifications) {
-    pending.push(
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.notifications(scope),
       }),
     );
   }
