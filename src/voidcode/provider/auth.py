@@ -6,6 +6,7 @@ from typing import Literal
 from uuid import uuid4
 
 from .config import (
+    AnthropicProviderConfig,
     CopilotProviderConfig,
     GoogleProviderConfig,
     OpenAICompatibleProviderConfig,
@@ -184,6 +185,18 @@ class ProviderAuthResolver:
             return None
         return getattr(self._providers, field_name) or OpenAICompatibleProviderConfig()
 
+    def _anthropic_wire_provider_config(self, provider: str) -> AnthropicProviderConfig | None:
+        """Config for a known Anthropic-wire provider, empty when unconfigured.
+
+        ``None`` means "not one of these provider ids": a built-in provider whose
+        config block is absent still answers here, with an empty config, so it is
+        reported as missing credentials instead of as an unsupported provider.
+        """
+        field_name = ANTHROPIC_COMPATIBLE_BUILTIN_FIELDS.get(provider)
+        if field_name is None:
+            return None
+        return getattr(self._providers, field_name) or AnthropicProviderConfig()
+
     def methods(self, provider: ProviderAuthProvider) -> ProviderAuthMethodsResponse:
         provider = canonical_provider_id(provider)
         if provider == "openai":
@@ -234,6 +247,12 @@ class ProviderAuthResolver:
                 methods=_OPENAI_COMPATIBLE_AUTH_METHODS,
                 default_method="api_key",
             )
+        if self._anthropic_wire_provider_config(provider) is not None:
+            return ProviderAuthMethodsResponse(
+                provider=provider,
+                methods=_ANTHROPIC_METHODS,
+                default_method="api_key",
+            )
         custom_config = self._custom_provider_config(provider)
         if custom_config is not None:
             default_method = "none"
@@ -257,7 +276,11 @@ class ProviderAuthResolver:
         if request.provider == "openai":
             return self._authorize_openai(request)
         if request.provider == "anthropic":
-            return self._authorize_anthropic(request)
+            return self._authorize_anthropic(
+                request=request,
+                provider_name="anthropic",
+                provider_config=self._providers.anthropic,
+            )
         if request.provider == "google":
             return self._authorize_google(request)
         if request.provider == "copilot":
@@ -274,6 +297,13 @@ class ProviderAuthResolver:
             return self._authorize_openai_compatible_provider(
                 request=request,
                 provider_config=compatible_config,
+            )
+        anthropic_wire_config = self._anthropic_wire_provider_config(request.provider)
+        if anthropic_wire_config is not None:
+            return self._authorize_anthropic(
+                request=request,
+                provider_name=request.provider,
+                provider_config=anthropic_wire_config,
             )
         custom_config = self._custom_provider_config(request.provider)
         if custom_config is not None:
@@ -446,22 +476,27 @@ class ProviderAuthResolver:
             material=self._bearer_material("openai", method, token),
         )
 
-    def _authorize_anthropic(self, request: ProviderAuthAuthorizeRequest) -> ProviderAuthAuthorizeResult:
+    def _authorize_anthropic(
+        self,
+        *,
+        request: ProviderAuthAuthorizeRequest,
+        provider_name: str,
+        provider_config: AnthropicProviderConfig | None,
+    ) -> ProviderAuthAuthorizeResult:
         method = self._resolve_method(request, default_method="api_key", allowed_methods={"api_key"})
-        provider_config = self._providers.anthropic
         payload = {} if request.payload is None else dict(request.payload)
         token = self._resolve_api_key(
             payload=payload,
             field_name="api_key",
             config_value=None if provider_config is None else provider_config.api_key,
-            provider="anthropic",
+            provider=provider_name,
         )
         return ProviderAuthAuthorizeResult(
-            provider="anthropic",
+            provider=provider_name,
             method=method,
             status="authorized",
             material=ProviderAuthMaterial(
-                provider="anthropic",
+                provider=provider_name,
                 method=method,
                 headers={"x-api-key": token},
                 metadata={},

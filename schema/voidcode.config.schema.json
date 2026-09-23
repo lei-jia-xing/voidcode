@@ -1365,6 +1365,26 @@
             }
           ]
         },
+        "kimi-coding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/anthropicProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "minimax-cn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/anthropicProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "google": {
           "anyOf": [
             {
@@ -1540,7 +1560,7 @@
             "$ref": "#/$defs/endpointProviderConfig"
           },
           "propertyNames": {
-            "pattern": "^(?!(?:openai|anthropic|google|copilot|endpoint|opencode|opencode-go|openrouter|deepseek|zai|zhipuai|grok|minimax|kimi|qwen|groq|together|fireworks|mistral)$)(?!.*[/]).+$"
+            "pattern": "^(?!(?:openai|anthropic|google|copilot|endpoint|opencode|opencode-go|openrouter|deepseek|zai|zhipuai|grok|minimax|minimax-cn|kimi|kimi-coding|qwen|groq|together|fireworks|mistral)$)(?!.*[/]).+$"
           },
           "type": "object"
         }

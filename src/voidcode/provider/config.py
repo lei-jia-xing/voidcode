@@ -256,6 +256,8 @@ class _OpenAICompatibleProviderConfigPayload(_ProviderPayloadModel):
 class ProviderConfigsPayload(_ProviderPayloadModel):
     openai: _OpenAIProviderConfigPayload | None = None
     anthropic: _AnthropicProviderConfigPayload | None = None
+    kimi_coding: _AnthropicProviderConfigPayload | None = Field(default=None, alias="kimi-coding")
+    minimax_cn: _AnthropicProviderConfigPayload | None = Field(default=None, alias="minimax-cn")
     google: _GoogleProviderConfigPayload | None = None
     copilot: _CopilotProviderConfigPayload | None = None
     endpoint: _ProviderEndpointConfigPayload | None = None
@@ -634,6 +636,8 @@ class ProviderEndpointConfig:
 class ProviderConfigs:
     openai: OpenAIProviderConfig | None = None
     anthropic: AnthropicProviderConfig | None = None
+    kimi_coding: AnthropicProviderConfig | None = None
+    minimax_cn: AnthropicProviderConfig | None = None
     google: GoogleProviderConfig | None = None
     copilot: CopilotProviderConfig | None = None
     endpoint: ProviderEndpointConfig | None = None
@@ -667,6 +671,11 @@ class ProviderConfigs:
 
 _OPENAI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
 _ANTHROPIC_API_KEY_ENV_VAR = "ANTHROPIC_API_KEY"
+# Distinct from ``KIMI_API_KEY``/``MINIMAX_API_KEY`` on purpose: those feed the
+# OpenAI wire at ``api.moonshot.ai``/``api.minimax.io``, and one variable must
+# never send one host's credential to another host.
+_KIMI_CODING_API_KEY_ENV_VAR = "KIMI_CODING_API_KEY"
+_MINIMAX_CN_API_KEY_ENV_VAR = "MINIMAX_CN_API_KEY"
 _GOOGLE_API_KEY_ENV_VAR = "GOOGLE_API_KEY"
 _COPILOT_TOKEN_ENV_VAR = "GITHUB_COPILOT_TOKEN"
 _ENDPOINT_API_KEY_ENV_VAR = "ENDPOINT_API_KEY"
@@ -721,6 +730,8 @@ def provider_configs_from_env(env: Mapping[str, str]) -> ProviderConfigs | None:
     providers = ProviderConfigs(
         openai=(OpenAIProviderConfig(api_key=openai_key) if (openai_key := env.get(_OPENAI_API_KEY_ENV_VAR)) else None),
         anthropic=(AnthropicProviderConfig(api_key=anthropic_key) if (anthropic_key := env.get(_ANTHROPIC_API_KEY_ENV_VAR)) else None),
+        kimi_coding=(AnthropicProviderConfig(api_key=kimi_coding_key) if (kimi_coding_key := env.get(_KIMI_CODING_API_KEY_ENV_VAR)) else None),
+        minimax_cn=(AnthropicProviderConfig(api_key=minimax_cn_key) if (minimax_cn_key := env.get(_MINIMAX_CN_API_KEY_ENV_VAR)) else None),
         google=(
             GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="api_key", api_key=google_key))
             if (google_key := env.get(_GOOGLE_API_KEY_ENV_VAR))
@@ -771,6 +782,8 @@ def merge_provider_configs(
     return ProviderConfigs(
         openai=_merge_openai_provider_config(primary.openai, fallback.openai),
         anthropic=_merge_anthropic_provider_config(primary.anthropic, fallback.anthropic),
+        kimi_coding=_merge_anthropic_provider_config(primary.kimi_coding, fallback.kimi_coding),
+        minimax_cn=_merge_anthropic_provider_config(primary.minimax_cn, fallback.minimax_cn),
         google=_merge_google_provider_config(primary.google, fallback.google),
         copilot=_merge_copilot_provider_config(primary.copilot, fallback.copilot),
         endpoint=_merge_endpoint_provider_config(primary.endpoint, fallback.endpoint),
@@ -937,6 +950,8 @@ def _provider_configs_has_entries(providers: ProviderConfigs) -> bool:
         (
             providers.openai,
             providers.anthropic,
+            providers.kimi_coding,
+            providers.minimax_cn,
             providers.google,
             providers.copilot,
             providers.endpoint,
@@ -1051,6 +1066,19 @@ def parse_provider_configs_payload(
             payload.anthropic,
             field_path=_nested_config_field(source, "anthropic"),
             env=environment,
+            api_key_env_var=_ANTHROPIC_API_KEY_ENV_VAR,
+        ),
+        kimi_coding=_parse_anthropic_provider_config(
+            payload.kimi_coding,
+            field_path=_nested_config_field(source, "kimi-coding"),
+            env=environment,
+            api_key_env_var=_KIMI_CODING_API_KEY_ENV_VAR,
+        ),
+        minimax_cn=_parse_anthropic_provider_config(
+            payload.minimax_cn,
+            field_path=_nested_config_field(source, "minimax-cn"),
+            env=environment,
+            api_key_env_var=_MINIMAX_CN_API_KEY_ENV_VAR,
         ),
         google=_parse_google_provider_config(
             payload.google,
@@ -1176,6 +1204,16 @@ def serialize_provider_configs(
     if providers.anthropic is not None:
         serialized["anthropic"] = _serialize_anthropic_provider_config(
             providers.anthropic,
+            include_secrets=include_secrets,
+        )
+    if providers.kimi_coding is not None:
+        serialized["kimi-coding"] = _serialize_anthropic_provider_config(
+            providers.kimi_coding,
+            include_secrets=include_secrets,
+        )
+    if providers.minimax_cn is not None:
+        serialized["minimax-cn"] = _serialize_anthropic_provider_config(
+            providers.minimax_cn,
             include_secrets=include_secrets,
         )
     if providers.google is not None:
@@ -1348,6 +1386,7 @@ def _parse_anthropic_provider_config(
     *,
     field_path: str,
     env: Mapping[str, str],
+    api_key_env_var: str,
 ) -> AnthropicProviderConfig | None:
     if raw_value is None:
         return None
@@ -1363,7 +1402,7 @@ def _parse_anthropic_provider_config(
 
     api_key = payload.api_key
     if api_key is None:
-        api_key = env.get(_ANTHROPIC_API_KEY_ENV_VAR)
+        api_key = env.get(api_key_env_var)
     return AnthropicProviderConfig(
         api_key=api_key,
         base_url=payload.base_url,

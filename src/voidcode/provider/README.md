@@ -122,6 +122,22 @@ Provider 只有**一个机器标识**和一个**人类标签**，两者各有出
 `endpoint`（未配置时为本地网关 `http://127.0.0.1:4000/v1`）、`deepseek`（`https://api.deepseek.com`）
 与 `grok`（`https://api.x.ai`）。
 
+### 一等 Anthropic-wire Provider
+
+以下 provider 的 wire 是 Anthropic Messages（`provider/anthropic_native.py`）；vendor 默认 host 与凭据环境变量来自
+`provider/provider_config.py` 的 `_DEFAULT_ANTHROPIC_WIRE_BASE_URLS`，配置支持 `api_key`、`base_url`、
+`discovery_base_url`、`version`、`beta_headers`、`cache_retention`、`timeout_seconds` 和 `transient_retry`。
+
+| Provider | 配置 Key | 默认 Base URL | 默认环境变量 |
+| :--- | :--- | :--- | :--- |
+| **Anthropic** | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
+| **Kimi For Coding** | `kimi-coding` | `https://api.kimi.com/coding` | `KIMI_CODING_API_KEY` |
+| **MiniMax CN** | `minimax-cn` | `https://api.minimaxi.com/anthropic` | `MINIMAX_CN_API_KEY` |
+
+`kimi-coding` / `minimax-cn` 与 OpenAI-wire 的 `kimi` / `minimax` 是不同的 host，因此凭据环境变量刻意不共用：
+`KIMI_API_KEY` 只发往 `api.moonshot.ai`，`MINIMAX_API_KEY` 只发往 `api.minimax.io`，一个变量不会把一个 host 的凭据发到另一个 host。
+（Kimi Code 的 OAuth 订阅登录 VoidCode 不支持：`kimi-coding` 只接受 API key。）
+
 ### Endpoint 解析规则
 
 - 每个 provider 只解析到自己的 endpoint：先取 `providers.<name>.base_url`，没有则取该 provider 自身的默认 host。
@@ -154,7 +170,7 @@ Provider 只有**一个机器标识**和一个**人类标签**，两者各有出
 | **Z.AI** | `/v4/models` endpoint | OpenAI-compatible，自动发现 |
 | **智谱 AI** | `/v4/models` endpoint | OpenAI-compatible，自动发现 |
 | **OpenRouter** | `/api/v1/models` endpoint | 自动发现真实模型 ID；模型引用保留 provider/model 中的全部 slash，也包含 API 返回的 `:free` 模型 |
-| **MiniMax** | 无公开 discovery endpoint | 默认禁用远端发现；配置 `discovery_base_url` 或 `model_map` 后可用。catalog 中的 `minimax` 条目由 models.dev 的 `minimax` 与 `minimax-cn` 两个来源键合并生成（区域变体并入同一 canonical id，生成期 `strip().lower()`）；没有运行时的 `minimax-cn` provider id |
+| **MiniMax** | 无公开 discovery endpoint | 默认禁用远端发现；配置 `discovery_base_url` 或 `model_map` 后可用。catalog 中的 `minimax` 条目由 models.dev 的 `minimax` 与 `minimax-cn` 两个来源键合并生成（区域变体并入同一 canonical id，生成期 `strip().lower()`）；运行时的 `minimax-cn` 是 Anthropic-wire vendor，自带 catalog 里没有它的条目 |
 | **Kimi** | `/v1/models` endpoint | OpenAI-compatible，自动发现 |
 | **OpenCode Zen** | `/zen/v1/models` endpoint | OpenAI-compatible，自动发现；模型引用为 `opencode/<model-id>` |
 | **OpenCode Go** | 无公开 discovery endpoint | 默认禁用远端发现；配置 `discovery_base_url` 或 `model_map` 后可用 |
@@ -163,6 +179,8 @@ Provider 只有**一个机器标识**和一个**人类标签**，两者各有出
 | **Together** | `/v1/models` endpoint | OpenAI-compatible，自动发现 |
 | **Fireworks AI** | 无通用 `/v1/models` | 默认禁用远端发现；可通过 `discovery_base_url` 显式启用 |
 | **Mistral** | `/v1/models` endpoint | OpenAI-compatible，自动发现 |
+| **Kimi For Coding** | 无公开 discovery endpoint | 默认禁用远端发现；配置 `discovery_base_url` 或 `model_map` 后可用 |
+| **MiniMax CN** | 无公开 discovery endpoint | 默认禁用远端发现；配置 `discovery_base_url` 或 `model_map` 后可用 |
 
 OpenRouter 不硬编码易变的免费模型 slug；请使用 `/api/v1/models` 刷新得到的模型 ID，例如
 `openrouter/anthropic/claude-3.7-sonnet` 或 API 当前返回的 `openrouter/<provider>/<model>:free`。

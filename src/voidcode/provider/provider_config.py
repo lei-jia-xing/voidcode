@@ -36,6 +36,10 @@ _DEFAULT_OPENAI_WIRE_BASE_URLS: dict[str, str] = {
 # ``anthropic_native`` keeps its own construction default for direct use only.
 _DEFAULT_ANTHROPIC_WIRE_BASE_URLS: dict[str, str] = {
     "anthropic": "https://api.anthropic.com",
+    # Kimi's coding subscription API and MiniMax's China-region Anthropic
+    # surface; hosts taken from pi's provider definitions.
+    "kimi-coding": "https://api.kimi.com/coding",
+    "minimax-cn": "https://api.minimaxi.com/anthropic",
 }
 
 # The endpoint provider is a user-supplied OpenAI-compatible gateway. Without
@@ -105,14 +109,23 @@ def anthropic_compatible_endpoint_config(provider_name: str, config: AnthropicPr
     if vendor_default_base_url is None:
         raise ValueError(f"Unknown Anthropic-wire provider: {provider_name!r}")
     configured_base_url = None if config is None else config.base_url
+    configured_discovery_base_url = None if config is None else config.discovery_base_url
+    discovery_base_url = default_discovery_base_url(
+        provider_name,
+        configured_base_url=configured_base_url,
+        configured_discovery_base_url=configured_discovery_base_url,
+    )
+    if discovery_base_url is None and configured_base_url is None:
+        # Nothing configured and no verified listing host of its own: disable
+        # discovery. ``None`` here would make the catalog probe
+        # ``<vendor base>/models`` as an OpenAI listing, which nobody has
+        # verified for these Anthropic-wire hosts. A configured
+        # ``discovery_base_url`` or ``base_url`` still decides for itself above.
+        discovery_base_url = ""
     return ProviderEndpointConfig(
         api_key=None if config is None else config.api_key,
         base_url=configured_base_url or vendor_default_base_url,
-        discovery_base_url=default_discovery_base_url(
-            provider_name,
-            configured_base_url=configured_base_url,
-            configured_discovery_base_url=None if config is None else config.discovery_base_url,
-        ),
+        discovery_base_url=discovery_base_url,
         timeout_seconds=None if config is None else config.timeout_seconds,
         model_map={},
         anthropic_version=None if config is None else config.version,

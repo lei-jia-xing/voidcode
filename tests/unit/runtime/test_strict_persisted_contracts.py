@@ -4,6 +4,7 @@ from typing import cast
 
 import pytest
 
+from voidcode.provider.naming import BUILTIN_PROVIDER_IDS
 from voidcode.provider.protocol import ProviderTokenUsage
 from voidcode.runtime.config import RuntimeConfig, RuntimeContextWindowConfig
 from voidcode.runtime.config_materializer import (
@@ -224,11 +225,14 @@ def test_persisted_runtime_config_reports_unknown_provider_key_once() -> None:
     with pytest.raises(ValueError) as excinfo:
         parse_persisted_runtime_config(payload)
 
-    assert str(excinfo.value) == (
-        "invalid provider config: persisted runtime_config.providers.team-gateway: unknown provider id 'team-gateway': "
-        "known provider ids are anthropic, copilot, deepseek, endpoint, fireworks, google, grok, groq, kimi, minimax, "
-        "mistral, openai, opencode, opencode-go, openrouter, qwen, together, zai, zhipuai; "
-        "declare a custom OpenAI-compatible endpoint as providers.custom.team-gateway and reference it as 'team-gateway/<model>'"
+    message = str(excinfo.value)
+    assert message.startswith(
+        "invalid provider config: persisted runtime_config.providers.team-gateway: unknown provider id 'team-gateway': known provider ids are "
+    )
+    # The message lists every built-in id, in canonical order.
+    assert ", ".join(sorted(BUILTIN_PROVIDER_IDS)) in message
+    assert message.endswith(
+        "; declare a custom OpenAI-compatible endpoint as providers.custom.team-gateway and reference it as 'team-gateway/<model>'"
     )
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from voidcode.provider.anthropic_native import AnthropicMessagesProvider
 from voidcode.provider.config import (
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
@@ -16,12 +17,38 @@ from voidcode.provider.endpoint import OpenAIEndpointProvider
 from voidcode.provider.google import GoogleModelProvider
 from voidcode.provider.naming import UnknownProviderIdError
 from voidcode.provider.openai import OpenAIModelProvider
+from voidcode.provider.provider_config import anthropic_compatible_endpoint_config
 from voidcode.provider.registry import (
     AnthropicCompatibleModelProvider,
     ModelProviderRegistry,
     OpenAICompatibleModelProvider,
 )
 from voidcode.provider.resolution import resolve_provider_model
+
+
+def test_registry_anthropic_wire_vendors_share_one_adapter() -> None:
+    registry = ModelProviderRegistry.with_defaults()
+
+    for provider_id, base_url in (
+        ("kimi-coding", "https://api.kimi.com/coding"),
+        ("minimax-cn", "https://api.minimaxi.com/anthropic"),
+    ):
+        provider = registry.resolve(provider_id)
+
+        assert isinstance(provider, AnthropicCompatibleModelProvider)
+        assert provider.name == provider_id
+        config = registry.provider_config(provider_id)
+        assert config is not None
+        assert config.base_url == base_url
+        # No verified model listing of its own: discovery stays off instead of
+        # probing a host nobody validated.
+        assert config.discovery_base_url == ""
+        assert isinstance(provider.turn_provider(), AnthropicMessagesProvider)
+
+
+def test_anthropic_wire_endpoint_config_rejects_unknown_vendor_names() -> None:
+    with pytest.raises(ValueError, match="Unknown Anthropic-wire provider"):
+        anthropic_compatible_endpoint_config("unknown-vendor", None)
 
 
 def test_registry_registers_concrete_provider_adapters() -> None:
