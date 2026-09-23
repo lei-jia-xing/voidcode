@@ -6,7 +6,7 @@ from typing import Protocol
 from pydantic import BaseModel, field_validator
 
 from ...runtime.background.models import BackgroundTaskState, is_background_task_terminal
-from .._pydantic_args import parse_tool_args
+from .._pydantic_args import NonEmptyPrompt, parse_tool_args
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import require_runtime_tool_context
 
@@ -21,7 +21,7 @@ class TaskSteerRuntime(Protocol):
 
 class _TaskSteerArgs(BaseModel):
     task_id: str
-    prompt: str
+    prompt: NonEmptyPrompt
 
     @field_validator("task_id", mode="after")
     @classmethod
@@ -29,14 +29,6 @@ class _TaskSteerArgs(BaseModel):
         stripped = value.strip()
         if not stripped:
             raise ValueError("task_id must be a non-empty string")
-        return stripped
-
-    @field_validator("prompt", mode="after")
-    @classmethod
-    def _validate_prompt(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("prompt must be a non-empty string")
         return stripped
 
 

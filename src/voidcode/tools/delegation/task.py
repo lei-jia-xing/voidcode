@@ -13,7 +13,7 @@ from ...runtime.contracts import (
     runtime_subagent_route_from_metadata,
     validate_runtime_request_metadata,
 )
-from .._pydantic_args import parse_tool_args
+from .._pydantic_args import NonEmptyPrompt, parse_tool_args
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import require_runtime_tool_context
 from .task_control import TaskControlRuntime, TaskControlTool
@@ -26,7 +26,7 @@ class TaskRuntime(TaskControlRuntime, Protocol):
 
 
 class _TaskArgs(BaseModel):
-    prompt: str
+    prompt: NonEmptyPrompt
     run_in_background: bool
     load_skills: list[str]
     subagent_type: str
@@ -53,14 +53,6 @@ class _TaskArgs(BaseModel):
         if self.schema_mode == "strict" and self.output_schema is None:
             raise ValueError("schemaMode=strict requires outputSchema (schema_mode is meaningless without a declared schema)")
         return self
-
-    @field_validator("prompt", mode="after")
-    @classmethod
-    def _validate_prompt(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("prompt must be a non-empty string")
-        return stripped
 
     @field_validator("load_skills", mode="before")
     @classmethod

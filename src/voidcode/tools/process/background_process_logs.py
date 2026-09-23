@@ -3,24 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from ...runtime.background.process import BackgroundProcessManager
-from .._pydantic_args import parse_tool_args
+from .._pydantic_args import NonEmptyProcessId, parse_tool_args
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..output import _artifact_metadata
 from ..runtime_context import current_runtime_tool_context
 
 
 class _BackgroundProcessLogsArgs(BaseModel):
-    process_id: str
-
-    @field_validator("process_id", mode="after")
-    @classmethod
-    def _validate_process_id(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("process_id must be a non-empty string")
-        return value
+    process_id: NonEmptyProcessId
 
 
 class BackgroundProcessLogsRuntime(Protocol):

@@ -14,7 +14,7 @@ from ...runtime.contracts import (
     runtime_subagent_route_from_metadata,
     validate_runtime_request_metadata,
 )
-from .._pydantic_args import parse_tool_args
+from .._pydantic_args import NonEmptyPrompt, parse_tool_args
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import require_runtime_tool_context
 
@@ -30,21 +30,13 @@ class _BatchItemArgs(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    prompt: str
+    prompt: NonEmptyPrompt
     load_skills: list[str]
     subagent_type: str
     description: str | None = None
     command: str | None = None
     output_schema: dict[str, object] | None = Field(default=None, validation_alias="outputSchema")
     schema_mode: Literal["permissive", "strict"] = Field(default="permissive", validation_alias="schemaMode")
-
-    @field_validator("prompt", mode="after")
-    @classmethod
-    def _validate_prompt(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("prompt must be a non-empty string")
-        return stripped
 
     @field_validator("load_skills", mode="after")
     @classmethod

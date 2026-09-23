@@ -3,31 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from ...runtime.background.process import BackgroundProcessManager
-from .._pydantic_args import parse_tool_args
+from .._pydantic_args import NonEmptyCommand, OptionalDescription, parse_tool_args
 from ..contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import current_runtime_tool_context
 
 
 class _BackgroundProcessStartArgs(BaseModel):
-    command: str
-    description: str | None = None
-
-    @field_validator("command", mode="after")
-    @classmethod
-    def _validate_command(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("command must not be empty")
-        return value
-
-    @field_validator("description", mode="after")
-    @classmethod
-    def _validate_description(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("description must not be empty when provided")
-        return value
+    command: NonEmptyCommand
+    description: OptionalDescription = None
 
 
 class BackgroundProcessStartRuntime(Protocol):

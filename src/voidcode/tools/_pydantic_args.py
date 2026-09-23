@@ -1,8 +1,40 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Annotated
 
-from pydantic import BaseModel, ValidationError
+from pydantic import AfterValidator, BaseModel, ValidationError
+
+
+def validate_command(value: str) -> str:
+    if not value.strip():
+        raise ValueError("command must not be empty")
+    return value
+
+
+def validate_description(value: str | None) -> str | None:
+    if value is not None and not value.strip():
+        raise ValueError("description must not be empty when provided")
+    return value
+
+
+def validate_process_id(value: str) -> str:
+    if not value.strip():
+        raise ValueError("process_id must be a non-empty string")
+    return value
+
+
+def validate_prompt(value: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("prompt must be a non-empty string")
+    return stripped
+
+
+type NonEmptyCommand = Annotated[str, AfterValidator(validate_command)]
+type OptionalDescription = Annotated[str | None, AfterValidator(validate_description)]
+type NonEmptyProcessId = Annotated[str, AfterValidator(validate_process_id)]
+type NonEmptyPrompt = Annotated[str, AfterValidator(validate_prompt)]
 
 
 def parse_tool_args[M: BaseModel](model: type[M], arguments: Mapping[str, object] | dict[str, object], *, tool_name: str) -> M:

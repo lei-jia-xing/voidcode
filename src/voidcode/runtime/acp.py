@@ -485,7 +485,7 @@ def emit_acp_events(
     adapter: AcpAdapter,
     session: SessionState,
     start_sequence: int,
-    acp_events: tuple[object, ...],
+    acp_events: tuple[AcpRuntimeEvent, ...],
 ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int]:
     emitted: list[RuntimeStreamChunk] = []
     current_session = session

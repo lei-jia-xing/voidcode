@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from ..graph.contracts import GraphEvent, GraphRunRequest, GraphStep, RuntimeGraph
+from ..graph.contracts import GraphEvent, GraphRunRequest, GraphStep, RuntimeGraph, SafeBoundaryGraph, StreamableGraph
 from ..hook.config import RuntimeHookSurface
 from ..hook.typed import (
     ToolInputEvent,
@@ -645,7 +645,7 @@ class RuntimeRunLoopCoordinator:
         tool_results: list[ToolResult],
         last_event_sequence: int,
     ) -> None:
-        current_turn_results = [result for result in tool_results if getattr(result, "source", None) != "replayed_conversation"]
+        current_turn_results = [result for result in tool_results if result.source != "replayed_conversation"]
         self._session_store.save_interrupted_checkpoint(
             workspace=self._workspace,
             session_id=session.session.id,
@@ -1006,7 +1006,7 @@ class RuntimeRunLoopCoordinator:
                 partial_timeout_payload: dict[str, object] = {}
                 partial_timeout_content: str | None = None
                 partial_timeout_error: str | None = None
-                partial_result = getattr(exc, "partial_result", None)
+                partial_result = exc.partial_result
                 if isinstance(partial_result, ToolResult):
                     capped_partial = cap_tool_result_output(
                         partial_result,
@@ -1319,19 +1319,17 @@ class RuntimeRunLoopCoordinator:
                     sequence=sequence,
                 )
                 break
-            queue_drain = getattr(runtime, "drain_queued_messages", None)
-            if callable(queue_drain):
-                queued_messages = queue_drain(session.session.id, kind="steering")
-                if queued_messages:
-                    steering_text = "\n\n".join(queued_messages)
-                    active_graph_request = replace(
-                        active_graph_request,
-                        prompt=(
-                            f"{active_graph_request.prompt}\n\nRuntime steering messages:\n{steering_text}"
-                            if active_graph_request.prompt.strip()
-                            else steering_text
-                        ),
-                    )
+            queued_messages = runtime.drain_queued_messages(session.session.id, kind="steering")
+            if queued_messages:
+                steering_text = "\n\n".join(queued_messages)
+                active_graph_request = replace(
+                    active_graph_request,
+                    prompt=(
+                        f"{active_graph_request.prompt}\n\nRuntime steering messages:\n{steering_text}"
+                        if active_graph_request.prompt.strip()
+                        else steering_text
+                    ),
+                )
             current_graph_request: Any = active_graph_request
             current_prompt: str = current_graph_request.prompt
             current_available_tools: tuple[ToolDefinition, ...] = current_graph_request.available_tools
@@ -2240,8 +2238,7 @@ class RuntimeRunLoopCoordinator:
                 active_graph_request=active_graph_request,
             )
             return None, sequence, streamed_reasoning_texts
-        stream_step = getattr(graph, "stream_step", None)
-        if active_graph_request.metadata.get("provider_stream") is True and callable(stream_step):
+        if active_graph_request.metadata.get("provider_stream") is True and isinstance(graph, StreamableGraph):
             graph_step = None
             partial_fragments: dict[str, list[str]] = {}
             partial_fragment_chars: dict[str, int] = {}
@@ -2298,7 +2295,7 @@ class RuntimeRunLoopCoordinator:
                     parsed_arguments=parsed,
                 ),
             )
-            for streamed_item in stream_step(
+            for streamed_item in graph.stream_step(
                 stream_request,
                 tuple(tool_results),
                 session=graph_request.session,
@@ -3029,7 +3026,7 @@ class RuntimeRunLoopCoordinator:
                 partial_timeout_payload: dict[str, object] = {}
                 partial_timeout_content: str | None = None
                 partial_timeout_error: str | None = None
-                partial_result = getattr(exc, "partial_result", None)
+                partial_result = exc.partial_result
                 if isinstance(partial_result, ToolResult):
                     capped_partial = cap_tool_result_output(
                         partial_result,
@@ -4063,8 +4060,7 @@ class RuntimeRunLoopCoordinator:
 
     @staticmethod
     def _at_safe_boundary(graph: RuntimeGraph) -> bool:
-        is_at_safe_boundary = getattr(graph, "is_at_safe_boundary", None)
-        return callable(is_at_safe_boundary) and bool(is_at_safe_boundary())
+        return isinstance(graph, SafeBoundaryGraph) and graph.is_at_safe_boundary()
 
     def _drain_runtime_events(
         self,

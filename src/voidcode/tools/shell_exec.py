@@ -11,35 +11,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, ClassVar, cast, final
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from ..security.shell_policy import (
     DEFAULT_TIMEOUT_SECONDS,
     non_interactive_shell_env,
     resolve_shell_execution_policy,
 )
-from ._pydantic_args import parse_tool_args
+from ._pydantic_args import NonEmptyCommand, OptionalDescription, parse_tool_args
 from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
 from .runtime_context import current_runtime_tool_context
 
 
 class ShellExecArgs(BaseModel):
-    command: str
-    description: str | None = None
-
-    @field_validator("command", mode="after")
-    @classmethod
-    def _validate_command(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("command must not be empty")
-        return value
-
-    @field_validator("description", mode="after")
-    @classmethod
-    def _validate_description(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("description must not be empty when provided")
-        return value
+    command: NonEmptyCommand
+    description: OptionalDescription = None
 
 
 _SHELL_PROGRESS_CHUNK_BYTES = 8192

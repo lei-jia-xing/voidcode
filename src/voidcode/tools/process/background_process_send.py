@@ -6,22 +6,15 @@ from typing import Protocol
 from pydantic import BaseModel, field_validator
 
 from ...runtime.background.process import BackgroundProcessManager
-from .._pydantic_args import parse_tool_args
+from .._pydantic_args import NonEmptyProcessId, parse_tool_args
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import current_runtime_tool_context
 
 
 class _BackgroundProcessSendArgs(BaseModel):
-    process_id: str
+    process_id: NonEmptyProcessId
     input: str
     newline: bool = True
-
-    @field_validator("process_id", mode="after")
-    @classmethod
-    def _validate_process_id(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("process_id must be a non-empty string")
-        return value
 
     @field_validator("input", mode="after")
     @classmethod

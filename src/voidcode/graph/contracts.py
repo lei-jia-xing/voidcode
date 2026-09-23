@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import operator
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Annotated, Final, Literal, Protocol, TypedDict, runtime_checkable
 
@@ -112,3 +112,23 @@ class RuntimeGraph(Protocol):
         *,
         session: GraphSession,
     ) -> GraphStep: ...
+
+
+@runtime_checkable
+class StreamableGraph(Protocol):
+    """Graph capability: yield events incrementally before the terminal step."""
+
+    def stream_step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[ToolResult | ToolResultView, ...],
+        *,
+        session: GraphSession,
+    ) -> Iterator[GraphStreamItem]: ...
+
+
+@runtime_checkable
+class SafeBoundaryGraph(Protocol):
+    """Graph capability: report whether a checkpoint is safe to capture now."""
+
+    def is_at_safe_boundary(self) -> bool: ...

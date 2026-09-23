@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import cast
+from typing import TYPE_CHECKING
 
-from ..acp import AcpDelegatedExecution
 from ..graph.contracts import GraphEvent
 from .events import (
     EMITTED_EVENT_TYPES,
@@ -11,6 +10,11 @@ from .events import (
     EventEnvelope,
     runtime_reasoning_part_from_provider_stream,
 )
+
+if TYPE_CHECKING:
+    from ..mcp.types import McpRuntimeEvent
+    from .acp import AcpRuntimeEvent
+    from .lsp import LspRuntimeEvent
 
 # Each surface (LSP/ACP/MCP) accepts exactly the ``EMITTED_EVENT_TYPES`` members
 # of its own family. The sets are DERIVED by prefix from events.py's
@@ -38,20 +42,15 @@ def envelopes_for_lsp_events(
     *,
     session_id: str,
     start_sequence: int,
-    lsp_events: tuple[object, ...],
+    lsp_events: tuple[LspRuntimeEvent, ...],
 ) -> tuple[EventEnvelope, ...]:
     known_event_types = _LSP_RUNTIME_EVENT_TYPES
     envelopes: list[EventEnvelope] = []
     sequence = start_sequence
     for raw_event in lsp_events:
-        if isinstance(raw_event, dict):
-            raw_event_dict = raw_event
-            event_type = raw_event_dict.get("event_type")
-            payload = raw_event_dict.get("payload")
-        else:
-            event_type = getattr(raw_event, "event_type", None)
-            payload = getattr(raw_event, "payload", None)
-        if event_type not in known_event_types or not isinstance(payload, dict):
+        event_type = raw_event.event_type
+        payload = raw_event.payload
+        if event_type not in known_event_types:
             continue
         envelopes.append(
             EventEnvelope(
@@ -70,30 +69,19 @@ def envelopes_for_acp_events(
     *,
     session_id: str,
     start_sequence: int,
-    acp_events: tuple[object, ...],
+    acp_events: tuple[AcpRuntimeEvent, ...],
 ) -> tuple[EventEnvelope, ...]:
     known_event_types = _ACP_RUNTIME_EVENT_TYPES
     envelopes: list[EventEnvelope] = []
     sequence = start_sequence
     for raw_event in acp_events:
-        acp_session_id: str | None = None
-        acp_parent_session_id: str | None = None
-        acp_delegation: AcpDelegatedExecution | None = None
-        if isinstance(raw_event, dict):
-            raw_event_dict = raw_event
-            event_type = raw_event_dict.get("event_type")
-            payload = raw_event_dict.get("payload")
-        else:
-            event_type = getattr(raw_event, "event_type", None)
-            payload = getattr(raw_event, "payload", None)
-            acp_session_id = getattr(raw_event, "session_id", None)
-            acp_parent_session_id = getattr(raw_event, "parent_session_id", None)
-            acp_delegation = cast(
-                AcpDelegatedExecution | None,
-                getattr(raw_event, "delegation", None),
-            )
-        if event_type not in known_event_types or not isinstance(payload, dict):
+        event_type = raw_event.event_type
+        payload = raw_event.payload
+        if event_type not in known_event_types:
             continue
+        acp_session_id = raw_event.session_id
+        acp_parent_session_id = raw_event.parent_session_id
+        acp_delegation = raw_event.delegation
         envelopes.append(
             EventEnvelope(
                 session_id=session_id,
@@ -101,7 +89,7 @@ def envelopes_for_acp_events(
                 event_type=event_type,
                 source="runtime",
                 payload={
-                    **cast(dict[str, object], payload),
+                    **payload,
                     **(
                         {
                             "session_id": acp_session_id,
@@ -125,20 +113,15 @@ def envelopes_for_mcp_events(
     *,
     session_id: str,
     start_sequence: int,
-    mcp_events: tuple[object, ...],
+    mcp_events: tuple[McpRuntimeEvent, ...],
 ) -> tuple[EventEnvelope, ...]:
     known_event_types = _MCP_RUNTIME_EVENT_TYPES
     envelopes: list[EventEnvelope] = []
     sequence = start_sequence
     for raw_event in mcp_events:
-        if isinstance(raw_event, dict):
-            raw_event_dict = raw_event
-            event_type = raw_event_dict.get("event_type")
-            payload = raw_event_dict.get("payload")
-        else:
-            event_type = getattr(raw_event, "event_type", None)
-            payload = getattr(raw_event, "payload", None)
-        if event_type not in known_event_types or not isinstance(payload, dict):
+        event_type = raw_event.event_type
+        payload = raw_event.payload
+        if event_type not in known_event_types:
             continue
         envelopes.append(
             EventEnvelope(

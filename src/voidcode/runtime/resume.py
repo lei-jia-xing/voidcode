@@ -10,6 +10,7 @@ from ..provider.protocol import ProviderAbortSignal
 from ..tools.contracts import ToolCall, ToolResult
 from ..tools.question import QuestionTool
 from .acp import (
+    AcpRuntimeEvent,
     disconnect_acp_for_session_state,
     emit_acp_events,
     emit_current_acp_drain,
@@ -781,7 +782,7 @@ class RuntimeResumeCoordinator:
             )
             return
 
-        deferred_startup_acp_events: tuple[object, ...] = ()
+        deferred_startup_acp_events: tuple[AcpRuntimeEvent, ...] = ()
         if self._acp_adapter.current_state().configuration.configured_enabled is True:
             try:
                 deferred_startup_acp_events = self._acp_adapter.connect()

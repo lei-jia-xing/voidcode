@@ -6,7 +6,7 @@ from typing import Annotated, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
 from ...runtime.background.process import BackgroundProcessManager
-from .._pydantic_args import format_validation_error
+from .._pydantic_args import NonEmptyCommand, NonEmptyProcessId, OptionalDescription, format_validation_error
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import current_runtime_tool_context
 from .background_process_logs import BackgroundProcessLogsTool
@@ -23,22 +23,8 @@ class _StrictArgs(BaseModel):
 
 class _StartArgs(_StrictArgs):
     op: Literal["start"]
-    command: str
-    description: str | None = None
-
-    @field_validator("command", mode="after")
-    @classmethod
-    def _validate_command(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("command must not be empty")
-        return value
-
-    @field_validator("description", mode="after")
-    @classmethod
-    def _validate_description(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("description must not be empty when provided")
-        return value
+    command: NonEmptyCommand
+    description: OptionalDescription = None
 
 
 class _PsArgs(_StrictArgs):
@@ -46,14 +32,7 @@ class _PsArgs(_StrictArgs):
 
 
 class _ProcessIdArgs(_StrictArgs):
-    process_id: str
-
-    @field_validator("process_id", mode="after")
-    @classmethod
-    def _validate_process_id(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("process_id must be a non-empty string")
-        return value
+    process_id: NonEmptyProcessId
 
 
 class _LogsArgs(_ProcessIdArgs):

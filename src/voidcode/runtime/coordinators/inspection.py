@@ -482,10 +482,7 @@ class InspectionCoordinator:
         return envelopes_for_mcp_events(
             session_id="runtime",
             start_sequence=1,
-            mcp_events=cast(
-                tuple[object, ...],
-                self._mcp_manager.cleanup_idle_session_servers(max_idle_seconds=max_idle_seconds),
-            ),
+            mcp_events=self._mcp_manager.cleanup_idle_session_servers(max_idle_seconds=max_idle_seconds),
         )
 
     def shutdown_mcp(self) -> tuple[EventEnvelope, ...]:
