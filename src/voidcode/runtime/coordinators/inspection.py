@@ -19,9 +19,8 @@ import logging
 import subprocess
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
-from ...acp import AcpRequestEnvelope, AcpResponseEnvelope
 from ...agent import AgentManifestRegistry
 from ...command import load_command_registry
 from ...command.models import CommandDefinition
@@ -44,7 +43,6 @@ from ...tools.runtime_context import current_runtime_tool_context
 from ..acp import (
     AcpAdapter,
     AcpAdapterState,
-    delegated_execution_for_task,
 )
 from ..agent_capability import validate_agent_capability_snapshot
 from ..background.routing import provider_fallback_for_agent_selection
@@ -55,7 +53,6 @@ from ..bundle import (
     apply_session_bundle,
     build_session_bundle,
     read_session_bundle,
-    write_session_bundle,
 )
 from ..config import (
     RuntimeAgentConfig,
@@ -164,13 +161,6 @@ if TYPE_CHECKING:
     from ..runtime_surface import RuntimeSurface
 
 logger = logging.getLogger(__name__)
-
-_ACP_CONNECTIVITY_ERRORS = frozenset(
-    {
-        "ACP adapter is not connected",
-        "ACP transport is not connected",
-    }
-)
 
 _POLICY_PROJECTED_EVENT_TYPES = frozenset({"runtime.request_received"})
 
@@ -474,17 +464,6 @@ class InspectionCoordinator:
             parent_session_id=context.parent_session_id if context is not None else None,
         )
 
-    def cleanup_idle_mcp_sessions(
-        self,
-        *,
-        max_idle_seconds: float = 300.0,
-    ) -> tuple[EventEnvelope, ...]:
-        return envelopes_for_mcp_events(
-            session_id="runtime",
-            start_sequence=1,
-            mcp_events=self._mcp_manager.cleanup_idle_session_servers(max_idle_seconds=max_idle_seconds),
-        )
-
     def shutdown_mcp(self) -> tuple[EventEnvelope, ...]:
         return envelopes_for_mcp_events(
             session_id="runtime",
@@ -514,48 +493,6 @@ class InspectionCoordinator:
             session_id="runtime",
             start_sequence=1,
             acp_events=self._acp_adapter.disconnect(),
-        )
-
-    def request_acp(self, *, request_type: str, payload: dict[str, object]) -> AcpResponseEnvelope:
-        return self._acp_adapter.request(AcpRequestEnvelope(request_type=request_type, payload=payload))
-
-    def request_delegated_acp(
-        self,
-        *,
-        request_type: str,
-        task_id: str,
-        payload: dict[str, object],
-    ) -> AcpResponseEnvelope:
-        task = self._load_background_task_fn(task_id)
-        task_any = cast(Any, task)
-        envelope = AcpRequestEnvelope(
-            request_type=request_type,
-            request_id=task_any.task.id,
-            session_id=task_any.session_id,
-            parent_session_id=task_any.parent_session_id,
-            delegation=delegated_execution_for_task(
-                task=task_any,
-                lifecycle_status=("waiting_approval" if task_any.status == "running" and task_any.approval_request_id else task_any.status),
-            ),
-            payload=payload,
-        )
-        response = self._acp_adapter.request(envelope)
-        if response.status != "error" or response.error not in _ACP_CONNECTIVITY_ERRORS:
-            return response
-        try:
-            if response.error == "ACP transport is not connected":
-                _ = self.disconnect_acp()
-            _ = self.connect_acp()
-        except Exception:
-            logger.debug("failed to reconnect ACP for delegated request retry", exc_info=True)
-            return response
-        return self._acp_adapter.request(envelope)
-
-    def fail_acp(self, message: str) -> tuple[EventEnvelope, ...]:
-        return envelopes_for_acp_events(
-            session_id="runtime",
-            start_sequence=1,
-            acp_events=self._acp_adapter.fail(message),
         )
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
@@ -826,24 +763,6 @@ class InspectionCoordinator:
             config_summary=self._session_bundle_config_summary(session_id=session_id),
             provider_summary=self._session_bundle_provider_summary(session_id=session_id),
         )
-
-    def export_session_bundle_file(
-        self,
-        *,
-        session_id: str,
-        output_path: Path,
-        options: SessionBundleOptions | None = None,
-        fmt: str | None = None,
-    ) -> SessionBundle:
-        bundle = self.export_session_bundle(session_id=session_id, options=options)
-        if fmt is not None and fmt not in {"zip", "json"}:
-            raise ValueError(f"unsupported session bundle format: {fmt!r}")
-        _ = write_session_bundle(
-            bundle,
-            path=output_path,
-            fmt=fmt,
-        )
-        return bundle
 
     def import_session_bundle_file(
         self,
@@ -1232,9 +1151,6 @@ class InspectionCoordinator:
         models = self._model_provider_registry.refresh_available_models(canonical_name)
         self._persist_provider_model_catalog_cache()
         return models
-
-    def provider_models(self, provider_name: str) -> tuple[str, ...]:
-        return self._provider_catalog_query.models(provider_name)
 
     def provider_model_catalog(self, provider_name: str) -> dict[str, object] | None:
         return self._provider_catalog_query.catalog_payload(provider_name)

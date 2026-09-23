@@ -2791,9 +2791,6 @@ class VoidCodeRuntime(RuntimeSurface):
     def _hydrate_provider_model_catalog_cache(self) -> None:
         self._provider_catalog_cache.hydrate()
 
-    def _persist_provider_model_catalog_cache(self) -> None:
-        self._provider_catalog_cache.persist()
-
     def reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> ReasoningEffortCapability:
         """Resolve the reasoning-effort capability of a config's active provider/model target.
 
