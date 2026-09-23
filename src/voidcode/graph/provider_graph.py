@@ -612,7 +612,6 @@ class ProviderGraph:
                 reported=raw_finish_reason is not None,
                 raw_finish_reason=raw_finish_reason,
             )
-
         ordered_tool_calls: list[tuple[tuple[int, int, int], ToolCall]] = []
         for state in sorted(lifecycle_tool_calls.values(), key=lambda item: cast(int, item["ordinal"])):
             if state.get("ended") is not True or not isinstance(state.get("tool_name"), str):
