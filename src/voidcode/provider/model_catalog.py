@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from functools import lru_cache
 from importlib.resources import files as _resource_files
 from typing import Literal, cast
@@ -64,61 +64,22 @@ class ProviderModelMetadata:
 
     def payload(self) -> dict[str, int | float | bool | str | list[str]]:
         payload: dict[str, int | float | bool | str | list[str]] = {}
-        if self.context_window is not None:
-            payload["context_window"] = self.context_window
-        if self.max_input_tokens is not None:
-            payload["max_input_tokens"] = self.max_input_tokens
-        if self.max_output_tokens is not None:
-            payload["max_output_tokens"] = self.max_output_tokens
-        if self.supports_tools is not None:
-            payload["supports_tools"] = self.supports_tools
-        if self.supports_vision is not None:
-            payload["supports_vision"] = self.supports_vision
-        if self.supports_streaming is not None:
-            payload["supports_streaming"] = self.supports_streaming
-        if self.supports_reasoning is not None:
-            payload["supports_reasoning"] = self.supports_reasoning
-        if self.supports_json_mode is not None:
-            payload["supports_json_mode"] = self.supports_json_mode
-        if self.cost_per_input_token is not None:
-            payload["cost_per_input_token"] = self.cost_per_input_token
-        if self.cost_per_output_token is not None:
-            payload["cost_per_output_token"] = self.cost_per_output_token
-        if self.cost_per_cache_read_token is not None:
-            payload["cost_per_cache_read_token"] = self.cost_per_cache_read_token
-        if self.cost_per_cache_write_token is not None:
-            payload["cost_per_cache_write_token"] = self.cost_per_cache_write_token
-        if self.supports_reasoning_effort is not None:
-            payload["supports_reasoning_effort"] = self.supports_reasoning_effort
-        if self.default_reasoning_effort is not None:
-            payload["default_reasoning_effort"] = self.default_reasoning_effort
-        if self.supported_effort_levels is not None:
-            payload["supported_effort_levels"] = list(self.supported_effort_levels)
-        if self.supports_reasoning_summary is not None:
-            payload["supports_reasoning_summary"] = self.supports_reasoning_summary
-        if self.supports_thinking_budget is not None:
-            payload["supports_thinking_budget"] = self.supports_thinking_budget
-        if self.supports_interleaved_reasoning is not None:
-            payload["supports_interleaved_reasoning"] = self.supports_interleaved_reasoning
-        if self.reasoning_visibility is not None:
-            payload["reasoning_visibility"] = self.reasoning_visibility
-        if self.modalities_input is not None:
-            payload["modalities_input"] = list(self.modalities_input)
-        if self.modalities_output is not None:
-            payload["modalities_output"] = list(self.modalities_output)
-        if self.model_status is not None:
-            payload["model_status"] = self.model_status
-        if self.tool_feedback_mode is not None:
-            payload["tool_feedback_mode"] = self.tool_feedback_mode
+        for model_field in fields(self):
+            # ``derived_max_input_tokens`` is internal bookkeeping, not metadata.
+            if not model_field.init:
+                continue
+            value = getattr(self, model_field.name)
+            if value is None:
+                continue
+            payload[model_field.name] = list(value) if isinstance(value, tuple) else value
         return payload
 
 
 @lru_cache(maxsize=1)
 def _load_static_catalog() -> dict[str, dict[str, ProviderModelMetadata]]:
-    try:
-        raw = _resource_files("voidcode.provider").joinpath("model_catalog_data.json").read_text(encoding="utf-8")
-    except FileNotFoundError, OSError:
-        return {}
+    # A packaged resource: a missing file means a broken install, not an empty
+    # catalog, so the read stays loud instead of quietly reporting no metadata.
+    raw = _resource_files("voidcode.provider").joinpath("model_catalog_data.json").read_text(encoding="utf-8")
     data = json.loads(raw)
     result: dict[str, dict[str, ProviderModelMetadata]] = {}
     for provider, models in data.items():
@@ -541,8 +502,8 @@ def _parse_openai_compatible_discovery_payload(payload: object) -> ModelDiscover
 def _parse_anthropic_discovery_payload(payload: object) -> ModelDiscoveryFetchResult:
     try:
         parsed = _AnthropicDiscoveryPayload.model_validate(payload)
-    except ValidationError:
-        return ModelDiscoveryFetchResult(models=())
+    except ValidationError as exc:
+        raise ValueError("provider model discovery response must be an object") from exc
     if parsed.data is None:
         return ModelDiscoveryFetchResult(models=())
     model_ids: list[str] = []
@@ -560,8 +521,8 @@ def _parse_anthropic_discovery_payload(payload: object) -> ModelDiscoveryFetchRe
 def _parse_google_discovery_payload(payload: object) -> ModelDiscoveryFetchResult:
     try:
         parsed = _GoogleDiscoveryPayload.model_validate(payload)
-    except ValidationError:
-        return ModelDiscoveryFetchResult(models=())
+    except ValidationError as exc:
+        raise ValueError("provider model discovery response must be an object") from exc
     if parsed.models is None:
         return ModelDiscoveryFetchResult(models=())
 

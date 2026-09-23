@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
@@ -65,35 +64,9 @@ def _format_snapshot_validation_error(*, source: str, error: dict[str, object]) 
     return format_invalid_provider_config_error(field_path, validation_reason_from_error(error))
 
 
-def resolved_provider_snapshot(
-    resolved_provider: ResolvedProviderConfig | Mapping[str, object] | None,
-) -> dict[str, object] | None:
+def resolved_provider_snapshot(resolved_provider: ResolvedProviderConfig | None) -> dict[str, object] | None:
     if resolved_provider is None:
         return None
-    if isinstance(resolved_provider, Mapping):
-        provider_snapshot = resolved_provider
-        raw_active_target = provider_snapshot.get("active_target")
-        raw_targets = provider_snapshot.get("targets")
-        if not isinstance(raw_active_target, Mapping) or not isinstance(raw_targets, list):
-            return None
-        active_target = _snapshot_target_payload(raw_active_target)
-        if active_target is None:
-            return None
-        normalized_targets: list[dict[str, str]] = []
-        for item in raw_targets:
-            if not isinstance(item, Mapping):
-                return None
-            target = _snapshot_target_payload(item)
-            if target is None:
-                return None
-            normalized_targets.append(target)
-        if not normalized_targets:
-            return None
-        return {
-            "active_target": active_target,
-            "targets": normalized_targets,
-        }
-
     targets: list[dict[str, str]] = []
     for target in resolved_provider.target_chain.all_targets:
         snapshot = _resolved_provider_target_snapshot(target)
@@ -189,7 +162,6 @@ def parse_resolved_provider_snapshot(
         active_target=resolved_active_target,
         target_chain=ResolvedProviderChain(
             preferred=first_target,
-            fallbacks=resolved_targets[1:],
             all_targets=resolved_targets,
         ),
     )
@@ -202,19 +174,6 @@ def _resolved_provider_target_snapshot(target: ResolvedProviderModel) -> dict[st
         "raw_model": target.selection.raw_model,
         "provider": target.selection.provider,
         "model": target.selection.model,
-    }
-
-
-def _snapshot_target_payload(payload: Mapping[str, object]) -> dict[str, str] | None:
-    raw_model = payload.get("raw_model")
-    provider = payload.get("provider")
-    model = payload.get("model")
-    if not isinstance(raw_model, str) or not isinstance(provider, str) or not isinstance(model, str):
-        return None
-    return {
-        "raw_model": raw_model,
-        "provider": provider,
-        "model": model,
     }
 
 

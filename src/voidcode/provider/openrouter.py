@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from .config import ProviderEndpointConfig
 from .openai_native import OpenAIChatCompletionsProvider
 from .protocol import TurnProvider
+from .provider_config import vendor_endpoint_config
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
@@ -19,28 +20,11 @@ class OpenRouterModelProvider:
     config: ProviderEndpointConfig | None = None
 
     def provider_config(self) -> ProviderEndpointConfig:
-        if self.config is None:
-            return ProviderEndpointConfig(
-                api_key_env_var=_OPENROUTER_API_KEY_ENV_VAR,
-                base_url=_OPENROUTER_BASE_URL,
-                discovery_base_url=_OPENROUTER_MODELS_URL,
-                model_map={},
-            )
-        discovery_base_url = self.config.discovery_base_url
-        if discovery_base_url is None:
-            discovery_base_url = None if self.config.base_url else _OPENROUTER_MODELS_URL
-        return ProviderEndpointConfig(
-            api_key=self.config.api_key,
-            api_key_env_var=self.config.api_key_env_var or _OPENROUTER_API_KEY_ENV_VAR,
-            base_url=self.config.base_url or _OPENROUTER_BASE_URL,
-            discovery_base_url=discovery_base_url,
-            auth_header=self.config.auth_header,
-            auth_scheme=self.config.auth_scheme,
-            auth_scheme_explicit=self.config.auth_scheme_explicit,
-            ssl_verify=self.config.ssl_verify,
-            timeout_seconds=self.config.timeout_seconds,
-            model_map=dict(self.config.model_map),
-            transient_retry=self.config.transient_retry,
+        return vendor_endpoint_config(
+            self.config,
+            base_url=_OPENROUTER_BASE_URL,
+            discovery_base_url=_OPENROUTER_MODELS_URL,
+            api_key_env_var=_OPENROUTER_API_KEY_ENV_VAR,
         )
 
     def turn_provider(self) -> TurnProvider:

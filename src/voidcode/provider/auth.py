@@ -126,6 +126,13 @@ _ENDPOINT_AUTH_METHODS: tuple[ProviderAuthMethod, ...] = (
 _OPENAI_COMPATIBLE_AUTH_METHODS: tuple[ProviderAuthMethod, ...] = (ProviderAuthMethod(id="api_key", label="API Key"),)
 
 
+def _endpoint_default_method(config: ProviderEndpointConfig) -> str:
+    """Default auth method for an endpoint-shaped provider: its configured credential decides."""
+    if config.auth_scheme == "none" or config.api_key is None:
+        return "none"
+    return "api_key"
+
+
 def _provider_id_field_map(payload_type: type) -> Mapping[str, str]:
     """Canonical provider id -> payload/``ProviderConfigs`` field name for one payload shape."""
     return {
@@ -231,15 +238,10 @@ class ProviderAuthResolver:
             )
         endpoint_config = self._endpoint_provider_config(provider)
         if endpoint_config is not None:
-            default_method = "none"
-            if endpoint_config.auth_scheme == "none":
-                default_method = "none"
-            elif endpoint_config.api_key is not None:
-                default_method = "api_key"
             return ProviderAuthMethodsResponse(
                 provider=provider,
                 methods=_ENDPOINT_AUTH_METHODS,
-                default_method=default_method,
+                default_method=_endpoint_default_method(endpoint_config),
             )
         if self._openai_compatible_provider_config(provider) is not None:
             return ProviderAuthMethodsResponse(
@@ -255,15 +257,10 @@ class ProviderAuthResolver:
             )
         custom_config = self._custom_provider_config(provider)
         if custom_config is not None:
-            default_method = "none"
-            if custom_config.auth_scheme == "none":
-                default_method = "none"
-            elif custom_config.api_key is not None:
-                default_method = "api_key"
             return ProviderAuthMethodsResponse(
                 provider=provider,
                 methods=_ENDPOINT_AUTH_METHODS,
-                default_method=default_method,
+                default_method=_endpoint_default_method(custom_config),
             )
         raise self._error(
             provider=provider,
@@ -274,12 +271,19 @@ class ProviderAuthResolver:
 
     def authorize(self, request: ProviderAuthAuthorizeRequest) -> ProviderAuthAuthorizeResult:
         if request.provider == "openai":
-            return self._authorize_openai(request)
+            openai_config = self._providers.openai
+            return self._authorize_api_key(
+                request=request,
+                provider_name="openai",
+                config_api_key=None if openai_config is None else openai_config.api_key,
+            )
         if request.provider == "anthropic":
-            return self._authorize_anthropic(
+            anthropic_config = self._providers.anthropic
+            return self._authorize_api_key(
                 request=request,
                 provider_name="anthropic",
-                provider_config=self._providers.anthropic,
+                config_api_key=None if anthropic_config is None else anthropic_config.api_key,
+                api_key_header="x-api-key",
             )
         if request.provider == "google":
             return self._authorize_google(request)
@@ -294,16 +298,18 @@ class ProviderAuthResolver:
             )
         compatible_config = self._openai_compatible_provider_config(request.provider)
         if compatible_config is not None:
-            return self._authorize_openai_compatible_provider(
+            return self._authorize_api_key(
                 request=request,
-                provider_config=compatible_config,
+                provider_name=request.provider,
+                config_api_key=compatible_config.api_key,
             )
         anthropic_wire_config = self._anthropic_wire_provider_config(request.provider)
         if anthropic_wire_config is not None:
-            return self._authorize_anthropic(
+            return self._authorize_api_key(
                 request=request,
                 provider_name=request.provider,
-                provider_config=anthropic_wire_config,
+                config_api_key=anthropic_wire_config.api_key,
+                api_key_header="x-api-key",
             )
         custom_config = self._custom_provider_config(request.provider)
         if custom_config is not None:
@@ -329,12 +335,7 @@ class ProviderAuthResolver:
         payload = {} if request.payload is None else dict(request.payload)
         method = request.method
         if method is None:
-            if provider_config is not None and provider_config.auth_scheme == "none":
-                method = "none"
-            elif provider_config is not None and provider_config.api_key is not None:
-                method = "api_key"
-            else:
-                method = "none"
+            method = "none" if provider_config is None else _endpoint_default_method(provider_config)
         if method not in {"api_key", "none"}:
             raise self._error(
                 provider=provider_name,
@@ -375,28 +376,30 @@ class ProviderAuthResolver:
             provider=provider_name,
             method=method,
             status="authorized",
-            material=self._bearer_material(provider_name, method, token),
+            material=self._api_key_material(provider_name, method, token),
         )
 
-    def _authorize_openai_compatible_provider(
+    def _authorize_api_key(
         self,
         *,
         request: ProviderAuthAuthorizeRequest,
-        provider_config: OpenAICompatibleProviderConfig,
+        provider_name: str,
+        config_api_key: str | None,
+        api_key_header: str = "Authorization",
     ) -> ProviderAuthAuthorizeResult:
         method = self._resolve_method(request, default_method="api_key", allowed_methods={"api_key"})
         payload = {} if request.payload is None else dict(request.payload)
         token = self._resolve_api_key(
             payload=payload,
             field_name="api_key",
-            config_value=provider_config.api_key,
-            provider=request.provider,
+            config_value=config_api_key,
+            provider=provider_name,
         )
         return ProviderAuthAuthorizeResult(
-            provider=request.provider,
+            provider=provider_name,
             method=method,
             status="authorized",
-            material=self._bearer_material(request.provider, method, token),
+            material=self._api_key_material(provider_name, method, token, header_name=api_key_header),
         )
 
     def callback(self, request: ProviderAuthCallbackRequest) -> ProviderAuthMaterial:
@@ -428,7 +431,7 @@ class ProviderAuthResolver:
                 field_path="provider auth callback payload.access_token",
                 provider=request.provider,
             )
-            return self._bearer_material(request.provider, request.method, token)
+            return self._api_key_material(request.provider, request.method, token)
         if request.provider == "copilot" and request.method == "oauth":
             token = self._required_payload_str(
                 payload,
@@ -457,50 +460,6 @@ class ProviderAuthResolver:
             code="callback_not_supported",
             kind="invalid_model",
             message=(f"provider auth callback is not supported for provider '{request.provider}' method '{request.method}'"),
-        )
-
-    def _authorize_openai(self, request: ProviderAuthAuthorizeRequest) -> ProviderAuthAuthorizeResult:
-        method = self._resolve_method(request, default_method="api_key", allowed_methods={"api_key"})
-        provider_config = self._providers.openai
-        payload = {} if request.payload is None else dict(request.payload)
-        token = self._resolve_api_key(
-            payload=payload,
-            field_name="api_key",
-            config_value=None if provider_config is None else provider_config.api_key,
-            provider="openai",
-        )
-        return ProviderAuthAuthorizeResult(
-            provider="openai",
-            method=method,
-            status="authorized",
-            material=self._bearer_material("openai", method, token),
-        )
-
-    def _authorize_anthropic(
-        self,
-        *,
-        request: ProviderAuthAuthorizeRequest,
-        provider_name: str,
-        provider_config: AnthropicProviderConfig | None,
-    ) -> ProviderAuthAuthorizeResult:
-        method = self._resolve_method(request, default_method="api_key", allowed_methods={"api_key"})
-        payload = {} if request.payload is None else dict(request.payload)
-        token = self._resolve_api_key(
-            payload=payload,
-            field_name="api_key",
-            config_value=None if provider_config is None else provider_config.api_key,
-            provider=provider_name,
-        )
-        return ProviderAuthAuthorizeResult(
-            provider=provider_name,
-            method=method,
-            status="authorized",
-            material=ProviderAuthMaterial(
-                provider=provider_name,
-                method=method,
-                headers={"x-api-key": token},
-                metadata={},
-            ),
         )
 
     def _authorize_google(self, request: ProviderAuthAuthorizeRequest) -> ProviderAuthAuthorizeResult:
@@ -577,7 +536,7 @@ class ProviderAuthResolver:
                 provider="google",
                 method=method,
                 status="authorized",
-                material=self._bearer_material("google", method, access_token),
+                material=self._api_key_material("google", method, access_token),
             )
         return ProviderAuthAuthorizeResult(
             provider="google",
@@ -626,7 +585,7 @@ class ProviderAuthResolver:
                 provider="copilot",
                 method=method,
                 status="authorized",
-                material=self._bearer_material("copilot", method, token),
+                material=self._api_key_material("copilot", method, token),
             )
 
         refresh = self._optional_payload_str(
@@ -769,11 +728,19 @@ class ProviderAuthResolver:
         return expected == (provider, method)
 
     @staticmethod
-    def _bearer_material(provider: str, method: str, token: str) -> ProviderAuthMaterial:
+    def _api_key_material(
+        provider: str,
+        method: str,
+        token: str,
+        *,
+        header_name: str = "Authorization",
+    ) -> ProviderAuthMaterial:
+        """Auth material carrying one token: a bearer header unless another header is named."""
+        headers = {"Authorization": f"Bearer {token}"} if header_name == "Authorization" else {header_name: token}
         return ProviderAuthMaterial(
             provider=provider,
             method=method,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=headers,
             metadata={},
         )
 

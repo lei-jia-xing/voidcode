@@ -128,8 +128,6 @@ def anthropic_compatible_endpoint_config(provider_name: str, config: AnthropicPr
         discovery_base_url=discovery_base_url,
         timeout_seconds=None if config is None else config.timeout_seconds,
         model_map={},
-        anthropic_version=None if config is None else config.version,
-        anthropic_beta_headers=() if config is None else config.beta_headers,
         anthropic_messages_compatible=True,
         cache_retention="none" if config is None else config.cache_retention,
     )
@@ -198,4 +196,43 @@ def endpoint_provider_config(config: ProviderEndpointConfig | None) -> ProviderE
         config,
         base_url=config.base_url or DEFAULT_ENDPOINT_BASE_URL,
         discovery_base_url=config.discovery_base_url if config.discovery_base_url is not None else DEFAULT_ENDPOINT_DISCOVERY_URL,
+    )
+
+
+def vendor_endpoint_config(
+    config: ProviderEndpointConfig | None,
+    *,
+    base_url: str,
+    discovery_base_url: str,
+    api_key_env_var: str,
+) -> ProviderEndpointConfig:
+    """Normalize one gateway vendor's configuration against that vendor's own defaults.
+
+    Unconfigured, the vendor keeps its own host and its own model listing.
+    Configured, every field the caller set survives and only the endpoints it left
+    out fall back to the vendor's; a ``base_url`` with no ``discovery_base_url``
+    disables discovery rather than guessing at a listing path the caller did not
+    name.
+    """
+    if config is None:
+        return ProviderEndpointConfig(
+            base_url=base_url,
+            discovery_base_url=discovery_base_url,
+            api_key_env_var=api_key_env_var,
+            model_map={},
+        )
+    return ProviderEndpointConfig(
+        api_key=config.api_key,
+        api_key_env_var=config.api_key_env_var,
+        base_url=config.base_url or base_url,
+        discovery_base_url=(
+            config.discovery_base_url if config.discovery_base_url is not None else (None if config.base_url else discovery_base_url)
+        ),
+        auth_header=config.auth_header,
+        auth_scheme=config.auth_scheme,
+        auth_scheme_explicit=config.auth_scheme_explicit,
+        ssl_verify=config.ssl_verify,
+        timeout_seconds=config.timeout_seconds,
+        model_map=dict(config.model_map),
+        transient_retry=config.transient_retry,
     )

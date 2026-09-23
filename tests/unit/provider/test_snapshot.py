@@ -33,54 +33,6 @@ def test_resolved_provider_snapshot_round_trip_with_fallback_chain() -> None:
     assert reparsed == resolved
 
 
-def test_resolved_provider_snapshot_sanitizes_mapping_payload_to_minimal_shape() -> None:
-    snapshot = resolved_provider_snapshot(
-        {
-            "active_target": {
-                "raw_model": "opencode/gpt-5.4",
-                "provider": "opencode",
-                "model": "gpt-5.4",
-                "api_key": "should-not-leak",
-            },
-            "targets": [
-                {
-                    "raw_model": "opencode/gpt-5.4",
-                    "provider": "opencode",
-                    "model": "gpt-5.4",
-                    "token": "secret",
-                },
-                {
-                    "raw_model": "custom/demo",
-                    "provider": "custom",
-                    "model": "demo",
-                    "nested": {"secret": "nope"},
-                },
-            ],
-            "provider_auth": {"api_key": "super-secret"},
-        }
-    )
-
-    assert snapshot == {
-        "active_target": {
-            "raw_model": "opencode/gpt-5.4",
-            "provider": "opencode",
-            "model": "gpt-5.4",
-        },
-        "targets": [
-            {
-                "raw_model": "opencode/gpt-5.4",
-                "provider": "opencode",
-                "model": "gpt-5.4",
-            },
-            {
-                "raw_model": "custom/demo",
-                "provider": "custom",
-                "model": "demo",
-            },
-        ],
-    }
-
-
 def test_parse_resolved_provider_snapshot_rejects_active_target_outside_target_chain() -> None:
     registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(custom={"llama-local": _CUSTOM_CONFIG}))
 
