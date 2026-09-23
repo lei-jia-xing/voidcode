@@ -201,6 +201,7 @@ class _StorageMixinBase(Protocol):
     def _enriched_background_task_event_payload(
         self, *, connection: sqlite3.Connection, workspace: Path, event_type: str, payload: dict[str, object]
     ) -> dict[str, object]: ...
+    def _event_envelope_from_row(self, *, session_id: str, row: sqlite3.Row) -> EventEnvelope: ...
     @classmethod
     def _interrupted_resume_checkpoint(
         cls,

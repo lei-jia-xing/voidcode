@@ -231,6 +231,14 @@ class _DiagnosticsStorageMixin(_MixinBase):
         }
 
     @staticmethod
+    def _ids_predicate(column: str, ids: tuple[str, ...], workspace: Path | None) -> tuple[str, tuple[object, ...]]:
+        """``column IN (…)`` predicate plus parameters, optionally workspace-scoped."""
+        placeholders = ", ".join("?" for _ in ids)
+        workspace_clause = " AND workspace_id = ?" if workspace is not None else ""
+        parameters: tuple[object, ...] = (*ids, str(workspace)) if workspace is not None else ids
+        return f"{column} IN ({placeholders}){workspace_clause}", parameters
+
+    @staticmethod
     def _count_for_ids(
         *,
         connection: sqlite3.Connection,
@@ -241,15 +249,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
     ) -> int:
         if not ids:
             return 0
-        placeholders = ", ".join("?" for _ in ids)
-        workspace_clause = " AND workspace_id = ?" if workspace is not None else ""
-        parameters: tuple[object, ...] = (*ids, str(workspace)) if workspace is not None else ids
-        return int(
-            connection.execute(
-                (f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({placeholders}){workspace_clause}"),
-                parameters,
-            ).fetchone()[0]
-        )
+        predicate, parameters = _DiagnosticsStorageMixin._ids_predicate(column, ids, workspace)
+        return int(connection.execute(f"SELECT COUNT(*) FROM {table} WHERE {predicate}", parameters).fetchone()[0])
 
     @staticmethod
     def _delete_for_ids(
@@ -262,14 +263,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
     ) -> int:
         if not ids:
             return 0
-        placeholders = ", ".join("?" for _ in ids)
-        workspace_clause = " AND workspace_id = ?" if workspace is not None else ""
-        parameters: tuple[object, ...] = (*ids, str(workspace)) if workspace is not None else ids
-        cursor = connection.execute(
-            f"DELETE FROM {table} WHERE {column} IN ({placeholders}){workspace_clause}",
-            parameters,
-        )
-        return cursor.rowcount
+        predicate, parameters = _DiagnosticsStorageMixin._ids_predicate(column, ids, workspace)
+        return connection.execute(f"DELETE FROM {table} WHERE {predicate}", parameters).rowcount
 
     @staticmethod
     def _prunable_session_ids(

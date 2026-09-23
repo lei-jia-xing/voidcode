@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 
 from ..hook.config import RuntimeHooksConfig, RuntimeHookSurface
 from ..hook.executor import (
@@ -14,7 +15,7 @@ from ..hook.executor import (
     run_lifecycle_hooks,
     run_tool_hooks,
 )
-from ..hook.plan import hook_plan_from_session_metadata
+from ..hook.plan import ResolvedHookPlan, hook_plan_from_session_metadata
 from .context.window import BeforeCompactInput
 from .contracts import RuntimeStreamChunk
 from .events import EventEnvelope
@@ -173,6 +174,46 @@ def _hook_outcome_from_execution(session: SessionState, outcome: HookExecutionOu
     )
 
 
+class _SessionHookRequestFields(TypedDict):
+    """The request fields every session hook execution shares."""
+
+    hooks: RuntimeHooksConfig | None
+    plan: ResolvedHookPlan | None
+    workspace: Path
+    session_id: str
+    recursion_env_var: str
+    environment: Mapping[str, str]
+    sequence_start: int
+    policy: HookExecutionPolicy
+
+
+def _session_hook_request_fields(
+    *,
+    hooks: RuntimeHooksConfig | None,
+    workspace: Path,
+    session: SessionState,
+    recursion_env_var: str,
+    sequence: int,
+    policy: HookExecutionPolicy,
+) -> _SessionHookRequestFields:
+    """Fields shared by the tool and lifecycle hook execution requests.
+
+    Typed so the compiler checks that ``HookExecutionRequest`` and
+    ``LifecycleHookExecutionRequest`` still agree on these eight fields; the
+    two request classes differ only by their surface-specific extras.
+    """
+    return _SessionHookRequestFields(
+        hooks=hooks,
+        plan=hook_plan_from_session_metadata(session.metadata),
+        workspace=workspace,
+        session_id=session.session.id,
+        recursion_env_var=recursion_env_var,
+        environment=os.environ,
+        sequence_start=sequence,
+        policy=policy,
+    )
+
+
 def run_tool_hooks_for_session(
     *,
     hooks: RuntimeHooksConfig | None,
@@ -186,16 +227,16 @@ def run_tool_hooks_for_session(
 ) -> RuntimeHookOutcome:
     outcome: HookExecutionOutcome = run_tool_hooks(
         HookExecutionRequest(
-            hooks=hooks,
-            plan=hook_plan_from_session_metadata(session.metadata),
-            workspace=workspace,
-            session_id=session.session.id,
+            **_session_hook_request_fields(
+                hooks=hooks,
+                workspace=workspace,
+                session=session,
+                recursion_env_var=recursion_env_var,
+                sequence=sequence,
+                policy=policy,
+            ),
             tool_name=tool_name,
             phase=phase,
-            recursion_env_var=recursion_env_var,
-            environment=os.environ,
-            sequence_start=sequence,
-            policy=policy,
         )
     )
     return _hook_outcome_from_execution(session, outcome)
@@ -214,16 +255,16 @@ def run_lifecycle_hooks_for_session(
 ) -> RuntimeHookOutcome:
     outcome: HookExecutionOutcome = run_lifecycle_hooks(
         LifecycleHookExecutionRequest(
-            hooks=hooks,
-            plan=hook_plan_from_session_metadata(session.metadata),
-            workspace=workspace,
-            session_id=session.session.id,
+            **_session_hook_request_fields(
+                hooks=hooks,
+                workspace=workspace,
+                session=session,
+                recursion_env_var=recursion_env_var,
+                sequence=sequence,
+                policy=policy,
+            ),
             surface=surface,
-            recursion_env_var=recursion_env_var,
-            environment=os.environ,
-            sequence_start=sequence,
             payload=payload or {},
-            policy=policy,
         )
     )
     return _hook_outcome_from_execution(session, outcome)

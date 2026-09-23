@@ -20,13 +20,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...mcp import McpCachedToolSurface, McpToolDescriptor
-from ...provider.models import ResolvedProviderConfig
 from ...provider.protocol import ProviderAbortSignal
 from ...skills import SkillRegistry, skill_registry_with_builtins
 from ...tools.contracts import Tool, ToolResult
 from ...tools.mcp import McpRequester
 from ...tools.runtime_context import current_runtime_tool_context
-from ..config import RuntimeContextWindowConfig, RuntimeSkillsConfig
+from ..config import RuntimeSkillsConfig
 from ..config_materializer import (
     EffectiveRuntimeConfig,
     apply_request_runtime_config_overrides,
@@ -40,7 +39,6 @@ from ..context.window import (
     prepare_provider_context,
 )
 from ..context.window_policy import (
-    context_window_config_from_policy,
     context_window_policy_from_config,
 )
 from ..contracts import (
@@ -48,7 +46,6 @@ from ..contracts import (
     RuntimeRequestError,
 )
 from ..execution.provider_execution_metadata import provider_attempt_from_metadata
-from ..execution.seams import resolve_runtime_session_routing
 from ..lsp import LspManager, LspRequestResult
 from ..mcp import McpManager
 from ..provider_metadata import validate_reasoning_effort_capability
@@ -75,11 +72,9 @@ class StreamPrepCoordinator:
         global_skills_config: RuntimeSkillsConfig | None,
         skill_registry: SkillRegistry | None = None,
         skill_registry_is_injected: bool = False,
-        lsp_manager: LspManager | None = None,
         mcp_manager: McpManager | None = None,
         mcp_manager_is_injected: bool = False,
         graph_override_present: Callable[[], bool] | None = None,
-        request_lsp: Callable[..., LspRequestResult] | None = None,
         request_mcp_tool: McpRequester | None = None,
     ) -> None:
         self._surface = surface
@@ -91,11 +86,9 @@ class StreamPrepCoordinator:
         self._global_skills_config = global_skills_config
         self._skill_registry = skill_registry
         self._skill_registry_is_injected = skill_registry_is_injected
-        self._lsp_manager = lsp_manager
         self._mcp_manager = mcp_manager
         self._mcp_manager_is_injected = mcp_manager_is_injected
         self._graph_override_present_fn = graph_override_present
-        self._request_lsp_fn = request_lsp
         self._request_mcp_tool_fn = request_mcp_tool
 
     def runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
@@ -131,29 +124,6 @@ class StreamPrepCoordinator:
             raise RuntimeRequestError(str(exc)) from exc
         return resolved
 
-    @staticmethod
-    def resolve_session_id(request: RuntimeRequest) -> str:
-        return resolve_runtime_session_routing(request).session_id
-
-    @staticmethod
-    def context_window_config_from_policy(
-        policy: ContextWindowPolicy | None,
-    ) -> RuntimeContextWindowConfig | None:
-        return context_window_config_from_policy(policy)
-
-    @staticmethod
-    def context_window_policy_from_config(
-        config: RuntimeContextWindowConfig | None,
-        *,
-        resolved_provider: ResolvedProviderConfig | None,
-        provider_attempt: int = 0,
-    ) -> ContextWindowPolicy:
-        return context_window_policy_from_config(
-            config,
-            resolved_provider=resolved_provider,
-            provider_attempt=provider_attempt,
-        )
-
     def prepare_provider_context_window(
         self,
         *,
@@ -167,11 +137,7 @@ class StreamPrepCoordinator:
         effective_config = self._surface.effective_runtime_config_from_metadata(session_metadata)
         provider_attempt = provider_attempt_from_metadata(session_metadata)
         if policy is None:
-            policy = self.context_window_policy_from_config(
-                effective_config.context_window,
-                resolved_provider=None,
-                provider_attempt=provider_attempt,
-            )
+            policy = context_window_policy_from_config(effective_config.context_window)
         policy = self._context_window_policy_for_provider_attempt_fn(
             policy,
             resolved_provider=effective_config.resolved_provider,
@@ -230,10 +196,6 @@ class StreamPrepCoordinator:
             return self._skill_registry
         return self.build_skill_registry(self.skills_config_for_effective_config(effective_config))
 
-    def build_lsp_tool(self) -> Tool | None:
-        assert self._request_lsp_fn is not None
-        return self.build_lsp_tool_for_manager(self._lsp_manager, request_lsp=self._request_lsp_fn)
-
     @staticmethod
     def mcp_tools_from_descriptors(
         descriptors: Iterable[McpToolDescriptor],
@@ -256,17 +218,8 @@ class StreamPrepCoordinator:
         )
 
     def build_mcp_tools(self) -> tuple[Tool, ...]:
-        if self._mcp_manager is None or self._mcp_manager.current_state().mode != "managed":
-            return ()
         context = current_runtime_tool_context()
-        assert self._request_mcp_tool_fn is not None
-        return self.mcp_tools_from_descriptors(
-            self._mcp_manager.list_tools(
-                workspace=self._workspace,
-                owner_session_id=context.session_id if context is not None else None,
-            ),
-            request_mcp_tool=self._request_mcp_tool_fn,
-        )
+        return self.build_mcp_tools_for_owner(owner_session_id=context.session_id if context is not None else None)
 
     def build_mcp_tools_for_owner(self, *, owner_session_id: str | None) -> tuple[Tool, ...]:
         if self._mcp_manager is None or self._mcp_manager.current_state().mode != "managed":

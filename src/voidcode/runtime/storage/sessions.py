@@ -817,16 +817,16 @@ class _SessionStorageMixin(_MixinBase):
         return SessionEventsAfter(
             status=self._parse_session_status(cast(str, session_row["status"])),
             metadata=metadata,
-            events=tuple(
-                EventEnvelope(
-                    session_id=session_id,
-                    sequence=cast(int, row["sequence"]),
-                    event_type=cast(str, row["event_type"]),
-                    source=self._parse_event_source(cast(str, row["source"])),
-                    payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
-                )
-                for row in event_rows
-            ),
+            events=tuple(self._event_envelope_from_row(session_id=session_id, row=row) for row in event_rows),
+        )
+
+    def _event_envelope_from_row(self, *, session_id: str, row: sqlite3.Row) -> EventEnvelope:
+        return EventEnvelope(
+            session_id=session_id,
+            sequence=row["sequence"],
+            event_type=row["event_type"],
+            source=self._parse_event_source(row["source"]),
+            payload=json.loads(row["payload_json"]),
         )
 
     def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None:
@@ -891,16 +891,7 @@ class _SessionStorageMixin(_MixinBase):
             turn=cast(int, session_row["turn"]),
             metadata=metadata,
         )
-        events = tuple(
-            EventEnvelope(
-                session_id=session_id,
-                sequence=cast(int, row["sequence"]),
-                event_type=cast(str, row["event_type"]),
-                source=self._parse_event_source(cast(str, row["source"])),
-                payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
-            )
-            for row in event_rows
-        )
+        events = tuple(self._event_envelope_from_row(session_id=session_id, row=row) for row in event_rows)
         marker = self._revert_marker_from_metadata(session.metadata)
         output = cast(str | None, session_row["output"])
         if filter_reverted and marker is not None and marker.active:

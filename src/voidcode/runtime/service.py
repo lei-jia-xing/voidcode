@@ -10,7 +10,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, final
 
-from ..acp import AcpResponseEnvelope
 from ..agent import AgentManifestRegistry, get_builtin_agent_manifest, load_agent_manifest_registry
 from ..agent.prompts import render_agent_prompt
 from ..command import (
@@ -148,15 +147,17 @@ from .context.window import (
     ToolResultView,
     assemble_provider_context,
 )
+from .context.window_policy import (
+    context_window_config_from_policy,
+    context_window_policy_from_config,
+)
 from .contracts import (
     AgentSummary,
     BackgroundTaskGroupResult,
     BackgroundTaskResult,
     CapabilityStatusSnapshot,
     CommandSummary,
-    GitStatusSnapshot,
     ProviderInspectResult,
-    ProviderModelMetadata,
     ProviderModelsResult,
     ProviderReadinessResult,
     ProviderSummary,
@@ -208,6 +209,7 @@ from .execution.provider_execution_metadata import (
 )
 from .execution.seams import (
     provider_model_required_message,
+    resolve_runtime_session_routing,
     select_graph_for_effective_config,
 )
 from .execution.tool_facades import (
@@ -558,7 +560,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self._tool_registry = self._tool_materialization.registry
         self._graph_override = graph
         self._graph_cache = {}
-        self._context_window_config_override = self._context_window_config_from_policy(context_window_policy)
+        self._context_window_config_override = context_window_config_from_policy(context_window_policy)
         initial_context_window = self._context_window_config_override or self._config.context_window
         self._initial_effective_config = EffectiveRuntimeConfig(
             approval_mode=self._config.approval_mode,
@@ -585,10 +587,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
         self._context_transform_registry = context_transform_registry or default_runtime_context_transform_registry()
         self._tool_input_handler_registry = tool_input_handler_registry or builtin_tool_input_handler_registry()
-        self._default_context_window_policy = self._context_window_policy_from_config(
-            initial_context_window,
-            resolved_provider=None,
-        )
+        self._default_context_window_policy = context_window_policy_from_config(initial_context_window)
         self._background_task_supervisor = RuntimeBackgroundTaskSupervisor(
             self,
             session_store=self._session_store,
@@ -661,11 +660,9 @@ class VoidCodeRuntime(RuntimeSurface):
             global_skills_config=self._config.skills,
             skill_registry=self._skill_registry if self._skill_registry_is_injected else None,
             skill_registry_is_injected=self._skill_registry_is_injected,
-            lsp_manager=self._lsp_manager,
             mcp_manager=self._mcp_manager,
             mcp_manager_is_injected=self._mcp_manager_is_injected,
             graph_override_present=lambda: self._graph_override is not None,
-            request_lsp=self.request_lsp,
             request_mcp_tool=self.request_mcp_tool,
         )
         self._finalize_coordinator = FinalizeCoordinator(
@@ -911,7 +908,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 request_metadata=request_metadata,
                 effective_config=effective_config,
             )
-            or self._is_background_child_mcp_deferred(
+            or StreamPrepCoordinator.is_background_child_mcp_deferred(
                 request_metadata=request_metadata,
                 effective_config=effective_config,
             )
@@ -1079,17 +1076,6 @@ class VoidCodeRuntime(RuntimeSurface):
             return emitted, session, last_sequence, None
         return (), session, sequence, None
 
-    @staticmethod
-    def _is_background_child_mcp_deferred(
-        *,
-        request_metadata: Mapping[str, object],
-        effective_config: EffectiveRuntimeConfig,
-    ) -> bool:
-        return StreamPrepCoordinator.is_background_child_mcp_deferred(
-            request_metadata=request_metadata,
-            effective_config=effective_config,
-        )
-
     def should_skip_mcp_startup_for_request(
         self,
         *,
@@ -1191,9 +1177,6 @@ class VoidCodeRuntime(RuntimeSurface):
     def current_lsp_state(self) -> LspManagerState:
         return self._inspection_coordinator.current_lsp_state()
 
-    def current_mcp_state(self):
-        return self._inspection_coordinator.current_mcp_state()
-
     @property
     def provider_auth_resolver(self) -> ProviderAuthResolver:
         return self._inspection_coordinator.provider_auth_resolver
@@ -1239,15 +1222,6 @@ class VoidCodeRuntime(RuntimeSurface):
             workspace=workspace,
         )
 
-    def cleanup_idle_mcp_sessions(
-        self,
-        *,
-        max_idle_seconds: float = 300.0,
-    ) -> tuple[EventEnvelope, ...]:
-        return self._inspection_coordinator.cleanup_idle_mcp_sessions(
-            max_idle_seconds=max_idle_seconds,
-        )
-
     def shutdown_mcp(self) -> tuple[EventEnvelope, ...]:
         return self._inspection_coordinator.shutdown_mcp()
 
@@ -1257,27 +1231,8 @@ class VoidCodeRuntime(RuntimeSurface):
     def current_acp_state(self):
         return self._inspection_coordinator.current_acp_state()
 
-    def connect_acp(self) -> tuple[EventEnvelope, ...]:
-        return self._inspection_coordinator.connect_acp()
-
     def disconnect_acp(self) -> tuple[EventEnvelope, ...]:
         return self._inspection_coordinator.disconnect_acp()
-
-    def request_acp(self, *, request_type: str, payload: dict[str, object]) -> AcpResponseEnvelope:
-        return self._inspection_coordinator.request_acp(request_type=request_type, payload=payload)
-
-    def request_delegated_acp(
-        self,
-        *,
-        request_type: str,
-        task_id: str,
-        payload: dict[str, object],
-    ) -> AcpResponseEnvelope:
-        return self._inspection_coordinator.request_delegated_acp(
-            request_type=request_type,
-            task_id=task_id,
-            payload=payload,
-        )
 
     def _runtime_agent_registry(self) -> AgentManifestRegistry:
         registry = load_agent_manifest_registry(self._workspace)
@@ -1287,9 +1242,6 @@ class VoidCodeRuntime(RuntimeSurface):
             if manifest is not None:
                 builtin[agent_id] = manifest
         return AgentManifestRegistry(builtin=builtin, custom=registry.custom)
-
-    def fail_acp(self, message: str) -> tuple[EventEnvelope, ...]:
-        return self._inspection_coordinator.fail_acp(message)
 
     def run_with_persistence(
         self,
@@ -1301,7 +1253,7 @@ class VoidCodeRuntime(RuntimeSurface):
             request,
             allow_internal_metadata=allow_internal_metadata,
         )
-        session_id = self._resolve_session_id(request)
+        session_id = resolve_runtime_session_routing(request).session_id
         run_id = os.urandom(8).hex()
         abort_signal = self._register_active_session_id(
             session_id,
@@ -1656,7 +1608,7 @@ class VoidCodeRuntime(RuntimeSurface):
     def _prepare_stream_request_and_rehydration(
         self, request: RuntimeRequest, *, session_id: str | None, run_id: str | None
     ) -> _PreparedStreamSession:
-        resolved_session_id = session_id or self._resolve_session_id(request)
+        resolved_session_id = session_id or resolve_runtime_session_routing(request).session_id
         effective_config = self.runtime_config_for_request(request)
         if self._graph_override is None:
             self._validate_provider_execution_ready(effective_config)
@@ -2790,21 +2742,6 @@ class VoidCodeRuntime(RuntimeSurface):
             options=options,
         )
 
-    def export_session_bundle_file(
-        self,
-        *,
-        session_id: str,
-        output_path: Path,
-        options: SessionBundleOptions | None = None,
-        fmt: str | None = None,
-    ) -> SessionBundle:
-        return self._inspection_coordinator.export_session_bundle_file(
-            session_id=session_id,
-            output_path=output_path,
-            options=options,
-            fmt=fmt,
-        )
-
     def import_session_bundle_file(
         self,
         *,
@@ -2815,12 +2752,6 @@ class VoidCodeRuntime(RuntimeSurface):
             bundle_path=bundle_path,
             dry_run=dry_run,
         )
-
-    def _session_bundle_config_summary(self, *, session_id: str) -> dict[str, object]:
-        return self._inspection_coordinator._session_bundle_config_summary(session_id=session_id)
-
-    def _session_bundle_provider_summary(self, *, session_id: str) -> dict[str, object]:
-        return self._inspection_coordinator._session_bundle_provider_summary(session_id=session_id)
 
     def prune_runtime_storage(
         self,
@@ -2844,17 +2775,6 @@ class VoidCodeRuntime(RuntimeSurface):
     def effective_agent_model_config(self, *, session_id: str | None = None) -> dict[str, object]:
         return self._inspection_coordinator.effective_agent_model_config(session_id=session_id)
 
-    def _display_routing_config(
-        self,
-        *,
-        session_id: str | None,
-    ) -> tuple[
-        Mapping[str, RuntimeAgentConfig],
-        str | None,
-        RuntimeProviderFallbackConfig | None,
-    ]:
-        return self._inspection_coordinator._display_routing_config(session_id=session_id)
-
     def _canonical_known_provider_name(self, provider_name: str) -> str:
         """Canonical id for a provider this runtime knows, or a loud error.
 
@@ -2868,20 +2788,11 @@ class VoidCodeRuntime(RuntimeSurface):
     def refresh_provider_models(self, provider_name: str) -> tuple[str, ...]:
         return self._inspection_coordinator.refresh_provider_models(provider_name)
 
-    def provider_models(self, provider_name: str) -> tuple[str, ...]:
-        return self._inspection_coordinator.provider_models(provider_name)
-
-    def provider_model_catalog(self, provider_name: str) -> dict[str, object] | None:
-        return self._inspection_coordinator.provider_model_catalog(provider_name)
-
     def _hydrate_provider_model_catalog_cache(self) -> None:
         self._provider_catalog_cache.hydrate()
 
     def _persist_provider_model_catalog_cache(self) -> None:
         self._provider_catalog_cache.persist()
-
-    def _metadata_for_provider_model(self, provider_name: str, model_name: str) -> ProviderModelMetadata | None:
-        return self._inspection_coordinator._metadata_for_provider_model(provider_name, model_name)
 
     def reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> ReasoningEffortCapability:
         """Resolve the reasoning-effort capability of a config's active provider/model target.
@@ -2917,29 +2828,6 @@ class VoidCodeRuntime(RuntimeSurface):
     def provider_readiness(self, *, session_id: str | None = None) -> ProviderReadinessResult:
         return self._inspection_coordinator.provider_readiness(session_id=session_id)
 
-    def _provider_readiness_for_effective_config(self, effective_config: EffectiveRuntimeConfig) -> ProviderReadinessResult:
-        return self._inspection_coordinator._provider_readiness_for_effective_config(effective_config)
-
-    def _reasoning_controls_diagnostic(
-        self,
-        *,
-        effective_config: EffectiveRuntimeConfig,
-        provider_name: str | None,
-        model_name: str | None,
-    ) -> dict[str, object]:
-        """Report what the runtime will do with the configured reasoning-effort hint.
-
-        The verdict is resolved exactly like the request path does it: the model's
-        own catalog metadata first, the provider allowlist only as a fallback. The
-        payload therefore names the layer that decided and, when neither layer
-        knows, says the forward is unverified instead of claiming support.
-        """
-        return self._inspection_coordinator._reasoning_controls_diagnostic(
-            effective_config=effective_config,
-            provider_name=provider_name,
-            model_name=model_name,
-        )
-
     def _reasoning_controls_diagnostic_for_config(
         self,
         effective_config: EffectiveRuntimeConfig,
@@ -2951,9 +2839,6 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def validate_provider_credentials(self, provider_name: str) -> ProviderValidationResult:
         return self._inspection_coordinator.validate_provider_credentials(provider_name)
-
-    def _provider_auth_presence(self, provider_name: str | None) -> tuple[bool | None, str | None, str | None]:
-        return self._inspection_coordinator._provider_auth_presence(provider_name)
 
     @staticmethod
     def _tool_feedback_mode(
@@ -2999,20 +2884,11 @@ class VoidCodeRuntime(RuntimeSurface):
     def review_diff(self, path: str) -> ReviewFileDiff:
         return self._inspection_coordinator.review_diff(path)
 
-    def _git_status_snapshot(self) -> GitStatusSnapshot:
-        return self._inspection_coordinator._git_status_snapshot()
-
     @staticmethod
     def _decode_subprocess_text_output(value: object) -> str:
         from .coordinators.inspection import _decode_subprocess_text_output as _shared_decode
 
         return _shared_decode(value)
-
-    def _current_provider_name(self) -> str | None:
-        return self._inspection_coordinator._current_provider_name()
-
-    def _provider_is_configured(self, provider_name: str) -> bool:
-        return self._inspection_coordinator._provider_is_configured(provider_name)
 
     def web_settings(self) -> dict[str, object]:
         return self._inspection_coordinator.web_settings()
@@ -3172,12 +3048,6 @@ class VoidCodeRuntime(RuntimeSurface):
     def _last_tool_summary(result: RuntimeSessionResult) -> RuntimeSessionDebugToolSummary | None:
         return last_tool_summary(result)
 
-    def _provider_context_debug_snapshot(
-        self,
-        result: RuntimeSessionResult,
-    ) -> RuntimeProviderContextSnapshot:
-        return self._inspection_coordinator._provider_context_debug_snapshot(result)
-
     def _provider_context_snapshot_for_assembled_context(
         self,
         *,
@@ -3252,13 +3122,6 @@ class VoidCodeRuntime(RuntimeSurface):
             terminal=terminal,
             failure=failure,
         )
-
-    def _active_only_session_debug_snapshot(
-        self,
-        *,
-        session_id: str,
-    ) -> RuntimeSessionDebugSnapshot:
-        return self._inspection_coordinator._active_only_session_debug_snapshot(session_id=session_id)
 
     @staticmethod
     def _should_prefer_active_debug_snapshot(
@@ -3968,29 +3831,6 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         return validated
 
-    @staticmethod
-    def _resolve_session_id(request: RuntimeRequest) -> str:
-        return StreamPrepCoordinator.resolve_session_id(request)
-
-    @staticmethod
-    def _context_window_config_from_policy(
-        policy: ContextWindowPolicy | None,
-    ) -> RuntimeContextWindowConfig | None:
-        return StreamPrepCoordinator.context_window_config_from_policy(policy)
-
-    @staticmethod
-    def _context_window_policy_from_config(
-        config: RuntimeContextWindowConfig | None,
-        *,
-        resolved_provider: ResolvedProviderConfig | None,
-        provider_attempt: int = 0,
-    ) -> ContextWindowPolicy:
-        return StreamPrepCoordinator.context_window_policy_from_config(
-            config,
-            resolved_provider=resolved_provider,
-            provider_attempt=provider_attempt,
-        )
-
     def prepare_provider_context_window(
         self,
         *,
@@ -4112,11 +3952,7 @@ class VoidCodeRuntime(RuntimeSurface):
             allowlist_patterns=agent_required_tool_patterns(effective_config.agent),
         )
         provider_attempt = provider_attempt_from_metadata(session_metadata)
-        policy = self._context_window_policy_from_config(
-            effective_config.context_window,
-            resolved_provider=None,
-            provider_attempt=provider_attempt,
-        )
+        policy = context_window_policy_from_config(effective_config.context_window)
         policy = self._context_window_policy_for_provider_attempt(
             policy,
             resolved_provider=effective_config.resolved_provider,
@@ -5009,14 +4845,6 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def _load_replay_response(self, *, session_id: str) -> RuntimeResponse:
         return self._finalize_coordinator.load_replay_response(session_id=session_id)
-
-    def _events_with_runtime_policy_projection(
-        self,
-        events: tuple[EventEnvelope, ...],
-        *,
-        metadata: dict[str, object],
-    ) -> tuple[EventEnvelope, ...]:
-        return self._finalize_coordinator.events_with_runtime_policy_projection(events, metadata=metadata)
 
     def _sealed_session_status(self, *, session_id: str) -> SessionStatus | None:
         return self._finalize_coordinator.sealed_session_status(session_id=session_id)

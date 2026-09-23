@@ -11,7 +11,7 @@ from ..contracts import (
     RuntimeResponse,
     UnknownSessionError,
 )
-from ..events import EventEnvelope, EventSource
+from ..events import EventEnvelope
 from ..permission import PendingApproval
 from ..question import (
     PendingQuestion,
@@ -381,16 +381,7 @@ class _ResumeStorageMixin(_MixinBase):
                     (str(workspace), session_id),
                 ).fetchall(),
             )
-            events = tuple(
-                EventEnvelope(
-                    session_id=session_id,
-                    sequence=cast(int, row["sequence"]),
-                    event_type=cast(str, row["event_type"]),
-                    source=cast(EventSource, row["source"]),
-                    payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
-                )
-                for row in event_rows
-            )
+            events = tuple(self._event_envelope_from_row(session_id=session_id, row=row) for row in event_rows)
             request_events = [
                 event
                 for event in events
@@ -733,12 +724,9 @@ class _ResumeStorageMixin(_MixinBase):
     ) -> dict[str, object]:
         payload = failure_event.payload
         last_tool: dict[str, object] = next(
-            (
-                event.payload
-                for event in reversed(response.events)
-                if event.event_type == "runtime.tool_completed" and event.payload.get("status") != "error"
-            ),
-            cast(dict[str, object], {}),
+            event.payload
+            for event in reversed(response.events)
+            if event.event_type == "runtime.tool_completed" and event.payload.get("status") != "error"
         )
         return {
             **self._resume_checkpoint_base(

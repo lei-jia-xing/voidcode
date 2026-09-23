@@ -107,16 +107,7 @@ class _RevertStorageMixin(_MixinBase):
                 (str(workspace), session_id),
             ).fetchall(),
         )
-        events = tuple(
-            EventEnvelope(
-                session_id=session_id,
-                sequence=row["sequence"],
-                event_type=row["event_type"],
-                source=self._parse_event_source(row["source"]),
-                payload=json.loads(row["payload_json"]),
-            )
-            for row in event_rows
-        )
+        events = tuple(self._event_envelope_from_row(session_id=session_id, row=row) for row in event_rows)
         return (
             normalize_persisted_session_metadata(json.loads(cast(str, session_row["metadata_json"]))),
             events,

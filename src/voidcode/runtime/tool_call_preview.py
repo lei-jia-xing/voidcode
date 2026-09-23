@@ -85,11 +85,11 @@ def _degraded(
     return result
 
 
-def _resolve_preview_path(*, workspace: Path, raw_path: object) -> tuple[Path, str] | dict[str, object]:
+def _resolve_preview_path(*, workspace: Path, raw_path: object, tool_name: str) -> tuple[Path, str] | dict[str, object]:
     if not isinstance(raw_path, str) or not raw_path.strip():
-        return _degraded(tool_name="", reason="missing_path", phase="partial")
+        return _degraded(tool_name=tool_name, reason="missing_path", phase="partial")
     if len(raw_path) > PREVIEW_PATH_MAX_CHARS:
-        return _degraded(tool_name="", reason="path_too_long", path=raw_path, phase="partial")
+        return _degraded(tool_name=tool_name, reason="path_too_long", path=raw_path, phase="partial")
     try:
         resolution = resolve_workspace_path(
             workspace=workspace,
@@ -98,7 +98,7 @@ def _resolve_preview_path(*, workspace: Path, raw_path: object) -> tuple[Path, s
             allow_outside_workspace=False,
         )
     except OSError, RuntimeError, ValueError:
-        return _degraded(tool_name="", reason="unsafe_path", path=raw_path, phase="partial")
+        return _degraded(tool_name=tool_name, reason="unsafe_path", path=raw_path, phase="partial")
     return resolution.candidate, resolution.relative_path
 
 
@@ -117,7 +117,9 @@ def _read_snapshot(path: Path) -> tuple[str, bool] | str:
         return "snapshot_unreadable"
 
 
-def _diff_payload(*, path: str, before: str, after: str, phase: Literal["partial", "final"], incomplete: bool = False) -> dict[str, object]:
+def _diff_payload(
+    *, path: str, before: str, after: str, phase: Literal["partial", "final"], tool_name: str, incomplete: bool = False
+) -> dict[str, object]:
     diff = "".join(
         difflib.unified_diff(
             before.splitlines(keepends=True),
@@ -133,7 +135,7 @@ def _diff_payload(*, path: str, before: str, after: str, phase: Literal["partial
         "schema_version": 1,
         "phase": phase,
         "live_only": phase == "partial",
-        "tool": "",
+        "tool": tool_name,
         "status": "ready",
         "bounded": True,
         "path": _bounded_path(path),
@@ -220,7 +222,7 @@ def _preview_single_file(
     phase: Literal["partial", "final"],
     incomplete: bool = False,
 ) -> dict[str, object]:
-    resolved = _resolve_preview_path(workspace=workspace, raw_path=arguments.get("path"))
+    resolved = _resolve_preview_path(workspace=workspace, raw_path=arguments.get("path"), tool_name=tool_name)
     if isinstance(resolved, dict):
         return _finish_diff_payload(resolved, tool_name=tool_name, phase=phase)
     candidate, display_path = resolved
@@ -240,7 +242,7 @@ def _preview_single_file(
         if content_bytes > PREVIEW_SNAPSHOT_MAX_BYTES:
             return _degraded(tool_name=tool_name, reason="proposed_content_too_large", path=display_path, phase=phase)
         return _finish_diff_payload(
-            _diff_payload(path=display_path, before=before, after=content, phase=phase, incomplete=incomplete),
+            _diff_payload(path=display_path, before=before, after=content, phase=phase, tool_name=tool_name, incomplete=incomplete),
             tool_name=tool_name,
             phase=phase,
         )
@@ -273,14 +275,14 @@ def _preview_single_file(
     except UnicodeError:
         return _degraded(tool_name=tool_name, reason="content_unreadable", path=display_path, phase=phase)
     return _finish_diff_payload(
-        _diff_payload(path=display_path, before=before, after=after, phase=phase, incomplete=incomplete),
+        _diff_payload(path=display_path, before=before, after=after, phase=phase, tool_name=tool_name, incomplete=incomplete),
         tool_name=tool_name,
         phase=phase,
     )
 
 
 def _preview_multi_edit(*, workspace: Path, arguments: Mapping[str, object], phase: Literal["partial", "final"]) -> dict[str, object]:
-    resolved = _resolve_preview_path(workspace=workspace, raw_path=arguments.get("path"))
+    resolved = _resolve_preview_path(workspace=workspace, raw_path=arguments.get("path"), tool_name="multi_edit")
     if isinstance(resolved, dict):
         return _finish_diff_payload(resolved, tool_name="multi_edit", phase=phase)
     candidate, display_path = resolved
@@ -317,7 +319,7 @@ def _preview_multi_edit(*, workspace: Path, arguments: Mapping[str, object], pha
         except UnicodeError:
             return _degraded(tool_name="multi_edit", reason="content_unreadable", path=display_path, phase=phase)
     return _finish_diff_payload(
-        _diff_payload(path=display_path, before=before, after=after, phase=phase),
+        _diff_payload(path=display_path, before=before, after=after, phase=phase, tool_name="multi_edit"),
         tool_name="multi_edit",
         phase=phase,
     )
@@ -382,7 +384,7 @@ def _preview_patch(
         return _degraded(tool_name="apply_patch", reason="patch_targets_unidentified", phase=phase)
     safe_paths: list[str] = []
     for raw_path in all_paths[:PREVIEW_MAX_PATHS]:
-        resolved = _resolve_preview_path(workspace=workspace, raw_path=raw_path)
+        resolved = _resolve_preview_path(workspace=workspace, raw_path=raw_path, tool_name="apply_patch")
         if isinstance(resolved, dict):
             return _finish_diff_payload(resolved, tool_name="apply_patch", phase=phase)
         _candidate, display_path = resolved

@@ -411,8 +411,8 @@ class BackgroundProcessManager:
             pid=state.process.pid,
             process_group_id=state.process_group_id,
             process_identity=state.process_identity,
-            stdout_path=str(state.stdout_path or ""),
-            stderr_path=str(state.stderr_path or ""),
+            stdout_path=str(state.stdout_path),
+            stderr_path=str(state.stderr_path),
         )
 
     def _reconcile(self) -> None:
@@ -471,7 +471,7 @@ class BackgroundProcessManager:
         process = cast(subprocess.Popen[str], _DetachedProcess(pid=pid, exit_code=exit_code))
         state = BackgroundProcessState(
             process_id=process_id,
-            command=str(record.get("command", "")),
+            command=str(record["command"]),
             cwd=cwd,
             process=process,
             stdout_chunks=stdout_chunks,

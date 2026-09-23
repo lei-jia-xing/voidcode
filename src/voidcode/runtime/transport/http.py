@@ -78,9 +78,14 @@ from ..events import (
 )
 from ..permission import PermissionResolution
 from ..question import QuestionResponse
-from ..serialization import serialize_revert_marker, serialize_session_debug_snapshot
+from ..serialization import (
+    _serialize_session_ref,
+    _serialize_session_state,
+    serialize_revert_marker,
+    serialize_session_debug_snapshot,
+)
 from ..service import VoidCodeRuntime
-from ..session import SessionRef, SessionState, StoredSessionSummary
+from ..session import SessionState, StoredSessionSummary
 from ..storage.shared import SessionSealedError
 from ..workspace import WorkspaceOpenError, WorkspaceRuntimeCoordinator
 from .http_contract import (
@@ -251,7 +256,7 @@ class _SessionStateEmitter:
     def serialize(self, session: SessionState) -> dict[str, object] | None:
         if self._emitted is not None and _session_states_serialize_identically(self._emitted, session):
             return None
-        payload = RuntimeTransportApp._serialize_session_state(session)
+        payload = _serialize_session_state(session)
         # Snapshot what was emitted instead of holding the caller's live state:
         # an in-place metadata update must be visible on the next frame, and the
         # copy is paid once per emission rather than once per frame.
@@ -1113,7 +1118,7 @@ class RuntimeTransportApp(FastAPI):
         yield sse_frame(
             {
                 "kind": "session",
-                "session": self._serialize_session_state(replay.session),
+                "session": _serialize_session_state(replay.session),
                 "event": None,
                 "output": None,
             }
@@ -1749,7 +1754,7 @@ class RuntimeTransportApp(FastAPI):
         show_thinking: bool = False,
     ) -> dict[str, object]:
         return {
-            "session": RuntimeTransportApp._serialize_session_state(response.session),
+            "session": _serialize_session_state(response.session),
             "events": [RuntimeTransportApp._serialize_event(event, show_thinking=show_thinking) for event in response.events],
             "output": response.output,
         }
@@ -1757,7 +1762,7 @@ class RuntimeTransportApp(FastAPI):
     @staticmethod
     def _serialize_stored_session_summary(summary: StoredSessionSummary) -> dict[str, object]:
         return {
-            "session": RuntimeTransportApp._serialize_session_ref(summary.session),
+            "session": _serialize_session_ref(summary.session),
             "status": summary.status,
             "turn": summary.turn,
             "prompt": summary.prompt,
@@ -1848,7 +1853,7 @@ class RuntimeTransportApp(FastAPI):
         show_thinking: bool = False,
     ) -> dict[str, object]:
         return {
-            "session": RuntimeTransportApp._serialize_session_state(result.session),
+            "session": _serialize_session_state(result.session),
             "prompt": result.prompt,
             "status": result.status,
             "summary": result.summary,
@@ -2144,22 +2149,6 @@ class RuntimeTransportApp(FastAPI):
             "path": diff.path,
             "state": diff.state,
             "diff": diff.diff,
-        }
-
-    @staticmethod
-    def _serialize_session_ref(session_ref: SessionRef) -> dict[str, object]:
-        payload: dict[str, object] = {"id": session_ref.id}
-        if session_ref.parent_id is not None:
-            payload["parent_id"] = session_ref.parent_id
-        return payload
-
-    @staticmethod
-    def _serialize_session_state(session: SessionState) -> dict[str, object]:
-        return {
-            "session": RuntimeTransportApp._serialize_session_ref(session.session),
-            "status": session.status,
-            "turn": session.turn,
-            "metadata": session.metadata,
         }
 
     @staticmethod

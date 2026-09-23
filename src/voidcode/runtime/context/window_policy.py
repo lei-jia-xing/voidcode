@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from ...provider.models import ResolvedProviderConfig
 from ..config import RuntimeContextWindowConfig
 from .window import ContextWindowPolicy
 
@@ -19,11 +18,7 @@ def context_window_config_from_policy(
 
 def context_window_policy_from_config(
     config: RuntimeContextWindowConfig | None,
-    *,
-    resolved_provider: ResolvedProviderConfig | None,
-    provider_attempt: int = 0,
 ) -> ContextWindowPolicy:
-    _ = resolved_provider, provider_attempt
     if config is None:
         return ContextWindowPolicy()
     return ContextWindowPolicy(

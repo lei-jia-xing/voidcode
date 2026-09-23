@@ -594,11 +594,21 @@ def _tool_pair_diagnostics(
     diagnostics: list[RuntimeProviderContextDiagnostic] = []
     assistant_ids: dict[str, list[int]] = defaultdict(list)
     tool_ids: dict[str, list[int]] = defaultdict(list)
+    missing_id_indices: list[int] = []
     for index, segment in enumerate(segments):
         if segment.role == "assistant" and segment.tool_name is not None:
-            assistant_ids[segment.tool_call_id or ""].append(index)
+            if segment.tool_call_id is None:
+                # Synthetic (runtime/hook-injected) tool calls carry no provider
+                # id, so there is nothing to pair them with. Bucketing them under
+                # "" would report a blocking orphan/missing pair against a fake id.
+                missing_id_indices.append(index)
+            else:
+                assistant_ids[segment.tool_call_id].append(index)
         if segment.role == "tool":
-            tool_ids[segment.tool_call_id or ""].append(index)
+            if segment.tool_call_id is None:
+                missing_id_indices.append(index)
+            else:
+                tool_ids[segment.tool_call_id].append(index)
             if len(segment.content or "") > oversized_tool_feedback_chars:
                 diagnostics.append(
                     RuntimeProviderContextDiagnostic(
@@ -614,6 +624,20 @@ def _tool_pair_diagnostics(
                         },
                     )
                 )
+    if missing_id_indices:
+        diagnostics.append(
+            RuntimeProviderContextDiagnostic(
+                severity="warning",
+                code="missing_tool_call_id",
+                message="Provider context has an unpaired tool call or tool result segment without a tool_call_id.",
+                source="assembled_context",
+                segment_indices=tuple(missing_id_indices),
+                suggested_fix=(
+                    "Runtime-injected tool-role segments carry no provider id; keep them out of the provider tool-role "
+                    "projection or give them a tool_call_id."
+                ),
+            )
+        )
     for tool_call_id, indices in assistant_ids.items():
         if tool_call_id not in tool_ids:
             diagnostics.append(

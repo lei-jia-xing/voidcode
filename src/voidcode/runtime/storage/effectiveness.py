@@ -10,7 +10,6 @@ from ..effectiveness import (
     ToolEffectivenessReport,
     project_tool_effectiveness,
 )
-from ..events import EventEnvelope
 
 if TYPE_CHECKING:
     from .shared import _StorageMixinBase
@@ -60,13 +59,7 @@ class _EffectivenessStorageMixin(_MixinBase):
         events = tuple(
             ToolEffectivenessEvent(
                 session_id=row["session_id"],
-                event=EventEnvelope(
-                    session_id=row["session_id"],
-                    sequence=row["sequence"],
-                    event_type=row["event_type"],
-                    source=self._parse_event_source(row["source"]),
-                    payload=json.loads(row["payload_json"]),
-                ),
+                event=self._event_envelope_from_row(session_id=row["session_id"], row=row),
             )
             for row in event_rows
         )
