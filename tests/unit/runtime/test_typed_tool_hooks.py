@@ -23,6 +23,7 @@ class _Step:
     output: str | None = None
     is_finished: bool = False
     events: tuple[GraphEvent, ...] = ()
+    reasoning: str | None = None
 
 
 class _OneToolGraph:

@@ -61,6 +61,10 @@ class DeterministicReadOnlyStep:
         if self.output is not None:
             raise ValueError("non-finished graph steps must not include output")
 
+    @property
+    def reasoning(self) -> str | None:
+        return None
+
 
 class DeterministicGraph:
     def step(

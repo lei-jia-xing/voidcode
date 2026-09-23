@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -482,6 +483,23 @@ class ProviderContextLimitError(ProviderError):
 
 def format_invalid_provider_config_error(field_path: str, reason: str) -> str:
     return f"invalid provider config: {field_path} {reason}"
+
+
+def validation_reason_from_error(error: Mapping[str, object]) -> str:
+    """Read the user-facing reason out of one pydantic error dict.
+
+    ``value_error`` errors wrap the original exception in ``ctx.error``; every
+    other error reports its ``msg`` (defaulting to ``"is invalid"``).
+    """
+    error_type = error.get("type", "")
+    if error_type == "value_error":
+        context = error.get("ctx")
+        if isinstance(context, dict):
+            nested_error = context.get("error")
+            if isinstance(nested_error, ValueError):
+                return str(nested_error)
+    message = error.get("msg", "is invalid")
+    return message if isinstance(message, str) else "is invalid"
 
 
 def classify_provider_error(exc: Exception) -> ProviderError | None:

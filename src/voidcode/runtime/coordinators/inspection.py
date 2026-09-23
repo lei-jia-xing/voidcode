@@ -1622,9 +1622,7 @@ class InspectionCoordinator:
         mcp_server_details: list[dict[str, object]] = []
         for server_name, server_config in sorted(mcp_configured_servers.items()):
             runtime_state = mcp_state.servers.get(server_name)
-            command = (
-                list(runtime_state.command) if runtime_state is not None and runtime_state.command else list(getattr(server_config, "command", ()))
-            )
+            command = list(runtime_state.command) if runtime_state is not None and runtime_state.command else list(server_config.command)
             server_status = (
                 runtime_state.status
                 if runtime_state is not None
@@ -1636,8 +1634,8 @@ class InspectionCoordinator:
                 {
                     "server": server_name,
                     "status": server_status,
-                    "scope": (runtime_state.scope if runtime_state is not None else getattr(server_config, "scope", "runtime")),
-                    "transport": getattr(server_config, "transport", "stdio"),
+                    "scope": (runtime_state.scope if runtime_state is not None else server_config.scope),
+                    "transport": server_config.transport,
                     "workspace_root": (None if runtime_state is None else runtime_state.workspace_root),
                     "stage": None if runtime_state is None else runtime_state.stage,
                     "error": None if runtime_state is None else runtime_state.error,

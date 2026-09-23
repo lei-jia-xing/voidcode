@@ -334,6 +334,7 @@ class _GraphStep:
     tool_call: object
     output: str | None = None
     is_finished: bool = False
+    reasoning: str | None = None
 
 
 class _NoopMcpManager:

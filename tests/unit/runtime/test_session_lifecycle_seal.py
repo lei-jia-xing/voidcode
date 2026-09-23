@@ -71,6 +71,7 @@ class _StubStep:
     tool_call: ToolCall | None = None
     output: str | None = None
     is_finished: bool = False
+    reasoning: str | None = None
 
 
 def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session") -> RuntimeRequest:

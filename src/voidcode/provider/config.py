@@ -931,7 +931,7 @@ def _runtime_config_field_name(field_path: str) -> str | None:
 def _append_config_field_suffix(field_path: str, suffix: str) -> str:
     runtime_field_name = _runtime_config_field_name(field_path)
     if runtime_field_name is not None:
-        return _format_runtime_config_field_error(f"{runtime_field_name}{suffix}")
+        return format_runtime_config_field_error(f"{runtime_field_name}{suffix}")
     return f"{field_path}{suffix}"
 
 
@@ -943,17 +943,6 @@ def _extend_config_field_path(field_path: str, loc: tuple[object, ...]) -> str:
             continue
         extended = _nested_config_field(extended, str(item))
     return extended
-
-
-def _validation_reason_from_error(error: dict[str, object]) -> str:
-    error_type = error.get("type", "")
-    if error_type == "value_error":
-        context = error.get("ctx")
-        if isinstance(context, dict):
-            nested_error = context.get("error")
-            if isinstance(nested_error, ValueError):
-                return str(nested_error)
-    return cast(str, error.get("msg", "is invalid"))
 
 
 def _format_provider_payload_validation_error(
@@ -970,7 +959,11 @@ def _format_provider_payload_validation_error(
         return f"{target} must be an object{suffix}"
     if error_type == "extra_forbidden":
         return f"{target} is not supported"
-    reason = _validation_reason_from_error(error)
+    # Imported lazily: ``provider.errors`` imports ``provider.protocol``, which
+    # reaches back through ``model_catalog`` to this module.
+    from .errors import validation_reason_from_error
+
+    reason = validation_reason_from_error(error)
     if reason.startswith("[") or reason.startswith("."):
         if " " in reason:
             suffix, nested_reason = reason.split(" ", maxsplit=1)
@@ -1910,7 +1903,7 @@ def _nested_config_field(source: str, nested: str) -> str:
     return f"{source}.{nested}"
 
 
-def _format_runtime_config_field_error(field_path: str) -> str:
+def format_runtime_config_field_error(field_path: str) -> str:
     runtime_field_prefix = "runtime config field '"
     if field_path.startswith(runtime_field_prefix):
         if field_path.endswith("'"):

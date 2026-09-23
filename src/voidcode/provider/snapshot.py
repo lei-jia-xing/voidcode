@@ -6,7 +6,7 @@ from typing import cast
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from .config import ProviderFallbackConfig
-from .errors import format_invalid_provider_config_error
+from .errors import format_invalid_provider_config_error, validation_reason_from_error
 from .models import ResolvedProviderChain, ResolvedProviderConfig, ResolvedProviderModel
 from .registry import ModelProviderRegistry
 from .resolution import resolve_provider_model
@@ -62,14 +62,7 @@ def _format_snapshot_validation_error(*, source: str, error: dict[str, object]) 
         field_path = f"{field_path}.{item}"
     if error_type in {"model_type", "dict_type"}:
         return format_invalid_provider_config_error(field_path, "must be an object")
-    reason = cast(str, error.get("msg", "is invalid"))
-    if error_type == "value_error":
-        context = error.get("ctx")
-        if isinstance(context, dict):
-            nested_error = context.get("error")
-            if isinstance(nested_error, ValueError):
-                reason = str(nested_error)
-    return format_invalid_provider_config_error(field_path, reason)
+    return format_invalid_provider_config_error(field_path, validation_reason_from_error(error))
 
 
 def resolved_provider_snapshot(

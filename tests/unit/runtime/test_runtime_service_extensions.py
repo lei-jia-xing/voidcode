@@ -224,6 +224,7 @@ class _StubStep:
     output: str | None = None
     events: tuple[EventEnvelope, ...] = ()
     is_finished: bool = False
+    reasoning: str | None = None
 
 
 class _SkillCapturingStubGraph:

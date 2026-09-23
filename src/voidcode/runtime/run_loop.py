@@ -2367,13 +2367,13 @@ class RuntimeRunLoopCoordinator:
             # Non-streaming turns (background children) carry the turn's
             # reasoning on the step; aggregate it like the streamed deltas
             # so one bounded runtime.reasoning_part is persisted below.
-            non_stream_reasoning = getattr(graph_step, "reasoning", None)
-            if isinstance(non_stream_reasoning, str) and non_stream_reasoning:
+            reasoning_text = graph_step.reasoning
+            if reasoning_text:
                 reasoning_capture_state.stream_observed = True
                 reasoning_capture_state.reasoning_observed = True
                 reasoning_capture_state.part_count += 1
-                reasoning_capture_state.text_char_count += len(non_stream_reasoning)
-                streamed_reasoning_texts.append(non_stream_reasoning)
+                reasoning_capture_state.text_char_count += len(reasoning_text)
+                streamed_reasoning_texts.append(reasoning_text)
         return graph_step, sequence, streamed_reasoning_texts
 
     def _apply_provider_error_policy(

@@ -106,6 +106,7 @@ class Step:
         self.tool_call = tool_call
         self.output = output
         self.is_finished = is_finished
+        self.reasoning: str | None = None
 
 
 class Graph:

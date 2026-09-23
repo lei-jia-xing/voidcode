@@ -29,6 +29,7 @@ class _Step:
     tool_call: ToolCall | None = None
     output: str | None = None
     is_finished: bool = False
+    reasoning: str | None = None
 
 
 class _ObserveGraph:

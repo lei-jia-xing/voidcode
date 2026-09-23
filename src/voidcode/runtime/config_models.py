@@ -42,7 +42,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from ..formatter import FormatterCwdPolicy
 from ..hook.config import RuntimeHooksConfig
 from ..mcp.builtin import get_builtin_mcp_descriptor
-from ..provider.config import ProviderConfigsPayload, _format_runtime_config_field_error
+from ..provider.config import ProviderConfigsPayload, format_runtime_config_field_error
 from ..provider.reasoning_effort import ALL_EFFORTS, normalize_reasoning_effort
 from .permission import PermissionDecision
 from .policy import runtime_policy_allowed_hook_scopes
@@ -168,13 +168,13 @@ def _parse_string_list(raw_value: object, *, field_path: str) -> tuple[str, ...]
     if raw_value is None:
         return ()
     if not isinstance(raw_value, list):
-        raise ValueError(f"{_format_runtime_config_field_error(field_path)} must be an array when provided")
+        raise ValueError(f"{format_runtime_config_field_error(field_path)} must be an array when provided")
 
     raw_items = raw_value
     parsed_items: list[str] = []
     for index, item in enumerate(raw_items):
         if not isinstance(item, str):
-            raise ValueError(f"{_format_runtime_config_field_error(f'{field_path}[{index}]')} must be a string")
+            raise ValueError(f"{format_runtime_config_field_error(f'{field_path}[{index}]')} must be a string")
         parsed_items.append(item)
     return tuple(parsed_items)
 

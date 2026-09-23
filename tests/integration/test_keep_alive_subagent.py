@@ -190,6 +190,7 @@ class _GraphStep:
     tool_call: object | None = None
     output: str | None = None
     is_finished: bool = False
+    reasoning: str | None = None
 
 
 def _tool_call(*, tool_name: str, arguments: dict[str, object]) -> object:

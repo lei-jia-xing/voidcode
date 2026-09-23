@@ -24,6 +24,8 @@ from starlette.requests import ClientDisconnect, Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from ...provider.errors import validation_reason_from_error
+
 logger = logging.getLogger(__name__)
 
 
@@ -156,17 +158,6 @@ def _http_path_from_loc(loc: tuple[object, ...]) -> str:
     return ".".join(parts)
 
 
-def _http_validation_reason(error: Mapping[str, object]) -> str:
-    error_type = cast(str, error.get("type", ""))
-    if error_type == "value_error":
-        context = error.get("ctx")
-        if isinstance(context, dict):
-            nested_error = cast(dict[str, object], context).get("error")
-            if isinstance(nested_error, ValueError):
-                return str(nested_error)
-    return cast(str, error.get("msg", "is invalid"))
-
-
 # Bodies that are not JSON objects, whatever pydantic's schema called them.
 _NON_OBJECT_BODY_ERROR_TYPES = frozenset({"model_type", "model_attributes_type", "dict_type"})
 
@@ -188,7 +179,7 @@ def format_validation_error(error: Mapping[str, object]) -> str:
         if not path:
             return "request body must be a JSON object"
         return f"{path} must be an object"
-    reason = _http_validation_reason(error)
+    reason = validation_reason_from_error(error)
     if not path:
         return reason
     if reason.startswith("[") or reason.startswith("."):

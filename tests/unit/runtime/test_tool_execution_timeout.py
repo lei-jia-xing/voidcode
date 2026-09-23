@@ -203,6 +203,7 @@ class _StaticGraphStep:
     output: str | None
     events: tuple[Any, ...] = ()
     is_finished: bool = False
+    reasoning: str | None = None
 
 
 class _SingleToolCallWithArgumentsGraph:
@@ -242,7 +243,7 @@ class _SingleToolCallGraph:
             self._done = True
 
         class _Step:
-            pass
+            reasoning: str | None = None
 
         step = _Step()
 
@@ -268,7 +269,7 @@ class _ShellExecGraph:
         _ = request, session
 
         class _Step:
-            pass
+            reasoning: str | None = None
 
         step = _Step()
         if not tool_results:
@@ -1438,7 +1439,7 @@ class _ArtifactThenUriReadGraph:
         _ = request, session
 
         class _Step:
-            pass
+            reasoning: str | None = None
 
         step = _Step()
         if not tool_results:
@@ -1510,7 +1511,7 @@ class _ForeignArtifactUriReadGraph:
         _ = request, tool_results, session
 
         class _Step:
-            pass
+            reasoning: str | None = None
 
         step = _Step()
         if not self._done:

@@ -93,6 +93,9 @@ class GraphStep(Protocol):
     @property
     def is_finished(self) -> bool: ...
 
+    @property
+    def reasoning(self) -> str | None: ...
+
 
 type GraphStreamItem = GraphEvent | GraphStep
 
