@@ -1,3 +1,4 @@
+import "./test-local-storage";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { deriveChatMessages } from "./lib/runtime/event-parser";
@@ -34,32 +35,6 @@ type PersistedState = {
   };
   version: number;
 };
-
-type StorageLike = {
-  getItem: (key: string) => string | null;
-  setItem: (key: string, value: string) => void;
-  removeItem: (key: string) => void;
-  clear: () => void;
-};
-
-const storageData = new Map<string, string>();
-const testStorage: StorageLike = {
-  getItem: (key) => storageData.get(key) ?? null,
-  setItem: (key, value) => {
-    storageData.set(key, value);
-  },
-  removeItem: (key) => {
-    storageData.delete(key);
-  },
-  clear: () => {
-    storageData.clear();
-  },
-};
-
-Object.defineProperty(globalThis, "localStorage", {
-  value: testStorage,
-  configurable: true,
-});
 
 let useAppStore: typeof import("./store").useAppStore;
 let queryClient: typeof import("./lib/queries").queryClient;

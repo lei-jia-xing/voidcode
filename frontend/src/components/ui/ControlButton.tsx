@@ -1,8 +1,7 @@
 import type { ButtonHTMLAttributes } from "react";
-import {
-  controlButtonClassName,
-  type ControlButtonVariant,
-} from "./controlButtonClassName";
+
+export type ControlButtonVariant =
+  "primary" | "secondary" | "ghost" | "danger" | "confirm";
 
 export interface ControlButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ControlButtonVariant;
@@ -22,12 +21,15 @@ export function ControlButton({
     <button
       {...props}
       type={type}
-      className={controlButtonClassName({
-        variant,
-        compact,
-        icon,
+      className={[
+        "vc-control",
+        `vc-control--${variant}`,
+        compact ? "vc-control--compact" : null,
+        icon ? "vc-control--icon" : null,
         className,
-      })}
+      ]
+        .filter(Boolean)
+        .join(" ")}
     />
   );
 }

@@ -6,6 +6,8 @@ import { errorMessage } from "../lib/errorMessage";
 import {
   deeplyEqual,
   failureMessageFromEvent,
+  isRuntimeCancellationEvent,
+  preferFailureMessage,
 } from "../lib/runtime/event-parser";
 import {
   currentWorkspaceScope,
@@ -234,42 +236,6 @@ function runStatusForReplay(session: SessionState): AppState["runStatus"] {
 
 function isRunLocked(runStatus: AppState["runStatus"]): boolean {
   return runStatus === "running" || runStatus === "cancelling";
-}
-
-function runtimeFailureMessage(event: EventEnvelope): string | null {
-  return failureMessageFromEvent(event);
-}
-
-function isGenericFailureMessage(message: string): boolean {
-  const normalized = message.trim().toLowerCase();
-  return (
-    normalized === "failed" ||
-    normalized === "runtime failed" ||
-    normalized === "runtime session failed" ||
-    normalized === "session failed" ||
-    normalized === "provider retry exhausted"
-  );
-}
-
-function preferFailureMessage(
-  current: string | null,
-  candidate: string | null,
-): string | null {
-  if (!candidate) return current;
-  if (!current || isGenericFailureMessage(current)) return candidate;
-  if (isGenericFailureMessage(candidate)) return current;
-  return candidate;
-}
-
-function isRuntimeCancellationEvent(event: EventEnvelope): boolean {
-  if (event.event_type !== "runtime.failed") {
-    return false;
-  }
-  return (
-    event.payload.cancelled === true ||
-    event.payload.kind === "interrupted" ||
-    event.payload.kind === "cancelled"
-  );
 }
 
 // Live-only provider output: the runtime never persists these events, so they are
@@ -963,10 +929,11 @@ export const useAppStore = create<AppState>()(
             if (chunk.event) {
               streamInterrupted =
                 isRuntimeCancellationEvent(chunk.event) || streamInterrupted;
-              streamFailureMessage = preferFailureMessage(
-                streamFailureMessage,
-                runtimeFailureMessage(chunk.event),
-              );
+              streamFailureMessage =
+                preferFailureMessage(
+                  streamFailureMessage,
+                  failureMessageFromEvent(chunk.event),
+                ) ?? null;
             }
             set((state) => {
               if (state.replayRequestId !== nextReplayRequestId) return state;

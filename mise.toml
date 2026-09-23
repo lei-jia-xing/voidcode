@@ -30,7 +30,7 @@ run = "bun run typecheck"
 dir = "frontend"
 
 [tasks."frontend:test"]
-run = "bun run test:run"
+run = "bun run test"
 dir = "frontend"
 
 [tasks."frontend:e2e"]
