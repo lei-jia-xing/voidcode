@@ -3747,7 +3747,7 @@ class RuntimeRunLoopCoordinator:
         }
         if tool_result.diagnostics is not None:
             completed_payload["diagnostics"] = tool_result.diagnostics.as_payload()
-        completed_payload.setdefault("tool", tool_result.tool_name)
+        completed_payload["tool"] = tool_result.tool_name
 
         completed_display = build_tool_display(
             inner_name,

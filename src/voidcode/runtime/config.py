@@ -1236,7 +1236,7 @@ def _base_prompt_for_manifest_override(
     if materialization is not None:
         if materialization.body is not None and materialization.body.strip():
             return materialization.body.strip()
-        selected_profile = materialization.select_profile(None)
+        selected_profile = materialization.profile
         rendered = render_builtin_prompt_profile(selected_profile)
         if rendered is not None:
             return rendered

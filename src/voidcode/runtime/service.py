@@ -386,14 +386,6 @@ def _provider_target_label(target: ResolvedProviderModel) -> str:
     return f"{provider}/{model}"
 
 
-def _coerce_bool_like(value: object | None, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    return str(value).strip().lower() not in {"false", "0", "no", "off", ""}
-
-
 def _approval_requested_hook_payload(pending: PendingApproval) -> dict[str, object]:
     keys = sorted(pending.arguments)
     if len(keys) > 64:
@@ -779,7 +771,6 @@ class VoidCodeRuntime(RuntimeSurface):
             hooks_config=self._config.hooks or RuntimeHooksConfig(),
             edit_schema_resolver=self._edit_schema_resolver(),
             skill_tool=SkillTool(
-                list_skills=self._skill_registry.all,
                 resolve_skill=self._skill_registry.resolve,
             ),
             task_batch_tool=TaskBatchTool(runtime=self),
@@ -2139,10 +2130,7 @@ class VoidCodeRuntime(RuntimeSurface):
                     **request_metadata,
                     "agent_preset": serialize_runtime_agent_config(self.effective_runtime_config_from_metadata(session.metadata).agent),
                     "provider_attempt": 0,
-                    "provider_stream": _coerce_bool_like(
-                        request_metadata.get("provider_stream", False),
-                        False,
-                    ),
+                    "provider_stream": request_metadata.get("provider_stream", False),
                     **(
                         {"reasoning_effort": effective_config.reasoning_effort}
                         if effective_config.reasoning_effort is not None and "reasoning_effort" not in request_metadata
@@ -4168,7 +4156,6 @@ class VoidCodeRuntime(RuntimeSurface):
                                 "format",
                                 "body",
                                 "prompt_append",
-                                "model_family_overrides",
                             )
                             if key in raw_materialization
                         }
@@ -4176,9 +4163,8 @@ class VoidCodeRuntime(RuntimeSurface):
                             agent_preset["runtime_internal"] = {
                                 "prompt_materialization": projected_materialization,
                             }
-        model_family = effective_config.resolved_provider.active_target.selection.provider
         tool_feedback_mode = self._tool_feedback_mode_for_effective_config(effective_config)
-        agent_prompt_context = render_agent_prompt(agent_preset, model_family=model_family) or ""
+        agent_prompt_context = render_agent_prompt(agent_preset) or ""
         hook_preset_context = self._hook_preset_context_from_metadata(
             session_metadata,
             agent=effective_config.agent,

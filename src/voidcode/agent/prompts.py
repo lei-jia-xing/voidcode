@@ -45,21 +45,11 @@ def render_builtin_prompt_profile(prompt_profile: str) -> str | None:
 
 def _select_profile_from_materialization_payload(
     materialization: Mapping[str, object],
-    model_family: str | None,
 ) -> str | None:
     profile = materialization.get("profile")
     if not isinstance(profile, str) or not profile.strip():
         return None
-    if model_family is None or not model_family.strip():
-        return profile.strip()
-    raw_overrides = materialization.get("model_family_overrides")
-    if not isinstance(raw_overrides, Mapping):
-        return profile.strip()
-    overrides = raw_overrides
-    override_profile = overrides.get(model_family.strip())
-    if not isinstance(override_profile, str) or not override_profile.strip():
-        return profile.strip()
-    return override_profile.strip()
+    return profile.strip()
 
 
 def compose_prompt_with_user_append(
@@ -90,8 +80,6 @@ def _render_materialization_payload(materialization: Mapping[str, object]) -> st
 
 def render_agent_prompt(
     agent_preset: Mapping[str, object] | None = None,
-    *,
-    model_family: str | None = None,
 ) -> str | None:
     if agent_preset is None:
         return None
@@ -111,7 +99,7 @@ def render_agent_prompt(
                     materialization.prompt_append,
                 )
             return materialization.body.strip()
-        selected_profile = materialization.select_profile(model_family)
+        selected_profile = materialization.profile
     elif isinstance(materialization, Mapping):
         materialization_payload = materialization
         rendered_payload = _render_materialization_payload(materialization_payload)
@@ -119,7 +107,6 @@ def render_agent_prompt(
             return rendered_payload
         selected_profile = _select_profile_from_materialization_payload(
             materialization_payload,
-            model_family,
         )
     if selected_profile is None:
         prompt_profile = agent_preset.get("prompt_profile")

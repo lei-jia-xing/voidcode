@@ -20,7 +20,7 @@ def test_skill_tool_returns_skill_body_and_metadata(tmp_path: Path) -> None:
         entry_path=entry,
         content="# Demo\nUse it.",
     )
-    tool = SkillTool(list_skills=lambda: (skill,), resolve_skill=lambda name: skill)
+    tool = SkillTool(resolve_skill=lambda name: skill)
 
     result = tool.invoke(ToolCall(tool_name="skill", arguments={"name": "demo"}), workspace=tmp_path)
 
@@ -50,7 +50,7 @@ def test_skill_tool_definition_is_static_without_catalog(tmp_path: Path) -> None
         content="# Demo\nUse it.",
     )
 
-    tool = SkillTool(list_skills=lambda: (skill,), resolve_skill=lambda name: skill)
+    tool = SkillTool(resolve_skill=lambda name: skill)
 
     assert entry.as_uri() not in tool.definition.description
     assert "<available_skills>" not in tool.definition.description
@@ -58,7 +58,7 @@ def test_skill_tool_definition_is_static_without_catalog(tmp_path: Path) -> None
 
 
 def test_skill_tool_rejects_missing_name(tmp_path: Path) -> None:
-    tool = SkillTool(list_skills=lambda: (), resolve_skill=lambda name: (_ for _ in ()).throw(ValueError(name)))
+    tool = SkillTool(resolve_skill=lambda name: (_ for _ in ()).throw(ValueError(name)))
 
     with pytest.raises(
         ValueError,

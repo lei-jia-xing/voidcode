@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
-from types import MappingProxyType
+from dataclasses import dataclass
 from typing import Literal
 
 type AgentManifestId = Literal[
@@ -19,9 +17,6 @@ type AgentExecutionEngineName = Literal["deterministic", "provider"]
 type AgentPromptSource = Literal["builtin", "custom_markdown"]
 type AgentPromptFormat = Literal["text", "markdown"]
 type AgentSourceScope = Literal["builtin", "project", "user"]
-
-
-_EMPTY_MODEL_FAMILY_OVERRIDES: Mapping[str, str] = MappingProxyType({})
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,13 +57,6 @@ class AgentPromptMaterialization:
     static text profile owned by `src/voidcode/agent/<profile>/base.txt`. The
     `version` integer is bumped whenever the persona text or its materialization
     semantics change so external consumers can compare prompts deterministically.
-
-    `model_family_overrides` declares an optional mapping from a model-family
-    hint (for example `"opencode"` or `"anthropic"`) to a builtin prompt
-    profile name. Runtime callers may pass a model-family hint into
-    `AgentPromptMaterialization.select_profile` to pick a family-tuned profile
-    while still falling back to the default profile when no override is
-    declared.
     """
 
     profile: str
@@ -79,9 +67,6 @@ class AgentPromptMaterialization:
     prompt_append: str | None = None
     source_scope: AgentSourceScope | None = None
     source_path: str | None = None
-    model_family_overrides: Mapping[str, str] = field(
-        default_factory=lambda: _EMPTY_MODEL_FAMILY_OVERRIDES,
-    )
 
     def __post_init__(self) -> None:
         if not self.profile.strip():
@@ -103,25 +88,6 @@ class AgentPromptMaterialization:
             raise ValueError("AgentPromptMaterialization.source_scope is invalid")
         if self.source_path is not None and not self.source_path.strip():
             raise ValueError("AgentPromptMaterialization.source_path must be a non-empty string")
-        for family, override_profile in self.model_family_overrides.items():
-            if not family.strip():
-                raise ValueError("AgentPromptMaterialization.model_family_overrides keys must be non-empty strings")
-            if not override_profile.strip():
-                raise ValueError("AgentPromptMaterialization.model_family_overrides values must be non-empty strings")
-
-    def select_profile(self, model_family: str | None = None) -> str:
-        """Return the profile to materialize for the given model family hint.
-
-        Falls back to the default `profile` when `model_family` is `None` or
-        when no override is declared for that family.
-        """
-
-        if model_family is None:
-            return self.profile
-        normalized = model_family.strip()
-        if not normalized:
-            return self.profile
-        return self.model_family_overrides.get(normalized, self.profile)
 
     def to_payload(self, *, profile: str | None = None) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -130,8 +96,6 @@ class AgentPromptMaterialization:
             "source": self.source,
             "format": self.format,
         }
-        if self.model_family_overrides:
-            payload["model_family_overrides"] = dict(self.model_family_overrides)
         if self.body is not None:
             payload["body"] = self.body
         if self.prompt_append is not None:

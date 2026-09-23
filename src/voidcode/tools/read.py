@@ -513,6 +513,6 @@ class ReadTool:
             status="ok",
             content=outcome.content,
             data=outcome.data,
-            truncated=bool(outcome.data.get("truncated", False)),
-            partial=bool(outcome.data.get("partial", False)),
+            truncated=bool(outcome.data["truncated"]),
+            partial=bool(outcome.data["partial"]),
         )

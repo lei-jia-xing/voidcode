@@ -64,7 +64,7 @@
 
 当前 builtin preset 都有 agent-owned prompt profile；active / delegated agent 的 manifest allowlist 会收窄 provider 可见的 `available_tools`，并且同一边界也会约束实际 tool lookup / invocation。builtin `prompt_profile` 由 `src/voidcode/agent/` 统一 materialize 后进入 provider system message，`model_preference` / `execution_engine` 会作为 manifest live defaults 被 runtime 解析，manifest `skill_refs` 会作为默认 skill selection 进入 runtime skill application，agent manifest 的 `preset_hook_refs` 必须引用 `src/voidcode/hook/presets.py` 中的 builtin hook preset catalog，`agent.skills` 会覆盖本次运行使用的 runtime-managed skill discovery / application policy。
 
-`prompt_materialization` 是 prompt 审计元数据：它声明 builtin prompt profile、materialization version、source/format，以及可选的 `model_family_overrides`。当前 builtin agents 仍共享各自默认 profile，但这个结构允许后续在不改变执行拓扑的前提下，为特定模型族选择不同 profile。profile 选择规则属于 agent declaration 层；最终 provider system message 的组装仍由 runtime/provider 路径负责。
+`prompt_materialization` 是 prompt 审计元数据：它声明 builtin prompt profile、materialization version、source/format。当前 builtin agents 共享各自默认 profile；profile 选择规则属于 agent declaration 层，最终 provider system message 的组装仍由 runtime/provider 路径负责。
 
 `top_level_selectable` 显式声明一个 manifest 是否允许作为顶层 active agent 被选择。当前仅 `leader` 为 `true`；`product` 与 `worker`、`advisor`、`explore`、`researcher` 是 delegated/internal presets，不能作为顶层 active agent 选择。runtime 仍通过自己的 `_EXECUTABLE_AGENT_PRESETS` 做执行时 enforcement，测试会校验该 allowlist 与 manifest 声明保持一致。
 

@@ -72,10 +72,10 @@ BEFORE_COMPACT_DEFAULT_CANCEL_REASON = "hook cancelled compaction"
 
 
 def hook_cancel_reason(outcome: RuntimeHookOutcome, *, default: str) -> str:
-    """First non-empty diagnostic/guidance/message/reason carried by ``outcome``.
+    """First non-empty diagnostic/guidance/reason carried by ``outcome``.
 
-    One key order for every cancel surface (mirrors ``service.py``
-    ``_hook_cancel_reason``); ``failed_error`` wins when the executor set it.
+    One key order for every cancel surface; ``failed_error`` wins when the
+    executor set it.
     """
     if outcome.failed_error is not None and outcome.failed_error.strip():
         return outcome.failed_error
@@ -84,7 +84,7 @@ def hook_cancel_reason(outcome: RuntimeHookOutcome, *, default: str) -> str:
         payload = event.payload if event is not None else None
         if not isinstance(payload, dict):
             continue
-        for key in ("diagnostic", "message", "guidance", "reason"):
+        for key in ("diagnostic", "guidance", "reason"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
                 return value
@@ -136,7 +136,7 @@ def _before_compact_cancel_reason(outcome: RuntimeHookOutcome) -> str:
         payload = event.payload if event is not None else None
         if not isinstance(payload, dict):
             continue
-        for key in ("diagnostic", "message", "reason"):
+        for key in ("diagnostic", "reason"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
                 return value

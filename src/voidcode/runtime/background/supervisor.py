@@ -2442,7 +2442,7 @@ class RuntimeBackgroundTaskSupervisor:
 
         A parent cancellation request is a durable task-side decision that wins
         a completion race.  It must not change the child outcome: the child is
-        still sealed from ``ChildCompletionProtocol`` evidence, while the task
+        still sealed from ``ChildCompletionEvidence``, while the task
         is delivered as cancelled.  Keeping this decision separate from the
         child seal makes the ordering explicit: child seal first, task status
         second, parent delivery last.

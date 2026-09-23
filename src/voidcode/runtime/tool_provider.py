@@ -93,7 +93,6 @@ class _SkillToolFactory(Protocol):
     def __call__(
         self,
         *,
-        list_skills: Callable[[], tuple[SkillMetadata, ...]],
         resolve_skill: Callable[[str], SkillMetadata],
     ) -> Tool: ...
 
@@ -220,7 +219,7 @@ class BuiltinToolProvider:
         if self._skill_tool is not None:
             tools.append(self._skill_tool)
         elif _SkillTool is not None:
-            tools.append(_SkillTool(list_skills=lambda: (), resolve_skill=self._unknown_skill))
+            tools.append(_SkillTool(resolve_skill=self._unknown_skill))
 
         if self._task_tool is not None:
             tools.append(self._task_tool)

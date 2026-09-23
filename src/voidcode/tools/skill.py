@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import ClassVar
 
 from pydantic import BaseModel, field_validator
 
@@ -18,47 +19,42 @@ class _SkillArgs(BaseModel):
 
 
 class SkillTool:
+    # Static description: the skill catalog (name + description per skill)
+    # lives in system-prompt metadata (see catalog_skill_context in the
+    # runtime), not in this tool's description. The SKILL.md body is served
+    # on demand by invoke(). Keeping the description static avoids shipping
+    # the catalog on every provider request.
+    definition: ClassVar[ToolDefinition] = ToolDefinition(
+        name="skill",
+        description=(
+            "Load a runtime-discovered skill into the current conversation context.\n"
+            "\n"
+            "Usage:\n"
+            "- Use this tool when the task matches a skill in the runtime skills catalog "
+            "listed in the system prompt metadata.\n"
+            "- The name argument is required and must match a catalog skill name.\n"
+            "- The tool returns the resolved SKILL.md body and metadata so the agent can "
+            "follow it in the current turn.\n"
+            "- This tool does not create or edit skills; it only loads already-discovered "
+            "local skills.\n"
+            "- If the skill is unknown, the tool fails instead of guessing."
+        ),
+        input_schema={
+            "name": {"type": "string", "description": "Skill name to load."},
+            "user_message": {
+                "type": "string",
+                "description": "Optional command arguments or extra context for the skill.",
+            },
+        },
+        read_only=True,
+    )
+
     def __init__(
         self,
         *,
-        list_skills: Callable[[], tuple[SkillMetadata, ...]],
         resolve_skill: Callable[[str], SkillMetadata],
     ) -> None:
-        self._list_skills = list_skills
         self._resolve_skill = resolve_skill
-
-    @property
-    def definition(self) -> ToolDefinition:
-        # Static description: the skill catalog (name + description per skill)
-        # lives in system-prompt metadata (see catalog_skill_context in the
-        # runtime), not in this tool's description. The SKILL.md body is served
-        # on demand by invoke(). Keeping the description static avoids shipping
-        # the catalog on every provider request.
-        _ = self._list_skills
-        return ToolDefinition(
-            name="skill",
-            description=(
-                "Load a runtime-discovered skill into the current conversation context.\n"
-                "\n"
-                "Usage:\n"
-                "- Use this tool when the task matches a skill in the runtime skills catalog "
-                "listed in the system prompt metadata.\n"
-                "- The name argument is required and must match a catalog skill name.\n"
-                "- The tool returns the resolved SKILL.md body and metadata so the agent can "
-                "follow it in the current turn.\n"
-                "- This tool does not create or edit skills; it only loads already-discovered "
-                "local skills.\n"
-                "- If the skill is unknown, the tool fails instead of guessing."
-            ),
-            input_schema={
-                "name": {"type": "string", "description": "Skill name to load."},
-                "user_message": {
-                    "type": "string",
-                    "description": "Optional command arguments or extra context for the skill.",
-                },
-            },
-            read_only=True,
-        )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace

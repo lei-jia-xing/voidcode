@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import MappingProxyType
-
 from ..hook.presets import validate_hook_preset_refs
 from .models import AgentManifest, AgentPromptMaterialization
 from .prompts import render_builtin_prompt_profile
@@ -66,7 +64,6 @@ LEADER_AGENT_MANIFEST = AgentManifest(
         version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
         format="text",
-        model_family_overrides=MappingProxyType({}),
     ),
 )
 
@@ -96,7 +93,6 @@ WORKER_AGENT_MANIFEST = AgentManifest(
         version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
         format="text",
-        model_family_overrides=MappingProxyType({}),
     ),
 )
 
@@ -115,7 +111,6 @@ ADVISOR_AGENT_MANIFEST = AgentManifest(
         version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
         format="text",
-        model_family_overrides=MappingProxyType({}),
     ),
 )
 
@@ -134,7 +129,6 @@ EXPLORE_AGENT_MANIFEST = AgentManifest(
         version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
         format="text",
-        model_family_overrides=MappingProxyType({}),
     ),
 )
 
@@ -153,7 +147,6 @@ RESEARCHER_AGENT_MANIFEST = AgentManifest(
         version=_BUILTIN_PROMPT_MATERIALIZATION_VERSION,
         source="builtin",
         format="text",
-        model_family_overrides=MappingProxyType({}),
     ),
 )
 
@@ -181,7 +174,6 @@ PRODUCT_AGENT_MANIFEST = AgentManifest(
         version=2,
         source="builtin",
         format="text",
-        model_family_overrides=MappingProxyType({}),
     ),
 )
 
@@ -244,13 +236,6 @@ def validate_builtin_agent_manifests(
                 f"'{materialization.profile}' must match prompt_profile "
                 f"'{manifest.prompt_profile}'"
             )
-        for family, override_profile in materialization.model_family_overrides.items():
-            if render_builtin_prompt_profile(override_profile) is None:
-                raise ValueError(
-                    f"builtin agent manifest '{manifest.id}' prompt_materialization "
-                    f"model_family_overrides[{family!r}] references unknown prompt profile "
-                    f"'{override_profile}'"
-                )
     return manifests
 
 
