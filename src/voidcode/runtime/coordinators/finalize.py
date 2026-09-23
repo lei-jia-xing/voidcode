@@ -277,7 +277,7 @@ class FinalizeCoordinator:
             error="run interrupted",
             payload=chunk_builders.user_interrupted_payload(
                 run_id=run_id_from_session_metadata(final_session.metadata) or run_id,
-                reason=cast(str | None, getattr(abort_signal, "reason", None)),
+                reason=abort_signal.reason if abort_signal is not None else None,
             ),
             status="interrupted",
         )

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from ..command.resolver import resolve_tool_instruction
+from ..runtime.context.window import ToolResultView
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .contracts import (
     GRAPH_LOOP_STEP,
@@ -65,7 +66,7 @@ class DeterministicGraph:
     def step(
         self,
         request: GraphRunRequest,
-        tool_results: tuple[ToolResult, ...],
+        tool_results: tuple[ToolResult | ToolResultView, ...],
         *,
         session: GraphSession,
     ) -> DeterministicReadOnlyStep:
@@ -113,7 +114,7 @@ class DeterministicGraph:
         self,
         *,
         request: GraphRunRequest,
-        tool_results: tuple[ToolResult, ...],
+        tool_results: tuple[ToolResult | ToolResultView, ...],
         session: GraphSession,
     ) -> GraphLoopState:
         _ = session

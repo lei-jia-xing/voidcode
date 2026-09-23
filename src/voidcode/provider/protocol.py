@@ -218,8 +218,21 @@ class ProviderTurnResult:
 
 @runtime_checkable
 class ProviderAbortSignal(Protocol):
+    """Cancellation handle a run hands to providers and tools.
+
+    ``set_cancelled`` is part of the contract because a resumed run must be able
+    to re-assert a cancellation that was recorded before the turn started;
+    ``reason`` carries the operator- or timeout-supplied cause to the surfaces
+    that report it (interrupt payloads, tool results).
+    """
+
     @property
     def cancelled(self) -> bool: ...
+
+    @property
+    def reason(self) -> str | None: ...
+
+    def set_cancelled(self, value: bool, *, reason: str | None = None) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)

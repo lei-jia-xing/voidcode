@@ -9,6 +9,7 @@ import pytest
 
 from voidcode.graph.contracts import GraphRunRequest
 from voidcode.hook.typed import (
+    RewriteResult,
     ToolResultHandlerBinding,
     ToolResultHandlerDecision,
     ToolResultHandlerRegistry,
@@ -90,7 +91,7 @@ def test_result_handler_changes_both_provider_surfaces_but_not_authority(tmp_pat
 
     def rewrite(result: ToolResultView) -> ToolResultHandlerDecision:
         assert result.content == "source"
-        return ToolResultHandlerDecision(action="rewrite", content="provider summary")
+        return RewriteResult(content="provider summary")
 
     runtime, graph = _runtime(
         tmp_path,
@@ -122,7 +123,7 @@ def test_result_handler_rewrites_error_view_without_changing_error_authority(tmp
 
     def rewrite(result: ToolResultView) -> ToolResultHandlerDecision:
         assert result.status == "error"
-        return ToolResultHandlerDecision(action="rewrite", content="provider error summary", error="provider error")
+        return RewriteResult(content="provider error summary", error="provider error")
 
     runtime, graph = _runtime(
         tmp_path,
@@ -144,7 +145,7 @@ def test_native_and_invoke_inner_use_the_same_result_view_projection(tmp_path: P
 
     def rewrite(result: ToolResultView) -> ToolResultHandlerDecision:
         seen.append(result.tool_name)
-        return ToolResultHandlerDecision(action="rewrite", content="same provider view")
+        return RewriteResult(content="same provider view")
 
     native_runtime, native_graph = _runtime(
         tmp_path / "native",
@@ -173,7 +174,7 @@ def test_replayed_results_are_passed_through_without_handler_execution(tmp_path:
 
     def rewrite(result: ToolResultView) -> ToolResultHandlerDecision:
         calls.append(result.tool_name)
-        return ToolResultHandlerDecision(action="rewrite", content="rewritten")
+        return RewriteResult(content="rewritten")
 
     runtime, _graph = _runtime(
         tmp_path,
@@ -250,7 +251,7 @@ def test_builtin_truncation_chain_is_last_wins() -> None:
 
     def override(result: ToolResultView) -> ToolResultHandlerDecision:
         _ = result
-        return ToolResultHandlerDecision(action="rewrite", content="override")
+        return RewriteResult(content="override")
 
     builtin = builtin_tool_result_handler_registry().bindings
     registry = compose_tool_result_handler_registry(

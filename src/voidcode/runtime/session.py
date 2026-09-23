@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
+from .events import EventEnvelope
 from .mode import backfill_runtime_policy_mode, runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .policy import runtime_policy_snapshot_from_session_metadata
 
@@ -142,36 +143,21 @@ def normalize_persisted_session_metadata(metadata: dict[str, object]) -> dict[st
     return backfill_runtime_policy_mode(metadata)
 
 
-def _event_payload(event: object) -> dict[str, object]:
-    payload = getattr(event, "payload", None)
-    return payload if isinstance(payload, dict) else {}
-
-
-def _event_type(event: object) -> str:
-    value = getattr(event, "event_type", "")
-    return value if isinstance(value, str) else ""
-
-
-def _event_sequence(event: object) -> int | None:
-    value = getattr(event, "sequence", None)
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _policy_observations(events: tuple[object, ...]) -> dict[str, object]:
+def _policy_observations(events: tuple[EventEnvelope, ...]) -> dict[str, object]:
     tool_policy_denial: dict[str, object] | None = None
     shell_policy_events: list[dict[str, object]] = []
     for event in events:
-        event_type = _event_type(event)
-        payload = _event_payload(event)
+        event_type = event.event_type
+        payload = event.payload
         if payload.get("kind") == "runtime_tool_policy_denied" and isinstance(payload.get("tool_policy"), dict):
             tool_policy_denial = {
-                "event_sequence": _event_sequence(event),
+                "event_sequence": event.sequence,
                 **cast(dict[str, object], _bounded_redacted(payload["tool_policy"])),
             }
         if payload.get("policy_surface") == "shell_policy":
             shell_policy_events.append(
                 {
-                    "event_sequence": _event_sequence(event),
+                    "event_sequence": event.sequence,
                     "event_type": event_type,
                     "tool": payload.get("tool"),
                     "path_scope": payload.get("path_scope"),
@@ -183,7 +169,7 @@ def _policy_observations(events: tuple[object, ...]) -> dict[str, object]:
         if payload.get("tool") == "shell_exec" and "injected_env_keys" in payload:
             shell_policy_events.append(
                 {
-                    "event_sequence": _event_sequence(event),
+                    "event_sequence": event.sequence,
                     "event_type": event_type,
                     "tool": "shell_exec",
                     "injected_env_keys": _bounded_redacted(payload.get("injected_env_keys")),
@@ -200,7 +186,7 @@ def _policy_observations(events: tuple[object, ...]) -> dict[str, object]:
 def session_metadata_for_persistence(
     metadata: dict[str, object],
     *,
-    events: tuple[object, ...] = (),
+    events: tuple[EventEnvelope, ...] = (),
 ) -> dict[str, object]:
     """Return bounded, redacted session metadata safe for durable storage.
 

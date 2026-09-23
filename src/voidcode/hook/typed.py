@@ -273,23 +273,24 @@ ToolResultHandlerAction = Literal["unchanged", "rewrite", "error"]
 
 
 @dataclass(frozen=True, slots=True)
-class ToolResultHandlerDecision:
-    """Provider-visible result transformation; authority fields are absent."""
+class UnchangedResult:
+    """Handler leaves the provider-visible view untouched."""
 
-    action: Literal["unchanged", "rewrite"]
+    action: Literal["unchanged"] = "unchanged"
+
+
+@dataclass(frozen=True, slots=True)
+class RewriteResult:
+    """Handler replaces the provider-visible fields; the payload is the type."""
+
     content: str | None = None
     error: str | None = None
     diagnostics: ToolDiagnostics | None = None
+    action: Literal["rewrite"] = "rewrite"
 
-    def __post_init__(self) -> None:
-        if self.action not in {"unchanged", "rewrite"}:
-            raise ValueError(f"unsupported tool result handler action: {self.action}")
-        if self.action == "unchanged" and any(value is not None for value in (self.content, self.error, self.diagnostics)):
-            raise ValueError("unchanged result decision cannot provide view fields")
-        if self.content is not None and not isinstance(self.content, str):
-            raise ValueError("result content must be a string or null")
-        if self.error is not None and not isinstance(self.error, str):
-            raise ValueError("result error must be a string or null")
+
+# The deliberately small result vocabulary for typed result handlers.
+type ToolResultHandlerDecision = UnchangedResult | RewriteResult
 
 
 class ToolResultHandler(Protocol):
@@ -371,10 +372,10 @@ _RESULT_OUTPUT_CHAR_LIMIT = 8000
 def _result_output_truncation_handler(view: ToolResultView, /) -> ToolResultHandlerDecision:
     content = view.content
     if not isinstance(content, str) or len(content) <= _RESULT_OUTPUT_CHAR_LIMIT:
-        return ToolResultHandlerDecision(action="unchanged")
+        return UnchangedResult()
     omitted = len(content) - _RESULT_OUTPUT_CHAR_LIMIT
     truncated = f"{content[:_RESULT_OUTPUT_CHAR_LIMIT].rstrip()}\n[... output truncated: {omitted} chars omitted]"
-    return ToolResultHandlerDecision(action="rewrite", content=truncated, error=view.error, diagnostics=view.diagnostics)
+    return RewriteResult(content=truncated, error=view.error, diagnostics=view.diagnostics)
 
 
 def builtin_tool_result_handler_registry() -> ToolResultHandlerRegistry:
@@ -454,6 +455,8 @@ __all__ = [
     "ToolResultHandlerDecision",
     "ToolResultHandlerOutcome",
     "ToolResultHandlerRegistry",
+    "RewriteResult",
+    "UnchangedResult",
     "builtin_tool_input_handler_registry",
     "builtin_tool_result_handler_registry",
     "compose_tool_input_handler_registry",

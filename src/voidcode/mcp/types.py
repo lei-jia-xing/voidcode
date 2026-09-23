@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from mcp.types.version import LATEST_HANDSHAKE_VERSION
+
+if TYPE_CHECKING:
+    from ..runtime.config import RuntimeMcpConfig, RuntimeMcpServerConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,10 +79,10 @@ class McpConfigState:
     """Static MCP configuration state - does not depend on runtime lifecycle."""
 
     configured_enabled: bool = False
-    servers: dict[str, Any] = field(default_factory=dict)
+    servers: dict[str, RuntimeMcpServerConfig] = field(default_factory=dict)
 
     @classmethod
-    def from_runtime_config(cls, config: Any | None) -> McpConfigState:
+    def from_runtime_config(cls, config: RuntimeMcpConfig | None) -> McpConfigState:
         if config is None:
             return cls()
         # Unset ``enabled`` (None) means enabled by default; only an explicit

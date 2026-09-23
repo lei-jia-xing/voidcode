@@ -19,6 +19,7 @@ from ..provider.protocol import (
     StreamableTurnProvider,
     TurnProvider,
 )
+from ..runtime.context.window import ToolResultView
 from ..tools.contracts import ToolCall, ToolResult
 from .contracts import (
     GRAPH_LOOP_STEP,
@@ -143,13 +144,20 @@ class ProviderStep:
 @dataclass(slots=True)
 class _GraphAbortSignal:
     _cancelled: bool = False
+    _reason: str | None = None
 
     @property
     def cancelled(self) -> bool:
         return self._cancelled
 
-    def set_cancelled(self, value: bool) -> None:
+    @property
+    def reason(self) -> str | None:
+        return self._reason
+
+    def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
         self._cancelled = value
+        if value and reason is not None:
+            self._reason = reason
 
 
 class ProviderGraph:
@@ -173,7 +181,7 @@ class ProviderGraph:
     def stream_step(
         self,
         request: GraphRunRequest,
-        tool_results: tuple[ToolResult, ...],
+        tool_results: tuple[ToolResult | ToolResultView, ...],
         *,
         session: GraphSession,
     ) -> Iterator[GraphStreamItem]:
@@ -208,7 +216,7 @@ class ProviderGraph:
     def step(
         self,
         request: GraphRunRequest,
-        tool_results: tuple[ToolResult, ...],
+        tool_results: tuple[ToolResult | ToolResultView, ...],
         *,
         session: GraphSession,
     ) -> ProviderStep:
@@ -230,17 +238,9 @@ class ProviderGraph:
         if self._pending_tool_calls:
             self._clear_pending_tool_calls()
 
-        provider_stream = request.metadata.get("provider_stream", False)
-        if isinstance(provider_stream, bool):
-            streaming_enabled = provider_stream
-        else:
-            streaming_enabled = str(provider_stream).strip().lower() not in {
-                "false",
-                "0",
-                "no",
-                "off",
-                "",
-            }
+        # ``validate_runtime_request_metadata`` rejects a non-boolean
+        # ``provider_stream`` before the runtime builds this request.
+        streaming_enabled = request.metadata.get("provider_stream") is True
 
         planning_events = (
             self._graph_event(
@@ -261,25 +261,15 @@ class ProviderGraph:
             ),
         )
 
-        abort_requested = request.metadata.get("abort_requested", False)
-        if isinstance(abort_requested, bool):
-            should_abort = abort_requested
-        else:
-            should_abort = str(abort_requested).strip().lower() not in {
-                "false",
-                "0",
-                "no",
-                "off",
-                "",
-            }
+        abort_requested = request.metadata.get("abort_requested") is True
 
         if request.abort_signal is None:
-            self._abort_signal.set_cancelled(should_abort)
+            self._abort_signal.set_cancelled(abort_requested)
             abort_signal = self._abort_signal
         else:
             abort_signal = request.abort_signal
-            if should_abort and hasattr(abort_signal, "set_cancelled"):
-                cast(_GraphAbortSignal, abort_signal).set_cancelled(True)
+            if abort_requested:
+                abort_signal.set_cancelled(True)
         turn_request = self._build_provider_turn_request(
             request=request,
             session_id=session_id,

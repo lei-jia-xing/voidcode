@@ -16,7 +16,6 @@ from textual.widgets import Footer, Input, Static
 
 from ..runtime.config import (
     RuntimeConfig,
-    RuntimeTuiConfig,
     RuntimeTuiPreferences,
     RuntimeTuiReadingPreferences,
     RuntimeTuiThemePreferences,
@@ -280,17 +279,19 @@ class VoidCodeTUI(App[int]):
         self._tracked_background_task_ids: set[str] = set()
         self._background_poll_timer_scheduled = False
 
-        if self._global_tui_preferences is None and isinstance(config.tui, RuntimeTuiConfig):
-            merged_preferences = config.tui.preferences
-            if isinstance(merged_preferences, RuntimeTuiPreferences):
+        tui_config = config.tui
+        if self._global_tui_preferences is None and tui_config is not None:
+            merged_preferences = tui_config.preferences
+            if merged_preferences is not None:
                 self._effective_preferences = merged_preferences
 
         self._configure_keybindings(config)
 
     def _configure_keybindings(self, config: RuntimeConfig) -> None:
-        if isinstance(config.tui, RuntimeTuiConfig):
-            if isinstance(config.tui.keymap, dict):
-                for k, action in config.tui.keymap.items():
+        tui_config = config.tui
+        if tui_config is not None:
+            if isinstance(tui_config.keymap, dict):
+                for k, action in tui_config.keymap.items():
                     self.bind(k, action)
 
     def compose(self) -> ComposeResult:
@@ -437,7 +438,7 @@ class VoidCodeTUI(App[int]):
     def _apply_tui_preferences(self) -> RuntimeTuiPreferences:
         merged_preferences = merge_runtime_tui_preferences(self._tui_preferences, self._workspace_tui_preferences)
         effective = effective_runtime_tui_preferences(merged_preferences)
-        if isinstance(effective.theme.name, str) and effective.theme.name in self.available_themes:
+        if effective.theme.name in self.available_themes:
             self.theme = effective.theme.name
 
         wrap = effective.reading.wrap if effective.reading.wrap is not None else True
@@ -608,7 +609,7 @@ class VoidCodeTUI(App[int]):
             except Exception as exc:
                 logger.error("Failed to read tool output artifact: %s", exc)
                 result = None
-            if isinstance(result, dict):
+            if result is not None:
                 status = result.get("status")
                 candidate = result.get("content")
                 if status == "available" and isinstance(candidate, str):
@@ -1063,21 +1064,6 @@ class VoidCodeTUI(App[int]):
             return f"{icon} {summary}"
         return f"{icon} {tool_name}"
 
-    def _flush_tool_progress(self, tool_call_id: str | None) -> None:
-        if not isinstance(tool_call_id, str) or not tool_call_id:
-            return
-        streams = self._pending_tool_progress.pop(tool_call_id, None)
-        if not streams:
-            return
-        log = self.query_one("#transcript-log", TimelineView)
-        for stream_name, chunks in streams.items():
-            body = "".join(chunks).rstrip()
-            if not body:
-                continue
-            style = "dim" if stream_name == "stdout" else "dim red"
-            log.write(Text(f"  ⎿ {stream_name}:", style=style))
-            log.write(Text(body, style=style))
-
     def _render_tool_completed(
         self,
         tool_name: str,
@@ -1392,7 +1378,7 @@ class VoidCodeTUI(App[int]):
         chunk = message.chunk
         self.session_id = chunk.session.session.id
 
-        if hasattr(chunk.session, "metadata") and chunk.session.metadata:
+        if chunk.session.metadata:
             self._update_context_panel_worker(chunk.session.metadata)
 
         if chunk.kind == "event" and chunk.event is not None:

@@ -390,8 +390,9 @@ def _is_abort_signal_requested(abort_signal: ProviderAbortSignal | None) -> bool
 
 
 def _abort_signal_reason(abort_signal: ProviderAbortSignal | None) -> str | None:
-    reason = getattr(abort_signal, "reason", None)
-    return reason if isinstance(reason, str) and reason else None
+    if abort_signal is None:
+        return None
+    return abort_signal.reason or None
 
 
 def _abort_reason(request: GraphRunRequest) -> str | None:
@@ -2358,7 +2359,7 @@ class RuntimeRunLoopCoordinator:
             if graph_step is None:
                 raise RuntimeError("graph stream ended without a terminal step")
         else:
-            graph_step = cast(Any, graph).step(
+            graph_step = graph.step(
                 graph_request,
                 tool_results=tuple(tool_results),
                 session=graph_request.session,

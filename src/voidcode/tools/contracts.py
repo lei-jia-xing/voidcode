@@ -82,8 +82,7 @@ class ToolDiagnostics:
     guidance: str | None = None
 
     def __post_init__(self) -> None:
-        for name in ("kind", "summary", "guidance"):
-            value = getattr(self, name)
+        for name, value in (("kind", self.kind), ("summary", self.summary), ("guidance", self.guidance)):
             if value is not None and not isinstance(value, str):
                 raise ValueError(f"diagnostics {name} must be a string or null")
             if isinstance(value, str):
@@ -230,9 +229,7 @@ class ToolResult:
     reference: str | None = None
 
     def __post_init__(self) -> None:
-        if self.status not in ("ok", "error"):
-            raise ValueError("tool result status must be 'ok' or 'error'")
-        if not isinstance(self.tool_name, str) or not self.tool_name:
+        if not self.tool_name:
             raise ValueError("tool results must include a tool name")
         if not isinstance(self.data, dict):
             raise ValueError("tool result data must be an object")

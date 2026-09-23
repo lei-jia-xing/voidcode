@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Annotated, Final, Literal, Protocol, TypedDict, runtime_checkable
 
 from ..provider.protocol import ProviderAbortSignal, ProviderAssembledContext, ProviderContextWindow
+from ..runtime.context.window import ToolResultView
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 type GraphEventSource = Literal["graph"]
@@ -54,7 +55,7 @@ class GraphLoopState(TypedDict):
     metadata: dict[str, object]
     current_turn: Annotated[int, _update_or_replace]
     tool_calls: Annotated[list[ToolCall], operator.add]
-    tool_results: Annotated[list[ToolResult], operator.add]
+    tool_results: Annotated[list[ToolResult | ToolResultView], operator.add]
     available_tools: tuple[ToolDefinition, ...]
     events: Annotated[list[GraphEvent], operator.add]
     output: Annotated[str | None, _update_or_replace]
@@ -101,7 +102,7 @@ class RuntimeGraph(Protocol):
     def step(
         self,
         request: GraphRunRequest,
-        tool_results: tuple[ToolResult, ...],
+        tool_results: tuple[ToolResult | ToolResultView, ...],
         *,
         session: GraphSession,
     ) -> GraphStep: ...

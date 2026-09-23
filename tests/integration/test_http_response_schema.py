@@ -992,10 +992,16 @@ def _statuses_carrying_the_success_schema(operation: dict[str, Any]) -> list[int
 
 
 def _assert_body_matches_model(body: object, model: Any, *, label: str) -> None:
-    """The emitted body validates against the model and round-trips unchanged."""
+    """The emitted body validates against the model and round-trips unchanged.
+
+    ``exclude_unset`` is what reproduces the wire's ``null``-vs-absent choice: the
+    body only sets the keys the transport wrote, so the fields the body omitted
+    stay omitted. A body that carried an explicit ``null`` for a key some
+    serializer omits would fail here, which is the point.
+    """
     adapter = TypeAdapter(model)
     validated = adapter.validate_python(body)
-    assert adapter.dump_python(validated, mode="json") == body, f"{label}: the model does not reproduce the body"
+    assert adapter.dump_python(validated, mode="json", exclude_unset=True) == body, f"{label}: the model does not reproduce the body"
 
 
 def _assert_wire_rendering(response: _TransportResponse, *, label: str) -> None:
@@ -1074,11 +1080,9 @@ def test_every_documented_operation_documents_the_error_envelope(tmp_path: Path)
 def test_response_model_schemas_describe_their_fields_in_both_modes() -> None:
     """Every model's OpenAPI schema carries its real fields, in both schema modes.
 
-    The response wrapper serializes to ``dict[str, object]``, and pydantic would
-    derive each model's *serialization* schema (the one FastAPI publishes) from
-    that return type, flattening every response to ``{"type": "object"}``. The
-    models keep their fields by stripping the wrapper from the schema core; this
-    asserts the outcome for every model, in both modes.
+    FastAPI builds response fields in ``serialization`` mode, so a model whose
+    serialization schema collapsed to ``{"type": "object"}`` would publish an
+    empty response body in the document the frontend types are generated from.
     """
     for name, model in sorted(_response_models().items()):
         for mode in ("validation", "serialization"):
@@ -1090,12 +1094,6 @@ def test_response_model_schemas_describe_their_fields_in_both_modes() -> None:
                 schema = schema["$defs"][target]
             assert schema.get("additionalProperties") is False, f"{name} ({mode}) is not a closed object"
             assert set(schema["properties"]) == set(model.model_fields), f"{name} ({mode}) does not describe every field"
-            absent = model._absent_when_none()
-            unknown = absent - set(model.model_fields)
-            assert not unknown, f"{name} omits unknown fields: {sorted(unknown)}"
-            assert absent.isdisjoint(schema.get("required", [])), f"{name} omits a required field"
-            for field in absent:
-                assert schema["properties"][field].get("default") is None, f"{name}.{field} must default to null"
 
 
 def test_every_documented_body_is_typed(tmp_path: Path) -> None:
@@ -1201,10 +1199,12 @@ def test_documented_models_reject_undocumented_keys_and_accept_absent_optionals(
     summary = _model_named("SessionSummaryBody")
     state = _session_state_json(True)
     good = {"session": state["session"], "status": "completed", "turn": 1, "prompt": "hi", "updated_at": 1}
-    assert summary.model_validate(good).model_dump(mode="json") == good
+    adapter = TypeAdapter(summary)
+    assert adapter.dump_python(adapter.validate_python(good), mode="json", exclude_unset=True) == good
     with pytest.raises(Exception, match="extra_forbidden"):
         summary.model_validate({**good, "unexpected": 1})
-    # ``parent_id`` is omitted by the serializer when unset, and the model
-    # reproduces that absence instead of emitting an explicit null.
+    # ``parent_id`` is omitted by the transport's serializer when unset; the
+    # model reproduces that absence under ``exclude_unset`` instead of emitting
+    # an explicit null.
     minimal = {**good, "session": {"id": "sess-1"}}
-    assert summary.model_validate(minimal).model_dump(mode="json") == minimal
+    assert adapter.dump_python(adapter.validate_python(minimal), mode="json", exclude_unset=True) == minimal

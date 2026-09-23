@@ -527,15 +527,7 @@ def _load_repo_local_config(
     if not config_path.exists():
         return RuntimeConfigOverrides()
 
-    try:
-        raw_payload = json.loads(config_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"runtime config file must contain valid JSON: {config_path}") from exc
-
-    if not isinstance(raw_payload, dict):
-        raise ValueError(f"runtime config file must contain a JSON object: {config_path}")
-
-    payload = cast(dict[str, object], raw_payload)
+    payload = _read_json_object(config_path)
 
     # Sections whose validator lives in another module keep the first word: the
     # policy and provider parsers own their contract messages.
@@ -611,15 +603,7 @@ def _load_user_config(env: Mapping[str, str]) -> RuntimeConfigOverrides:
     if not config_path.exists():
         return RuntimeConfigOverrides()
 
-    try:
-        raw_payload = json.loads(config_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"runtime config file must contain valid JSON: {config_path}") from exc
-
-    if not isinstance(raw_payload, dict):
-        raise ValueError(f"runtime config file must contain a JSON object: {config_path}")
-
-    payload = cast(dict[str, object], raw_payload)
+    payload = _read_json_object(config_path)
     # The provider parser owns its messages, so it sees the raw payload.
     providers = _parse_providers_config(payload.get("providers"), env=env)
     config_payload = validate_config_model(UserConfigPayload, payload)

@@ -662,23 +662,26 @@ class ManagedMcpManager:
             )
             raise ValueError(message)
 
-        if transport == "remote-http" and not server_config.url:
-            diagnostic = create_diagnostic(
-                severity=McpDiagnosticSeverity.ERROR,
-                category="startup",
-                code="server_url_missing",
-                server_name=server_name,
-            )
-            self._record_diagnostic(diagnostic)
-            message = f"MCP[{server_name}]: url is empty. Please configure mcp.servers.{{server_name}}.url in .voidcode.json"
-            self._record_failure_event(
-                key=key,
-                workspace_root=workspace.resolve(),
-                stage="startup",
-                error=message,
-                diagnostic=diagnostic,
-            )
-            raise ValueError(message)
+        remote_http_url = ""
+        if transport == "remote-http":
+            remote_http_url = server_config.url or ""
+            if not remote_http_url:
+                diagnostic = create_diagnostic(
+                    severity=McpDiagnosticSeverity.ERROR,
+                    category="startup",
+                    code="server_url_missing",
+                    server_name=server_name,
+                )
+                self._record_diagnostic(diagnostic)
+                message = f"MCP[{server_name}]: url is empty. Please configure mcp.servers.{{server_name}}.url in .voidcode.json"
+                self._record_failure_event(
+                    key=key,
+                    workspace_root=workspace.resolve(),
+                    stage="startup",
+                    error=message,
+                    diagnostic=diagnostic,
+                )
+                raise ValueError(message)
 
         workspace_root = workspace.resolve()
         stderr_log: IO[str] | None = None
@@ -696,8 +699,7 @@ class ManagedMcpManager:
             try:
                 portal = self._ensure_portal()
                 if transport == "remote-http":
-                    url = server_config.url
-                    pending_transport_context = portal.wrap_async_context_manager(cast(Any, streamable_http_client(url)))
+                    pending_transport_context = portal.wrap_async_context_manager(cast(Any, streamable_http_client(remote_http_url)))
                     read_stream, write_stream = _read_write_streams(pending_transport_context.__enter__())
                     transport_context = pending_transport_context
                 else:

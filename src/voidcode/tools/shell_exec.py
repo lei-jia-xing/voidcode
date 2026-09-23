@@ -433,7 +433,7 @@ class ShellExecTool:
             raise ValueError(f"shell_exec command timed out after {timeout_seconds}s")
 
         if aborted:
-            reason = getattr(abort_signal, "reason", None)
+            reason = abort_signal.reason if abort_signal is not None else None
             content = "User aborted the command."
             return ToolResult(
                 tool_name=self.definition.name,
@@ -449,7 +449,7 @@ class ShellExecTool:
                     "truncated": False,
                     "interrupted": True,
                     "cancelled": True,
-                    "reason": reason if isinstance(reason, str) else None,
+                    "reason": reason,
                     "injected_env_keys": injected_env_keys,
                 },
                 truncated=False,

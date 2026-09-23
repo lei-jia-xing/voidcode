@@ -119,7 +119,7 @@ class _InvocationCancelSignal:
     def reason(self) -> str | None:
         if self._cancelled:
             return self._reason
-        return getattr(self.run_signal, "reason", None)
+        return self.run_signal.reason if self.run_signal is not None else None
 
     def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
         self._cancelled = value

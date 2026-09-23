@@ -23,9 +23,10 @@ Two properties of the transport shape the design:
   ``EventEnvelope``'s ``delegated_lifecycle``, agent/skill source fields, the
   debug snapshot's ``runtime_policy``, every provider-model capability), while
   others emit an explicit ``null`` (``BackgroundTaskState.child_session_id``,
-  the error envelope's ``code``, ...). ``_absent_when_none`` marks the former so
-  a model's dump reproduces the emitted body exactly, which keeps that
-  distinction visible to generated clients (``field?: T`` vs ``field: T | null``).
+  the error envelope's ``code``, ...). A model is only ever built by validating
+  the body the transport wrote, so dumping it with ``exclude_unset=True``
+  reproduces that distinction for generated clients (``field?: T`` vs
+  ``field: T | null``).
 
 Deliberately partially typed payloads (free-form, runtime-owned maps) are marked
 ``dynamic`` with the reason: event payloads, session/task metadata blobs,
@@ -36,12 +37,9 @@ than ``object`` so generated clients at least see a JSON object.
 
 from __future__ import annotations
 
-from typing import Literal, Self, cast, final
+from typing import Literal, Self, final
 
-from pydantic import BaseModel, ConfigDict, model_serializer, model_validator
-from pydantic.functional_serializers import SerializerFunctionWrapHandler
-from pydantic.json_schema import GetJsonSchemaHandler, JsonSchemaValue
-from pydantic_core import CoreSchema
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from ..background.models import BackgroundTaskStatus
 from ..background.routing import SubagentExecutionMode
@@ -57,72 +55,19 @@ from ..events import DelegatedLifecycleStatus, EventSource
 from ..session import SessionStatus
 
 
-def _without_wrapper_serializers(core_schema: CoreSchema) -> CoreSchema:
-    """A schema core with every model node's response-wrapper serializer removed.
-
-    Pydantic composes a model's core schema with its validators (``function-after``
-    and friends) wrapped *around* the model node, so the wrapper serializer has to
-    be removed wherever a model node carries one instead of only at the top level.
-    """
-    stripped: dict[str, object] = {}
-    for key, value in core_schema.items():
-        if key == "serialization" and core_schema.get("type") == "model":
-            continue
-        stripped[key] = _without_wrapper_serializers_in(value)
-    return cast(CoreSchema, stripped)
-
-
-def _without_wrapper_serializers_in(value: object) -> object:
-    if isinstance(value, dict):
-        return _without_wrapper_serializers(cast(CoreSchema, value))
-    if isinstance(value, list):
-        return [_without_wrapper_serializers_in(item) for item in value]
-    return value
-
-
 class ResponseModel(BaseModel):
     """Base for every transport response model.
 
     ``extra="forbid"`` is the drift guard: the transport emits exactly these
     keys, so an unexpected key in a real body is a contract violation and must
     fail validation rather than be silently accepted.
+
+    ``null``-vs-absent is reproduced by dumping with ``exclude_unset=True``:
+    a model is only ever built by validating the body the transport wrote, so
+    the fields its serializer never set are exactly the keys the body omitted.
     """
 
     model_config = ConfigDict(extra="forbid")
-
-    @classmethod
-    def _absent_when_none(cls) -> frozenset[str]:
-        """Fields whose key the serializers omit entirely when the value is unset.
-
-        Default is "emit every field", including explicit ``null``. Models that
-        inherit the transport's omit-when-unset behaviour override this.
-        """
-        return frozenset()
-
-    @model_serializer(mode="wrap")
-    def _serialize_transport_response(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
-        payload = handler(self)
-        absent = type(self)._absent_when_none()
-        if not absent:
-            return payload
-        return {key: value for key, value in payload.items() if not (value is None and key in absent)}
-
-    @classmethod
-    def __get_pydantic_json_schema__(cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler) -> JsonSchemaValue:
-        """Publish the model's fields instead of the wrapper serializer's return type.
-
-        FastAPI builds response fields in ``serialization`` mode, and pydantic
-        derives a wrapped model's serialization schema from
-        :meth:`_serialize_transport_response`'s ``dict[str, object]`` return type
-        — collapsing every model to ``{"type": "object"}`` and dropping the
-        response fields this module exists to publish. Removing the wrapper from
-        the schema core (never from the serializer) restores the declared fields,
-        their types, and ``additionalProperties: false`` in both modes: the
-        wrapper only omits unset keys at dump time and never changes the shape.
-        ``tests/integration/test_http_response_schema.py`` asserts both modes
-        describe every field of every model.
-        """
-        return handler(_without_wrapper_serializers(core_schema))
 
 
 # ------------------------------------------------------------------ error envelope
@@ -152,10 +97,6 @@ class SessionRefBody(ResponseModel):
 
     id: str
     parent_id: str | None = None
-
-    @classmethod
-    def _absent_when_none(cls) -> frozenset[str]:
-        return frozenset({"parent_id"})
 
 
 @final
@@ -187,10 +128,6 @@ class EventBody(ResponseModel):
     source: EventSource
     payload: dict[str, object]
     delegated_lifecycle: DelegationEventBody | None = None
-
-    @classmethod
-    def _absent_when_none(cls) -> frozenset[str]:
-        return frozenset({"delegated_lifecycle"})
 
 
 @final
@@ -548,10 +485,6 @@ class SessionDebugBody(ResponseModel):
     suggested_operator_action: str
     operator_guidance: str
 
-    @classmethod
-    def _absent_when_none(cls) -> frozenset[str]:
-        return frozenset({"runtime_policy"})
-
 
 # ------------------------------------------------------------------- background tasks
 
@@ -635,10 +568,6 @@ class SubagentRoutingBody(ResponseModel):
     description: str | None = None
     command: str | None = None
 
-    @classmethod
-    def _absent_when_none(cls) -> frozenset[str]:
-        return frozenset({"subagent_type", "description", "command"})
-
 
 @final
 class DelegatedExecutionBody(ResponseModel):
@@ -679,10 +608,6 @@ class DelegationEventBody(ResponseModel):
     message: DelegatedLifecycleMessageBody
     session_id: str | None = None
     parent_session_id: str | None = None
-
-    @classmethod
-    def _absent_when_none(cls) -> frozenset[str]:
-        return frozenset({"session_id", "parent_session_id"})
 
 
 @final
@@ -885,10 +810,6 @@ class ProviderModelMetadataBody(ResponseModel):
     model_status: str | None = None
     tool_feedback_mode: Literal["standard", "synthetic_user_message"] | None = None
 
-    @classmethod
-    def _absent_when_none(cls) -> frozenset[str]:
-        return frozenset(cls.model_fields)
-
 
 @final
 class ProviderModelsBody(ResponseModel):
@@ -981,10 +902,6 @@ class AgentSummaryBody(ResponseModel):
     source_scope: str | None = None
     source_path: str | None = None
 
-    @classmethod
-    def _absent_when_none(cls) -> frozenset[str]:
-        return frozenset({"source_scope", "source_path"})
-
 
 @final
 class SkillSummaryBody(ResponseModel):
@@ -994,10 +911,6 @@ class SkillSummaryBody(ResponseModel):
     description: str
     origin: str
     source_path: str | None = None
-
-    @classmethod
-    def _absent_when_none(cls) -> frozenset[str]:
-        return frozenset({"source_path"})
 
 
 @final

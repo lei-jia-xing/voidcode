@@ -42,7 +42,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from ..formatter import FormatterCwdPolicy
 from ..hook.config import RuntimeHooksConfig
 from ..mcp.builtin import get_builtin_mcp_descriptor
-from ..provider.config import ProviderConfigsPayload
+from ..provider.config import ProviderConfigsPayload, _format_runtime_config_field_error
 from ..provider.reasoning_effort import ALL_EFFORTS, normalize_reasoning_effort
 from .permission import PermissionDecision
 from .policy import runtime_policy_allowed_hook_scopes
@@ -115,17 +115,6 @@ DEFAULT_HOOK_TIMEOUT_SECONDS: float = cast(float, RuntimeHooksConfig().timeout_s
 # ---------------------------------------------------------------------------
 # Raw-value validators shared by the payload models and the environment surface
 # ---------------------------------------------------------------------------
-
-
-def _format_runtime_config_field_error(field_path: str) -> str:
-    runtime_field_prefix = "runtime config field '"
-    if field_path.startswith(runtime_field_prefix):
-        if field_path.endswith("'"):
-            return field_path
-        if "'[" in field_path:
-            base, suffix = field_path[len(runtime_field_prefix) :].split("'[", maxsplit=1)
-            return f"{runtime_field_prefix}{base}[{suffix}'"
-    return f"runtime config field '{field_path}'"
 
 
 def config_model_keys(model_type: type[BaseModel]) -> frozenset[str]:

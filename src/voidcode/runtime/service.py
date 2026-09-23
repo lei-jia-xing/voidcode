@@ -224,6 +224,7 @@ from .hook_preset_metadata import (
 )
 from .hook_runtime import (
     HOOK_RECURSION_ENV_VAR,
+    hook_cancel_reason,
     hook_execution_policy_from_metadata,
     run_lifecycle_hooks_for_session,
 )
@@ -415,19 +416,6 @@ def _approval_requested_hook_payload(pending: PendingApproval) -> dict[str, obje
     if pending.policy_surface is not None:
         payload["policy_surface"] = pending.policy_surface
     return payload
-
-
-def _hook_cancel_reason(outcome: object, *, default: str) -> str:
-    for chunk in getattr(outcome, "chunks", ()):
-        event = getattr(chunk, "event", None)
-        payload = getattr(event, "payload", None)
-        if not isinstance(payload, dict):
-            continue
-        for key in ("diagnostic", "message", "guidance", "reason"):
-            value = payload.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-    return default
 
 
 def _permission_chunks_with_hook_reason(
@@ -1394,7 +1382,7 @@ class VoidCodeRuntime(RuntimeSurface):
                         session=final_session,
                         events=events,
                         run_id=run_id,
-                        reason=cast(str | None, getattr(abort_signal, "reason", None)),
+                        reason=abort_signal.reason,
                     )
                     if final_session.status == "waiting":
                         final_session = disconnect_acp_for_session_state(self._acp_adapter, final_session)
@@ -1419,7 +1407,7 @@ class VoidCodeRuntime(RuntimeSurface):
                     session=final_session,
                     events=events,
                     run_id=run_id,
-                    reason=cast(str | None, getattr(abort_signal, "reason", None)),
+                    reason=abort_signal.reason,
                 )
 
             if final_session.status == "waiting":
@@ -2283,7 +2271,7 @@ class VoidCodeRuntime(RuntimeSurface):
             return outcome.chunks, outcome.last_sequence, None
         if outcome.action != "cancel":
             return outcome.chunks, outcome.last_sequence, None
-        return outcome.chunks, outcome.last_sequence, _hook_cancel_reason(outcome, default="hook blocked approval")
+        return outcome.chunks, outcome.last_sequence, hook_cancel_reason(outcome, default="hook blocked approval")
 
     def resolve_permission(
         self,

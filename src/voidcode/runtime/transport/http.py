@@ -380,6 +380,8 @@ class RuntimeTransport(Protocol):
         responses: tuple[QuestionResponse, ...],
     ) -> RuntimeResponse: ...
 
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None: ...
+
 
 def _runtime_request_from(payload: _RunStreamRequestPayload) -> RuntimeRequest:
     """Build the runtime request, applying the runtime's own boundary checks.
@@ -953,9 +955,7 @@ class RuntimeTransportApp(FastAPI):
     ) -> None:
         if workspace_coordinator is not None and workspace_coordinator.owns_runtime(runtime):
             return
-        exit_method = getattr(runtime, "__exit__", None)
-        if callable(exit_method):
-            exit_method(None, None, None)
+        runtime.__exit__(None, None, None)
 
     @contextmanager
     def _active_request_scope(self) -> Iterator[None]:
