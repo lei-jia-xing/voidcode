@@ -29,6 +29,10 @@ from voidcode.provider.config import (
 )
 from voidcode.provider.protocol import (
     ProviderAssembledContext,
+    ProviderExecutionError,
+    ProviderStreamEvent,
+    ProviderTurnRequest,
+    ProviderTurnResult,
 )
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.runtime.background.models import (
@@ -80,12 +84,6 @@ from voidcode.runtime.permission import (
 from voidcode.runtime.permission_context import RuntimePermissionContextResolver
 from voidcode.runtime.permission_path_helpers import extract_paths_from_patch
 from voidcode.runtime.policy import RuntimePolicyConfig, RuntimePolicyToolPolicyConfig
-from voidcode.runtime.provider_protocol import (
-    ProviderExecutionError,
-    ProviderStreamEvent,
-    ProviderTurnRequest,
-    ProviderTurnResult,
-)
 from voidcode.runtime.question import QuestionResponse
 from voidcode.runtime.service import (
     GraphRunRequest,

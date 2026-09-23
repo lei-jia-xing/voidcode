@@ -7,6 +7,8 @@ from .config import ProviderFallbackConfig
 from .model_catalog import ProviderModelMetadata
 from .protocol import ModelTurnProvider
 
+# ``source``/``configured`` are read only by the provider-resolution tests; the
+# registry still records them so those tests can pin which branch resolved an id.
 type ProviderResolutionSource = Literal["builtin", "custom"]
 
 
@@ -34,7 +36,6 @@ class ResolvedProviderModel:
 @dataclass(frozen=True, slots=True)
 class ResolvedProviderChain:
     preferred: ResolvedProviderModel = ResolvedProviderModel()
-    fallbacks: tuple[ResolvedProviderModel, ...] = ()
     all_targets: tuple[ResolvedProviderModel, ...] = ()
 
     def target_at(self, index: int) -> ResolvedProviderModel | None:

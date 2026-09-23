@@ -56,7 +56,6 @@ from .protocol import (
     ProviderTransport,
     ProviderTurnRequest,
     ProviderTurnResult,
-    StubTurnProvider,
     TurnProvider,
 )
 from .registry import (
@@ -119,7 +118,6 @@ __all__ = [
     "ProviderError",
     "OpenAICompatibleProviderConfig",
     "ProviderEndpointConfig",
-    "StubTurnProvider",
     "OpenCodeGoModelProvider",
     "classify_provider_error",
     "format_invalid_provider_config_error",

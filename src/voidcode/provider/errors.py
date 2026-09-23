@@ -272,6 +272,43 @@ def _is_context_overflow(message: str, status_code: int | None, code: str | None
     return any(pattern.search(message) is not None for pattern in _CONTEXT_OVERFLOW_PATTERNS)
 
 
+# Message markers, in the order they are tried: the first table whose marker
+# appears in the lowered message decides the kind.
+_MESSAGE_MARKER_KINDS: tuple[tuple[ProviderErrorKind, tuple[str, ...]], ...] = (
+    (
+        "invalid_model",
+        ("insufficient balance", "insufficient quota", "quota exceeded", "billing balance", "payment required"),
+    ),
+    (
+        "missing_auth",
+        ("api key is missing", "missing api key", "invalid api key", "authentication failed", "unauthorized"),
+    ),
+    (
+        "unsupported_feature",
+        (
+            "unsupported stream",
+            "streaming is not supported",
+            "tools are not supported",
+            "tool calling is not supported",
+            "invalid schema for function",
+            "invalid function schema",
+        ),
+    ),
+    (
+        "stream_tool_feedback_shape",
+        ("invalid tool call", "tool_calls must", "malformed tool call", "stream tool"),
+    ),
+)
+_MODEL_ACCESS_MARKERS = ("not authorized for model", "model access", "model unavailable", "permission to access model", "usage not included")
+
+
+def _kind_from_message_markers(lowered_message: str) -> ProviderErrorKind | None:
+    return next(
+        (kind for kind, markers in _MESSAGE_MARKER_KINDS if any(marker in lowered_message for marker in markers)),
+        None,
+    )
+
+
 def _classify_api_error_kind(
     *,
     message: str,
@@ -308,66 +345,14 @@ def _classify_api_error_kind(
         return "invalid_model"
 
     lowered_message = message.lower()
-    if any(
-        marker in lowered_message
-        for marker in (
-            "insufficient balance",
-            "insufficient quota",
-            "quota exceeded",
-            "billing balance",
-            "payment required",
-        )
-    ):
-        return "invalid_model"
-    if any(
-        marker in lowered_message
-        for marker in (
-            "api key is missing",
-            "missing api key",
-            "invalid api key",
-            "authentication failed",
-            "unauthorized",
-        )
-    ):
-        return "missing_auth"
-
-    if any(
-        marker in lowered_message
-        for marker in (
-            "unsupported stream",
-            "streaming is not supported",
-            "tools are not supported",
-            "tool calling is not supported",
-            "invalid schema for function",
-            "invalid function schema",
-        )
-    ):
-        return "unsupported_feature"
-
-    if any(
-        marker in lowered_message
-        for marker in (
-            "invalid tool call",
-            "tool_calls must",
-            "malformed tool call",
-            "stream tool",
-        )
-    ):
-        return "stream_tool_feedback_shape"
+    marker_kind = _kind_from_message_markers(lowered_message)
+    if marker_kind is not None:
+        return marker_kind
 
     if status_code == 403:
         if any(pattern.search(message) is not None for pattern in _INVALID_MODEL_PATTERNS):
             return "invalid_model"
-        if any(
-            marker in lowered_message
-            for marker in (
-                "not authorized for model",
-                "model access",
-                "model unavailable",
-                "permission to access model",
-                "usage not included",
-            )
-        ):
+        if any(marker in lowered_message for marker in _MODEL_ACCESS_MARKERS):
             return "invalid_model"
         return "missing_auth"
 
@@ -381,35 +366,15 @@ def _classify_api_error_kind(
 
 
 def parse_provider_api_error(payload: dict[str, Any]) -> ParsedProviderError:
-    message = _extract_error_message(payload) or "provider api error"
-    status_code = _extract_status_code(payload)
-    code = _extract_error_code(payload)
-    kind = _classify_api_error_kind(message=message, status_code=status_code, code=code)
-    retryable, fallback_allowed = _recovery_policy_for_kind(kind)
-    details = _provider_error_details(payload)
-    guidance = guidance_for_provider_error_kind(kind)
-    retry_after = _extract_retry_after(payload)
-    details.update(
-        {
-            "source": "api",
-            "status_code": status_code,
-            "error_code": code,
-            "guidance": guidance,
-        }
-    )
-    return ParsedProviderError(
-        kind=kind,
-        message=redact_provider_error_message(message),
-        details=details,
-        retryable=retryable,
-        fallback_allowed=fallback_allowed,
-        retry_after=retry_after,
-        guidance=guidance,
-    )
+    return _parse_provider_error(payload, source="api", default_message="provider api error")
 
 
 def parse_provider_stream_error(payload: dict[str, Any]) -> ParsedProviderError:
-    message = _extract_error_message(payload) or "provider stream error"
+    return _parse_provider_error(payload, source="stream", default_message="provider stream error")
+
+
+def _parse_provider_error(payload: dict[str, Any], *, source: str, default_message: str) -> ParsedProviderError:
+    message = _extract_error_message(payload) or default_message
     status_code = _extract_status_code(payload)
     code = _extract_error_code(payload)
     kind = _classify_api_error_kind(message=message, status_code=status_code, code=code)
@@ -419,7 +384,7 @@ def parse_provider_stream_error(payload: dict[str, Any]) -> ParsedProviderError:
     retry_after = _extract_retry_after(payload)
     details.update(
         {
-            "source": "stream",
+            "source": source,
             "status_code": status_code,
             "error_code": code,
             "guidance": guidance,

@@ -97,7 +97,7 @@ def test_native_non_stream_uses_chat_completions_wire_and_auth_headers() -> None
     assert payload["stream"] is False
     assert result.output == "hello"
     assert result.done_reason == "stop"
-    assert result.usage is not None and result.usage.total_tokens == 10
+    assert result.usage is not None and result.usage.input_tokens == 7 and result.usage.output_tokens == 3
 
 
 def test_nonstream_missing_finish_reason_is_stop_and_reported_reasons_fail() -> None:

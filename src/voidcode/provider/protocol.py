@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast, runtime_checkable
 
-from ..runtime.context.window import ToolResultView, normalize_read_output
+from ..runtime.context.window import ToolResultView
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .model_catalog import ProviderModelMetadata
 
@@ -90,10 +89,6 @@ class ProviderTurnRequest:
             summary_anchor=cast(str | None, payload.get("summary_anchor")),
             summary_source=cast(dict[str, object] | None, payload.get("summary_source")),
         )
-
-    @property
-    def applied_skills(self) -> tuple[dict[str, str], ...]:
-        return ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,10 +175,6 @@ class ProviderTokenUsage:
             "cache_write_tokens": self.cache_write_tokens,
             "uncached_input_tokens": self.uncached_input_tokens,
         }
-
-    @property
-    def total_tokens(self) -> int:
-        return (self.input_tokens or 0) + (self.output_tokens or 0)
 
     @property
     def cache_hit_rate(self) -> float | None:
@@ -278,85 +269,6 @@ class ProviderWireMaterialization:
     prefix: WirePrefixDescriptor
 
 
-def normalize_provider_stream_event(event: ProviderStreamEvent) -> ProviderStreamEvent:
-    if event.kind in {"delta", "content"} and event.text is None:
-        raise ValueError(f"provider stream event '{event.kind}' requires text")
-    if event.kind in {"tool_call_start", "tool_call_delta", "tool_call_end"}:
-        if not event.tool_call_id:
-            raise ValueError(f"provider stream event '{event.kind}' requires tool_call_id")
-        if event.kind == "tool_call_start" and not event.tool_name:
-            raise ValueError("provider stream event 'tool_call_start' requires tool_name")
-        if event.kind == "tool_call_delta" and event.arguments_delta is None:
-            raise ValueError("provider stream event 'tool_call_delta' requires arguments_delta")
-        if event.parsed_arguments is not None and event.kind != "tool_call_end":
-            raise ValueError("parsed_arguments are only valid on tool_call_end")
-    if event.kind == "error" and event.error is None:
-        raise ValueError("provider stream event 'error' requires error")
-    if event.kind == "done" and event.done_reason is None:
-        return ProviderStreamEvent(
-            kind="done",
-            channel=event.channel,
-            done_reason="unknown",
-            metadata=event.metadata,
-            usage=event.usage,
-        )
-    return event
-
-
-def wrap_provider_stream(
-    events: Iterator[ProviderStreamEvent],
-    *,
-    provider_name: str,
-    model_name: str,
-    abort_signal: ProviderAbortSignal | None,
-    chunk_timeout_seconds: float,
-) -> Iterator[ProviderStreamEvent]:
-    if chunk_timeout_seconds <= 0:
-        raise ValueError("provider stream chunk timeout must be greater than 0")
-
-    if abort_signal is not None and abort_signal.cancelled:
-        yield ProviderStreamEvent(
-            kind="error",
-            channel="error",
-            error="provider stream cancelled",
-            error_kind="cancelled",
-        )
-        yield ProviderStreamEvent(kind="done", done_reason="cancelled")
-        return
-
-    previous_chunk_at = time.monotonic()
-    done_seen = False
-    for event in events:
-        now = time.monotonic()
-        if now - previous_chunk_at > chunk_timeout_seconds:
-            raise ProviderExecutionError(
-                kind="transient_failure",
-                provider_name=provider_name,
-                model_name=model_name,
-                message="provider stream chunk timeout exceeded",
-            )
-        previous_chunk_at = now
-
-        if abort_signal is not None and abort_signal.cancelled:
-            yield ProviderStreamEvent(
-                kind="error",
-                channel="error",
-                error="provider stream cancelled",
-                error_kind="cancelled",
-            )
-            yield ProviderStreamEvent(kind="done", done_reason="cancelled")
-            return
-
-        normalized = normalize_provider_stream_event(event)
-        yield normalized
-        if normalized.kind == "done":
-            done_seen = True
-            break
-
-    if not done_seen:
-        yield ProviderStreamEvent(kind="done", done_reason="unknown")
-
-
 @dataclass(frozen=True, slots=True, eq=False)
 class ProviderExecutionError(ValueError):
     kind: ProviderErrorKind
@@ -404,35 +316,3 @@ class ModelTurnProvider(Protocol):
     def name(self) -> str: ...
 
     def turn_provider(self) -> TurnProvider: ...
-
-
-@dataclass(frozen=True, slots=True)
-class StubTurnProvider:
-    name: str
-
-    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
-        assembled_context = request.assembled_context
-        commands = [line.strip() for line in assembled_context.prompt.splitlines() if line.strip()]
-        if not commands:
-            raise ValueError("request must not be empty")
-
-        step_index = len(assembled_context.tool_results)
-        if step_index >= len(commands):
-            if not assembled_context.tool_results:
-                raise ValueError("request must contain at least one actionable command")
-            last_result = assembled_context.tool_results[-1]
-            return ProviderTurnResult(output=_normalize_tool_output(last_result.content))
-
-        from ..command.resolver import resolve_tool_instruction  # lazy to avoid circular import
-
-        resolution = resolve_tool_instruction(
-            commands[step_index],
-            request.available_tools,
-            unavailable_message_suffix="single-agent execution",
-        )
-        return ProviderTurnResult(tool_call=resolution.tool_call)
-
-
-def _normalize_tool_output(content: str | None) -> str:
-    normalized = normalize_read_output(content)
-    return "" if normalized is None else normalized

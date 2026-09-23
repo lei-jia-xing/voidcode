@@ -11,6 +11,7 @@ from google.oauth2 import service_account
 
 from ..tools.contracts import ToolCall
 from ..tools.output import redacted_argument_keys_for_tool, sanitize_tool_arguments, strip_redaction_sentinels
+from ._wire_common import resolve_extra_request_headers
 from .config import GoogleProviderConfig
 from .errors import redact_provider_error_details, redact_provider_error_message
 from .protocol import ProviderExecutionError, ProviderStreamEvent, ProviderTokenUsage, ProviderTurnRequest, ProviderTurnResult
@@ -98,28 +99,6 @@ def _service_account_project_id(credentials: Any) -> str | None:
     """Return the project named by the loaded credentials, when they expose one."""
     project_id = getattr(credentials, "project_id", None)
     return project_id if isinstance(project_id, str) and project_id else None
-
-
-# A declared request header may name the conversation with ``{session_id}``. The
-# SDK client is reused across turns, so a value resolved at construction time
-# would freeze the first conversation's id; it is resolved per request instead.
-_SESSION_ID_PLACEHOLDER = "{session_id}"
-
-
-def _resolve_extra_request_headers(declared: Mapping[str, str], session_id: str | None) -> dict[str, str]:
-    """Resolve declared request headers for one turn, dropping ones with no value.
-
-    A declaration whose value names ``{session_id}`` is omitted when the request
-    carries no session id: an empty header is not a routable conversation.
-    """
-    resolved: dict[str, str] = {}
-    for name, value in declared.items():
-        if _SESSION_ID_PLACEHOLDER in value:
-            if not session_id:
-                continue
-            value = value.replace(_SESSION_ID_PLACEHOLDER, session_id)
-        resolved[name] = value
-    return resolved
 
 
 @dataclass(slots=True)
@@ -266,7 +245,7 @@ class GoogleGenAIProvider:
             )
         tools = [types.Tool(function_declarations=declarations)] if declarations else None
         max_output_tokens = request.model_metadata.max_output_tokens if request.model_metadata is not None else None
-        extra_headers = _resolve_extra_request_headers(self.extra_request_headers, request.session_id)
+        extra_headers = resolve_extra_request_headers(self.extra_request_headers, request.session_id)
         return types.GenerateContentConfig(
             system_instruction=system,
             tools=tools,
@@ -297,12 +276,12 @@ class GoogleGenAIProvider:
                 # asks for the lowest level and suppresses thought summaries.
                 return types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL, include_thoughts=False)
             return types.ThinkingConfig(
-                thinking_level=_GOOGLE_THINKING_LEVELS.get(effort, types.ThinkingLevel.HIGH),
+                thinking_level=_GOOGLE_THINKING_LEVELS[effort],
                 include_thoughts=True,
             )
         if effort == REASONING_EFFORT_OFF:
             return types.ThinkingConfig(thinking_budget=0, include_thoughts=False)
-        return types.ThinkingConfig(thinking_budget=_GOOGLE_THINKING_BUDGETS.get(effort, -1), include_thoughts=True)
+        return types.ThinkingConfig(thinking_budget=_GOOGLE_THINKING_BUDGETS[effort], include_thoughts=True)
 
     @staticmethod
     def _finish_reason(value: object) -> str:

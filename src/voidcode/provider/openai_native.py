@@ -5,8 +5,6 @@ import json
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from queue import Empty, Full, Queue
-from threading import Event, Thread
 from typing import Any, Protocol, cast
 
 import httpx2
@@ -15,6 +13,13 @@ from openai import OpenAI, omit
 
 from ..tools.contracts import ToolCall
 from ..tools.output import redacted_argument_keys_for_tool, sanitize_tool_arguments, sanitize_tool_result_data, strip_redaction_sentinels
+from ._wire_common import (
+    OwnedTransport,
+    iter_stream_with_timeout,
+    normalize_tool_call_id,
+    resolve_extra_request_headers,
+    usage_int,
+)
 from .config import OpenAIProviderConfig, ProviderEndpointConfig
 from .errors import (
     provider_execution_error_from_api_payload,
@@ -36,7 +41,6 @@ from .provider_config import openai_wire_default_base_url
 from .reasoning_effort import clamp_effort_to_supported, map_effort_for_provider, normalize_reasoning_effort
 from .trace import write_provider_trace
 
-_STREAM_TIMEOUT_SENTINEL = object()
 _PROVIDERS_REQUIRING_REASONING_CONTENT_WITH_TOOL_CALLS = frozenset({"deepseek"})
 
 
@@ -58,82 +62,6 @@ def _requires_reasoning_content_with_tool_calls(*, provider_name: str | None, mo
     if raw_model is not None:
         candidates.append(raw_model)
     return any(candidate.strip().lower().startswith("deepseek-") for candidate in candidates)
-
-
-def _iter_stream_with_timeout(
-    stream: Iterator[object],
-    *,
-    timeout_seconds: float,
-    provider_name: str,
-    model_name: str,
-) -> Iterator[object]:
-    if timeout_seconds <= 0:
-        raise ProviderExecutionError(
-            kind="transient_failure",
-            provider_name=provider_name,
-            model_name=model_name,
-            message="provider stream timeout must be greater than zero",
-            retryable=False,
-            fallback_allowed=True,
-        )
-    queue: Queue[tuple[str, object]] = Queue(maxsize=1)
-    stop_event = Event()
-
-    def enqueue(kind: str, value: object) -> None:
-        while not stop_event.is_set():
-            try:
-                queue.put((kind, value), timeout=0.01)
-                return
-            except Full:
-                continue
-
-    def pull() -> None:
-        try:
-            for item in stream:
-                if stop_event.is_set():
-                    return
-                enqueue("item", item)
-            enqueue("done", _STREAM_TIMEOUT_SENTINEL)
-        except BaseException as exc:
-            enqueue("error", exc)
-
-    def close_stream() -> None:
-        closer = getattr(stream, "close", None)
-        if not callable(closer):
-            return
-        try:
-            closer()
-        except Exception:
-            return
-
-    thread = Thread(target=pull, name="voidcode-openai-stream", daemon=True)
-    thread.start()
-    try:
-        while True:
-            try:
-                kind, value = queue.get(timeout=timeout_seconds)
-            except Empty as exc:
-                stop_event.set()
-                close_stream()
-                thread.join(timeout=min(timeout_seconds, 0.1))
-                raise ProviderExecutionError(
-                    kind="transient_failure",
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    message="provider stream chunk timeout exceeded",
-                    retryable=True,
-                    fallback_allowed=True,
-                ) from exc
-            if kind == "done":
-                return
-            if kind == "error":
-                raise cast(BaseException, value)
-            yield value
-    finally:
-        stop_event.set()
-        close_stream()
-        if thread.is_alive():
-            thread.join(timeout=min(timeout_seconds, 0.1))
 
 
 # Construction default of ``OpenAIChatCompletionsTransport`` for direct use only.
@@ -323,26 +251,14 @@ def _safe_tool_name(name: str) -> str:
     return f"{normalized[: _MAX_TOOL_NAME_LENGTH - len(suffix)]}{suffix}"
 
 
-def _normalize_tool_call_id(value: str | None, *, fallback: str) -> str:
-    raw = value if isinstance(value, str) and value.strip() else fallback
-    return re.sub(r"[^a-zA-Z0-9_-]", "_", raw.strip()) or fallback
-
-
-def _usage_int(value: object) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    result = int(value)
-    return result if result >= 0 else None
-
-
 def _usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
     raw = payload.get("usage")
     if not isinstance(raw, Mapping):
         return None
-    input_tokens = _usage_int(raw.get("prompt_tokens"))
-    output_tokens = _usage_int(raw.get("completion_tokens"))
+    input_tokens = usage_int(raw.get("prompt_tokens"))
+    output_tokens = usage_int(raw.get("completion_tokens"))
     details = raw.get("prompt_tokens_details")
-    cache_read = _usage_int(details.get("cached_tokens")) if isinstance(details, Mapping) else None
+    cache_read = usage_int(details.get("cached_tokens")) if isinstance(details, Mapping) else None
     if input_tokens is None and output_tokens is None:
         return None
     uncached = max(0, input_tokens - cache_read) if input_tokens is not None and cache_read is not None else None
@@ -408,12 +324,11 @@ def _parse_arguments(value: object) -> dict[str, object]:
     if isinstance(value, Mapping):
         return dict(value)
     if not isinstance(value, str) or not value.strip():
-        return {}
-    try:
-        decoded = json.loads(value)
-    except json.JSONDecodeError:
-        return {}
-    return dict(decoded) if isinstance(decoded, dict) else {}
+        raise ValueError("tool input was empty")
+    decoded = json.loads(value)
+    if not isinstance(decoded, dict):
+        raise ValueError("tool input was not an object")
+    return dict(decoded)
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,36 +344,6 @@ class _ToolAccumulator:
         return "".join(self.fragments)
 
 
-# A declared request header may name the conversation with ``{session_id}``. The
-# transport -- and therefore its SDK client -- is cached across turns, so a value
-# resolved at construction time would freeze the first conversation's id; it is
-# resolved per request instead.
-_SESSION_ID_PLACEHOLDER = "{session_id}"
-
-
-def _resolve_extra_request_headers(declared: Mapping[str, str], session_id: str | None) -> dict[str, str]:
-    """Resolve declared request headers for one turn, dropping ones with no value.
-
-    A declaration whose value names ``{session_id}`` is omitted when the request
-    carries no session id: an empty header is not a routable conversation.
-    """
-    resolved: dict[str, str] = {}
-    for name, value in declared.items():
-        if _SESSION_ID_PLACEHOLDER in value:
-            if not session_id:
-                continue
-            value = value.replace(_SESSION_ID_PLACEHOLDER, session_id)
-        resolved[name] = value
-    return resolved
-
-
-@dataclass(slots=True)
-class _OwnedTransport:
-    """One-slot holder letting a frozen provider own a single transport."""
-
-    value: OpenAITransport | None = None
-
-
 @dataclass(frozen=True, slots=True)
 class OpenAIChatCompletionsProvider:
     name: str = "openai"
@@ -472,7 +357,7 @@ class OpenAIChatCompletionsProvider:
     # One transport -- and therefore one SDK client and HTTP connection pool --
     # per provider, reused across every turn. Building it per request leaked a
     # pool per turn. Only the first-use race can drop one losing transport.
-    _owned_transport: _OwnedTransport = field(default_factory=_OwnedTransport, compare=False, repr=False)
+    _owned_transport: OwnedTransport[OpenAITransport] = field(default_factory=OwnedTransport, compare=False, repr=False)
 
     def provider_config(self) -> OpenAIProviderConfig | ProviderEndpointConfig | None:
         return self.config
@@ -649,7 +534,7 @@ class OpenAIChatCompletionsProvider:
         """
         tool_feedback_lines: list[str] = []
         for result in request.assembled_context.tool_results:
-            if getattr(result, "source", None) == "replayed_conversation":
+            if result.source == "replayed_conversation":
                 continue
             raw_data = result.data
             sanitized_data = sanitize_tool_result_data(raw_data) if isinstance(raw_data, dict) else {}
@@ -789,7 +674,7 @@ class OpenAIChatCompletionsProvider:
                 payload["extra_body"] = merged
             else:
                 payload.update(mapped)
-        extra_headers = _resolve_extra_request_headers(self.extra_request_headers, request.session_id)
+        extra_headers = resolve_extra_request_headers(self.extra_request_headers, request.session_id)
         if extra_headers:
             # A request option, not a body field: the SDK merges it into the HTTP
             # request and never serializes it into the JSON payload.
@@ -860,12 +745,14 @@ class OpenAIChatCompletionsProvider:
             provider_name = function["name"]
             runtime_name = reverse.get(provider_name, provider_name)
             explicit_id = item.get("id") if isinstance(item.get("id"), str) else None
-            fallback = f"{runtime_name}_{index + 1}" if len(raw_calls) > 1 else runtime_name
+            # A tool name is not a call id: synthesise an ordinal, as the
+            # Anthropic and Google adapters do.
+            fallback = f"tool_call_{index + 1}"
             parsed.append(
                 ToolCall(
                     tool_name=runtime_name,
                     arguments=_parse_arguments(function.get("arguments")),
-                    tool_call_id=_normalize_tool_call_id(explicit_id, fallback=fallback),
+                    tool_call_id=normalize_tool_call_id(explicit_id, fallback=fallback),
                 )
             )
         return tuple(parsed)
@@ -926,7 +813,7 @@ class OpenAIChatCompletionsProvider:
             finish_reason_reported = False
             raw_finish_reason_token: str | None = None
             accumulators: dict[int, _ToolAccumulator] = {}
-            for raw_chunk in _iter_stream_with_timeout(
+            for raw_chunk in iter_stream_with_timeout(
                 stream,
                 timeout_seconds=self._timeout(),
                 provider_name=provider_name,
@@ -969,7 +856,7 @@ class OpenAIChatCompletionsProvider:
                     index = raw_tool.get("index") if isinstance(raw_tool.get("index"), int) else 0
                     previous = accumulators.get(index, _ToolAccumulator())
                     raw_id = raw_tool.get("id")
-                    tool_id = _normalize_tool_call_id(raw_id if isinstance(raw_id, str) else previous.tool_call_id, fallback=f"tool_call_{index + 1}")
+                    tool_id = normalize_tool_call_id(raw_id if isinstance(raw_id, str) else previous.tool_call_id, fallback=f"tool_call_{index + 1}")
                     function = raw_tool.get("function")
                     name = previous.tool_name
                     fragment: str | None = None
@@ -1044,9 +931,9 @@ class OpenAIChatCompletionsProvider:
         if any(accumulator.explicit_streaming for _index, accumulator, _parsed, _name in completed):
             for index, accumulator, parsed, runtime_name in completed:
                 if accumulator.explicit_streaming:
-                    tool_id = _normalize_tool_call_id(
+                    tool_id = normalize_tool_call_id(
                         accumulator.tool_call_id,
-                        fallback=runtime_name if len(completed) == 1 else f"{runtime_name}_{index + 1}",
+                        fallback=f"tool_call_{index + 1}",
                     )
                     yield ProviderStreamEvent(
                         kind="tool_call_end",
@@ -1064,9 +951,9 @@ class OpenAIChatCompletionsProvider:
                     {
                         "tool_name": runtime_name,
                         "arguments": parsed,
-                        "tool_call_id": _normalize_tool_call_id(
+                        "tool_call_id": normalize_tool_call_id(
                             accumulator.tool_call_id,
-                            fallback=runtime_name if len(completed) == 1 else f"{runtime_name}_{index + 1}",
+                            fallback=f"tool_call_{index + 1}",
                         ),
                     }
                 )

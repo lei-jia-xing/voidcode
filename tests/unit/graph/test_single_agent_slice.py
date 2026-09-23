@@ -8,7 +8,13 @@ import pytest
 
 from voidcode.graph.contracts import GraphRunRequest, GraphSessionSnapshot
 from voidcode.graph.provider_graph import ProviderGraph
-from voidcode.provider.protocol import ProviderErrorKind
+from voidcode.provider.protocol import (
+    ProviderErrorKind,
+    ProviderExecutionError,
+    ProviderStreamEvent,
+    ProviderTurnRequest,
+    ProviderTurnResult,
+)
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
 from voidcode.runtime.context.window import (
@@ -16,15 +22,32 @@ from voidcode.runtime.context.window import (
     RuntimeAssembledContext,
     RuntimeContextSegment,
     RuntimeContextWindow,
-)
-from voidcode.runtime.provider_protocol import (
-    ProviderExecutionError,
-    ProviderStreamEvent,
-    ProviderTurnRequest,
-    ProviderTurnResult,
-    StubTurnProvider,
+    normalize_read_output,
 )
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
+
+
+class _StubTurnProvider:
+    """Test double: emit the ``read <path>`` tool call a prompt's next command names."""
+
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        assembled_context = request.assembled_context
+        commands = [line.strip() for line in assembled_context.prompt.splitlines() if line.strip()]
+        if not commands:
+            raise ValueError("request must not be empty")
+
+        step_index = len(assembled_context.tool_results)
+        if step_index >= len(commands):
+            if not assembled_context.tool_results:
+                raise ValueError("request must contain at least one actionable command")
+            normalized = normalize_read_output(assembled_context.tool_results[-1].content)
+            return ProviderTurnResult(output="" if normalized is None else normalized)
+
+        path = commands[step_index].removeprefix("read ").strip()
+        return ProviderTurnResult(tool_call=ToolCall(tool_name="read", arguments={"path": path}))
 
 
 def _tool_definitions() -> tuple[ToolDefinition, ...]:
@@ -366,7 +389,7 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(
-        provider=StubTurnProvider(name="opencode"),
+        provider=_StubTurnProvider(name="opencode"),
         provider_model=provider_model,
     )
 
@@ -665,7 +688,7 @@ def test_provider_provider_graph_finalizes_after_tool_result() -> None:
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(
-        provider=StubTurnProvider(name="opencode"),
+        provider=_StubTurnProvider(name="opencode"),
         provider_model=provider_model,
     )
 

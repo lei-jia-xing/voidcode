@@ -7,10 +7,7 @@ from .anthropic_native import AnthropicMessagesProvider
 from .auth import ANTHROPIC_COMPATIBLE_BUILTIN_FIELDS, OPENAI_COMPATIBLE_BUILTIN_FIELDS
 from .config import (
     AnthropicProviderConfig,
-    CopilotProviderConfig,
-    GoogleProviderConfig,
     OpenAICompatibleProviderConfig,
-    OpenAIProviderConfig,
     ProviderConfigs,
     ProviderEndpointConfig,
     openai_compatible_endpoint_config,
@@ -32,12 +29,7 @@ from .opencode import OpenCodeModelProvider
 from .opencode_go import OpenCodeGoModelProvider
 from .openrouter import OpenRouterModelProvider
 from .protocol import ModelTurnProvider, TurnProvider
-from .provider_config import (
-    anthropic_compatible_endpoint_config,
-    copilot_provider_config,
-    google_provider_config,
-    openai_provider_config,
-)
+from .provider_config import anthropic_compatible_endpoint_config
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,23 +77,6 @@ class ProviderResolution:
     provider: ModelTurnProvider
     source: ProviderResolutionSource
     configured: bool
-
-
-def _discovery_config(config: object) -> ProviderEndpointConfig | None:
-    """Normalize any config shape a registry entry exposes into the single shape model discovery consumes."""
-    if config is None or isinstance(config, ProviderEndpointConfig):
-        return config
-    if isinstance(config, OpenAIProviderConfig):
-        return openai_provider_config(config)
-    if isinstance(config, AnthropicProviderConfig):
-        # This config shape is the Anthropic-wire vendor's own: the derived
-        # vendor table maps it to exactly one id.
-        return anthropic_compatible_endpoint_config("anthropic", config)
-    if isinstance(config, GoogleProviderConfig):
-        return google_provider_config(config)
-    if isinstance(config, CopilotProviderConfig):
-        return copilot_provider_config(config)
-    return None
 
 
 @dataclass(slots=True)
@@ -181,7 +156,7 @@ class ModelProviderRegistry:
         if provider is not None:
             provider_config = getattr(provider, "provider_config", None)
             if callable(provider_config):
-                return _discovery_config(provider_config())
+                return provider_config()
         if self.custom_provider_configs is not None:
             return self.custom_provider_configs.get(canonical_name)
         return None

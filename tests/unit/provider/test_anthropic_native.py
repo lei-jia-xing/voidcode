@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from voidcode.provider.anthropic_native import AnthropicMessagesProvider
+from voidcode.provider.anthropic_native import AnthropicMessagesProvider, AnthropicMessagesTransport
+from voidcode.provider.config import AnthropicProviderConfig
 from voidcode.provider.protocol import (
     ProviderAbortSignal,
     ProviderCacheRetention,
@@ -101,3 +102,26 @@ def test_nonstream_text_thinking_tool_usage_and_stop_reason() -> None:
     assert result.finish_reason_reported is True
     assert result.usage == ProviderTokenUsage(input_tokens=13, output_tokens=4, cache_read_tokens=3, cache_write_tokens=2, uncached_input_tokens=10)
     assert fake.payloads[0]["thinking"] == {"type": "enabled", "budget_tokens": 8192}
+
+
+def test_unconfigured_vendor_never_borrows_the_ambient_anthropic_key(monkeypatch) -> None:
+    """One shared adapter serves every Anthropic-wire vendor, so an ambient key
+    resolved for ``anthropic`` must not travel to another vendor's host."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+
+    transport = AnthropicMessagesProvider(name="kimi-coding")._transport()
+
+    assert isinstance(transport, AnthropicMessagesTransport)
+    assert transport.base_url == "https://api.kimi.com/coding"
+    assert transport.api_key is None
+
+
+def test_configured_vendor_sends_only_its_own_credential() -> None:
+    transport = AnthropicMessagesProvider(
+        name="minimax-cn",
+        config=AnthropicProviderConfig(api_key="vendor-key"),
+    )._transport()
+
+    assert isinstance(transport, AnthropicMessagesTransport)
+    assert transport.base_url == "https://api.minimaxi.com/anthropic"
+    assert transport.api_key == "vendor-key"

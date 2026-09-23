@@ -62,7 +62,6 @@ def resolve_provider_chain(
     fallbacks = tuple(resolve_provider_model(raw_model, registry=registry) for raw_model in provider_fallback.fallback_models)
     return ResolvedProviderChain(
         preferred=preferred,
-        fallbacks=fallbacks,
         all_targets=(preferred, *fallbacks),
     )
 
