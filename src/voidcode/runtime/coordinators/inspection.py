@@ -481,13 +481,6 @@ class InspectionCoordinator:
     def current_acp_state(self):
         return self._acp_adapter.current_state()
 
-    def connect_acp(self) -> tuple[EventEnvelope, ...]:
-        return envelopes_for_acp_events(
-            session_id="runtime",
-            start_sequence=1,
-            acp_events=self._acp_adapter.connect(),
-        )
-
     def disconnect_acp(self) -> tuple[EventEnvelope, ...]:
         return envelopes_for_acp_events(
             session_id="runtime",

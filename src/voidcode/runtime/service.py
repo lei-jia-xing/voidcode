@@ -74,16 +74,6 @@ from .acp import (
 from .active_session import (
     ACTIVE_SESSION_REGISTRY,
     ActiveRunInterruptResult,
-    ActiveSessionRegistry,
-)
-from .active_session import (
-    _ActiveRunAbortSignal as _ActiveRunAbortSignal,
-)
-from .active_session import (
-    _ActiveRunHandle as _ActiveRunHandle,
-)
-from .active_session import (
-    _ActiveSessionKey as _ActiveSessionKey,
 )
 from .agent_capability import (
     AGENT_CAPABILITY_SNAPSHOT_VERSION,
@@ -328,13 +318,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_ACTIVE_SESSION_TYPES = (
-    _ActiveRunAbortSignal,
-    _ActiveRunHandle,
-    _ActiveSessionKey,
-    ActiveSessionRegistry,
-)
-
 _EXECUTABLE_AGENT_PRESETS = frozenset({"leader"})
 
 
@@ -349,12 +332,6 @@ def _agent_effective_execution_engine(
     return base_engine
 
 
-_ACP_CONNECTIVITY_ERRORS = frozenset(
-    {
-        "ACP adapter is not connected",
-        "ACP transport is not connected",
-    }
-)
 _SKILL_BINDING_SCOPE_KEYS = (
     "approval_mode",
     "execution_engine",
@@ -368,24 +345,6 @@ _SKILL_BINDING_SCOPE_KEYS = (
     "lsp",
     "mcp",
 )
-
-# Event types whose payload the runtime policy projection annotates. Kept as the
-# single source of truth so the incremental follow read
-# (``session_events_after``) can skip the persisted-metadata parse when a batch
-# has no event that the projection would rewrite.
-_POLICY_PROJECTED_EVENT_TYPES = frozenset({"runtime.request_received"})
-
-
-def _provider_target_label(target: ResolvedProviderModel) -> str:
-    provider = target.selection.provider
-    model = target.selection.model
-    if provider is None and model is None:
-        return "unresolved"
-    if provider is None:
-        return str(model)
-    if model is None:
-        return provider
-    return f"{provider}/{model}"
 
 
 def _approval_requested_hook_payload(pending: PendingApproval) -> dict[str, object]:
