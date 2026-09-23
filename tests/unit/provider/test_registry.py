@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from urllib.error import URLError
+from urllib.request import Request
+
 import pytest
 
+from voidcode.provider import model_catalog
 from voidcode.provider.anthropic_native import AnthropicMessagesProvider
 from voidcode.provider.config import (
     GoogleProviderAuthConfig,
@@ -40,9 +44,7 @@ def test_registry_anthropic_wire_vendors_share_one_adapter() -> None:
         config = registry.provider_config(provider_id)
         assert config is not None
         assert config.base_url == base_url
-        # No verified model listing of its own: discovery stays off instead of
-        # probing a host nobody validated.
-        assert config.discovery_base_url == ""
+        assert config.anthropic_messages_compatible is True
         assert isinstance(provider.turn_provider(), AnthropicMessagesProvider)
 
 
@@ -145,7 +147,7 @@ def test_registry_resolve_with_metadata_distinguishes_builtin_and_custom_sources
 
 
 @pytest.mark.parametrize(
-    ("provider_id", "provider_configs", "base_url", "expected_discovery"),
+    ("provider_id", "provider_configs", "base_url"),
     (
         pytest.param(
             "opencode",
@@ -156,7 +158,6 @@ def test_registry_resolve_with_metadata_distinguishes_builtin_and_custom_sources
                 )
             ),
             "https://opencode-proxy.example.test/zen/v1",
-            None,
             id="opencode-zen",
         ),
         pytest.param(
@@ -168,7 +169,6 @@ def test_registry_resolve_with_metadata_distinguishes_builtin_and_custom_sources
                 )
             ),
             "https://proxy.example.com/v1",
-            None,
             id="openai",
         ),
         pytest.param(
@@ -180,7 +180,6 @@ def test_registry_resolve_with_metadata_distinguishes_builtin_and_custom_sources
                 )
             ),
             "https://deepseek-proxy.example.test/v1",
-            None,
             id="deepseek",
         ),
         pytest.param(
@@ -192,16 +191,14 @@ def test_registry_resolve_with_metadata_distinguishes_builtin_and_custom_sources
                 )
             ),
             "https://opencode-go-proxy.example.test/zen/go",
-            "",
             id="opencode-go",
         ),
     ),
 )
-def test_registry_custom_base_url_disables_default_discovery(
+def test_registry_custom_base_url_wins_over_vendor_default(
     provider_id: str,
     provider_configs: ProviderConfigs,
     base_url: str,
-    expected_discovery: str | None,
 ) -> None:
     registry = ModelProviderRegistry.with_defaults(provider_configs=provider_configs)
 
@@ -209,15 +206,22 @@ def test_registry_custom_base_url_disables_default_discovery(
 
     assert config is not None
     assert config.base_url == base_url
-    assert config.discovery_base_url == expected_discovery
 
 
-def test_registry_shipped_provider_resolves_models_and_metadata_from_model_map() -> None:
+def test_registry_shipped_provider_resolves_models_and_metadata_from_model_map(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Discovery is derived, so this vendor would be probed for real: keep the
+    # unit test offline and let the refresh fall back to the configured map.
+    def _offline(_request: Request, timeout: float) -> object:
+        del timeout
+        raise URLError("offline")
+
+    monkeypatch.setattr(model_catalog, "urlopen", _offline)
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
             zai=OpenAICompatibleProviderConfig(
                 api_key="zai-key",
-                discovery_base_url="",
                 model_map={"glm": "glm-4.5"},
             )
         )
@@ -254,7 +258,6 @@ def test_registry_google_service_account_auth_disables_discovery() -> None:
     assert config is not None
     assert config.api_key is None
     assert config.auth_header is None
-    assert config.discovery_base_url == ""
 
     assert registry.refresh_available_models("google") == ()
     catalog = registry.provider_catalog("google")

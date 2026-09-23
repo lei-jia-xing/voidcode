@@ -101,7 +101,7 @@ Provider 只有**一个机器标识**和一个**人类标签**，两者各有出
 
 ### 一等 OpenAI-compatible Provider
 
-以下 provider 默认都复用官方 OpenAI SDK（`openai` package）的 chat-completions 路径（`opencode-go` 例外：它按模型选择 wire，见下文 OpenCode 说明）；配置支持 `api_key`、`api_key_env_var`、`base_url`、`discovery_base_url`、`ssl_verify`、`timeout_seconds` 和 `model_map`。
+以下 provider 默认都复用官方 OpenAI SDK（`openai` package）的 chat-completions 路径（`opencode-go` 例外：它按模型选择 wire，见下文 OpenCode 说明）；配置支持 `api_key`、`api_key_env_var`、`base_url`、`ssl_verify`、`timeout_seconds` 和 `model_map`。
 
 | Provider | 配置 Key | 默认 Base URL | 默认环境变量 |
 | :--- | :--- | :--- | :--- |
@@ -126,7 +126,7 @@ Provider 只有**一个机器标识**和一个**人类标签**，两者各有出
 
 以下 provider 的 wire 是 Anthropic Messages（`provider/anthropic_native.py`）；vendor 默认 host 与凭据环境变量来自
 `provider/provider_config.py` 的 `_DEFAULT_ANTHROPIC_WIRE_BASE_URLS`，配置支持 `api_key`、`base_url`、
-`discovery_base_url`、`version`、`beta_headers`、`cache_retention`、`timeout_seconds` 和 `transient_retry`。
+`version`、`beta_headers`、`cache_retention`、`timeout_seconds` 和 `transient_retry`。
 
 | Provider | 配置 Key | 默认 Base URL | 默认环境变量 |
 | :--- | :--- | :--- | :--- |
@@ -143,8 +143,9 @@ Provider 只有**一个机器标识**和一个**人类标签**，两者各有出
 - 每个 provider 只解析到自己的 endpoint：先取 `providers.<name>.base_url`，没有则取该 provider 自身的默认 host。
   **不会**回落到其它 vendor 的 host——某个 vendor 的配置缺失时，请求也不会被发到 `api.openai.com`。
   （例外：OpenCode 网关的 Anthropic 路由固定使用网关 host root，见下文 OpenCode 说明。）
-- 配置 block 完全缺失（`.voidcode.json` 里没有该 block，也没有对应凭据环境变量）时，同样按该 provider 的默认 host
-  解析，同时关闭远端 discovery：不会对没人配置过的 provider 发起未鉴权的模型列表请求。
+- 模型发现没有独立配置项：provider 的模型列表一律从它自己解析出的 `base_url` 推导（`<base_url>` + 该 wire 的路径），
+  所以 `base_url` 指向哪，探测就发往哪。配置 block 完全缺失（`.voidcode.json` 里没有该 block，也没有对应凭据
+  环境变量）时，同样按该 provider 的默认 host 解析，并从该 host 推导模型列表。
 - 只有既没有配置 `base_url`、自身也没有默认 host 的 provider 才会失败：runtime 产生
   `not_configured`（不可重试、允许 fallback），并提示设置 `providers.<name>.base_url` 与凭据。
 - `google` 的 `service_account` auth 不产生 discovery 可用的凭据，因此该模式下 discovery 记为禁用，
@@ -163,29 +164,32 @@ Provider 只有**一个机器标识**和一个**人类标签**，两者各有出
   - `endpoint.base_url`：wire 实际使用的基础 URL（与 transport 的归一化规则一致；`null` 表示配置里没有可解析的 base URL）
   - `endpoint.source`：`config`（来自 `providers.<name>.base_url`）、`provider_default`（provider 自身默认 host）、
     `endpoint_default`（`endpoint` provider 未配置时的本地网关默认值）
-  - `endpoint.discovery_base_url`：模型发现使用的基址；`""` 表示禁用远端发现，`null` 表示未声明、由 provider 自行决定
 
 #### 模型发现策略
 
 | **Z.AI** | `/v4/models` endpoint | OpenAI-compatible，自动发现 |
 | **智谱 AI** | `/v4/models` endpoint | OpenAI-compatible，自动发现 |
 | **OpenRouter** | `/api/v1/models` endpoint | 自动发现真实模型 ID；模型引用保留 provider/model 中的全部 slash，也包含 API 返回的 `:free` 模型 |
-| **MiniMax** | 无公开 discovery endpoint | 默认禁用远端发现；配置 `discovery_base_url` 或 `model_map` 后可用。catalog 中的 `minimax` 条目由 models.dev 的 `minimax` 与 `minimax-cn` 两个来源键合并生成（区域变体并入同一 canonical id，生成期 `strip().lower()`）；运行时的 `minimax-cn` 是 Anthropic-wire vendor，自带 catalog 里没有它的条目 |
+| **MiniMax** | `/v1/models` endpoint | 从 `https://api.minimax.io` 推导（`/v1/models`），OpenAI-compatible 自动发现。catalog 中的 `minimax` 条目由 models.dev 的 `minimax` 与 `minimax-cn` 两个来源键合并生成（区域变体并入同一 canonical id，生成期 `strip().lower()`）；运行时的 `minimax-cn` 是 Anthropic-wire vendor，自带 catalog 里没有它的条目 |
 | **Kimi** | `/v1/models` endpoint | OpenAI-compatible，自动发现 |
 | **OpenCode Zen** | `/zen/v1/models` endpoint | OpenAI-compatible，自动发现；模型引用为 `opencode/<model-id>` |
-| **OpenCode Go** | 无公开 discovery endpoint | 默认禁用远端发现；配置 `discovery_base_url` 或 `model_map` 后可用 |
+| **OpenCode Go** | `/zen/go/v1/models` endpoint | 从 `https://opencode.ai/zen/go` 推导，OpenAI-compatible 自动发现（该网关的列表无需鉴权） |
 | **Qwen** | `/v1/models` endpoint | DashScope compatible-mode，自动发现 |
 | **Groq** | `/v1/models` endpoint | OpenAI-compatible，自动发现 |
 | **Together** | `/v1/models` endpoint | OpenAI-compatible，自动发现 |
-| **Fireworks AI** | 无通用 `/v1/models` | 默认禁用远端发现；可通过 `discovery_base_url` 显式启用 |
+| **Fireworks AI** | `/inference/v1/models` endpoint | 从 `https://api.fireworks.ai/inference/v1` 推导，OpenAI-compatible 自动发现 |
 | **Mistral** | `/v1/models` endpoint | OpenAI-compatible，自动发现 |
-| **Kimi For Coding** | 无公开 discovery endpoint | 默认禁用远端发现；配置 `discovery_base_url` 或 `model_map` 后可用 |
-| **MiniMax CN** | 无公开 discovery endpoint | 默认禁用远端发现；配置 `discovery_base_url` 或 `model_map` 后可用 |
+| **Kimi For Coding** | `/coding/v1/models` endpoint | Anthropic-wire；从 `https://api.kimi.com/coding` 推导列表，凭据以 `Authorization: Bearer` 发送 |
+| **MiniMax CN** | `/anthropic/v1/models` endpoint | Anthropic-wire；从 `https://api.minimaxi.com/anthropic` 推导列表，凭据以 `X-Api-Key` 发送 |
+
+没有模型列表的 provider 由代码计算，而不是配置开关：`copilot` 没有公开列表，`google` 的 `service_account` auth
+（或完全没有凭据）不产生列表请求可发送的凭据；这两者报告 `disabled`。
 
 OpenRouter 不硬编码易变的免费模型 slug；请使用 `/api/v1/models` 刷新得到的模型 ID，例如
 `openrouter/anthropic/claude-3.7-sonnet` 或 API 当前返回的 `openrouter/<provider>/<model>:free`。
 
-VoidCode 不内置任何静态模型清单（避免长期维护两份列表）：模型列表一律来自 provider 的 discovery endpoint；没有公开 discovery 的 provider 需要在配置里显式给出 `discovery_base_url` 或 `model_map`。
+模型列表一律来自 provider 自己的列表路由（`<base_url>` + wire 路径），不再需要 `discovery_base_url`；
+没有公开列表的 provider 报告 `disabled`，可用 `model_map` 显式给出模型。
 
 配置示例（最小）：
 
@@ -233,8 +237,8 @@ session id 时该 header 不发送，`x-opencode-client` 仍然发送。
 runtime 仍统一注入工具 schema、审批与会话状态。
 
 OpenCode Zen 与 OpenCode Go 是不同 provider：Zen 使用 `opencode/<model-id>`，默认从
-`https://opencode.ai/zen/v1/models` 自动发现模型；Go 使用 `opencode-go/<model-id>`，网关没有公开的
-模型列表端点，需要 `model_map` 或显式 `discovery_base_url`。
+`https://opencode.ai/zen/v1/models` 自动发现模型；Go 使用 `opencode-go/<model-id>`，同样从
+`https://opencode.ai/zen/go/v1/models` 自动发现（该列表无需鉴权）。
 
 配置示例（完整）：
 
@@ -308,10 +312,10 @@ OpenCode Zen 与 OpenCode Go 是不同 provider：Zen 使用 `opencode/<model-id
 - Runtime 现在支持按 provider 动态刷新可用模型列表：
   - `voidcode provider models <provider>`：读取当前缓存
   - `voidcode provider models <provider> --refresh`：主动请求 provider `/v1/models` 刷新
-  - `voidcode provider inspect <provider>`：输出 provider 状态与解析后的 `endpoint`（`base_url` / `source` / `discovery_base_url`）
+  - `voidcode provider inspect <provider>`：输出 provider 状态与解析后的 `endpoint`（`base_url` / `source`）
 - provider-specific 端点策略（与 opencode 的 provider 分层思路对齐）：
   - `openai` / 自定义 OpenAI-compatible：`<base>/v1/models`
-  - `anthropic`：`<base>/v1/models`，并带 `anthropic-version` + `x-api-key`
+  - Anthropic-wire（`anthropic` / `kimi-coding` / `minimax-cn`）：`<base>/v1/models`，并带 `anthropic-version` 与该 vendor 的凭据 header（默认 `x-api-key`；`kimi-coding` 用 `Authorization: Bearer`，`minimax-cn` 用 `X-Api-Key`）
   - `google`：`<base>/v1beta/models?key=...`（读取 `models[].name`）
 - 刷新结果会融合三类来源并去重：
   1. `model_map` 的别名键（便于用户直接选别名）
@@ -376,10 +380,9 @@ SDK 负责 HTTP、SSE 解码与异常类型；adapter 只把 SDK 事件投影成
 - fallback chain 不允许重复 target；即使绕过原始 config parser，`resolution.py` / `snapshot.py`
   仍会在 provider 模块内拒绝重复链路。
 - model discovery 会显式区分：
-  - `configured_endpoint`：使用 `discovery_base_url`
-  - `configured_base_url`：从 `base_url` 推导探测端点
-  - `disabled`：`discovery_base_url` 被显式置空，表示禁用远端发现
-  - `unavailable`：provider 本身没有可用 discovery endpoint
+  - `configured_base_url`：从 provider 自己解析出的 `base_url` 推导探测端点
+  - `disabled`：provider 本身没有模型列表（`copilot`；`google` 在无凭据时）
+  - `unavailable`：provider 解析不出 `base_url`，没有可探测的端点
 - provider error 解析会同时给出 `kind` 与恢复语义（`retryable` / `fallback_allowed`），减少调用侧对启发式字符串的重复判断。
 
 ## 官方 SDK 边界

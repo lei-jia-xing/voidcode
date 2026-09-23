@@ -26,10 +26,9 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
     parsed = parse_provider_configs_payload(
         {
             "openai": {"base_url": "https://api.openai.test"},
-            "anthropic": {"discovery_base_url": "https://api.anthropic.com"},
+            "anthropic": {},
             "google": {
                 "auth": {"method": "api_key"},
-                "discovery_base_url": "https://generativelanguage.googleapis.com",
             },
             "copilot": {
                 "auth": {
@@ -76,15 +75,12 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
         openai=OpenAIProviderConfig(
             api_key="openai-env-key",
             base_url="https://api.openai.test",
-            discovery_base_url=None,
         ),
         anthropic=AnthropicProviderConfig(
             api_key="anthropic-env-key",
-            discovery_base_url="https://api.anthropic.com",
         ),
         google=GoogleProviderConfig(
             auth=GoogleProviderAuthConfig(method="api_key", api_key="google-env-key"),
-            discovery_base_url="https://generativelanguage.googleapis.com",
         ),
         copilot=CopilotProviderConfig(
             auth=CopilotProviderAuthConfig(

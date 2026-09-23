@@ -288,7 +288,7 @@ async function installMockRuntime(page: Page) {
         source: null,
         last_refresh_status: "ok",
         last_error: null,
-        discovery_mode: "configured_endpoint",
+        discovery_mode: "configured_base_url",
         model_metadata: {
           "deepseek-v4-pro": {
             context_window: 1000000,

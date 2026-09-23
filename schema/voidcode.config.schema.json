@@ -1794,12 +1794,6 @@
             "null"
           ]
         },
-        "discovery_base_url": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "version": {
           "type": [
             "string",
@@ -1977,12 +1971,6 @@
             "null"
           ]
         },
-        "discovery_base_url": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "project": {
           "type": [
             "string",
@@ -2031,12 +2019,6 @@
           ]
         },
         "base_url": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "discovery_base_url": {
           "type": [
             "string",
             "null"
@@ -2096,12 +2078,6 @@
             "null"
           ]
         },
-        "discovery_base_url": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "organization": {
           "type": [
             "string",
@@ -2150,12 +2126,6 @@
           ]
         },
         "base_url": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "discovery_base_url": {
           "type": [
             "string",
             "null"

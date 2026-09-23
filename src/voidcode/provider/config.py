@@ -173,7 +173,6 @@ class _ProviderTransientRetryConfigPayload(_ProviderPayloadModel):
 class _OpenAIProviderConfigPayload(_ProviderPayloadModel):
     api_key: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
-    discovery_base_url: BoundaryOptionalString = None
     organization: BoundaryOptionalString = None
     project: BoundaryOptionalString = None
     timeout_seconds: BoundaryOptionalTimeout = None
@@ -183,7 +182,6 @@ class _OpenAIProviderConfigPayload(_ProviderPayloadModel):
 class _AnthropicProviderConfigPayload(_ProviderPayloadModel):
     api_key: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
-    discovery_base_url: BoundaryOptionalString = None
     version: BoundaryOptionalString = None
     beta_headers: BoundaryStringList | None = ()
     cache_retention: Literal["none", "short", "long"] = "none"
@@ -204,7 +202,6 @@ class _GoogleProviderAuthConfigPayload(_ProviderPayloadModel):
 class _GoogleProviderConfigPayload(_ProviderPayloadModel):
     auth: _GoogleProviderAuthConfigPayload | None = None
     base_url: BoundaryOptionalString = None
-    discovery_base_url: BoundaryOptionalString = None
     project: BoundaryOptionalString = None
     region: BoundaryOptionalString = None
     timeout_seconds: BoundaryOptionalTimeout = None
@@ -233,7 +230,6 @@ class _ProviderEndpointConfigPayload(_ProviderPayloadModel):
     api_key: BoundaryOptionalString = None
     api_key_env_var: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
-    discovery_base_url: BoundaryOptionalString = None
     auth_header: BoundaryOptionalString = None
     auth_scheme: _BoundaryAuthScheme = None
     ssl_verify: BoundaryOptionalBool = None
@@ -246,7 +242,6 @@ class _OpenAICompatibleProviderConfigPayload(_ProviderPayloadModel):
     api_key: BoundaryOptionalString = None
     api_key_env_var: BoundaryOptionalString = None
     base_url: BoundaryOptionalString = None
-    discovery_base_url: BoundaryOptionalString = None
     ssl_verify: BoundaryOptionalBool = None
     timeout_seconds: BoundaryOptionalTimeout = None
     model_map: BoundaryStringMapping = Field(default_factory=dict)
@@ -392,7 +387,6 @@ class OpenAICompatibleProviderConfig:
     api_key: str | None = None
     api_key_env_var: str | None = None
     base_url: str | None = None
-    discovery_base_url: str | None = None
     ssl_verify: bool | None = None
     timeout_seconds: float | None = None
     model_map: dict[str, str] = field(default_factory=dict)
@@ -400,56 +394,21 @@ class OpenAICompatibleProviderConfig:
 
 
 # Default endpoint per provider. Only base URLs live here: the model list is
-# always discovered from the provider so there is no second list to maintain.
-_OPENAI_COMPATIBLE_DEFAULTS: dict[str, tuple[str, str | None]] = {
-    "deepseek": (
-        "https://api.deepseek.com",
-        "https://api.deepseek.com",
-    ),
-    "zai": (
-        "https://api.z.ai/api/paas/v4",
-        "https://api.z.ai/api/paas/v4",
-    ),
-    "zhipuai": (
-        "https://open.bigmodel.cn/api/paas/v4",
-        "https://open.bigmodel.cn/api/paas/v4",
-    ),
-    "grok": (
-        "https://api.x.ai",
-        "https://api.x.ai",
-    ),
-    "minimax": (
-        "https://api.minimax.io",
-        "",
-    ),
-    "kimi": (
-        "https://api.moonshot.ai",
-        "https://api.moonshot.ai/v1",
-    ),
-    "opencode-go": (
-        "https://opencode.ai/zen/go",
-        "",
-    ),
-    "qwen": (
-        "https://dashscope.aliyuncs.com/compatible-mode",
-        "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    ),
-    "groq": (
-        "https://api.groq.com/openai/v1",
-        "https://api.groq.com/openai/v1",
-    ),
-    "together": (
-        "https://api.together.ai/v1",
-        "https://api.together.ai/v1",
-    ),
-    "fireworks": (
-        "https://api.fireworks.ai/inference/v1",
-        "",
-    ),
-    "mistral": (
-        "https://api.mistral.ai/v1",
-        "https://api.mistral.ai/v1",
-    ),
+# always discovered from the provider's own host, so there is no second list to
+# maintain and no listing URL to keep in step.
+_OPENAI_COMPATIBLE_DEFAULTS: dict[str, str] = {
+    "deepseek": "https://api.deepseek.com",
+    "zai": "https://api.z.ai/api/paas/v4",
+    "zhipuai": "https://open.bigmodel.cn/api/paas/v4",
+    "grok": "https://api.x.ai",
+    "minimax": "https://api.minimax.io",
+    "kimi": "https://api.moonshot.ai",
+    "opencode-go": "https://opencode.ai/zen/go",
+    "qwen": "https://dashscope.aliyuncs.com/compatible-mode",
+    "groq": "https://api.groq.com/openai/v1",
+    "together": "https://api.together.ai/v1",
+    "fireworks": "https://api.fireworks.ai/inference/v1",
+    "mistral": "https://api.mistral.ai/v1",
 }
 
 
@@ -457,15 +416,7 @@ _OPENAI_COMPATIBLE_PROVIDER_NAMES = frozenset(_OPENAI_COMPATIBLE_DEFAULTS)
 
 
 def openai_compatible_default_base_url(provider_name: str) -> str:
-    default = _OPENAI_COMPATIBLE_DEFAULTS.get(provider_name)
-    return "" if default is None else default[0]
-
-
-def openai_compatible_discovery_base_url(provider_name: str) -> str | None:
-    default = _OPENAI_COMPATIBLE_DEFAULTS.get(provider_name)
-    if default is None:
-        return None
-    return default[1]
+    return _OPENAI_COMPATIBLE_DEFAULTS.get(provider_name, "")
 
 
 def openai_compatible_endpoint_config(
@@ -474,30 +425,15 @@ def openai_compatible_endpoint_config(
 ) -> ProviderEndpointConfig:
     if provider_name not in _OPENAI_COMPATIBLE_PROVIDER_NAMES:
         raise ValueError(f"Unknown OpenAI-compatible provider: {provider_name!r}")
+    default_base_url = openai_compatible_default_base_url(provider_name)
     if config is None:
         # An unconfigured provider still has exactly one endpoint: its own
-        # vendor default. Discovery stays off -- nobody asked us to list this
-        # vendor's models, and an unauthenticated listing must not go out.
-        return ProviderEndpointConfig(
-            base_url=openai_compatible_default_base_url(provider_name),
-            discovery_base_url="",
-        )
-    default_base_url = openai_compatible_default_base_url(provider_name)
-    default_discovery_base_url = openai_compatible_discovery_base_url(provider_name)
-    if config.discovery_base_url is not None:
-        discovery_base_url = config.discovery_base_url
-    elif config.base_url is not None and default_discovery_base_url == "":
-        # An empty default marks a provider with no public model listing.
-        discovery_base_url = ""
-    elif config.base_url is not None and provider_name == "deepseek":
-        # The one vendor that lists its models off the base URL itself.
-        discovery_base_url = None
-    else:
-        discovery_base_url = default_discovery_base_url
+        # vendor default.
+        return ProviderEndpointConfig(base_url=default_base_url)
     return ProviderEndpointConfig(
         api_key=config.api_key,
+        api_key_env_var=config.api_key_env_var,
         base_url=config.base_url if config.base_url else default_base_url,
-        discovery_base_url=discovery_base_url,
         ssl_verify=config.ssl_verify,
         timeout_seconds=config.timeout_seconds,
         model_map=dict(config.model_map),
@@ -531,7 +467,6 @@ _MISTRAL_API_KEY_ENV_VAR = "MISTRAL_API_KEY"
 class OpenAIProviderConfig:
     api_key: str | None = None
     base_url: str | None = None
-    discovery_base_url: str | None = None
     organization: str | None = None
     project: str | None = None
     timeout_seconds: float | None = None
@@ -542,7 +477,6 @@ class OpenAIProviderConfig:
 class AnthropicProviderConfig:
     api_key: str | None = None
     base_url: str | None = None
-    discovery_base_url: str | None = None
     version: str | None = None
     beta_headers: tuple[str, ...] = ()
     cache_retention: Literal["none", "short", "long"] = "none"
@@ -567,7 +501,6 @@ class GoogleProviderAuthConfig:
 class GoogleProviderConfig:
     auth: GoogleProviderAuthConfig | None = None
     base_url: str | None = None
-    discovery_base_url: str | None = None
     project: str | None = None
     region: str | None = None
     timeout_seconds: float | None = None
@@ -612,7 +545,6 @@ class ProviderEndpointConfig:
     api_key: str | None = None
     api_key_env_var: str | None = None
     base_url: str | None = None
-    discovery_base_url: str | None = None
     auth_header: str | None = None
     auth_scheme: EndpointAuthScheme = "bearer"
     ssl_verify: bool | None = None
@@ -889,7 +821,6 @@ def _merge_openai_provider_config(
     return OpenAIProviderConfig(
         api_key=_prefer_primary(primary.api_key, fallback.api_key),
         base_url=_prefer_primary(primary.base_url, fallback.base_url),
-        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
         organization=_prefer_primary(primary.organization, fallback.organization),
         project=_prefer_primary(primary.project, fallback.project),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
@@ -908,7 +839,6 @@ def _merge_anthropic_provider_config(
     return AnthropicProviderConfig(
         api_key=_prefer_primary(primary.api_key, fallback.api_key),
         base_url=_prefer_primary(primary.base_url, fallback.base_url),
-        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
         version=_prefer_primary(primary.version, fallback.version),
         beta_headers=(primary.beta_headers if primary.beta_headers_explicit else fallback.beta_headers),
         cache_retention=(primary.cache_retention if primary.cache_retention != "none" else fallback.cache_retention),
@@ -929,7 +859,6 @@ def _merge_google_provider_config(
     return GoogleProviderConfig(
         auth=_prefer_primary(primary.auth, fallback.auth),
         base_url=_prefer_primary(primary.base_url, fallback.base_url),
-        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
         project=_prefer_primary(primary.project, fallback.project),
         region=_prefer_primary(primary.region, fallback.region),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
@@ -965,7 +894,6 @@ def _merge_endpoint_provider_config(
         api_key=_prefer_primary(primary.api_key, fallback.api_key),
         api_key_env_var=_prefer_primary(primary.api_key_env_var, fallback.api_key_env_var),
         base_url=_prefer_primary(primary.base_url, fallback.base_url),
-        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
         auth_header=_prefer_primary(primary.auth_header, fallback.auth_header),
         auth_scheme=(primary.auth_scheme if primary.auth_scheme_explicit else fallback.auth_scheme),
         auth_scheme_explicit=primary.auth_scheme_explicit or fallback.auth_scheme_explicit,
@@ -988,7 +916,6 @@ def _merge_openai_compatible_provider_config(
         api_key=_prefer_primary(primary.api_key, fallback.api_key),
         api_key_env_var=_prefer_primary(primary.api_key_env_var, fallback.api_key_env_var),
         base_url=_prefer_primary(primary.base_url, fallback.base_url),
-        discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
         ssl_verify=_prefer_primary(primary.ssl_verify, fallback.ssl_verify),
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
         model_map={**fallback.model_map, **primary.model_map},
@@ -1283,7 +1210,6 @@ def _parse_openai_provider_config(
     return OpenAIProviderConfig(
         api_key=api_key,
         base_url=payload.base_url,
-        discovery_base_url=payload.discovery_base_url,
         organization=payload.organization,
         project=payload.project,
         timeout_seconds=payload.timeout_seconds,
@@ -1319,7 +1245,6 @@ def _parse_anthropic_provider_config(
     return AnthropicProviderConfig(
         api_key=api_key,
         base_url=payload.base_url,
-        discovery_base_url=payload.discovery_base_url,
         version=payload.version,
         beta_headers=payload.beta_headers or (),
         cache_retention=payload.cache_retention,
@@ -1358,7 +1283,6 @@ def _parse_google_provider_config(
     return GoogleProviderConfig(
         auth=auth,
         base_url=payload.base_url,
-        discovery_base_url=payload.discovery_base_url,
         project=payload.project,
         region=payload.region,
         timeout_seconds=payload.timeout_seconds,
@@ -1561,7 +1485,6 @@ def _parse_endpoint_provider_config(
         api_key=api_key,
         api_key_env_var=api_key_env_var,
         base_url=base_url,
-        discovery_base_url=payload.discovery_base_url,
         auth_header=payload.auth_header,
         auth_scheme=auth_scheme,
         auth_scheme_explicit=raw_auth_scheme is not None,
@@ -1610,7 +1533,6 @@ def _parse_openai_compatible_provider_config(
         api_key=api_key,
         api_key_env_var=api_key_env,
         base_url=payload.base_url,
-        discovery_base_url=payload.discovery_base_url,
         ssl_verify=payload.ssl_verify,
         timeout_seconds=payload.timeout_seconds,
         model_map=payload.model_map or {},
@@ -1659,8 +1581,6 @@ def _serialize_openai_provider_config(
         payload["api_key"] = provider.api_key
     if provider.base_url is not None:
         payload["base_url"] = provider.base_url
-    if provider.discovery_base_url is not None:
-        payload["discovery_base_url"] = provider.discovery_base_url
     if provider.organization is not None:
         payload["organization"] = provider.organization
     if provider.project is not None:
@@ -1682,8 +1602,6 @@ def _serialize_anthropic_provider_config(
         payload["api_key"] = provider.api_key
     if provider.base_url is not None:
         payload["base_url"] = provider.base_url
-    if provider.discovery_base_url is not None:
-        payload["discovery_base_url"] = provider.discovery_base_url
     if provider.version is not None:
         payload["version"] = provider.version
     if provider.beta_headers or provider.beta_headers_explicit:
@@ -1707,8 +1625,6 @@ def _serialize_google_provider_config(
         payload["auth"] = _serialize_google_auth_config(provider.auth, include_secrets=include_secrets)
     if provider.base_url is not None:
         payload["base_url"] = provider.base_url
-    if provider.discovery_base_url is not None:
-        payload["discovery_base_url"] = provider.discovery_base_url
     if provider.project is not None:
         payload["project"] = provider.project
     if provider.region is not None:
@@ -1784,8 +1700,6 @@ def _serialize_endpoint_provider_config(
         payload["api_key_env_var"] = provider.api_key_env_var
     if provider.base_url is not None:
         payload["base_url"] = provider.base_url
-    if provider.discovery_base_url is not None:
-        payload["discovery_base_url"] = provider.discovery_base_url
     if provider.auth_header is not None:
         payload["auth_header"] = provider.auth_header
     payload["auth_scheme"] = provider.auth_scheme
@@ -1812,8 +1726,6 @@ def _serialize_openai_compatible_provider_config(
         payload["api_key_env_var"] = provider.api_key_env_var
     if provider.base_url is not None:
         payload["base_url"] = provider.base_url
-    if provider.discovery_base_url is not None:
-        payload["discovery_base_url"] = provider.discovery_base_url
     if provider.ssl_verify is not None:
         payload["ssl_verify"] = provider.ssl_verify
     if provider.timeout_seconds is not None:

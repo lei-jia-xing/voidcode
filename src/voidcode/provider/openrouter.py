@@ -8,7 +8,6 @@ from .protocol import TurnProvider
 from .provider_config import vendor_endpoint_config
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-_OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 _OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
 
 
@@ -23,7 +22,6 @@ class OpenRouterModelProvider:
         return vendor_endpoint_config(
             self.config,
             base_url=_OPENROUTER_BASE_URL,
-            discovery_base_url=_OPENROUTER_MODELS_URL,
             api_key_env_var=_OPENROUTER_API_KEY_ENV_VAR,
         )
 

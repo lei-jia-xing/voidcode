@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .config import ProviderEndpointConfig
+from .provider_config import provider_has_model_listing
 from .reasoning_effort import CANONICAL_EFFORTS
 
 type ToolFeedbackMode = Literal["standard", "synthetic_user_message"]
@@ -151,7 +152,6 @@ class ProviderModelCatalog:
     last_refresh_status: str = "ok"
     last_error: str | None = None
     discovery_mode: Literal[
-        "configured_endpoint",
         "configured_base_url",
         "disabled",
         "unavailable",
@@ -166,7 +166,6 @@ class ModelDiscoveryResult:
     last_refresh_status: str
     last_error: str | None
     discovery_mode: Literal[
-        "configured_endpoint",
         "configured_base_url",
         "disabled",
         "unavailable",
@@ -176,7 +175,6 @@ class ModelDiscoveryResult:
 @dataclass(frozen=True, slots=True)
 class ModelDiscoveryPlan:
     discovery_mode: Literal[
-        "configured_endpoint",
         "configured_base_url",
         "disabled",
         "unavailable",
@@ -326,26 +324,18 @@ def _headers_for_discovery(config: ProviderEndpointConfig | None) -> dict[str, s
 
 
 def _build_discovery_plan(*, provider_name: str, config: ProviderEndpointConfig | None) -> ModelDiscoveryPlan:
-    if config is not None and config.discovery_base_url is not None:
-        candidate = config.discovery_base_url.strip()
-        if not candidate:
-            return ModelDiscoveryPlan(
-                discovery_mode="disabled",
-                request=None,
-                skip_reason="provider model discovery disabled by config",
-            )
-        return _discovery_plan_from_base_url(
-            provider_name=provider_name,
-            config=config,
-            base_url=candidate.rstrip("/"),
-            discovery_mode="configured_endpoint",
+    provider = provider_name.strip().lower()
+    if not provider_has_model_listing(provider, config):
+        return ModelDiscoveryPlan(
+            discovery_mode="disabled",
+            request=None,
+            skip_reason="provider has no model listing",
         )
     if config is not None and config.base_url:
         return _discovery_plan_from_base_url(
-            provider_name=provider_name,
+            provider_name=provider,
             config=config,
             base_url=config.base_url.rstrip("/"),
-            discovery_mode="configured_base_url",
         )
     return ModelDiscoveryPlan(
         discovery_mode="unavailable",
@@ -359,7 +349,6 @@ def _discovery_plan_from_base_url(
     provider_name: str,
     config: ProviderEndpointConfig | None,
     base_url: str,
-    discovery_mode: Literal["configured_endpoint", "configured_base_url"],
 ) -> ModelDiscoveryPlan:
 
     provider = provider_name.strip().lower()
@@ -367,15 +356,15 @@ def _discovery_plan_from_base_url(
     headers = _headers_for_discovery(config)
     if provider == "google" and config is not None and config.api_key is not None and config.auth_scheme == "bearer" and config.auth_header is None:
         headers = {"x-goog-api-key": config.api_key}
-    if provider == "anthropic":
-        api_key = None if config is None else config.api_key
-        anthropic_headers: dict[str, str] = {"anthropic-version": "2023-06-01"}
-        if api_key is not None:
-            anthropic_headers["x-api-key"] = api_key
-        headers = anthropic_headers
+    if config is not None and config.anthropic_messages_compatible:
+        # The Anthropic Messages wire owns its own header set -- the version
+        # header plus the vendor's credential header -- instead of OpenAI's
+        # ``Authorization: Bearer``. Which header the vendor's listing names
+        # comes from the endpoint config's own ``auth_header``/``auth_scheme``.
+        headers = {"anthropic-version": "2023-06-01", **headers}
 
     return ModelDiscoveryPlan(
-        discovery_mode=discovery_mode,
+        discovery_mode="configured_base_url",
         request=DiscoveryRequest(
             provider=provider,
             base_url=base_url,

@@ -16,7 +16,6 @@ from .protocol import TurnProvider
 from .provider_config import vendor_endpoint_config
 
 _OPENCODE_ZEN_BASE_URL = "https://opencode.ai/zen/v1"
-_OPENCODE_ZEN_MODELS_URL = "https://opencode.ai/zen/v1/models"
 _OPENCODE_API_KEY_ENV_VAR = "OPENCODE_API_KEY"
 
 # The Zen gateway routes per conversation: a turn that does not name the
@@ -122,7 +121,6 @@ class OpenCodeModelProvider:
         return vendor_endpoint_config(
             self.config,
             base_url=_OPENCODE_ZEN_BASE_URL,
-            discovery_base_url=_OPENCODE_ZEN_MODELS_URL,
             api_key_env_var=_OPENCODE_API_KEY_ENV_VAR,
         )
 

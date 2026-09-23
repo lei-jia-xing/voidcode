@@ -1,24 +1,64 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from types import TracebackType
 from urllib.request import Request
 
 import pytest
 
 from voidcode.provider import model_catalog
-from voidcode.provider.config import ProviderEndpointConfig
+from voidcode.provider.config import AnthropicProviderConfig, ProviderEndpointConfig
 from voidcode.provider.model_catalog import (
     DiscoveryRequest,
     ModelDiscoveryFetchResult,
     ProviderModelMetadata,
     discover_available_models,
 )
+from voidcode.provider.provider_config import anthropic_compatible_endpoint_config
+
+
+@dataclass
+class _CapturedRequest:
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    timeout: float = 0.0
+
+
+def _capture_discovery_request(monkeypatch: pytest.MonkeyPatch) -> _CapturedRequest:
+    """Serve one listing payload and record the request the plan would send."""
+    captured = _CapturedRequest()
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"data": [{"id": "provider/model-a"}]}).encode("utf-8")
+
+    def _fake_urlopen(request: Request, timeout: float) -> _Response:
+        captured.url = request.full_url
+        # urllib capitalises header names; HTTP header names are case-insensitive,
+        # so compare them lowercased.
+        captured.headers = {str(key).lower(): str(value) for key, value in dict(request.header_items()).items()}
+        captured.timeout = timeout
+        return _Response()
+
+    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+    return captured
 
 
 def test_discover_available_models_combines_alias_discovery_and_targets() -> None:
     config = ProviderEndpointConfig(
-        discovery_base_url="http://127.0.0.1:4000",
+        base_url="http://127.0.0.1:4000/v1",
         model_map={
             "alias-a": "provider/model-a",
             "alias-b": "provider/model-b",
@@ -39,7 +79,7 @@ def test_discover_available_models_combines_alias_discovery_and_targets() -> Non
         "provider/model-b",
     )
     assert models.source in {"remote", "mixed"}
-    assert models.discovery_mode == "configured_endpoint"
+    assert models.discovery_mode == "configured_base_url"
 
 
 def test_discover_available_models_fills_gaps_from_static_catalog(
@@ -52,7 +92,7 @@ def test_discover_available_models_fills_gaps_from_static_catalog(
     )
     result = discover_available_models(
         "openai",
-        ProviderEndpointConfig(discovery_base_url="https://api.openai.com"),
+        ProviderEndpointConfig(base_url="https://api.openai.com"),
         fetcher=lambda _request: ModelDiscoveryFetchResult(
             models=("gpt-5",),
             model_metadata={},
@@ -78,7 +118,7 @@ def test_static_catalog_metadata_lowercases_and_looks_up(
 def test_discover_available_models_recomputes_input_limit_for_remote_context_override() -> None:
     result = discover_available_models(
         "openai",
-        ProviderEndpointConfig(discovery_base_url="https://api.openai.com"),
+        ProviderEndpointConfig(base_url="https://api.openai.com"),
         fetcher=lambda _request: ModelDiscoveryFetchResult(
             models=("gpt-4o",),
             model_metadata={
@@ -139,7 +179,7 @@ def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> N
     }
 
 
-def test_discover_available_models_skips_when_no_discovery_base_url_or_base_url() -> None:
+def test_discover_available_models_reports_unavailable_without_a_base_url() -> None:
     result = discover_available_models("openai", ProviderEndpointConfig(api_key="sk-test"))
 
     assert result.source == "fallback"
@@ -156,7 +196,7 @@ def test_discover_available_models_marks_fallback_on_fetch_failure() -> None:
         "openai",
         ProviderEndpointConfig(
             model_map={"alias": "provider/model"},
-            discovery_base_url="https://api.openai.com",
+            base_url="https://api.openai.com",
         ),
         fetcher=_failing_fetcher,
     )
@@ -165,36 +205,13 @@ def test_discover_available_models_marks_fallback_on_fetch_failure() -> None:
     assert result.source == "fallback"
     assert result.last_refresh_status == "failed"
     assert result.last_error == "remote model discovery failed"
-    assert result.discovery_mode == "configured_endpoint"
+    assert result.discovery_mode == "configured_base_url"
 
 
 def test_discover_available_models_custom_provider_builds_url_from_plain_base_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: dict[str, object] = {}
-
-    class _Response:
-        def __enter__(self) -> _Response:
-            return self
-
-        def __exit__(
-            self,
-            exc_type: type[BaseException] | None,
-            exc: BaseException | None,
-            tb: TracebackType | None,
-        ) -> bool:
-            return False
-
-        def read(self) -> bytes:
-            return json.dumps({"data": [{"id": "provider/model-a"}]}).encode("utf-8")
-
-    def _fake_urlopen(request: Request, timeout: float) -> _Response:
-        captured["url"] = request.full_url
-        captured["headers"] = {str(key): str(value) for key, value in dict(request.header_items()).items()}
-        captured["timeout"] = timeout
-        return _Response()
-
-    monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
+    captured = _capture_discovery_request(monkeypatch)
 
     result = discover_available_models(
         "llama-local",
@@ -202,6 +219,76 @@ def test_discover_available_models_custom_provider_builds_url_from_plain_base_ur
     )
 
     assert result.models == ("provider/model-a",)
-    assert captured["url"] == "https://gateway.example.com/v1/models"
-    assert captured["timeout"] == 10.0
+    assert captured.url == "https://gateway.example.com/v1/models"
+    assert captured.timeout == 10.0
     assert result.discovery_mode == "configured_base_url"
+
+
+def test_discovery_probes_the_configured_openai_compatible_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A gateway is probed at the gateway, not at the vendor's own host.
+    captured = _capture_discovery_request(monkeypatch)
+
+    result = discover_available_models(
+        "fireworks",
+        ProviderEndpointConfig(base_url="https://gateway.example.test/inference/v1", api_key="fw-key"),
+    )
+
+    assert captured.url == "https://gateway.example.test/inference/v1/models"
+    assert captured.headers["authorization"] == "Bearer fw-key"
+    assert result.discovery_mode == "configured_base_url"
+
+
+def test_discovery_probes_the_configured_anthropic_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _capture_discovery_request(monkeypatch)
+    config = anthropic_compatible_endpoint_config(
+        "anthropic",
+        AnthropicProviderConfig(api_key="anth-key", base_url="https://anthropic-gw.example.test"),
+    )
+
+    result = discover_available_models("anthropic", config)
+
+    assert captured.url == "https://anthropic-gw.example.test/v1/models"
+    assert captured.headers["anthropic-version"] == "2023-06-01"
+    assert captured.headers["x-api-key"] == "anth-key"
+    assert result.discovery_mode == "configured_base_url"
+
+
+def test_anthropic_wire_vendor_sends_its_own_credential_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Any Anthropic-wire vendor, not just ``anthropic``, gets the Anthropic
+    # header set -- and its listing's own credential header.
+    captured = _capture_discovery_request(monkeypatch)
+    config = anthropic_compatible_endpoint_config("minimax-cn", AnthropicProviderConfig(api_key="mm-key"))
+
+    result = discover_available_models("minimax-cn", config)
+
+    assert captured.url == "https://api.minimaxi.com/anthropic/v1/models"
+    assert captured.headers["anthropic-version"] == "2023-06-01"
+    assert captured.headers["x-api-key"] == "mm-key"
+    assert "authorization" not in captured.headers
+    assert result.discovery_mode == "configured_base_url"
+
+
+def test_anthropic_wire_vendor_with_a_bearer_listing_sends_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _capture_discovery_request(monkeypatch)
+    config = anthropic_compatible_endpoint_config("kimi-coding", AnthropicProviderConfig(api_key="kimi-key"))
+
+    result = discover_available_models("kimi-coding", config)
+
+    assert captured.url == "https://api.kimi.com/coding/v1/models"
+    assert captured.headers["anthropic-version"] == "2023-06-01"
+    assert captured.headers["authorization"] == "Bearer kimi-key"
+    assert result.discovery_mode == "configured_base_url"
+
+
+def test_discovery_is_disabled_for_a_vendor_without_a_listing() -> None:
+    # Copilot publishes no listing: the plan reports disabled instead of probing.
+    result = discover_available_models(
+        "copilot",
+        ProviderEndpointConfig(base_url="https://api.individual.githubcopilot.com", api_key="copilot-token"),
+    )
+
+    assert result.discovery_mode == "disabled"
+    assert result.last_refresh_status == "skipped"
+    assert result.last_error == "provider has no model listing"

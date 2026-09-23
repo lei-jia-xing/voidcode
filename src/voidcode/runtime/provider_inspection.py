@@ -159,13 +159,11 @@ class ProviderEndpointFacts:
 
     base_url: str | None
     source: ProviderEndpointSource
-    discovery_base_url: str | None = None
 
     def as_payload(self) -> dict[str, object]:
         return {
             "base_url": self.base_url,
             "source": self.source,
-            "discovery_base_url": self.discovery_base_url,
         }
 
 
@@ -186,7 +184,6 @@ class RuntimeProviderEndpointInspector:
         return ProviderEndpointFacts(
             base_url=self._base_url(endpoint_config),
             source=self._source(provider_name, endpoint_config),
-            discovery_base_url=None if endpoint_config is None else endpoint_config.discovery_base_url,
         )
 
     @staticmethod

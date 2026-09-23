@@ -56,14 +56,13 @@ class RuntimeProviderCatalogCache:
             discovery_mode = (
                 cast(
                     Literal[
-                        "configured_endpoint",
                         "configured_base_url",
                         "disabled",
                         "unavailable",
                     ],
                     raw_discovery_mode,
                 )
-                if raw_discovery_mode in {"configured_endpoint", "configured_base_url", "disabled", "unavailable"}
+                if raw_discovery_mode in {"configured_base_url", "disabled", "unavailable"}
                 else "unavailable"
             )
             hydrated[provider_name] = ProviderModelCatalog(

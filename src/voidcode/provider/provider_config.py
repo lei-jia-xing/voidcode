@@ -5,17 +5,12 @@ from dataclasses import replace
 from .config import (
     AnthropicProviderConfig,
     CopilotProviderConfig,
+    EndpointAuthScheme,
     GoogleProviderConfig,
     OpenAIProviderConfig,
     ProviderEndpointConfig,
     openai_compatible_default_base_url,
 )
-
-_DEFAULT_DISCOVERY_BASE_URLS: dict[str, str] = {
-    "openai": "https://api.openai.com",
-    "anthropic": "https://api.anthropic.com",
-    "google": "https://generativelanguage.googleapis.com",
-}
 
 # Vendor defaults for the providers whose wire is the OpenAI chat protocol.
 # A config that names no ``base_url`` resolves to the provider's own host here
@@ -42,19 +37,39 @@ _DEFAULT_ANTHROPIC_WIRE_BASE_URLS: dict[str, str] = {
     "minimax-cn": "https://api.minimaxi.com/anthropic",
 }
 
+# Google's config names no base URL by default -- the SDK resolves its own -- so
+# the listing derives from the Gemini API host the SDK would use.
+_DEFAULT_GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com"
+
 # The endpoint provider is a user-supplied OpenAI-compatible gateway. Without
-# configuration it assumes the conventional local gateway, mirroring the
-# discovery default documented for `providers.endpoint`.
+# configuration it assumes the conventional local gateway.
 DEFAULT_ENDPOINT_BASE_URL = "http://127.0.0.1:4000/v1"
-DEFAULT_ENDPOINT_DISCOVERY_URL = "http://127.0.0.1:4000"
+
+# The credential header an Anthropic-wire vendor's model listing wants. The wire
+# itself always speaks ``x-api-key`` with the raw key, which is the default; a
+# vendor whose listing names another header overrides it here.
+_ANTHROPIC_WIRE_LISTING_DEFAULT_AUTH: tuple[str, EndpointAuthScheme] = ("x-api-key", "token")
+_ANTHROPIC_WIRE_LISTING_AUTH: dict[str, tuple[str, EndpointAuthScheme]] = {
+    # Kimi's coding subscription lists with ``Authorization: Bearer``.
+    "kimi-coding": ("Authorization", "bearer"),
+    # MiniMax CN's listing names its own key header.
+    "minimax-cn": ("X-Api-Key", "token"),
+}
 
 
-def default_discovery_base_url(provider_name: str, *, configured_base_url: str | None, configured_discovery_base_url: str | None) -> str | None:
-    if configured_discovery_base_url is not None:
-        return configured_discovery_base_url
-    if configured_base_url is not None:
-        return None
-    return _DEFAULT_DISCOVERY_BASE_URLS.get(provider_name)
+def provider_has_model_listing(provider_name: str, config: ProviderEndpointConfig | None) -> bool:
+    """Whether ``provider_name`` serves a model listing its wire can request.
+
+    A vendor's listing lives at its own base URL plus the wire's path, so the
+    only per-vendor discovery fact left is whether the route exists at all:
+    Copilot publishes none, and Google's listing needs a credential the request
+    can send, which a service-account (or absent) config does not resolve.
+    """
+    if provider_name == "copilot":
+        return False
+    if provider_name == "google":
+        return config is not None and config.api_key is not None
+    return True
 
 
 def openai_wire_default_base_url(provider_name: str) -> str | None:
@@ -76,11 +91,6 @@ def openai_provider_config(config: OpenAIProviderConfig | None) -> ProviderEndpo
         # OpenAI's own host, stated here instead of borrowed from the transport's
         # construction default.
         base_url=configured_base_url or _DEFAULT_OPENAI_BASE_URL,
-        discovery_base_url=default_discovery_base_url(
-            "openai",
-            configured_base_url=None if config is None else config.base_url,
-            configured_discovery_base_url=None if config is None else config.discovery_base_url,
-        ),
         timeout_seconds=None if config is None else config.timeout_seconds,
         model_map={},
         openai_organization=None if config is None else config.organization,
@@ -100,32 +110,20 @@ def anthropic_wire_default_base_url(provider_name: str) -> str | None:
 def anthropic_compatible_endpoint_config(provider_name: str, config: AnthropicProviderConfig | None) -> ProviderEndpointConfig:
     """Normalize one Anthropic-wire vendor's configuration.
 
-    The vendor default base URL and the discovery host both come from tables
-    keyed by ``provider_name``, so a gateway route that pins its own host (the
-    OpenCode adapters) keeps that host while an unconfigured vendor resolves to
-    its own endpoint instead of borrowing Anthropic's.
+    The vendor default base URL and the listing's credential header both come
+    from tables keyed by ``provider_name``, so a gateway route that pins its own
+    host keeps that host while an unconfigured vendor resolves to its own
+    endpoint instead of borrowing Anthropic's.
     """
     vendor_default_base_url = anthropic_wire_default_base_url(provider_name)
     if vendor_default_base_url is None:
         raise ValueError(f"Unknown Anthropic-wire provider: {provider_name!r}")
-    configured_base_url = None if config is None else config.base_url
-    configured_discovery_base_url = None if config is None else config.discovery_base_url
-    discovery_base_url = default_discovery_base_url(
-        provider_name,
-        configured_base_url=configured_base_url,
-        configured_discovery_base_url=configured_discovery_base_url,
-    )
-    if discovery_base_url is None and configured_base_url is None:
-        # Nothing configured and no verified listing host of its own: disable
-        # discovery. ``None`` here would make the catalog probe
-        # ``<vendor base>/models`` as an OpenAI listing, which nobody has
-        # verified for these Anthropic-wire hosts. A configured
-        # ``discovery_base_url`` or ``base_url`` still decides for itself above.
-        discovery_base_url = ""
+    auth_header, auth_scheme = _ANTHROPIC_WIRE_LISTING_AUTH.get(provider_name, _ANTHROPIC_WIRE_LISTING_DEFAULT_AUTH)
     return ProviderEndpointConfig(
         api_key=None if config is None else config.api_key,
-        base_url=configured_base_url or vendor_default_base_url,
-        discovery_base_url=discovery_base_url,
+        base_url=(None if config is None else config.base_url) or vendor_default_base_url,
+        auth_header=auth_header,
+        auth_scheme=auth_scheme,
         timeout_seconds=None if config is None else config.timeout_seconds,
         model_map={},
         anthropic_messages_compatible=True,
@@ -145,20 +143,14 @@ def google_provider_config(config: GoogleProviderConfig | None) -> ProviderEndpo
             auth_scheme = "token"
         elif auth.method == "oauth":
             api_key = auth.access_token
-    discovery_base_url = default_discovery_base_url(
-        "google",
-        configured_base_url=None if config is None else config.base_url,
-        configured_discovery_base_url=None if config is None else config.discovery_base_url,
-    )
-    if auth is not None and auth.method == "service_account":
-        # Service-account auth resolves no credential this discovery path can
-        # send, so an unauthenticated probe must not be issued: report discovery
-        # as disabled rather than pretending it is available.
-        discovery_base_url = ""
+    configured_base_url = None if config is None else config.base_url
+    # A service-account config resolves no credential this discovery path can
+    # send and selects the Vertex surface rather than the Gemini API host, so it
+    # keeps no base URL and ``provider_has_model_listing`` reports no listing.
+    base_url = configured_base_url if auth is not None and auth.method == "service_account" else configured_base_url or _DEFAULT_GOOGLE_BASE_URL
     return ProviderEndpointConfig(
         api_key=api_key,
-        base_url=None if config is None else config.base_url,
-        discovery_base_url=discovery_base_url,
+        base_url=base_url,
         auth_header=auth_header,
         auth_scheme=auth_scheme,
         timeout_seconds=None if config is None else config.timeout_seconds,
@@ -174,9 +166,6 @@ def copilot_provider_config(config: CopilotProviderConfig | None) -> ProviderEnd
         # Copilot calls its own host: a Copilot token must never be sent to
         # ``api.openai.com`` just because no base URL was configured.
         base_url=configured_base_url or _DEFAULT_COPILOT_BASE_URL,
-        # Copilot has no public model listing, so the default host disables
-        # discovery instead of issuing an unauthenticated probe.
-        discovery_base_url=None if configured_base_url else "",
         timeout_seconds=None if config is None else config.timeout_seconds,
     )
 
@@ -184,18 +173,14 @@ def copilot_provider_config(config: CopilotProviderConfig | None) -> ProviderEnd
 def endpoint_provider_config(config: ProviderEndpointConfig | None) -> ProviderEndpointConfig:
     """Normalize the configuration-driven endpoint provider.
 
-    An unconfigured endpoint keeps the local gateway defaults, so resolution
+    An unconfigured endpoint keeps the local gateway default, so resolution
     never silently targets a first-party API.
     """
     if config is None:
-        return ProviderEndpointConfig(
-            base_url=DEFAULT_ENDPOINT_BASE_URL,
-            discovery_base_url=DEFAULT_ENDPOINT_DISCOVERY_URL,
-        )
+        return ProviderEndpointConfig(base_url=DEFAULT_ENDPOINT_BASE_URL)
     return replace(
         config,
         base_url=config.base_url or DEFAULT_ENDPOINT_BASE_URL,
-        discovery_base_url=config.discovery_base_url if config.discovery_base_url is not None else DEFAULT_ENDPOINT_DISCOVERY_URL,
     )
 
 
@@ -203,21 +188,17 @@ def vendor_endpoint_config(
     config: ProviderEndpointConfig | None,
     *,
     base_url: str,
-    discovery_base_url: str,
     api_key_env_var: str,
 ) -> ProviderEndpointConfig:
     """Normalize one gateway vendor's configuration against that vendor's own defaults.
 
-    Unconfigured, the vendor keeps its own host and its own model listing.
-    Configured, every field the caller set survives and only the endpoints it left
-    out fall back to the vendor's; a ``base_url`` with no ``discovery_base_url``
-    disables discovery rather than guessing at a listing path the caller did not
-    name.
+    Unconfigured, the vendor keeps its own host. Configured, every field the
+    caller set survives and only the endpoints it left out fall back to the
+    vendor's. The model listing always derives from the resolved base URL.
     """
     if config is None:
         return ProviderEndpointConfig(
             base_url=base_url,
-            discovery_base_url=discovery_base_url,
             api_key_env_var=api_key_env_var,
             model_map={},
         )
@@ -225,9 +206,6 @@ def vendor_endpoint_config(
         api_key=config.api_key,
         api_key_env_var=config.api_key_env_var,
         base_url=config.base_url or base_url,
-        discovery_base_url=(
-            config.discovery_base_url if config.discovery_base_url is not None else (None if config.base_url else discovery_base_url)
-        ),
         auth_header=config.auth_header,
         auth_scheme=config.auth_scheme,
         auth_scheme_explicit=config.auth_scheme_explicit,
