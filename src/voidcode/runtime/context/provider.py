@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections import defaultdict
 from typing import Literal, cast
 
@@ -266,12 +265,6 @@ def _redact_debug_text(content: str) -> str:
     return redact_text(content)
 
 
-def _normalize_tool_call_id(value: str | None, *, fallback: str) -> str:
-    raw = value if value is not None and value.strip() else fallback
-    normalized = re.sub(r"[^a-zA-Z0-9_-]", "_", raw.strip())
-    return normalized or fallback
-
-
 def _safe_payload(value: object) -> object:
     if isinstance(value, str):
         clipped, truncated = _clip_content(value)
@@ -332,7 +325,7 @@ def _standard_tool_message_snapshots(
                     source="provider_native_tool_call",
                     tool_calls=(
                         {
-                            "id": _tool_call_id(segment, fallback=segment.tool_name),
+                            "id": segment.tool_call_id,
                             "type": "function",
                             "function": {
                                 "name": segment.tool_name,
@@ -359,10 +352,7 @@ def _standard_tool_message_snapshots(
                     source="provider_native_tool_result",
                     content=content,
                     content_truncated=content_truncated,
-                    tool_call_id=_tool_call_id(
-                        segment,
-                        fallback=segment.tool_name or "voidcode_tool",
-                    ),
+                    tool_call_id=segment.tool_call_id,
                 )
             )
             continue
@@ -502,10 +492,6 @@ def _provider_visible_debug_arguments(
 def _sanitize_debug_data(data: dict[str, object]) -> dict[str, object]:
     sanitized = sanitize_tool_result_data(data)
     return cast(dict[str, object], _safe_payload(sanitized))
-
-
-def _tool_call_id(segment: RuntimeContextSegment, *, fallback: str) -> str:
-    return _normalize_tool_call_id(segment.tool_call_id, fallback=fallback)
 
 
 def _diagnostics(
