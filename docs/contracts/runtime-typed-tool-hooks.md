@@ -210,5 +210,5 @@ Typed handler 不能放宽 agent tool allowlist、read-only policy、shell polic
 path policy、approval mode 或 delegation budget。Background lifecycle hooks 的
 post-truth observer 语义也不因 typed input hook 改变。
 
-本契约只覆盖 ToolInputHandler；ToolResultHandler、context transform、provider
+本契约只覆盖 ToolInputHandler；context transform、provider
 request transform、extension registration 和 plan v3 不属于首期实现。

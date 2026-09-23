@@ -4,12 +4,11 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Literal, Protocol
 
 import jsonschema
 
-from ..runtime.context.window import ToolResultView
 from ..security.shell_policy import non_interactive_shell_env
 from ..tools.contracts import ToolCall, ToolDefinition, ToolDiagnostics
 
@@ -109,11 +108,6 @@ class ToolInputHookOutcome:
     diagnostics: tuple[str, ...] = ()
     handler_names: tuple[str, ...] = ()
     blocked_reason: str | None = None
-    _original_arguments: Mapping[str, object] = field(default_factory=dict, repr=False, compare=False)
-
-    @property
-    def changed(self) -> bool:
-        return self.tool_call.arguments != self._original_arguments
 
 
 class ToolInputHandlerRegistry:
@@ -129,10 +123,6 @@ class ToolInputHandlerRegistry:
         # Explicit priority is the primary order; Python's stable sort keeps
         # registration order for equal priorities.
         self._bindings = tuple(binding for _index, binding in sorted(indexed, key=lambda item: item[1].priority))
-
-    @classmethod
-    def empty(cls) -> ToolInputHandlerRegistry:
-        return cls()
 
     @property
     def bindings(self) -> tuple[ToolInputHandlerBinding, ...]:
@@ -164,7 +154,6 @@ class ToolInputHandlerRegistry:
                     diagnostics=tuple(diagnostics),
                     handler_names=tuple(names),
                     blocked_reason=_safe_text(f"tool input handler '{binding.name}' failed: {exc}"),
-                    _original_arguments=original_arguments,
                 )
             if decision.action == "diagnostic":
                 if len(diagnostics) < _MAX_DIAGNOSTICS:
@@ -185,7 +174,6 @@ class ToolInputHandlerRegistry:
                 diagnostics=tuple(diagnostics),
                 handler_names=tuple(names),
                 blocked_reason=decision.reason,
-                _original_arguments=original_arguments,
             )
 
         action: ToolInputAction = "rewrite" if changed else ("diagnostic" if diagnostics else "unchanged")
@@ -194,7 +182,6 @@ class ToolInputHandlerRegistry:
             action=action,
             diagnostics=tuple(diagnostics),
             handler_names=tuple(names),
-            _original_arguments=original_arguments,
         )
 
 
@@ -216,15 +203,6 @@ def builtin_tool_input_handler_registry() -> ToolInputHandlerRegistry:
     # ShellExecTool/hook executor (one line each). Add a typed env channel
     # only if a handler ever needs to change keys, not just announce them.
     return ToolInputHandlerRegistry((ToolInputHandlerBinding(name="shell-non-interactive-env", handler=_shell_non_interactive_env_handler),))
-
-
-def compose_tool_input_handler_registry(
-    builtin_bindings: Iterable[ToolInputHandlerBinding] = (),
-    configured_bindings: Iterable[ToolInputHandlerBinding] = (),
-) -> ToolInputHandlerRegistry:
-    """Compose builtin and explicit bindings through one stable registry."""
-
-    return ToolInputHandlerRegistry((*builtin_bindings, *configured_bindings))
 
 
 def validate_tool_input_schema(tool: ToolDefinition, arguments: Mapping[str, object]) -> None:
@@ -269,149 +247,6 @@ def tool_input_rewrite_metadata(*, original: ToolCall, outcome: ToolInputHookOut
     }
 
 
-ToolResultHandlerAction = Literal["unchanged", "rewrite", "error"]
-
-
-@dataclass(frozen=True, slots=True)
-class UnchangedResult:
-    """Handler leaves the provider-visible view untouched."""
-
-    action: Literal["unchanged"] = "unchanged"
-
-
-@dataclass(frozen=True, slots=True)
-class RewriteResult:
-    """Handler replaces the provider-visible fields; the payload is the type."""
-
-    content: str | None = None
-    error: str | None = None
-    diagnostics: ToolDiagnostics | None = None
-    action: Literal["rewrite"] = "rewrite"
-
-
-# The deliberately small result vocabulary for typed result handlers.
-type ToolResultHandlerDecision = UnchangedResult | RewriteResult
-
-
-class ToolResultHandler(Protocol):
-    def __call__(self, result: ToolResultView, /) -> ToolResultHandlerDecision: ...
-
-
-@dataclass(frozen=True, slots=True)
-class ToolResultHandlerBinding:
-    name: str
-    handler: ToolResultHandler
-    priority: int = 0
-
-    def __post_init__(self) -> None:
-        if not self.name.strip():
-            raise ValueError("tool result handler name must be non-empty")
-        if isinstance(self.priority, bool):
-            raise ValueError("tool result handler priority must be an integer")
-
-
-@dataclass(frozen=True, slots=True)
-class ToolResultHandlerOutcome:
-    view: ToolResultView
-    action: ToolResultHandlerAction = "unchanged"
-    handler_names: tuple[str, ...] = ()
-    failure_reason: str | None = None
-
-
-class ToolResultHandlerRegistry:
-    """Stable priority-ordered composition of safe result views."""
-
-    def __init__(self, bindings: Iterable[ToolResultHandlerBinding] = ()) -> None:
-        indexed = tuple(enumerate(bindings))
-        names: set[str] = set()
-        for _index, binding in indexed:
-            if binding.name in names:
-                raise ValueError(f"duplicate tool result handler name: {binding.name}")
-            names.add(binding.name)
-        self._bindings = tuple(binding for _index, binding in sorted(indexed, key=lambda item: item[1].priority))
-
-    @classmethod
-    def empty(cls) -> ToolResultHandlerRegistry:
-        return cls()
-
-    @property
-    def bindings(self) -> tuple[ToolResultHandlerBinding, ...]:
-        return self._bindings
-
-    def apply(self, *, result: ToolResultView) -> ToolResultHandlerOutcome:
-        source = ToolResultView(result=deepcopy(result.result), content=deepcopy(result.content))
-        current = source
-        names: list[str] = []
-        for binding in self._bindings:
-            if len(names) < _MAX_HANDLER_NAMES:
-                names.append(binding.name)
-            try:
-                decision = binding.handler(deepcopy(current))
-            except Exception:
-                return ToolResultHandlerOutcome(
-                    view=source, action="error", handler_names=tuple(names), failure_reason=f"handler '{binding.name}' failed"
-                )
-            if decision.action == "unchanged":
-                continue
-            try:
-                transformed = replace(
-                    current.result, content=deepcopy(decision.content), error=deepcopy(decision.error), diagnostics=deepcopy(decision.diagnostics)
-                )
-            except Exception as exc:
-                return ToolResultHandlerOutcome(
-                    view=source, action="error", handler_names=tuple(names), failure_reason=f"handler '{binding.name}' produced invalid view: {exc}"
-                )
-            current = ToolResultView(result=transformed, content=transformed.content)
-        return ToolResultHandlerOutcome(view=current, action="rewrite" if current != source else "unchanged", handler_names=tuple(names))
-
-
-# ponytail: fixed 8000-char cap; per-tool limits or token-based budgets only if provider pressure data demands it.
-_RESULT_OUTPUT_CHAR_LIMIT = 8000
-
-
-def _result_output_truncation_handler(view: ToolResultView, /) -> ToolResultHandlerDecision:
-    content = view.content
-    if not isinstance(content, str) or len(content) <= _RESULT_OUTPUT_CHAR_LIMIT:
-        return UnchangedResult()
-    omitted = len(content) - _RESULT_OUTPUT_CHAR_LIMIT
-    truncated = f"{content[:_RESULT_OUTPUT_CHAR_LIMIT].rstrip()}\n[... output truncated: {omitted} chars omitted]"
-    return RewriteResult(content=truncated, error=view.error, diagnostics=view.diagnostics)
-
-
-def builtin_tool_result_handler_registry() -> ToolResultHandlerRegistry:
-    """Return the production builtin registry (provider-view output truncation)."""
-    return ToolResultHandlerRegistry((ToolResultHandlerBinding(name="result-output-truncation", handler=_result_output_truncation_handler),))
-
-
-def compose_tool_result_handler_registry(
-    builtin_bindings: Iterable[ToolResultHandlerBinding] = (),
-    configured_bindings: Iterable[ToolResultHandlerBinding] = (),
-) -> ToolResultHandlerRegistry:
-    """Compose builtin and explicit bindings through one stable registry."""
-
-    return ToolResultHandlerRegistry((*builtin_bindings, *configured_bindings))
-
-
-def tool_result_handler_metadata(*, original: ToolResultView, outcome: ToolResultHandlerOutcome) -> dict[str, object]:
-    """Return bounded, text-free provenance for a provider-view transform."""
-    return {
-        "surface": "typed_result",
-        "action": outcome.action,
-        "handler_names": list(outcome.handler_names[:_MAX_HANDLER_NAMES]),
-        "failure": outcome.failure_reason,
-        "original_content_sha256": _result_field_sha256(original.content),
-        "final_content_sha256": _result_field_sha256(outcome.view.content),
-        "original_error_sha256": _result_field_sha256(original.error),
-        "final_error_sha256": _result_field_sha256(outcome.view.error),
-        "diagnostic_changed": original.diagnostics != outcome.view.diagnostics,
-    }
-
-
-def _result_field_sha256(value: object) -> str:
-    encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=repr).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
 def _arguments_sha256(arguments: Mapping[str, object]) -> str:
     try:
         encoded = json.dumps(dict(arguments), ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=repr).encode()
@@ -449,20 +284,8 @@ __all__ = [
     "ToolInputHandlerRegistry",
     "ToolInputHookOutcome",
     "UnchangedDecision",
-    "ToolResultHandler",
-    "ToolResultHandlerAction",
-    "ToolResultHandlerBinding",
-    "ToolResultHandlerDecision",
-    "ToolResultHandlerOutcome",
-    "ToolResultHandlerRegistry",
-    "RewriteResult",
-    "UnchangedResult",
     "builtin_tool_input_handler_registry",
-    "builtin_tool_result_handler_registry",
-    "compose_tool_input_handler_registry",
-    "compose_tool_result_handler_registry",
     "tool_input_arguments_sha256",
     "tool_input_rewrite_metadata",
-    "tool_result_handler_metadata",
     "validate_tool_input_schema",
 ]

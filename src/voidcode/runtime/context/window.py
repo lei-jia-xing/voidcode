@@ -8,13 +8,11 @@ from pathlib import Path
 from typing import Literal, cast
 
 from ...agent.prompt_sections import dynamic_boundary_marker
-from ...hook.percall import PerCallChain
+from ...hook.percall import PerCallRewriteOutcome
 from ...tools.contracts import ToolDiagnostics, ToolResult, ToolResultStatus
 from ..todos import render_provider_todo_state
 from .percall import (
-    apply_percall_chain,
     percall_wire_cache_prefix,
-    percall_wire_segments,
     segments_to_percall_messages,
 )
 from .projection import project_summary
@@ -280,8 +278,6 @@ class RuntimeAssembledContext:
     segments: tuple[RuntimeContextSegment, ...]
     metadata: dict[str, object]
     loaded_skills: tuple[dict[str, object], ...] = ()
-    # Per-call-only wire segments: visible to one provider call, never persisted.
-    percall_wire_segments: tuple[RuntimeContextSegment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1082,7 +1078,6 @@ def assemble_provider_context(
     replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
     summary_projector: Callable[[Mapping[str, object]], str] | None = None,
     tool_catalog_context: str = "",
-    percall_chain: PerCallChain | None = None,
     hook_guidance: Iterable[str] | None = None,
 ) -> RuntimeAssembledContext:
     context_window = prepare_provider_context(
@@ -1259,17 +1254,7 @@ def assemble_provider_context(
         "protected_tiers": ["instruction", "workspace", "task"],
         "compaction_target": "recent",
     }
-    percall_outcome = apply_percall_chain(
-        segments_to_percall_messages(tuple(segments)),
-        chain=percall_chain,
-    )
-    wire_segments = percall_wire_segments(percall_outcome)
-    metadata_payload["percall"] = {
-        "version": 1,
-        "handler_names": list(percall_outcome.handler_names),
-        "changed": percall_outcome.changed,
-        "wire_segment_count": len(wire_segments),
-    }
+    percall_outcome = PerCallRewriteOutcome(messages=segments_to_percall_messages(tuple(segments)))
     metadata_payload["percall_cache_prefix"] = percall_wire_cache_prefix(percall_outcome)
     return RuntimeAssembledContext(
         prompt=prompt,
@@ -1278,7 +1263,6 @@ def assemble_provider_context(
         segments=tuple(segments),
         metadata=metadata_payload,
         loaded_skills=loaded_skills,
-        percall_wire_segments=wire_segments,
     )
 
 

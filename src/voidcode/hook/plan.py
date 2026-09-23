@@ -19,7 +19,6 @@ HookPlanPhase = Literal["foreground", "background"]
 # This is the one descriptor used by materialization.  RuntimeHooksConfig remains
 # the source of command declarations; no command is inferred from a preset.
 _VALID_SURFACES = frozenset(descriptor.surface for descriptor in HOOK_SURFACE_DESCRIPTORS)
-_BACKGROUND_SURFACES = frozenset(descriptor.surface for descriptor in HOOK_SURFACE_DESCRIPTORS if descriptor.phase == "background")
 
 
 class HookPlanValidationError(ValueError):
@@ -43,16 +42,11 @@ class HookPlanBinding:
     phase: HookPlanPhase = "foreground"
     metadata: Mapping[str, object] = field(default_factory=dict)
 
-    @property
-    def argv(self) -> tuple[str, ...]:
-        return self.command
-
     def as_payload(self) -> dict[str, object]:
         return {
             "binding_id": self.binding_id,
             "event": self.event,
             "command": list(self.command),
-            "argv": list(self.command),
             "order": self.order,
             "scope": self.scope,
             "source": self.source,
@@ -284,10 +278,10 @@ def _binding_from_payload(payload: object) -> HookPlanBinding:
     if not isinstance(payload, Mapping):
         raise HookPlanValidationError("hook plan binding must be an object")
     raw = payload
-    command = raw.get("command", raw.get("argv"))
+    command = raw["command"]
     if not isinstance(command, Sequence) or isinstance(command, (str, bytes)):
         raise HookPlanValidationError("hook plan binding command must be an argv array")
-    metadata = raw.get("metadata", {})
+    metadata = raw["metadata"]
     if not isinstance(metadata, Mapping):
         raise HookPlanValidationError("hook plan binding metadata must be an object")
     event = raw.get("event")
@@ -298,13 +292,13 @@ def _binding_from_payload(payload: object) -> HookPlanBinding:
         event=event,
         command=tuple(arg for arg in command),
         order=cast(int, raw.get("order")),
-        scope=raw.get("scope", "session"),
-        source=raw.get("source", "runtime_config"),
+        scope=raw["scope"],
+        source=raw["source"],
         agent_source=raw.get("agent_source"),
-        failure_mode=raw.get("failure_mode", "warn"),
+        failure_mode=raw["failure_mode"],
         timeout_seconds=raw.get("timeout_seconds"),
-        payload_schema=raw.get("payload_schema", HOOK_PAYLOAD_SCHEMA),
-        phase=raw.get("phase", "foreground"),
+        payload_schema=raw["payload_schema"],
+        phase=raw["phase"],
         metadata=metadata,
     )
 

@@ -16,10 +16,8 @@ from ..hook.typed import (
     ToolInputEvent,
     ToolInputHandlerRegistry,
     ToolInputHookOutcome,
-    ToolResultHandlerRegistry,
     tool_input_arguments_sha256,
     tool_input_rewrite_metadata,
-    tool_result_handler_metadata,
     validate_tool_input_schema,
 )
 from ..provider.errors import (
@@ -119,13 +117,11 @@ from .execution.tool_result_projection import (
     _serialized_tool_results,
     _tool_completed_identity_payload,
     _tool_completed_payload,
-    _tool_diagnostic_payload,  # noqa: F401 — preserve run_loop private import compatibility
     _tool_error_details,
     _tool_error_diagnostics,  # noqa: F401 — preserve run_loop private import compatibility
     _tool_error_payload,
     _tool_error_retry_guidance,
     _tool_error_summary,
-    _tool_result_call_id,
 )
 from .hook_runtime import (
     HOOK_RECURSION_ENV_VAR,
@@ -454,7 +450,6 @@ class RuntimeRunLoopCoordinator:
         lsp_manager: LspManager,
         provider_catalog_query: RuntimeProviderCatalogQuery,
         tool_input_handler_registry: ToolInputHandlerRegistry,
-        tool_result_handler_registry: ToolResultHandlerRegistry,
         tool_executor: RuntimeToolExecutor,
     ) -> None:
         self._surface = surface
@@ -467,7 +462,6 @@ class RuntimeRunLoopCoordinator:
         self._lsp_manager = lsp_manager
         self._provider_catalog_query = provider_catalog_query
         self._tool_input_handler_registry = tool_input_handler_registry
-        self._tool_result_handler_registry = tool_result_handler_registry
         self._tool_executor = tool_executor
         self._pending_hook_guidance: list[str] = []
 
@@ -528,40 +522,6 @@ class RuntimeRunLoopCoordinator:
             session_id=session_id,
             events=((event_type, source, payload, dedupe_key),),
         )[0]
-
-    def _provider_tool_results(
-        self,
-        *,
-        tool_results: list[ToolResult],
-        skip_result_count: int = 0,
-    ) -> tuple[tuple[ToolResult | ToolResultView, ...], dict[str, object] | None]:
-        """Project authoritative results for one provider-context rebuild.
-
-        ``tool_results`` remains the sole authoritative pool. Result views are
-        transient and replayed results are deliberately passed through so a
-        resume/replay never re-executes handlers for historical output.
-        """
-        if not self._tool_result_handler_registry.bindings:
-            return tuple(tool_results), None
-        projected: list[ToolResult | ToolResultView] = []
-        provenance: list[dict[str, object]] = []
-        for index, result in enumerate(tool_results):
-            if index < skip_result_count or result.source == "replayed_conversation":
-                projected.append(result)
-                continue
-            original = ToolResultView(result=result, content=result.content)
-            outcome = self._tool_result_handler_registry.apply(result=original)
-            projected.append(outcome.view)
-            provenance.append(
-                {
-                    "tool_name": result.tool_name,
-                    **({"tool_call_id": call_id} if (call_id := _tool_result_call_id(result)) is not None else {}),
-                    **tool_result_handler_metadata(original=original, outcome=outcome),
-                }
-            )
-        if not provenance:
-            return tuple(projected), None
-        return tuple(projected), {"results": provenance[-32:]}
 
     def _persist_chunk(self, chunk: RuntimeStreamChunk) -> tuple[RuntimeStreamChunk, int]:
         event = chunk.event
@@ -1291,9 +1251,6 @@ class RuntimeRunLoopCoordinator:
         stuck_detected_emitted = False
         self._pending_hook_guidance = []
         checkpoint_tool_result_count = len(tool_results)
-        replayed_result_count = (
-            len(tool_results) if graph_request.metadata.get("runtime_resume") is True or graph_request.metadata.get("resume") is True else 0
-        )
         # Run-local watermark propagated to graph events, hooks, and diagnostics.
         run_step = graph_request.run_step
 
@@ -1347,15 +1304,7 @@ class RuntimeRunLoopCoordinator:
             )
             if terminated:
                 return
-            provider_tool_results, handler_provenance = self._provider_tool_results(
-                tool_results=tool_results,
-                skip_result_count=replayed_result_count,
-            )
-            if handler_provenance is not None:
-                session = replace(
-                    session,
-                    metadata={**session.metadata, "tool_result_handlers": handler_provenance},
-                )
+            provider_tool_results = tuple(tool_results)
             sequence, before_compact_input = yield from self._run_before_compact_hook_phase(
                 session=session,
                 sequence=sequence,
@@ -2049,12 +1998,6 @@ class RuntimeRunLoopCoordinator:
             replayed_conversation_segments=_replayed_conversation_segments(current_graph_request),
             hook_guidance=(*self._drain_pending_hook_guidance(), *(hook_guidance or ())) or None,
         )
-        handler_provenance = session.metadata.get("tool_result_handlers")
-        if isinstance(handler_provenance, dict):
-            assembled_context = replace(
-                assembled_context,
-                metadata={**assembled_context.metadata, "tool_result_handlers": dict(handler_provenance)},
-            )
         context_window_payload = {
             **assembled_context.metadata,
             **context_window.metadata_payload(),

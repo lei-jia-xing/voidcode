@@ -29,7 +29,6 @@ from ..hook.presets import (
 )
 from ..hook.typed import (
     ToolInputHandlerRegistry,
-    ToolResultHandlerRegistry,
     builtin_tool_input_handler_registry,
     tool_input_arguments_sha256,
 )
@@ -96,7 +95,6 @@ from .agent_capability import (
     agent_mcp_binding_payload,
     validate_agent_capability_snapshot,
 )
-from .background.facade import _RuntimeBackgroundTaskFacade
 from .background.models import (
     BackgroundTaskState,
     StoredBackgroundTaskSummary,
@@ -480,10 +478,8 @@ class VoidCodeRuntime(RuntimeSurface):
     _stream_prep_coordinator: StreamPrepCoordinator
     _finalize_coordinator: FinalizeCoordinator
     _background_task_supervisor: RuntimeBackgroundTaskSupervisor
-    _background_task_facade: _RuntimeBackgroundTaskFacade
     _background_process_manager: BackgroundProcessManager
     _context_transform_registry: RuntimeContextTransformRegistry
-    _tool_result_handler_registry: ToolResultHandlerRegistry
     _default_context_window_policy = ContextWindowPolicy()
 
     def __init__(
@@ -503,7 +499,6 @@ class VoidCodeRuntime(RuntimeSurface):
         context_window_policy: ContextWindowPolicy | None = None,
         context_transform_registry: RuntimeContextTransformRegistry | None = None,
         tool_input_handler_registry: ToolInputHandlerRegistry | None = None,
-        tool_result_handler_registry: ToolResultHandlerRegistry | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
         self._permission_context_resolver = RuntimePermissionContextResolver(workspace=self._workspace)
@@ -598,7 +593,6 @@ class VoidCodeRuntime(RuntimeSurface):
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
         self._context_transform_registry = context_transform_registry or default_runtime_context_transform_registry()
         self._tool_input_handler_registry = tool_input_handler_registry or builtin_tool_input_handler_registry()
-        self._tool_result_handler_registry = tool_result_handler_registry or ToolResultHandlerRegistry.empty()
         self._default_context_window_policy = self._context_window_policy_from_config(
             initial_context_window,
             resolved_provider=None,
@@ -610,7 +604,6 @@ class VoidCodeRuntime(RuntimeSurface):
             config=self._config,
             acp_adapter=self._acp_adapter,
         )
-        self._background_task_facade = _RuntimeBackgroundTaskFacade(self._background_task_supervisor)
         self._run_loop_coordinator = RuntimeRunLoopCoordinator(
             self,
             session_store=self._session_store,
@@ -622,7 +615,6 @@ class VoidCodeRuntime(RuntimeSurface):
             lsp_manager=self._lsp_manager,
             provider_catalog_query=self._provider_catalog_query,
             tool_input_handler_registry=self._tool_input_handler_registry,
-            tool_result_handler_registry=self._tool_result_handler_registry,
             tool_executor=RuntimeToolExecutor(
                 workspace=self._workspace,
                 lsp=self,
@@ -766,7 +758,7 @@ class VoidCodeRuntime(RuntimeSurface):
         — see the boundary invariant in
         docs/contracts/background-task-delegation.md → 「执行所有权与 late write」.
         """
-        self._background_task_facade.shutdown(timeout_seconds=timeout_seconds)
+        self._background_task_supervisor.shutdown(timeout_seconds=timeout_seconds)
 
     def _tool_catalog_lookup(self, tool_name: str) -> ToolDefinition | None:
         """Read-only registry lookup for on-demand tool documentation.
@@ -2507,11 +2499,11 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
         validated_request = self._validated_request(request)
-        return self._background_task_facade.start(validated_request)
+        return self._background_task_supervisor.start_background_task(validated_request)
 
     def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None:
         """Authorize a parent session before a tool reads or cancels its task."""
-        self._background_task_facade.authorize_owner(
+        self._background_task_supervisor.authorize_background_task_owner(
             task_id,
             parent_session_id=parent_session_id,
         )
@@ -2693,10 +2685,10 @@ class VoidCodeRuntime(RuntimeSurface):
         }
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
-        return self._background_task_facade.cancel(task_id)
+        return self._background_task_supervisor.cancel_background_task(task_id)
 
     def retry_background_task(self, task_id: str) -> BackgroundTaskState:
-        return self._background_task_facade.retry(task_id)
+        return self._background_task_supervisor.retry_background_task(task_id)
 
     def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState:
         """Steer a keep-alive background task with a new instruction.
@@ -2705,7 +2697,7 @@ class VoidCodeRuntime(RuntimeSurface):
         keep-alive and currently ``idle`` (or ``interrupted``, treated as a
         resumable breakpoint) and the content must be non-empty.
         """
-        return self._background_task_facade.steer(task_id, content)
+        return self._background_task_supervisor.steer_background_task(task_id, content)
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         return self._inspection_coordinator.session_result(session_id=session_id)
@@ -4117,7 +4109,6 @@ class VoidCodeRuntime(RuntimeSurface):
         mode_resolution = resolve_mode(
             runtime_mode_from_metadata(session_metadata),
             explicit_read_only=(isinstance(session_metadata.get("read_only"), bool) and cast(bool, session_metadata["read_only"]) is True),
-            source="metadata" if "mode" in session_metadata else "default",
         )
         mode_guidance_context = ""
         if mode_resolution.mode != "normal":

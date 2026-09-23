@@ -49,10 +49,6 @@ def _append_diagnostic(diagnostics: list[str], diagnostic: str) -> None:
         diagnostics.append(_DIAGNOSTICS_OMITTED_SENTINEL)
 
 
-def _empty_payload() -> Mapping[str, object]:
-    return {}
-
-
 @dataclass(frozen=True, slots=True)
 class HookExecutionEvent:
     sequence: int
@@ -106,9 +102,23 @@ class LifecycleHookExecutionRequest:
     recursion_env_var: str
     environment: Mapping[str, str]
     sequence_start: int
-    payload: Mapping[str, object] = field(default_factory=_empty_payload)
+    payload: Mapping[str, object] = field(default_factory=dict)
     policy: HookExecutionPolicy = field(default_factory=HookExecutionPolicy)
     plan: ResolvedHookPlan | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _HookCommandLoop:
+    """Per-surface adapter for the shared hook command gate/execute/record loop."""
+
+    event_type: str
+    base_payload: Mapping[str, object]
+    status_key: str
+    environment: Mapping[str, str]
+    fail_closed: bool
+    error_label: str
+    honors_cancel: bool
+    label: str
 
 
 def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
@@ -132,130 +142,23 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
         match_patterns = hooks.pre_tool_match if request.phase == "pre" else hooks.post_tool_match
         if not hook_tool_matches(match_patterns, request.tool_name):
             return HookExecutionOutcome(events=(), last_sequence=request.sequence_start)
-    last_sequence = request.sequence_start
-    events: list[HookExecutionEvent] = []
-    diagnostics: list[str] = []
-    for command in commands:
-        last_sequence += 1
-        policy_decision = _hook_policy_decision(command, request.policy)
-        if not policy_decision.allowed:
-            events.append(
-                HookExecutionEvent(
-                    sequence=last_sequence,
-                    event_type=_event_type_for_phase(request.phase),
-                    payload={
-                        "phase": request.phase,
-                        "tool_name": request.tool_name,
-                        "session_id": request.session_id,
-                        "status": policy_decision.outcome,
-                        "hook_policy": _hook_policy_payload(
-                            policy=request.policy,
-                            decision=policy_decision,
-                        ),
-                    },
-                )
-            )
-            if policy_decision.outcome == "skipped":
-                continue
-            return HookExecutionOutcome(
-                events=tuple(events),
-                last_sequence=last_sequence,
-                failed_error=policy_decision.reason,
-                diagnostics=tuple(diagnostics),
-            )
-        try:
-            command_result = _run_hook_command(
-                command=command,
-                workspace=request.workspace,
-                environment={**request.environment, request.recursion_env_var: "1"},
-                timeout_seconds=timeout_seconds,
-                injected_env=non_interactive_shell_env(_hook_command_text(command)),
-            )
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            error_text = f"tool {request.phase}-hook failed for {request.tool_name}: {exc}"
-            if request.phase == "pre":
-                # Fail-closed gate: crash/timeout blocks the tool (cancel +
-                # failed_error both set); the error text rides diagnostic and
-                # guidance so the reason reaches the prompt buffer.
-                _append_diagnostic(diagnostics, error_text)
-                return HookExecutionOutcome(
-                    events=(
-                        *events,
-                        HookExecutionEvent(
-                            sequence=last_sequence,
-                            event_type=_event_type_for_phase(request.phase),
-                            payload={
-                                "phase": request.phase,
-                                "tool_name": request.tool_name,
-                                "session_id": request.session_id,
-                                "status": "error",
-                                "error": error_text,
-                                "diagnostic": error_text,
-                                "guidance": error_text,
-                            },
-                        ),
-                    ),
-                    last_sequence=last_sequence,
-                    failed_error=error_text,
-                    action="cancel",
-                    diagnostics=tuple(diagnostics),
-                )
-            return HookExecutionOutcome(
-                events=(
-                    *events,
-                    HookExecutionEvent(
-                        sequence=last_sequence,
-                        event_type=_event_type_for_phase(request.phase),
-                        payload={
-                            "phase": request.phase,
-                            "tool_name": request.tool_name,
-                            "session_id": request.session_id,
-                            "status": "error",
-                            "error": error_text,
-                        },
-                    ),
-                ),
-                last_sequence=last_sequence,
-                failed_error=error_text,
-            )
-
-        action_payload = _hook_action_payload_from_stdout(command_result.stdout)
-        action = action_payload.action
-        diagnostic = action_payload.diagnostic
-        guidance = action_payload.guidance
-        if diagnostic is not None:
-            _append_diagnostic(diagnostics, diagnostic)
-        events.append(
-            HookExecutionEvent(
-                sequence=last_sequence,
-                event_type=_event_type_for_phase(request.phase),
-                payload={
-                    "phase": request.phase,
-                    "tool_name": request.tool_name,
-                    "session_id": request.session_id,
-                    "status": "ok",
-                    "hook_policy": _hook_policy_payload(
-                        policy=request.policy,
-                        decision=policy_decision,
-                    ),
-                    **({"action": action} if action != "continue" else {}),
-                    **({"diagnostic": diagnostic} if diagnostic is not None else {}),
-                    **({"guidance": guidance} if guidance is not None else {}),
-                },
-            )
-        )
-        if action == "cancel":
-            return HookExecutionOutcome(
-                events=tuple(events),
-                last_sequence=last_sequence,
-                action=action,
-                diagnostics=tuple(diagnostics),
-            )
-
-    return HookExecutionOutcome(
-        events=tuple(events),
-        last_sequence=last_sequence,
-        diagnostics=tuple(diagnostics),
+    return _run_hook_commands(
+        _HookCommandLoop(
+            event_type=_event_type_for_phase(request.phase),
+            base_payload={"phase": request.phase, "tool_name": request.tool_name, "session_id": request.session_id},
+            status_key="status",
+            environment=request.environment,
+            fail_closed=request.phase == "pre",
+            error_label=f"tool {request.phase}-hook failed for {request.tool_name}",
+            honors_cancel=True,
+            label=request.phase,
+        ),
+        commands=commands,
+        timeout_seconds=timeout_seconds,
+        workspace=request.workspace,
+        recursion_env_var=request.recursion_env_var,
+        policy=request.policy,
+        sequence_start=request.sequence_start,
     )
 
 
@@ -277,29 +180,52 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
         assert hooks is not None
         commands = hooks.commands_for_surface(request.surface)
         timeout_seconds = hooks.timeout_seconds
-    last_sequence = request.sequence_start
+    return _run_hook_commands(
+        _HookCommandLoop(
+            event_type=_event_type_for_surface(request.surface),
+            base_payload={"surface": request.surface, "session_id": request.session_id, **dict(request.payload)},
+            status_key="hook_status",
+            environment={**request.environment, **_lifecycle_hook_environment(request)},
+            fail_closed=False,
+            error_label=f"lifecycle hook failed for {request.surface}",
+            honors_cancel=_surface_honors_cancel(request.surface),
+            label=request.surface,
+        ),
+        commands=commands,
+        timeout_seconds=timeout_seconds,
+        workspace=request.workspace,
+        recursion_env_var=request.recursion_env_var,
+        policy=request.policy,
+        sequence_start=request.sequence_start,
+    )
+
+
+def _run_hook_commands(
+    adapter: _HookCommandLoop,
+    *,
+    commands: tuple[tuple[str, ...], ...],
+    timeout_seconds: float | None,
+    workspace: Path,
+    recursion_env_var: str,
+    policy: HookExecutionPolicy,
+    sequence_start: int,
+) -> HookExecutionOutcome:
+    """Gate, execute and record one surface's hook commands."""
+    last_sequence = sequence_start
     events: list[HookExecutionEvent] = []
     diagnostics: list[str] = []
-    base_payload = {
-        "surface": request.surface,
-        "session_id": request.session_id,
-        **dict(request.payload),
-    }
     for command in commands:
         last_sequence += 1
-        policy_decision = _hook_policy_decision(command, request.policy)
+        policy_decision = _hook_policy_decision(command, policy)
         if not policy_decision.allowed:
             events.append(
                 HookExecutionEvent(
                     sequence=last_sequence,
-                    event_type=_event_type_for_surface(request.surface),
+                    event_type=adapter.event_type,
                     payload={
-                        **base_payload,
-                        "hook_status": policy_decision.outcome,
-                        "hook_policy": _hook_policy_payload(
-                            policy=request.policy,
-                            decision=policy_decision,
-                        ),
+                        **adapter.base_payload,
+                        adapter.status_key: policy_decision.outcome,
+                        "hook_policy": _hook_policy_payload(policy=policy, decision=policy_decision),
                     },
                 )
             )
@@ -314,26 +240,47 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
         try:
             command_result = _run_hook_command(
                 command=command,
-                workspace=request.workspace,
-                environment={
-                    **request.environment,
-                    **_lifecycle_hook_environment(request),
-                    request.recursion_env_var: "1",
-                },
+                workspace=workspace,
+                environment={**adapter.environment, recursion_env_var: "1"},
                 injected_env=non_interactive_shell_env(_hook_command_text(command)),
                 timeout_seconds=timeout_seconds,
             )
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            error_text = f"lifecycle hook failed for {request.surface}: {exc}"
+            error_text = f"{adapter.error_label}: {exc}"
+            if adapter.fail_closed:
+                # Fail-closed gate: crash/timeout blocks the tool (cancel +
+                # failed_error both set); the error text rides diagnostic and
+                # guidance so the reason reaches the prompt buffer.
+                _append_diagnostic(diagnostics, error_text)
+                return HookExecutionOutcome(
+                    events=(
+                        *events,
+                        HookExecutionEvent(
+                            sequence=last_sequence,
+                            event_type=adapter.event_type,
+                            payload={
+                                **adapter.base_payload,
+                                adapter.status_key: "error",
+                                "error": error_text,
+                                "diagnostic": error_text,
+                                "guidance": error_text,
+                            },
+                        ),
+                    ),
+                    last_sequence=last_sequence,
+                    failed_error=error_text,
+                    action="cancel",
+                    diagnostics=tuple(diagnostics),
+                )
             return HookExecutionOutcome(
                 events=(
                     *events,
                     HookExecutionEvent(
                         sequence=last_sequence,
-                        event_type=_event_type_for_surface(request.surface),
+                        event_type=adapter.event_type,
                         payload={
-                            **base_payload,
-                            "hook_status": "error",
+                            **adapter.base_payload,
+                            adapter.status_key: "error",
                             "error": error_text,
                         },
                     ),
@@ -348,20 +295,17 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
         guidance = action_payload.guidance
         if diagnostic is not None:
             _append_diagnostic(diagnostics, diagnostic)
-        if action == "cancel" and not _surface_honors_cancel(request.surface):
-            logger.debug("ignoring cancel from advisory surface %s", request.surface)
+        if action == "cancel" and not adapter.honors_cancel:
+            logger.debug("ignoring cancel from advisory surface %s", adapter.label)
             action = "continue"
         events.append(
             HookExecutionEvent(
                 sequence=last_sequence,
-                event_type=_event_type_for_surface(request.surface),
+                event_type=adapter.event_type,
                 payload={
-                    **base_payload,
-                    "hook_status": "ok",
-                    "hook_policy": _hook_policy_payload(
-                        policy=request.policy,
-                        decision=policy_decision,
-                    ),
+                    **adapter.base_payload,
+                    adapter.status_key: "ok",
+                    "hook_policy": _hook_policy_payload(policy=policy, decision=policy_decision),
                     **({"action": action} if action != "continue" else {}),
                     **({"diagnostic": diagnostic} if diagnostic is not None else {}),
                     **({"guidance": guidance} if guidance is not None else {}),
@@ -418,7 +362,7 @@ def _hook_action_payload_from_stdout(stdout: str) -> _HookActionPayload:
         return _HookActionPayload()
     payload = raw_payload
     action = payload.get("action")
-    diagnostic = payload.get("diagnostic") or payload.get("message")
+    diagnostic = payload.get("diagnostic")
     guidance = payload.get("guidance")
     return _HookActionPayload(
         action="cancel" if action == "cancel" else "continue",
