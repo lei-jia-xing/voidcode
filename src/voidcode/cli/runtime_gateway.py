@@ -11,7 +11,7 @@ import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Protocol, TypedDict, Unpack, cast
+from typing import TypedDict, Unpack
 
 from ..cli_support import (
     EXIT_APPROVAL_DENIED,
@@ -41,13 +41,6 @@ class RuntimeConfigKwargs(TypedDict, total=False):
     reasoning_effort: str | None
 
 
-def close_runtime(runtime: VoidCodeRuntime) -> None:
-    try:
-        runtime.__exit__(None, None, None)
-    except Exception as exc:
-        print(f"warning: runtime cleanup error: {exc}", file=sys.stderr)
-
-
 @contextmanager
 def open_runtime(
     workspace: Path,
@@ -61,7 +54,19 @@ def open_runtime(
     try:
         yield runtime
     finally:
-        close_runtime(runtime)
+        try:
+            runtime.__exit__(None, None, None)
+        except Exception as exc:
+            print(f"warning: runtime cleanup error: {exc}", file=sys.stderr)
+
+
+@contextmanager
+def runtime_error_boundary() -> Iterator[None]:
+    """Surface a runtime ``ValueError`` as the CLI's runtime-failure exit code."""
+    try:
+        yield
+    except ValueError as exc:
+        raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
 
 
 def load_cli_config(
@@ -281,7 +286,7 @@ def prompt_for_approval(event: EventEnvelope) -> PermissionResolution:
 def prompt_for_question(event: EventEnvelope) -> tuple[QuestionResponse, ...]:
     raw_questions = event.payload.get("questions")
     if not isinstance(raw_questions, list) or not raw_questions:
-        raw_questions = [{"header": "response", "question": "Answer"}]
+        raise ValueError("runtime.question_requested event carries no questions to answer")
     responses: list[QuestionResponse] = []
     for index, raw_question in enumerate(raw_questions, start=1):
         question = raw_question if isinstance(raw_question, dict) else {}
@@ -297,15 +302,6 @@ def prompt_for_question(event: EventEnvelope) -> tuple[QuestionResponse, ...]:
         sys.stderr.flush()
         responses.append(QuestionResponse(header=header, answers=(sys.stdin.readline().strip(),)))
     return tuple(responses)
-
-
-def _runtime_response_result(response: object) -> RuntimeStreamResult:
-    typed = cast("RuntimeResponseLike", response)
-    return RuntimeStreamResult(
-        output=typed.output,
-        session=typed.session,
-        events=cast(tuple[EventEnvelope, ...], typed.events),
-    )
 
 
 def session_result_exit_code(result: RuntimeStreamResult) -> int:
@@ -324,33 +320,12 @@ def session_result_exit_code(result: RuntimeStreamResult) -> int:
 def consume_session_stream(
     chunks: Iterator[RuntimeStreamChunk],
     *,
-    fallback: Callable[[], object],
     show_thinking: bool,
     on_interrupt: Callable[[str, str | None], object] | None = None,
 ) -> RuntimeStreamResult:
-    try:
-        return consume_runtime_stream(
-            chunks,
-            emit_events=True,
-            show_thinking=show_thinking,
-            on_interrupt=on_interrupt,
-        )
-    except ValueError as exc:
-        # Keeps adapters written against the pre-stream runtime contract
-        # usable while real runtimes always take the stream path.
-        if str(exc) != "runtime stream emitted no chunks":
-            raise
-        return _runtime_response_result(fallback())
-
-
-class EventLikeProtocol(Protocol):
-    event_type: str
-    source: str
-    payload: dict[str, object]
-
-
-class RuntimeResponseLike(Protocol):
-    events: tuple[EventLikeProtocol, ...]
-    output: str | None
-
-    session: SessionState
+    return consume_runtime_stream(
+        chunks,
+        emit_events=True,
+        show_thinking=show_thinking,
+        on_interrupt=on_interrupt,
+    )

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from ...cli_support import EXIT_CONFIG_ERROR, EXIT_INVALID_RESOURCE, EXIT_RUNTIME_ERROR, EXIT_SUCCESS, print_json
+from ...cli_support import EXIT_CONFIG_ERROR, EXIT_SUCCESS, print_json
 from ...provider.snapshot import resolved_provider_snapshot
 from ...runtime.config import RUNTIME_CONFIG_FILE_NAME, serialize_runtime_agent_config
 from ...runtime.config_schema import (
@@ -16,28 +16,24 @@ from ...runtime.config_schema import (
     runtime_config_json_schema,
     write_runtime_config_payload,
 )
-from ..errors import CliError
+from ..errors import CliError, require_workspace
 from ..handler_args import ConfigArgs
 from ..options import APPROVAL_MODES, workspace_option
 from ..output import mcp_status_payload
 from ..provider_view import provider_readiness_payload
-from ..runtime_gateway import open_runtime
+from ..runtime_gateway import open_runtime, runtime_error_boundary
 
 
 def _handle_config_show_command(args: ConfigArgs) -> int:
     workspace = args.workspace
-    if not workspace.exists() or not workspace.is_dir():
-        raise CliError(code=EXIT_INVALID_RESOURCE, message=f"workspace does not exist: {workspace}")
+    require_workspace(workspace)
 
     session_id = args.session_id
-    with open_runtime(workspace) as runtime:
-        try:
-            effective_config = runtime.effective_runtime_config(session_id=session_id)
-            readiness = runtime.provider_readiness(session_id=session_id)
-            agents = runtime.effective_agent_model_config(session_id=session_id)
-            status = runtime.current_status()
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        effective_config = runtime.effective_runtime_config(session_id=session_id)
+        readiness = runtime.provider_readiness(session_id=session_id)
+        agents = runtime.effective_agent_model_config(session_id=session_id)
+        status = runtime.current_status()
 
     print_json(
         {
@@ -47,10 +43,10 @@ def _handle_config_show_command(args: ConfigArgs) -> int:
             "execution_engine": effective_config.execution_engine,
             "model": effective_config.model,
             "fallback_models": (list(effective_config.provider_fallback.fallback_models) if effective_config.provider_fallback is not None else []),
-            "reasoning_effort": getattr(effective_config, "reasoning_effort", None),
-            "agent": serialize_runtime_agent_config(getattr(effective_config, "agent", None)),
+            "reasoning_effort": effective_config.reasoning_effort,
+            "agent": serialize_runtime_agent_config(effective_config.agent),
             "agents": agents,
-            "resolved_provider": resolved_provider_snapshot(getattr(effective_config, "resolved_provider", None)),
+            "resolved_provider": resolved_provider_snapshot(effective_config.resolved_provider),
             "provider_readiness": provider_readiness_payload(readiness),
             "context_budget": {
                 "context_window": readiness.context_window,
@@ -70,17 +66,14 @@ def _handle_config_schema_command(args: ConfigArgs) -> int:
 
 def _handle_config_init_command(args: ConfigArgs) -> int:
     workspace = args.workspace
-    if not workspace.exists() or not workspace.is_dir():
-        raise CliError(code=EXIT_INVALID_RESOURCE, message=f"workspace does not exist: {workspace}")
+    require_workspace(workspace)
 
-    try:
+    with runtime_error_boundary():
         payload = generate_starter_runtime_config(
             approval_mode=args.approval_mode,
             model=args.model,
             include_examples=args.with_examples,
         )
-    except ValueError as exc:
-        raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     if args.print:
         print(format_starter_runtime_config_json(payload), end="")
         return 0

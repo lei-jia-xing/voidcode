@@ -8,13 +8,12 @@ from pathlib import Path
 
 import click
 
-from ...cli_support import EXIT_PROVIDER_ERROR, EXIT_RUNTIME_ERROR, EXIT_SUCCESS
+from ...cli_support import EXIT_PROVIDER_ERROR, EXIT_SUCCESS
 from ...runtime.provider_inspection import ProviderEndpointFacts, RuntimeProviderEndpointInspector
-from ..errors import CliError
 from ..handler_args import ProviderArgs
 from ..options import workspace_option
 from ..provider_view import provider_inspect_payload, provider_model_metadata_payload
-from ..runtime_gateway import load_cli_config, open_runtime
+from ..runtime_gateway import load_cli_config, open_runtime, runtime_error_boundary
 
 
 def _handle_provider_models_command(args: ProviderArgs) -> int:
@@ -22,13 +21,10 @@ def _handle_provider_models_command(args: ProviderArgs) -> int:
     provider = args.provider
     assert provider is not None
     refresh = args.refresh
-    with open_runtime(workspace) as runtime:
-        try:
-            if refresh:
-                _ = runtime.refresh_provider_models(provider)
-            result = runtime.provider_models_result(provider)
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        if refresh:
+            _ = runtime.refresh_provider_models(provider)
+        result = runtime.provider_models_result(provider)
 
     payload: dict[str, object] = {
         "workspace": str(workspace),
@@ -65,11 +61,8 @@ def _handle_provider_inspect_command(args: ProviderArgs) -> int:
     workspace = args.workspace
     provider = args.provider
     assert provider is not None
-    with open_runtime(workspace) as runtime:
-        try:
-            result = runtime.inspect_provider(provider)
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        result = runtime.inspect_provider(provider)
 
     endpoint = _provider_endpoint_facts_for_cli(workspace, provider)
     print(json.dumps(provider_inspect_payload(result, workspace=workspace, endpoint=endpoint), sort_keys=True))

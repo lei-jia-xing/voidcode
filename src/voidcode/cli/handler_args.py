@@ -1,12 +1,10 @@
 """Typed frozen argument shapes for CLI handler command groups.
 
-Field names match the Click command param names; the ``command`` key
-defaults to the owning command group name.
+Field names match the Click command param names.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,7 +14,6 @@ class RunArgs:
     """Arguments for the ``run`` command."""
 
     request: str
-    command: str = "run"
     workspace: Path = field(default_factory=Path.cwd)
     session_id: str | None = None
     approval_mode: str | None = None
@@ -36,7 +33,6 @@ class RunArgs:
 class SessionsArgs:
     """Arguments for the ``sessions`` command group."""
 
-    command: str = "sessions"
     workspace: Path = field(default_factory=Path.cwd)
     session_id: str | None = None
     approval_request_id: str | None = None
@@ -63,7 +59,6 @@ class SessionsArgs:
 class TasksArgs:
     """Arguments for the ``tasks`` command group."""
 
-    command: str = "tasks"
     workspace: Path = field(default_factory=Path.cwd)
     task_id: str | None = None
     prompt: str | None = None
@@ -75,7 +70,6 @@ class TasksArgs:
 class StorageArgs:
     """Arguments for the ``storage`` command group."""
 
-    command: str = "storage"
     workspace: Path = field(default_factory=Path.cwd)
     json: bool = False
     keep_sessions: int | None = None
@@ -87,7 +81,6 @@ class StorageArgs:
 class StatsArgs:
     """Arguments for the ``stats`` command group."""
 
-    command: str = "stats"
     workspace: Path = field(default_factory=Path.cwd)
     json: bool = False
 
@@ -96,7 +89,6 @@ class StatsArgs:
 class ConfigArgs:
     """Arguments for the ``config`` command group."""
 
-    command: str = "config"
     workspace: Path = field(default_factory=Path.cwd)
     session_id: str | None = None
     json: bool = False
@@ -111,7 +103,6 @@ class ConfigArgs:
 class ProviderArgs:
     """Arguments for the ``provider`` command group."""
 
-    command: str = "provider"
     workspace: Path = field(default_factory=Path.cwd)
     provider: str | None = None
     refresh: bool = False
@@ -121,7 +112,6 @@ class ProviderArgs:
 class CommandsArgs:
     """Arguments for the ``commands`` command group."""
 
-    command: str = "commands"
     workspace: Path = field(default_factory=Path.cwd)
     user_commands_dir: Path | None = None
     include_hidden: bool = False
@@ -134,7 +124,6 @@ class CommandsArgs:
 class DoctorArgs:
     """Arguments for the ``doctor`` command."""
 
-    command: str = "doctor"
     workspace: Path = field(default_factory=Path.cwd)
     verbose: bool = False
     json: bool = False
@@ -146,7 +135,6 @@ class DoctorArgs:
 class TuiArgs:
     """Arguments for the ``tui`` command."""
 
-    command: str = "tui"
     workspace: Path = field(default_factory=Path.cwd)
     approval_mode: str | None = None
 
@@ -155,29 +143,14 @@ class TuiArgs:
 class AcpArgs:
     """Arguments for the ``acp`` command."""
 
-    command: str = "acp"
     workspace: Path = field(default_factory=Path.cwd)
     approval_mode: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ServerArgs:
-    """Arguments for the ``serve`` and ``web`` commands."""
-
-    command: str = "serve"
-    workspace: Path = field(default_factory=Path.cwd)
-    host: str = "127.0.0.1"
-    port: int | None = None
-    approval_mode: str | None = None
-    server_entry: Callable[..., None] | None = None
-    open_browser: bool = True
 
 
 @dataclass(frozen=True, slots=True)
 class AgentsArgs:
     """Arguments for the ``agents`` command group."""
 
-    command: str = "agents"
     workspace: Path = field(default_factory=Path.cwd)
     json: bool = False
 
@@ -186,7 +159,6 @@ class AgentsArgs:
 class McpArgs:
     """Arguments for the ``mcp`` command group."""
 
-    command: str = "mcp"
     workspace: Path = field(default_factory=Path.cwd)
     json: bool = False
 
@@ -202,7 +174,6 @@ __all__ = [
     "DoctorArgs",
     "TuiArgs",
     "AcpArgs",
-    "ServerArgs",
     "AgentsArgs",
     "McpArgs",
 ]

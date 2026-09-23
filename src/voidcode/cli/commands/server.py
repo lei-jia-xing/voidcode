@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
 import click
 
 from ...acp.stdio import StdioAcpServer
-from ...cli_support import EXIT_RUNTIME_ERROR, EXIT_SUCCESS
+from ...cli_support import EXIT_SUCCESS
 from ...runtime.permission import PermissionDecision
 from ...server import serve, web
-from ..errors import CliError
-from ..handler_args import AcpArgs, ServerArgs
+from ..handler_args import AcpArgs
 from ..options import APPROVAL_MODES, workspace_option
 from ..runtime_gateway import load_cli_config, open_runtime
 
@@ -25,27 +23,6 @@ def _handle_acp_command(args: AcpArgs) -> int:
     with open_runtime(workspace, config) as runtime:
         server = StdioAcpServer(runtime=runtime, workspace=workspace)
         return server.serve()
-
-
-def _handle_server_command(args: ServerArgs) -> int:
-    workspace = args.workspace
-    server_approval_mode: PermissionDecision | None = cast(PermissionDecision | None, args.approval_mode)
-    config = load_cli_config(workspace, approval_mode=server_approval_mode)
-    server_entry = args.server_entry
-    if server_entry is None:
-        raise CliError(code=EXIT_RUNTIME_ERROR, message="server entry function is not configured")
-    common_kwargs: dict[str, object] = dict(
-        workspace=workspace,
-        host=args.host,
-        port=args.port,
-        config=config,
-    )
-    if args.command == "web":
-        server_entry(**common_kwargs, open_browser=args.open_browser)
-    else:
-        server_entry(**common_kwargs)
-
-    return EXIT_SUCCESS
 
 
 @click.command(name="acp", help="Run the minimal external-facing ACP stdio JSON-RPC facade.")
@@ -64,48 +41,6 @@ def acp(workspace: Path, approval_mode: str | None) -> int:
     )
 
 
-def _server_command(
-    *,
-    command: str,
-    workspace: Path,
-    host: str,
-    port: int,
-    approval_mode: str | None,
-    server_entry: Callable[..., None],
-) -> int:
-    return _handle_server_command(
-        ServerArgs(
-            command=command,
-            workspace=workspace,
-            host=host,
-            port=port,
-            approval_mode=approval_mode,
-            server_entry=server_entry,
-        )
-    )
-
-
-def _web_server_command(
-    *,
-    workspace: Path,
-    host: str,
-    port: int | None,
-    approval_mode: str | None,
-    open_browser: bool,
-) -> int:
-    return _handle_server_command(
-        ServerArgs(
-            command="web",
-            workspace=workspace,
-            host=host,
-            port=port,
-            approval_mode=approval_mode,
-            server_entry=web,
-            open_browser=open_browser,
-        )
-    )
-
-
 @click.command(name="serve", help="Serve the local HTTP runtime transport.")
 @workspace_option("Workspace root used by the local runtime and session database.")
 @click.option("--host", default="127.0.0.1", help="Host interface for the local transport server.")
@@ -116,14 +51,10 @@ def _web_server_command(
     help="Override the runtime approval mode for this server process.",
 )
 def serve_command(workspace: Path, host: str, port: int, approval_mode: str | None) -> int:
-    return _server_command(
-        command="serve",
-        workspace=workspace,
-        host=host,
-        port=port,
-        approval_mode=approval_mode,
-        server_entry=serve,
-    )
+    server_approval_mode: PermissionDecision | None = cast(PermissionDecision | None, approval_mode)
+    config = load_cli_config(workspace, approval_mode=server_approval_mode)
+    serve(workspace=workspace, host=host, port=port, config=config)
+    return EXIT_SUCCESS
 
 
 @click.command(
@@ -157,10 +88,7 @@ def web_command(
     approval_mode: str | None,
     open_browser: bool,
 ) -> int:
-    return _web_server_command(
-        workspace=workspace,
-        host=host,
-        port=port,
-        approval_mode=approval_mode,
-        open_browser=open_browser,
-    )
+    server_approval_mode: PermissionDecision | None = cast(PermissionDecision | None, approval_mode)
+    config = load_cli_config(workspace, approval_mode=server_approval_mode)
+    web(workspace=workspace, host=host, port=port, config=config, open_browser=open_browser)
+    return EXIT_SUCCESS

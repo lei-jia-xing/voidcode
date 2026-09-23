@@ -3,25 +3,22 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 import click
 
 from ...cli_support import (
     EXIT_INVALID_COMMAND,
-    EXIT_INVALID_RESOURCE,
-    EXIT_RUNTIME_ERROR,
     serialize_command_definition,
     serialize_command_summary,
 )
 from ...command.loader import load_command_registry
 from ...command.registry import CommandRegistry
 from ...runtime.contracts import AgentSummary
-from ..errors import CliError
+from ..errors import CliError, require_workspace
 from ..handler_args import AgentsArgs, CommandsArgs, McpArgs
 from ..options import command_discovery_options, json_option, workspace_option
 from ..output import emit_output, format_named_record, mcp_status_payload
-from ..runtime_gateway import open_runtime
+from ..runtime_gateway import open_runtime, runtime_error_boundary
 
 
 def _serialize_agent_summary(summary: AgentSummary) -> dict[str, object]:
@@ -47,8 +44,7 @@ def _serialize_agent_summary(summary: AgentSummary) -> dict[str, object]:
 
 def _handle_agents_list_command(args: AgentsArgs) -> int:
     workspace = args.workspace
-    if not workspace.exists() or not workspace.is_dir():
-        raise CliError(code=EXIT_INVALID_RESOURCE, message=f"workspace does not exist: {workspace}")
+    require_workspace(workspace)
 
     with open_runtime(workspace) as runtime:
         summaries = runtime.list_agent_summaries()
@@ -80,8 +76,7 @@ def _handle_agents_list_command(args: AgentsArgs) -> int:
 
 def _handle_mcp_list_command(args: McpArgs) -> int:
     workspace = args.workspace
-    if not workspace.exists() or not workspace.is_dir():
-        raise CliError(code=EXIT_INVALID_RESOURCE, message=f"workspace does not exist: {workspace}")
+    require_workspace(workspace)
 
     with open_runtime(workspace) as runtime:
         status = runtime.current_status()
@@ -93,34 +88,35 @@ def _handle_mcp_list_command(args: McpArgs) -> int:
 
     def _print_mcp() -> None:
         details = status.mcp.details
+        servers = details["servers"]
+        assert isinstance(servers, list)
         print(
             format_named_record(
                 "MCP",
                 [
                     ("state", status.mcp.state),
-                    ("mode", details.get("mode", "disabled")),
-                    ("configured", details.get("configured", False)),
-                    ("configured_enabled", details.get("configured_enabled", False)),
-                    ("configured_server_count", details.get("configured_server_count", 0)),
-                    ("running_server_count", details.get("running_server_count", 0)),
-                    ("failed_server_count", details.get("failed_server_count", 0)),
+                    ("mode", details["mode"]),
+                    ("configured", details["configured"]),
+                    ("configured_enabled", details["configured_enabled"]),
+                    ("configured_server_count", details["configured_server_count"]),
+                    ("running_server_count", details["running_server_count"]),
+                    ("failed_server_count", details["failed_server_count"]),
                 ],
             )
         )
-        servers = cast(list[object], details.get("servers", []))
         for item in servers:
-            server = cast(dict[str, object], item)
+            assert isinstance(item, dict)
             print(
                 format_named_record(
                     "MCP_SERVER",
                     [
-                        ("name", server.get("server")),
-                        ("status", server.get("status")),
-                        ("scope", server.get("scope")),
-                        ("transport", server.get("transport")),
-                        ("command", repr(server.get("command", []))),
-                        ("stage", server.get("stage")),
-                        ("error", repr(server.get("error"))),
+                        ("name", item.get("server")),
+                        ("status", item.get("status")),
+                        ("scope", item.get("scope")),
+                        ("transport", item.get("transport")),
+                        ("command", repr(item.get("command", []))),
+                        ("stage", item.get("stage")),
+                        ("error", repr(item.get("error"))),
                     ],
                 )
             )
@@ -193,10 +189,8 @@ def _handle_commands_show_command(args: CommandsArgs) -> int:
 
 def _load_cli_command_registry(args: CommandsArgs, *, workspace: Path) -> CommandRegistry:
     user_commands_dir = args.user_commands_dir
-    try:
+    with runtime_error_boundary():
         return load_command_registry(workspace=workspace, user_commands_dir=user_commands_dir)
-    except ValueError as exc:
-        raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
 
 
 @click.group(help="Discover prompt commands available to runtime requests.")

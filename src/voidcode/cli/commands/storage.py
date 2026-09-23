@@ -6,13 +6,12 @@ from pathlib import Path
 
 import click
 
-from ...cli_support import EXIT_RUNTIME_ERROR, EXIT_SUCCESS, print_json
+from ...cli_support import EXIT_SUCCESS, print_json
 from ...runtime.storage import SqliteSessionStore
-from ..errors import CliError
 from ..handler_args import StatsArgs, StorageArgs
 from ..options import json_option, workspace_option
 from ..output import emit_output, format_rate
-from ..runtime_gateway import open_runtime
+from ..runtime_gateway import open_runtime, runtime_error_boundary
 
 
 def _handle_storage_diagnostics_command(args: StorageArgs) -> int:
@@ -69,15 +68,12 @@ def _handle_stats_tools_command(args: StatsArgs) -> int:
 
 def _handle_storage_prune_command(args: StorageArgs) -> int:
     workspace = args.workspace
-    with open_runtime(workspace) as runtime:
-        try:
-            counts = runtime.prune_runtime_storage(
-                keep_sessions=args.keep_sessions,
-                keep_background_tasks=args.keep_background_tasks,
-                older_than=args.older_than,
-            )
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        counts = runtime.prune_runtime_storage(
+            keep_sessions=args.keep_sessions,
+            keep_background_tasks=args.keep_background_tasks,
+            older_than=args.older_than,
+        )
     print_json({"workspace": str(workspace), "pruned": counts})
     return EXIT_SUCCESS
 

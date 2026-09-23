@@ -5,17 +5,12 @@ from __future__ import annotations
 import shlex
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from ..cli_support import RuntimeStreamResult, format_event, serialize_event, serialize_session_state
 from ..runtime.events import EventEnvelope
 from .output import print_runtime_output, safe_detail
-from .runtime_gateway import (
-    RuntimeResponseLike,
-    approval_request_id,
-    last_event,
-    pending_blocked_event,
-)
+from .runtime_gateway import approval_request_id, last_event, pending_blocked_event
 
 if TYPE_CHECKING:
     # Annotation-only: the CLI never constructs or reaches into the runtime service
@@ -24,15 +19,11 @@ if TYPE_CHECKING:
 
 
 def print_runtime_response(
-    result: object,
+    result: RuntimeStreamResult,
     *,
-    event_offset: int = 0,
-    include_result: bool = True,
     show_thinking: bool = False,
 ) -> int:
-    typed_result = cast("RuntimeResponseLike", result)
-
-    for event in typed_result.events[event_offset:]:
+    for event in result.events:
         print(
             format_event(
                 event.event_type,
@@ -43,9 +34,8 @@ def print_runtime_response(
             flush=True,
         )
 
-    if include_result:
-        print_runtime_output(typed_result.output)
-    return len(typed_result.events)
+    print_runtime_output(result.output)
+    return len(result.events)
 
 
 def print_runtime_failure_footer(
@@ -72,7 +62,7 @@ def print_runtime_failure_footer(
     model = failed_event.payload.get("model")
     provider_error_kind = failed_event.payload.get("provider_error_kind")
     last_tool = snapshot.last_tool if snapshot is not None else None
-    resumable = snapshot.resumable if snapshot is not None else False
+    resumable = snapshot.resumable if snapshot is not None else None
     print("", file=sys.stderr, flush=True)
     print("VoidCode runtime failure summary", file=sys.stderr, flush=True)
     print(f"  session: {result.session.session.id}", file=sys.stderr, flush=True)
@@ -83,7 +73,8 @@ def print_runtime_failure_footer(
         print(f"  model: {model}", file=sys.stderr, flush=True)
     if isinstance(provider_error_kind, str) and provider_error_kind:
         print(f"  provider_error_kind: {provider_error_kind}", file=sys.stderr, flush=True)
-    print(f"  resumable: {str(resumable).lower()}", file=sys.stderr, flush=True)
+    if resumable is not None:
+        print(f"  resumable: {str(resumable).lower()}", file=sys.stderr, flush=True)
     if last_tool is not None:
         print(f"  last_successful_tool: {last_tool.tool_name}", file=sys.stderr, flush=True)
     print(

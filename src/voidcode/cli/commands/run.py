@@ -26,6 +26,7 @@ from ..runtime_gateway import (
     open_runtime,
     pending_blocked_event,
     run_with_inline_approval,
+    runtime_error_boundary,
 )
 from ..trace import print_trace_blocked, print_trace_final
 
@@ -95,19 +96,18 @@ def _handle_run_command(args: RunArgs) -> int:
         )
         interactive = sys.stdin.isatty() and sys.stderr.isatty()
         try:
-            result = run_with_inline_approval(
-                runtime,
-                request,
-                interactive=interactive,
-                emit_events=interactive and not json_output and not trace_output,
-                trace_events=trace_output,
-                show_thinking=show_thinking,
-            )
+            with runtime_error_boundary():
+                result = run_with_inline_approval(
+                    runtime,
+                    request,
+                    interactive=interactive,
+                    emit_events=interactive and not json_output and not trace_output,
+                    trace_events=trace_output,
+                    show_thinking=show_thinking,
+                )
         except KeyboardInterrupt:
             print("Interrupted current run.", file=sys.stderr)
             return 130
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
 
         incomplete_stream_message = incomplete_runtime_stream_message(result)
         if incomplete_stream_message is not None:

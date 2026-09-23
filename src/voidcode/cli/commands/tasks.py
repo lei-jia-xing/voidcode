@@ -7,12 +7,11 @@ from pathlib import Path
 
 import click
 
-from ...cli_support import EXIT_RUNTIME_ERROR
-from ..errors import CliError
+from ...runtime.background.models import BackgroundTaskState
 from ..handler_args import TasksArgs
 from ..options import json_option, workspace_option
 from ..output import emit_output, print_runtime_output
-from ..runtime_gateway import open_runtime
+from ..runtime_gateway import open_runtime, runtime_error_boundary
 from ..tasks_view import (
     background_task_result_payload,
     background_task_state_payload,
@@ -24,45 +23,50 @@ from ..tasks_view import (
 )
 
 
+def _emit_task_state(
+    args: TasksArgs,
+    task: BackgroundTaskState,
+    *,
+    note: str | None = None,
+    extra: dict[str, object] | None = None,
+) -> int:
+    workspace = args.workspace
+    payload = background_task_state_payload(task, workspace=workspace)
+    if extra is not None:
+        payload.update(extra)
+
+    def _print_task() -> None:
+        print(format_background_task_state(task))
+        if note is not None:
+            print(note)
+        print_background_task_guidance(payload)
+
+    return emit_output(args, {"workspace": str(workspace), "task": payload}, _print_task)
+
+
 def _handle_tasks_status_command(args: TasksArgs) -> int:
     workspace = args.workspace
     task_id = args.task_id
     assert task_id is not None
-    with open_runtime(workspace) as runtime:
-        try:
-            task = runtime.load_background_task(task_id)
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        task = runtime.load_background_task(task_id)
 
-    payload = background_task_state_payload(task, workspace=workspace)
-
-    def _print_task() -> None:
-        print(format_background_task_state(task))
-        print_background_task_guidance(payload)
-
-    return emit_output(
-        args,
-        {"workspace": str(workspace), "task": payload},
-        _print_task,
-    )
+    return _emit_task_state(args, task)
 
 
 def _handle_tasks_output_command(args: TasksArgs) -> int:
     workspace = args.workspace
     task_id = args.task_id
     assert task_id is not None
-    with open_runtime(workspace) as runtime:
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
         session_output: str | None = None
-        try:
-            task_result = runtime.load_background_task_result(task_id)
-            if task_result.result_available and task_result.child_session_id is not None:
-                try:
-                    session_output = runtime.session_result(session_id=task_result.child_session_id).output
-                except ValueError as exc:
-                    print(f"warning: session result output unavailable: {exc}", file=sys.stderr)
-                    session_output = None
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+        task_result = runtime.load_background_task_result(task_id)
+        if task_result.result_available and task_result.child_session_id is not None:
+            try:
+                session_output = runtime.session_result(session_id=task_result.child_session_id).output
+            except ValueError as exc:
+                print(f"warning: session result output unavailable: {exc}", file=sys.stderr)
+                session_output = None
 
     fallback_output = task_result.summary_output if task_result.summary_output is not None else task_result.error
     if session_output is None and fallback_output is not None:
@@ -86,47 +90,24 @@ def _handle_tasks_cancel_command(args: TasksArgs) -> int:
     workspace = args.workspace
     task_id = args.task_id
     assert task_id is not None
-    with open_runtime(workspace) as runtime:
-        try:
-            task = runtime.cancel_background_task(task_id)
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        task = runtime.cancel_background_task(task_id)
 
-    payload = background_task_state_payload(task, workspace=workspace)
-
-    def _print_task() -> None:
-        print(format_background_task_state(task))
-        print_background_task_guidance(payload)
-
-    return emit_output(
-        args,
-        {"workspace": str(workspace), "task": payload},
-        _print_task,
-    )
+    return _emit_task_state(args, task)
 
 
 def _handle_tasks_retry_command(args: TasksArgs) -> int:
     workspace = args.workspace
     task_id = args.task_id
     assert task_id is not None
-    with open_runtime(workspace) as runtime:
-        try:
-            task = runtime.retry_background_task(task_id)
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        task = runtime.retry_background_task(task_id)
 
-    payload = background_task_state_payload(task, workspace=workspace)
-    payload["retry_of_task_id"] = task_id
-
-    def _print_retry_task() -> None:
-        print(format_background_task_state(task))
-        print(f"RETRY previous_task_id={task_id} new_task_id={task.task.id}")
-        print_background_task_guidance(payload)
-
-    return emit_output(
+    return _emit_task_state(
         args,
-        {"workspace": str(workspace), "task": payload},
-        _print_retry_task,
+        task,
+        note=f"RETRY previous_task_id={task_id} new_task_id={task.task.id}",
+        extra={"retry_of_task_id": task_id},
     )
 
 
@@ -136,39 +117,26 @@ def _handle_tasks_steer_command(args: TasksArgs) -> int:
     prompt = args.prompt
     assert task_id is not None
     assert prompt is not None
-    with open_runtime(workspace) as runtime:
-        try:
-            task = runtime.steer_background_task(task_id, prompt)
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        task = runtime.steer_background_task(task_id, prompt)
 
-    payload = background_task_state_payload(task, workspace=workspace)
-    payload["steer_prompt"] = prompt
-
-    def _print_steer_task() -> None:
-        print(format_background_task_state(task))
-        print(f"STEER task_id={task_id} status={task.status}")
-        print_background_task_guidance(payload)
-
-    return emit_output(
+    return _emit_task_state(
         args,
-        {"workspace": str(workspace), "task": payload},
-        _print_steer_task,
+        task,
+        note=f"STEER task_id={task_id} status={task.status}",
+        extra={"steer_prompt": prompt},
     )
 
 
 def _handle_tasks_list_command(args: TasksArgs) -> int:
     workspace = args.workspace
     parent_session_id = args.parent_session_id
-    with open_runtime(workspace) as runtime:
-        try:
-            tasks = (
-                runtime.list_background_tasks_by_parent_session(parent_session_id=parent_session_id)
-                if parent_session_id is not None
-                else runtime.list_background_tasks()
-            )
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        tasks = (
+            runtime.list_background_tasks_by_parent_session(parent_session_id=parent_session_id)
+            if parent_session_id is not None
+            else runtime.list_background_tasks()
+        )
 
     def _print_tasks() -> None:
         for task in tasks:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 
 from ..runtime.contracts import ProviderInspectResult, ProviderModelMetadata, ProviderReadinessResult
@@ -11,52 +12,11 @@ from ..runtime.provider_inspection import ProviderEndpointFacts
 def provider_model_metadata_payload(
     metadata: ProviderModelMetadata,
 ) -> dict[str, object]:
-    return {
-        key: value
-        for key, value in {
-            "context_window": metadata.context_window,
-            "max_input_tokens": metadata.max_input_tokens,
-            "max_output_tokens": metadata.max_output_tokens,
-            "supports_tools": metadata.supports_tools,
-            "supports_vision": metadata.supports_vision,
-            "supports_streaming": metadata.supports_streaming,
-            "supports_reasoning": metadata.supports_reasoning,
-            "supports_json_mode": metadata.supports_json_mode,
-            "cost_per_input_token": metadata.cost_per_input_token,
-            "cost_per_output_token": metadata.cost_per_output_token,
-            "cost_per_cache_read_token": metadata.cost_per_cache_read_token,
-            "cost_per_cache_write_token": metadata.cost_per_cache_write_token,
-            "supports_reasoning_effort": metadata.supports_reasoning_effort,
-            "default_reasoning_effort": metadata.default_reasoning_effort,
-            "supported_effort_levels": list(metadata.supported_effort_levels) if metadata.supported_effort_levels is not None else None,
-            "supports_reasoning_summary": metadata.supports_reasoning_summary,
-            "supports_thinking_budget": metadata.supports_thinking_budget,
-            "supports_interleaved_reasoning": metadata.supports_interleaved_reasoning,
-            "reasoning_visibility": metadata.reasoning_visibility,
-            "modalities_input": list(metadata.modalities_input) if metadata.modalities_input is not None else None,
-            "modalities_output": list(metadata.modalities_output) if metadata.modalities_output is not None else None,
-            "model_status": metadata.model_status,
-        }.items()
-        if value is not None
-    }
+    return {key: value for key, value in asdict(metadata).items() if value is not None and key != "tool_feedback_mode"}
 
 
 def provider_readiness_payload(readiness: ProviderReadinessResult) -> dict[str, object]:
-    return {
-        "provider": readiness.provider,
-        "model": readiness.model,
-        "configured": readiness.configured,
-        "ok": readiness.ok,
-        "status": readiness.status,
-        "guidance": readiness.guidance,
-        "auth_present": readiness.auth_present,
-        "streaming_configured": readiness.streaming_configured,
-        "streaming_supported": readiness.streaming_supported,
-        "context_window": readiness.context_window,
-        "max_output_tokens": readiness.max_output_tokens,
-        "fallback_chain": list(readiness.fallback_chain),
-        "reasoning_controls": readiness.reasoning_controls,
-    }
+    return asdict(readiness)
 
 
 def provider_inspect_payload(

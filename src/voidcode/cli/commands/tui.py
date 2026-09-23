@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol, cast
+from typing import cast
 
 import click
 
 from ...runtime.permission import PermissionDecision
 from ..handler_args import TuiArgs
 from ..options import APPROVAL_MODES, workspace_option
-
-
-class TuiAppProtocol(Protocol):
-    def run(self) -> None: ...
 
 
 def _handle_tui_command(args: TuiArgs) -> int:

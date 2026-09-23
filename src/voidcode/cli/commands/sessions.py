@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import cast
+from typing import Annotated, cast
 
 import click
+from pydantic import AfterValidator, BaseModel, Field, TypeAdapter, ValidationError
 
 from ...cli_support import (
     EXIT_INVALID_RESOURCE,
@@ -19,7 +20,6 @@ from ...cli_support import (
     serialize_stored_session_summary,
 )
 from ...runtime.bundle import (
-    SessionBundleError,
     SessionBundleFormat,
     SessionBundleOptions,
     write_session_bundle,
@@ -34,7 +34,39 @@ from ..handler_args import SessionsArgs
 from ..options import APPROVAL_DECISIONS, BUNDLE_FORMATS, json_option, show_thinking_option, workspace_option
 from ..output import emit_output
 from ..presentation import print_runtime_response
-from ..runtime_gateway import consume_session_stream, open_runtime, session_result_exit_code
+from ..runtime_gateway import consume_session_stream, open_runtime, runtime_error_boundary, session_result_exit_code
+
+
+def _non_empty_text(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must be a non-empty string")
+    return value
+
+
+_NonEmptyText = Annotated[str, AfterValidator(_non_empty_text)]
+
+
+class _QuestionResponsePayload(BaseModel):
+    """One ``--response-json`` item: a non-empty header and its non-empty answers."""
+
+    header: _NonEmptyText
+    answers: Annotated[list[_NonEmptyText], Field(min_length=1)]
+
+
+_QuestionResponsePayloads = TypeAdapter(list[_QuestionResponsePayload])
+
+
+def _question_response_error_message(exc: ValidationError) -> str:
+    """Render a validation failure with the ``--response-json`` path the user typed."""
+    location = exc.errors()[0]["loc"]
+    head = f"--response-json[{location[0]}]"
+    if len(location) == 1:
+        return f"{head} must be an object"
+    if location[1] == "header":
+        return f"{head}.header must be a non-empty string"
+    if len(location) == 2:
+        return f"{head}.answers must be a non-empty array"
+    return f"{head}.answers[{location[2]}] must be a non-empty string"
 
 
 def parse_question_responses(
@@ -51,25 +83,11 @@ def parse_question_responses(
         raw_payload = json.loads(response_json)
         if not isinstance(raw_payload, list) or not raw_payload:
             raise ValueError("--response-json must be a non-empty JSON array")
-        raw_items = raw_payload
-        parsed: list[QuestionResponse] = []
-        for index, raw_item in enumerate(raw_items):
-            if not isinstance(raw_item, dict):
-                raise ValueError(f"--response-json[{index}] must be an object")
-            item = raw_item
-            raw_header = item.get("header")
-            if not isinstance(raw_header, str) or not raw_header.strip():
-                raise ValueError(f"--response-json[{index}].header must be a non-empty string")
-            raw_answers = item.get("answers")
-            if not isinstance(raw_answers, list) or not raw_answers:
-                raise ValueError(f"--response-json[{index}].answers must be a non-empty array")
-            answers: list[str] = []
-            for answer_index, raw_answer in enumerate(raw_answers):
-                if not isinstance(raw_answer, str) or not raw_answer.strip():
-                    raise ValueError(f"--response-json[{index}].answers[{answer_index}] must be a non-empty string")
-                answers.append(raw_answer)
-            parsed.append(QuestionResponse(header=raw_header, answers=tuple(answers)))
-        return tuple(parsed)
+        try:
+            parsed = _QuestionResponsePayloads.validate_python(raw_payload)
+        except ValidationError as exc:
+            raise ValueError(_question_response_error_message(exc)) from None
+        return tuple(QuestionResponse(header=item.header, answers=tuple(item.answers)) for item in parsed)
     if not response:
         raise CliError(
             code=EXIT_USAGE_ERROR,
@@ -109,36 +127,25 @@ def _handle_sessions_resume_command(args: SessionsArgs) -> int:
     session_id = args.session_id
     assert session_id is not None
     if args.dry_run:
-        with open_runtime(workspace) as runtime:
-            try:
-                snapshot = runtime.session_debug_snapshot(session_id=session_id)
-            except ValueError as exc:
-                raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+        with open_runtime(workspace) as runtime, runtime_error_boundary():
+            snapshot = runtime.session_debug_snapshot(session_id=session_id)
         print_json({"workspace": str(workspace), "session_id": session_id, "dry_run": True, "debug": serialize_session_debug_snapshot(snapshot)})
         return EXIT_SUCCESS
     approval_decision: PermissionResolution | None = cast(PermissionResolution | None, args.approval_decision)
-    with open_runtime(workspace) as runtime:
-        try:
-            result = consume_session_stream(
-                runtime.resume_stream(
-                    session_id,
-                    approval_request_id=args.approval_request_id,
-                    approval_decision=approval_decision,
-                ),
-                fallback=lambda: runtime.resume(
-                    session_id,
-                    approval_request_id=args.approval_request_id,
-                    approval_decision=approval_decision,
-                ),
-                show_thinking=args.show_thinking,
-                on_interrupt=lambda interrupted_session_id, run_id: runtime.cancel_session(
-                    interrupted_session_id,
-                    run_id=run_id,
-                    reason="sessions resume KeyboardInterrupt",
-                ),
-            )
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        result = consume_session_stream(
+            runtime.resume_stream(
+                session_id,
+                approval_request_id=args.approval_request_id,
+                approval_decision=approval_decision,
+            ),
+            show_thinking=args.show_thinking,
+            on_interrupt=lambda interrupted_session_id, run_id: runtime.cancel_session(
+                interrupted_session_id,
+                run_id=run_id,
+                reason="sessions resume KeyboardInterrupt",
+            ),
+        )
     print_runtime_response(result, show_thinking=args.show_thinking)
     return session_result_exit_code(result)
 
@@ -155,15 +162,10 @@ def _handle_sessions_answer_command(args: SessionsArgs) -> int:
         raise
     except (json.JSONDecodeError, ValueError) as exc:
         raise CliError(code=EXIT_USAGE_ERROR, message=str(exc)) from None
-    with open_runtime(workspace) as runtime:
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
         try:
             result = consume_session_stream(
                 runtime.answer_question_stream(
-                    session_id,
-                    question_request_id=question_request_id,
-                    responses=responses,
-                ),
-                fallback=lambda: runtime.answer_question(
                     session_id,
                     question_request_id=question_request_id,
                     responses=responses,
@@ -177,8 +179,6 @@ def _handle_sessions_answer_command(args: SessionsArgs) -> int:
             )
         except NoPendingQuestionError as exc:
             raise CliError(code=EXIT_INVALID_RESOURCE, message=str(exc)) from None
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     payload = {
         "workspace": str(workspace),
         "session": serialize_session_state(result.session),
@@ -210,11 +210,8 @@ def _handle_sessions_export_command(args: SessionsArgs) -> int:
     output_path = args.output
     fmt = args.format
     options = _session_bundle_options_from_args(args)
-    with open_runtime(workspace) as runtime:
-        try:
-            bundle = runtime.export_session_bundle(session_id=session_id, options=options)
-        except (ValueError, SessionBundleError) as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        bundle = runtime.export_session_bundle(session_id=session_id, options=options)
 
     if output_path is None and fmt == "json":
         print(json.dumps(bundle.to_payload(), sort_keys=True))
@@ -244,7 +241,7 @@ def _handle_sessions_import_command(args: SessionsArgs) -> int:
     bundle_path = args.bundle_path
     assert bundle_path is not None
     dry_run = args.dry_run
-    with open_runtime(workspace) as runtime:
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
         try:
             result = runtime.import_session_bundle_file(
                 bundle_path=bundle_path,
@@ -252,8 +249,6 @@ def _handle_sessions_import_command(args: SessionsArgs) -> int:
             )
         except OSError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=f"cannot read session bundle {bundle_path}: {exc}") from None
-        except (ValueError, SessionBundleError) as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     print_json({"workspace": str(workspace), "import": result.to_payload()})
     return EXIT_SUCCESS
 
@@ -263,11 +258,8 @@ def _handle_sessions_debug_command(args: SessionsArgs) -> int:
     session_id = args.session_id
     assert session_id is not None
     show_thinking = args.show_thinking
-    with open_runtime(workspace) as runtime:
-        try:
-            snapshot = runtime.session_debug_snapshot(session_id=session_id)
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        snapshot = runtime.session_debug_snapshot(session_id=session_id)
 
     debug_payload = serialize_session_debug_snapshot(
         snapshot,
@@ -281,11 +273,8 @@ def _handle_sessions_undo_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
     assert session_id is not None
-    with open_runtime(workspace) as runtime:
-        try:
-            marker = runtime.undo_session(session_id=session_id)
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        marker = runtime.undo_session(session_id=session_id)
     print_json({"session_id": session_id, "revert_marker": serialize_revert_marker(marker)})
     return 0
 
@@ -296,14 +285,11 @@ def _handle_sessions_revert_command(args: SessionsArgs) -> int:
     assert session_id is not None
     sequence = args.sequence
     assert sequence is not None
-    with open_runtime(workspace) as runtime:
-        try:
-            marker = runtime.revert_session(
-                session_id=session_id,
-                sequence=sequence,
-            )
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        marker = runtime.revert_session(
+            session_id=session_id,
+            sequence=sequence,
+        )
     print_json({"session_id": session_id, "revert_marker": serialize_revert_marker(marker)})
     return 0
 
@@ -312,11 +298,8 @@ def _handle_sessions_unrevert_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
     assert session_id is not None
-    with open_runtime(workspace) as runtime:
-        try:
-            marker = runtime.unrevert_session(session_id=session_id)
-        except ValueError as exc:
-            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        marker = runtime.unrevert_session(session_id=session_id)
     print_json({"session_id": session_id, "revert_marker": serialize_revert_marker(marker)})
     return 0
 

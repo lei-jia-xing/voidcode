@@ -5,10 +5,43 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 
-from ..runtime.background.models import BackgroundTaskState, SchemaValidation, StoredBackgroundTaskSummary
+from ..runtime.background.models import (
+    BackgroundTaskObservability,
+    BackgroundTaskState,
+    SchemaValidation,
+    StoredBackgroundTaskSummary,
+)
 from ..runtime.background.routing import SubagentRoutingIdentity
 from ..runtime.contracts import BackgroundTaskResult
 from .output import format_named_record
+
+
+def _append_observability_and_routing(
+    fields: list[tuple[str, object]],
+    observability: BackgroundTaskObservability | None,
+    routing: SubagentRoutingIdentity | None,
+) -> None:
+    if observability is not None:
+        fields.append(("waiting_reason", observability.waiting_reason))
+        if observability.queue_position is not None:
+            fields.append(("queue_position", observability.queue_position))
+        if observability.terminal_reason is not None:
+            fields.append(("terminal_reason", observability.terminal_reason))
+        if observability.concurrency is not None:
+            fields.append(("active_worker_slots", observability.concurrency.active_worker_slots))
+            fields.append(("concurrency_limit", observability.concurrency.limit))
+            fields.append(("queued_total", observability.concurrency.queued_total))
+        if observability.retry is not None:
+            fields.append(("retry_count", observability.retry.retry_count))
+            fields.append(("retry_backoff_seconds", observability.retry.backoff_seconds))
+    if routing is not None:
+        fields.append(("delegation_mode", routing.mode))
+        if routing.subagent_type is not None:
+            fields.append(("subagent_type", routing.subagent_type))
+        if routing.description is not None:
+            fields.append(("description", routing.description))
+        if routing.command is not None:
+            fields.append(("command", routing.command))
 
 
 def _background_task_fields(task: BackgroundTaskState) -> list[tuple[str, object]]:
@@ -30,29 +63,7 @@ def _background_task_fields(task: BackgroundTaskState) -> list[tuple[str, object
         fields.append(("cancellation_cause", task.cancellation_cause))
     if task.error is not None:
         fields.append(("error", task.error))
-    observability = task.observability
-    if observability is not None:
-        fields.append(("waiting_reason", observability.waiting_reason))
-        if observability.queue_position is not None:
-            fields.append(("queue_position", observability.queue_position))
-        if observability.terminal_reason is not None:
-            fields.append(("terminal_reason", observability.terminal_reason))
-        if observability.concurrency is not None:
-            fields.append(("active_worker_slots", observability.concurrency.active_worker_slots))
-            fields.append(("concurrency_limit", observability.concurrency.limit))
-            fields.append(("queued_total", observability.concurrency.queued_total))
-        if observability.retry is not None:
-            fields.append(("retry_count", observability.retry.retry_count))
-            fields.append(("retry_backoff_seconds", observability.retry.backoff_seconds))
-    routing = task.routing_identity
-    if routing is not None:
-        fields.append(("delegation_mode", routing.mode))
-        if routing.subagent_type is not None:
-            fields.append(("subagent_type", routing.subagent_type))
-        if routing.description is not None:
-            fields.append(("description", routing.description))
-        if routing.command is not None:
-            fields.append(("command", routing.command))
+    _append_observability_and_routing(fields, task.observability, task.routing_identity)
     return fields
 
 
@@ -289,31 +300,7 @@ def _background_task_result_fields(result: BackgroundTaskResult) -> list[tuple[s
     cancellation_cause = result.cancellation_cause
     if cancellation_cause is not None:
         fields.append(("cancellation_cause", cancellation_cause))
-    observability = result.observability
-    if observability is not None:
-        fields.append(("waiting_reason", observability.waiting_reason))
-        if observability.queue_position is not None:
-            fields.append(("queue_position", observability.queue_position))
-        if observability.terminal_reason is not None:
-            fields.append(("terminal_reason", observability.terminal_reason))
-        if observability.concurrency is not None:
-            concurrency = observability.concurrency
-            fields.append(("active_worker_slots", concurrency.active_worker_slots))
-            fields.append(("concurrency_limit", concurrency.limit))
-            fields.append(("queued_total", concurrency.queued_total))
-        if observability.retry is not None:
-            retry = observability.retry
-            fields.append(("retry_count", retry.retry_count))
-            fields.append(("retry_backoff_seconds", retry.backoff_seconds))
-    routing = result.routing
-    if routing is not None:
-        fields.append(("delegation_mode", routing.mode))
-        if routing.subagent_type is not None:
-            fields.append(("subagent_type", routing.subagent_type))
-        if routing.description is not None:
-            fields.append(("description", routing.description))
-        if routing.command is not None:
-            fields.append(("command", routing.command))
+    _append_observability_and_routing(fields, result.observability, result.routing)
     return fields
 
 
