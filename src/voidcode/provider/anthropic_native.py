@@ -355,10 +355,6 @@ class _OwnedTransport:
     value: AnthropicTransport | None = None
 
 
-def _empty_extra_request_headers() -> dict[str, str]:
-    return {}
-
-
 # A declared request header may name the conversation with ``{session_id}``. The
 # transport -- and therefore its SDK client -- is cached across turns, so a value
 # resolved at construction time would freeze the first conversation's id; it is
@@ -390,7 +386,7 @@ class AnthropicMessagesProvider:
     # Headers this gateway requires on every request it serves. They reach the wire
     # through the SDK's ``extra_headers`` argument, which the transport passes to
     # ``messages.create`` from the payload, so the JSON body never carries them.
-    extra_request_headers: Mapping[str, str] = field(default_factory=_empty_extra_request_headers)
+    extra_request_headers: Mapping[str, str] = field(default_factory=dict)
     # One transport -- and therefore one SDK client and HTTP connection pool --
     # per provider, reused across every turn. Building it per request leaked a
     # pool per turn. Only the first-use race can drop one losing transport.

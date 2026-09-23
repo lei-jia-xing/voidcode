@@ -100,10 +100,6 @@ def _service_account_project_id(credentials: Any) -> str | None:
     return project_id if isinstance(project_id, str) and project_id else None
 
 
-def _empty_extra_request_headers() -> dict[str, str]:
-    return {}
-
-
 # A declared request header may name the conversation with ``{session_id}``. The
 # SDK client is reused across turns, so a value resolved at construction time
 # would freeze the first conversation's id; it is resolved per request instead.
@@ -143,7 +139,7 @@ class GoogleGenAIProvider:
     # onto the client's own options per request, so they merge with (never
     # replace) the client's ``Content-Type``/credential headers, and the request
     # body is unaffected because the SDK pops ``config`` from it.
-    extra_request_headers: Mapping[str, str] = field(default_factory=_empty_extra_request_headers)
+    extra_request_headers: Mapping[str, str] = field(default_factory=dict)
     # One client -- and therefore one HTTP connection pool -- per provider,
     # reused across every turn. A client owns no conversation state: the headers
     # above are patched per request, so reusing it is correct rather than merely

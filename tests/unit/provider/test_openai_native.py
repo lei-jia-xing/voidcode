@@ -5,16 +5,17 @@ from dataclasses import dataclass
 from typing import cast
 
 import httpx2
+import pytest
 
-from voidcode.provider.config import (
-    OpenAIProviderConfig,
-)
+from voidcode.provider.config import OpenAIProviderConfig
 from voidcode.provider.openai import OpenAIModelProvider
-from voidcode.provider.openai_native import OpenAIChatCompletionsTransport
+from voidcode.provider.openai_native import OpenAIChatCompletionsProvider, OpenAIChatCompletionsTransport
 from voidcode.provider.protocol import (
+    ProviderAbortSignal,
     ProviderAssembledContext,
     ProviderContextSegment,
     ProviderContextWindow,
+    ProviderExecutionError,
     ProviderTurnRequest,
 )
 from voidcode.tools.contracts import ToolDefinition
@@ -38,7 +39,7 @@ class _Context:
     continuity_state: object | None = None
 
 
-def _request(*, transport: object | None, abort_signal: object | None = None, session_id: str | None = None) -> ProviderTurnRequest:
+def _request(*, transport: object | None, abort_signal: ProviderAbortSignal | None = None, session_id: str | None = None) -> ProviderTurnRequest:
     context = _Context(prompt="hello", segments=(ProviderContextSegment(role="user", content="hello"),), metadata={})
     return ProviderTurnRequest(
         assembled_context=cast(ProviderAssembledContext, context),
@@ -54,7 +55,7 @@ def _request(*, transport: object | None, abort_signal: object | None = None, se
         model_name="gpt-4o",
         raw_model="openai/gpt-4o",
         session_id=session_id,
-        abort_signal=cast(object, abort_signal),
+        abort_signal=abort_signal,
     )
 
 
@@ -97,3 +98,54 @@ def test_native_non_stream_uses_chat_completions_wire_and_auth_headers() -> None
     assert result.output == "hello"
     assert result.done_reason == "stop"
     assert result.usage is not None and result.usage.total_tokens == 10
+
+
+def test_nonstream_missing_finish_reason_is_stop_and_reported_reasons_fail() -> None:
+    def provider_for(reason: object = ...) -> OpenAIModelProvider:
+        payload: dict[str, object] = {"choices": [{"message": {"content": "hello"}}]}
+        if reason is not ...:
+            payload["choices"] = [{"message": {"content": "hello"}, "finish_reason": reason}]
+        transport = OpenAIChatCompletionsTransport(
+            api_key="sk-test",
+            http_client=httpx2.Client(transport=httpx2.MockTransport(lambda _request: httpx2.Response(200, json=payload))),
+        )
+        return OpenAIModelProvider(config=OpenAIProviderConfig(api_key="sk-test"), transport=transport)
+
+    result = provider_for().turn_provider().propose_turn(_request(transport=None))
+    assert result.done_reason == "stop"
+    assert result.finish_reason_reported is False
+
+    for reason in ("content_filter", "eos_token"):
+        with pytest.raises(ProviderExecutionError, match=f"finish_reason: {reason}"):
+            provider_for(reason).turn_provider().propose_turn(_request(transport=None))
+
+    class StreamingOpenAIProvider(OpenAIModelProvider):
+        def turn_provider(self) -> OpenAIChatCompletionsProvider:
+            return OpenAIChatCompletionsProvider(config=self.provider_config(), transport=self.transport)
+
+    for reason, expected in ((None, "stop"), ("content_filter", None), ("eos_token", None)):
+        payload: dict[str, object] = {"choices": [{"delta": {"content": "hello"}, "finish_reason": reason}]}
+        if reason is None:
+            payload["choices"] = [{"delta": {"content": "hello"}}]
+        response_body = b"data: " + json.dumps(payload).encode() + b"\n\ndata: [DONE]\n\n"
+        transport = OpenAIChatCompletionsTransport(
+            api_key="sk-test",
+            http_client=httpx2.Client(
+                transport=httpx2.MockTransport(
+                    lambda _request, body=response_body: httpx2.Response(
+                        200,
+                        content=body,
+                        headers={"content-type": "text/event-stream"},
+                    )
+                )
+            ),
+        )
+        provider = StreamingOpenAIProvider(config=OpenAIProviderConfig(api_key="sk-test"), transport=transport)
+        stream_provider = provider.turn_provider()
+        if expected is None:
+            with pytest.raises(ProviderExecutionError, match=f"finish_reason: {reason}"):
+                list(stream_provider.stream_turn(_request(transport=None)))
+        else:
+            events = list(stream_provider.stream_turn(_request(transport=None)))
+            assert events[-1].done_reason == expected
+            assert events[-1].metadata == {"finish_reason_reported": False}

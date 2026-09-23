@@ -350,8 +350,8 @@ def _usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
 
 
 def _done_reason(value: object) -> str:
-    if not isinstance(value, str):
-        return "unknown"
+    if not isinstance(value, str) or not value.strip():
+        return "stop"
     value = value.strip().lower()
     if value in {"stop", "end_turn"}:
         return "stop"
@@ -361,9 +361,7 @@ def _done_reason(value: object) -> str:
         return "function_call"
     if value in {"length", "max_tokens"}:
         return "length"
-    if value == "content_filter":
-        return "content_filter"
-    if value == "error":
+    if value in {"content_filter", "error"}:
         return "error"
     return "unknown"
 
@@ -377,13 +375,25 @@ def _raw_finish_reason(value: object) -> str | None:
     unsupported-finish-reason failure can name the token instead of only ``"unknown"``.
     """
     if isinstance(value, str):
-        return value or None
+        return value.strip() or None
     if value is None:
         return None
     try:
         return json.dumps(value, ensure_ascii=True, sort_keys=True)
     except TypeError, ValueError:
         return None
+
+
+def _raise_finish_reason_error(raw_reason: str, *, provider_name: str, model_name: str) -> None:
+    raise ProviderExecutionError(
+        kind="transient_failure",
+        provider_name=provider_name,
+        model_name=model_name,
+        message=f"provider finish_reason: {raw_reason}",
+        retryable=False,
+        fallback_allowed=True,
+        details={"source": "finish_reason", "reason": "unsupported_done_reason", "finish_reason_raw": raw_reason},
+    )
 
 
 def _reasoning(message: Mapping[str, object]) -> str | None:
@@ -417,14 +427,6 @@ class _ToolAccumulator:
     @property
     def arguments(self) -> str:
         return "".join(self.fragments)
-
-
-def _empty_tool_feedback_overrides() -> dict[str, ToolFeedbackMode]:
-    return {}
-
-
-def _empty_extra_request_headers() -> dict[str, str]:
-    return {}
 
 
 # A declared request header may name the conversation with ``{session_id}``. The
@@ -462,11 +464,11 @@ class OpenAIChatCompletionsProvider:
     name: str = "openai"
     config: OpenAIProviderConfig | ProviderEndpointConfig | None = None
     transport: OpenAITransport | None = None
-    tool_feedback_model_overrides: Mapping[str, ToolFeedbackMode] = field(default_factory=_empty_tool_feedback_overrides)
+    tool_feedback_model_overrides: Mapping[str, ToolFeedbackMode] = field(default_factory=dict)
     # Headers this gateway requires on every request it serves. They reach the wire
     # through the SDK's ``extra_headers`` argument, which the transport passes to
     # ``create`` from the payload, so the JSON body never carries them.
-    extra_request_headers: Mapping[str, str] = field(default_factory=_empty_extra_request_headers)
+    extra_request_headers: Mapping[str, str] = field(default_factory=dict)
     # One transport -- and therefore one SDK client and HTTP connection pool --
     # per provider, reused across every turn. Building it per request leaked a
     # pool per turn. Only the first-use race can drop one losing transport.
@@ -883,19 +885,17 @@ class OpenAIChatCompletionsProvider:
             raw_finish_reason = choice.get("finish_reason")
             done_reason = _done_reason(raw_finish_reason)
             raw_token = _raw_finish_reason(raw_finish_reason)
-            if done_reason == "unknown" and raw_token is not None:
-                # Keep the provider's own token so an unrecognized reason stays
-                # diagnosable in the graph's debug resolution.
-                metadata["finish_reason_raw"] = raw_token
+            if done_reason in {"error", "unknown"} and raw_token is not None:
+                _raise_finish_reason_error(raw_token, provider_name=provider_name, model_name=model_name)
+            if raw_token is None:
+                metadata["finish_reason_reported"] = False
             return ProviderTurnResult(
                 tool_calls=self._tool_calls(message_mapping, self._tool_maps(request)[1]),
                 output=content if isinstance(content, str) else "",
                 reasoning=_reasoning(message_mapping),
                 usage=usage,
                 done_reason=cast(Any, done_reason),
-                # Reported only when the provider carried a usable value: an absent
-                # key or an explicit null is the silent-truncation case.
-                finish_reason_reported=raw_finish_reason is not None and raw_finish_reason != "",
+                finish_reason_reported=raw_token is not None,
                 metadata=metadata,
             )
         except Exception as exc:
@@ -917,7 +917,8 @@ class OpenAIChatCompletionsProvider:
                 raise ValueError("provider stream transport did not return an iterator")
             latest_usage: ProviderTokenUsage | None = None
             metadata: dict[str, object] = {}
-            done_reason = "unknown"
+            done_reason = "stop"
+            finish_reason_reported = False
             raw_finish_reason_token: str | None = None
             accumulators: dict[int, _ToolAccumulator] = {}
             for raw_chunk in _iter_stream_with_timeout(
@@ -940,12 +941,10 @@ class OpenAIChatCompletionsProvider:
                     continue
                 choice = cast(Mapping[str, object], choices[0])
                 raw_finish_reason = choice.get("finish_reason")
-                if isinstance(raw_finish_reason, str) and raw_finish_reason:
+                if isinstance(raw_finish_reason, str) and raw_finish_reason.strip():
+                    finish_reason_reported = True
                     done_reason = _done_reason(raw_finish_reason)
-                    # Latched with the reason (a trailing usage-only chunk must not clear
-                    # either), and cleared when the latched reason is recognized.
-                    raw_token = _raw_finish_reason(raw_finish_reason)
-                    raw_finish_reason_token = raw_token if done_reason == "unknown" else None
+                    raw_finish_reason_token = raw_finish_reason if done_reason in {"error", "unknown"} else None
                 delta = choice.get("delta")
                 if not isinstance(delta, Mapping):
                     continue
@@ -1035,6 +1034,8 @@ class OpenAIChatCompletionsProvider:
                 )
             runtime_name = reverse.get(accumulator.tool_name, accumulator.tool_name)
             completed.append((index, accumulator, cast(dict[str, object], parsed), runtime_name))
+        if raw_finish_reason_token is not None:
+            _raise_finish_reason_error(raw_finish_reason_token, provider_name=provider_name, model_name=model_name)
         if any(accumulator.explicit_streaming for _index, accumulator, _parsed, _name in completed):
             for index, accumulator, parsed, runtime_name in completed:
                 if accumulator.explicit_streaming:
@@ -1066,11 +1067,8 @@ class OpenAIChatCompletionsProvider:
                 )
             event_payload: dict[str, object] = event_calls[0] if len(event_calls) == 1 else {"tool_calls": event_calls}
             yield ProviderStreamEvent(kind="content", channel="tool", text=json.dumps(event_payload))
-        if raw_finish_reason_token is not None:
-            # Surfaced on the done event so an unrecognized finish reason is diagnosable
-            # from the provider's own token rather than the collapsed "unknown".
-            metadata["finish_reason_raw"] = raw_finish_reason_token
-        yield ProviderStreamEvent(kind="done", done_reason=cast(Any, done_reason), metadata=metadata or None, usage=latest_usage)
+        metadata["finish_reason_reported"] = finish_reason_reported
+        yield ProviderStreamEvent(kind="done", done_reason=cast(Any, done_reason), metadata=metadata, usage=latest_usage)
         write_provider_trace(
             request=payload,
             response={"native_stream": True},
