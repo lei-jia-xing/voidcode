@@ -50,10 +50,6 @@ jobs:
             - name: Build frontend bundle for packaging
               working-directory: frontend
               run: bun run build
-
-            - name: Stage frontend bundle into package tree
-              run: uv run python scripts/stage_frontend_bundle.py
-
             - name: Build package
               run: uv build
 
