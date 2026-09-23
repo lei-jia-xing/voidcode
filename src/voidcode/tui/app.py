@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Literal, Protocol, cast, runtime_checkable
+from typing import Literal
 
 from rich.console import Group, RenderableType
 from rich.markdown import Markdown
@@ -17,22 +17,17 @@ from textual.widgets import Footer, Input, Static
 from ..runtime.config import (
     RuntimeConfig,
     RuntimeTuiPreferences,
-    RuntimeTuiReadingPreferences,
-    RuntimeTuiThemePreferences,
     effective_runtime_tui_preferences,
     load_global_tui_preferences,
     load_runtime_config,
     load_workspace_tui_preferences,
     merge_runtime_tui_preferences,
-    save_global_tui_preferences,
 )
-from ..runtime.contracts import CommandSummary, RuntimeRequest, RuntimeStreamChunk
+from ..runtime.contracts import RuntimeRequest, RuntimeStreamChunk
 from ..runtime.events import EventEnvelope
-from ..runtime.lsp import LspManagerState
-from ..runtime.permission import PermissionDecision, PermissionResolution
+from ..runtime.permission import PermissionDecision
 from ..runtime.question import QuestionResponse
 from ..runtime.service import VoidCodeRuntime
-from ..runtime.session import StoredSessionSummary
 from .messages import (
     ContextPanelUpdated,
     ParentSessionEventsPolled,
@@ -44,8 +39,6 @@ from .screens import (
     ApprovalModal,
     QuestionModal,
     SessionListModal,
-    ThemeModePickerModal,
-    ThemePickerModal,
 )
 from .timeline import TimelineView
 
@@ -65,55 +58,6 @@ _LIVE_ONLY_EVENT_TYPES = frozenset(
         "graph.tool_call_end",
     }
 )
-
-
-@runtime_checkable
-class RuntimeProtocol(Protocol):
-    """Runtime surface consumed by the TUI.
-
-    Structural contract matching the subset of ``VoidCodeRuntime`` public
-    methods used by ``VoidCodeTUI``. It is the injection seam that lets tests
-    (and future clients) pass a mock or alternate runtime instead of forcing a
-    real ``VoidCodeRuntime`` construction.
-    """
-
-    def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
-
-    def queue_steering(self, session_id: str, content: str) -> tuple[dict[str, object], ...]: ...
-
-    def resume_stream(
-        self,
-        session_id: str,
-        *,
-        approval_request_id: str | None = None,
-        approval_decision: PermissionResolution | None = None,
-    ) -> Iterator[RuntimeStreamChunk]: ...
-
-    def list_sessions(self) -> tuple[StoredSessionSummary, ...]: ...
-
-    def answer_question_stream(
-        self,
-        session_id: str,
-        *,
-        question_request_id: str,
-        responses: tuple[QuestionResponse, ...],
-    ) -> Iterator[RuntimeStreamChunk]: ...
-
-    def current_lsp_state(self) -> LspManagerState: ...
-
-    def read_tool_output_artifact(
-        self,
-        *,
-        session_id: str,
-        artifact_id: str | None = None,
-        tool_call_id: str | None = None,
-        offset: int = 0,
-        limit: int = 2000,
-    ) -> dict[str, object]: ...
-
-    def list_command_summaries(self) -> tuple[CommandSummary, ...]: ...
-
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None: ...
 
 
 class _ComposerInput(Input):
@@ -240,7 +184,7 @@ class VoidCodeTUI(App[int]):
         workspace: Path,
         approval_mode: PermissionDecision | None = None,
         *,
-        runtime: RuntimeProtocol | None = None,
+        runtime: VoidCodeRuntime | None = None,
         tui_preferences: RuntimeTuiPreferences | None = None,
     ) -> None:
         super().__init__()
@@ -259,7 +203,6 @@ class VoidCodeTUI(App[int]):
         self._current_prompt: str | None = None
         self._global_tui_preferences = load_global_tui_preferences()
         self._workspace_tui_preferences = load_workspace_tui_preferences(workspace)
-        self._effective_preferences = RuntimeTuiPreferences()
         self._tui_preferences = tui_preferences if tui_preferences is not None else (self._global_tui_preferences or RuntimeTuiPreferences())
         self._pending_tool_progress: dict[str, dict[str, list[str]]] = {}
         self._tool_display_by_call_id: dict[str, dict[str, object]] = {}
@@ -278,12 +221,6 @@ class VoidCodeTUI(App[int]):
         self._background_event_poll_active = False
         self._tracked_background_task_ids: set[str] = set()
         self._background_poll_timer_scheduled = False
-
-        tui_config = config.tui
-        if self._global_tui_preferences is None and tui_config is not None:
-            merged_preferences = tui_config.preferences
-            if merged_preferences is not None:
-                self._effective_preferences = merged_preferences
 
         self._configure_keybindings(config)
 
@@ -400,7 +337,8 @@ class VoidCodeTUI(App[int]):
                 sessions = self.runtime.list_sessions()
             except Exception as exc:
                 logger.error("Failed to list sessions: %s", exc)
-                sessions = ()
+                self.notify("Failed to list sessions", severity="error")
+                return
             self._session_titles = {s.session.id: s.prompt for s in sessions}
 
             def _handle_session(session_id: str | None) -> None:
@@ -423,19 +361,8 @@ class VoidCodeTUI(App[int]):
                     self.query_one("#composer-input", Input).focus()
 
             self.push_screen(SessionListModal(sessions), _handle_session)
-        elif command == "theme.switch":
-            self.push_screen(ThemePickerModal(self._available_theme_names()), self._handle_theme_selection)
-        elif command == "theme.mode":
-            self.push_screen(ThemeModePickerModal(), self._handle_theme_mode_selection)
-        elif command == "view.wrap":
-            self._toggle_wrap()
-        elif command == "view.sidebar":
-            self._toggle_sidebar()
 
-    def _effective_tui_preferences(self) -> RuntimeTuiPreferences:
-        return self._effective_preferences
-
-    def _apply_tui_preferences(self) -> RuntimeTuiPreferences:
+    def _apply_tui_preferences(self) -> None:
         merged_preferences = merge_runtime_tui_preferences(self._tui_preferences, self._workspace_tui_preferences)
         effective = effective_runtime_tui_preferences(merged_preferences)
         if effective.theme.name in self.available_themes:
@@ -447,78 +374,6 @@ class VoidCodeTUI(App[int]):
         collapsed = effective.reading.sidebar_collapsed if effective.reading.sidebar_collapsed is not None else False
         sidebar = self.query_one("#sidebar-column", VerticalScroll)
         sidebar.display = not collapsed
-        self._effective_preferences = RuntimeTuiPreferences(
-            theme=effective.theme,
-            reading=effective.reading,
-        )
-        return self._effective_preferences
-
-    def _persist_global_preferences(self) -> None:
-        save_global_tui_preferences(self._tui_preferences)
-
-    def _available_theme_names(self) -> list[str]:
-        theme_preferences = self._effective_preferences.theme or RuntimeTuiThemePreferences(mode="auto")
-        mode = theme_preferences.mode
-        themes = sorted(self.available_themes.items())
-        if mode == "light":
-            return [name for name, theme in themes if theme.dark is False]
-        if mode == "dark":
-            return [name for name, theme in themes if theme.dark is True]
-        return [name for name, _theme in themes]
-
-    def _handle_theme_selection(self, theme_name: str | None) -> None:
-        if theme_name is None:
-            return
-        prefs = self._tui_preferences
-        theme_prefs = prefs.theme or RuntimeTuiThemePreferences()
-        self._tui_preferences = RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name=theme_name, mode=theme_prefs.mode),
-            reading=prefs.reading,
-        )
-        self._apply_tui_preferences()
-        self._persist_global_preferences()
-
-    def _handle_theme_mode_selection(self, mode: str | None) -> None:
-        if mode is None:
-            return
-        prefs = self._tui_preferences
-        theme_prefs = prefs.theme or RuntimeTuiThemePreferences()
-        self._tui_preferences = RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name=theme_prefs.name, mode=cast(Literal["auto", "light", "dark"], mode)),
-            reading=prefs.reading,
-        )
-        self._apply_tui_preferences()
-        self._persist_global_preferences()
-
-    def _toggle_wrap(self) -> None:
-        prefs = self._tui_preferences
-        effective = self._effective_preferences
-        reading_prefs = prefs.reading or RuntimeTuiReadingPreferences()
-        effective_reading = effective.reading or RuntimeTuiReadingPreferences(wrap=True)
-        self._tui_preferences = RuntimeTuiPreferences(
-            theme=prefs.theme,
-            reading=RuntimeTuiReadingPreferences(
-                wrap=not (effective_reading.wrap if effective_reading.wrap is not None else True),
-                sidebar_collapsed=reading_prefs.sidebar_collapsed,
-            ),
-        )
-        self._apply_tui_preferences()
-        self._persist_global_preferences()
-
-    def _toggle_sidebar(self) -> None:
-        prefs = self._tui_preferences
-        effective = self._effective_preferences
-        reading_prefs = prefs.reading or RuntimeTuiReadingPreferences()
-        effective_reading = effective.reading or RuntimeTuiReadingPreferences(sidebar_collapsed=False)
-        self._tui_preferences = RuntimeTuiPreferences(
-            theme=prefs.theme,
-            reading=RuntimeTuiReadingPreferences(
-                wrap=reading_prefs.wrap,
-                sidebar_collapsed=not (effective_reading.sidebar_collapsed if effective_reading.sidebar_collapsed is not None else False),
-            ),
-        )
-        self._apply_tui_preferences()
-        self._persist_global_preferences()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "composer-input":
@@ -598,6 +453,7 @@ class VoidCodeTUI(App[int]):
             return
 
         content: str | None = None
+        artifact_read_failed = False
         artifact_id = self._tool_artifact_by_call_id.get(tool_call_id)
         if artifact_id is not None and self.session_id is not None:
             try:
@@ -609,6 +465,7 @@ class VoidCodeTUI(App[int]):
             except Exception as exc:
                 logger.error("Failed to read tool output artifact: %s", exc)
                 result = None
+                artifact_read_failed = True
             if result is not None:
                 status = result.get("status")
                 candidate = result.get("content")
@@ -617,6 +474,8 @@ class VoidCodeTUI(App[int]):
 
         if content is None:
             content = self._tool_content_by_call_id.get(tool_call_id)
+            if content is not None and artifact_read_failed:
+                log.write(Text("⚠ Artifact read failed; showing cached output", style="bold yellow"))
 
         if content is None:
             log.write(Text(f"✖ No stored output for tool_call_id: {tool_call_id}", style="bold red"))
@@ -922,7 +781,7 @@ class VoidCodeTUI(App[int]):
             if new_chunks:
                 self.post_message(ParentSessionEventsPolled(session_id, tuple(new_chunks)))
         except Exception as exc:
-            logger.debug("Failed to poll parent session events: %s", exc)
+            logger.warning("Failed to poll parent session events: %s", exc)
         finally:
             self._background_event_poll_active = False
             if self._tracked_background_task_ids:
@@ -934,9 +793,13 @@ class VoidCodeTUI(App[int]):
         *,
         after_sequence: int,
     ) -> list[RuntimeStreamChunk]:
-        new_chunks = [chunk for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.sequence > after_sequence]
-        new_chunks.sort(key=lambda chunk: chunk.event.sequence if chunk.event is not None else 0)
-        return new_chunks
+        ordered: list[tuple[int, RuntimeStreamChunk]] = []
+        for chunk in chunks:
+            event = chunk.event
+            if chunk.kind == "event" and event is not None and event.sequence > after_sequence:
+                ordered.append((event.sequence, chunk))
+        ordered.sort(key=lambda item: item[0])
+        return [chunk for _sequence, chunk in ordered]
 
     @staticmethod
     def _extract_display(payload: dict[str, object]) -> dict[str, object] | None:
@@ -1182,31 +1045,6 @@ class VoidCodeTUI(App[int]):
         return text
 
     @staticmethod
-    def _write_content_block(
-        log: TimelineView,
-        content: str,
-        tool_call_id: str | None,
-        *,
-        max_lines: int = 10,
-        preview_head_lines: int = 5,
-    ) -> None:
-        lines = content.splitlines()
-        if len(lines) <= max_lines:
-            log.write(Text(content))
-            return
-        head = "\n".join(lines[:preview_head_lines])
-        log.write(Text(head))
-        remaining = len(lines) - preview_head_lines
-        hint = f"[... {remaining} more lines"
-        if tool_call_id:
-            hint += f", /expand {tool_call_id}"
-        hint += "]"
-        log.write(Text(hint, style="dim"))
-
-    def _write_output_line(self, output: str) -> None:
-        self.query_one("#transcript-log", TimelineView).write(Markdown(output))
-
-    @staticmethod
     def _format_runtime_error(error: object) -> str:
         if not isinstance(error, str):
             return "Unknown error"
@@ -1218,9 +1056,9 @@ class VoidCodeTUI(App[int]):
         return cleaned or error
 
     @staticmethod
-    def _context_int_value(context_window: dict[str, object], key: str, default: int = 0) -> int:
-        value = context_window.get(key, default)
-        return value if isinstance(value, int) else default
+    def _context_int_value(context_window: dict[str, object], key: str) -> int | None:
+        value = context_window.get(key)
+        return value if isinstance(value, int) else None
 
     @staticmethod
     def _context_str_value(context_window: dict[str, object], key: str, default: str = "unknown") -> str:
@@ -1237,9 +1075,9 @@ class VoidCodeTUI(App[int]):
         context_window = cw
 
         retained = self._context_int_value(context_window, "retained_tool_result_count")
-        text = f"{retained} results"
+        text = f"{retained} results" if retained is not None else "unknown results"
 
-        if self._context_int_value(context_window, "compacted", 0) or context_window.get("compacted") is True:
+        if self._context_int_value(context_window, "compacted") or context_window.get("compacted") is True:
             reason = self._context_str_value(context_window, "compaction_reason")
             text += f"\n[Compacted: {reason}]"
 
@@ -1301,12 +1139,11 @@ class VoidCodeTUI(App[int]):
         self._stream_active = active
         self.query_one("#composer-input", Input).disabled = False
 
-    @work(thread=True)
-    def _replay_stream(self, session_id: str) -> None:
+    def _pump_stream(self, open_stream: Callable[[], Iterator[RuntimeStreamChunk]]) -> None:
         last_status = "Idle"
         saw_chunk = False
         try:
-            for chunk in self.runtime.resume_stream(session_id=session_id):
+            for chunk in open_stream():
                 saw_chunk = True
                 last_status = chunk.session.status
                 self.post_message(StreamChunkReceived(chunk))
@@ -1315,40 +1152,24 @@ class VoidCodeTUI(App[int]):
             self.post_message(StreamCompleted(last_status))
         except Exception as error:
             self.post_message(StreamFailed(error))
+
+    @work(thread=True)
+    def _replay_stream(self, session_id: str) -> None:
+        self._pump_stream(lambda: self.runtime.resume_stream(session_id=session_id))
 
     @work(thread=True)
     def _start_stream(self, request: RuntimeRequest) -> None:
-        last_status = "Idle"
-        saw_chunk = False
-        try:
-            for chunk in self.runtime.run_stream(request):
-                saw_chunk = True
-                last_status = chunk.session.status
-                self.post_message(StreamChunkReceived(chunk))
-            if not saw_chunk:
-                raise ValueError("runtime stream emitted no chunks")
-            self.post_message(StreamCompleted(last_status))
-        except Exception as error:
-            self.post_message(StreamFailed(error))
+        self._pump_stream(lambda: self.runtime.run_stream(request))
 
     @work(thread=True)
     def _resume_stream(self, session_id: str, request_id: str, decision: Literal["allow", "deny"]) -> None:
-        last_status = "Idle"
-        saw_chunk = False
-        try:
-            for chunk in self.runtime.resume_stream(
+        self._pump_stream(
+            lambda: self.runtime.resume_stream(
                 session_id=session_id,
                 approval_request_id=request_id,
                 approval_decision=decision,
-            ):
-                saw_chunk = True
-                last_status = chunk.session.status
-                self.post_message(StreamChunkReceived(chunk))
-            if not saw_chunk:
-                raise ValueError("runtime stream emitted no chunks")
-            self.post_message(StreamCompleted(last_status))
-        except Exception as error:
-            self.post_message(StreamFailed(error))
+            )
+        )
 
     @work(thread=True)
     def _answer_question_stream(
@@ -1357,22 +1178,13 @@ class VoidCodeTUI(App[int]):
         request_id: str,
         responses: tuple[QuestionResponse, ...],
     ) -> None:
-        last_status = "Idle"
-        saw_chunk = False
-        try:
-            for chunk in self.runtime.answer_question_stream(
+        self._pump_stream(
+            lambda: self.runtime.answer_question_stream(
                 session_id,
                 question_request_id=request_id,
                 responses=responses,
-            ):
-                saw_chunk = True
-                last_status = chunk.session.status
-                self.post_message(StreamChunkReceived(chunk))
-            if not saw_chunk:
-                raise ValueError("runtime stream emitted no chunks")
-            self.post_message(StreamCompleted(last_status))
-        except Exception as error:
-            self.post_message(StreamFailed(error))
+            )
+        )
 
     def on_stream_chunk_received(self, message: StreamChunkReceived) -> None:
         chunk = message.chunk
@@ -1406,7 +1218,8 @@ class VoidCodeTUI(App[int]):
 
             if chunk.session.status == "waiting" and event.event_type == "runtime.approval_requested":
                 payload = event.payload or {}
-                self.pending_request_id = str(payload.get("request_id", ""))
+                request_id = payload.get("request_id")
+                self.pending_request_id = request_id if isinstance(request_id, str) and request_id else None
                 self._set_state("Waiting approval")
                 self._set_stream_active(False)
 

@@ -96,7 +96,3 @@ class AcpEventEnvelope:
 
 class AcpRequestHandler(Protocol):
     def request(self, envelope: AcpRequestEnvelope) -> AcpResponseEnvelope: ...
-
-
-class AcpEventPublisher(Protocol):
-    def publish(self, envelope: AcpEventEnvelope) -> AcpResponseEnvelope: ...

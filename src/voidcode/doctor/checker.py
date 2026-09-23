@@ -11,12 +11,41 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from ..formatter import RuntimeFormatterPresetConfig
     from ..lsp.presets import LspServerPreset
-    from ..mcp.config import McpServerConfig
+    from ..runtime.config import RuntimeMcpServerConfig
 
 from ..mcp.redaction import format_redacted_mcp_command, redact_mcp_command
 
 # Timeout for executable checks
 _EXECUTABLE_CHECK_TIMEOUT = 5.0
+
+
+def _probe_version(command: str, version_args: tuple[str, ...]) -> tuple[str | None, str | None]:
+    """Probe ``command`` for a version string.
+
+    Returns ``(version, probe_error)``. ``probe_error`` is set only when no
+    probe could run at all (timeout, permission denied, invalid invocation);
+    an executable that runs but prints nothing yields ``(None, None)``.
+    """
+    last_error: str | None = None
+    ran = False
+    for version_arg in version_args:
+        try:
+            result = subprocess.run(
+                [command, version_arg],
+                capture_output=True,
+                text=True,
+                timeout=_EXECUTABLE_CHECK_TIMEOUT,
+            )
+        except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
+            last_error = f"'{command}' could not be run: {exc}"
+            continue
+        ran = True
+        if result.returncode == 0:
+            version = result.stdout.strip() or result.stderr.strip()
+            if version:
+                # Truncate long version strings
+                return (version[:100] if len(version) > 100 else version), None
+    return None, None if ran else last_error
 
 
 class CapabilityCheckStatus(enum.Enum):
@@ -45,11 +74,6 @@ class CapabilityCheckResult:
     details: dict[str, Any] = field(default_factory=dict)
     error_message: str | None = None
 
-    @property
-    def is_ok(self) -> bool:
-        """Return True if the capability is ready."""
-        return self.status == CapabilityCheckStatus.READY
-
 
 class DoctorCheckType(enum.Enum):
     """Types of capability checks."""
@@ -60,16 +84,6 @@ class DoctorCheckType(enum.Enum):
     MCP_SERVER = "mcp_server"
     RUNTIME_CONFIG = "runtime_config"
     PROVIDER_READINESS = "provider_readiness"
-
-
-@dataclass(frozen=True, slots=True)
-class DoctorCheck:
-    """A single check to be performed by the capability doctor."""
-
-    check_type: DoctorCheckType
-    name: str
-    description: str
-    data: Any = None
 
 
 class ExecutableChecker:
@@ -84,7 +98,15 @@ class ExecutableChecker:
         for cmd in self._commands:
             if shutil.which(cmd) is not None:
                 # Found it, try to get version info
-                version_info = self._get_version_info(cmd)
+                version_info, probe_error = _probe_version(cmd, ("--version", "-v", "-V", "version"))
+                if probe_error is not None:
+                    return CapabilityCheckResult(
+                        status=CapabilityCheckStatus.ERROR,
+                        name=self._name,
+                        check_type=DoctorCheckType.EXECUTABLE.value,
+                        details={"command": cmd},
+                        error_message=probe_error,
+                    )
                 return CapabilityCheckResult(
                     status=CapabilityCheckStatus.READY,
                     name=self._name,
@@ -100,25 +122,6 @@ class ExecutableChecker:
             details={"tried_commands": list(self._commands)},
             error_message=f"'{self._name}' not found. Tried: {', '.join(self._commands)}",
         )
-
-    def _get_version_info(self, command: str) -> str | None:
-        """Try to get version information from the executable."""
-        for version_arg in ("--version", "-v", "-V", "version"):
-            try:
-                result = subprocess.run(
-                    [command, version_arg],
-                    capture_output=True,
-                    text=True,
-                    timeout=_EXECUTABLE_CHECK_TIMEOUT,
-                )
-                if result.returncode == 0:
-                    version = result.stdout.strip() or result.stderr.strip()
-                    if version:
-                        # Truncate long version strings
-                        return version[:100] if len(version) > 100 else version
-            except subprocess.TimeoutExpired, OSError, ValueError:
-                pass
-        return None
 
 
 class FormatterPresetChecker:
@@ -140,18 +143,23 @@ class FormatterPresetChecker:
         all_commands = [self._preset.command, *self._preset.fallback_commands]
         available: list[str] = []
         missing: list[str] = []
+        probe_errors: list[str] = []
 
         for cmd in all_commands:
             executable = cmd[0] if cmd else ""
             if executable and shutil.which(executable) is not None:
-                version = self._get_version_info(executable)
+                version, probe_error = _probe_version(executable, ("--version", "-v", "-V"))
+                if probe_error is not None:
+                    probe_errors.append(probe_error)
+                    missing.append(executable)
+                    continue
                 available.append(f"{executable} (version: {version})" if version else executable)
             else:
                 missing.append(executable)
 
         if not available:
             return CapabilityCheckResult(
-                status=CapabilityCheckStatus.NOT_FOUND,
+                status=CapabilityCheckStatus.ERROR if probe_errors else CapabilityCheckStatus.NOT_FOUND,
                 name=f"formatter:{self._preset_name}",
                 check_type=DoctorCheckType.FORMATTER_PRESET.value,
                 details={
@@ -160,7 +168,11 @@ class FormatterPresetChecker:
                     "primary_command": list(self._preset.command) if self._preset.command else [],
                     "fallback_commands": [list(cmd) for cmd in self._preset.fallback_commands],
                 },
-                error_message=(f"Formatter preset '{self._preset_name}' has no available executable. Tried: {', '.join(missing)}"),
+                error_message=(
+                    probe_errors[0]
+                    if probe_errors
+                    else f"Formatter preset '{self._preset_name}' has no available executable. Tried: {', '.join(missing)}"
+                ),
             )
 
         # Some commands are available
@@ -191,24 +203,6 @@ class FormatterPresetChecker:
             },
         )
 
-    def _get_version_info(self, command: str) -> str | None:
-        """Try to get version information from the executable."""
-        for version_arg in ("--version", "-v", "-V"):
-            try:
-                result = subprocess.run(
-                    [command, version_arg],
-                    capture_output=True,
-                    text=True,
-                    timeout=_EXECUTABLE_CHECK_TIMEOUT,
-                )
-                if result.returncode == 0:
-                    version = result.stdout.strip() or result.stderr.strip()
-                    if version:
-                        return version[:100] if len(version) > 100 else version
-            except subprocess.TimeoutExpired, OSError, ValueError:
-                pass
-        return None
-
 
 class LspServerChecker:
     """Check LSP server command availability."""
@@ -233,7 +227,7 @@ class LspServerChecker:
                 error_message=f"LSP server '{self._server_name}' has no command configured",
             )
 
-        executable = command[0] if command else ""
+        executable = command[0]
         if not executable:
             return CapabilityCheckResult(
                 status=CapabilityCheckStatus.NOT_CONFIGURED,
@@ -284,7 +278,7 @@ class McpServerChecker:
     def __init__(
         self,
         server_name: str,
-        config: McpServerConfig,
+        config: RuntimeMcpServerConfig,
     ) -> None:
         self._server_name = server_name
         self._config = config
@@ -315,7 +309,7 @@ class McpServerChecker:
                 error_message=f"MCP server '{self._server_name}' has no command configured",
             )
 
-        executable = command[0] if command else ""
+        executable = command[0]
         if not executable:
             return CapabilityCheckResult(
                 status=CapabilityCheckStatus.NOT_CONFIGURED,

@@ -11,43 +11,6 @@ Issue: https://github.com/lei-jia-xing/voidcode/issues/107
 
 from __future__ import annotations
 
-# SUPPORTED CAPABILITIES (FROZEN)
-
-SUPPORTED_CAPABILITIES = {
-    # Transport
-    "transport": ["stdio", "remote-http"],
-    # Discovery
-    "discovery": ["deferred"],  # Tool discovery happens on first list_tools call
-    # Operations
-    "operations": ["tools/list", "tools/call"],
-    # Lifecycle
-    "lifecycle": ["runtime-owned", "sdk-managed-client"],  # Runtime owns SDK client sessions
-    # Security
-    "security": ["trusted-local-only", "tool-annotation-governance"],
-    # Observability
-    "observability": ["runtime-events", "diagnostics-collector"],
-}
-
-# NOT SUPPORTED (EXPLICITLY EXCLUDED)
-
-NOT_SUPPORTED = {
-    "bidirectional_mcp": "Full bidirectional MCP not supported",
-    "resources": "MCP resources not supported",
-    "prompts": "MCP prompts not supported",
-    "sampling": "MCP sampling not supported",
-    "untrusted_servers": "Untrusted MCP servers not supported",
-}
-
-# CONTRACT VERSION
-
-CONTRACT_VERSION = "1.0.0"
-CONTRACT_VERSION_DATE = "2026-04-14"
-
-# Protocol/version semantics are intentionally centralized here and re-exported
-# through voidcode.mcp.types. Runtime implementations must not hardcode a
-# divergent MCP protocol version for initialize handshakes.
-SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25",)
-
 # ERROR CODES
 
 
@@ -57,35 +20,6 @@ class McpErrorCode:
     TOOL_NOT_FOUND = "tool_not_found"
     INVALID_REQUEST = "invalid_request"
 
-
-# DIAGNOSTIC TYPES
-
-DIAGNOSTIC_CATEGORIES = {
-    "startup": [
-        "server_command_missing",
-        "server_command_empty",
-        "server_url_missing",
-        "stdio_pipe_failed",
-        "env_config_invalid",
-        "remote_connection_failed",
-    ],
-    "communication": [
-        "json_decode_failed",
-        "response_id_mismatch",
-        "unexpected_response_type",
-        "protocol_negotiation_failed",
-        "remote_http_error",
-    ],
-    "timeout": [
-        "request_timeout",
-        "server_unresponsive",
-        "remote_timeout",
-    ],
-    "shutdown": [
-        "graceful_shutdown_failed",
-        "force_kill_required",
-    ],
-}
 
 # CONTRACT BOUNDARY NOTES
 
@@ -117,8 +51,7 @@ DIAGNOSTIC_CATEGORIES = {
 #    - runtime.mcp_server_stopped
 #
 # 6. Protocol Version: Runtime initialize handshakes use the official Python SDK's
-#    latest supported protocol version. The capability layer exposes supported
-#    protocol versions for contract review and test fixtures.
+#    latest supported protocol version.
 #
 # 7. Tool Governance: MCP tool annotations are mapped into McpToolSafety. Tools
 #    default to mutating unless the server explicitly marks them read-only and

@@ -60,12 +60,13 @@ class ApprovalModal(ModalScreen[Literal["allow", "deny"]]):
         self.event = event
 
     def compose(self) -> ComposeResult:
-        tool = str(self.event.payload.get("tool", "unknown"))
+        raw_tool = self.event.payload.get("tool")
+        tool = raw_tool if isinstance(raw_tool, str) and raw_tool else None
         target_summary = self.event.payload.get("target_summary")
         if isinstance(target_summary, str) and target_summary:
-            prompt = f"Approve {tool} for {target_summary}?"
+            prompt = f"Approve {tool or 'tool call'} for {target_summary}?"
         else:
-            prompt = f"Approve {tool}?"
+            prompt = f"Approve {tool or 'tool call'}?"
 
         with Vertical(id="dialog"):
             yield Label(prompt, id="question")
@@ -483,72 +484,6 @@ class SessionListModal(ModalScreen[str | None]):
             return
         idx = event.option_index
         self.dismiss(self.sessions[idx].session.id)
-
-    def action_dismiss_modal(self) -> None:
-        self.dismiss(None)
-
-
-class ThemePickerModal(ModalScreen[str | None]):
-    CSS = """
-    ThemePickerModal {
-        align: center middle;
-    }
-    #theme-dialog {
-        padding: 1 2;
-        width: 60;
-        height: auto;
-        max-height: 20;
-        border: thick $surface;
-        background: $background;
-    }
-    """
-    BINDINGS = [Binding("escape", "dismiss_modal", "Dismiss", show=False)]
-
-    def __init__(self, themes: list[str]) -> None:
-        super().__init__()
-        self.themes = themes
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="theme-dialog"):
-            yield Label("Select Theme", classes="sidebar-header")
-            yield OptionList(*self.themes, id="theme-options")
-
-    def on_mount(self) -> None:
-        self.query_one(OptionList).focus()
-
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(str(event.option.prompt))
-
-    def action_dismiss_modal(self) -> None:
-        self.dismiss(None)
-
-
-class ThemeModePickerModal(ModalScreen[str | None]):
-    CSS = """
-    ThemeModePickerModal {
-        align: center middle;
-    }
-    #theme-mode-dialog {
-        padding: 1 2;
-        width: 60;
-        height: auto;
-        max-height: 20;
-        border: thick $surface;
-        background: $background;
-    }
-    """
-    BINDINGS = [Binding("escape", "dismiss_modal", "Dismiss", show=False)]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="theme-mode-dialog"):
-            yield Label("Select Theme Mode", classes="sidebar-header")
-            yield OptionList("auto", "light", "dark", id="theme-mode-options")
-
-    def on_mount(self) -> None:
-        self.query_one(OptionList).focus()
-
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(str(event.option.prompt))
 
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import socket
+
 import pytest
 
 from voidcode.security.url_policy import (
@@ -9,6 +11,18 @@ from voidcode.security.url_policy import (
     validate_redirect_target,
     validate_url,
 )
+
+_PUBLIC_ADDRESS = "93.184.216.34"
+
+
+@pytest.fixture(autouse=True)
+def _resolve_hostnames_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve every hostname to a public address so URL checks need no DNS."""
+
+    def _resolve(host: str, port: object, *args: object, **kwargs: object) -> list[tuple[object, ...]]:
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (_PUBLIC_ADDRESS, 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _resolve)
 
 
 def test_allowed_schemes_are_http_and_https() -> None:
@@ -81,6 +95,17 @@ def test_validate_url_rejects_private_ip_from_dns_resolution(monkeypatch: pytest
     )
     with pytest.raises(ValueError, match="blocked for security reasons"):
         validate_url("http://example.com/")
+
+
+def test_validate_url_rejects_unresolvable_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Fail closed: a name the validator cannot resolve must not be authorised
+    # for a fetch that would resolve it again.
+    def _fail(hostname: str, port: object, *args: object, **kwargs: object) -> None:
+        raise socket.gaierror(f"name or service not known: {hostname}")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fail)
+    with pytest.raises(ValueError, match="could not be resolved"):
+        validate_url("https://unresolvable.invalid/path")
 
 
 def test_validate_url_accepts_public_ip() -> None:

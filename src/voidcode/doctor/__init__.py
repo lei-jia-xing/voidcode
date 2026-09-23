@@ -16,7 +16,6 @@ from __future__ import annotations
 from .checker import (
     CapabilityCheckResult,
     CapabilityCheckStatus,
-    DoctorCheck,
     DoctorCheckType,
     ExecutableChecker,
     FormatterPresetChecker,
@@ -36,7 +35,6 @@ __all__ = [
     "CapabilityCheckStatus",
     "CapabilityDoctor",
     "CapabilityReport",
-    "DoctorCheck",
     "DoctorCheckType",
     "ExecutableChecker",
     "FormatterPresetChecker",

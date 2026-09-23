@@ -9,25 +9,13 @@ from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import Protocol, cast
+from typing import cast
 
 from .runtime.config import RuntimeConfig
 from .runtime.transport.http import create_runtime_app
 
 
-class UvicornModule(Protocol):
-    def run(
-        self,
-        app: object,
-        *,
-        host: str,
-        port: int,
-        lifespan: str,
-        fd: int | None = None,
-    ) -> None: ...
-
-
-def _run_runtime_server(
+def serve(
     *,
     workspace: Path,
     host: str = "127.0.0.1",
@@ -41,23 +29,10 @@ def _run_runtime_server(
     if listener_socket is None:
         uvicorn.run(app, host=host, port=port, lifespan="auto")
         return
-    if os.name == "nt":
-        with closing(listener_socket):
-            pass
-        uvicorn.run(app, host=host, port=port, lifespan="auto")
-        return
     with closing(listener_socket):
-        uvicorn.run(app, host=host, port=port, lifespan="auto", fd=listener_socket.fileno())
-
-
-def serve(
-    *,
-    workspace: Path,
-    host: str = "127.0.0.1",
-    port: int = 8000,
-    config: RuntimeConfig | None = None,
-) -> None:
-    _run_runtime_server(workspace=workspace, host=host, port=port, config=config)
+        # Windows cannot inherit a bound listener fd, so bind host/port instead.
+        fd = None if os.name == "nt" else listener_socket.fileno()
+        uvicorn.run(app, host=host, port=port, lifespan="auto", fd=fd)
 
 
 _BANNER = r"""\
@@ -155,7 +130,7 @@ def web(
                 except Exception:
                     pass
 
-            _run_runtime_server(
+            serve(
                 workspace=workspace,
                 host=host,
                 port=selected_port,

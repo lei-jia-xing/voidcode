@@ -39,9 +39,6 @@ def redact_mcp_command(command: Sequence[str]) -> list[str]:
                 redacted.append(part)
                 redact_next = True
             continue
-        if option_value:
-            redacted.append(part)
-            continue
         redacted.append(part)
     return redacted
 

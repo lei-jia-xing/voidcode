@@ -35,8 +35,10 @@ def _is_blocked_ip(address: str) -> bool:
 def _resolve_ips(hostname: str) -> tuple[str, ...]:
     try:
         infos = socket.getaddrinfo(hostname, None)
-    except socket.gaierror:
-        return ()
+    except socket.gaierror as exc:
+        # Fail closed: an unresolvable name cannot be checked for private targets,
+        # and the fetch would resolve it again.
+        raise ValueError(f"web_fetch target host could not be resolved: {hostname}") from exc
     addresses: list[str] = []
     for info in infos:
         address = info[4][0]

@@ -28,7 +28,6 @@
 - `AcpResponseEnvelope`
 - `AcpEventEnvelope`
 - `AcpRequestHandler`
-- `AcpEventPublisher`
 
 这些定义位于：
 
@@ -53,8 +52,6 @@
 - `AcpRequestHandler`
   - 最小 adapter-facing protocol contract
   - 当前只要求 `request(envelope)`
-- `AcpEventPublisher`
-  - 最小 adapter-facing event publish contract
 - `AcpDelegatedExecution`
   - capability-layer 的 delegation identity/correlation shape
   - 与 runtime-owned delegated lifecycle truth 对齐，但不夺走 lifecycle ownership

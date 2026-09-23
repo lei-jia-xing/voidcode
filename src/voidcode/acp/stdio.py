@@ -124,7 +124,7 @@ class StdioAcpServer:
         if not isinstance(method, str) or not method:
             self._write_error(request_id, _ERROR_INVALID_REQUEST, "method must be a non-empty string")
             return
-        params = payload.get("params", {})
+        params = payload.get("params")
         if params is None:
             params = {}
         if not isinstance(params, dict):

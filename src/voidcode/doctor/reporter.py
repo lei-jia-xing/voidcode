@@ -114,8 +114,8 @@ def _create_first_task_readiness(results: list[CapabilityCheckResult], workspace
     doctor_command = f"voidcode doctor{workspace_arg}"
     run_command = f'voidcode run "read README.md"{workspace_arg}'
 
-    if config_result is not None and config_result.status != CapabilityCheckStatus.READY:
-        message = config_result.error_message or "Runtime config could not be parsed."
+    if config_result is not None and config_result.status != CapabilityCheckStatus.READY and config_result.error_message:
+        message = config_result.error_message
         return FirstTaskReadiness(
             status="not_ready",
             summary="VoidCode cannot evaluate first-task readiness until runtime config is valid.",
@@ -145,7 +145,7 @@ def _create_first_task_readiness(results: list[CapabilityCheckResult], workspace
 
     provider_details = dict(provider_result.details)
     if provider_result.status != CapabilityCheckStatus.READY:
-        provider_status = str(provider_details.get("status") or provider_result.status.value)
+        provider_status = str(provider_details["status"])
         blocker = provider_result.error_message or "Provider/model readiness is incomplete."
         return FirstTaskReadiness(
             status="not_ready",
@@ -290,12 +290,10 @@ def format_report(report: CapabilityReport, *, verbose: bool = False) -> str:
         if "max_output_tokens" in details and details["max_output_tokens"] is not None:
             lines.append(f"  max_output_tokens: {details['max_output_tokens']}")
         local_tools = details.get("local_tools")
-        if isinstance(local_tools, list) and local_tools:
+        if local_tools:
             lines.append("  local_tools:")
             for tool in local_tools:
-                if isinstance(tool, dict):
-                    tool_map = tool
-                    lines.append(f"    - {tool_map.get('name')}: {tool_map.get('status')}")
+                lines.append(f"    - {tool.get('name')}: {tool.get('status')}")
         if readiness.blockers:
             lines.append("  blockers:")
             for blocker in readiness.blockers:
@@ -334,10 +332,10 @@ def format_report(report: CapabilityReport, *, verbose: bool = False) -> str:
 
 def _format_result(
     result: CapabilityCheckResult,
-    check_icon: str = "[+]",
-    cross_icon: str = "[-]",
-    warn_icon: str = "[!]",
-    circle_icon: str = "[o]",
+    check_icon: str,
+    cross_icon: str,
+    warn_icon: str,
+    circle_icon: str,
 ) -> str:
     """Format a single check result."""
     status_icon_map = {
@@ -346,14 +344,14 @@ def _format_result(
         CapabilityCheckStatus.ERROR: warn_icon,
         CapabilityCheckStatus.NOT_CONFIGURED: circle_icon,
     }
-    status_icon = status_icon_map.get(result.status, "?")
+    status_icon = status_icon_map[result.status]
 
     status_text = {
         CapabilityCheckStatus.READY: "ready",
         CapabilityCheckStatus.NOT_FOUND: "not found",
         CapabilityCheckStatus.ERROR: "error",
         CapabilityCheckStatus.NOT_CONFIGURED: "not configured",
-    }.get(result.status, "unknown")
+    }[result.status]
 
     lines = [f"  {status_icon} {result.name}: {status_text}"]
 

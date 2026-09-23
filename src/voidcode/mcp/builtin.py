@@ -16,24 +16,6 @@ class BuiltinMcpDescriptor:
     skill_name: str | None = None
     tags: tuple[str, ...] = ()
 
-    def to_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "name": self.name,
-            "transport": self.transport,
-            "description": self.description,
-            "lifecycle": self.lifecycle,
-            "scope": self.scope,
-            "skill_scoped": self.skill_scoped,
-            "tags": list(self.tags),
-        }
-        if self.url is not None:
-            payload["url"] = self.url
-        if self.command:
-            payload["command"] = list(self.command)
-        if self.skill_name is not None:
-            payload["skill_name"] = self.skill_name
-        return payload
-
 
 _BUILTIN_MCP_DESCRIPTORS: dict[str, BuiltinMcpDescriptor] = {
     "context7": BuiltinMcpDescriptor(

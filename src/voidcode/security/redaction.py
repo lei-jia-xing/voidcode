@@ -94,10 +94,6 @@ def redact_value(value: object, *, placeholder: str = REDACTED_PLACEHOLDER) -> o
     return value
 
 
-def redact(value: object, *, placeholder: str = REDACTED_PLACEHOLDER) -> object:
-    return redact_value(value, placeholder=placeholder)
-
-
 def truncate(text: str, limit: int) -> str:
     if limit <= 0 or len(text) <= limit:
         return text
@@ -121,7 +117,6 @@ __all__ = [
     "TOOL_OUTPUT_BYTES",
     "TOOL_OUTPUT_LINES",
     "is_sensitive_key",
-    "redact",
     "redact_text",
     "redact_value",
     "truncate",

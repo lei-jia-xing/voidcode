@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from io import StringIO
-from typing import Any, cast
+from typing import Any
 
-from rich.console import Console, RenderableType
-from rich.segment import Segment
+from rich.console import RenderableType
 from textual.containers import VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Collapsible, Static
@@ -115,14 +113,6 @@ class TimelineView(VerticalScroll):
             block.collapsed = not self.expanded
         return self.expanded
 
-    def remove_block(self, key: str) -> None:
-        block = self._tool_blocks.pop(key, None)
-        self._tool_bodies.pop(key, None)
-        if block is not None:
-            if block in self._entries:
-                self._entries.remove(block)
-            block.remove()
-
     def clear(self) -> None:
         self._tool_blocks.clear()
         self._tool_bodies.clear()
@@ -130,20 +120,6 @@ class TimelineView(VerticalScroll):
         self._entries.clear()
         for child in tuple(self.children):
             child.remove()
-
-    @property
-    def lines(self) -> list[list[Segment]]:
-        """Compatibility snapshot for callers that inspect plain transcript text."""
-        result: list[list[Segment]] = []
-        for child in self._entries:
-            renderable = getattr(child, "content", None)
-            if renderable is not None:
-                result.extend(self._render_lines(renderable))
-            elif isinstance(child, Collapsible):
-                result.append([Segment(str(child.title))])
-                body = child.query_one(".timeline-block-content", Static)
-                result.extend(self._render_lines(body.content))
-        return result
 
     def _prune_entries(self) -> None:
         while len(self._entries) > self.max_lines:
@@ -156,15 +132,3 @@ class TimelineView(VerticalScroll):
                 if entry is oldest:
                     self._live_entries.pop(key, None)
             oldest.remove()
-
-    @staticmethod
-    def _plain_text(renderable: object) -> str:
-        console = Console(record=True, width=120, color_system=None, file=StringIO())
-        console.print(renderable, end="")
-        return console.export_text(clear=False)
-
-    @staticmethod
-    def _render_lines(renderable: object) -> list[list[Segment]]:
-        console = Console(width=120, color_system="truecolor", file=StringIO())
-        segments = console.render(cast(RenderableType, renderable))
-        return [list(line) for line in Segment.split_lines(segments)]

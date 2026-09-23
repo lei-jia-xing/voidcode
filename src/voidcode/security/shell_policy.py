@@ -60,24 +60,19 @@ def resolve_shell_execution_policy(
     )
 
 
-def _shell_command_groups(command: str) -> tuple[list[list[str]], list[str]]:
+def _shell_command_groups(command: str) -> list[list[str]]:
     groups: list[list[str]] = []
-    separators: list[str] = []
     current: list[str] = []
     for token in _shell_tokens(command):
         if token in _SHELL_CONTROL_OPERATORS:
             if current:
                 groups.append(current)
                 current = []
-            if groups:
-                separators.append(token)
         else:
             current.append(token)
     if current:
         groups.append(current)
-    if len(separators) > max(0, len(groups) - 1):
-        separators = separators[: max(0, len(groups) - 1)]
-    return groups, separators
+    return groups
 
 
 def _shell_tokens(command: str) -> list[str]:
@@ -117,7 +112,7 @@ def _normalize_shell_newlines(command: str) -> str:
 
 
 def _command_segments(command: str) -> tuple[str, ...]:
-    groups, _separators = _shell_command_groups(command)
+    groups = _shell_command_groups(command)
     return tuple(" ".join(group).strip() for group in groups if group)
 
 

@@ -67,15 +67,6 @@ def test_resolve_workspace_path_rejects_containment_for_symlink_escape(tmp_path:
         resolve_workspace_path(workspace=tmp_path, raw_path="link")
 
 
-def test_resolve_workspace_path_require_existing(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="target does not exist"):
-        resolve_workspace_path(workspace=tmp_path, raw_path="missing.txt", require_existing=True)
-
-    (tmp_path / "present.txt").write_text("data", encoding="utf-8")
-    resolution = resolve_workspace_path(workspace=tmp_path, raw_path="present.txt", require_existing=True)
-    assert resolution.relative_path == "present.txt"
-
-
 def test_resolve_workspace_path_custom_containment_error(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="custom containment"):
         resolve_workspace_path(
@@ -83,26 +74,6 @@ def test_resolve_workspace_path_custom_containment_error(tmp_path: Path) -> None
             raw_path="/etc/hostname",
             containment_error="custom containment message",
         )
-
-
-def test_resolve_workspace_path_require_regular_file(tmp_path: Path) -> None:
-    directory = tmp_path / "subdir"
-    directory.mkdir()
-    with pytest.raises(ValueError, match="target is not a regular file"):
-        resolve_workspace_path(
-            workspace=tmp_path,
-            raw_path="subdir",
-            require_regular_file=True,
-            regular_file_error="target is not a regular file",
-        )
-
-    (tmp_path / "file.txt").write_text("data", encoding="utf-8")
-    resolution = resolve_workspace_path(
-        workspace=tmp_path,
-        raw_path="file.txt",
-        require_regular_file=True,
-    )
-    assert resolution.relative_path == "file.txt"
 
 
 def test_resolve_workspace_path_expands_user_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

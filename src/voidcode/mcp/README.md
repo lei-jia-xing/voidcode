@@ -1,17 +1,16 @@
 # `voidcode.mcp`
 
-这里是 VoidCode 的 MCP 能力层，包含协议模型、配置 schema 和可观测性接口。
+这里是 VoidCode 的 MCP 能力层，包含协议模型、server 描述符和可观测性接口。
 
-> **状态**: 根据 Issue #107/#213，MCP 的静态类型、配置模型和边界约束已经提取到此目录。
+> **状态**: 根据 Issue #107/#213，MCP 的静态类型和边界约束已经提取到此目录。
 > runtime 实现保留在 `src/voidcode/runtime/mcp.py`，基于官方 Python MCP SDK 提供 stdio + remote-http (Streamable HTTP) 传输的 runtime-managed 集成。
 
 ## 定位
 
-`voidcode.mcp` 承载 MCP 相关的协议模型、配置 schema、server 定义与 capability-layer primitives。
+`voidcode.mcp` 承载 MCP 相关的协议模型、server 定义与 capability-layer primitives。
 
 ## 负责什么
 
-- ✅ MCP 相关 schema 与配置模型 (`config.py`)
 - ✅ MCP server / connection definition 的纯数据结构 (`types.py`)
 - ✅ 不依赖 runtime session 状态的协议契约 (`contract.py`)
 - ✅ 可观测性与诊断接口定义 (`observability.py`)
@@ -27,8 +26,6 @@
 
 ### 当前约束
 
-参见 `contract.py` 中的 `SUPPORTED_CAPABILITIES`:
-
 - **Transport**: stdio + remote-http (Streamable HTTP)
 - **Discovery**: deferred (懒加载，由 runtime 在需要时触发)
 - **Operations**: tools/list, tools/call
@@ -38,8 +35,6 @@
 - **Observability**: runtime events plus diagnostics collector
 
 ### 不支持的功能
-
-参见 `contract.py` 中的 `NOT_SUPPORTED`:
 
 - 完整 bidirectional MCP
 - MCP resources / prompts / sampling
@@ -74,7 +69,6 @@ grep.app 提供三个不同的端点，用途各不相同:
 ```
 src/voidcode/mcp/
 ├── __init__.py         # 公共导出
-├── config.py           # 静态配置模型
 ├── types.py            # 静态类型定义
 ├── contract.py         # 当前边界约束
 ├── observability.py    # 诊断与观测性接口定义
