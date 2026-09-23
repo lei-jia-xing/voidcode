@@ -2517,8 +2517,8 @@ def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(tm
     }
 
 
-@pytest.mark.parametrize("provider", ["deepseek", "grok"])
-def test_save_global_web_settings_writes_openai_compatible_provider_api_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
+@pytest.mark.parametrize("provider", ["deepseek", "grok", "kimi-coding", "minimax-cn"])
+def test_save_global_web_settings_writes_provider_api_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
     global_config_dir = tmp_path / "global-config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
 
@@ -2586,9 +2586,11 @@ def test_load_global_web_settings_canonicalises_a_stored_provider_id(tmp_path: P
     [
         ("deepseek", {"DEEPSEEK_API_KEY": "deepseek-env-key"}),
         ("grok", {"XAI_API_KEY": "xai-env-key"}),
+        ("kimi-coding", {"KIMI_CODING_API_KEY": "kimi-coding-env-key"}),
+        ("minimax-cn", {"MINIMAX_CN_API_KEY": "minimax-cn-env-key"}),
     ],
 )
-def test_load_global_web_settings_detects_openai_compatible_provider_env_keys(tmp_path: Path, provider: str, env: dict[str, str]) -> None:
+def test_load_global_web_settings_detects_provider_env_keys(tmp_path: Path, provider: str, env: dict[str, str]) -> None:
     settings = load_global_web_settings(env={"XDG_CONFIG_HOME": str(tmp_path / "global-config"), **env})
 
     assert settings == RuntimeWebSettings(provider=provider, provider_api_key_present=True)

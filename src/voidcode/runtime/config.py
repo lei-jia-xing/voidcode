@@ -1702,31 +1702,15 @@ def _validate_runtime_web_provider(provider: str) -> None:
 
 
 def _first_configured_provider_name(providers: RuntimeProvidersConfig | None) -> str | None:
+    """The first built-in provider that has a config block, in config-table order.
+
+    The ids and their order come from ``PROVIDER_CONFIG_FIELDS``, so a new vendor
+    is selectable without touching this function.
+    """
     if providers is None:
         return None
-    ordered_candidates: tuple[tuple[str, object | None], ...] = (
-        ("openai", providers.openai),
-        ("anthropic", providers.anthropic),
-        ("google", providers.google),
-        ("copilot", providers.copilot),
-        ("endpoint", providers.endpoint),
-        ("opencode", providers.opencode),
-        ("openrouter", providers.openrouter),
-        ("deepseek", providers.deepseek),
-        ("zai", providers.zai),
-        ("zhipuai", providers.zhipuai),
-        ("grok", providers.grok),
-        ("minimax", providers.minimax),
-        ("kimi", providers.kimi),
-        ("opencode-go", providers.opencode_go),
-        ("qwen", providers.qwen),
-        ("groq", providers.groq),
-        ("together", providers.together),
-        ("fireworks", providers.fireworks),
-        ("mistral", providers.mistral),
-    )
-    for provider_name, configured_provider in ordered_candidates:
-        if configured_provider is not None:
+    for provider_name in provider_config.PROVIDER_CONFIG_FIELDS:
+        if providers.entry(provider_name) is not None:
             return provider_name
     if providers.custom:
         return next(iter(providers.custom))
@@ -1734,89 +1718,55 @@ def _first_configured_provider_name(providers: RuntimeProvidersConfig | None) ->
 
 
 def _provider_api_key_present(providers: RuntimeProvidersConfig | None, provider: str | None) -> bool:
+    """Whether one provider has a credential, told by its own config shape.
+
+    The entry type decides where the credential lives: ``google`` and ``copilot``
+    nest it under ``auth``, every other config shape carries ``api_key``. The
+    provider set itself comes from the config table.
+    """
     if providers is None or provider is None:
         return False
-    if provider == "openai":
-        return bool(providers.openai and providers.openai.api_key)
-    if provider == "anthropic":
-        return bool(providers.anthropic and providers.anthropic.api_key)
-    if provider == "google":
-        return bool(providers.google and providers.google.auth and providers.google.auth.api_key)
-    if provider == "copilot":
-        return bool(providers.copilot and providers.copilot.auth and providers.copilot.auth.token)
-    if provider == "endpoint":
-        return bool(providers.endpoint and providers.endpoint.api_key)
-    if provider == "opencode":
-        return bool(providers.opencode and providers.opencode.api_key)
-    if provider == "openrouter":
-        return bool(providers.openrouter and providers.openrouter.api_key)
-    if provider == "deepseek":
-        return bool(providers.deepseek and providers.deepseek.api_key)
-    if provider == "zai":
-        return bool(providers.zai and providers.zai.api_key)
-    if provider == "zhipuai":
-        return bool(providers.zhipuai and providers.zhipuai.api_key)
-    if provider == "grok":
-        return bool(providers.grok and providers.grok.api_key)
-    if provider == "minimax":
-        return bool(providers.minimax and providers.minimax.api_key)
-    if provider == "kimi":
-        return bool(providers.kimi and providers.kimi.api_key)
-    if provider == "opencode-go":
-        return bool(providers.opencode_go and providers.opencode_go.api_key)
-    if provider == "qwen":
-        return bool(providers.qwen and providers.qwen.api_key)
-    if provider == "groq":
-        return bool(providers.groq and providers.groq.api_key)
-    if provider == "together":
-        return bool(providers.together and providers.together.api_key)
-    if provider == "fireworks":
-        return bool(providers.fireworks and providers.fireworks.api_key)
-    if provider == "mistral":
-        return bool(providers.mistral and providers.mistral.api_key)
-    custom_provider = providers.custom.get(provider)
-    return bool(custom_provider and custom_provider.api_key)
+    entry = providers.entry(provider)
+    if entry is None:
+        custom_provider = providers.custom.get(canonical_provider_id(provider))
+        return bool(custom_provider and custom_provider.api_key)
+    if isinstance(entry, provider_config.GoogleProviderConfig):
+        return bool(entry.auth and entry.auth.api_key)
+    if isinstance(entry, provider_config.CopilotProviderConfig):
+        return bool(entry.auth and entry.auth.token)
+    return bool(entry.api_key)
 
 
 def _set_provider_api_key_payload(*, raw_providers: object, provider: str, api_key: str) -> dict[str, object]:
+    """Write one provider's API key in that provider's own config shape.
+
+    The provider set is the config table (``PROVIDER_CONFIG_FIELDS``), and every
+    id in it writes a top-level ``api_key``; only ``google`` and ``copilot`` nest
+    it under ``auth``, which no table carries.
+    """
+    if provider not in provider_config.PROVIDER_CONFIG_FIELDS:
+        raise ValueError(f"provider '{provider}' has no writable credentials field in {RUNTIME_CONFIG_FILE_NAME}")
     providers_payload = dict(cast(dict[str, object], raw_providers)) if isinstance(raw_providers, dict) else {}
-    if provider in {"deepseek", "zai", "zhipuai", "grok", "minimax", "kimi", "opencode-go", "qwen", "groq", "together", "fireworks", "mistral"}:
-        nested = providers_payload.get(provider)
-        nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
-        nested_payload["api_key"] = api_key
-        providers_payload[provider] = nested_payload
-        return providers_payload
-    if provider in {"openai", "anthropic", "endpoint", "opencode", "openrouter"}:
-        nested = providers_payload.get(provider)
-        nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
-        nested_payload["api_key"] = api_key
-        providers_payload[provider] = nested_payload
-        return providers_payload
+    nested = providers_payload.get(provider)
+    nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
     if provider == "google":
-        nested = providers_payload.get(provider)
-        nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
         auth = nested_payload.get("auth")
         auth_payload = dict(cast(dict[str, object], auth)) if isinstance(auth, dict) else {"method": "api_key"}
         raw_method = auth_payload.get("method")
-        method = raw_method if isinstance(raw_method, str) and raw_method else "api_key"
-        auth_payload["method"] = method
+        auth_payload["method"] = raw_method if isinstance(raw_method, str) and raw_method else "api_key"
         auth_payload["api_key"] = api_key
         nested_payload["auth"] = auth_payload
-        providers_payload[provider] = nested_payload
-        return providers_payload
-    if provider == "copilot":
-        nested = providers_payload.get(provider)
-        nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
+    elif provider == "copilot":
         auth = nested_payload.get("auth")
         auth_payload = dict(cast(dict[str, object], auth)) if isinstance(auth, dict) else {"method": "token"}
         raw_method = auth_payload.get("method")
-        method = raw_method if isinstance(raw_method, str) and raw_method else "token"
-        auth_payload["method"] = method
+        auth_payload["method"] = raw_method if isinstance(raw_method, str) and raw_method else "token"
         auth_payload["token"] = api_key
         nested_payload["auth"] = auth_payload
-        providers_payload[provider] = nested_payload
-        return providers_payload
-    raise ValueError(f"provider '{provider}' has no writable credentials field in {RUNTIME_CONFIG_FILE_NAME}")
+    else:
+        nested_payload["api_key"] = api_key
+    providers_payload[provider] = nested_payload
+    return providers_payload
 
 
 def _read_json_object(config_path: Path) -> dict[str, object]:
