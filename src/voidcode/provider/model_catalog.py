@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from .config import ProviderEndpointConfig
+from .config import ProviderEndpointConfig, RoutedWire
 from .provider_config import provider_has_model_listing
 from .reasoning_effort import CANONICAL_EFFORTS
 
@@ -126,7 +126,7 @@ def static_catalog_metadata(provider_name: str, model_name: str) -> ProviderMode
 
 @dataclass(frozen=True, slots=True)
 class DiscoveryRequest:
-    provider: str
+    wire: RoutedWire
     base_url: str
     headers: dict[str, str]
     timeout_seconds: float
@@ -221,10 +221,6 @@ class _OpenAICompatibleDiscoveryPayload(_DiscoveryPayloadModel):
     data: list[str | _OpenAICompatibleModelItem] | None = None
 
 
-class _AnthropicDiscoveryPayload(_DiscoveryPayloadModel):
-    data: list[_OpenAICompatibleModelItem] | None = None
-
-
 class _GoogleModelItem(_DiscoveryPayloadModel):
     name: str | None = None
     inputTokenLimit: int | None = None
@@ -315,17 +311,14 @@ def _timeout_for_discovery(config: ProviderEndpointConfig | None) -> float:
 def _headers_for_discovery(config: ProviderEndpointConfig | None) -> dict[str, str]:
     if config is None or config.api_key is None or config.auth_scheme == "none":
         return {}
-    if config.auth_scheme == "token":
-        return {config.auth_header or "Authorization": config.api_key}
     header_name = config.auth_header or "Authorization"
-    if header_name == "Authorization":
-        return {header_name: f"Bearer {config.api_key}"}
+    if config.auth_scheme == "token":
+        return {header_name: config.api_key}
     return {header_name: f"Bearer {config.api_key}"}
 
 
 def _build_discovery_plan(*, provider_name: str, config: ProviderEndpointConfig | None) -> ModelDiscoveryPlan:
-    provider = provider_name.strip().lower()
-    if not provider_has_model_listing(provider, config):
+    if not provider_has_model_listing(provider_name.strip().lower(), config):
         return ModelDiscoveryPlan(
             discovery_mode="disabled",
             request=None,
@@ -333,7 +326,6 @@ def _build_discovery_plan(*, provider_name: str, config: ProviderEndpointConfig 
         )
     if config is not None and config.base_url:
         return _discovery_plan_from_base_url(
-            provider_name=provider,
             config=config,
             base_url=config.base_url.rstrip("/"),
         )
@@ -346,41 +338,36 @@ def _build_discovery_plan(*, provider_name: str, config: ProviderEndpointConfig 
 
 def _discovery_plan_from_base_url(
     *,
-    provider_name: str,
-    config: ProviderEndpointConfig | None,
+    config: ProviderEndpointConfig,
     base_url: str,
 ) -> ModelDiscoveryPlan:
-
-    provider = provider_name.strip().lower()
-    timeout_seconds = _timeout_for_discovery(config)
     headers = _headers_for_discovery(config)
-    if provider == "google" and config is not None and config.api_key is not None and config.auth_scheme == "bearer" and config.auth_header is None:
+    if config.wire == "google-generative-ai" and config.api_key is not None and config.auth_scheme == "bearer" and config.auth_header is None:
+        # A bearer credential with no explicit header goes in Google's own key
+        # header rather than ``Authorization``.
         headers = {"x-goog-api-key": config.api_key}
-    if config is not None and config.anthropic_messages_compatible:
+    if config.wire == "anthropic-messages":
         # The Anthropic Messages wire owns its own header set -- the version
         # header plus the vendor's credential header -- instead of OpenAI's
-        # ``Authorization: Bearer``. Which header the vendor's listing names
-        # comes from the endpoint config's own ``auth_header``/``auth_scheme``.
+        # ``Authorization: Bearer``.
         headers = {"anthropic-version": "2023-06-01", **headers}
 
     return ModelDiscoveryPlan(
         discovery_mode="configured_base_url",
         request=DiscoveryRequest(
-            provider=provider,
+            wire=config.wire,
             base_url=base_url,
             headers=headers,
-            timeout_seconds=timeout_seconds,
-            api_key=None if config is None else config.api_key,
+            timeout_seconds=_timeout_for_discovery(config),
+            api_key=config.api_key,
         ),
     )
 
 
 def _fetch_models(request: DiscoveryRequest) -> ModelDiscoveryFetchResult:
-    if request.provider == "google":
+    if request.wire == "google-generative-ai":
         return _fetch_google_models(request)
-    if request.provider == "anthropic":
-        return _fetch_anthropic_models(request)
-    return _fetch_openai_compatible_models(request)
+    return _fetch_data_models(request)
 
 
 def _positive_int(value: object) -> int | None:
@@ -488,25 +475,6 @@ def _parse_openai_compatible_discovery_payload(payload: object) -> ModelDiscover
     return ModelDiscoveryFetchResult(models=tuple(model_ids), model_metadata=model_metadata)
 
 
-def _parse_anthropic_discovery_payload(payload: object) -> ModelDiscoveryFetchResult:
-    try:
-        parsed = _AnthropicDiscoveryPayload.model_validate(payload)
-    except ValidationError as exc:
-        raise ValueError("provider model discovery response must be an object") from exc
-    if parsed.data is None:
-        return ModelDiscoveryFetchResult(models=())
-    model_ids: list[str] = []
-    model_metadata: dict[str, ProviderModelMetadata] = {}
-    for item in parsed.data:
-        if not item.id:
-            continue
-        model_ids.append(item.id)
-        metadata = _metadata_from_discovery_item(item)
-        if metadata is not None:
-            model_metadata[item.id] = metadata
-    return ModelDiscoveryFetchResult(models=tuple(model_ids), model_metadata=model_metadata)
-
-
 def _parse_google_discovery_payload(payload: object) -> ModelDiscoveryFetchResult:
     try:
         parsed = _GoogleDiscoveryPayload.model_validate(payload)
@@ -528,11 +496,14 @@ def _parse_google_discovery_payload(payload: object) -> ModelDiscoveryFetchResul
     return ModelDiscoveryFetchResult(models=tuple(model_ids), model_metadata=model_metadata)
 
 
-def _fetch_openai_compatible_models(
+def _fetch_data_models(
     request: DiscoveryRequest,
 ) -> ModelDiscoveryFetchResult:
     base_url = request.base_url.rstrip("/")
-    if base_url.endswith("/v1/models"):
+    if request.wire == "anthropic-messages":
+        # The Anthropic wire appends its own version segment to the base URL.
+        models_url = f"{base_url}/models" if base_url.endswith("/v1") else f"{base_url}/v1/models"
+    elif base_url.endswith("/v1/models"):
         models_url = base_url
     elif re.search(r"/v[0-9]+(?:beta|alpha)?$", base_url, re.IGNORECASE):
         models_url = f"{base_url}/models"
@@ -546,16 +517,6 @@ def _fetch_openai_compatible_models(
         payload = json.loads(response.read().decode("utf-8"))
 
     return _parse_openai_compatible_discovery_payload(payload)
-
-
-def _fetch_anthropic_models(request: DiscoveryRequest) -> ModelDiscoveryFetchResult:
-    base_url = request.base_url.rstrip("/")
-    models_url = f"{base_url}/models" if base_url.endswith("/v1") else f"{base_url}/v1/models"
-    http_request = Request(url=models_url, headers=_http_headers(request.headers), method="GET")
-    with urlopen(http_request, timeout=request.timeout_seconds) as response:  # noqa: S310
-        payload = json.loads(response.read().decode("utf-8"))
-
-    return _parse_anthropic_discovery_payload(payload)
 
 
 def _fetch_google_models(request: DiscoveryRequest) -> ModelDiscoveryFetchResult:

@@ -112,6 +112,11 @@ _VALID_ENDPOINT_AUTH_SCHEMES: tuple[EndpointAuthScheme, ...] = (
     "none",
 )
 
+# The wires VoidCode implements. An internal endpoint marker, never user config:
+# it tells the discovery path which listing shape and credential headers the
+# provider's host speaks, and per-model gateway routing reuses it.
+type RoutedWire = Literal["openai-chat-completions", "anthropic-messages", "google-generative-ai"]
+
 
 # The ``Field(...)`` range/minimum constraints below mirror what the paired
 # ``BeforeValidator`` already enforces, so the JSON Schema generated from these
@@ -553,7 +558,7 @@ class ProviderEndpointConfig:
     transient_retry: ProviderTransientRetryConfig | None = None
     openai_organization: str | None = None
     openai_project: str | None = None
-    anthropic_messages_compatible: bool = False
+    wire: RoutedWire = "openai-chat-completions"
     cache_retention: Literal["none", "short", "long"] = "none"
     auth_scheme_explicit: bool = field(default=False, compare=False, repr=False)
 

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Literal, cast
+from typing import cast
 
+from .config import RoutedWire
 from .protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
@@ -12,11 +13,6 @@ from .protocol import (
     StreamableTurnProvider,
     TurnProvider,
 )
-
-# The wires VoidCode implements. A gateway that serves one of its models over
-# anything else says so in its routing table (`overrides[model] = None`) instead
-# of downgrading the model to a wire that would hit a different endpoint.
-type RoutedWire = Literal["openai-chat-completions", "anthropic-messages", "google-generative-ai"]
 
 
 @dataclass(frozen=True, slots=True)

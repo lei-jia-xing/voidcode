@@ -8,14 +8,14 @@ from urllib.request import Request
 import pytest
 
 from voidcode.provider import model_catalog
-from voidcode.provider.config import AnthropicProviderConfig, ProviderEndpointConfig
+from voidcode.provider.config import AnthropicProviderConfig, GoogleProviderAuthConfig, GoogleProviderConfig, ProviderEndpointConfig
 from voidcode.provider.model_catalog import (
     DiscoveryRequest,
     ModelDiscoveryFetchResult,
     ProviderModelMetadata,
     discover_available_models,
 )
-from voidcode.provider.provider_config import anthropic_compatible_endpoint_config
+from voidcode.provider.provider_config import anthropic_compatible_endpoint_config, google_provider_config
 
 
 @dataclass
@@ -25,9 +25,10 @@ class _CapturedRequest:
     timeout: float = 0.0
 
 
-def _capture_discovery_request(monkeypatch: pytest.MonkeyPatch) -> _CapturedRequest:
+def _capture_discovery_request(monkeypatch: pytest.MonkeyPatch, payload: object | None = None) -> _CapturedRequest:
     """Serve one listing payload and record the request the plan would send."""
     captured = _CapturedRequest()
+    response_payload = {"data": [{"id": "provider/model-a"}]} if payload is None else payload
 
     class _Response:
         def __enter__(self) -> _Response:
@@ -42,7 +43,7 @@ def _capture_discovery_request(monkeypatch: pytest.MonkeyPatch) -> _CapturedRequ
             return False
 
         def read(self) -> bytes:
-            return json.dumps({"data": [{"id": "provider/model-a"}]}).encode("utf-8")
+            return json.dumps(response_payload).encode("utf-8")
 
     def _fake_urlopen(request: Request, timeout: float) -> _Response:
         captured.url = request.full_url
@@ -292,3 +293,58 @@ def test_discovery_is_disabled_for_a_vendor_without_a_listing() -> None:
     assert result.discovery_mode == "disabled"
     assert result.last_refresh_status == "skipped"
     assert result.last_error == "provider has no model listing"
+
+
+def test_discovery_probes_the_google_wire_path_and_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _capture_discovery_request(monkeypatch, payload={"models": [{"name": "models/gemini-3-flash"}]})
+    config = google_provider_config(
+        GoogleProviderConfig(
+            auth=GoogleProviderAuthConfig(method="api_key", api_key="google-key"),
+            base_url="https://google-gw.example.test",
+        )
+    )
+
+    result = discover_available_models("google", config)
+
+    assert captured.url == "https://google-gw.example.test/v1beta/models"
+    assert captured.headers["x-goog-api-key"] == "google-key"
+    assert result.models == ("gemini-3-flash",)
+    assert result.discovery_mode == "configured_base_url"
+
+
+def test_anthropic_wire_vendor_uses_the_shared_data_parser(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ``data`` may hold bare model-id strings; only the shared parser accepts
+    # that shape, so parsing one proves the Anthropic wire routes through it.
+    captured = _capture_discovery_request(monkeypatch, payload={"data": ["kimi-k2", {"id": "kimi-k3"}]})
+    config = anthropic_compatible_endpoint_config("kimi-coding", AnthropicProviderConfig(api_key="kimi-key"))
+
+    result = discover_available_models("kimi-coding", config)
+
+    assert captured.url == "https://api.kimi.com/coding/v1/models"
+    assert result.models == ("kimi-k2", "kimi-k3")
+
+
+def test_discovery_dispatch_keys_on_the_wire_not_the_provider_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    anthropic_wire = ProviderEndpointConfig(
+        base_url="https://api.minimaxi.com/anthropic",
+        api_key="mm-key",
+        auth_header="X-Api-Key",
+        auth_scheme="token",
+        wire="anthropic-messages",
+    )
+
+    captured = _capture_discovery_request(monkeypatch)
+    discover_available_models("fireworks", anthropic_wire)
+
+    assert captured.headers["anthropic-version"] == "2023-06-01"
+    assert captured.headers["x-api-key"] == "mm-key"
+    assert "authorization" not in captured.headers
+
+    openai_wire = ProviderEndpointConfig(base_url="https://gw.example.test/v1", api_key="gw-key")
+
+    captured = _capture_discovery_request(monkeypatch)
+    discover_available_models("anthropic", openai_wire)
+
+    assert captured.url == "https://gw.example.test/v1/models"
+    assert "anthropic-version" not in captured.headers
+    assert captured.headers["authorization"] == "Bearer gw-key"

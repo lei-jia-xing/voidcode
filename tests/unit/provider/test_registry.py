@@ -44,7 +44,7 @@ def test_registry_anthropic_wire_vendors_share_one_adapter() -> None:
         config = registry.provider_config(provider_id)
         assert config is not None
         assert config.base_url == base_url
-        assert config.anthropic_messages_compatible is True
+        assert config.wire == "anthropic-messages"
         assert isinstance(provider.turn_provider(), AnthropicMessagesProvider)
 
 

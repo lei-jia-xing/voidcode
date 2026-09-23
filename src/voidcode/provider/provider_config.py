@@ -126,7 +126,7 @@ def anthropic_compatible_endpoint_config(provider_name: str, config: AnthropicPr
         auth_scheme=auth_scheme,
         timeout_seconds=None if config is None else config.timeout_seconds,
         model_map={},
-        anthropic_messages_compatible=True,
+        wire="anthropic-messages",
         cache_retention="none" if config is None else config.cache_retention,
     )
 
@@ -155,6 +155,7 @@ def google_provider_config(config: GoogleProviderConfig | None) -> ProviderEndpo
         auth_scheme=auth_scheme,
         timeout_seconds=None if config is None else config.timeout_seconds,
         model_map={},
+        wire="google-generative-ai",
     )
 
 

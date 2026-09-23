@@ -190,7 +190,7 @@ class RuntimeProviderEndpointInspector:
     def _base_url(endpoint_config: ProviderEndpointConfig | None) -> str | None:
         if endpoint_config is None or not endpoint_config.base_url:
             return None
-        if endpoint_config.anthropic_messages_compatible:
+        if endpoint_config.wire == "anthropic-messages":
             # The Anthropic wire owns its own path conventions; reporting it as
             # an OpenAI chat base URL would name an endpoint nothing calls.
             return endpoint_config.base_url
