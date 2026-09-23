@@ -289,7 +289,6 @@ class RuntimeToolExecutor:
         def emit_tool_progress(payload: Mapping[str, object]) -> None:
             nonlocal next_fallback_ordinal
             progress_payload: dict[str, object] = {
-                "tool": tool_call.tool_name,
                 **dict(payload),
             }
             progress_payload["tool"] = tool_call.tool_name

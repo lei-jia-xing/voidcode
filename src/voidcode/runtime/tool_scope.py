@@ -20,23 +20,8 @@ class RuntimeToolScopeResolver:
         metadata: dict[str, object] | None,
     ) -> ToolRegistry:
         agent_scoped = scoped_tool_registry_for_agent(registry, agent=agent)
-        return self.apply_policy(agent_scoped, metadata=metadata)
-
-    def apply_policy(
-        self,
-        registry: ToolRegistry,
-        *,
-        metadata: dict[str, object] | None,
-    ) -> ToolRegistry:
-        return registry.allowed_by_policy(self.decisions(registry, metadata=metadata))
-
-    def decisions(
-        self,
-        registry: ToolRegistry,
-        *,
-        metadata: dict[str, object] | None,
-    ) -> tuple[ToolPolicyDecision, ...]:
-        return tuple(self.decision(tool_name=name, registry=registry, metadata=metadata) for name in registry.tools)
+        decisions = tuple(self.decision(tool_name=name, registry=agent_scoped, metadata=metadata) for name in agent_scoped.tools)
+        return agent_scoped.allowed_by_policy(decisions)
 
     def decision(
         self,

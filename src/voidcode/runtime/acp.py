@@ -351,10 +351,11 @@ class ManagedAcpAdapter:
 
 
 def build_acp_adapter(config: RuntimeAcpConfig | None) -> AcpAdapter:
-    configuration = _config_state_from_runtime_config(config)
-    if configuration.configured_enabled is not True:
+    if config is None:
+        return DisabledAcpAdapter(None)
+    if _config_state_from_runtime_config(config).configured_enabled is not True:
         return DisabledAcpAdapter(config)
-    return ManagedAcpAdapter(config or RuntimeAcpConfig())
+    return ManagedAcpAdapter(config)
 
 
 def delegated_execution_for_task(
@@ -397,7 +398,7 @@ def delegated_execution_for_task(
             ],
             lifecycle_status,
         ),
-        approval_blocked=(approval_blocked if approval_blocked is not None else task.status == "running"),
+        approval_blocked=(approval_blocked if approval_blocked is not None else task.approval_request_id is not None),
         result_available=(result_available if result_available is not None else task.result_available),
         cancellation_cause=task.cancellation_cause,
     )
@@ -439,6 +440,7 @@ def append_parent_acp_delegated_lifecycle_event(
     workspace: Path,
     task: BackgroundTaskState,
     lifecycle_status: str,
+    turn_sequence: int,
     payload: dict[str, object],
     approval_blocked: bool | None = None,
     result_available: bool | None = None,
@@ -454,7 +456,6 @@ def append_parent_acp_delegated_lifecycle_event(
         approval_blocked=approval_blocked,
         result_available=result_available,
     )
-    correlation_id = task.approval_request_id or task.question_request_id or task.session_id or "none"
     try:
         _ = appender.append_session_event(
             workspace=workspace,
@@ -467,7 +468,7 @@ def append_parent_acp_delegated_lifecycle_event(
                 "delegation": delegation.as_payload(),
                 **payload,
             },
-            dedupe_key=(f"{RUNTIME_ACP_DELEGATED_LIFECYCLE}:{task.task.id}:{lifecycle_status}:{correlation_id}"),
+            dedupe_key=(f"{RUNTIME_ACP_DELEGATED_LIFECYCLE}:{task.task.id}:{lifecycle_status}:{turn_sequence}"),
         )
     except AttributeError, UnknownSessionError:
         logger.debug(

@@ -238,8 +238,7 @@ def project_tool_effectiveness(
         if event.event_type != "runtime.tool_completed":
             continue
         payload = event.payload
-        raw_tool = payload.get("tool")
-        tool = raw_tool if isinstance(raw_tool, str) and raw_tool else "unknown"
+        tool = str(payload["tool"])
         stats = mutable.setdefault(tool, _MutableToolStats())
         stats.calls += 1
 

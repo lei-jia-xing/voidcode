@@ -32,9 +32,6 @@ class RuntimeGraphSelection:
 @dataclass(frozen=True, slots=True)
 class RuntimeSessionRouting:
     session_id: str
-    parent_session_id: str | None
-    requested_session_id: str | None
-    allocate_session_id: bool
 
 
 def provider_model_required_message() -> str:
@@ -49,25 +46,10 @@ def provider_model_required_message() -> str:
 def resolve_runtime_session_routing(request: RuntimeRequest) -> RuntimeSessionRouting:
     requested_session_id = request.session_id
     if requested_session_id is not None:
-        return RuntimeSessionRouting(
-            session_id=requested_session_id,
-            parent_session_id=request.parent_session_id,
-            requested_session_id=requested_session_id,
-            allocate_session_id=request.allocate_session_id,
-        )
+        return RuntimeSessionRouting(session_id=requested_session_id)
     if request.allocate_session_id or request.parent_session_id is not None:
-        return RuntimeSessionRouting(
-            session_id=f"session-{uuid4().hex}",
-            parent_session_id=request.parent_session_id,
-            requested_session_id=None,
-            allocate_session_id=request.allocate_session_id,
-        )
-    return RuntimeSessionRouting(
-        session_id="local-cli-session",
-        parent_session_id=request.parent_session_id,
-        requested_session_id=None,
-        allocate_session_id=request.allocate_session_id,
-    )
+        return RuntimeSessionRouting(session_id=f"session-{uuid4().hex}")
+    return RuntimeSessionRouting(session_id="local-cli-session")
 
 
 def build_runtime_graph(

@@ -19,10 +19,6 @@ class RuntimeProviderCatalogCache:
         self._registry = registry
         self._path = path
 
-    @property
-    def path(self) -> Path:
-        return self._path
-
     def hydrate(self) -> None:
         catalog = self._registry.model_catalog
         if catalog is None or catalog:
@@ -75,9 +71,11 @@ class RuntimeProviderCatalogCache:
                 models=models,
                 refreshed=bool(catalog_payload.get("refreshed", False)),
                 model_metadata=model_metadata,
-                source=(cast(str, catalog_payload["source"]) if isinstance(catalog_payload.get("source"), str) else "remote"),
+                source=(cast(str, catalog_payload["source"]) if isinstance(catalog_payload.get("source"), str) else "unknown"),
                 last_refresh_status=(
-                    cast(str, catalog_payload["last_refresh_status"]) if isinstance(catalog_payload.get("last_refresh_status"), str) else "ok"
+                    cast(str, catalog_payload["last_refresh_status"])
+                    if isinstance(catalog_payload.get("last_refresh_status"), str)
+                    else "unavailable"
                 ),
                 last_error=(cast(str, catalog_payload["last_error"]) if isinstance(catalog_payload.get("last_error"), str) else None),
                 discovery_mode=discovery_mode,

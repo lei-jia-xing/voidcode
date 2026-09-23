@@ -15,7 +15,6 @@ from .contracts import (
     PLAN_STATE_METADATA_KEYS,
     RUNTIME_STATE_METADATA_KEYS,
     SKILL_SNAPSHOT_METADATA_KEYS,
-    AcpStateMetadata,
     ContextCompactedStateMetadata,
     ContextProjectionMetadata,
     ContextTransformAppliedStateMetadata,
@@ -215,11 +214,6 @@ def _runtime_state_payload(metadata: Mapping[str, object]) -> RuntimeStateMetada
 def runtime_state_run_id(metadata: Mapping[str, object]) -> str | None:
     run_id = _runtime_state_payload(metadata).get("run_id")
     return run_id if isinstance(run_id, str) else None
-
-
-def runtime_state_acp(metadata: Mapping[str, object]) -> AcpStateMetadata | None:
-    value = _runtime_state_payload(metadata).get("acp")
-    return value if isinstance(value, dict) else None
 
 
 def runtime_state_todos(metadata: Mapping[str, object]) -> TodosStateMetadata | None:
@@ -765,7 +759,6 @@ __all__ = [
     "persist_tool_execution_intent",
     "remaining_spawn_budget_from_metadata",
     "resume_waiting_reason",
-    "runtime_state_acp",
     "runtime_state_context_compacted",
     "runtime_state_context_projection",
     "runtime_state_context_projection_summary",

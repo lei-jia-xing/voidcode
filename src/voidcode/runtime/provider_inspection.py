@@ -326,7 +326,7 @@ class RuntimeProviderValidationProjector:
                 failure_kind="transient_failure",
                 guidance=guidance_for_provider_error_kind("transient_failure"),
             )
-        status = models.last_refresh_status or "ok"
+        status = models.last_refresh_status or "unavailable"
         ok = status == "ok"
         return ProviderValidationResult(
             provider=facts.provider,

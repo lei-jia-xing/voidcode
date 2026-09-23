@@ -16,8 +16,6 @@ tool UI plan:
 
 from __future__ import annotations
 
-from typing import cast
-
 # ── Tool-kind table ────────────────────────────────────────────────────────
 
 _TOOL_KIND_TABLE: dict[str, tuple[str, str]] = {
@@ -43,6 +41,22 @@ _TOOL_KIND_TABLE: dict[str, tuple[str, str]] = {
 _MAX_SUMMARY_LENGTH = 120
 _MAX_ARG_LENGTH = 200
 _MAX_ARGS_COUNT = 3
+
+#: tool name -> (summary key order, arg key order, fallback summary).
+_TOOL_DISPLAY_TABLE: dict[str, tuple[tuple[str, ...], tuple[str, ...], str]] = {
+    "read": (("path",), ("path",), "Read file"),
+    "write": (("path",), ("path",), "Write file"),
+    "grep": (("pattern", "query"), ("pattern", "query"), "Search"),
+    "ast_grep": (("pattern", "query"), ("pattern", "query"), "Search"),
+    "glob": (("pattern",), ("pattern",), "Context"),
+    "web_search": (("query", "url"), ("query", "url"), "Search"),
+    "web_fetch": (("query", "url"), ("query", "url"), "Fetch"),
+    "task": (("description",), ("subagent_type", "description"), "Task"),
+    "background_task": (("task_id", "operation"), ("operation", "task_id", "prompt"), "Background"),
+    "skill": (("name",), ("name",), "Skill"),
+    "question": (("header",), ("header",), "Question"),
+    "lsp": (("operation",), ("operation",), "LSP"),
+}
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -190,93 +204,38 @@ def build_tool_display(
         args = _extract_primitive_args(arguments, "command")
         copyable = _build_copyable(tool_name, arguments, result_data)
 
-    elif tool_name in {"read"}:
-        path = _first_primitive(arguments, "path")
-        summary = path if path else "Read file"
-        args = _extract_primitive_args(arguments, "path")
-        if path:
-            copyable = {"path": path}
-
-    elif tool_name in {"write"}:
-        path = _first_primitive(arguments, "path")
-        summary = path if path else "Write file"
-        args = _extract_primitive_args(arguments, "path")
-        if result_data is not None:
-            bc = result_data.get("byte_count")
-            if isinstance(bc, int):
-                summary = f"{summary} ({bc}B)"
-        if path:
-            copyable = {"path": path}
-
     elif tool_name in {"edit", "multi_edit", "apply_patch"}:
         path = _first_primitive(arguments, "path")
-        file_path_label = _first_primitive(arguments, "path")
         edit_count = 0
         if result_data is not None:
             raw_edits = result_data.get("edit_count")
             if isinstance(raw_edits, int) and not isinstance(raw_edits, bool):
                 edit_count = raw_edits
-        if file_path_label and edit_count:
-            summary = f"{file_path_label} ({edit_count} change{'s' if edit_count != 1 else ''})"
-        elif file_path_label:
-            summary = file_path_label
+        if path and edit_count:
+            summary = f"{path} ({edit_count} change{'s' if edit_count != 1 else ''})"
         else:
-            summary = "Edit"
+            summary = path or "Edit"
         args = _extract_primitive_args(arguments, "path")
         if path:
             copyable = {"path": path}
-
-    elif tool_name in {
-        "grep",
-        "glob",
-        "ast_grep",
-    }:
-        query_keys: tuple[str, ...]
-        if tool_name in {"grep", "ast_grep"}:
-            query_keys = ("pattern", "query")
-        else:
-            query_keys = ("pattern",)
-        query = _first_primitive(arguments, *query_keys)
-        summary = query if query else title
-        args = _extract_primitive_args(arguments, *query_keys)
-
-    elif tool_name in {"web_search", "web_fetch"}:
-        query = _first_primitive(arguments, "query", "url")
-        summary = query if query else title
-        args = _extract_primitive_args(arguments, "query", "url")
-
-    elif tool_name == "task":
-        desc = _first_primitive(arguments, "description")
-        summary = desc if desc else "Task"
-        args = _extract_primitive_args(arguments, "subagent_type", "description")
-        if desc:
-            # description is already shown as summary; keep args cleaner
-            pass
-
-    elif tool_name == "background_task":
-        operation = _first_primitive(arguments, "operation")
-        task_id = _first_primitive(arguments, "task_id")
-        summary = task_id if task_id else operation if operation else title
-        args = _extract_primitive_args(arguments, "operation", "task_id", "prompt")
-
-    elif tool_name == "skill":
-        skill_name = _first_primitive(arguments, "name")
-        summary = skill_name if skill_name else "Skill"
-        args = _extract_primitive_args(arguments, "name")
-
-    elif tool_name == "question":
-        header = _first_primitive(arguments, "header")
-        summary = header if header else "Question"
-        args = _extract_primitive_args(arguments, "header")
 
     elif tool_name == "todo":
         summary = "Update todo list"
         hidden = True
 
-    elif tool_name == "lsp":
-        operation = _first_primitive(arguments, "operation")
-        summary = operation if operation else "LSP"
-        args = _extract_primitive_args(arguments, "operation")
+    elif (entry := _TOOL_DISPLAY_TABLE.get(tool_name)) is not None:
+        summary_keys, args_keys, fallback = entry
+        matched = _first_primitive(arguments, *summary_keys)
+        summary = matched if matched else fallback
+        args = _extract_primitive_args(arguments, *args_keys)
+        if "path" in args_keys:
+            path = _first_primitive(arguments, "path")
+            if path:
+                copyable = {"path": path}
+        if tool_name == "write" and result_data is not None:
+            byte_count = result_data.get("byte_count")
+            if isinstance(byte_count, int):
+                summary = f"{summary} ({byte_count}B)"
 
     else:
         # Unknown / MCP fallback: safe generic with summary from first
@@ -341,7 +300,7 @@ def build_tool_status(
         "phase": phase,
         "status": status,
     }
-    label = cast(str, display.get("summary", ""))
+    label = display["summary"]
     if label:
         payload["label"] = label
     payload["display"] = display

@@ -242,7 +242,6 @@ class SessionBundleImportResult:
     event_count: int
     background_task_count: int
     imported_session_ids: tuple[str, ...]
-    skipped_session_ids: tuple[str, ...]
     skipped_background_task_count: int
     dry_run: bool
 
@@ -259,7 +258,6 @@ class SessionBundleImportResult:
             "event_count": self.event_count,
             "background_task_count": self.background_task_count,
             "imported_session_ids": list(self.imported_session_ids),
-            "skipped_session_ids": list(self.skipped_session_ids),
             "skipped_background_task_count": self.skipped_background_task_count,
             "dry_run": self.dry_run,
         }
@@ -333,24 +331,8 @@ def _diagnostics_payload(diagnostics: SessionBundleDiagnostics) -> dict[str, obj
     return payload
 
 
-def _scrub_secret_text(value: str) -> str:
-    return redact_text(value)
-
-
-def _redact_object(value: object) -> object:
-    return redact_value(value)
-
-
 def _redact_dict(value: dict[str, object]) -> dict[str, object]:
-    return cast(dict[str, object], _redact_object(value))
-
-
-def _is_deferred_bundle_diagnostic_key(value: str) -> bool:
-    return value.casefold() in _DEFERRED_BUNDLE_DIAGNOSTIC_KEYS
-
-
-def _is_deferred_bundle_diagnostic_value(value: str) -> bool:
-    return value.casefold() in _DEFERRED_BUNDLE_DIAGNOSTIC_VALUES
+    return cast(dict[str, object], redact_value(value))
 
 
 def _strip_deferred_bundle_diagnostics(value: object) -> object | None:
@@ -358,7 +340,7 @@ def _strip_deferred_bundle_diagnostics(value: object) -> object | None:
         cleaned: dict[str, object] = {}
         for raw_key, raw_item in cast(Mapping[object, object], value).items():
             key = str(raw_key)
-            if _is_deferred_bundle_diagnostic_key(key):
+            if key.casefold() in _DEFERRED_BUNDLE_DIAGNOSTIC_KEYS:
                 continue
             cleaned_item = _strip_deferred_bundle_diagnostics(raw_item)
             if cleaned_item is not None:
@@ -373,13 +355,9 @@ def _strip_deferred_bundle_diagnostics(value: object) -> object | None:
         return cleaned_items
     if isinstance(value, tuple):
         return tuple(cleaned_item for item in value if (cleaned_item := _strip_deferred_bundle_diagnostics(item)) is not None)
-    if isinstance(value, str) and _is_deferred_bundle_diagnostic_value(value):
+    if isinstance(value, str) and value.casefold() in _DEFERRED_BUNDLE_DIAGNOSTIC_VALUES:
         return None
     return value
-
-
-def _truncate_string(value: str, *, limit: int) -> str:
-    return truncate(value, limit)
 
 
 @overload
@@ -394,9 +372,9 @@ def _sanitize_export_text(
 ) -> str | None:
     if value is None:
         return None
-    sanitized = _scrub_secret_text(value) if options.redact else value
+    sanitized = redact_text(value) if options.redact else value
     if truncate_when_tool_output_hidden and not options.include_tool_output:
-        return _truncate_string(sanitized, limit=options.tool_output_preview_chars)
+        return truncate(sanitized, options.tool_output_preview_chars)
     return sanitized
 
 
@@ -429,7 +407,7 @@ def _truncate_tool_output_payload(
     cleaned: dict[str, object] = {}
     for key, value in payload.items():
         if key in _TOOL_OUTPUT_KEYS and isinstance(value, str):
-            cleaned[key] = _truncate_string(value, limit=limit)
+            cleaned[key] = truncate(value, limit)
             continue
         if isinstance(value, dict):
             cleaned[key] = _truncate_tool_output_payload(cast(dict[str, object], value), limit=limit)
@@ -670,13 +648,10 @@ class _SessionBundleBuilder:
         )
 
     def _session_prompt(self, *, session_id: str) -> str:
-        try:
-            result = self._session_store.load_session_result(
-                workspace=self._workspace,
-                session_id=session_id,
-            )
-        except UnknownSessionError:
-            return ""
+        result = self._session_store.load_session_result(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
         return result.prompt
 
     def _build_event_payload(self, event: EventEnvelope) -> dict[str, object] | None:
@@ -691,13 +666,10 @@ class _SessionBundleBuilder:
         }
 
     def _child_session_ids(self, *, parent_session_id: str) -> tuple[str, ...]:
-        try:
-            tasks = self._session_store.list_background_tasks_by_parent_session(
-                workspace=self._workspace,
-                parent_session_id=parent_session_id,
-            )
-        except ValueError:
-            return ()
+        tasks = self._session_store.list_background_tasks_by_parent_session(
+            workspace=self._workspace,
+            parent_session_id=parent_session_id,
+        )
         seen: set[str] = set()
         ordered: list[str] = []
         for task in tasks:
@@ -709,13 +681,10 @@ class _SessionBundleBuilder:
         return tuple(ordered)
 
     def _collect_background_tasks(self, *, session_id: str) -> tuple[SessionBundleBackgroundTaskPayload, ...]:
-        try:
-            tasks = self._session_store.list_background_tasks_by_parent_session(
-                workspace=self._workspace,
-                parent_session_id=session_id,
-            )
-        except ValueError:
-            return ()
+        tasks = self._session_store.list_background_tasks_by_parent_session(
+            workspace=self._workspace,
+            parent_session_id=session_id,
+        )
         return tuple(self._build_task_payload(task) for task in tasks)
 
     def _build_task_payload(self, task: StoredBackgroundTaskSummary) -> SessionBundleBackgroundTaskPayload:
@@ -877,14 +846,14 @@ def _ensure_optional_dict(value: object) -> dict[str, object] | None:
 
 
 def _parse_session_payload(payload: dict[str, object], *, index: int) -> SessionBundleSessionPayload:
-    session_id = _validate_bundle_session_id(
+    session_id = _validate_bundle_id(
         _ensure_str(payload.get("id"), where=f"sessions[{index}].id"),
         where=f"sessions[{index}].id",
     )
     parent_raw = _required(payload, "parent_id", where=f"sessions[{index}].parent_id")
     parent_id = _ensure_optional_str(parent_raw, where=f"sessions[{index}].parent_id")
     if parent_id is not None:
-        parent_id = _validate_bundle_parent_id(parent_id, where=f"sessions[{index}].parent_id")
+        parent_id = _validate_bundle_id(parent_id, where=f"sessions[{index}].parent_id", field_name="parent_id")
     status = _ensure_str(payload.get("status"), where=f"sessions[{index}].status")
     turn = _ensure_int(payload.get("turn"), where=f"sessions[{index}].turn")
     prompt = _ensure_str(payload.get("prompt"), where=f"sessions[{index}].prompt")
@@ -928,16 +897,9 @@ def _normalize_event_payload(event: dict[str, object], *, label: str) -> dict[st
     }
 
 
-def _validate_bundle_session_id(value: str, *, where: str) -> str:
+def _validate_bundle_id(value: str, *, where: str, field_name: str = "session_id") -> str:
     try:
-        return validate_id(value)
-    except ValueError as exc:
-        raise SessionBundleError(f"session bundle {where} is invalid: {exc}") from exc
-
-
-def _validate_bundle_parent_id(value: str, *, where: str) -> str:
-    try:
-        return validate_id(value, field_name="parent_id")
+        return validate_id(value, field_name=field_name)
     except ValueError as exc:
         raise SessionBundleError(f"session bundle {where} is invalid: {exc}") from exc
 
@@ -1175,7 +1137,6 @@ def apply_session_bundle(
         resolver=resolver,
     )
     imported_ids = tuple(rebound_id_for[session.id] for session in bundle.sessions)
-    skipped_ids: tuple[str, ...] = ()
     for session in bundle.sessions:
         target_id = rebound_id_for[session.id]
         if dry_run:
@@ -1251,7 +1212,6 @@ def apply_session_bundle(
         event_count=bundle.manifest.event_count,
         background_task_count=bundle.manifest.background_task_count,
         imported_session_ids=imported_ids,
-        skipped_session_ids=skipped_ids,
         skipped_background_task_count=skipped_tasks,
         dry_run=dry_run,
     )

@@ -479,8 +479,4 @@ def runtime_provider_config_metadata(
 
 
 def execution_engine_or_none(value: object) -> ExecutionEngineName | None:
-    if value == "deterministic":
-        return "deterministic"
-    if value == "provider":
-        return "provider"
-    return None
+    return value if isinstance(value, str) and value in ("deterministic", "provider") else None

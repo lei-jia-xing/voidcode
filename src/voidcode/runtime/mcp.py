@@ -157,7 +157,7 @@ def _is_connection_error(exc: BaseException) -> bool:
     if isinstance(exc, httpx2.ConnectError | httpx2.ConnectTimeout):
         return True
     if isinstance(exc, MCPError):
-        return getattr(exc.error, "code", None) == _MCP_CONNECTION_CLOSED_CODE
+        return exc.code == _MCP_CONNECTION_CLOSED_CODE
     return False
 
 
@@ -511,7 +511,11 @@ class ManagedMcpManager:
             descriptor = self._tool_descriptors_by_server.get(key, {}).get(tool_name)
 
         if descriptor is not None and not descriptor.enabled:
-            raise ValueError(f"MCP[{server_name}/{tool_name}] is disabled: {descriptor.disabled_reason or 'invalid schema'}")
+            disabled_reason = descriptor.disabled_reason
+            message = f"MCP[{server_name}/{tool_name}] is disabled"
+            if disabled_reason:
+                message = f"{message}: {disabled_reason}"
+            raise ValueError(message)
 
         if descriptor is not None:
             try:
@@ -953,8 +957,7 @@ class ManagedMcpManager:
     def _is_recoverable_call_error(self, exc: Exception, *, stage: str) -> bool:
         if stage != "call" or not isinstance(exc, MCPError) or self._is_timeout_error(exc):
             return False
-        code = getattr(exc.error, "code", None)
-        return code in _RECOVERABLE_MCP_CALL_ERROR_CODES
+        return exc.code in _RECOVERABLE_MCP_CALL_ERROR_CODES
 
     def _call_sdk_session(
         self,
@@ -1410,8 +1413,7 @@ class ManagedMcpManager:
         if isinstance(exc, TimeoutError):
             return True
         if isinstance(exc, MCPError):
-            code = getattr(exc.error, "code", None)
-            return code == 408 or "timed out" in str(exc).lower()
+            return exc.code == 408 or "timed out" in str(exc).lower()
         return False
 
     @staticmethod
@@ -1456,11 +1458,12 @@ def build_mcp_manager(
     tool_catalog_cache: McpToolCatalogCache | None = None,
 ) -> McpManager:
     """Build an MCP manager based on configuration."""
-    configuration = McpConfigState.from_runtime_config(config)
-    if configuration.configured_enabled is not True:
+    if config is None:
+        return DisabledMcpManager(None)
+    if McpConfigState.from_runtime_config(config).configured_enabled is not True:
         return DisabledMcpManager(config)
     return ManagedMcpManager(
-        config or RuntimeMcpConfig(),
+        config,
         diagnostics_collector=diagnostics_collector,
         tool_catalog_cache=tool_catalog_cache,
     )

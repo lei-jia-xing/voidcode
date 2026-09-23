@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from ..graph.contracts import GraphRunRequest
 from ..provider.protocol import ProviderAbortSignal
@@ -39,9 +39,6 @@ from .execution.resume_checkpoint import (
 )
 from .execution.resume_checkpoint import (
     approval_resume_state_from_checkpoint as _approval_resume_state_from_checkpoint,
-)
-from .execution.resume_checkpoint import (
-    checkpoint_state_from_payload as _checkpoint_state_from_payload,
 )
 from .execution.resume_checkpoint import (
     question_resume_state_from_checkpoint as _question_resume_state_from_checkpoint,
@@ -411,9 +408,7 @@ class RuntimeResumeCoordinator:
                     "resume": True,
                     "runtime_resume": True,
                     "approval_request_id": pending.request_id,
-                    "provider_attempt": (
-                        session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
-                    ),
+                    "provider_attempt": provider_attempt_from_metadata(session.metadata),
                     **(
                         {"reasoning_effort": effective_config.reasoning_effort}
                         if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
@@ -718,9 +713,7 @@ class RuntimeResumeCoordinator:
                     **session.metadata,
                     "agent_preset": serialize_runtime_agent_config(effective_config.agent),
                     "runtime_resume": True,
-                    "provider_attempt": (
-                        session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
-                    ),
+                    "provider_attempt": provider_attempt_from_metadata(session.metadata),
                     **(
                         {"reasoning_effort": effective_config.reasoning_effort}
                         if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
@@ -1068,19 +1061,6 @@ class RuntimeResumeCoordinator:
             response=response,
         )
 
-    @staticmethod
-    def _checkpoint_state_from_payload(
-        *,
-        checkpoint_payload: dict[str, object],
-        stored_metadata: dict[str, object],
-        resume_label: Literal["approval", "question"],
-    ) -> ApprovalResumeCheckpointState:
-        return _checkpoint_state_from_payload(
-            checkpoint_payload=checkpoint_payload,
-            stored_metadata=stored_metadata,
-            resume_label=resume_label,
-        )
-
     def approval_resume_state_from_checkpoint(
         self,
         *,
@@ -1360,9 +1340,7 @@ class RuntimeResumeCoordinator:
                     **session.metadata,
                     **({"resume_kind": resume_kind} if resume_kind is not None else {}),
                     "runtime_resume": True,
-                    "provider_attempt": (
-                        session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
-                    ),
+                    "provider_attempt": provider_attempt_from_metadata(session.metadata),
                     "provider_stream": True,
                     **({"provider_failure_resume": True} if provider_failure_resume else {}),
                     **(

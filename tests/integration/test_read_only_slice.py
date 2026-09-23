@@ -527,7 +527,7 @@ class _ScriptedModelProvider:
             def propose_turn(self, request: object) -> object:
                 _ = request
                 if not outcomes:
-                    return importlib.import_module("voidcode.runtime.provider_protocol").ProviderTurnResult(output="done")
+                    return importlib.import_module("voidcode.provider.protocol").ProviderTurnResult(output="done")
                 outcome = outcomes.pop(0)
                 if isinstance(outcome, Exception):
                     raise outcome
@@ -551,7 +551,7 @@ class _CapturingModelProvider:
 
             def propose_turn(self, request: object) -> object:
                 requests.append(request)
-                return importlib.import_module("voidcode.runtime.provider_protocol").ProviderTurnResult(output="done")
+                return importlib.import_module("voidcode.provider.protocol").ProviderTurnResult(output="done")
 
         return _Provider()
 
@@ -571,7 +571,7 @@ class _ReadFileParityModelProvider:
 
             def propose_turn(self, request: object) -> object:
                 requests.append(request)
-                provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+                provider_protocol_module = importlib.import_module("voidcode.provider.protocol")
                 tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
                 if not _assembled_context(request).tool_results:
                     return provider_protocol_module.ProviderTurnResult(
@@ -604,7 +604,7 @@ class _SingleThenBatchTurnProvider:
         self.propose_turn_tool_result_counts: list[int] = []
 
     def propose_turn(self, request: object) -> object:
-        provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+        provider_protocol_module = importlib.import_module("voidcode.provider.protocol")
         tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
         tool_results = _assembled_context(request).tool_results
         self.propose_turn_tool_result_counts.append(len(tool_results))
@@ -646,7 +646,7 @@ class _DelegationE2EModelProvider:
                 self.name = name
 
             def propose_turn(self, request: object) -> object:
-                provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+                provider_protocol_module = importlib.import_module("voidcode.provider.protocol")
                 tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
                 assembled_context = _assembled_context(request)
                 tool_results = assembled_context.tool_results
@@ -690,7 +690,7 @@ class _ParentToolResultGuardrailProvider:
 
             def propose_turn(self, request: object) -> object:
                 requests.append(request)
-                provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+                provider_protocol_module = importlib.import_module("voidcode.provider.protocol")
                 tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
                 assembled_context = _assembled_context(request)
                 tool_results = assembled_context.tool_results
@@ -741,7 +741,7 @@ class _BackgroundOutputGuardrailProvider:
 
             def propose_turn(self, request: object) -> object:
                 requests.append(request)
-                provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+                provider_protocol_module = importlib.import_module("voidcode.provider.protocol")
                 tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
                 assembled_context = _assembled_context(request)
                 tool_results = assembled_context.tool_results

@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from typing import Protocol
 
 from ...tools.contracts import (
     ToolCall,
@@ -22,12 +21,6 @@ from ..context.window import ToolResultView
 from ..session import SessionState
 from ..session_metadata_helpers import session_model_identity
 from ..tool_display import build_tool_display, build_tool_status
-
-
-class _ToolDiagnosticError(Protocol):
-    error_kind: str
-    error_details: dict[str, object]
-    retry_guidance: str | None
 
 
 def _tool_completed_identity_payload(session: SessionState) -> dict[str, str]:
@@ -94,7 +87,7 @@ def _tool_completed_payload(
     }
     if tool_result.diagnostics is not None:
         completed_payload["diagnostics"] = tool_result.diagnostics.as_payload()
-    completed_payload.setdefault("tool", tool_result.tool_name)
+    completed_payload["tool"] = tool_result.tool_name
 
     completed_display = build_tool_display(
         tool_result.tool_name if display_tool_name is None else display_tool_name,
@@ -245,24 +238,6 @@ def _tool_error_payload(
     }
 
 
-def _tool_diagnostic_payload(
-    *,
-    tool_name: str,
-    error: _ToolDiagnosticError,
-) -> dict[str, object]:
-    return {
-        "diagnostics": ToolDiagnostics(
-            kind=error.error_kind,
-            summary=_tool_error_summary(str(error)),
-            details=_tool_error_details(
-                tool_name=tool_name,
-                extra=error.error_details,
-            ),
-            guidance=error.retry_guidance,
-        ).as_payload()
-    }
-
-
 __all__ = [
     "_fit_numbered_progress_payload",
     "_is_terminal_yield_result",
@@ -271,7 +246,6 @@ __all__ = [
     "_serialized_tool_results",
     "_tool_completed_identity_payload",
     "_tool_completed_payload",
-    "_tool_diagnostic_payload",
     "_tool_error_details",
     "_tool_error_diagnostics",
     "_tool_error_payload",

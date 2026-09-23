@@ -184,7 +184,6 @@ class RuntimeLspConfig:
 @dataclass(frozen=True, slots=True)
 class RuntimeAcpConfig:
     enabled: bool | None = None
-    transport: Literal["memory"] = "memory"
     handshake_request_type: str = "handshake"
     handshake_payload: dict[str, object] = field(default_factory=dict)
 

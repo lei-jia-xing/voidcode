@@ -448,9 +448,6 @@ def _debug_snapshot(rich: bool) -> RuntimeSessionDebugSnapshot:
             RuntimeHookPresetSnapshot(
                 refs=("hooks/post_run.json",),
                 kinds=("post_run",),
-                event_scopes=("runtime",),
-                allowed_actions=("notification",),
-                authority="workspace",
                 source="workspace",
                 count=1,
             )

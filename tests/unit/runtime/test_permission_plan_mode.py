@@ -18,7 +18,7 @@ from voidcode.runtime.permission import (
     PathScope,
     PermissionPolicy,
     default_policy_for_tool,
-    is_plan_mode_blocked,
+    is_read_only_blocked,
     resolve_permission,
 )
 from voidcode.runtime.permission_context import RuntimePermissionContextResolver, operation_class_for_tool
@@ -63,14 +63,14 @@ def _call(name: str = "write") -> ToolCall:
         (True, _read_only_tool(), "execute", True),
     ],
 )
-def test_is_plan_mode_blocked_matrix(
+def test_is_read_only_blocked_matrix(
     read_only: bool,
     tool: ToolDefinition,
     operation_class: str | None,
     expected: bool,
 ) -> None:
     assert (
-        is_plan_mode_blocked(
+        is_read_only_blocked(
             read_only=read_only,
             tool=tool,
             operation_class=cast(OperationClass | None, operation_class),

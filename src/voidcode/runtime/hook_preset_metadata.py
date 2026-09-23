@@ -55,15 +55,12 @@ def hook_preset_event_payload_from_session_metadata(
 def debug_hook_preset_snapshot(
     metadata: dict[str, object],
 ) -> RuntimeHookPresetSnapshot | None:
-    payload = hook_preset_event_payload_from_session_metadata(metadata)
-    if payload is None:
+    snapshot = resolved_hook_preset_snapshot_from_session_metadata(metadata)
+    if snapshot is None or not snapshot.presets:
         return None
     return RuntimeHookPresetSnapshot(
-        refs=tuple(cast(list[str], payload["refs"])),
-        kinds=tuple(cast(list[str], payload["kinds"])),
-        event_scopes=tuple(cast(list[str], payload["event_scopes"])),
-        allowed_actions=tuple(cast(list[str], payload["allowed_actions"])),
-        authority=cast(str, payload["authority"]),
-        source=cast(str, payload["source"]),
-        count=cast(int, payload["count"]),
+        refs=tuple(snapshot.refs),
+        kinds=tuple(cast(str, preset["kind"]) for preset in snapshot.presets),
+        source="builtin",
+        count=len(snapshot.presets),
     )

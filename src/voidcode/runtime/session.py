@@ -240,14 +240,6 @@ class SessionRef:
     def kind(self) -> SessionKind:
         return "child" if self.parent_id is not None else "top_level"
 
-    @property
-    def is_child(self) -> bool:
-        return self.parent_id is not None
-
-    @property
-    def is_top_level(self) -> bool:
-        return self.parent_id is None
-
 
 @dataclass(frozen=True, slots=True)
 class SessionState:

@@ -41,7 +41,6 @@ from .effectiveness import _EffectivenessStorageMixin
 from .resume import _ResumeStorageMixin
 from .revert import _RevertStorageMixin
 from .sessions import SessionEventsAfter, _SessionStorageMixin
-from .shared import SessionSealedError as SessionSealedError
 
 SCHEMA_VERSION: Final[int] = 1
 

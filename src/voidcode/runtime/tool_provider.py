@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ..hook.config import RuntimeHooksConfig
 from ..skills.models import SkillMetadata
@@ -21,6 +21,9 @@ from ..tools.write import WriteTool
 from ..tools.yield_tool import YieldTool
 from .config import RuntimeAgentConfig, RuntimeToolsLocalConfig
 from .edit_schema_policy import EditSchemaResolver
+
+if TYPE_CHECKING:
+    from .tool_registry import ToolRegistry
 
 BUILTIN_TOOL_NAMES = frozenset(
     {
@@ -54,25 +57,11 @@ BUILTIN_TOOL_NAMES = frozenset(
 )
 
 
-class ScopedToolRegistry(Protocol):
-    tools: dict[str, Tool]
-
-    def filtered[ToolRegistryT: "ScopedToolRegistry"](
-        self: ToolRegistryT,
-        patterns: Iterable[str],
-    ) -> ToolRegistryT: ...
-
-    def excluding[ToolRegistryT: "ScopedToolRegistry"](
-        self: ToolRegistryT,
-        tool_names: Iterable[str],
-    ) -> ToolRegistryT: ...
-
-
-def scoped_tool_registry_for_agent[ToolRegistryT: ScopedToolRegistry](
-    registry: ToolRegistryT,
+def scoped_tool_registry_for_agent(
+    registry: ToolRegistry,
     *,
     agent: RuntimeAgentConfig | None,
-) -> ToolRegistryT:
+) -> ToolRegistry:
     if agent is None:
         return registry
 
@@ -151,10 +140,6 @@ except ImportError:
     _TodoTool: _NoArgToolFactory | None = None
 else:
     _TodoTool: _NoArgToolFactory | None = TodoTool
-
-
-class ToolProvider(Protocol):
-    def provide_tools(self) -> tuple[Tool, ...]: ...
 
 
 class LocalCustomToolProvider:

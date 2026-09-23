@@ -64,6 +64,7 @@ from ..contracts import (
     RuntimeStreamChunk,
     SessionEventBatch,
     SkillSummary,
+    UnknownSessionError,
     WorkspaceRegistrySnapshot,
     WorkspaceReviewSnapshot,
     WorkspaceSummary,
@@ -1284,7 +1285,7 @@ class RuntimeTransportApp(FastAPI):
                 if task_result.child_session_id is not None:
                     try:
                         child_session_result = runtime.session_result(session_id=task_result.child_session_id)
-                    except ValueError:
+                    except UnknownSessionError:
                         child_session_result = None
             except ValueError as exc:
                 raise HttpError(404, str(exc)) from None
@@ -1322,7 +1323,7 @@ class RuntimeTransportApp(FastAPI):
                     child_session_result = runtime.session_result(
                         session_id=task_result.child_session_id,
                     )
-                except ValueError:
+                except UnknownSessionError:
                     child_session_result = None
 
         return json_response(

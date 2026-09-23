@@ -259,33 +259,23 @@ def _parse_hook_timeout_seconds(raw_value: object, *, source: str) -> float:
 def _parse_formatter_cwd_policy(raw_value: object, *, field_path: str, default: FormatterCwdPolicy) -> FormatterCwdPolicy:
     if raw_value is None:
         return default
-    if raw_value == "workspace":
-        return "workspace"
-    if raw_value == "nearest_root":
-        return "nearest_root"
-    if raw_value == "file_directory":
-        return "file_directory"
-    raise ValueError(f"runtime config field '{field_path}' must be one of: workspace, nearest_root, file_directory")
+    if not isinstance(raw_value, str) or raw_value not in ("workspace", "nearest_root", "file_directory"):
+        raise ValueError(f"runtime config field '{field_path}' must be one of: workspace, nearest_root, file_directory")
+    return raw_value
 
 
 def _parse_permission_decision(value: object, *, source: str) -> PermissionDecision:
-    if value == "allow":
-        return "allow"
-    if value == "deny":
-        return "deny"
-    if value == "ask":
-        return "ask"
-    allowed = ", ".join(VALID_APPROVAL_MODES)
-    raise ValueError(f"{source} must be one of: {allowed}")
+    if not isinstance(value, str) or value not in VALID_APPROVAL_MODES:
+        allowed = ", ".join(VALID_APPROVAL_MODES)
+        raise ValueError(f"{source} must be one of: {allowed}")
+    return value
 
 
 def _parse_execution_engine_name(value: object, *, source: str) -> ExecutionEngineName:
-    if value == "deterministic":
-        return "deterministic"
-    if value == "provider":
-        return "provider"
-    allowed = ", ".join(VALID_EXECUTION_ENGINES)
-    raise ValueError(f"{source} must be one of: {allowed}")
+    if not isinstance(value, str) or value not in VALID_EXECUTION_ENGINES:
+        allowed = ", ".join(VALID_EXECUTION_ENGINES)
+        raise ValueError(f"{source} must be one of: {allowed}")
+    return value
 
 
 @overload
@@ -345,48 +335,34 @@ def _parse_environment_reasoning_effort(raw_value: object) -> str | None:
 def _parse_provider_context_diagnostic_mode(value: object) -> RuntimeProviderContextDiagnosticMode:
     if value is None:
         return "warn"
-    if value == "off":
-        return "off"
-    if value == "warn":
-        return "warn"
-    if value == "block":
-        return "block"
-    raise ValueError("runtime config field 'context_window.provider_context_diagnostics' must be one of: off, warn, block")
+    if not isinstance(value, str) or value not in ("off", "warn", "block"):
+        raise ValueError("runtime config field 'context_window.provider_context_diagnostics' must be one of: off, warn, block")
+    return value
 
 
 def _parse_context_transform_failure_mode(value: object) -> RuntimeContextTransformFailureMode:
     if value is None:
         return "warn"
-    if value == "ignore":
-        return "ignore"
-    if value == "warn":
-        return "warn"
-    if value == "block":
-        return "block"
-    raise ValueError("runtime config field 'context_window.context_transform_failure_policy' must be one of: ignore, warn, block")
+    if not isinstance(value, str) or value not in ("ignore", "warn", "block"):
+        raise ValueError("runtime config field 'context_window.context_transform_failure_policy' must be one of: ignore, warn, block")
+    return value
 
 
 def _parse_runtime_mcp_server_scope(value: object, *, field_path: str) -> RuntimeMcpServerScope:
     if value is None:
         return "runtime"
-    if value == "runtime":
-        return "runtime"
-    if value == "session":
-        return "session"
-    raise ValueError(f"runtime config field '{field_path}.scope' must be one of: runtime, session")
+    if not isinstance(value, str) or value not in ("runtime", "session"):
+        raise ValueError(f"runtime config field '{field_path}.scope' must be one of: runtime, session")
+    return value
 
 
 def _parse_runtime_tui_theme_mode(value: object) -> RuntimeTuiThemeMode | None:
     if value is None:
         return None
-    if value == "auto":
-        return "auto"
-    if value == "light":
-        return "light"
-    if value == "dark":
-        return "dark"
-    allowed = ", ".join(VALID_TUI_THEME_MODES)
-    raise ValueError(f"runtime config field 'tui.preferences.theme.mode' must be one of: {allowed}")
+    if not isinstance(value, str) or value not in VALID_TUI_THEME_MODES:
+        allowed = ", ".join(VALID_TUI_THEME_MODES)
+        raise ValueError(f"runtime config field 'tui.preferences.theme.mode' must be one of: {allowed}")
+    return value
 
 
 def format_environment_validation_error(

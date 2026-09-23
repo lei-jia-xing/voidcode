@@ -85,15 +85,6 @@ class ToolCatalogEntry:
     documentation_uri: str
     replay_policy: Literal["safe", "never"]
 
-    def payload(self) -> dict[str, object]:
-        return {
-            "name": self.name,
-            "visibility": self.visibility,
-            "read_only": self.read_only,
-            "documentation_uri": self.documentation_uri,
-            "replay_policy": self.replay_policy,
-        }
-
 
 @dataclass(frozen=True, slots=True)
 class ToolPolicyDecision:

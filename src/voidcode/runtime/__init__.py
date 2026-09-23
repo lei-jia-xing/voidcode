@@ -13,7 +13,6 @@ from .background.models import (
 )
 from .contracts import (
     BackgroundTaskResult,
-    BackgroundTaskRuntimeEntrypoint,
     RuntimeEntrypoint,
     RuntimeRequest,
     RuntimeResponse,
@@ -51,7 +50,6 @@ __all__ = [
     "BackgroundTaskRef",
     "BackgroundTaskRequestSnapshot",
     "BackgroundTaskResult",
-    "BackgroundTaskRuntimeEntrypoint",
     "BackgroundTaskState",
     "BackgroundTaskStatus",
     "UnknownBackgroundTaskError",

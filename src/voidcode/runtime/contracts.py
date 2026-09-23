@@ -11,10 +11,8 @@ from .background.execution import (
 )
 from .background.models import (
     BackgroundTaskObservability,
-    BackgroundTaskState,
     BackgroundTaskStatus,
     SchemaValidation,
-    StoredBackgroundTaskSummary,
 )
 from .background.routing import (
     ResolvedSubagentRoute,
@@ -29,7 +27,6 @@ from .events import (
     DelegatedRoutingPayload,
     EventEnvelope,
 )
-from .question import QuestionResponse
 from .session import SessionState, SessionStatus
 
 
@@ -249,18 +246,21 @@ def _parse_runtime_mode(value: object) -> runtime_mode.RuntimeMode:
         raise RuntimeRequestError("request metadata 'mode' must be 'normal' or 'plan'") from exc
 
 
+def _parse_string_list(raw: list[object], *, field: str) -> list[str]:
+    """Parse a JSON list of non-empty strings, labelling errors by ``field``."""
+    parsed: list[str] = []
+    for index, raw_name in enumerate(raw):
+        if not isinstance(raw_name, str) or not raw_name:
+            raise RuntimeRequestError(f"{field}[{index}] must be a non-empty string")
+        parsed.append(raw_name)
+    return parsed
+
+
 def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadata:
     if not isinstance(metadata, dict):
         raise RuntimeRequestError("request metadata 'command' must be an object when provided")
     payload = cast(dict[object, object], metadata)
-    allowed_keys = {
-        "name",
-        "source",
-        "arguments",
-        "raw_arguments",
-        "original_prompt",
-        "mode",
-    }
+    allowed_keys = frozenset(RuntimeCommandMetadata.__annotations__)
     non_string_keys = sorted(repr(key) for key in payload if not isinstance(key, str))
     if non_string_keys:
         joined = ", ".join(non_string_keys)
@@ -325,20 +325,7 @@ def validate_runtime_subagent_routing_metadata(
 
     routing_metadata = {cast(str, key): value for key, value in metadata_items.items()}
 
-    allowed_keys = {
-        "mode",
-        "subagent_type",
-        "description",
-        "command",
-        "depth",
-        "remaining_spawn_budget",
-        "selected_preset",
-        "selected_execution_engine",
-        "parallel_group_id",
-        "parallel_group_size",
-        "output_schema",
-        "schema_mode",
-    }
+    allowed_keys = DELEGATION_METADATA_KEYS
     unknown_keys = sorted(key for key in routing_metadata if key not in allowed_keys)
     if unknown_keys:
         joined = ", ".join(unknown_keys)
@@ -529,34 +516,25 @@ def validate_runtime_request_metadata(
         raw_skills = metadata["skills"]
         if not isinstance(raw_skills, list):
             raise RuntimeRequestError("request metadata 'skills' must be a list of skill names")
-        parsed_skills: list[str] = []
-        for index, raw_name in enumerate(cast(list[object], raw_skills)):
-            if not isinstance(raw_name, str) or not raw_name:
-                raise RuntimeRequestError(f"request metadata 'skills[{index}]' must be a non-empty string")
-            parsed_skills.append(raw_name)
-        normalized["skills"] = parsed_skills
+        normalized["skills"] = _parse_string_list(cast(list[object], raw_skills), field="request metadata 'skills'")
 
     if "context_transform_refs" in metadata:
         raw_transform_refs = metadata["context_transform_refs"]
         if not isinstance(raw_transform_refs, list):
             raise RuntimeRequestError("request metadata 'context_transform_refs' must be a list of transform provider names")
-        parsed_transform_refs: list[str] = []
-        for index, raw_name in enumerate(cast(list[object], raw_transform_refs)):
-            if not isinstance(raw_name, str) or not raw_name:
-                raise RuntimeRequestError(f"request metadata 'context_transform_refs[{index}]' must be a non-empty string")
-            parsed_transform_refs.append(raw_name)
-        normalized["context_transform_refs"] = parsed_transform_refs
+        normalized["context_transform_refs"] = _parse_string_list(
+            cast(list[object], raw_transform_refs),
+            field="request metadata 'context_transform_refs'",
+        )
 
     if "force_load_skills" in metadata:
         raw_force_load = metadata["force_load_skills"]
         if not isinstance(raw_force_load, list):
             raise RuntimeRequestError("request metadata 'force_load_skills' must be a list of skill names")
-        parsed_force_load: list[str] = []
-        for index, raw_name in enumerate(cast(list[object], raw_force_load)):
-            if not isinstance(raw_name, str) or not raw_name:
-                raise RuntimeRequestError(f"request metadata 'force_load_skills[{index}]' must be a non-empty string")
-            parsed_force_load.append(raw_name)
-        normalized["force_load_skills"] = parsed_force_load
+        normalized["force_load_skills"] = _parse_string_list(
+            cast(list[object], raw_force_load),
+            field="request metadata 'force_load_skills'",
+        )
 
     if "keep_alive" in metadata:
         keep_alive = metadata["keep_alive"]
@@ -995,9 +973,6 @@ class RuntimeProviderContextSnapshot:
 class RuntimeHookPresetSnapshot:
     refs: tuple[str, ...]
     kinds: tuple[str, ...]
-    event_scopes: tuple[str, ...]
-    allowed_actions: tuple[str, ...]
-    authority: str
     source: str
     count: int
 
@@ -1221,71 +1196,3 @@ class RuntimeEntrypoint(Protocol):
 @runtime_checkable
 class StreamingRuntimeEntrypoint(Protocol):
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
-
-
-@runtime_checkable
-class QuestionRuntimeEntrypoint(Protocol):
-    def answer_question(
-        self,
-        session_id: str,
-        *,
-        question_request_id: str,
-        responses: tuple[QuestionResponse, ...],
-    ) -> RuntimeResponse: ...
-
-    def answer_question_stream(
-        self,
-        session_id: str,
-        *,
-        question_request_id: str,
-        responses: tuple[QuestionResponse, ...],
-    ) -> Iterator[RuntimeStreamChunk]: ...
-
-
-@runtime_checkable
-class BackgroundTaskRuntimeEntrypoint(Protocol):
-    def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState: ...
-
-    def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None: ...
-
-    def load_background_task(self, task_id: str) -> BackgroundTaskState: ...
-    def load_background_task_result(
-        self,
-        task_id: str,
-        *,
-        emit_result_read_hook: bool = True,
-    ) -> BackgroundTaskResult: ...
-
-    def load_background_task_result_by_child_session(
-        self,
-        *,
-        child_session_id: str,
-        emit_result_read_hook: bool = True,
-    ) -> BackgroundTaskResult | None: ...
-    def load_background_task_group_result(
-        self,
-        *,
-        task_ids: tuple[str, ...] = (),
-        parallel_group_id: str | None = None,
-        parent_session_id: str | None = None,
-        emit_result_read_hook: bool = True,
-    ) -> BackgroundTaskGroupResult: ...
-
-    def wait_for_background_task_group(
-        self,
-        *,
-        task_ids: tuple[str, ...] = (),
-        parallel_group_id: str | None = None,
-        parent_session_id: str | None = None,
-        timeout_seconds: float,
-        emit_result_read_hook: bool = True,
-    ) -> BackgroundTaskGroupResult: ...
-
-    def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]: ...
-
-    def list_background_tasks_by_parent_session(self, *, parent_session_id: str) -> tuple[StoredBackgroundTaskSummary, ...]: ...
-    def background_task_roster(self, *, parent_session_id: str) -> dict[str, object]: ...
-
-    def cancel_background_task(self, task_id: str) -> BackgroundTaskState: ...
-
-    def retry_background_task(self, task_id: str) -> BackgroundTaskState: ...

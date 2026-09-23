@@ -187,54 +187,6 @@ class _BackgroundTaskConcurrencyIdentity:
 
 
 @dataclass(frozen=True, slots=True)
-class _BackgroundTaskConcurrencySnapshot:
-    provider: str
-    model: str
-    limit: int
-    limit_source: str
-    running_provider: int
-    running_model: int
-    running_total: int
-    queued_provider: int
-    queued_model: int
-    queued_total: int
-
-    def as_payload(self) -> dict[str, object]:
-        return self.as_observability().as_payload()
-
-    def as_observability(self) -> BackgroundTaskConcurrencyObservability:
-        return BackgroundTaskConcurrencyObservability(
-            provider=self.provider,
-            model=self.model,
-            limit=self.limit,
-            limit_source=self.limit_source,
-            running_provider=self.running_provider,
-            running_model=self.running_model,
-            running_total=self.running_total,
-            active_worker_slots=self.running_total,
-            queued_provider=self.queued_provider,
-            queued_model=self.queued_model,
-            queued_total=self.queued_total,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class _BackgroundTaskRetrySnapshot:
-    retry_count: int
-    max_retries: int
-    backoff_seconds: float
-    next_retry_at: int | None
-
-    def as_observability(self) -> BackgroundTaskRetryObservability:
-        return BackgroundTaskRetryObservability(
-            retry_count=self.retry_count,
-            max_retries=self.max_retries,
-            backoff_seconds=self.backoff_seconds,
-            next_retry_at=self.next_retry_at,
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class _BackgroundTaskObservabilityContext:
     queued_positions: dict[str, int]
     queued_provider_counts: dict[str, int]
@@ -243,7 +195,7 @@ class _BackgroundTaskObservabilityContext:
     running_provider_counts: dict[str, int]
     running_model_counts: dict[str, int]
     running_total: int
-    retries: dict[str, _BackgroundTaskRetrySnapshot]
+    retries: dict[str, BackgroundTaskRetryObservability]
 
 
 class RuntimeBackgroundTaskSupervisor:
@@ -273,7 +225,7 @@ class RuntimeBackgroundTaskSupervisor:
         self._reconcile_in_progress = False
         self._provider_running_counts: dict[str, int] = {}
         self._model_running_counts: dict[str, int] = {}
-        self._rate_limit_retries: dict[str, _BackgroundTaskRetrySnapshot] = {}
+        self._rate_limit_retries: dict[str, BackgroundTaskRetryObservability] = {}
         # task_id -> waiting reason for queued tasks the drain could not
         # dispatch (e.g. concurrency limit, runtime shutdown). Consulted by
         # ``_waiting_reason`` so reads surface *why* a task is queued instead
@@ -602,7 +554,7 @@ class RuntimeBackgroundTaskSupervisor:
         else:
             with self._queue_lock:
                 retry = self._rate_limit_retries.get(task_id)
-        return None if retry is None else retry.as_observability()
+        return retry
 
     def _queue_position(
         self,
@@ -628,7 +580,7 @@ class RuntimeBackgroundTaskSupervisor:
         context: _BackgroundTaskObservabilityContext | None = None,
     ) -> BackgroundTaskConcurrencyObservability:
         if context is None:
-            return self._concurrency_snapshot(task).as_observability()
+            return self._concurrency_snapshot(task)
         identity = self._concurrency_identity_for_task(task)
         return BackgroundTaskConcurrencyObservability(
             provider=identity.provider,
@@ -749,15 +701,7 @@ class RuntimeBackgroundTaskSupervisor:
             task_id=task_id,
             stop_condition="explicit_retry",
         )
-        return self.start_background_task(
-            RuntimeRequest(
-                prompt=previous_task.request.prompt,
-                session_id=previous_task.request.session_id,
-                parent_session_id=previous_task.request.parent_session_id,
-                metadata=cast(RuntimeRequestMetadataPayload, previous_task.request.metadata),
-                allocate_session_id=previous_task.request.allocate_session_id,
-            )
-        )
+        return self.start_background_task(previous_task.request.as_runtime_request())
 
     def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState:
         """Dispatch a new worker turn for a keep-alive background task.
@@ -791,13 +735,7 @@ class RuntimeBackgroundTaskSupervisor:
                 raise ValueError(f"background task {task_id} is not a keep-alive task and cannot be steered")
             if current_task.status not in ("idle", "interrupted"):
                 raise ValueError(f"background task {task_id} can only be steered while idle or interrupted; task is {current_task.status}")
-            request = RuntimeRequest(
-                prompt=current_task.request.prompt,
-                session_id=current_task.request.session_id,
-                parent_session_id=current_task.request.parent_session_id,
-                metadata=cast(RuntimeRequestMetadataPayload, current_task.request.metadata),
-                allocate_session_id=current_task.request.allocate_session_id,
-            )
+            request = current_task.request.as_runtime_request()
             identity = self._concurrency_identity_for_request(request)
             if not self._can_start_task(identity):
                 raise ValueError(f"background task {task_id} steer blocked by the provider/model concurrency limit; retry when a worker slot frees")
@@ -907,13 +845,7 @@ class RuntimeBackgroundTaskSupervisor:
         return self._concurrency_identity_for_provider_model(provider=provider, model=model)
 
     def _concurrency_identity_for_task(self, task: BackgroundTaskState) -> _BackgroundTaskConcurrencyIdentity:
-        request = RuntimeRequest(
-            prompt=task.request.prompt,
-            session_id=task.request.session_id,
-            parent_session_id=task.request.parent_session_id,
-            metadata=cast(RuntimeRequestMetadataPayload, task.request.metadata),
-            allocate_session_id=task.request.allocate_session_id,
-        )
+        request = task.request.as_runtime_request()
         return self._concurrency_identity_for_request(request)
 
     def _can_start_task(self, identity: _BackgroundTaskConcurrencyIdentity) -> bool:
@@ -972,7 +904,7 @@ class RuntimeBackgroundTaskSupervisor:
         deadline = time.monotonic() + backoff_seconds
         next_retry_at = int((time.time() + backoff_seconds) * 1000)
         with self._queue_lock:
-            self._rate_limit_retries[task_id] = _BackgroundTaskRetrySnapshot(
+            self._rate_limit_retries[task_id] = BackgroundTaskRetryObservability(
                 retry_count=retry_count,
                 max_retries=_BACKGROUND_TASK_RATE_LIMIT_RETRIES,
                 backoff_seconds=backoff_seconds,
@@ -1021,18 +953,20 @@ class RuntimeBackgroundTaskSupervisor:
                 queued_model += 1
         return queued_provider, queued_model, queued_total
 
-    def _concurrency_snapshot(self, task: BackgroundTaskState) -> _BackgroundTaskConcurrencySnapshot:
+    def _concurrency_snapshot(self, task: BackgroundTaskState) -> BackgroundTaskConcurrencyObservability:
         identity = self._concurrency_identity_for_task(task)
         with self._queue_lock:
             queued_provider, queued_model, queued_total = self._queued_counts_for_identity(identity)
-            return _BackgroundTaskConcurrencySnapshot(
+            running_total = sum(self._provider_running_counts.values())
+            return BackgroundTaskConcurrencyObservability(
                 provider=identity.provider,
                 model=identity.model,
                 limit=identity.limit,
                 limit_source=identity.limit_source,
                 running_provider=self._provider_running_counts.get(identity.provider, 0),
                 running_model=self._model_running_counts.get(identity.model_key, 0),
-                running_total=sum(self._provider_running_counts.values()),
+                running_total=running_total,
+                active_worker_slots=running_total,
                 queued_provider=queued_provider,
                 queued_model=queued_model,
                 queued_total=queued_total,
@@ -1347,13 +1281,7 @@ class RuntimeBackgroundTaskSupervisor:
                 )
                 if task.status != "queued" or task.task.id in self._threads:
                     continue
-                request = RuntimeRequest(
-                    prompt=task.request.prompt,
-                    session_id=task.request.session_id,
-                    parent_session_id=task.request.parent_session_id,
-                    metadata=cast(RuntimeRequestMetadataPayload, task.request.metadata),
-                    allocate_session_id=task.request.allocate_session_id,
-                )
+                request = task.request.as_runtime_request()
                 try:
                     identity = self._concurrency_identity_for_task(task)
                     routing = resolve_runtime_session_routing(request)
@@ -1952,6 +1880,9 @@ class RuntimeBackgroundTaskSupervisor:
                 workspace=self._workspace,
                 task=task,
                 lifecycle_status=task.status,
+                # No child transcript is in scope on the terminal path, so key
+                # the per-turn discriminator on the terminal row write time.
+                turn_sequence=task.finished_at_unix_ms or 0,
                 result_available=result.result_available,
                 payload=payload,
             )
@@ -2241,6 +2172,7 @@ class RuntimeBackgroundTaskSupervisor:
                 workspace=self._workspace,
                 task=task,
                 lifecycle_status="waiting_approval",
+                turn_sequence=(child_response.events[-1].sequence if child_response.events else 0),
                 approval_blocked=True,
                 payload=acp_payload,
             )
@@ -2322,6 +2254,7 @@ class RuntimeBackgroundTaskSupervisor:
                 workspace=self._workspace,
                 task=task,
                 lifecycle_status="idle",
+                turn_sequence=turn_sequence,
                 result_available=result.result_available,
                 payload=acp_payload,
             )
@@ -2365,7 +2298,7 @@ class RuntimeBackgroundTaskSupervisor:
             child_session_id=child_session_id,
             child_session_status=child_response.session.status,
             idle_event_sequence=idle_event_sequence,
-            idle_reason=(idle_event.payload.get("reason", waiting_reason) if idle_event is not None else waiting_reason),
+            idle_reason=(idle_event.payload["reason"] if idle_event is not None else waiting_reason),
         )
 
     def emit_background_task_idle_reminder(
@@ -2686,13 +2619,7 @@ class RuntimeBackgroundTaskSupervisor:
             > 0
         ):
             return
-        request = RuntimeRequest(
-            prompt=task.request.prompt,
-            session_id=task.request.session_id,
-            parent_session_id=task.request.parent_session_id,
-            metadata=cast(RuntimeRequestMetadataPayload, task.request.metadata),
-            allocate_session_id=task.request.allocate_session_id,
-        )
+        request = task.request.as_runtime_request()
         sealed_response = RuntimeResponse(
             session=SessionState(
                 session=session_response.session.session,
@@ -3023,13 +2950,7 @@ class RuntimeBackgroundTaskSupervisor:
             # Routing-invalid tasks must keep the drain's own routing-failed
             # outcome (``failed`` + the routing error): do not shadow it with
             # the orphan cancellation.
-            request = RuntimeRequest(
-                prompt=task.request.prompt,
-                session_id=task.request.session_id,
-                parent_session_id=task.request.parent_session_id,
-                metadata=cast(RuntimeRequestMetadataPayload, task.request.metadata),
-                allocate_session_id=task.request.allocate_session_id,
-            )
+            request = task.request.as_runtime_request()
             try:
                 _ = self._concurrency_identity_for_task(task)
                 _ = resolve_runtime_session_routing(request)
@@ -3058,13 +2979,7 @@ class RuntimeBackgroundTaskSupervisor:
             task = self._load_background_task(task_id)
             if task.status == "cancelled":
                 return
-            request = RuntimeRequest(
-                prompt=task.request.prompt,
-                session_id=task.request.session_id,
-                parent_session_id=task.request.parent_session_id,
-                metadata=cast(RuntimeRequestMetadataPayload, task.request.metadata),
-                allocate_session_id=task.request.allocate_session_id,
-            )
+            request = task.request.as_runtime_request()
             slot_identity = self._concurrency_identity_for_request(request)
             if task.status == "queued":
                 routing = resolve_runtime_session_routing(request)
@@ -3168,7 +3083,7 @@ class RuntimeBackgroundTaskSupervisor:
                                 child_session_id=session_id,
                                 child_session_status=chunk.session.status,
                                 idle_event_sequence=chunk.event.sequence,
-                                idle_reason=chunk.event.payload.get("reason", "waiting"),
+                                idle_reason=chunk.event.payload["reason"],
                             )
                         fallback_identity = self._fallback_identity_for_event(chunk.event)
                         if fallback_identity is not None and fallback_identity != slot_identity:

@@ -8,11 +8,9 @@ type RuntimeMode = Literal["normal", "plan"]
 
 
 def parse_runtime_mode(value: object) -> RuntimeMode:
-    if value == "normal":
-        return "normal"
-    if value == "plan":
-        return "plan"
-    raise ValueError("runtime mode must be 'normal' or 'plan'")
+    if not isinstance(value, str) or value not in ("normal", "plan"):
+        raise ValueError("runtime mode must be 'normal' or 'plan'")
+    return value
 
 
 def runtime_mode_from_metadata(metadata: Mapping[str, object] | None) -> RuntimeMode:
@@ -41,28 +39,16 @@ class ModeDefinition:
     scattered consumers: adding a mode only adds one declaration here.
     """
 
-    name: RuntimeMode
     description: str
     read_only: bool = False
     transform_refs: tuple[str, ...] = ()
 
-    def __post_init__(self) -> None:
-        parse_runtime_mode(self.name)
-        if not self.description.strip():
-            raise ValueError(f"mode '{self.name}' must declare a description")
-        if len(self.transform_refs) != len(set(self.transform_refs)):
-            raise ValueError(f"mode '{self.name}' transform_refs must not contain duplicates")
-        if any(not ref.strip() for ref in self.transform_refs):
-            raise ValueError(f"mode '{self.name}' transform_refs entries must be non-empty strings")
-
 
 MODE_DEFINITIONS: dict[RuntimeMode, ModeDefinition] = {
     "normal": ModeDefinition(
-        name="normal",
         description="Balanced default execution stance.",
     ),
     "plan": ModeDefinition(
-        name="plan",
         description="Plan mode is active: read-only stance; produce a plan before writing code.",
         read_only=True,
         transform_refs=("mode_guidance",),
@@ -75,14 +61,12 @@ class ModeResolution:
     mode: RuntimeMode
     read_only: bool
     transform_refs: tuple[str, ...] = ()
-    source: Literal["command", "metadata", "inherited", "default"] = "default"
 
 
 def resolve_mode(
     mode: RuntimeMode,
     *,
     explicit_read_only: bool = False,
-    source: Literal["command", "metadata", "inherited", "default"] = "default",
 ) -> ModeResolution:
     """Single aggregation point for a request's effective mode behavior.
 
@@ -104,7 +88,6 @@ def resolve_mode(
         mode=mode,
         read_only=definition.read_only or explicit_read_only,
         transform_refs=transform_refs,
-        source=source,
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import cast
 
 from .config import RuntimeAgentConfig
+from .contracts import _parse_string_list
 from .session_metadata_helpers import parse_skill_snapshot_metadata
 from .skills import (
     SkillExecutionSnapshot,
@@ -21,12 +22,7 @@ def request_skill_names_from_metadata(
     raw_skills = metadata[key]
     if not isinstance(raw_skills, list):
         raise ValueError(f"request metadata '{key}' must be a list of skill names")
-    parsed_names: list[str] = []
-    for index, raw_name in enumerate(cast(list[object], raw_skills)):
-        if not isinstance(raw_name, str) or not raw_name:
-            raise ValueError(f"request metadata '{key}[{index}]' must be a non-empty string")
-        parsed_names.append(raw_name)
-    return tuple(parsed_names)
+    return tuple(_parse_string_list(cast(list[object], raw_skills), field=f"request metadata '{key}'"))
 
 
 def effective_selected_skill_names(

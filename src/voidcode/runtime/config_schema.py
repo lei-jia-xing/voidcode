@@ -35,7 +35,6 @@ from .config_models import (
     SHARED_SCHEMA_DEFINITIONS,
     TOOL_TIMEOUT_ENV_VAR,
     RuntimeConfigPayload,
-    config_model_keys,
 )
 
 RUNTIME_CONFIG_SCHEMA_ID = "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json"
@@ -350,11 +349,6 @@ def runtime_config_json_schema() -> dict[str, object]:
     }
 
 
-def runtime_config_schema_keys() -> frozenset[str]:
-    """Accepted top-level keys of the workspace config, from the payload model."""
-    return config_model_keys(RuntimeConfigPayload)
-
-
 def format_runtime_config_schema_json(schema: Mapping[str, object] | None = None) -> str:
     """The exact text of the shipped ``schema/voidcode.config.schema.json``."""
     document = runtime_config_json_schema() if schema is None else schema
@@ -368,9 +362,7 @@ __all__ = [
     "format_runtime_config_schema_json",
     "format_starter_runtime_config_json",
     "generate_starter_runtime_config",
-    "read_runtime_config_payload",
     "runtime_config_json_schema",
-    "runtime_config_schema_keys",
     "write_runtime_config_payload",
 ]
 
@@ -406,20 +398,6 @@ def generate_starter_runtime_config(
 
 def format_starter_runtime_config_json(payload: Mapping[str, object]) -> str:
     return json.dumps(dict(payload), indent=2, ensure_ascii=False) + "\n"
-
-
-def read_runtime_config_payload(workspace: Path) -> dict[str, object] | None:
-    config_path = runtime_config_path(workspace.resolve())
-    if not config_path.exists():
-        return None
-    raw_text = config_path.read_text(encoding="utf-8")
-    try:
-        raw_payload = json.loads(raw_text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"runtime config file must contain valid JSON: {config_path}") from exc
-    if not isinstance(raw_payload, dict):
-        raise ValueError(f"runtime config file must contain a JSON object: {config_path}")
-    return cast(dict[str, object], raw_payload)
 
 
 def write_runtime_config_payload(

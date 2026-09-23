@@ -62,8 +62,8 @@ class _RuntimeArtifactReadFacade:
         result = self._runtime.read_tool_output_artifact(
             session_id=context.session_id,
             artifact_id=artifact_id,
-            offset=max(0, offset or 0),
-            limit=max(1, limit or 2000),
+            offset=0 if offset is None else offset,
+            limit=2000 if limit is None else limit,
         )
         if result.get("status") == "artifact_not_found":
             return None

@@ -105,20 +105,6 @@ def is_read_only_blocked(
     return operation_class in ("write", "execute")
 
 
-def is_plan_mode_blocked(
-    *,
-    read_only: bool,
-    tool: ToolDefinition,
-    operation_class: OperationClass | None = None,
-) -> bool:
-    """Deprecated alias for :func:`is_read_only_blocked`.
-
-    Kept for external compatibility; new code must use
-    :func:`is_read_only_blocked`. Same signature, same behavior.
-    """
-    return is_read_only_blocked(read_only=read_only, tool=tool, operation_class=operation_class)
-
-
 def resolve_permission(
     tool: ToolDefinition,
     tool_call: ToolCall,
@@ -136,61 +122,29 @@ def resolve_permission(
     rule_decision: PermissionDecision | None = None,
     read_only: bool = False,
 ) -> PermissionOutcome:
-    if is_read_only_blocked(read_only=read_only, tool=tool, operation_class=operation_class):
-        pending_approval = build_pending_approval(
-            tool_call,
-            policy=PermissionPolicy(mode="deny"),
-            owner_session_id=owner_session_id,
-            owner_parent_session_id=owner_parent_session_id,
-            delegated_task_id=delegated_task_id,
-            path_scope=path_scope,
-            operation_class=operation_class,
-            canonical_path=canonical_path,
-            matched_rule=matched_rule,
-            policy_surface="mode.plan",
-            reason=PLAN_MODE_DENIAL_REASON,
-        )
-        return PermissionOutcome(decision="deny", pending_approval=pending_approval)
-    if rule_decision is not None:
-        pending_approval = build_pending_approval(
-            tool_call,
-            policy=PermissionPolicy(mode=rule_decision),
-            owner_session_id=owner_session_id,
-            owner_parent_session_id=owner_parent_session_id,
-            delegated_task_id=delegated_task_id,
-            path_scope=path_scope,
-            operation_class=operation_class,
-            canonical_path=canonical_path,
-            matched_rule=matched_rule,
-            policy_surface=policy_surface,
-        )
-        if rule_decision == "ask":
-            return PermissionOutcome(decision="ask", pending_approval=pending_approval)
-        return PermissionOutcome(decision=rule_decision, pending_approval=pending_approval)
-
-    if path_scope == "workspace" and (operation_class == "read" or (operation_class is None and tool.read_only)):
+    plan_blocked = is_read_only_blocked(read_only=read_only, tool=tool, operation_class=operation_class)
+    decision: PermissionDecision
+    effective_policy: PermissionPolicy
+    effective_surface = policy_surface
+    if plan_blocked:
+        decision = "deny"
+        effective_policy = PermissionPolicy(mode="deny")
+        effective_surface = "mode.plan"
+    elif rule_decision is not None:
+        decision = rule_decision
+        effective_policy = PermissionPolicy(mode=rule_decision)
+    elif path_scope == "workspace" and (operation_class == "read" or (operation_class is None and tool.read_only)):
         return PermissionOutcome(decision="allow")
-
-    if path_scope == "external" and external_decision is not None:
-        pending_approval = build_pending_approval(
-            tool_call,
-            policy=PermissionPolicy(mode=external_decision),
-            owner_session_id=owner_session_id,
-            owner_parent_session_id=owner_parent_session_id,
-            delegated_task_id=delegated_task_id,
-            path_scope=path_scope,
-            operation_class=operation_class,
-            canonical_path=canonical_path,
-            matched_rule=matched_rule,
-            policy_surface=policy_surface,
-        )
-        if external_decision == "ask":
-            return PermissionOutcome(decision="ask", pending_approval=pending_approval)
-        return PermissionOutcome(decision=external_decision, pending_approval=pending_approval)
+    elif path_scope == "external" and external_decision is not None:
+        decision = external_decision
+        effective_policy = PermissionPolicy(mode=external_decision)
+    else:
+        decision = policy.mode
+        effective_policy = policy
 
     pending_approval = build_pending_approval(
         tool_call,
-        policy=policy,
+        policy=effective_policy,
         owner_session_id=owner_session_id,
         owner_parent_session_id=owner_parent_session_id,
         delegated_task_id=delegated_task_id,
@@ -198,11 +152,10 @@ def resolve_permission(
         operation_class=operation_class,
         canonical_path=canonical_path,
         matched_rule=matched_rule,
-        policy_surface=policy_surface,
+        policy_surface=effective_surface,
+        **({"reason": PLAN_MODE_DENIAL_REASON} if plan_blocked else {}),
     )
-    if policy.mode == "ask":
-        return PermissionOutcome(decision="ask", pending_approval=pending_approval)
-    return PermissionOutcome(decision=policy.mode, pending_approval=pending_approval)
+    return PermissionOutcome(decision=decision, pending_approval=pending_approval)
 
 
 def build_pending_approval(

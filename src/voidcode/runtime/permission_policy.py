@@ -21,31 +21,15 @@ from .question import PendingQuestion
 
 
 def permission_decision_or_none(value: object) -> PermissionDecision | None:
-    if value == "allow":
-        return "allow"
-    if value == "deny":
-        return "deny"
-    if value == "ask":
-        return "ask"
-    return None
+    return value if isinstance(value, str) and value in ("allow", "deny", "ask") else None
 
 
 def path_scope_or_none(value: object) -> PathScope | None:
-    if value == "workspace":
-        return "workspace"
-    if value == "external":
-        return "external"
-    return None
+    return value if isinstance(value, str) and value in ("workspace", "external") else None
 
 
 def operation_class_or_none(value: object) -> OperationClass | None:
-    if value == "read":
-        return "read"
-    if value == "write":
-        return "write"
-    if value == "execute":
-        return "execute"
-    return None
+    return value if isinstance(value, str) and value in ("read", "write", "execute") else None
 
 
 def pending_approval_from_response(response: RuntimeResponse) -> PendingApproval:

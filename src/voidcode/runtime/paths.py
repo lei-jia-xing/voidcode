@@ -78,20 +78,6 @@ def cache_home(env: Mapping[str, str] | None = None) -> Path:
     return _xdg_dir(e, "XDG_CACHE_HOME", Path.home() / ".cache")
 
 
-def data_home(env: Mapping[str, str] | None = None) -> Path:
-    """Return ``<data-root>/voidcode`` for persistent user data.
-
-    POSIX default: ``~/.local/share/voidcode``.
-    Windows default: ``%APPDATA%\\voidcode``.
-    """
-    e = _envmap(env)
-    if _running_on_windows():
-        appdata = e.get("APPDATA")
-        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
-        return base / VOIDCODE_DIR_NAME
-    return _xdg_dir(e, "XDG_DATA_HOME", Path.home() / ".local" / "share")
-
-
 def sessions_db_path(env: Mapping[str, str] | None = None) -> Path:
     """Resolve the canonical SQLite session database path.
 
@@ -124,7 +110,6 @@ __all__ = [
     "SESSIONS_DB_FILENAME",
     "VOIDCODE_DIR_NAME",
     "cache_home",
-    "data_home",
     "mcp_tool_catalog_cache_path",
     "provider_catalog_cache_path",
     "sessions_db_path",

@@ -26,7 +26,6 @@ from ..session import (
     normalize_persisted_session_metadata,
     session_metadata_for_persistence,
 )
-from ..session_metadata_helpers import runtime_state_todos, session_metadata_with_runtime_state_updates
 from ..todos import runtime_todo_phases_from_payload, todo_state_payload
 from .shared import _assert_terminal_session_events_allowed
 
@@ -158,22 +157,6 @@ class _SessionStorageMixin(_MixinBase):
             ),
         )
         return updated_at
-
-    @staticmethod
-    def _todo_state_from_metadata(metadata: dict[str, object]) -> dict[str, object] | None:
-        todo_state = runtime_state_todos(metadata)
-        if todo_state is None:
-            return None
-        revision = todo_state.get("revision")
-        if not isinstance(revision, int) or revision < 0:
-            raise ValueError("runtime todo revision must be a non-negative integer")
-        return todo_state_payload(runtime_todo_phases_from_payload(todo_state.get("phases")), revision=revision)
-
-    @classmethod
-    def _metadata_with_todo_state(cls, metadata: dict[str, object], todo_state: dict[str, object] | None) -> dict[str, object]:
-        if todo_state is None:
-            return metadata
-        return session_metadata_with_runtime_state_updates(metadata, updates={"todos": todo_state})
 
     @staticmethod
     def _todo_state_from_events(events: tuple[EventEnvelope, ...]) -> dict[str, object] | None:
@@ -725,7 +708,7 @@ class _SessionStorageMixin(_MixinBase):
             raw_content = payload.get("content")
             raw_error = payload.get("error")
             tool_result: dict[str, object] = {
-                "tool_name": str(payload.get("tool", "unknown")),
+                "tool_name": str(payload["tool"]),
                 "content": str(raw_content) if raw_content is not None and not is_err else None,
                 "status": "error" if is_err else "ok",
                 "data": payload,
@@ -975,7 +958,7 @@ class _SessionStorageMixin(_MixinBase):
         if response.session.status == "waiting":
             for event in reversed(response.events):
                 if event.event_type == "runtime.approval_requested":
-                    tool = str(event.payload.get("tool", "tool"))
+                    tool = str(event.payload["tool"])
                     target = str(event.payload.get("target_summary", "")).strip()
                     if target:
                         return f"Approval blocked on {tool}: {target[:100]}", None

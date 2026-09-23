@@ -120,30 +120,14 @@ type KnownEventType = CoreEventType | RuntimeEventType
 
 
 def _parse_delegated_routing_mode(value: object) -> Literal["sync", "background"] | None:
-    if value == "sync":
-        return "sync"
-    if value == "background":
-        return "background"
+    if isinstance(value, str) and value in ("sync", "background"):
+        return value
     return None
 
 
 def _parse_delegated_lifecycle_status(value: object) -> DelegatedLifecycleStatus | None:
-    if value == "queued":
-        return "queued"
-    if value == "running":
-        return "running"
-    if value == "idle":
-        return "idle"
-    if value == "waiting_approval":
-        return "waiting_approval"
-    if value == "completed":
-        return "completed"
-    if value == "failed":
-        return "failed"
-    if value == "cancelled":
-        return "cancelled"
-    if value == "interrupted":
-        return "interrupted"
+    if isinstance(value, str) and value in _DELEGATED_LIFECYCLE_STATUSES:
+        return value
     return None
 
 

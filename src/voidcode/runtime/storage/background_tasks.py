@@ -126,7 +126,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             output_schema=_BackgroundTaskStorageMixin._output_schema_from_json(
                 row["output_schema_json"],
             ),
-            schema_mode=row["schema_mode"] or "permissive",
+            schema_mode=row["schema_mode"],
         )
 
     @staticmethod
@@ -426,41 +426,46 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             raise UnknownBackgroundTaskError(f"unknown background task: {task_id}")
         return self._background_task_state_from_row(row)
 
-    def list_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]:
+    def _list_task_summaries(
+        self,
+        *,
+        workspace: Path,
+        where_sql: str,
+        params: tuple[object, ...],
+        order_sql: str,
+    ) -> tuple[StoredBackgroundTaskSummary, ...]:
         with self._connect(workspace) as connection:
             rows = cast(
                 list[sqlite3.Row],
                 connection.execute(
-                    """
+                    f"""
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
                            , created_at_unix_ms, keep_alive, steer_prompt
                            , output_schema_json, schema_mode
                     FROM background_tasks
-                    WHERE workspace_id = ?
-                    ORDER BY updated_at DESC, task_id ASC
+                    WHERE workspace_id = ?{where_sql}
+                    ORDER BY {order_sql}
                     """,
-                    (str(workspace),),
+                    (str(workspace), *params),
                 ).fetchall(),
             )
         return tuple(self._background_task_summary_from_row(row) for row in rows)
 
+    def list_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]:
+        return self._list_task_summaries(
+            workspace=workspace,
+            where_sql="",
+            params=(),
+            order_sql="updated_at DESC, task_id ASC",
+        )
+
     def list_queued_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]:
-        with self._connect(workspace) as connection:
-            rows = cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    """
-                    SELECT task_id, status, prompt, session_id, error, created_at, updated_at
-                           , created_at_unix_ms, keep_alive, steer_prompt
-                           , output_schema_json, schema_mode
-                    FROM background_tasks
-                    WHERE workspace_id = ? AND status = 'queued'
-                    ORDER BY created_at ASC, task_id ASC
-                    """,
-                    (str(workspace),),
-                ).fetchall(),
-            )
-        return tuple(self._background_task_summary_from_row(row) for row in rows)
+        return self._list_task_summaries(
+            workspace=workspace,
+            where_sql=" AND status = 'queued'",
+            params=(),
+            order_sql="created_at ASC, task_id ASC",
+        )
 
     def list_running_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]:
         """Status-indexed running-task summaries for worker-liveness reconciliation.
@@ -469,40 +474,20 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         this never scans terminal history, so hot read paths (task loads,
         observability) can check worker liveness without a full-history pass.
         """
-        with self._connect(workspace) as connection:
-            rows = cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    """
-                    SELECT task_id, status, prompt, session_id, error, created_at, updated_at
-                           , created_at_unix_ms, keep_alive, steer_prompt
-                           , output_schema_json, schema_mode
-                    FROM background_tasks
-                    WHERE workspace_id = ? AND status = 'running'
-                    ORDER BY updated_at ASC, task_id ASC
-                    """,
-                    (str(workspace),),
-                ).fetchall(),
-            )
-        return tuple(self._background_task_summary_from_row(row) for row in rows)
+        return self._list_task_summaries(
+            workspace=workspace,
+            where_sql=" AND status = 'running'",
+            params=(),
+            order_sql="updated_at ASC, task_id ASC",
+        )
 
     def list_background_tasks_by_parent_session(self, *, workspace: Path, parent_session_id: str) -> tuple[StoredBackgroundTaskSummary, ...]:
-        with self._connect(workspace) as connection:
-            rows = cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    """
-                    SELECT task_id, status, prompt, session_id, error, created_at, updated_at
-                           , created_at_unix_ms, keep_alive, steer_prompt
-                           , output_schema_json, schema_mode
-                    FROM background_tasks
-                    WHERE workspace_id = ? AND request_parent_session_id = ?
-                    ORDER BY updated_at DESC, task_id ASC
-                    """,
-                    (str(workspace), parent_session_id),
-                ).fetchall(),
-            )
-        return tuple(self._background_task_summary_from_row(row) for row in rows)
+        return self._list_task_summaries(
+            workspace=workspace,
+            where_sql=" AND request_parent_session_id = ?",
+            params=(parent_session_id,),
+            order_sql="updated_at DESC, task_id ASC",
+        )
 
     def list_background_tasks_by_parallel_group(
         self,
@@ -513,26 +498,13 @@ class _BackgroundTaskStorageMixin(_MixinBase):
     ) -> tuple[StoredBackgroundTaskSummary, ...]:
         """List persisted tasks in one delegation group without loading transcripts."""
         where_parent = " AND request_parent_session_id = ?" if parent_session_id is not None else ""
-        parameters: tuple[object, ...] = (
-            (str(workspace), parent_session_id, parallel_group_id) if parent_session_id is not None else (str(workspace), parallel_group_id)
+        params: tuple[object, ...] = (parent_session_id, parallel_group_id) if parent_session_id is not None else (parallel_group_id,)
+        return self._list_task_summaries(
+            workspace=workspace,
+            where_sql=f"{where_parent} AND json_extract(request_metadata_json, '$.delegation.parallel_group_id') = ?",
+            params=params,
+            order_sql="created_at ASC, task_id ASC",
         )
-        with self._connect(workspace) as connection:
-            rows = cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    f"""
-                    SELECT task_id, status, prompt, session_id, error, created_at, updated_at
-                           , created_at_unix_ms, keep_alive, steer_prompt
-                           , output_schema_json, schema_mode
-                    FROM background_tasks
-                    WHERE workspace_id = ?{where_parent}
-                      AND json_extract(request_metadata_json, '$.delegation.parallel_group_id') = ?
-                    ORDER BY created_at ASC, task_id ASC
-                    """,
-                    parameters,
-                ).fetchall(),
-            )
-        return tuple(self._background_task_summary_from_row(row) for row in rows)
 
     def load_background_task_by_child_session(
         self,
@@ -1215,7 +1187,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             keep_alive=bool(row["keep_alive"]),
             steer_prompt=row["steer_prompt"],
             output_schema=self._output_schema_from_json(row["output_schema_json"]),
-            schema_mode=row["schema_mode"] or "permissive",
+            schema_mode=row["schema_mode"],
             structured_output=self._output_schema_from_json(row["structured_output_json"]),
             schema_validation=self._schema_validation_from_json(row["schema_validation_json"]),
         )

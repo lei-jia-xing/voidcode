@@ -44,18 +44,10 @@ class ToolExecutionIntent:
         }
 
 
-def interrupted_tool_result_message(intent: ToolExecutionIntent) -> str:
-    return (
-        f"Tool {intent.tool_name} was interrupted before its result was persisted. "
-        "The runtime did not replay it because its operation may have side effects. "
-        "Re-read the current state and retry only if still necessary."
-    )
-
-
 def recovery_action(intent: ToolExecutionIntent) -> ToolRecoveryAction:
     if intent.status != "pending":
         return "none"
     return "replay" if intent.replay_policy == "safe" else "interrupted"
 
 
-__all__ = ["ToolExecutionIntent", "ToolIntentStatus", "ToolRecoveryAction", "interrupted_tool_result_message", "recovery_action"]
+__all__ = ["ToolExecutionIntent", "ToolIntentStatus", "ToolRecoveryAction", "recovery_action"]

@@ -756,10 +756,9 @@ class InspectionCoordinator:
                 "session_id": session_id,
             }
         read_result = read_tool_output_artifact(artifact, offset=0, limit=0)
-        status = read_result.get("status")
         return {
             **artifact,
-            "status": status if isinstance(status, str) else artifact.get("status", "unknown"),
+            "status": read_result["status"],
             "artifact_missing": bool(read_result.get("artifact_missing")),
         }
 
@@ -1109,8 +1108,8 @@ class InspectionCoordinator:
         effective_config: EffectiveRuntimeConfig,
     ) -> RuntimeProviderContextSnapshot:
         active_target = effective_config.resolved_provider.active_target
-        provider = active_target.selection.provider or "unknown"
-        model = active_target.selection.model or active_target.selection.raw_model or "unknown"
+        provider = active_target.selection.provider or "unresolved"
+        model = active_target.selection.model or active_target.selection.raw_model or "unresolved"
         tool_registry = self._surface.tool_registry_for_effective_config(effective_config)
         context_window_config = effective_config.context_window or self._surface_context_window_default()
         return inspect_provider_context(

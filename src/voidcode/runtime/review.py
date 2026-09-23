@@ -17,6 +17,17 @@ from .contracts import (
 
 _VCS_TREE_DIRECTORY_NAMES = frozenset({".git", ".hg", ".svn"})
 
+#: git status flag -> review change type; first match in order wins.
+_GIT_STATUS_CHANGE_TYPES: tuple[tuple[str, ReviewChangeType], ...] = (
+    ("R", "renamed"),
+    ("C", "copied"),
+    ("A", "added"),
+    ("D", "deleted"),
+    ("T", "type_changed"),
+    ("M", "modified"),
+    ("U", "modified"),
+)
+
 type ReviewChangeType = Literal[
     "added",
     "modified",
@@ -148,18 +159,9 @@ class WorkspaceReviewService:
         normalized = code.upper()
         if normalized == "??":
             return "untracked"
-        if "R" in normalized:
-            return "renamed"
-        if "C" in normalized:
-            return "copied"
-        if "A" in normalized:
-            return "added"
-        if "D" in normalized:
-            return "deleted"
-        if "T" in normalized:
-            return "type_changed"
-        if "M" in normalized or "U" in normalized:
-            return "modified"
+        for flag, change_type in _GIT_STATUS_CHANGE_TYPES:
+            if flag in normalized:
+                return change_type
         return "unknown"
 
     def _tree(

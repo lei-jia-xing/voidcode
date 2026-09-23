@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Literal
+from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING, Literal, cast
 
 from .execution import SubagentExecutionContract
 from .routing import (
     SubagentRoutingIdentity,
     subagent_routing_identity_from_metadata,
 )
+
+if TYPE_CHECKING:
+    from ..contracts import RuntimeRequest
 
 type BackgroundTaskStatus = Literal[
     "queued",
@@ -69,6 +72,17 @@ class BackgroundTaskRequestSnapshot:
     def routing_identity(self) -> SubagentRoutingIdentity | None:
         return subagent_routing_identity_from_metadata(self.metadata)
 
+    def as_runtime_request(self) -> RuntimeRequest:
+        from ..contracts import RuntimeRequest, RuntimeRequestMetadataPayload
+
+        return RuntimeRequest(
+            prompt=self.prompt,
+            session_id=self.session_id,
+            parent_session_id=self.parent_session_id,
+            metadata=cast(RuntimeRequestMetadataPayload, self.metadata),
+            allocate_session_id=self.allocate_session_id,
+        )
+
     @property
     def subagent_execution(self) -> SubagentExecutionContract:
         return SubagentExecutionContract.from_snapshot(
@@ -95,19 +109,7 @@ class BackgroundTaskConcurrencyObservability:
     queued_total: int
 
     def as_payload(self) -> dict[str, object]:
-        return {
-            "provider": self.provider,
-            "model": self.model,
-            "limit": self.limit,
-            "limit_source": self.limit_source,
-            "running_provider": self.running_provider,
-            "running_model": self.running_model,
-            "running_total": self.running_total,
-            "active_worker_slots": self.active_worker_slots,
-            "queued_provider": self.queued_provider,
-            "queued_model": self.queued_model,
-            "queued_total": self.queued_total,
-        }
+        return asdict(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,12 +120,7 @@ class BackgroundTaskRetryObservability:
     next_retry_at: int | None = None
 
     def as_payload(self) -> dict[str, object]:
-        return {
-            "retry_count": self.retry_count,
-            "max_retries": self.max_retries,
-            "backoff_seconds": self.backoff_seconds,
-            "next_retry_at": self.next_retry_at,
-        }
+        return asdict(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,12 +171,7 @@ class SchemaValidation:
     error: str | None = None
 
     def as_payload(self) -> dict[str, object]:
-        return {
-            "schema_source": self.schema_source,
-            "schema_mode": self.schema_mode,
-            "valid": self.valid,
-            "error": self.error,
-        }
+        return asdict(self)
 
 
 @dataclass(frozen=True, slots=True)

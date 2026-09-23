@@ -229,7 +229,7 @@ def prompt_and_tool_results_from_debug_events(
         is_error = error_value is not None
         tool_results.append(
             ToolResult(
-                tool_name=str(event.payload.get("tool", "unknown")),
+                tool_name=str(event.payload["tool"]),
                 status="error" if is_error else "ok",
                 content=str(raw_content) if raw_content is not None and not is_error else None,
                 data=provider_visible_tool_result_data(event.payload),
