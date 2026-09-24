@@ -6,7 +6,7 @@ import queue
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
-from typing import Final, Literal, cast
+from typing import Final, Literal, TypedDict, cast
 
 from ..provider.errors import parse_provider_stream_error
 from ..provider.model_catalog import static_catalog_metadata
@@ -71,6 +71,27 @@ logger = logging.getLogger(__name__)
 _COMPLETED_DONE_REASONS: Final[frozenset[str]] = frozenset(
     {"stop", "tool_calls", "function_call", "length", "content_filter", "completed", "unknown"}
 )
+
+
+class _StreamedToolCallState(TypedDict):
+    """Graph-local accumulator for one tool call streamed by the provider turn.
+
+    Every key is written when the accumulator is created; ``parsed_arguments``
+    is only present once the provider emits structured arguments.
+    """
+
+    tool_call_id: str
+    tool_name: str | None
+    ordinal: int
+    stream_order: int
+    fragments: list[str]
+    preview_fragments: list[str]
+    preview_chars: int
+    ended: bool
+
+
+class _StreamedToolCallWithArguments(_StreamedToolCallState, total=False):
+    parsed_arguments: dict[str, object]
 
 
 def _finish_reason_diagnostics(*, done_reason: str, reported: bool) -> dict[str, object]:
@@ -308,6 +329,7 @@ class ProviderGraph:
 
         if streaming_enabled and isinstance(self._provider, StreamableTurnProvider):
             return self._step_streaming(
+                stream_provider=self._provider,
                 planning_events=planning_events,
                 turn_request=turn_request,
                 current_turn=current_turn,
@@ -439,6 +461,10 @@ class ProviderGraph:
         session_id: str,
         abort_signal: ProviderAbortSignal,
     ) -> ProviderTurnRequest:
+        # Boundary: these three read the runtime-owned request metadata blob
+        # (``GraphRunRequest.metadata: dict[str, object]``); the runtime
+        # validated the tokens before building the request, so the cast only
+        # recovers the declared shape of an untyped heterogeneous dict.
         return ProviderTurnRequest(
             assembled_context=request.assembled_context,
             bounded_context_window=request.context_window,
@@ -457,6 +483,7 @@ class ProviderGraph:
     def _step_streaming(
         self,
         *,
+        stream_provider: StreamableTurnProvider,
         planning_events: tuple[GraphEvent, ...],
         turn_request: ProviderTurnRequest,
         current_turn: int,
@@ -469,11 +496,10 @@ class ProviderGraph:
         output_parts: list[str] = []
         tool_payload_parts: list[str] = []
         complete_tool_payload_order: int | None = None
-        lifecycle_tool_calls: dict[str, dict[str, object]] = {}
+        lifecycle_tool_calls: dict[str, _StreamedToolCallWithArguments] = {}
         done_reason: str | None = None
         raw_finish_reason: str | None = None
         provider_usage: ProviderTokenUsage | None = None
-        stream_provider = cast(StreamableTurnProvider, self._provider)
         for stream_event_index, stream_event in enumerate(stream_provider.stream_turn(turn_request)):
             preview: dict[str, object] | None = None
             preview_tool_name: str | None = stream_event.tool_name
@@ -495,12 +521,12 @@ class ProviderGraph:
                     )
                     if stream_event.tool_name is not None:
                         state["tool_name"] = stream_event.tool_name
-                    preview_tool_name = cast(str | None, state.get("tool_name"))
-                    fragments = cast(list[str], state["fragments"])
+                    preview_tool_name = state.get("tool_name")
+                    fragments = state["fragments"]
                     if stream_event.arguments_delta is not None:
                         fragments.append(stream_event.arguments_delta)
-                        preview_fragments = cast(list[str], state["preview_fragments"])
-                        preview_chars = cast(int, state["preview_chars"])
+                        preview_fragments = state["preview_fragments"]
+                        preview_chars = state["preview_chars"]
                         if preview_chars < _PREVIEW_ARGUMENT_MAX_CHARS:
                             fragment = stream_event.arguments_delta[: _PREVIEW_ARGUMENT_MAX_CHARS - preview_chars]
                             preview_fragments.append(fragment)
@@ -514,8 +540,8 @@ class ProviderGraph:
                         try:
                             preview = callback(
                                 preview_tool_name,
-                                tuple(cast(list[str], state["preview_fragments"])),
-                                cast(dict[str, object] | None, state.get("parsed_arguments")),
+                                tuple(state["preview_fragments"]),
+                                state.get("parsed_arguments"),
                             )
                         except Exception:
                             # A preview is strictly observational. A client
@@ -552,7 +578,7 @@ class ProviderGraph:
                 if stream_event.error_kind == "cancelled":
                     raise ProviderExecutionError(
                         kind="cancelled",
-                        provider_name=self._provider.name,
+                        provider_name=stream_provider.name,
                         model_name=turn_request.model_name or "unknown",
                         message=stream_event.error or "provider stream cancelled",
                     )
@@ -582,7 +608,7 @@ class ProviderGraph:
                     parsed_kind = stream_event.error_kind
                 raise ProviderExecutionError(
                     kind=parsed_kind,
-                    provider_name=self._provider.name,
+                    provider_name=stream_provider.name,
                     model_name=turn_request.model_name or "unknown",
                     message=parsed.message,
                     details=parsed.details,
@@ -627,18 +653,19 @@ class ProviderGraph:
         if done_reason == "unknown":
             _log_unrecognized_finish_reason(
                 source="graph_stream",
-                provider_name=self._provider.name,
+                provider_name=stream_provider.name,
                 model_name=turn_request.model_name,
                 reported=raw_finish_reason is not None,
                 raw_finish_reason=raw_finish_reason,
             )
         ordered_tool_calls: list[tuple[tuple[int, int, int], ToolCall]] = []
-        for state in sorted(lifecycle_tool_calls.values(), key=lambda item: cast(int, item["ordinal"])):
-            if state.get("ended") is not True or not isinstance(state.get("tool_name"), str):
+        for state in sorted(lifecycle_tool_calls.values(), key=lambda item: item["ordinal"]):
+            tool_name = state["tool_name"]
+            if state.get("ended") is not True or not isinstance(tool_name, str):
                 continue
             parsed_arguments = state.get("parsed_arguments")
             if not isinstance(parsed_arguments, dict):
-                raw_arguments = "".join(cast(list[str], state["fragments"]))
+                raw_arguments = "".join(state["fragments"])
                 try:
                     parsed_arguments = json.loads(raw_arguments)
                 except json.JSONDecodeError as exc:
@@ -654,13 +681,13 @@ class ProviderGraph:
             if not isinstance(parsed_arguments, dict):
                 continue
             explicit_call = ToolCall(
-                tool_name=cast(str, state["tool_name"]),
+                tool_name=tool_name,
                 arguments=parsed_arguments,
-                tool_call_id=cast(str, state["tool_call_id"]),
+                tool_call_id=state["tool_call_id"],
             )
             ordered_tool_calls.append(
                 (
-                    (cast(int, state["stream_order"]), 0, cast(int, state["ordinal"])),
+                    (state["stream_order"], 0, state["ordinal"]),
                     explicit_call,
                 )
             )

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import cast
+from typing import TypedDict
 
 from ..command.resolver import resolve_tool_instruction
 from ..runtime.context.window import ToolResultView
@@ -15,6 +15,23 @@ from .contracts import (
     GraphRunRequest,
     GraphSession,
 )
+
+
+class _PlannedTurn(TypedDict, total=False):
+    """Partial turn-plan update: each branch emits only the keys it changed."""
+
+    events: list[GraphEvent]
+    tool_calls: list[ToolCall]
+    current_turn: int
+    output: str
+    error: str
+
+
+class _FinalizedTurn(TypedDict):
+    """Terminal turn update: the finalize node always emits events and output."""
+
+    events: list[GraphEvent]
+    output: str
 
 
 def _normalize_read_output(content: str | None) -> str | None:
@@ -84,13 +101,13 @@ class DeterministicGraph:
             session=session,
         )
         planned = self._plan_turn_node(state)
-        state["events"].extend(cast(list[GraphEvent], planned.get("events", [])))
-        state["tool_calls"].extend(cast(list[ToolCall], planned.get("tool_calls", [])))
-        state["current_turn"] = cast(int, planned["current_turn"])
+        state["events"].extend(planned.get("events", []))
+        state["tool_calls"].extend(planned.get("tool_calls", []))
+        state["current_turn"] = planned["current_turn"]
         if "output" in planned:
-            state["output"] = cast(str | None, planned["output"])
+            state["output"] = planned["output"]
         if "error" in planned:
-            state["error"] = cast(str | None, planned["error"])
+            state["error"] = planned["error"]
 
         if state["error"] is not None:
             raise ValueError(state["error"])
@@ -109,8 +126,8 @@ class DeterministicGraph:
             )
 
         finalized = self._finalize_turn_node(state)
-        state["events"].extend(cast(list[GraphEvent], finalized["events"]))
-        output = cast(str, finalized["output"])
+        state["events"].extend(finalized["events"])
+        output = finalized["output"]
         return DeterministicReadOnlyStep(
             events=tuple(state["events"]),
             output=output,
@@ -146,7 +163,7 @@ class DeterministicGraph:
             return len(tool_results)
         return sum(result.source != "replayed_conversation" for result in tool_results)
 
-    def _plan_turn_node(self, state: GraphLoopState) -> dict[str, object]:
+    def _plan_turn_node(self, state: GraphLoopState) -> _PlannedTurn:
         current_turn = state["current_turn"]
         if current_turn < 1:
             raise ValueError("run_step must be a positive integer")
@@ -204,7 +221,7 @@ class DeterministicGraph:
             "current_turn": current_turn + 1,
         }
 
-    def _finalize_turn_node(self, state: GraphLoopState) -> dict[str, object]:
+    def _finalize_turn_node(self, state: GraphLoopState) -> _FinalizedTurn:
         current_turn = state["current_turn"]
 
         last_result = state["tool_results"][-1]
