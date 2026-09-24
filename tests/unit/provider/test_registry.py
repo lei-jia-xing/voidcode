@@ -6,7 +6,7 @@ from urllib.request import Request
 import pytest
 
 from voidcode.provider import model_catalog
-from voidcode.provider.anthropic_native import AnthropicMessagesProvider
+from voidcode.provider.anthropic_native import AnthropicMessagesProvider, AnthropicMessagesTransport
 from voidcode.provider.config import (
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
@@ -46,6 +46,26 @@ def test_registry_anthropic_wire_vendors_share_one_adapter() -> None:
         assert config.base_url == base_url
         assert config.wire == "anthropic-messages"
         assert isinstance(provider.turn_provider(), AnthropicMessagesProvider)
+
+
+def test_anthropic_wire_turn_resolves_the_vendor_default_host() -> None:
+    """``turn_provider`` hands the adapter the raw vendor config while
+    ``provider_config()`` returns the normalized endpoint config. The asymmetry is
+    benign for a turn: the adapter resolves the vendor's own host from the wire
+    table itself, so an unconfigured vendor reaches its own endpoint -- never
+    Anthropic's -- and carries no ambient credential."""
+    for provider_name, base_url in (
+        ("minimax-cn", "https://api.minimaxi.com/anthropic"),
+        ("kimi-code", "https://api.kimi.com/coding"),
+    ):
+        turn = AnthropicCompatibleModelProvider(name=provider_name).turn_provider()
+
+        assert isinstance(turn, AnthropicMessagesProvider)
+        transport = turn._transport()
+
+        assert isinstance(transport, AnthropicMessagesTransport)
+        assert transport.base_url == base_url
+        assert transport.api_key is None
 
 
 def test_anthropic_wire_endpoint_config_rejects_unknown_vendor_names() -> None:

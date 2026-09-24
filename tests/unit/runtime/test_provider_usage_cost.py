@@ -59,6 +59,30 @@ def test_the_amount_is_the_oracle_arithmetic_for_the_observed_usage() -> None:
     assert expected == (1e-05 * 2000) + (5e-05 * 500) + (1e-06 * 1000)
 
 
+def test_cumulative_cache_hit_rate_is_the_ratio_of_the_accumulated_totals() -> None:
+    """The cumulative rate is the ratio of the summed buckets *after* this turn.
+    Reading the previous turn's persisted buckets reported the prior turn's ratio,
+    and ``0/0`` (-> None) on the first one."""
+    first = session_with_provider_usage_metadata(
+        _session(),
+        ProviderTokenUsage(input_tokens=3000, output_tokens=10, cache_read_tokens=1000, uncached_input_tokens=2000),
+    )
+    first_payload = first.metadata["provider_usage"]
+    assert isinstance(first_payload, dict)
+    assert first_payload["latest"]["cache_hit_rate"] == 1000 / 3000
+    assert first_payload["cumulative"]["cache_hit_rate"] == 1000 / 3000
+
+    second = session_with_provider_usage_metadata(
+        first,
+        ProviderTokenUsage(input_tokens=2000, output_tokens=10, cache_read_tokens=1000, uncached_input_tokens=1000),
+    )
+    payload = second.metadata["provider_usage"]
+    assert isinstance(payload, dict)
+    # This turn's own split, and the running 2000/5000 across both turns.
+    assert payload["latest"]["cache_hit_rate"] == 1000 / 2000
+    assert payload["cumulative"]["cache_hit_rate"] == 2000 / 5000
+
+
 def test_a_resumed_run_does_not_double_count_the_cost() -> None:
     """Resume rebuilds the session from the *checkpoint payload*, not from the
     sessions row or the truncated event tail (``resume.py``: the resumed

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import cast
 
 from ...provider.protocol import ProviderTokenUsage
@@ -42,6 +43,13 @@ def _cache_hit_rate(cache_read_tokens: int, uncached_input_tokens: int) -> float
     return cache_read_tokens / denominator
 
 
+def _accumulated_int(payload: Mapping[str, object], key: str) -> int:
+    raw_value = payload.get(key, 0)
+    if isinstance(raw_value, int) and not isinstance(raw_value, bool):
+        return raw_value
+    raise ValueError(f"persisted provider_usage.cumulative.{key} must be an integer")
+
+
 def session_with_provider_usage_metadata(
     session: SessionState,
     usage: ProviderTokenUsage | None,
@@ -59,10 +67,7 @@ def session_with_provider_usage_metadata(
     cumulative = dict(cast(dict[str, object], raw_cumulative or {}))
 
     def _int_value(key: str) -> int:
-        raw_value = cumulative.get(key, 0)
-        if isinstance(raw_value, int) and not isinstance(raw_value, bool):
-            return raw_value
-        raise ValueError(f"persisted provider_usage.cumulative.{key} must be an integer")
+        return _accumulated_int(cumulative, key)
 
     cumulative_payload: dict[str, int | float] = {}
     for key, value in usage_payload.items():
@@ -80,7 +85,13 @@ def session_with_provider_usage_metadata(
     }
     cumulative_payload_with_rate = {
         **cumulative_payload,
-        "cache_hit_rate": _cache_hit_rate(_int_value("cache_read_tokens"), _int_value("uncached_input_tokens")),
+        # The ratio of the totals *after* this turn. Reading ``cumulative`` here
+        # instead reported the previous turn's ratio, and ``0/0`` (-> None) on the
+        # first one.
+        "cache_hit_rate": _cache_hit_rate(
+            _accumulated_int(cumulative_payload, "cache_read_tokens"),
+            _accumulated_int(cumulative_payload, "uncached_input_tokens"),
+        ),
     }
     raw_turn_count = provider_usage.get("turn_count", 0)
     turn_count = 0
