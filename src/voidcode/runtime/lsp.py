@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
@@ -647,8 +647,7 @@ class ManagedLspManager:
             raw_container = params.get(container_key)
             if not isinstance(raw_container, dict):
                 continue
-            container = cast(dict[str, object], raw_container)
-            uri = container.get("uri")
+            uri = raw_container.get("uri")
             if isinstance(uri, str):
                 uris.append(uri)
         return tuple(uris)
@@ -792,7 +791,7 @@ class ManagedLspManager:
             raise LspProtocolError("invalid JSON payload from LSP server") from exc
         if not isinstance(payload, dict):
             raise LspProtocolError("expected JSON-RPC object payload from LSP server")
-        return cast(dict[str, object], payload)
+        return payload
 
     @staticmethod
     def _wait_for_windows_pipe(*, fd: int, timeout: float) -> bool:

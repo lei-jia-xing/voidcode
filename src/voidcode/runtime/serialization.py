@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import cast
-
 from .contracts import (
     RuntimeHookPresetSnapshot,
     RuntimeProviderContextSnapshot,
@@ -98,7 +96,7 @@ def _runtime_policy_debug_payload(
     runtime_policy = snapshot.session.metadata.get("runtime_policy")
     if not isinstance(runtime_policy, dict):
         return None
-    return runtime_policy_observability_payload(cast(dict[str, object], runtime_policy))
+    return runtime_policy_observability_payload(runtime_policy)
 
 
 def serialize_hook_preset_snapshot(

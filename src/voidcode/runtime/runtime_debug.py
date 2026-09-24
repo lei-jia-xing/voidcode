@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import cast
-
 from ..tools.contracts import ToolDiagnostics, ToolResult
 from ..tools.output import read_tool_output_artifact, sanitize_tool_result_data
 from .contracts import (
@@ -51,9 +49,8 @@ def debug_session_state_inconsistency(
     pending_question: PendingQuestion | None,
     resume_checkpoint: dict[str, object] | None,
 ) -> str | None:
-    checkpoint_kind = (
-        cast(str, resume_checkpoint.get("kind")) if isinstance(resume_checkpoint, dict) and isinstance(resume_checkpoint.get("kind"), str) else None
-    )
+    raw_kind = resume_checkpoint.get("kind") if resume_checkpoint is not None else None
+    checkpoint_kind = raw_kind if isinstance(raw_kind, str) else None
     if result.session.status == "waiting":
         if pending_approval is None and pending_question is None:
             return "waiting session is missing pending approval/question state"
@@ -131,7 +128,7 @@ def artifact_debug_metadata(payload: dict[str, object]) -> dict[str, object]:
     artifact = payload.get("artifact")
     if not isinstance(artifact, dict):
         return {}
-    artifact_metadata = dict(cast(dict[str, object], artifact))
+    artifact_metadata = dict(artifact)
     read_result = read_tool_output_artifact(artifact_metadata, offset=0, limit=0)
     status = read_result.get("status")
     if isinstance(status, str):
@@ -184,7 +181,7 @@ def last_tool_summary(
             tool_name=tool_name,
             status=status,
             summary=summary,
-            arguments=(dict(cast(dict[str, object], arguments)) if isinstance(arguments, dict) else {}),
+            arguments=(dict(arguments) if isinstance(arguments, dict) else {}),
             artifact=artifact,
             sequence=event.sequence,
         )
@@ -226,6 +223,7 @@ def prompt_and_tool_results_from_debug_events(
             continue
         error_value = event.payload.get("error")
         raw_content = event.payload.get("content")
+        raw_reference = event.payload.get("reference")
         is_error = error_value is not None
         tool_results.append(
             ToolResult(
@@ -236,7 +234,7 @@ def prompt_and_tool_results_from_debug_events(
                 error=str(error_value) if is_error else None,
                 truncated=event.payload.get("truncated") is True,
                 partial=event.payload.get("partial") is True,
-                reference=(cast(str, event.payload.get("reference")) if isinstance(event.payload.get("reference"), str) else None),
+                reference=raw_reference if isinstance(raw_reference, str) else None,
                 diagnostics=(
                     ToolDiagnostics.from_payload(event.payload["diagnostics"])
                     if isinstance(event.payload.get("diagnostics"), dict) and is_error

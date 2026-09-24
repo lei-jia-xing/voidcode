@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal
 from uuid import uuid4
 
 type QueuedMessageKind = Literal["steering", "follow_up"]
@@ -84,7 +84,7 @@ def drain_runtime_messages(
     drained: list[QueuedRuntimeMessage] = []
     remaining: list[object] = []
     for item in raw:
-        payload = cast(dict[str, object], item) if isinstance(item, dict) else None
+        payload = item if isinstance(item, dict) else None
         if payload is None or payload.get("kind") != kind:
             remaining.append(item)
             continue

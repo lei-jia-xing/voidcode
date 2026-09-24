@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 from ..security.path_policy import resolve_workspace_path
 from ..tools._repair import ToolDiagnosticError
@@ -202,7 +202,7 @@ def _partial_arguments(argument_text: str, parsed_arguments: Mapping[str, object
     except TypeError, ValueError:
         parsed = None
     if isinstance(parsed, dict):
-        return _PartialArguments(values=cast(dict[str, object], parsed), incomplete=False)
+        return _PartialArguments(values=parsed, incomplete=False)
 
     values: dict[str, object] = {}
     incomplete = True

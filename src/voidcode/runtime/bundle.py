@@ -334,7 +334,8 @@ def _diagnostics_payload(diagnostics: SessionBundleDiagnostics) -> dict[str, obj
 def _strip_deferred_bundle_diagnostics(value: object) -> object | None:
     if isinstance(value, dict):
         cleaned: dict[str, object] = {}
-        for raw_key, raw_item in cast(Mapping[object, object], value).items():
+        mapping: Mapping[object, object] = value
+        for raw_key, raw_item in mapping.items():
             key = str(raw_key)
             if key.casefold() in _DEFERRED_BUNDLE_DIAGNOSTIC_KEYS:
                 continue
@@ -344,7 +345,7 @@ def _strip_deferred_bundle_diagnostics(value: object) -> object | None:
         return cleaned
     if isinstance(value, list):
         cleaned_items: list[object] = []
-        for item in cast(list[object], value):
+        for item in value:
             cleaned_item = _strip_deferred_bundle_diagnostics(item)
             if cleaned_item is not None:
                 cleaned_items.append(cleaned_item)
@@ -381,12 +382,12 @@ def _strip_reasoning_payload(payload: dict[str, object]) -> dict[str, object]:
             cleaned[key] = SESSION_BUNDLE_REDACTED_PLACEHOLDER
             continue
         if isinstance(value, dict):
-            cleaned[key] = _strip_reasoning_payload(cast(dict[str, object], value))
+            cleaned[key] = _strip_reasoning_payload(value)
         elif isinstance(value, list):
             cleaned_items: list[object] = []
-            for item in cast(list[object], value):
+            for item in value:
                 if isinstance(item, dict):
-                    cleaned_items.append(_strip_reasoning_payload(cast(dict[str, object], item)))
+                    cleaned_items.append(_strip_reasoning_payload(item))
                 else:
                     cleaned_items.append(item)
             cleaned[key] = cleaned_items
@@ -406,12 +407,12 @@ def _truncate_tool_output_payload(
             cleaned[key] = truncate(value, limit)
             continue
         if isinstance(value, dict):
-            cleaned[key] = _truncate_tool_output_payload(cast(dict[str, object], value), limit=limit)
+            cleaned[key] = _truncate_tool_output_payload(value, limit=limit)
         elif isinstance(value, list):
             cleaned_items: list[object] = []
-            for item in cast(list[object], value):
+            for item in value:
                 if isinstance(item, dict):
-                    cleaned_items.append(_truncate_tool_output_payload(cast(dict[str, object], item), limit=limit))
+                    cleaned_items.append(_truncate_tool_output_payload(item, limit=limit))
                 else:
                     cleaned_items.append(item)
             cleaned[key] = cleaned_items
@@ -537,11 +538,10 @@ class _SessionBundleBuilder:
                 payload = event.get("payload")
                 if not isinstance(payload, dict):
                     continue
-                payload_dict = cast(dict[str, object], payload)
-                artifact = payload_dict.get("artifact")
+                artifact = payload.get("artifact")
                 if not isinstance(artifact, dict):
                     continue
-                artifact_payload = self._build_artifact_payload(cast(dict[str, object], artifact))
+                artifact_payload = self._build_artifact_payload(artifact)
                 if artifact_payload is None or artifact_payload.artifact_id in seen:
                     continue
                 seen.add(artifact_payload.artifact_id)
@@ -590,10 +590,9 @@ class _SessionBundleBuilder:
         cleaned = _strip_deferred_bundle_diagnostics(payload)
         if not isinstance(cleaned, dict):
             return {}
-        diagnostics = cast(dict[str, object], cleaned)
         if not self._options.redact:
-            return dict(diagnostics)
-        return redact_mapping(diagnostics)
+            return dict(cleaned)
+        return redact_mapping(cleaned)
 
     def _collect_sessions(self, *, session_id: str) -> tuple[tuple[SessionBundleSessionPayload, ...], int]:
         primary = self._load_session_response(session_id=session_id)
@@ -732,13 +731,13 @@ def build_session_bundle(
 def _ensure_dict(value: object, *, where: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise SessionBundleError(f"session bundle {where} must be an object")
-    return cast(dict[str, object], value)
+    return value
 
 
 def _ensure_list(value: object, *, where: str) -> list[object]:
     if not isinstance(value, list):
         raise SessionBundleError(f"session bundle {where} must be an array")
-    return cast(list[object], value)
+    return value
 
 
 def _ensure_str(value: object, *, where: str) -> str:
@@ -838,7 +837,7 @@ def _ensure_optional_dict(value: object) -> dict[str, object] | None:
         return None
     if not isinstance(value, dict):
         raise SessionBundleError("diagnostics blocks must be objects when present")
-    return dict(cast(dict[str, object], value))
+    return dict(value)
 
 
 def _parse_session_payload(payload: dict[str, object], *, index: int) -> SessionBundleSessionPayload:
@@ -1121,7 +1120,7 @@ def _session_metadata_with_import_marker(
         marker["original_workspace"] = original_workspace
     raw_existing = metadata.get("imported_bundle")
     if isinstance(raw_existing, dict):
-        marker = {**cast(dict[str, object], raw_existing), **marker}
+        marker = {**raw_existing, **marker}
     metadata["workspace"] = str(workspace)
     metadata["imported_bundle"] = marker
     return metadata

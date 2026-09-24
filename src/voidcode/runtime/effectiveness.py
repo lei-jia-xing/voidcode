@@ -6,7 +6,6 @@ import json
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import cast
 
 from .events import EventEnvelope
 
@@ -286,8 +285,7 @@ def project_tool_effectiveness(
         if model_stats is not None:
             model_stats.successes += 1
         if tool == "read" and isinstance(arguments, Mapping):
-            typed_arguments = cast(Mapping[str, object], arguments)
-            raw_path = typed_arguments.get("path")
+            raw_path = arguments.get("path")
             if isinstance(raw_path, str) and raw_path:
                 seen_paths = read_paths_by_session.setdefault(item.session_id, set())
                 read_key = (item.session_id, raw_path)
@@ -340,16 +338,14 @@ def project_tool_effectiveness(
         provider_usage = metadata.get("provider_usage")
         if not isinstance(provider_usage, Mapping):
             continue
-        typed_provider_usage = cast(Mapping[str, object], provider_usage)
-        cumulative = typed_provider_usage.get("cumulative")
+        cumulative = provider_usage.get("cumulative")
         if not isinstance(cumulative, Mapping):
             continue
-        typed_cumulative = cast(Mapping[str, object], cumulative)
         for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "uncached_input_tokens"):
-            value = typed_cumulative.get(key)
+            value = cumulative.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 usage_totals[key] += value
-        cumulative_cost = typed_cumulative.get("cost_usd")
+        cumulative_cost = cumulative.get("cost_usd")
         if isinstance(cumulative_cost, (int, float)) and not isinstance(cumulative_cost, bool):
             cost_total += float(cumulative_cost)
             cost_seen = True

@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol
 
 from .background.models import StoredBackgroundTaskSummary
 from .config import RuntimeConfig, user_runtime_config_path
@@ -201,11 +201,9 @@ class WorkspaceRuntimeCoordinator[RuntimeT: WorkspaceRuntimeHandle = WorkspaceRu
         raw_web = payload.get("web")
         if not isinstance(raw_web, dict):
             return ()
-        typed_web = cast(dict[str, object], raw_web)
-        raw_recent = typed_web.get("recent_workspaces")
-        if not isinstance(raw_recent, list):
+        recent_entries = raw_web.get("recent_workspaces")
+        if not isinstance(recent_entries, list):
             return ()
-        recent_entries = cast(list[object], raw_recent)
         workspaces: list[WorkspaceCandidate] = []
         for index, raw_path in enumerate(recent_entries):
             if not isinstance(raw_path, str) or not raw_path.strip():
@@ -232,7 +230,7 @@ class WorkspaceRuntimeCoordinator[RuntimeT: WorkspaceRuntimeHandle = WorkspaceRu
         config_path = user_runtime_config_path()
         payload = _read_user_config_json()
         raw_web = payload.get("web")
-        web_payload: dict[str, object] = dict(cast(dict[str, object], raw_web)) if isinstance(raw_web, dict) else {}
+        web_payload: dict[str, object] = dict(raw_web) if isinstance(raw_web, dict) else {}
         web_payload["recent_workspaces"] = [str(workspace.path) for workspace in workspaces]
         payload["web"] = web_payload
         config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,4 +244,4 @@ def _read_user_config_json() -> dict[str, object]:
     raw_payload = json.loads(config_path.read_text(encoding="utf-8"))
     if not isinstance(raw_payload, dict):
         raise ValueError(f"runtime config file must contain a JSON object: {config_path}")
-    return dict(cast(dict[str, object], raw_payload))
+    return dict(raw_payload)
