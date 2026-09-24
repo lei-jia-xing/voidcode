@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from typing import Literal, cast
+from collections.abc import Mapping
+from typing import Literal
 
 from ...provider.model_catalog import ToolFeedbackMode
 from ...provider.protocol import ProviderAssembledContext, ProviderContextSegmentLike
@@ -19,7 +20,7 @@ from ...tools.output import (
     redacted_argument_keys_for_tool,
     sanitize_tool_arguments,
     sanitize_tool_result_data,
-    strip_redaction_sentinels,
+    strip_redaction_sentinels_from_mapping,
 )
 from ..contracts import (
     RuntimeProviderContextDiagnostic,
@@ -266,12 +267,22 @@ def _redact_debug_text(content: str) -> str:
     return redact_text(content)
 
 
+def _safe_mapping(value: Mapping[str, object]) -> dict[str, object]:
+    """The debug-safe copy of one mapping: entries redacted, sensitive keys dropped.
+
+    ``_safe_payload`` returns ``object`` because it also transforms lists and
+    passes scalars through; the mapping arm is this one function, so a caller
+    holding a mapping never has to cast the walk's result back.
+    """
+    return {str(key): _safe_payload(item) for key, item in value.items() if not is_sensitive_key(str(key))}
+
+
 def _safe_payload(value: object) -> object:
     if isinstance(value, str):
         clipped, truncated = _clip_content(value)
         return {"text": clipped, "truncated": True} if truncated else clipped
     if isinstance(value, dict):
-        return {str(key): _safe_payload(item) for key, item in value.items() if not is_sensitive_key(str(key))}
+        return _safe_mapping(value)
     if isinstance(value, list | tuple):
         return [_safe_payload(item) for item in value]
     if isinstance(value, bool | int | float) or value is None:
@@ -298,7 +309,7 @@ def _segment_snapshot(
         tool_call_id=segment.tool_call_id,
         tool_name=segment.tool_name,
         tool_arguments=_sanitize_debug_arguments(segment.tool_arguments or {}),
-        metadata=cast(dict[str, object], _safe_payload(safe_metadata)),
+        metadata=_safe_mapping(safe_metadata),
     )
 
 
@@ -474,7 +485,7 @@ def _tool_result_payload_json(result: ToolResult | ToolResultView) -> str:
 
 def _sanitize_debug_arguments(arguments: dict[str, object]) -> dict[str, object]:
     sanitized = sanitize_tool_arguments(arguments)
-    return cast(dict[str, object], _safe_payload(sanitized))
+    return _safe_mapping(sanitized)
 
 
 def _provider_visible_debug_arguments(
@@ -482,17 +493,17 @@ def _provider_visible_debug_arguments(
     arguments: dict[str, object],
 ) -> dict[str, object]:
     sanitized = sanitize_tool_arguments(arguments)
-    stripped = strip_redaction_sentinels(
-        sanitized,
-        redacted_keys=redacted_argument_keys_for_tool(tool_name),
+    return _safe_mapping(
+        strip_redaction_sentinels_from_mapping(
+            sanitized,
+            redacted_keys=redacted_argument_keys_for_tool(tool_name),
+        )
     )
-    safe = _safe_payload(stripped)
-    return safe if isinstance(safe, dict) else {}
 
 
 def _sanitize_debug_data(data: dict[str, object]) -> dict[str, object]:
     sanitized = sanitize_tool_result_data(data)
-    return cast(dict[str, object], _safe_payload(sanitized))
+    return _safe_mapping(sanitized)
 
 
 def _diagnostics(

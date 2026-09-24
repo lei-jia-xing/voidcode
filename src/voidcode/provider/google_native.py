@@ -10,7 +10,7 @@ from google.genai import types
 from google.oauth2 import service_account
 
 from ..tools.contracts import ToolCall
-from ..tools.output import redacted_argument_keys_for_tool, sanitize_tool_arguments, strip_redaction_sentinels
+from ..tools.output import redacted_argument_keys_for_tool, sanitize_tool_arguments, strip_redaction_sentinels_from_mapping
 from ._wire_common import resolve_extra_request_headers
 from .config import GoogleProviderConfig
 from .errors import redact_provider_error_details, redact_provider_error_message
@@ -185,8 +185,7 @@ class GoogleGenAIProvider:
     @staticmethod
     def _visible_arguments(tool_name: str | None, arguments: Mapping[str, object]) -> dict[str, object]:
         sanitized = sanitize_tool_arguments(dict(arguments))
-        stripped = strip_redaction_sentinels(sanitized, redacted_keys=redacted_argument_keys_for_tool(tool_name))
-        return stripped if isinstance(stripped, dict) else {}
+        return strip_redaction_sentinels_from_mapping(sanitized, redacted_keys=redacted_argument_keys_for_tool(tool_name))
 
     def _contents(self, request: ProviderTurnRequest) -> tuple[str | None, list[dict[str, object]]]:
         system: list[str] = []

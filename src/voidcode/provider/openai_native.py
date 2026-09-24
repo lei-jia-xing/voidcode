@@ -12,7 +12,7 @@ from openai import APIError as OpenAIAPIError
 from openai import OpenAI, omit
 
 from ..tools.contracts import ToolCall
-from ..tools.output import redacted_argument_keys_for_tool, sanitize_tool_arguments, sanitize_tool_result_data, strip_redaction_sentinels
+from ..tools.output import redacted_argument_keys_for_tool, sanitize_tool_arguments, sanitize_tool_result_data, strip_redaction_sentinels_from_mapping
 from ._wire_common import (
     DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
     OwnedTransport,
@@ -464,8 +464,7 @@ class OpenAIChatCompletionsProvider:
     @staticmethod
     def _visible_arguments(tool_name: str | None, arguments: dict[str, object]) -> dict[str, object]:
         sanitized = sanitize_tool_arguments(arguments)
-        stripped = strip_redaction_sentinels(sanitized, redacted_keys=redacted_argument_keys_for_tool(tool_name))
-        return stripped if isinstance(stripped, dict) else {}
+        return strip_redaction_sentinels_from_mapping(sanitized, redacted_keys=redacted_argument_keys_for_tool(tool_name))
 
     def _messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         original_to_provider, _ = self._tool_maps(request)

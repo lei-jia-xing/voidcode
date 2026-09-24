@@ -22,6 +22,7 @@ from .output import (
     sanitize_tool_result_data,
     search_tool_output_artifact,
     strip_redaction_sentinels,
+    strip_redaction_sentinels_from_mapping,
     tool_output_artifact_temp_root,
 )
 from .process import BackgroundProcessTool
@@ -77,5 +78,6 @@ __all__ = [
     "sanitize_tool_result_data",
     "search_tool_output_artifact",
     "strip_redaction_sentinels",
+    "strip_redaction_sentinels_from_mapping",
     "tool_output_artifact_temp_root",
 ]

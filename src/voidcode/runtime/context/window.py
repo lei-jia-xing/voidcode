@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 from ...agent.prompt_sections import dynamic_boundary_marker
 from ...hook.percall import PerCallRewriteOutcome
@@ -20,6 +20,8 @@ from .prompt_assembly import (
     PromptAssemblyPlan,
     PromptAssemblySection,
     build_prompt_assembly_plan,
+    is_context_tier,
+    metadata_source,
     prompt_activation_decision,
 )
 from .transforms import (
@@ -299,10 +301,9 @@ def _context_tier_metadata(
         metadata = segment.metadata or {}
         if metadata.get("source") == "runtime_dynamic_boundary":
             continue
-        raw_tier = metadata.get("tier")
-        if raw_tier not in counts:
+        tier = metadata.get("tier")
+        if not is_context_tier(tier):
             continue
-        tier = cast(Literal["instruction", "workspace", "task", "recent"], raw_tier)
         counts[tier] += 1
         if tier not in order:
             order.append(tier)
@@ -1126,12 +1127,9 @@ def assemble_provider_context(
             PromptAssemblySection(
                 role=segment.role,
                 content=segment.content or "",
-                source=cast(
-                    str,
-                    (segment.metadata or {}).get(
-                        "source",
-                        "runtime_context_artifact_reference",
-                    ),
+                source=metadata_source(
+                    segment.metadata or {},
+                    fallback="runtime_context_artifact_reference",
                 ),
                 tier="recent",
                 metadata={} if segment.metadata is None else dict(segment.metadata),
@@ -1158,12 +1156,9 @@ def assemble_provider_context(
             PromptAssemblySection(
                 role=pending_state_segment.role,
                 content=pending_state_segment.content or "",
-                source=cast(
-                    str,
-                    (pending_state_segment.metadata or {}).get(
-                        "source",
-                        "runtime_pending_state",
-                    ),
+                source=metadata_source(
+                    pending_state_segment.metadata or {},
+                    fallback="runtime_pending_state",
                 ),
                 tier="task",
                 metadata=({} if pending_state_segment.metadata is None else dict(pending_state_segment.metadata)),

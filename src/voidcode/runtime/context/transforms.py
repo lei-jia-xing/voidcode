@@ -28,7 +28,7 @@ _MAX_TRACE_ITEMS = 32
 
 @dataclass(frozen=True, slots=True)
 class RuntimeContextTransformInjection:
-    role: str
+    role: Literal["system", "user", "assistant", "tool"]
     content: str
     metadata: Mapping[str, object] = field(default_factory=dict)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Literal, cast
+from typing import Final, Literal, TypeIs
 
 from voidcode.agent.profile_overlays import get_profile_overlay
 from voidcode.agent.prompt_sections import (
@@ -202,12 +202,22 @@ def _activation_records(value: object) -> list[dict[str, object]]:
     return records
 
 
+type ContextTier = Literal["instruction", "workspace", "task", "recent"]
+
+_CONTEXT_TIERS: Final[frozenset[ContextTier]] = frozenset({"instruction", "workspace", "task", "recent"})
+
+
+def is_context_tier(value: object) -> TypeIs[ContextTier]:
+    """Whether an untrusted ``tier`` value names one of the four context tiers."""
+    return value in _CONTEXT_TIERS
+
+
 @dataclass(frozen=True, slots=True)
 class PromptAssemblySection:
     role: Literal["system", "user", "assistant", "tool"]
     content: str
     source: str
-    tier: Literal["instruction", "workspace", "task", "recent"]
+    tier: ContextTier
     metadata: Mapping[str, object] = field(default_factory=dict)
 
 
@@ -216,7 +226,7 @@ class _PromptContextBlock:
     role: Literal["system", "user", "assistant", "tool"]
     content: str
     source: str
-    tier: Literal["instruction", "workspace", "task", "recent"]
+    tier: ContextTier
     metadata: Mapping[str, object] = field(default_factory=dict)
     layer: str | None = None
 
@@ -437,7 +447,7 @@ def build_prompt_assembly_plan(
             if injection.role == "system":
                 append_system(
                     normalized,
-                    source=_metadata_source(injection.metadata, fallback="context_transform"),
+                    source=metadata_source(injection.metadata, fallback="context_transform"),
                     tier=_metadata_tier(injection.metadata, fallback="workspace"),
                     layer="hook_injected_context",
                     metadata=injection.metadata,
@@ -445,8 +455,8 @@ def build_prompt_assembly_plan(
                 continue
             append_block(
                 normalized,
-                role=cast(Literal["system", "user", "assistant", "tool"], injection.role),
-                source=_metadata_source(injection.metadata, fallback="context_transform"),
+                role=injection.role,
+                source=metadata_source(injection.metadata, fallback="context_transform"),
                 tier=_metadata_tier(injection.metadata, fallback="workspace"),
                 layer="hook_injected_context",
                 metadata=injection.metadata,
@@ -624,7 +634,8 @@ def _redacted_preview(content: str) -> tuple[str, bool]:
     return truncate(redacted, _PROMPT_FRAGMENT_PREVIEW_CHARS), True
 
 
-def _metadata_source(metadata: Mapping[str, object], *, fallback: str) -> str:
+def metadata_source(metadata: Mapping[str, object], *, fallback: str) -> str:
+    """The ``source`` one assembled segment's metadata carries, else ``fallback``."""
     source = metadata.get("source")
     return source if isinstance(source, str) and source.strip() else fallback
 
@@ -632,19 +643,20 @@ def _metadata_source(metadata: Mapping[str, object], *, fallback: str) -> str:
 def _metadata_tier(
     metadata: Mapping[str, object],
     *,
-    fallback: Literal["instruction", "workspace", "task", "recent"],
-) -> Literal["instruction", "workspace", "task", "recent"]:
+    fallback: ContextTier,
+) -> ContextTier:
     tier = metadata.get("tier")
-    if tier in {"instruction", "workspace", "task", "recent"}:
-        return cast(Literal["instruction", "workspace", "task", "recent"], tier)
-    return fallback
+    return tier if is_context_tier(tier) else fallback
 
 
 __all__ = [
-    "PromptAssemblyPlan",
+    "ContextTier",
     "PromptAssemblyFragment",
+    "PromptAssemblyPlan",
     "PromptAssemblySection",
     "build_prompt_assembly_plan",
+    "is_context_tier",
+    "metadata_source",
     "prompt_activation_decision",
     "prompt_fragments_for_sections",
 ]

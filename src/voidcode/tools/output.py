@@ -77,6 +77,23 @@ def _string_summary(value: str, *, include_preview: bool) -> dict[str, object]:
     return payload
 
 
+def _sanitize_mapping(value: Mapping[str, object], *, argument: bool) -> dict[str, object]:
+    """The model-visible copy of one mapping: a mapping in, a mapping out.
+
+    ``_sanitize_value`` returns ``object`` because it also transforms lists and
+    passes scalars through; the mapping arm is this one function, so a caller
+    holding a mapping never has to cast the walk's result back.
+    """
+    return {
+        str(item_key): _sanitize_value(
+            item_value,
+            key=str(item_key),
+            argument=argument,
+        )
+        for item_key, item_value in value.items()
+    }
+
+
 def _sanitize_value(value: object, *, key: str | None = None, argument: bool = False) -> object:
     if isinstance(value, str):
         if key in _INLINE_BLOB_KEYS:
@@ -87,14 +104,7 @@ def _sanitize_value(value: object, *, key: str | None = None, argument: bool = F
             return _string_summary(value, include_preview=True)
         return value
     if isinstance(value, dict):
-        return {
-            str(item_key): _sanitize_value(
-                item_value,
-                key=str(item_key),
-                argument=argument,
-            )
-            for item_key, item_value in value.items()
-        }
+        return _sanitize_mapping(value, argument=argument)
     if isinstance(value, list):
         return [_sanitize_value(item, key=key, argument=argument) for item in value]
     if isinstance(value, tuple):
@@ -103,11 +113,11 @@ def _sanitize_value(value: object, *, key: str | None = None, argument: bool = F
 
 
 def sanitize_tool_arguments(arguments: dict[str, object]) -> dict[str, object]:
-    return cast(dict[str, object], _sanitize_value(arguments, argument=True))
+    return _sanitize_mapping(arguments, argument=True)
 
 
 def sanitize_tool_data(data: dict[str, object]) -> dict[str, object]:
-    return cast(dict[str, object], _sanitize_value(data, argument=False))
+    return _sanitize_mapping(data, argument=False)
 
 
 def sanitize_tool_result_data(data: dict[str, object]) -> dict[str, object]:
@@ -127,6 +137,28 @@ def redacted_argument_keys_for_tool(tool_name: str | None) -> frozenset[str]:
     )
 
 
+def strip_redaction_sentinels_from_mapping(
+    value: Mapping[str, object],
+    *,
+    redacted_keys: frozenset[str] = _EMPTY_REDACTED_ARGUMENT_KEYS,
+) -> dict[str, object]:
+    """The sentinel-stripped copy of one top-level mapping: a mapping in, a mapping out.
+
+    ``strip_redaction_sentinels`` returns ``object`` because it also transforms
+    lists, passes scalars through, and collapses a nested mapping under a redacted
+    key to ``""``. A caller holding a mapping would otherwise have to narrow that
+    result back; the walk stays in one place, and this is its mapping arm stated.
+    """
+    return {
+        str(item_key): strip_redaction_sentinels(
+            item,
+            redacted_keys=redacted_keys,
+            key=str(item_key),
+        )
+        for item_key, item in value.items()
+    }
+
+
 def strip_redaction_sentinels(
     value: object,
     *,
@@ -136,17 +168,9 @@ def strip_redaction_sentinels(
     """Return a schema-safe copy with sanitizer-created redaction placeholders removed."""
 
     if isinstance(value, dict):
-        raw_value = value
-        if key in redacted_keys and _is_sanitizer_redaction_placeholder(raw_value):
+        if key in redacted_keys and _is_sanitizer_redaction_placeholder(value):
             return ""
-        return {
-            str(item_key): strip_redaction_sentinels(
-                item,
-                redacted_keys=redacted_keys,
-                key=str(item_key),
-            )
-            for item_key, item in raw_value.items()
-        }
+        return strip_redaction_sentinels_from_mapping(value, redacted_keys=redacted_keys)
     if isinstance(value, list):
         return [strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key) for item in value]
     if isinstance(value, tuple):
@@ -612,5 +636,6 @@ __all__ = [
     "sanitize_tool_result_data",
     "search_tool_output_artifact",
     "strip_redaction_sentinels",
+    "strip_redaction_sentinels_from_mapping",
     "tool_output_artifact_temp_root",
 ]
