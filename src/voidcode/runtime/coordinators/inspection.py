@@ -29,6 +29,7 @@ from ...provider.auth import ProviderAuthResolver
 from ...provider.model_catalog import ToolFeedbackMode
 from ...provider.models import ResolvedProviderConfig, ResolvedProviderModel
 from ...provider.naming import provider_label
+from ...provider.protocol import ProviderAssembledContext
 from ...provider.registry import ModelProviderRegistry
 from ...provider.resolution import resolve_provider_config
 from ...provider.snapshot import resolved_provider_snapshot
@@ -1009,7 +1010,7 @@ class InspectionCoordinator:
     def _provider_context_snapshot_for_assembled_context(
         self,
         *,
-        assembled_context: RuntimeAssembledContext,
+        assembled_context: ProviderAssembledContext,
         effective_config: EffectiveRuntimeConfig,
     ) -> RuntimeProviderContextSnapshot:
         active_target = effective_config.resolved_provider.active_target
@@ -1667,7 +1668,7 @@ class InspectionCoordinator:
         if context_window_config.provider_context_diagnostics == "off" and context_window_config.context_transform_failure_policy != "block":
             return None
         snapshot = self._provider_context_snapshot_for_assembled_context(
-            assembled_context=cast(RuntimeAssembledContext, graph_request.assembled_context),
+            assembled_context=graph_request.assembled_context,
             effective_config=effective_config,
         )
         return snapshot.policy_decision
