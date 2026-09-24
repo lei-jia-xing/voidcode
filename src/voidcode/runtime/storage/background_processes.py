@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
+
+from .rows import BackgroundProcessRow, decode_row, fetch_row, fetch_rows
 
 if TYPE_CHECKING:
     from .shared import _StorageMixinBase
@@ -58,27 +59,24 @@ class _BackgroundProcessStorageMixin(_MixinBase):
 
     def load_background_process(self, *, workspace: Path, process_id: str) -> dict[str, object] | None:
         with self._connect(workspace) as connection:
-            row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
+            row = fetch_row(
+                connection,
+                """
                     SELECT process_id, workspace_id, owner_session_id, command, cwd, pid,
                            process_group_id, process_identity, stdout_path, stderr_path,
                            status, exit_code, reconciliation_reason, created_at, updated_at
                     FROM background_processes
                     WHERE workspace_id = ? AND process_id = ?
                     """,
-                    (str(workspace), process_id),
-                ).fetchone(),
+                (str(workspace), process_id),
             )
-        return None if row is None else self._background_process_from_row(row)
+        return None if row is None else self._background_process_from_row(decode_row(row, BackgroundProcessRow))
 
     def list_background_processes(self, *, workspace: Path) -> tuple[dict[str, object], ...]:
         with self._connect(workspace) as connection:
-            rows = cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    """
+            rows = fetch_rows(
+                connection,
+                """
                     SELECT process_id, workspace_id, owner_session_id, command, cwd, pid,
                            process_group_id, process_identity, stdout_path, stderr_path,
                            status, exit_code, reconciliation_reason, created_at, updated_at
@@ -86,10 +84,9 @@ class _BackgroundProcessStorageMixin(_MixinBase):
                     WHERE workspace_id = ?
                     ORDER BY created_at ASC, process_id ASC
                     """,
-                    (str(workspace),),
-                ).fetchall(),
+                (str(workspace),),
             )
-        return tuple(self._background_process_from_row(row) for row in rows)
+        return tuple(self._background_process_from_row(decode_row(row, BackgroundProcessRow)) for row in rows)
 
     def mark_background_process_exit(
         self,
@@ -113,7 +110,7 @@ class _BackgroundProcessStorageMixin(_MixinBase):
             connection.commit()
 
     @staticmethod
-    def _background_process_from_row(row: sqlite3.Row) -> dict[str, object]:
+    def _background_process_from_row(row: BackgroundProcessRow) -> dict[str, object]:
         return {
             "process_id": row["process_id"],
             "workspace_id": row["workspace_id"],
