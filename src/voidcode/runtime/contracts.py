@@ -1195,6 +1195,18 @@ class RuntimeStreamChunk:
         if self.kind == "output" and self.output is None:
             raise ValueError("output chunks require output content")
 
+    def require_event(self) -> EventEnvelope:
+        """The chunk's event, which ``__post_init__`` guarantees on an event chunk.
+
+        Reading ``.event`` directly leaves every caller to assert or cast the
+        invariant away; this is the one place that states it, and it fails the
+        same way the invariant itself does.
+        """
+        event = self.event
+        if event is None:
+            raise ValueError("event chunks require an event")
+        return event
+
 
 @runtime_checkable
 class RuntimeEntrypoint(Protocol):

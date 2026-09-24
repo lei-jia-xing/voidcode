@@ -1818,7 +1818,7 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         for chunk in mcp_startup_chunks:
             persisted_chunk = self._persist_emitted_chunk(chunk)
-            sequence = cast(EventEnvelope, persisted_chunk.event).sequence
+            sequence = persisted_chunk.require_event().sequence
             yield persisted_chunk
         if mcp_failed_chunk is not None:
             yield self._persist_emitted_chunk(mcp_failed_chunk)

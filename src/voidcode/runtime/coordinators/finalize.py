@@ -402,8 +402,7 @@ class FinalizeCoordinator:
             return
 
         if deferred_failed_chunk is not None:
-            failed_event = deferred_failed_chunk.event
-            assert failed_event is not None
+            failed_event = deferred_failed_chunk.require_event()
             cleanup_sequence = failed_event.sequence - 1
             final_chunks, finalized_session, final_sequence = finalize_run_acp(
                 self._acp_adapter,

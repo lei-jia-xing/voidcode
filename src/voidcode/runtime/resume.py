@@ -476,7 +476,7 @@ class RuntimeResumeCoordinator:
                 policy=hook_execution_policy_from_metadata(final_session.metadata),
             )
             for hook_chunk in idle_hook_outcome.chunks:
-                hook_event = cast(EventEnvelope, hook_chunk.event)
+                hook_event = hook_chunk.require_event()
                 loop_events.append(hook_event)
                 yield hook_chunk
             if idle_hook_outcome.failed_error is not None:
@@ -488,7 +488,7 @@ class RuntimeResumeCoordinator:
                     hooks=self._config.hooks,
                 )
                 if failed_chunk is not None:
-                    failed_event = cast(EventEnvelope, failed_chunk.event)
+                    failed_event = failed_chunk.require_event()
                     loop_events.append(failed_event)
                     final_session = failed_chunk.session
                     yield failed_chunk
@@ -517,7 +517,7 @@ class RuntimeResumeCoordinator:
                 policy=hook_execution_policy_from_metadata(final_session.metadata),
             )
             for hook_chunk in end_hook_outcome.chunks:
-                hook_event = cast(EventEnvelope, hook_chunk.event)
+                hook_event = hook_chunk.require_event()
                 loop_events.append(hook_event)
                 yield hook_chunk
             if end_hook_outcome.failed_error is not None:
@@ -529,7 +529,7 @@ class RuntimeResumeCoordinator:
                     hooks=self._config.hooks,
                 )
                 if failed_chunk is not None:
-                    failed_event = cast(EventEnvelope, failed_chunk.event)
+                    failed_event = failed_chunk.require_event()
                     loop_events.append(failed_event)
                     final_session = failed_chunk.session
                     yield failed_chunk
@@ -752,12 +752,12 @@ class RuntimeResumeCoordinator:
             yield RuntimeStreamChunk(kind="event", session=session, event=mismatch_event)
         for chunk in mcp_startup_chunks:
             emitted_sequence += 1
-            resequenced_event = resequence_event(cast(EventEnvelope, chunk.event), sequence=emitted_sequence)
+            resequenced_event = resequence_event(chunk.require_event(), sequence=emitted_sequence)
             loop_events.append(resequenced_event)
             yield RuntimeStreamChunk(kind="event", session=chunk.session, event=resequenced_event)
         if mcp_failed_chunk is not None:
             emitted_sequence += 1
-            resequenced_failed = resequence_event(cast(EventEnvelope, mcp_failed_chunk.event), sequence=emitted_sequence)
+            resequenced_failed = resequence_event(mcp_failed_chunk.require_event(), sequence=emitted_sequence)
             response = RuntimeResponse(
                 session=mcp_failed_chunk.session,
                 events=stored.events + tuple(loop_events) + (resequenced_failed,),
@@ -800,13 +800,13 @@ class RuntimeResumeCoordinator:
             startup_failed_chunk = None
         for chunk in startup_chunks:
             emitted_sequence += 1
-            resequenced_event = resequence_event(cast(EventEnvelope, chunk.event), sequence=emitted_sequence)
+            resequenced_event = resequence_event(chunk.require_event(), sequence=emitted_sequence)
             loop_events.append(resequenced_event)
             yield RuntimeStreamChunk(kind="event", session=chunk.session, event=resequenced_event)
         if startup_failed_chunk is not None:
             emitted_sequence += 1
             resequenced_failed = resequence_event(
-                cast(EventEnvelope, startup_failed_chunk.event),
+                startup_failed_chunk.require_event(),
                 sequence=emitted_sequence,
             )
             response = RuntimeResponse(
@@ -858,7 +858,7 @@ class RuntimeResumeCoordinator:
                     )
                     deferred_startup_acp_events = ()
                     for startup_chunk in startup_chunks:
-                        startup_event = cast(EventEnvelope, startup_chunk.event)
+                        startup_event = startup_chunk.require_event()
                         emitted_sequence = startup_event.sequence
                         loop_events.append(startup_event)
                         yield startup_chunk
@@ -913,7 +913,7 @@ class RuntimeResumeCoordinator:
                     )
                     deferred_startup_acp_events = ()
                     for startup_chunk in startup_chunks:
-                        startup_event = cast(EventEnvelope, startup_chunk.event)
+                        startup_event = startup_chunk.require_event()
                         emitted_sequence = startup_event.sequence
                         loop_events.append(startup_event)
                         yield startup_chunk
@@ -961,7 +961,7 @@ class RuntimeResumeCoordinator:
                 acp_events=deferred_startup_acp_events,
             )
             for startup_chunk in startup_chunks:
-                startup_event = cast(EventEnvelope, startup_chunk.event)
+                startup_event = startup_chunk.require_event()
                 emitted_sequence = startup_event.sequence
                 loop_events.append(startup_event)
                 yield startup_chunk
@@ -983,7 +983,7 @@ class RuntimeResumeCoordinator:
                 policy=hook_execution_policy_from_metadata(session.metadata),
             )
             for hook_chunk in idle_hook_outcome.chunks:
-                hook_event = cast(EventEnvelope, hook_chunk.event)
+                hook_event = hook_chunk.require_event()
                 loop_events.append(hook_event)
                 yield hook_chunk
             if idle_hook_outcome.failed_error is not None:
@@ -995,7 +995,7 @@ class RuntimeResumeCoordinator:
                     hooks=self._config.hooks,
                 )
                 if failed_chunk is not None:
-                    failed_event = cast(EventEnvelope, failed_chunk.event)
+                    failed_event = failed_chunk.require_event()
                     loop_events.append(failed_event)
                     session = failed_chunk.session
                     yield failed_chunk
@@ -1022,7 +1022,7 @@ class RuntimeResumeCoordinator:
                 policy=hook_execution_policy_from_metadata(session.metadata),
             )
             for hook_chunk in end_hook_outcome.chunks:
-                hook_event = cast(EventEnvelope, hook_chunk.event)
+                hook_event = hook_chunk.require_event()
                 loop_events.append(hook_event)
                 yield hook_chunk
             if end_hook_outcome.failed_error is not None:
@@ -1034,7 +1034,7 @@ class RuntimeResumeCoordinator:
                     hooks=self._config.hooks,
                 )
                 if failed_chunk is not None:
-                    failed_event = cast(EventEnvelope, failed_chunk.event)
+                    failed_event = failed_chunk.require_event()
                     loop_events.append(failed_event)
                     session = failed_chunk.session
                     yield failed_chunk
@@ -1436,7 +1436,7 @@ class RuntimeResumeCoordinator:
                 policy=hook_execution_policy_from_metadata(final_session.metadata),
             )
             for hook_chunk in idle_hook_outcome.chunks:
-                hook_event = cast(EventEnvelope, hook_chunk.event)
+                hook_event = hook_chunk.require_event()
                 loop_events.append(hook_event)
                 yield hook_chunk
             if idle_hook_outcome.failed_error is not None:
@@ -1448,7 +1448,7 @@ class RuntimeResumeCoordinator:
                     hooks=self._config.hooks,
                 )
                 if failed_chunk is not None:
-                    failed_event = cast(EventEnvelope, failed_chunk.event)
+                    failed_event = failed_chunk.require_event()
                     loop_events.append(failed_event)
                     final_session = failed_chunk.session
                     yield failed_chunk
@@ -1478,7 +1478,7 @@ class RuntimeResumeCoordinator:
                 policy=hook_execution_policy_from_metadata(final_session.metadata),
             )
             for hook_chunk in end_hook_outcome.chunks:
-                hook_event = cast(EventEnvelope, hook_chunk.event)
+                hook_event = hook_chunk.require_event()
                 loop_events.append(hook_event)
                 yield hook_chunk
             if end_hook_outcome.failed_error is not None:
@@ -1490,7 +1490,7 @@ class RuntimeResumeCoordinator:
                     hooks=self._config.hooks,
                 )
                 if failed_chunk is not None:
-                    failed_event = cast(EventEnvelope, failed_chunk.event)
+                    failed_event = failed_chunk.require_event()
                     loop_events.append(failed_event)
                     final_session = failed_chunk.session
                     yield failed_chunk
