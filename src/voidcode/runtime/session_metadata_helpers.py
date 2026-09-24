@@ -15,6 +15,7 @@ from .contracts import (
     PLAN_STATE_METADATA_KEYS,
     RUNTIME_STATE_METADATA_KEYS,
     SKILL_SNAPSHOT_METADATA_KEYS,
+    AcpStateMetadata,
     PlanStateMetadata,
     RuntimeResponse,
     RuntimeStateMetadata,
@@ -267,7 +268,7 @@ def runtime_state_value(metadata: Mapping[str, object], key: str) -> object | No
     return _runtime_state_payload(metadata).get(key)
 
 
-def _acp_state_payload(acp_state: AcpAdapterState) -> dict[str, object]:
+def _acp_state_payload(acp_state: AcpAdapterState) -> AcpStateMetadata:
     """Serialize ``AcpAdapterState`` to the current ``runtime_state.acp`` payload."""
     return {
         "mode": acp_state.mode,

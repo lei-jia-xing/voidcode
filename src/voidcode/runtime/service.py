@@ -207,7 +207,12 @@ from .execution.tool_facades import (
     _RuntimeToolCatalogFacade,
     _RuntimeTranscriptReadFacade,
 )
-from .execution.tool_replay import ToolExecutionIntent, recovery_action
+from .execution.tool_replay import (
+    ToolExecutionIntent,
+    is_tool_intent_status,
+    is_tool_replay_policy,
+    recovery_action,
+)
 from .hook_preset_metadata import (
     hook_preset_event_payload_from_session_metadata,
     hook_preset_refs_for_agent,
@@ -3230,13 +3235,29 @@ class VoidCodeRuntime(RuntimeSurface):
         raw_intent = self.pending_tool_intent(session_id)
         if raw_intent is None:
             return None
+        # The persisted intent is only object-validated at the runtime-state
+        # boundary, so every field is checked here. The previous blind casts
+        # silently coerced a non-string id via ``str(...)`` and accepted any
+        # replay/status token; a malformed value now takes the same "corrupt"
+        # path the surrounding ``except`` already defines for missing fields.
         try:
+            tool_call_id = raw_intent["tool_call_id"]
+            tool_name = raw_intent["tool_name"]
+            arguments = raw_intent["arguments"]
+            replay_policy = raw_intent["replay_policy"]
+            status = raw_intent.get("status", "pending")
+            if not isinstance(tool_call_id, str) or not isinstance(tool_name, str) or not isinstance(arguments, dict):
+                raise ValueError("pending tool intent identifiers must be strings and arguments an object")
+            if not is_tool_replay_policy(replay_policy):
+                raise ValueError("pending tool intent replay_policy is not a known token")
+            if not is_tool_intent_status(status):
+                raise ValueError("pending tool intent status is not a known token")
             intent = ToolExecutionIntent(
-                tool_call_id=str(raw_intent["tool_call_id"]),
-                tool_name=str(raw_intent["tool_name"]),
-                arguments=cast(dict[str, object], raw_intent["arguments"]),
-                replay_policy=cast(Literal["safe", "never"], raw_intent["replay_policy"]),
-                status=cast(Literal["pending", "completed", "interrupted"], raw_intent.get("status", "pending")),
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                replay_policy=replay_policy,
+                status=status,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(f"persisted pending tool intent for session {session_id!r} is corrupt") from exc

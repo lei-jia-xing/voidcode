@@ -140,14 +140,6 @@ class AcpStateMetadata(TypedDict, total=False):
     last_delegation: dict[str, object] | None  # AcpDelegationPayload（acp.py as_payload）
 
 
-class PendingToolIntentMetadata(TypedDict, total=False):
-    tool_call_id: str
-    tool_name: str
-    arguments: dict[str, object]
-    replay_policy: str  # Literal["safe", "never"]，tool_replay.py
-    status: str  # Literal["pending", "completed"]
-
-
 class TodosStateMetadata(TypedDict):
     version: Literal[2]
     revision: int
@@ -155,23 +147,11 @@ class TodosStateMetadata(TypedDict):
     summary: dict[str, object]
 
 
-class ContextCompactedStateMetadata(TypedDict, total=False):
-    last_summary_anchor: str | None
-    last_original_tool_result_count: int
-    last_retained_tool_result_count: int
-    last_emitted_run_id: str | None
-
-
-class ContextTransformAppliedStateMetadata(TypedDict, total=False):
-    last_emitted_fingerprints: list[str]
-    last_emitted_run_id: str | None
-
-
 class RuntimeStateMetadata(TypedDict, total=False):
     run_id: str
     # Nested sections are validated to be objects only
-    # (``_validate_runtime_state_metadata_types``); each section's owner parses
-    # its own shape on read (context/window.py, todos.py, acp.py, ...).
+    # (``parse_runtime_state_metadata``); each section's owner parses its own
+    # shape on read (context/window.py, todos.py, acp.py, ...).
     acp: dict[str, object]
     context_projection: dict[str, object]
     context_projection_summary: dict[str, object]

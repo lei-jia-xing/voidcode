@@ -440,7 +440,7 @@ def append_parent_acp_delegated_lifecycle_event(
     workspace: Path,
     task: BackgroundTaskState,
     lifecycle_status: str,
-    turn_sequence: int,
+    turn_sequence: int | None,
     payload: dict[str, object],
     approval_blocked: bool | None = None,
     result_available: bool | None = None,

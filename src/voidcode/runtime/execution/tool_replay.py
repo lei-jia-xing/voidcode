@@ -8,13 +8,26 @@ mutations and to surface an interrupted mutation to the model.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Final, Literal, TypeIs
 
 from ...tools.contracts import ToolCall, ToolDefinition, ToolReplayPolicy
 from ...tools.output import sanitize_tool_arguments
 
 type ToolIntentStatus = Literal["pending", "completed", "interrupted"]
 type ToolRecoveryAction = Literal["replay", "interrupted", "none"]
+
+_TOOL_REPLAY_POLICIES: Final[tuple[ToolReplayPolicy, ...]] = ("safe", "never")
+_TOOL_INTENT_STATUSES: Final[tuple[ToolIntentStatus, ...]] = ("pending", "completed", "interrupted")
+
+
+def is_tool_replay_policy(value: object) -> TypeIs[ToolReplayPolicy]:
+    """Whether an untrusted ``replay_policy`` token names one of the tool replay policies."""
+    return value in _TOOL_REPLAY_POLICIES
+
+
+def is_tool_intent_status(value: object) -> TypeIs[ToolIntentStatus]:
+    """Whether an untrusted ``status`` token names one of the tool intent statuses."""
+    return value in _TOOL_INTENT_STATUSES
 
 
 @dataclass(frozen=True, slots=True)

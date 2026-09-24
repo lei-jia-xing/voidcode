@@ -1887,7 +1887,7 @@ class RuntimeBackgroundTaskSupervisor:
                 lifecycle_status=task.status,
                 # No child transcript is in scope on the terminal path, so key
                 # the per-turn discriminator on the terminal row write time.
-                turn_sequence=task.finished_at_unix_ms or 0,
+                turn_sequence=task.finished_at_unix_ms,
                 result_available=result.result_available,
                 payload=payload,
             )
