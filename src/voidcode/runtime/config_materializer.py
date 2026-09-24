@@ -358,7 +358,7 @@ def parse_persisted_external_permission_config(
 ) -> ExternalDirectoryPermissionConfig:
     if not isinstance(raw_permission, dict):
         raise ValueError("persisted runtime_config permission must be an object")
-    payload = cast(dict[object, object], raw_permission)
+    payload: Mapping[str, object] = raw_permission
     allowed_keys = {"external_directory_read", "external_directory_write", "rules"}
     unknown_keys = sorted(str(key) for key in payload if key not in allowed_keys)
     if unknown_keys:
@@ -398,7 +398,8 @@ def parse_persisted_external_permission_rules(
     if not isinstance(raw_rules, dict):
         raise ValueError(f"persisted runtime_config {field_path} must be an object")
     parsed: list[tuple[str, PermissionDecision]] = []
-    for raw_pattern, raw_decision in cast(dict[object, object], raw_rules).items():
+    rule_entries: Mapping[str, object] = raw_rules
+    for raw_pattern, raw_decision in rule_entries.items():
         if not isinstance(raw_pattern, str) or not raw_pattern.strip():
             raise ValueError(f"persisted runtime_config {field_path} keys must be strings")
         decision = permission_decision_or_none(raw_decision)
@@ -421,7 +422,7 @@ def parse_persisted_pattern_permission_rules(
         field_path = f"permission.rules[{index}]"
         if not isinstance(raw_rule, dict):
             raise ValueError(f"persisted runtime_config {field_path} must be an object")
-        payload = cast(dict[object, object], raw_rule)
+        payload: Mapping[str, object] = raw_rule
         unknown_keys = sorted(str(key) for key in payload if key not in allowed_keys)
         if unknown_keys:
             raise ValueError(f"persisted runtime_config {field_path}.{unknown_keys[0]} is not supported")

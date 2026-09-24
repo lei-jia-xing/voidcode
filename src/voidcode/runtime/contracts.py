@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, TypedDict, TypeIs, cast, runtime_checkable
 
@@ -266,39 +266,38 @@ def _parse_string_list(raw: list[object], *, field: str) -> list[str]:
 def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadata:
     if not isinstance(metadata, dict):
         raise RuntimeRequestError("request metadata 'command' must be an object when provided")
-    payload = cast(dict[object, object], metadata)
+    payload: Mapping[str, object] = metadata
     allowed_keys = frozenset(RuntimeCommandMetadata.__annotations__)
     non_string_keys = sorted(repr(key) for key in payload if not isinstance(key, str))
     if non_string_keys:
         joined = ", ".join(non_string_keys)
         raise RuntimeRequestError(f"request metadata 'command' keys must be strings; received invalid key(s): {joined}")
-    command_payload = cast(dict[str, object], payload)
-    unknown_keys = sorted(key for key in command_payload if key not in allowed_keys)
+    unknown_keys = sorted(key for key in payload if key not in allowed_keys)
     if unknown_keys:
         joined = ", ".join(unknown_keys)
         raise RuntimeRequestError(f"unsupported request metadata 'command' field(s): {joined}")
     required_keys = {"name", "source", "arguments", "raw_arguments", "original_prompt"}
-    missing_keys = sorted(required_keys - command_payload.keys())
+    missing_keys = sorted(required_keys - payload.keys())
     if missing_keys:
         joined = ", ".join(missing_keys)
         raise RuntimeRequestError(f"request metadata 'command' is missing required field(s): {joined}")
 
     name = _validate_optional_runtime_metadata_string(
-        command_payload.get("name"),
+        payload.get("name"),
         field_name="command.name",
     )
     source = _validate_optional_runtime_metadata_string(
-        command_payload.get("source"),
+        payload.get("source"),
         field_name="command.source",
     )
-    raw_arguments = command_payload["raw_arguments"]
+    raw_arguments = payload["raw_arguments"]
     if not isinstance(raw_arguments, str):
         raise RuntimeRequestError("request metadata 'command.raw_arguments' must be a string")
     original_prompt = _validate_optional_runtime_metadata_string(
-        command_payload.get("original_prompt"),
+        payload.get("original_prompt"),
         field_name="command.original_prompt",
     )
-    raw_arguments_list = command_payload["arguments"]
+    raw_arguments_list = payload["arguments"]
     if not isinstance(raw_arguments_list, list):
         raise RuntimeRequestError("request metadata 'command.arguments' must be a list")
     arguments: list[str] = []
@@ -313,8 +312,8 @@ def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadat
         "raw_arguments": raw_arguments,
         "original_prompt": original_prompt,
     }
-    if "mode" in command_payload:
-        normalized["mode"] = _parse_runtime_mode(command_payload["mode"])
+    if "mode" in payload:
+        normalized["mode"] = _parse_runtime_mode(payload["mode"])
     return normalized
 
 
@@ -324,13 +323,13 @@ def validate_runtime_subagent_routing_metadata(
     if not isinstance(metadata, dict):
         raise RuntimeRequestError("request metadata 'delegation' must be an object when provided")
 
-    metadata_items = cast(dict[object, object], metadata)
+    metadata_items: Mapping[str, object] = metadata
     non_string_keys = sorted(repr(key) for key in metadata_items if not isinstance(key, str))
     if non_string_keys:
         joined = ", ".join(non_string_keys)
         raise RuntimeRequestError(f"request metadata 'delegation' keys must be strings; received invalid key(s): {joined}")
 
-    routing_metadata = {cast(str, key): value for key, value in metadata_items.items()}
+    routing_metadata = dict(metadata_items)
 
     allowed_keys = DELEGATION_METADATA_KEYS
     unknown_keys = sorted(key for key in routing_metadata if key not in allowed_keys)
@@ -461,7 +460,7 @@ def validate_runtime_request_metadata(
     *,
     allow_internal_fields: bool = False,
 ) -> RuntimeRequestMetadataPayload:
-    metadata_items = cast(dict[object, object], metadata)
+    metadata_items: Mapping[str, object] = metadata
     non_string_keys = sorted(repr(key) for key in metadata_items if not isinstance(key, str))
     if non_string_keys:
         joined = ", ".join(non_string_keys)

@@ -151,7 +151,8 @@ class McpToolCatalogCache:
             return {}
 
         entries: dict[str, tuple[str, tuple[McpToolDescriptor, ...]]] = {}
-        for raw_name, raw_entry in cast(dict[object, object], raw_servers).items():
+        server_entries: Mapping[str, object] = raw_servers
+        for raw_name, raw_entry in server_entries.items():
             if not isinstance(raw_name, str) or not raw_name or not isinstance(raw_entry, dict):
                 continue
             entry = cast(dict[str, object], raw_entry)

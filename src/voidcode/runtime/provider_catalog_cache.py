@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, cast
 
@@ -34,7 +35,8 @@ class RuntimeProviderCatalogCache:
             return
 
         hydrated: dict[str, ProviderModelCatalog] = {}
-        for provider_name, raw_catalog in cast(dict[object, object], raw_providers).items():
+        provider_entries: Mapping[str, object] = raw_providers
+        for provider_name, raw_catalog in provider_entries.items():
             if not isinstance(provider_name, str) or not provider_name or "/" in provider_name:
                 continue
             if not isinstance(raw_catalog, dict):
@@ -45,7 +47,7 @@ class RuntimeProviderCatalogCache:
                 continue
             models = tuple(raw_model for raw_model in cast(list[object], raw_models) if isinstance(raw_model, str) and raw_model)
             raw_metadata = catalog_payload.get("model_metadata", {})
-            metadata_payloads: dict[object, object] = cast(dict[object, object], raw_metadata) if isinstance(raw_metadata, dict) else {}
+            metadata_payloads: Mapping[str, object] = raw_metadata if isinstance(raw_metadata, dict) else {}
             model_metadata = {
                 model: catalog_metadata_from_payload(payload)
                 for model, raw_payload in metadata_payloads.items()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Literal, TypedDict, TypeIs, cast
 
 TodoStatus = Literal["pending", "in_progress", "completed", "abandoned", "blocked"]
@@ -39,7 +40,7 @@ _TODO_STATE_KEYS = frozenset({"version", "revision", "phases", "summary"})
 def runtime_todo_state_from_payload(raw_state: object) -> dict[str, object]:
     if not isinstance(raw_state, dict):
         raise ValueError("runtime todo state must be an object")
-    state = cast(dict[object, object], raw_state)
+    state: Mapping[str, object] = raw_state
     unknown = sorted(str(key) for key in state if key not in _TODO_STATE_KEYS)
     if unknown:
         raise ValueError(f"runtime todo state field '{unknown[0]}' is not supported")
@@ -77,7 +78,7 @@ def _parse_phases(raw_phases: object) -> tuple[RuntimeTodoPhase, ...]:
     for raw_phase in raw_phases:
         if not isinstance(raw_phase, dict):
             raise ValueError("runtime todo phase must be an object")
-        phase = cast(dict[object, object], raw_phase)
+        phase: Mapping[str, object] = raw_phase
         name = phase.get("name")
         raw_tasks = phase.get("tasks")
         if not isinstance(name, str) or not name.strip():
@@ -92,7 +93,7 @@ def _parse_phases(raw_phases: object) -> tuple[RuntimeTodoPhase, ...]:
         for raw_task in raw_tasks:
             if not isinstance(raw_task, dict):
                 raise ValueError("runtime todo task must be an object")
-            task = cast(dict[object, object], raw_task)
+            task: Mapping[str, object] = raw_task
             content = task.get("content")
             status = _parse_status(task.get("status"))
             blocker = task.get("blocker")

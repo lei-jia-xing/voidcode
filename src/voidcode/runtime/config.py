@@ -1335,7 +1335,8 @@ def _parse_agents_config(
     if not isinstance(raw_agents, dict):
         raise ValueError("runtime config field 'agents' must be an object when provided")
     parsed_entries: dict[str, AgentPayload] = {}
-    for key, value in cast(dict[object, object], raw_agents).items():
+    agent_entries: Mapping[str, object] = raw_agents
+    for key, value in agent_entries.items():
         if not isinstance(key, str):
             raise ValueError("runtime config field 'agents' keys must be strings")
         if not isinstance(value, dict):

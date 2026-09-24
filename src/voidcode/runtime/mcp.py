@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -191,7 +191,7 @@ def _validate_call_arguments_against_schema(
     if not isinstance(properties, dict):
         return
 
-    raw_properties = cast(dict[object, object], properties)
+    raw_properties: Mapping[str, object] = properties
     for raw_key, raw_expected_schema in raw_properties.items():
         if not isinstance(raw_key, str):
             continue

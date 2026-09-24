@@ -3921,7 +3921,8 @@ class VoidCodeRuntime(RuntimeSurface):
             for item in cast(list[object], raw_loaded):
                 if isinstance(item, dict):
                     entry: dict[str, object] = {}
-                    for k, v in cast(dict[object, object], item).items():
+                    item_entries: Mapping[str, object] = item
+                    for k, v in item_entries.items():
                         if isinstance(k, str):
                             entry[k] = v
                     typed.append(entry)
@@ -4292,15 +4293,15 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> str:
         raw_snapshot: object | None = metadata.get("resolved_hook_presets")
         if isinstance(raw_snapshot, dict):
-            raw_snapshot_payload: object | None = cast(dict[object, object], raw_snapshot)
+            raw_snapshot_payload: object | None = raw_snapshot
         else:
             raw_snapshot_payload = None
             raw_runtime_config = metadata.get("runtime_config")
             if isinstance(raw_runtime_config, dict):
-                runtime_config_payload = cast(dict[object, object], raw_runtime_config)
+                runtime_config_payload: Mapping[str, object] = raw_runtime_config
                 nested_snapshot: object = runtime_config_payload.get("resolved_hook_presets")
                 if isinstance(nested_snapshot, dict):
-                    raw_snapshot_payload = cast(dict[object, object], nested_snapshot)
+                    raw_snapshot_payload = nested_snapshot
         snapshot = hook_preset_snapshot_from_payload(raw_snapshot_payload)
         if snapshot is None:
             snapshot = self._build_hook_preset_snapshot(agent)

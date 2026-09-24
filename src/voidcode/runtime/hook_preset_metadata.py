@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import cast
 
 from ..hook.presets import ResolvedHookPresetSnapshot, hook_preset_snapshot_from_payload
@@ -21,15 +22,15 @@ def resolved_hook_preset_snapshot_from_session_metadata(
 ) -> ResolvedHookPresetSnapshot | None:
     raw_snapshot = metadata.get("resolved_hook_presets")
     if isinstance(raw_snapshot, dict):
-        return hook_preset_snapshot_from_payload(cast(dict[object, object], raw_snapshot))
+        return hook_preset_snapshot_from_payload(raw_snapshot)
     raw_runtime_config = metadata.get("runtime_config")
     if not isinstance(raw_runtime_config, dict):
         return None
-    runtime_config_payload = cast(dict[object, object], raw_runtime_config)
+    runtime_config_payload: Mapping[str, object] = raw_runtime_config
     nested_snapshot = runtime_config_payload.get("resolved_hook_presets")
     if not isinstance(nested_snapshot, dict):
         return None
-    return hook_preset_snapshot_from_payload(cast(dict[object, object], nested_snapshot))
+    return hook_preset_snapshot_from_payload(nested_snapshot)
 
 
 def hook_preset_event_payload_from_session_metadata(
