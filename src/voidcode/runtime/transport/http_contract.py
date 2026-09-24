@@ -435,7 +435,7 @@ class _RunStreamRequestPayload(_HttpBoundaryModel):
             return {}
         if not isinstance(value, dict):
             raise ValueError("must be an object when provided")
-        return cast(dict[str, object], value)
+        return value
 
 
 class _ApprovalResolutionRequestPayload(_HttpBoundaryModel):
@@ -550,9 +550,8 @@ class _QuestionResponsePayload(_HttpBoundaryModel):
     def _validate_answers(cls, value: object) -> tuple[str, ...]:
         if not isinstance(value, list) or not value:
             raise ValueError("must be a non-empty array")
-        answer_items = cast(list[object], value)
         answers: list[str] = []
-        for index, raw_answer in enumerate(answer_items):
+        for index, raw_answer in enumerate(value):
             if not isinstance(raw_answer, str) or not raw_answer.strip():
                 raise ValueError(f"[{index}] must be a non-empty string")
             answers.append(raw_answer)
@@ -575,7 +574,7 @@ class _QuestionAnswerRequestPayload(_HttpBoundaryModel):
     def _validate_responses(cls, value: object) -> list[object]:
         if not isinstance(value, list) or not value:
             raise ValueError("must be a non-empty array")
-        return cast(list[object], value)
+        return value
 
 
 class _SessionRevertRequestPayload(_HttpBoundaryModel):

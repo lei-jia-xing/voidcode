@@ -19,7 +19,7 @@ import logging
 import subprocess
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from ...agent import AgentManifestRegistry
 from ...command import load_command_registry
@@ -70,7 +70,7 @@ from ..config_materializer import (
     parse_persisted_runtime_config,
 )
 from ..context.provider import inspect_provider_context
-from ..context.window import RuntimeAssembledContext
+from ..context.window import ContextWindowPolicy, RuntimeAssembledContext
 from ..contracts import (
     AgentSummary,
     CapabilityStatusSnapshot,
@@ -516,7 +516,7 @@ class InspectionCoordinator:
             raise ValueError("persisted session requires agent_capability_snapshot")
         if not isinstance(raw_snapshot, dict):
             raise ValueError("persisted agent_capability_snapshot must be an object")
-        validate_agent_capability_snapshot(cast(dict[str, object], raw_snapshot))
+        validate_agent_capability_snapshot(raw_snapshot)
         return result
 
     def _events_with_runtime_policy_projection(
@@ -987,8 +987,7 @@ class InspectionCoordinator:
         )
         context_window_metadata = result.session.metadata.get("context_window")
         if isinstance(context_window_metadata, dict):
-            typed_context_window_metadata = cast(dict[str, object], context_window_metadata)
-            preserved_transform_metadata = typed_context_window_metadata.get("context_transforms")
+            preserved_transform_metadata = context_window_metadata.get("context_transforms")
             if isinstance(preserved_transform_metadata, dict):
                 assembled_context = RuntimeAssembledContext(
                     prompt=assembled_context.prompt,
@@ -997,7 +996,7 @@ class InspectionCoordinator:
                     segments=assembled_context.segments,
                     metadata={
                         **assembled_context.metadata,
-                        "context_transforms": dict(cast(dict[str, object], preserved_transform_metadata)),
+                        "context_transforms": dict(preserved_transform_metadata),
                     },
                     loaded_skills=assembled_context.loaded_skills,
                 )
@@ -1040,7 +1039,7 @@ class InspectionCoordinator:
         active_metadata = self._active_session_metadata(session_id) or {}
         request_metadata = active_metadata.get("request_metadata")
         session_metadata = {
-            **(dict(cast(dict[str, object], request_metadata)) if isinstance(request_metadata, dict) else {}),
+            **(dict(request_metadata) if isinstance(request_metadata, dict) else {}),
             "workspace": str(self._workspace),
         }
         raw_prompt = active_metadata.get("prompt")
@@ -1113,7 +1112,7 @@ class InspectionCoordinator:
         runtime_config = response.session.metadata.get("runtime_config")
         if not isinstance(runtime_config, dict):
             raise ValueError("persisted session metadata must include runtime_config object")
-        payload = cast(dict[str, object], runtime_config)
+        payload: dict[str, object] = runtime_config
         materialized = parse_persisted_runtime_config(payload)
         base_model = materialized.model
         base_provider_fallback = materialized.provider_fallback
@@ -1166,11 +1165,11 @@ class InspectionCoordinator:
 
     def _context_window_policy_for_provider_attempt(
         self,
-        policy: object,
+        policy: ContextWindowPolicy,
         *,
-        resolved_provider: object | None,
+        resolved_provider: ResolvedProviderConfig | None,
         provider_attempt: int,
-    ) -> object:
+    ) -> ContextWindowPolicy:
         _ = resolved_provider, provider_attempt
         return policy
 

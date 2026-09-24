@@ -571,11 +571,11 @@ class RuntimeRunLoopCoordinator:
             if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "yield" and event.payload.get("yield_kind") == "progress"
         ]
         prior_count = len(prior_progress)
-        prior_bytes = sum(
-            _progress_payload_size(cast(Mapping[str, object], event.payload.get("progress")))
-            for event in prior_progress
-            if isinstance(event.payload.get("progress"), Mapping)
-        )
+        prior_bytes = 0
+        for event in prior_progress:
+            prior_progress_payload = event.payload.get("progress")
+            if isinstance(prior_progress_payload, Mapping):
+                prior_bytes += _progress_payload_size(prior_progress_payload)
         from ..tools.yield_tool import YIELD_PROGRESS_MAX_RETAINED_CHARS, YIELD_PROGRESS_MAX_SECTION_CHARS, YIELD_PROGRESS_MAX_SECTIONS
 
         if prior_count >= YIELD_PROGRESS_MAX_SECTIONS:
@@ -697,13 +697,10 @@ class RuntimeRunLoopCoordinator:
         """
         sequence = start_sequence - 1
         todo_state = todo_state_from_session_metadata(session.metadata)
-        todo_phases = (
-            cast(
-                tuple[dict[str, object], ...],
-                tuple(
-                    {"name": phase["name"], "tasks": [dict(task) for task in phase["tasks"]]}
-                    for phase in runtime_todo_phases_from_payload(todo_state["phases"])
-                ),
+        todo_phases: tuple[dict[str, object], ...] = (
+            tuple(
+                {"name": phase["name"], "tasks": [dict(task) for task in phase["tasks"]]}
+                for phase in runtime_todo_phases_from_payload(todo_state["phases"])
             )
             if todo_state is not None
             else ()
@@ -1524,13 +1521,14 @@ class RuntimeRunLoopCoordinator:
             )
             if action == "returned":
                 return
+            assert tool_result is not None
 
             tool_result, todo_mutated, runtime_tool_result_data, session, sequence, terminated = yield from self._finalize_tool_result(
                 session=session,
                 sequence=sequence,
                 plan_tool_call=plan_tool_call,
                 tool_call_id=tool_call_id,
-                tool_result=cast(ToolResult, tool_result),
+                tool_result=tool_result,
                 active_graph_request=active_graph_request,
             )
             if terminated:
@@ -1920,6 +1918,9 @@ class RuntimeRunLoopCoordinator:
         current_abort_signal = current_graph_request.abort_signal
         current_session_metadata: dict[str, object] = session.metadata
         if first_iteration:
+            # Boundary: the graph field is typed with the provider Protocol, which
+            # does not declare the runtime-only counters read below; the runtime is
+            # the sole producer of this field, so the concrete window is the truth.
             prebuilt_context = cast(RuntimeContextWindow, current_graph_request.context_window)
             first_iteration = False
             if (
@@ -2882,10 +2883,11 @@ class RuntimeRunLoopCoordinator:
             fallback_sequence=hook_outcome.last_sequence,
         )
         if hook_outcome.failed_error is not None:
+            surface: RuntimeHookSurface = "pre_tool" if phase == "pre" else "post_tool"
             failed_chunk = chunk_builders.lifecycle_hook_failure_chunk(
                 session=session,
                 sequence=sequence,
-                surface=cast(RuntimeHookSurface, f"{phase}_tool"),
+                surface=surface,
                 error=hook_outcome.failed_error,
                 hooks=self._config.hooks,
             )

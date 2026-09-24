@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Generator, Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from ...provider.protocol import ProviderAbortSignal
 from ..acp import AcpAdapter, disconnect_acp_for_session_state, finalize_run_acp
@@ -295,8 +295,8 @@ class FinalizeCoordinator:
             session_id=final_session.session.id,
         )
         raw_tool_results = checkpoint.get("tool_results", []) if isinstance(checkpoint, dict) else []
-        tool_results = (
-            tuple(cast(dict[str, object], item) for item in raw_tool_results if isinstance(item, dict)) if isinstance(raw_tool_results, list) else ()
+        tool_results: tuple[dict[str, object], ...] = (
+            tuple(item for item in raw_tool_results if isinstance(item, dict)) if isinstance(raw_tool_results, list) else ()
         )
         self._session_store.save_interrupted_checkpoint(
             workspace=self._workspace,

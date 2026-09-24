@@ -4,7 +4,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from .events import EventEnvelope
 from .mode import backfill_runtime_policy_mode, runtime_mode_from_metadata, runtime_read_only_from_metadata
@@ -140,11 +140,11 @@ def session_metadata_for_replay(metadata: dict[str, object]) -> dict[str, object
     raw_runtime_policy = projected.get("runtime_policy")
     if not isinstance(raw_runtime_policy, dict):
         return projected
-    runtime_policy = dict(raw_runtime_policy)
+    runtime_policy: dict[str, object] = dict(raw_runtime_policy)
     raw_prompt_activation = runtime_policy.get("prompt_activation")
     if isinstance(raw_prompt_activation, dict):
         runtime_policy["prompt_activation"] = {
-            **cast(dict[str, object], raw_prompt_activation),
+            **raw_prompt_activation,
             "activated_this_turn": False,
         }
     projected["runtime_policy"] = runtime_policy
@@ -236,8 +236,9 @@ def session_metadata_for_persistence(
     if "runtime_policy" in persisted:
         raw_runtime_policy = persisted.get("runtime_policy")
         if observations and isinstance(raw_runtime_policy, dict):
+            runtime_policy_metadata: dict[str, object] = raw_runtime_policy
             persisted["runtime_policy"] = {
-                **cast(dict[str, object], raw_runtime_policy),
+                **runtime_policy_metadata,
                 **observations,
             }
     elif observations:

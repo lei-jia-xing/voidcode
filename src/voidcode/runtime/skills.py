@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, TypeIs, cast
+from typing import TYPE_CHECKING, Final, Literal, TypeIs
 
 from ..skills.models import SkillMetadata
 from ..skills.registry import SkillRegistry
@@ -205,20 +205,20 @@ def snapshot_from_payload(payload: dict[str, object]) -> SkillExecutionSnapshot:
     raw_selected = payload.get("selected_skill_names")
     if not isinstance(raw_selected, list):
         raise ValueError("persisted skill snapshot selected_skill_names must be a list[str]")
-    raw_selected_items = cast(list[object], raw_selected)
-    if not all(isinstance(item, str) for item in raw_selected_items):
-        raise ValueError("persisted skill snapshot selected_skill_names must be a list[str]")
-    selected_skill_names = cast(list[str], raw_selected_items)
+    selected_skill_names: list[str] = []
+    for item in raw_selected:
+        if not isinstance(item, str):
+            raise ValueError("persisted skill snapshot selected_skill_names must be a list[str]")
+        selected_skill_names.append(item)
     raw_applied = payload.get("applied_skill_payloads")
     if not isinstance(raw_applied, list):
         raise ValueError("persisted skill snapshot applied_skill_payloads must be a list")
-    raw_applied_items = cast(list[object], raw_applied)
     applied_payloads: list[dict[str, str]] = []
-    for item in raw_applied_items:
+    for item in raw_applied:
         if not isinstance(item, dict):
             raise ValueError("persisted skill snapshot payload entries must be objects")
         normalized: dict[str, str] = {}
-        for key, value in cast(dict[str, object], item).items():
+        for key, value in item.items():
             if not isinstance(value, str):
                 raise ValueError("persisted skill snapshot payload values must be strings")
             normalized[key] = value
@@ -254,7 +254,7 @@ def snapshot_from_payload(payload: dict[str, object]) -> SkillExecutionSnapshot:
         snapshot_hash=snapshot_hash,
         snapshot_version=snapshot_version,
         source=source,
-        binding_snapshot=cast(dict[str, object], binding_snapshot),
+        binding_snapshot=binding_snapshot,
     )
 
 

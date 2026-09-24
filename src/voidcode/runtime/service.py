@@ -644,6 +644,10 @@ class VoidCodeRuntime(RuntimeSurface):
             ),
         )
         self._background_process_manager = BackgroundProcessManager(
+            # Ceiling: ``BackgroundProcessPersistence`` declares an optional
+            # ``reconciliation_reason`` that the ``SessionStore`` protocol omits, so
+            # the concrete store satisfies the seam without declaring it. Remove the
+            # cast once the storage protocol carries the parameter.
             persistence=cast(BackgroundProcessPersistence, self._session_store),
             workspace=self._workspace,
         )
@@ -748,22 +752,21 @@ class VoidCodeRuntime(RuntimeSurface):
         failure degrades to the flexible profile: policy selection must never
         break an edit.
         """
-        cache: dict[str, object] = {"report": None, "expires_at": 0.0}
+        cached_report: ToolEffectivenessReport | None = None
+        cached_until = 0.0
         ttl_seconds = 5.0
 
         def resolve(model: str | None) -> EditSchema:
+            nonlocal cached_report, cached_until
             if model is None:
                 return EditSchema.FLEXIBLE
             now = time.monotonic()
-            cached_report = cast(ToolEffectivenessReport | None, cache["report"])
-            expires_at = cast(float, cache["expires_at"])
-            if cached_report is None or now >= expires_at:
+            if cached_report is None or now >= cached_until:
                 try:
                     cached_report = self._session_store.tool_effectiveness_report(workspace=self._workspace)
                 except Exception:
                     return EditSchema.FLEXIBLE
-                cache["report"] = cached_report
-                cache["expires_at"] = now + ttl_seconds
+                cached_until = now + ttl_seconds
             return select_edit_schema(model, cached_report)
 
         return resolve
@@ -1432,19 +1435,17 @@ class VoidCodeRuntime(RuntimeSurface):
         implicit_force_loaded: tuple[dict[str, object], ...] = ()
         raw_snapshot = session.metadata.get("skill_snapshot")
         if isinstance(raw_snapshot, dict):
-            snapshot_payload = cast(dict[str, object], raw_snapshot)
-            applied_payloads = snapshot_payload.get("applied_skill_payloads")
+            applied_payloads = raw_snapshot.get("applied_skill_payloads")
             if isinstance(applied_payloads, list):
                 normalized: list[dict[str, object]] = []
-                for item in cast(list[object], applied_payloads):
+                for item in applied_payloads:
                     if not isinstance(item, dict):
                         continue
-                    payload = cast(dict[str, object], item)
                     normalized.append(
                         {
-                            "name": payload.get("name"),
+                            "name": item.get("name"),
                             "source": "force_load",
-                            "source_path": payload.get("source_path"),
+                            "source_path": item.get("source_path"),
                         }
                     )
                 implicit_force_loaded = tuple(normalized)
@@ -1581,7 +1582,7 @@ class VoidCodeRuntime(RuntimeSurface):
         # takes precedence over top-level request metadata mode.
         raw_command = request_metadata.get("command")
         if isinstance(raw_command, dict):
-            command_mode = cast(dict[str, object], raw_command).get("mode")
+            command_mode = raw_command.get("mode")
             if isinstance(command_mode, str):
                 request_metadata["mode"] = command_mode
         existing_session = (
@@ -1671,7 +1672,7 @@ class VoidCodeRuntime(RuntimeSurface):
         session_request_metadata = dict(request_metadata)
         session_request_metadata.pop("background_rate_limit_retry", None)
         session_request_metadata.pop("show_thinking", None)
-        parent_runtime_policy = None
+        parent_runtime_policy: dict[str, object] | None = None
         if request.parent_session_id is not None:
             parent_policy_metadata = self._parent_policy_metadata(request.parent_session_id)
             if parent_policy_metadata is not None:
@@ -1679,14 +1680,14 @@ class VoidCodeRuntime(RuntimeSurface):
                 if raw_parent_runtime_policy is not None:
                     if not isinstance(raw_parent_runtime_policy, dict):
                         raise ValueError("persisted parent runtime_policy must be an object")
-                    parent_runtime_policy = cast(dict[str, object], raw_parent_runtime_policy)
-        persisted_runtime_policy = None
+                    parent_runtime_policy = raw_parent_runtime_policy
+        persisted_runtime_policy: dict[str, object] | None = None
         if existing_session is not None and existing_session.session.session.parent_id == request.parent_session_id:
             raw_persisted_runtime_policy = existing_session.session.metadata.get("runtime_policy")
             if raw_persisted_runtime_policy is not None:
                 if not isinstance(raw_persisted_runtime_policy, dict):
                     raise ValueError("persisted runtime_policy must be an object")
-                persisted_runtime_policy = cast(dict[str, object], raw_persisted_runtime_policy)
+                persisted_runtime_policy = raw_persisted_runtime_policy
         session = SessionState(
             session=SessionRef(id=resolved_session_id, parent_id=request.parent_session_id),
             status="running",
@@ -1754,7 +1755,7 @@ class VoidCodeRuntime(RuntimeSurface):
             **({"agent_preset": active_agent.preset} if (active_agent := effective_config.agent) is not None else {}),
         }
         if isinstance(runtime_policy_snapshot, dict):
-            request_received_payload["runtime_policy"] = runtime_policy_observability_payload(cast(dict[str, object], runtime_policy_snapshot))
+            request_received_payload["runtime_policy"] = runtime_policy_observability_payload(runtime_policy_snapshot)
         request_received_envelope = self._persist_emitted_event(
             session_id=session.session.id,
             event_type="runtime.request_received",
@@ -1790,7 +1791,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 event_type=COMMAND_RESOLVED,
                 source="runtime",
                 payload={
-                    **cast(dict[str, object], command_metadata),
+                    **command_metadata,
                     "rendered_prompt": request.prompt,
                 },
             )
@@ -2196,6 +2197,7 @@ class VoidCodeRuntime(RuntimeSurface):
         policy_surface = eval_result.policy_surface
         external_decision = eval_result.external_decision
 
+        raw_background_task_id = session.metadata.get("background_task_id")
         permission = resolve_permission(
             tool,
             tool_call,
@@ -2209,9 +2211,7 @@ class VoidCodeRuntime(RuntimeSurface):
             rule_decision=rule_decision,
             owner_session_id=session.session.id,
             owner_parent_session_id=session.session.parent_id,
-            delegated_task_id=(
-                cast(str, session.metadata["background_task_id"]) if isinstance(session.metadata.get("background_task_id"), str) else None
-            ),
+            delegated_task_id=(raw_background_task_id if isinstance(raw_background_task_id, str) else None),
             read_only=runtime_read_only_from_metadata(session.metadata),
         )
 
@@ -2771,13 +2771,10 @@ class VoidCodeRuntime(RuntimeSurface):
         resolved_provider: ResolvedProviderConfig | None,
         provider_attempt: int,
     ) -> ContextWindowPolicy:
-        return cast(
-            ContextWindowPolicy,
-            self._inspection_coordinator._context_window_policy_for_provider_attempt(
-                policy,
-                resolved_provider=resolved_provider,
-                provider_attempt=provider_attempt,
-            ),
+        return self._inspection_coordinator._context_window_policy_for_provider_attempt(
+            policy,
+            resolved_provider=resolved_provider,
+            provider_attempt=provider_attempt,
         )
 
     def list_provider_summaries(self) -> tuple[ProviderSummary, ...]:
@@ -2882,10 +2879,10 @@ class VoidCodeRuntime(RuntimeSurface):
     def _read_json_object(config_path: Path) -> dict[str, object]:
         if not config_path.exists():
             return {}
-        raw_payload = json.loads(config_path.read_text(encoding="utf-8"))
+        raw_payload: object = json.loads(config_path.read_text(encoding="utf-8"))
         if not isinstance(raw_payload, dict):
             raise ValueError(f"runtime config file must contain a JSON object: {config_path}")
-        return cast(dict[str, object], raw_payload)
+        return raw_payload
 
     def _reload_runtime_config_state(self) -> None:
         """Atomically refresh the provider/model state used by web settings.
@@ -3203,7 +3200,7 @@ class VoidCodeRuntime(RuntimeSurface):
         raw = metadata.get("pending_messages")
         if not isinstance(raw, list):
             return ()
-        return tuple(cast(dict[str, object], item) for item in raw if isinstance(item, dict))
+        return tuple(item for item in raw if isinstance(item, dict))
 
     def drain_queued_messages(
         self,
@@ -3729,7 +3726,7 @@ class VoidCodeRuntime(RuntimeSurface):
         if resolution is None:
             return prompt, metadata
 
-        normalized = dict(cast(dict[str, object], metadata))
+        normalized: dict[str, object] = dict(metadata)
         prompt = resolution.invocation.rendered_prompt
         command_metadata: dict[str, object] = {
             "name": resolution.invocation.name,
@@ -3764,8 +3761,8 @@ class VoidCodeRuntime(RuntimeSurface):
         if not isinstance(raw_delegation, dict):
             return metadata
 
-        normalized = dict(cast(dict[str, object], metadata))
-        delegation = dict(cast(dict[str, object], raw_delegation))
+        normalized: dict[str, object] = dict(metadata)
+        delegation: dict[str, object] = dict(raw_delegation)
         parent_depth = 0
         remaining_spawn_budget = _DELEGATION_GOVERNANCE.spawn_budget
 
@@ -3911,9 +3908,10 @@ class VoidCodeRuntime(RuntimeSurface):
         # the effective mode once, render its guidance text, and let the
         # registry's filtered() decide which providers run (plan declares
         # transform_refs=("mode_guidance",)).
+        raw_read_only = session_metadata.get("read_only")
         mode_resolution = resolve_mode(
             runtime_mode_from_metadata(session_metadata),
-            explicit_read_only=(isinstance(session_metadata.get("read_only"), bool) and cast(bool, session_metadata["read_only"]) is True),
+            explicit_read_only=(isinstance(raw_read_only, bool) and raw_read_only is True),
         )
         mode_guidance_context = ""
         if mode_resolution.mode != "normal":
@@ -3939,7 +3937,7 @@ class VoidCodeRuntime(RuntimeSurface):
         loaded_skills: tuple[dict[str, object], ...] = ()
         if isinstance(raw_loaded, list):
             typed: list[dict[str, object]] = []
-            for item in cast(list[object], raw_loaded):
+            for item in raw_loaded:
                 if isinstance(item, dict):
                     entry: dict[str, object] = {}
                     item_entries: Mapping[str, object] = item
@@ -3949,7 +3947,7 @@ class VoidCodeRuntime(RuntimeSurface):
                     typed.append(entry)
             loaded_skills = tuple(typed)
         raw_runtime_config = session_metadata.get("runtime_config")
-        raw_runtime_agent = cast(dict[str, object], raw_runtime_config).get("agent") if isinstance(raw_runtime_config, dict) else None
+        raw_runtime_agent = raw_runtime_config.get("agent") if isinstance(raw_runtime_config, dict) else None
         raw_agent_preset = session_metadata.get("agent_preset")
         agent_preset = dict(raw_agent_preset) if isinstance(raw_agent_preset, dict) else None
         if agent_preset is None and isinstance(raw_runtime_agent, dict):
@@ -4121,15 +4119,15 @@ class VoidCodeRuntime(RuntimeSurface):
                 raw_capability_snapshot = metadata["agent_capability_snapshot"]
                 if not isinstance(raw_capability_snapshot, dict):
                     raise ValueError("persisted agent_capability_snapshot must be an object")
-                validate_agent_capability_snapshot(cast(dict[str, object], raw_capability_snapshot))
-                return self._skill_binding_snapshot_from_agent_capability_snapshot(cast(dict[str, object], raw_capability_snapshot))
+                validate_agent_capability_snapshot(raw_capability_snapshot)
+                return self._skill_binding_snapshot_from_agent_capability_snapshot(raw_capability_snapshot)
         if require_capability:
             raise ValueError("persisted session requires agent_capability_snapshot")
-        source_runtime_config = None
+        source_runtime_config: dict[str, object] | None = None
         if metadata is not None:
             raw_runtime_config = metadata.get("runtime_config")
             if isinstance(raw_runtime_config, dict):
-                source_runtime_config = cast(dict[str, object], raw_runtime_config)
+                source_runtime_config = raw_runtime_config
         if source_runtime_config is None:
             source_runtime_config = self._runtime_config_metadata(self.effective_runtime_config_from_metadata(metadata))
         snapshot: dict[str, object] = {}
@@ -4155,7 +4153,7 @@ class VoidCodeRuntime(RuntimeSurface):
         parent_capability_snapshot: dict[str, object] | None = None,
     ) -> dict[str, object]:
         runtime_config = metadata.get("runtime_config")
-        runtime_config_payload = cast(dict[str, object], runtime_config) if isinstance(runtime_config, dict) else {}
+        runtime_config_payload: dict[str, object] = runtime_config if isinstance(runtime_config, dict) else {}
         agent = effective_config.agent
         manifest = self._agent_registry.get(agent.preset) if agent is not None else None
         force_load_skills = self._request_skill_names_from_metadata(
@@ -4289,7 +4287,7 @@ class VoidCodeRuntime(RuntimeSurface):
             return None
         if not isinstance(raw_snapshot, dict):
             raise ValueError("persisted parent agent_capability_snapshot must be an object")
-        return validate_agent_capability_snapshot(cast(dict[str, object], raw_snapshot))
+        return validate_agent_capability_snapshot(raw_snapshot)
 
     @staticmethod
     def _snapshot_to_session_metadata(snapshot: SkillExecutionSnapshot) -> dict[str, object]:
@@ -4532,11 +4530,11 @@ class VoidCodeRuntime(RuntimeSurface):
         if resolved_route is None:
             return metadata
 
-        normalized_metadata = dict(cast(dict[str, object], metadata))
+        normalized_metadata: dict[str, object] = dict(metadata)
         raw_delegation_metadata = normalized_metadata["delegation"]
         if not isinstance(raw_delegation_metadata, dict):
             raise RuntimeRequestError("request metadata 'delegation' must be an object when provided")
-        delegation_metadata = dict(cast(dict[str, object], raw_delegation_metadata))
+        delegation_metadata: dict[str, object] = dict(raw_delegation_metadata)
         delegation_metadata["selected_preset"] = resolved_route.selected_preset
         delegation_metadata["selected_execution_engine"] = resolved_route.execution_engine
 
@@ -4729,7 +4727,7 @@ class VoidCodeRuntime(RuntimeSurface):
         if not isinstance(persisted_runtime_config, dict):
             raise ValueError("persisted session metadata must include runtime_config")
 
-        runtime_config = cast(dict[str, object], persisted_runtime_config)
+        runtime_config: dict[str, object] = persisted_runtime_config
         materialized = parse_persisted_runtime_config(runtime_config)
         approval_mode = materialized.approval_mode
         permission = materialized.permission

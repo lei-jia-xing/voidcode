@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal
 
 from ...tools.contracts import ToolDiagnostics, ToolResult, ToolResultStatus
 from ...tools.output import sanitize_tool_result_data
@@ -129,7 +129,7 @@ def checkpoint_state_from_payload(
     if not isinstance(session_metadata, dict):
         raise ValueError(f"{prefix} session_metadata must be an object")
     recovered_metadata = verified_checkpoint_session_metadata(
-        checkpoint_metadata=cast(dict[str, object], session_metadata),
+        checkpoint_metadata=session_metadata,
         stored_metadata=stored_metadata,
     )
     if recovered_metadata is None:
@@ -139,7 +139,7 @@ def checkpoint_state_from_payload(
     return ApprovalResumeCheckpointState(
         prompt=prompt,
         session_metadata=recovered_metadata,
-        tool_results=tool_results_from_checkpoint(cast(list[object], raw_tool_results)),
+        tool_results=tool_results_from_checkpoint(raw_tool_results),
     )
 
 
@@ -157,10 +157,7 @@ def approval_resume_state_from_checkpoint(
     if checkpoint_payload.get("pending_approval_request_id") != pending.request_id:
         raise ValueError("persisted approval resume checkpoint request id does not match pending approval")
     checkpoint_snapshot_hash = checkpoint_payload.get("skill_snapshot_hash")
-    stored_snapshot_payload = cast(
-        dict[str, object] | None,
-        stored_metadata.get("skill_snapshot"),
-    )
+    stored_snapshot_payload = stored_metadata.get("skill_snapshot")
     stored_snapshot_hash = stored_snapshot_payload.get("snapshot_hash") if isinstance(stored_snapshot_payload, dict) else None
     if checkpoint_snapshot_hash is not None and stored_snapshot_hash is not None and checkpoint_snapshot_hash != stored_snapshot_hash:
         raise ValueError("persisted approval resume checkpoint skill snapshot hash does not match session")
@@ -214,7 +211,7 @@ def tool_results_from_checkpoint(raw_tool_results: list[object]) -> tuple[ToolRe
     for raw_tool_result in raw_tool_results:
         if not isinstance(raw_tool_result, dict):
             raise ValueError("persisted resume checkpoint tool_results must contain objects")
-        payload = cast(dict[str, object], raw_tool_result)
+        payload: dict[str, object] = raw_tool_result
         tool_name = payload.get("tool_name")
         raw_status = payload.get("status")
         if raw_status == "ok":
@@ -238,7 +235,7 @@ def tool_results_from_checkpoint(raw_tool_results: list[object]) -> tuple[ToolRe
                 tool_name=tool_name,
                 content=content,
                 status=status,
-                data=sanitize_tool_result_data(cast(dict[str, object], data)),
+                data=sanitize_tool_result_data(data),
                 error=error,
                 diagnostics=(ToolDiagnostics.from_payload(diagnostics) if diagnostics is not None else None),
                 source="checkpoint",

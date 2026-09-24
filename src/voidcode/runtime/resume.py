@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from ..graph.contracts import GraphRunRequest
 from ..provider.protocol import ProviderAbortSignal
@@ -146,7 +146,7 @@ class RuntimeResumeCoordinator:
         )
         streamed_events: list[EventEnvelope] = []
         output: str | None = None
-        final_session: Any | None = None
+        final_session: SessionState | None = None
         for chunk in self.resume_pending_approval_impl(
             stored=stored_response,
             pending=pending,
@@ -185,7 +185,7 @@ class RuntimeResumeCoordinator:
         )
         streamed_events: list[EventEnvelope] = []
         output: str | None = None
-        final_session: Any | None = None
+        final_session: SessionState | None = None
         for chunk in self.resume_pending_approval_impl(
             stored=stored_response,
             pending=pending,
@@ -224,7 +224,7 @@ class RuntimeResumeCoordinator:
         )
         streamed_events: list[EventEnvelope] = []
         output: str | None = None
-        final_session: Any | None = None
+        final_session: SessionState | None = None
         for chunk in self.answer_pending_question_impl(
             stored=stored_response,
             pending=pending,
@@ -264,7 +264,7 @@ class RuntimeResumeCoordinator:
         )
         streamed_events: list[EventEnvelope] = []
         output: str | None = None
-        final_session: Any | None = None
+        final_session: SessionState | None = None
         for chunk in self.answer_pending_question_impl(
             stored=stored_response,
             pending=pending,
@@ -562,15 +562,14 @@ class RuntimeResumeCoordinator:
         stored_response: Any,
         streamed_events: list[EventEnvelope],
         output: str | None,
-        final_session: Any | None,
+        final_session: SessionState | None,
     ) -> RuntimeResponse:
         if final_session is None:
             raise ValueError("runtime stream emitted no chunks")
         if final_session.status == "waiting":
             final_session = reload_persisted_session(self._session_store, self._workspace, session_id=final_session.session.id)
-        resolved_session = cast(SessionState, final_session)
         response = RuntimeResponse(
-            session=resolved_session,
+            session=final_session,
             events=stored_response.events + tuple(streamed_events),
             output=output,
         )
@@ -626,24 +625,18 @@ class RuntimeResumeCoordinator:
             stored_metadata=stored.session.metadata,
         )
         binding_mismatch_payload: dict[str, object] | None = None
-        checkpoint_payload = cast(dict[str, object], checkpoint)
-        checkpoint_binding = checkpoint_payload.get("skill_binding_snapshot")
-        checkpoint_binding_payload = cast(dict[str, object], checkpoint_binding) if isinstance(checkpoint_binding, dict) else None
+        assert checkpoint is not None
+        checkpoint_binding = checkpoint.get("skill_binding_snapshot")
+        checkpoint_binding_payload: dict[str, object] | None = checkpoint_binding if isinstance(checkpoint_binding, dict) else None
         if checkpoint_binding_payload is not None:
-            stored_snapshot_payload = cast(
-                dict[str, object] | None,
-                stored.session.metadata.get("skill_snapshot"),
-            )
-            stored_binding_payload = (
-                cast(dict[str, object], stored_snapshot_payload.get("binding_snapshot"))
-                if isinstance(stored_snapshot_payload, dict) and isinstance(stored_snapshot_payload.get("binding_snapshot"), dict)
-                else None
-            )
+            stored_snapshot_payload = stored.session.metadata.get("skill_snapshot")
+            raw_stored_binding = stored_snapshot_payload.get("binding_snapshot") if isinstance(stored_snapshot_payload, dict) else None
+            stored_binding_payload: dict[str, object] | None = raw_stored_binding if isinstance(raw_stored_binding, dict) else None
             mismatch_payload = skill_binding_mismatch_payload(
                 checkpoint_binding_payload,
                 stored_binding_payload,
             )
-            if cast(bool, mismatch_payload["mismatch"]):
+            if mismatch_payload["mismatch"] is True:
                 binding_mismatch_payload = mismatch_payload
         prompt = checkpoint_state.prompt
         session = SessionState(
@@ -1230,12 +1223,13 @@ class RuntimeResumeCoordinator:
         )
         payload = checkpoint_envelope.payload
         prompt = payload.get("prompt")
-        session_metadata = payload.get("session_metadata")
+        raw_session_metadata = payload.get("session_metadata")
         raw_tool_results = payload.get("tool_results")
         if not isinstance(prompt, str):
             raise ValueError("persisted resume checkpoint prompt must be a string")
-        if not isinstance(session_metadata, dict):
+        if not isinstance(raw_session_metadata, dict):
             raise ValueError("persisted resume checkpoint session_metadata must be an object")
+        session_metadata: dict[str, object] = raw_session_metadata
         if not isinstance(raw_tool_results, list):
             raise ValueError("persisted resume checkpoint tool_results must be a list")
         # A resume replays the capability binding the recorded run was bound to,
@@ -1267,7 +1261,7 @@ class RuntimeResumeCoordinator:
                 session=stored_row.session.session,
                 status="running",
                 turn=stored_row.session.turn,
-                metadata=cast(dict[str, object], session_metadata),
+                metadata=session_metadata,
             ),
             run_id=run_id,
         )
@@ -1303,7 +1297,7 @@ class RuntimeResumeCoordinator:
             workspace=self._workspace,
             session_id=session_id,
         )
-        tool_results = list(self.tool_results_from_checkpoint(cast(list[object], raw_tool_results)))
+        tool_results = list(self.tool_results_from_checkpoint(raw_tool_results))
         replayed_conversation_segments = runtime.replayed_conversation_segments_for_existing_session(
             stored=stored,
             parent_session_id=stored.session.session.parent_id,
@@ -1378,8 +1372,8 @@ class RuntimeResumeCoordinator:
             workspace=self._workspace,
             session_id=session_id,
             prompt=prompt,
-            session_metadata=cast(dict[str, object], session_metadata),
-            tool_results=tuple(cast(dict[str, object], result) for result in raw_tool_results),
+            session_metadata=session_metadata,
+            tool_results=tuple(result for result in raw_tool_results if isinstance(result, dict)),
             last_event_sequence=max_stored_sequence,
             output=None,
             create_if_missing=False,

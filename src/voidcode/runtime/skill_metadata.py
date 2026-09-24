@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import cast
 
 from .config import RuntimeAgentConfig
 from .contracts import _parse_string_list
@@ -23,7 +22,7 @@ def request_skill_names_from_metadata(
     raw_skills = metadata[key]
     if not isinstance(raw_skills, list):
         raise ValueError(f"request metadata '{key}' must be a list of skill names")
-    return tuple(_parse_string_list(cast(list[object], raw_skills), field=f"request metadata '{key}'"))
+    return tuple(_parse_string_list(raw_skills, field=f"request metadata '{key}'"))
 
 
 def effective_selected_skill_names(
@@ -84,7 +83,7 @@ def persisted_selected_skill_names(metadata: dict[str, object]) -> tuple[str, ..
         raise ValueError("persisted selected skill names must be a list")
 
     selected_skill_names: list[str] = []
-    for index, raw_name in enumerate(cast(list[object], raw_skill_names)):
+    for index, raw_name in enumerate(raw_skill_names):
         if not isinstance(raw_name, str):
             raise ValueError(f"persisted selected skill names[{index}] must be a string")
         selected_skill_names.append(raw_name)
@@ -107,7 +106,7 @@ def skill_snapshot_from_metadata(
     raw_snapshot = metadata["skill_snapshot"]
     if not isinstance(raw_snapshot, dict):
         raise ValueError("persisted skill_snapshot must be an object")
-    return snapshot_from_payload(cast(dict[str, object], raw_snapshot))
+    return snapshot_from_payload(raw_snapshot)
 
 
 def skill_binding_snapshot_from_agent_capability_snapshot(
@@ -116,7 +115,6 @@ def skill_binding_snapshot_from_agent_capability_snapshot(
     snapshot: dict[str, object] = {}
     execution = capability_snapshot.get("execution")
     if isinstance(execution, dict):
-        execution_payload = cast(dict[str, object], execution)
         execution_key_map = {
             "execution_engine": "execution_engine",
             "model": "model",
@@ -125,24 +123,23 @@ def skill_binding_snapshot_from_agent_capability_snapshot(
             "reasoning_effort": "reasoning_effort",
         }
         for source_key, target_key in execution_key_map.items():
-            if source_key in execution_payload:
-                snapshot[target_key] = execution_payload[source_key]
+            if source_key in execution:
+                snapshot[target_key] = execution[source_key]
     agent = capability_snapshot.get("agent")
     if isinstance(agent, dict):
-        snapshot["agent"] = cast(dict[str, object], agent)
+        snapshot["agent"] = agent
     runtime = capability_snapshot.get("runtime")
     if isinstance(runtime, dict):
-        runtime_payload = cast(dict[str, object], runtime)
         for key in (
             "approval_mode",
             "tool_timeout_seconds",
             "permission",
         ):
-            if key in runtime_payload:
-                snapshot[key] = runtime_payload[key]
+            if key in runtime:
+                snapshot[key] = runtime[key]
     mcp = capability_snapshot.get("mcp")
     if isinstance(mcp, dict):
-        snapshot["mcp"] = cast(dict[str, object], mcp)
+        snapshot["mcp"] = mcp
     return snapshot
 
 

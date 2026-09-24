@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from .context.window import (
     ContextProjection,
@@ -466,7 +466,7 @@ def plan_state_from_metadata(
         return None
     if not isinstance(existing_plan_state, dict):
         raise ValueError("persisted plan_state must be an object")
-    plan_state: dict[str, object] = dict(cast(dict[str, object], existing_plan_state))
+    plan_state: dict[str, object] = dict(existing_plan_state)
 
     if status is not None:
         plan_state["status"] = status
@@ -486,10 +486,7 @@ def plan_state_from_metadata(
     else:
         plan_state.pop("last_error", None)
 
-    return cast(
-        dict[str, object],
-        parse_plan_state_metadata(plan_state),
-    )
+    return dict(parse_plan_state_metadata(plan_state))
 
 
 def session_with_context_window_payload_metadata(
@@ -500,7 +497,7 @@ def session_with_context_window_payload_metadata(
     if raw_runtime_state is not None and not isinstance(raw_runtime_state, dict):
         raise ValueError("persisted runtime_state must be an object")
     continuity_payload_raw = context_window_payload.get("projection")
-    continuity_payload = cast(dict[str, object], continuity_payload_raw) if isinstance(continuity_payload_raw, dict) else None
+    continuity_payload: dict[str, object] | None = continuity_payload_raw if isinstance(continuity_payload_raw, dict) else None
     summary_anchor = context_window_payload.get("summary_anchor")
     summary_source = context_window_payload.get("summary_source")
     continuity_summary_payload = (
@@ -514,9 +511,9 @@ def session_with_context_window_payload_metadata(
     metadata = dict(session.metadata)
     raw_prompt_activation = context_window_payload.get("prompt_activation")
     if isinstance(raw_prompt_activation, dict):
-        prompt_activation = dict(cast(dict[str, object], raw_prompt_activation))
+        prompt_activation: dict[str, object] = dict(raw_prompt_activation)
         raw_runtime_policy = metadata.get("runtime_policy")
-        runtime_policy = dict(cast(dict[str, object], raw_runtime_policy)) if isinstance(raw_runtime_policy, dict) else {}
+        runtime_policy: dict[str, object] = dict(raw_runtime_policy) if isinstance(raw_runtime_policy, dict) else {}
         runtime_policy["prompt_activation"] = prompt_activation
         metadata["runtime_policy"] = runtime_policy
     runtime_state = _runtime_state_payload_with_updates(
@@ -597,10 +594,7 @@ def session_with_plan_state(
                 plan_state["blocked_tool"] = blocked_tool
             if error is not None:
                 plan_state["last_error"] = error
-            plan_state = cast(
-                dict[str, object],
-                parse_plan_state_metadata(plan_state),
-            )
+            plan_state = dict(parse_plan_state_metadata(plan_state))
         else:
             return session
     return _session_with_metadata(
