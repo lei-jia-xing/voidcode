@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Literal, cast
+from typing import Literal
 
 from ...hook.config import RuntimeHooksConfig, RuntimeHookSurface
-from ...provider.errors import ProviderErrorKind, guidance_for_provider_error_kind
+from ...provider.errors import guidance_for_provider_error_kind
 from ..contracts import RuntimeStreamChunk
 from ..events import EventEnvelope
 from ..session import SessionState
@@ -114,7 +114,7 @@ def user_interrupted_payload(*, run_id: str | None, reason: str | None) -> dict[
 def _retry_guidance_for_runtime_failure(payload: dict[str, object]) -> str | None:
     provider_error_kind = payload.get("provider_error_kind")
     if isinstance(provider_error_kind, str) and provider_error_kind:
-        guidance = guidance_for_provider_error_kind(cast(ProviderErrorKind, provider_error_kind))
+        guidance = guidance_for_provider_error_kind(provider_error_kind)
         if guidance:
             return guidance
     if payload.get("cancelled") is True:

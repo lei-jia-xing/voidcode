@@ -201,7 +201,13 @@ def _recovery_policy_for_kind(kind: ProviderErrorKind) -> tuple[bool | None, boo
     return True, True
 
 
-def guidance_for_provider_error_kind(kind: ProviderErrorKind) -> str:
+def guidance_for_provider_error_kind(kind: str) -> str:
+    """Guidance for a provider-error kind token, generic for one nothing recognizes.
+
+    Total over strings on purpose: the caller may hold a *persisted* token, and the
+    final branch already answers any unrecognized value, so the parameter is the
+    token's real type rather than the closed set of kinds this build knows.
+    """
     if kind == "missing_auth":
         return "Configure the provider API key or auth method, then retry."
     if kind == "invalid_model":
