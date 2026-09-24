@@ -9,7 +9,6 @@ from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import cast
 
 from .runtime.config import RuntimeConfig
 from .runtime.transport.http import create_runtime_app
@@ -110,13 +109,13 @@ def web(
     config: RuntimeConfig | None = None,
     open_browser: bool = True,
 ) -> None:
-    listener_socket = _reserve_listener_socket(host) if port is None else None
+    if port is None:
+        listener_socket: socket.socket | None = _reserve_listener_socket(host)
+        selected_port = listener_socket.getsockname()[1]
+    else:
+        listener_socket = None
+        selected_port = port
     try:
-        selected_port: int
-        if listener_socket is not None:
-            selected_port = listener_socket.getsockname()[1]
-        else:
-            selected_port = cast(int, port)
         url = f"http://{host}:{selected_port}"
         with _frontend_dist_context() as frontend_dist:
             print(_BANNER)
