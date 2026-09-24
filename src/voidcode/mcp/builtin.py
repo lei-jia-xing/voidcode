@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+
+type BuiltinMcpTransport = Literal["stdio", "remote-http"]
+type BuiltinMcpScope = Literal["runtime", "session"]
 
 
 @dataclass(frozen=True, slots=True)
 class BuiltinMcpDescriptor:
     name: str
-    transport: str
+    transport: BuiltinMcpTransport
     description: str
     lifecycle: str
     url: str | None = None
     command: tuple[str, ...] = ()
-    scope: str = "runtime"
+    scope: BuiltinMcpScope = "runtime"
     skill_scoped: bool = False
     skill_name: str | None = None
     tags: tuple[str, ...] = ()

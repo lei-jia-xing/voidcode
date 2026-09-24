@@ -6,10 +6,19 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, cast
+from typing import Final, Literal, TypeIs, cast
 
 from ..skills.models import SkillMetadata
 from ..skills.registry import SkillRegistry
+
+type SkillSnapshotSource = Literal["run", "resume", "replay"]
+
+_SKILL_SNAPSHOT_SOURCES: Final[frozenset[SkillSnapshotSource]] = frozenset({"run", "resume", "replay"})
+
+
+def is_skill_snapshot_source(value: object) -> TypeIs[SkillSnapshotSource]:
+    """Whether an untrusted ``source`` token names one of the skill snapshot origins."""
+    return value in _SKILL_SNAPSHOT_SOURCES
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,7 +222,7 @@ def snapshot_from_payload(payload: dict[str, object]) -> SkillExecutionSnapshot:
         _ = runtime_context_from_payload(normalized)
         applied_payloads.append(normalized)
     source = payload.get("source")
-    if source not in {"run", "resume", "replay"}:
+    if not is_skill_snapshot_source(source):
         raise ValueError("persisted skill snapshot source must be one of: run, resume, replay")
     skill_prompt_context = payload.get("skill_prompt_context")
     if not isinstance(skill_prompt_context, str):
@@ -241,7 +250,7 @@ def snapshot_from_payload(payload: dict[str, object]) -> SkillExecutionSnapshot:
         skill_prompt_context=skill_prompt_context,
         snapshot_hash=snapshot_hash,
         snapshot_version=snapshot_version,
-        source=cast(Literal["run", "resume", "replay"], source),
+        source=source,
         binding_snapshot=cast(dict[str, object], binding_snapshot),
     )
 

@@ -234,9 +234,9 @@ def _default_runtime_mcp_servers() -> dict[str, RuntimeMcpServerConfig]:
         if descriptor.skill_scoped:
             continue
         servers[descriptor.name] = RuntimeMcpServerConfig(
-            transport=cast(McpTransport, descriptor.transport),
+            transport=descriptor.transport,
             command=descriptor.command,
-            scope=cast(RuntimeMcpServerScope, descriptor.scope),
+            scope=descriptor.scope,
             url=descriptor.url,
         )
     return servers
@@ -1036,7 +1036,7 @@ def _agent_config_from_payload(
         prompt_append=payload.prompt_append,
         runtime_internal=RuntimeAgentInternalState(
             prompt_ref=prompt_ref,
-            prompt_source=cast(RuntimeAgentPromptSource, normalized_prompt_source),
+            prompt_source=normalized_prompt_source,
             prompt_materialization=dict(prompt_materialization) if prompt_materialization is not None else None,
             manifest_source_scope=internal_payload.manifest_source_scope if internal_payload is not None else None,
             manifest_source_path=internal_payload.manifest_source_path if internal_payload is not None else None,

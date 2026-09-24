@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Literal, Protocol, TypedDict, cast, runtime_checkable
+from typing import Literal, Protocol, TypedDict, TypeIs, cast, runtime_checkable
 
 from ..provider.reasoning_effort import normalize_reasoning_effort
 from . import mode as runtime_mode
@@ -98,6 +98,13 @@ class InternalRuntimeRequestMetadata(RuntimeRequestMetadata, total=False):
 
 type RuntimeRequestMetadataPayload = RuntimeRequestMetadata | InternalRuntimeRequestMetadata
 
+type RoutingSchemaMode = Literal["permissive", "strict"]
+
+
+def is_schema_mode(value: object) -> TypeIs[RoutingSchemaMode]:
+    """Whether an untrusted ``schema_mode`` token names one of the delegation schema modes."""
+    return value in ("permissive", "strict")
+
 
 class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
     mode: Literal["sync", "background"]
@@ -111,7 +118,7 @@ class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
     parallel_group_id: str
     parallel_group_size: int
     output_schema: dict[str, object]
-    schema_mode: Literal["permissive", "strict"]
+    schema_mode: RoutingSchemaMode
 
 
 class AcpStateMetadata(TypedDict, total=False):
@@ -382,9 +389,9 @@ def validate_runtime_subagent_routing_metadata(
         normalized["output_schema"] = dict(raw_output_schema)
     if "schema_mode" in routing_metadata:
         raw_schema_mode = routing_metadata["schema_mode"]
-        if raw_schema_mode not in ("permissive", "strict"):
+        if not is_schema_mode(raw_schema_mode):
             raise RuntimeRequestError("request metadata 'delegation.schema_mode' must be 'permissive' or 'strict'")
-        normalized["schema_mode"] = cast(Literal["permissive", "strict"], raw_schema_mode)
+        normalized["schema_mode"] = raw_schema_mode
     return normalized
 
 

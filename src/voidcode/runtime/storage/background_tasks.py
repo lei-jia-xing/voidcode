@@ -16,6 +16,7 @@ from ..background.models import (
     StoredBackgroundTaskSummary,
     is_background_task_terminal,
     is_background_task_transition_allowed,
+    is_delegated_reminder_stop_condition,
     validate_background_task_id,
 )
 from ..contracts import (
@@ -192,14 +193,8 @@ class _BackgroundTaskStorageMixin(_MixinBase):
     ) -> DelegatedReminderStopCondition | None:
         if value is None:
             return None
-        if value in {
-            "result_read",
-            "explicit_retry",
-            "cancellation",
-            "terminal_status",
-            "already_sent_for_idle_episode",
-        }:
-            return cast(DelegatedReminderStopCondition, value)
+        if is_delegated_reminder_stop_condition(value):
+            return value
         raise ValueError(f"invalid delegated reminder stop condition: {value!r}")
 
     @classmethod

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, TypeIs, cast
 
 from .execution import SubagentExecutionContract
 from .routing import (
@@ -28,6 +28,22 @@ type DelegatedReminderStopCondition = Literal[
     "terminal_status",
     "already_sent_for_idle_episode",
 ]
+
+_DELEGATED_REMINDER_STOP_CONDITIONS: frozenset[DelegatedReminderStopCondition] = frozenset(
+    {
+        "result_read",
+        "explicit_retry",
+        "cancellation",
+        "terminal_status",
+        "already_sent_for_idle_episode",
+    }
+)
+
+
+def is_delegated_reminder_stop_condition(value: object) -> TypeIs[DelegatedReminderStopCondition]:
+    """Whether an untrusted ``stop_condition`` token names one of the reminder stop conditions."""
+    return value in _DELEGATED_REMINDER_STOP_CONDITIONS
+
 
 BACKGROUND_TASK_TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled", "interrupted"})
 _BACKGROUND_TASK_ALLOWED_TRANSITIONS: dict[BackgroundTaskStatus, frozenset[BackgroundTaskStatus]] = {

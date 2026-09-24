@@ -34,7 +34,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Literal, cast, overload
+from typing import Annotated, Literal, TypeIs, cast, overload
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -86,6 +86,18 @@ type RuntimeSummaryStrategy = Literal["deterministic", "model_assisted"]
 #: contract message, so it is declared here rather than as a Literal constraint.
 type ReasoningEffort = Annotated[str, Field(json_schema_extra={"enum": list(ALL_EFFORTS)})]
 type RuntimeHookFailureMode = Literal["warn", "fail"]
+
+
+def is_hook_failure_mode(value: object) -> TypeIs[RuntimeHookFailureMode]:
+    """Whether an untrusted ``failure_mode`` token names one of the hook failure modes."""
+    return value in ("warn", "fail")
+
+
+def is_mcp_transport(value: object) -> TypeIs[McpTransport]:
+    """Whether an untrusted ``transport`` token names one of the MCP transports."""
+    return value in ("stdio", "remote-http")
+
+
 #: Policy hook event scopes, from the policy owner's own table.
 type HookEventScope = Annotated[str, Field(json_schema_extra={"enum": list(runtime_policy_allowed_hook_scopes())})]
 
@@ -848,9 +860,9 @@ class HooksPayload(_PayloadModel):
     @field_validator("failure_mode", mode="before")
     @classmethod
     def _validate_failure_mode(cls, value: object) -> RuntimeHookFailureMode:
-        if value not in ("warn", "fail"):
+        if not is_hook_failure_mode(value):
             raise ValueError("runtime config field 'hooks.failure_mode' must be warn or fail")
-        return cast(RuntimeHookFailureMode, value)
+        return value
 
     @field_validator(*HOOK_COMMAND_FIELDS, mode="before")
     @classmethod
@@ -1222,9 +1234,9 @@ class McpServerPayload(_PayloadModel):
         if value is None:
             return "stdio"
         field_path = _validation_context_field_path(info, default="mcp.servers")
-        if value not in ("stdio", "remote-http"):
+        if not is_mcp_transport(value):
             raise ValueError(f"runtime config field '{field_path}.transport' must be one of: stdio, remote-http")
-        return cast(McpTransport, value)
+        return value
 
     @field_validator("command", mode="before")
     @classmethod
@@ -1295,8 +1307,8 @@ def _merge_builtin_mcp_server_defaults(server_name: str, raw_server: dict[str, o
         merged.setdefault("command", list(descriptor.command))
     if descriptor.url is not None and merged.get("transport") == "remote-http":
         merged.setdefault("url", descriptor.url)
-    if descriptor.scope:
-        merged.setdefault("scope", descriptor.scope)
+    # Every builtin descriptor carries a non-empty scope, so this always applies.
+    merged.setdefault("scope", descriptor.scope)
     return merged
 
 

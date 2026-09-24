@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, TypeIs
 
 SkillOrigin = Literal["workspace", "builtin"]
 
@@ -28,9 +28,14 @@ def _validated_path(value: object, *, field_name: str) -> Path:
     return value
 
 
+def is_skill_origin(value: object) -> TypeIs[SkillOrigin]:
+    """Whether an untrusted ``origin`` token names one of the skill origins."""
+    return value == "workspace" or value == "builtin"
+
+
 def _validated_skill_origin(value: object) -> SkillOrigin:
-    if value == "workspace" or value == "builtin":
-        return cast(SkillOrigin, value)
+    if is_skill_origin(value):
+        return value
     raise ValueError("origin must be one of: workspace, builtin")
 
 

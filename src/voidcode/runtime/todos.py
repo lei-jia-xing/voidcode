@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, TypedDict, cast
+from typing import Literal, TypedDict, TypeIs, cast
 
 TodoStatus = Literal["pending", "in_progress", "completed", "abandoned", "blocked"]
 TODO_STATUSES: tuple[TodoStatus, ...] = (
@@ -56,9 +56,14 @@ def runtime_todo_state_from_payload(raw_state: object) -> dict[str, object]:
     return todo_state_payload(phases, revision=revision)
 
 
+def is_todo_status(value: object) -> TypeIs[TodoStatus]:
+    """Whether an untrusted ``status`` token names one of the runtime todo statuses."""
+    return value in TODO_STATUSES
+
+
 def _parse_status(value: object) -> TodoStatus:
-    if value in TODO_STATUSES:
-        return cast(TodoStatus, value)
+    if is_todo_status(value):
+        return value
     raise ValueError(f"runtime todo task has invalid status: {value}")
 
 

@@ -29,7 +29,7 @@ import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final, Literal, cast, final, overload
+from typing import Final, Literal, TypeIs, cast, final, overload
 
 from .. import __version__ as VOIDCODE_VERSION
 from ..security.redaction import (
@@ -1040,18 +1040,30 @@ def _decode_json_bundle(raw: bytes) -> SessionBundle:
     return parse_session_bundle(decoded)
 
 
+_EVENT_SOURCES: frozenset[EventSource] = frozenset({"runtime", "graph", "tool"})
+_SESSION_STATUSES: frozenset[SessionStatus] = frozenset({"idle", "running", "waiting", "completed", "failed", "interrupted"})
+
+
+def is_event_source(value: object) -> TypeIs[EventSource]:
+    """Whether an untrusted ``source`` token names one of the bundle event sources."""
+    return value in _EVENT_SOURCES
+
+
+def is_session_status(value: object) -> TypeIs[SessionStatus]:
+    """Whether an untrusted ``status`` token names one of the session statuses."""
+    return value in _SESSION_STATUSES
+
+
 def _validate_event_source(value: str) -> EventSource:
-    allowed: set[str] = {"runtime", "graph", "tool"}
-    if value not in allowed:
-        raise SessionBundleError(f"unknown event source {value!r}; expected one of {sorted(allowed)}")
-    return cast(EventSource, value)
+    if not is_event_source(value):
+        raise SessionBundleError(f"unknown event source {value!r}; expected one of {sorted(_EVENT_SOURCES)}")
+    return value
 
 
 def _validate_session_status(value: str) -> SessionStatus:
-    allowed: set[str] = {"idle", "running", "waiting", "completed", "failed", "interrupted"}
-    if value not in allowed:
-        raise SessionBundleError(f"unknown session status {value!r}; expected one of {sorted(allowed)}")
-    return cast(SessionStatus, value)
+    if not is_session_status(value):
+        raise SessionBundleError(f"unknown session status {value!r}; expected one of {sorted(_SESSION_STATUSES)}")
+    return value
 
 
 def _events_from_session_payload(
