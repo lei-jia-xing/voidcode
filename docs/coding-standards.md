@@ -20,7 +20,9 @@ VoidCode 当前更重视代码的清晰性、小规模变更以及可重复的�
 
 ## cast 与 fallback
 
-- `cast` 只在**命名边界**上使用，并在代码里写明边界：JSON/HTTP 解码（`json.loads` → `dict[str, object]`）、第三方 SDK 桩（`Any` kwargs、`Omit` 哨兵、联合返回）、无类型动态查找（ASGI `Scope`、`__dict__` monkeypatch）、pydantic `errors()` 字典。
+- `cast` 只在**命名边界**上使用，并在代码里写明边界：JSON/HTTP 解码（`json.loads` → `dict[str, object]`）、第三方 SDK 桩（`Any` kwargs、`Omit` 哨兵、联合返回）、无类型动态查找（ASGI `Scope`、`__dict__` monkeypatch）、pydantic `errors()` 字典、**持久化/解码读取**（SQLite `sqlite3.Row` 的 `row["col"]`，以及已落盘 JSON blob 上对 `raw_*`/`payload`/`metadata`/`state` 的 `.get(...)`/`["..."]`）。
+- `runtime/storage/**` 约有 111 处这类 `cast`，因为行本身没有类型。**已知上限**：升级路径是每个表一个 `row → TypedDict` 解码函数，把 `cast` 收进解码处；本轮不做，避免动落盘契约。
+- fallback 判定已定案，不再重开：真正可选值上的 `is not None else`、带声明优先级的来源合并、恒等映射（`.get(name, name)`）都合法；约 40 处"替换成具体值"的三元与 3 处契约键 `.get(k, default)` 候选是低风险保留。
 - 边界解析的范例是 `src/voidcode/provider/provider_table.py`：每个字段一种校验器（`_string_tuple` 形状），`Literal` 集合用 `TypeIs` 谓词收窄（`model_match.is_matcher`），而不是每个调用点一个 `cast`；容器边界处的 `cast(dict[str, object], ...)` 用来阻止 `Any` 向下游扩散。
 - 可选性用 `T | None` 表达并由消费方显式处理；契约要求的值缺失就直接 `raise`。请求体里"必填、但要有自己错误句"的字段用 `Field(default=None, validate_default=True)` + before 校验器，而不是 `T | None` 加路由处 `cast(T, ...)`。
 - fallback 只在**带声明优先级的来源合并**时合法：discovered 拥有 X，shipped 只填未设置的 Y（范例 `src/voidcode/provider/registry.py` 的 `ModelProviderRegistry.model_metadata_for_model`），合并处写清谁优先；`.get(name, name)` 这类恒等映射同样合法。

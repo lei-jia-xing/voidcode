@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
@@ -91,18 +92,30 @@ def _scrub_text(value: str) -> str:
     )
 
 
+def _bounded_redacted_mapping(value: Mapping[str, object]) -> dict[str, object]:
+    """The bounded, redacted copy of one top-level mapping: a mapping in, a mapping out.
+
+    ``_bounded_redacted`` returns ``object`` (it also bounds lists, passes scalars
+    through, and replaces a value under a secret key with ``_REDACTED``), so a
+    caller holding a mapping would otherwise have to cast the result back. The
+    walk stays in one place: this is its mapping arm, reached only when the
+    caller's own key is not a secret.
+    """
+    result: dict[str, object] = {}
+    for index, (raw_key, item) in enumerate(value.items()):
+        if index >= _PERSISTED_DICT_LIMIT:
+            result["__truncated__"] = True
+            break
+        item_key = str(raw_key)
+        result[item_key] = _bounded_redacted(item, key=item_key)
+    return result
+
+
 def _bounded_redacted(value: object, *, key: str | None = None) -> object:
     if key is not None and (_looks_secret_key(key) or key.lower() in _REDACTED_ENV_VALUE_KEYS):
         return _REDACTED
     if isinstance(value, dict):
-        result: dict[str, object] = {}
-        for index, (raw_key, item) in enumerate(value.items()):
-            if index >= _PERSISTED_DICT_LIMIT:
-                result["__truncated__"] = True
-                break
-            item_key = str(raw_key)
-            result[item_key] = _bounded_redacted(item, key=item_key)
-        return result
+        return _bounded_redacted_mapping(value)
     if isinstance(value, list):
         result = [_bounded_redacted(item) for item in value[:_PERSISTED_LIST_LIMIT]]
         if len(value) > _PERSISTED_LIST_LIMIT:
@@ -149,10 +162,11 @@ def _policy_observations(events: tuple[EventEnvelope, ...]) -> dict[str, object]
     for event in events:
         event_type = event.event_type
         payload = event.payload
-        if payload.get("kind") == "runtime_tool_policy_denied" and isinstance(payload.get("tool_policy"), dict):
+        raw_tool_policy = payload.get("tool_policy")
+        if payload.get("kind") == "runtime_tool_policy_denied" and isinstance(raw_tool_policy, dict):
             tool_policy_denial = {
                 "event_sequence": event.sequence,
-                **cast(dict[str, object], _bounded_redacted(payload["tool_policy"])),
+                **_bounded_redacted_mapping(raw_tool_policy),
             }
         if payload.get("policy_surface") == "shell_policy":
             shell_policy_events.append(
@@ -196,7 +210,7 @@ def session_metadata_for_persistence(
     bloat in the sessions row.
     """
 
-    persisted = cast(dict[str, object], _bounded_redacted(metadata))
+    persisted = _bounded_redacted_mapping(metadata)
     persisted.pop("_prompt_activation_this_run", None)
     mode = runtime_mode_from_metadata(persisted)
     read_only = runtime_read_only_from_metadata(persisted)

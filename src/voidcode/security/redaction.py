@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Final
 
 #: Canonical placeholder for redacted secret text/values.
@@ -75,18 +76,28 @@ def redact_text(value: str, *, placeholder: str = REDACTED_PLACEHOLDER) -> str:
     return redacted
 
 
+def redact_mapping(value: Mapping[str, object], *, placeholder: str = REDACTED_PLACEHOLDER) -> dict[str, object]:
+    """The redacted copy of one mapping: a mapping in, a mapping out.
+
+    ``redact_value`` returns ``object`` because it also redacts strings and walks
+    lists and tuples; the mapping arm is this one function, so a caller holding a
+    mapping never has to cast the walk's result back.
+    """
+    result: dict[str, object] = {}
+    for raw_key, raw_item in value.items():
+        key = str(raw_key)
+        if is_sensitive_key(key):
+            result[key] = placeholder
+        else:
+            result[key] = redact_value(raw_item, placeholder=placeholder)
+    return result
+
+
 def redact_value(value: object, *, placeholder: str = REDACTED_PLACEHOLDER) -> object:
     if isinstance(value, str):
         return redact_text(value, placeholder=placeholder)
     if isinstance(value, dict):
-        result: dict[str, object] = {}
-        for raw_key, raw_item in value.items():
-            key = str(raw_key)
-            if is_sensitive_key(key):
-                result[key] = placeholder
-            else:
-                result[key] = redact_value(raw_item, placeholder=placeholder)
-        return result
+        return redact_mapping(value, placeholder=placeholder)
     if isinstance(value, list):
         return [redact_value(item, placeholder=placeholder) for item in value]
     if isinstance(value, tuple):
@@ -117,6 +128,7 @@ __all__ = [
     "TOOL_OUTPUT_BYTES",
     "TOOL_OUTPUT_LINES",
     "is_sensitive_key",
+    "redact_mapping",
     "redact_text",
     "redact_value",
     "truncate",

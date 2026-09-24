@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -95,17 +96,23 @@ def _bounded_background_hook_value(value: object, *, depth: int = 0) -> object:
     if depth >= 3:
         return "<bounded>"
     if isinstance(value, dict):
-        return {
-            str(key)[:128]: _bounded_background_hook_value(item, depth=depth + 1)
-            for key, item in list(value.items())[:_BACKGROUND_HOOK_COLLECTION_LIMIT]
-        }
+        return _bounded_background_hook_mapping(value, depth=depth)
     if isinstance(value, list | tuple):
         return [_bounded_background_hook_value(item, depth=depth + 1) for item in list(value)[:_BACKGROUND_HOOK_COLLECTION_LIMIT]]
     return _bounded_background_hook_value(str(value), depth=depth + 1)
 
 
-def _bounded_background_hook_payload(payload: dict[str, object]) -> dict[str, object]:
-    return cast(dict[str, object], _bounded_background_hook_value(payload))
+def _bounded_background_hook_mapping(value: Mapping[str, object], *, depth: int = 0) -> dict[str, object]:
+    """The bounded copy of one hook-event mapping: a mapping in, a mapping out.
+
+    ``_bounded_background_hook_value`` returns ``object`` (it also bounds lists,
+    passes scalars through and replaces anything past the depth limit with
+    ``"<bounded>"``), so a caller holding a mapping would otherwise have to cast
+    the walk's result back. The walk stays in one place: this is its mapping arm.
+    """
+    return {
+        str(key)[:128]: _bounded_background_hook_value(item, depth=depth + 1) for key, item in list(value.items())[:_BACKGROUND_HOOK_COLLECTION_LIMIT]
+    }
 
 
 def _background_hook_execution_identity(
@@ -2792,7 +2799,7 @@ class RuntimeBackgroundTaskSupervisor:
                 (
                     event.event_type,
                     "runtime",
-                    _bounded_background_hook_payload(event.payload),
+                    _bounded_background_hook_mapping(event.payload),
                     f"runtime-hook:{execution_identity}:{index}",
                 )
                 for index, event in enumerate(outcome.events)

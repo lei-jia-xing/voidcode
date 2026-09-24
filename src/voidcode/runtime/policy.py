@@ -347,7 +347,7 @@ def serialize_runtime_policy_config(config: object) -> dict[str, object] | None:
     if isinstance(config, RuntimePolicyConfig):
         return config.as_payload()
     if isinstance(config, dict):
-        return _json_safe_dict(config)
+        return _json_safe_mapping(config)
     return None
 
 
@@ -735,9 +735,19 @@ def _diagnostics(value: object) -> dict[str, object]:
     return diagnostics
 
 
+def _json_safe_mapping(value: Mapping[str, object]) -> dict[str, object]:
+    """The JSON-safe copy of one mapping: a mapping in, a mapping out.
+
+    ``_json_safe`` returns ``object`` because it also transforms lists, passes
+    scalars through and ``str()``-coerces anything else; the mapping arm is this
+    one function, so a caller holding a mapping reads the result directly.
+    """
+    return {str(key): _json_safe(item) for key, item in value.items()}
+
+
 def _json_safe(value: object) -> object:
     if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
+        return _json_safe_mapping(value)
     if isinstance(value, list):
         return [_json_safe(item) for item in value]
     if isinstance(value, tuple):
@@ -745,7 +755,3 @@ def _json_safe(value: object) -> object:
     if isinstance(value, str | int | float | bool) or value is None:
         return value
     return str(value)
-
-
-def _json_safe_dict(value: Mapping[str, object]) -> dict[str, object]:
-    return cast(dict[str, object], _json_safe(dict(value)))

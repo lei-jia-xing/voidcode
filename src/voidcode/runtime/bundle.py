@@ -39,8 +39,8 @@ from ..security.redaction import (
     REDACTED_PLACEHOLDER as SESSION_BUNDLE_REDACTED_PLACEHOLDER,
 )
 from ..security.redaction import (
+    redact_mapping,
     redact_text,
-    redact_value,
     truncate,
 )
 from ..tools.output import read_tool_output_artifact
@@ -331,10 +331,6 @@ def _diagnostics_payload(diagnostics: SessionBundleDiagnostics) -> dict[str, obj
     return payload
 
 
-def _redact_dict(value: dict[str, object]) -> dict[str, object]:
-    return cast(dict[str, object], redact_value(value))
-
-
 def _strip_deferred_bundle_diagnostics(value: object) -> object | None:
     if isinstance(value, dict):
         cleaned: dict[str, object] = {}
@@ -439,7 +435,7 @@ def _apply_payload_options(
     if not options.include_tool_output:
         cleaned = _truncate_tool_output_payload(cleaned, limit=options.tool_output_preview_chars)
     if options.redact:
-        cleaned = _redact_dict(cleaned)
+        cleaned = redact_mapping(cleaned)
     return cleaned
 
 
@@ -597,7 +593,7 @@ class _SessionBundleBuilder:
         diagnostics = cast(dict[str, object], cleaned)
         if not self._options.redact:
             return dict(diagnostics)
-        return _redact_dict(diagnostics)
+        return redact_mapping(diagnostics)
 
     def _collect_sessions(self, *, session_id: str) -> tuple[tuple[SessionBundleSessionPayload, ...], int]:
         primary = self._load_session_response(session_id=session_id)
