@@ -282,6 +282,9 @@ def _artifact_metadata(
     content: str,
     kind: str,
 ) -> dict[str, object]:
+    # Boundary: returned as a plain ``dict[str, object]`` because the runtime-owned
+    # ``BackgroundProcessState.stdout_artifact``/``stderr_artifact`` fields are typed
+    # that way, so callers that need ``artifact_id`` recover it with a cast.
     encoded = content.encode("utf-8")
     content_hash = hashlib.sha256(encoded).hexdigest()
     artifact_id = _artifact_id(
