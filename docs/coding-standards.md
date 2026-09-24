@@ -20,10 +20,12 @@ VoidCode 当前更重视代码的清晰性、小规模变更以及可重复的�
 
 ## cast 与 fallback
 
-- `cast` 只在**命名边界**上使用，并在代码里写明边界：JSON/HTTP 解码（`json.loads` → `dict[str, object]`）、第三方 SDK 桩（`Any` kwargs、`Omit` 哨兵、联合返回）、无类型动态查找（ASGI `Scope`、`__dict__` monkeypatch）、pydantic `errors()` 字典、**持久化/解码读取**（SQLite `sqlite3.Row` 的 `row["col"]`，以及已落盘 JSON blob 上对 `raw_*`/`payload`/`metadata`/`state` 的 `.get(...)`/`["..."]`）。
-- `runtime/storage/**` 有 110 处这类 `cast`，因为行本身没有类型。**已知上限**：升级路径是每个表一个 `row → TypedDict` 解码函数，把 `cast` 收进解码处；本轮不做，避免动落盘契约。
+- `cast` 只在**命名边界**上使用，并在代码里写明边界：JSON/HTTP 解码（`json.loads` → `dict[str, object]`）、SQLite 行解码（`runtime/storage/rows.py::decode_row`）、第三方 SDK 桩（`Any` kwargs、`Omit` 哨兵、联合返回）、无类型动态查找（ASGI `Scope`、`__dict__` monkeypatch）、pydantic `errors()` 字典、已落盘 JSON blob 上对 `raw_*`/`payload`/`metadata`/`state` 的 `.get(...)`/`["..."]`，以及 CLI 参数边界（四个命令模块统一 `click.Choice(...)` 收窄并在调用点注明边界，不在路由处 `cast`）。
+- 计数（`src/voidcode` + `scripts` 全仓 `cast(`）：**518 → 447 → 107 → 100**。其中 `runtime/**`（除 `storage/`、`context/`）231 → 33 → 30，`runtime/storage/**` 110 → 20，`graph/`+`tools/`+`hook/`+`cli/`+`skills/`+`server.py`+`scripts/` 78 → 25 → 21。
+- 剩余 100 处即上面那几类边界本身，不再有过度防御：`json.loads`/落盘 payload 解码、经 `decode_row` 的 SQLite 行解码、第三方 SDK 桩、无类型动态查找、pydantic `errors()`、CLI `click.Choice` 边界。
+- **已关闭的上限（不是遗忘）**：约 152 处对内部无类型 `dict[str, object]` 状态的容器 `cast` 已按每个状态对象一个 `TypedDict` 消除（`_PlannedTurn`、`_StreamedToolCallState`、`HookPresetPayload` 等）；10 处对未校验 dict 的 TypedDict 断言已改为**构造即校验**——逐字段构造 + `TypeIs` 谓词收窄 literal/enum（范例 `provider_table.py`、`is_routing_mode`、`is_tool_intent_status`）。持久化/序列化状态仍是普通 `dict`（`TypedDict` 只用于内存态），不用 dataclass 取代。
+- **仍存在的上限**：`runtime/storage/**` 里 `decode_row` 之外仍按查询各留一套行形状，尚未合并为表级解码器（升级路径：每表一个 `row → TypedDict`）；个别结构适配 `cast`——`runtime/service.py` 的 `BackgroundProcessPersistence`（升级路径：拆出 Protocol）、`runtime/run_loop.py` 的 graph 请求 `context_window`（升级路径：graph 侧给该字段具体类型）。
 - fallback 判定已定案，不再重开：真正可选值上的 `is not None else`、带声明优先级的来源合并、恒等映射（`.get(name, name)`）都合法；约 40 处"替换成具体值"的三元与 3 处契约键 `.get(k, default)` 候选是低风险保留。
-- 其余已知上限（本轮明确接受，不是遗忘）：约 152 处对内部无类型 `dict[str, object]` 状态（graph/todo/hook/config 的 `state[...]`/`phase["tasks"]`/`preset[...]`）的容器 `cast`，升级路径是每个状态对象一个 TypedDict/dataclass；10 处 TypedDict 断言（`RuntimeRequestMetadataPayload` 等，指对**未校验** dict 的断言，不含对已验证 payload 的 `dict → TypedDict` 转换），升级路径是 TypedDict 构造/校验；以及少数 literal/enum 形状的站点，各自需要一个契约决定（持久化 token 的校验、CLI 参数边界）。
 - 读无类型 payload 时，只读用途优先标注 `Mapping[str, object]`：它表达的是**只读、协变的契约**（值类型更窄的 `dict[str, str]` 之类源仍可赋值），而不是类型检查器的硬性要求；源本身就是本地新建的 `dict` 时，直接写 `dict[str, object]`。
 - 边界解析的范例是 `src/voidcode/provider/provider_table.py`：每个字段一种校验器（`_string_tuple` 形状），`Literal` 集合用 `TypeIs` 谓词收窄（`model_match.is_matcher`），而不是每个调用点一个 `cast`；容器边界处的 `cast(dict[str, object], ...)` 用来阻止 `Any` 向下游扩散。
 - 可选性用 `T | None` 表达并由消费方显式处理；契约要求的值缺失就直接 `raise`。请求体里"必填、但要有自己错误句"的字段用 `Field(default=None, validate_default=True)` + before 校验器，而不是 `T | None` 加路由处 `cast(T, ...)`。
