@@ -3,7 +3,9 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from time import sleep, time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
+
+from .rows import SessionIdRow, TaskIdRow, decode_row, fetch_rows
 
 if TYPE_CHECKING:
     from .shared import _StorageMixinBase
@@ -152,7 +154,7 @@ class _DiagnosticsStorageMixin(_MixinBase):
     @staticmethod
     def _pragma_scalar(*, connection: sqlite3.Connection, name: str) -> object:
         row = connection.execute(f"PRAGMA {name}").fetchone()
-        return None if row is None else cast(object, row[0])
+        return None if row is None else row[0]
 
     @staticmethod
     def _wal_checkpoint(*, connection: sqlite3.Connection, mode: str) -> dict[str, int]:
@@ -186,13 +188,11 @@ class _DiagnosticsStorageMixin(_MixinBase):
             for table in scoped_tables
         }
         session_ids = tuple(
-            cast(str, row["session_id"])
-            for row in cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    "SELECT session_id FROM sessions WHERE workspace_id = ?",
-                    (str(workspace),),
-                ).fetchall(),
+            decode_row(row, SessionIdRow)["session_id"]
+            for row in fetch_rows(
+                connection,
+                "SELECT session_id FROM sessions WHERE workspace_id = ?",
+                (str(workspace),),
             )
         )
         counts["session_events"] = self._count_for_ids(
@@ -225,6 +225,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
         ).fetchone()
         if row is None:
             return {"pending_approvals": 0, "pending_questions": 0}
+        # ``SUM`` over zero matching rows is NULL (unlike ``COUNT``), so the
+        # ``or 0`` is the empty-workspace value, not a hidden error.
         return {
             "pending_approvals": int(row[0] or 0),
             "pending_questions": int(row[1] or 0),
@@ -295,7 +297,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
                 ")"
             )
             parameters.extend([str(workspace), keep_sessions])
-        rows = connection.execute(
+        rows = fetch_rows(
+            connection,
             f"""
             SELECT session_id
             FROM sessions
@@ -305,8 +308,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
             ORDER BY updated_at ASC, session_id ASC
             """,
             tuple(parameters),
-        ).fetchall()
-        return tuple(cast(str, row["session_id"]) for row in cast(list[sqlite3.Row], rows))
+        )
+        return tuple(decode_row(row, SessionIdRow)["session_id"] for row in rows)
 
     @staticmethod
     def _retained_background_task_session_ids(
@@ -321,7 +324,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
             pruned_placeholders = ", ".join("?" for _ in pruned_task_ids)
             pruned_clause = f"AND task_id NOT IN ({pruned_placeholders})"
             parameters.extend(pruned_task_ids)
-        rows = connection.execute(
+        rows = fetch_rows(
+            connection,
             f"""
             SELECT DISTINCT session_id
             FROM background_tasks
@@ -330,8 +334,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
               {pruned_clause}
             """,
             tuple(parameters),
-        ).fetchall()
-        return tuple(cast(str, row["session_id"]) for row in cast(list[sqlite3.Row], rows))
+        )
+        return tuple(decode_row(row, SessionIdRow)["session_id"] for row in rows)
 
     @staticmethod
     def _prunable_background_task_ids(
@@ -360,7 +364,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
                 ")"
             )
             parameters.extend([str(workspace), keep_background_tasks])
-        rows = connection.execute(
+        rows = fetch_rows(
+            connection,
             f"""
             SELECT task_id
             FROM background_tasks
@@ -369,8 +374,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
             ORDER BY updated_at ASC, task_id ASC
             """,
             tuple(parameters),
-        ).fetchall()
-        return tuple(cast(str, row["task_id"]) for row in cast(list[sqlite3.Row], rows))
+        )
+        return tuple(decode_row(row, TaskIdRow)["task_id"] for row in rows)
 
     def _auto_prune_sessions(
         self,
@@ -388,10 +393,9 @@ class _DiagnosticsStorageMixin(_MixinBase):
             workspace=workspace,
             pruned_task_ids=(),
         )
-        age_rows = cast(
-            list[sqlite3.Row],
-            connection.execute(
-                """
+        age_rows = fetch_rows(
+            connection,
+            """
                 SELECT session_id FROM sessions
                 WHERE workspace_id = ?
                   AND status IN ('completed', 'failed')
@@ -399,11 +403,12 @@ class _DiagnosticsStorageMixin(_MixinBase):
                   AND created_at_unix_ms < ?
                 ORDER BY created_at_unix_ms ASC, session_id ASC
                 """,
-                (str(workspace), age_cutoff_ms),
-            ).fetchall(),
+            (str(workspace), age_cutoff_ms),
         )
         age_ids = tuple(
-            session_id for session_id in (cast(str, row["session_id"]) for row in age_rows) if session_id not in protected_task_session_ids
+            session_id
+            for session_id in (decode_row(row, SessionIdRow)["session_id"] for row in age_rows)
+            if session_id not in protected_task_session_ids
         )
 
         count_ids = self._prunable_session_ids(
@@ -481,7 +486,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
             protected_placeholders = ", ".join("?" for _ in protected_session_ids)
             protected_clause = f"AND session_id NOT IN ({protected_placeholders})"
             parameters.extend(protected_session_ids)
-        rows = connection.execute(
+        rows = fetch_rows(
+            connection,
             f"""
             SELECT session_id
             FROM sessions
@@ -507,8 +513,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
             ORDER BY updated_at ASC, session_id ASC
             """,
             tuple(parameters),
-        ).fetchall()
-        return tuple(cast(str, row["session_id"]) for row in cast(list[sqlite3.Row], rows))
+        )
+        return tuple(decode_row(row, SessionIdRow)["session_id"] for row in rows)
 
     @staticmethod
     def _orphaned_terminal_background_task_ids(
@@ -525,7 +531,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
         requires ``session_id``), so they are safe to prune; a terminal parent
         (or missing parent) guarantees no future dispatch can own them.
         """
-        rows = connection.execute(
+        rows = fetch_rows(
+            connection,
             """
             SELECT task_id
             FROM background_tasks
@@ -544,5 +551,5 @@ class _DiagnosticsStorageMixin(_MixinBase):
             ORDER BY updated_at ASC, task_id ASC
             """,
             (str(workspace),),
-        ).fetchall()
-        return tuple(cast(str, row["task_id"]) for row in cast(list[sqlite3.Row], rows))
+        )
+        return tuple(decode_row(row, TaskIdRow)["task_id"] for row in rows)

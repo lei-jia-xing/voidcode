@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from time import sleep, time
-from typing import Final, Literal, NoReturn, Protocol, cast, final, runtime_checkable
+from typing import Final, Literal, NoReturn, Protocol, final, runtime_checkable
 
 from ..background.models import (
     BackgroundTaskState,
@@ -40,6 +40,16 @@ from .diagnostics import _DiagnosticsStorageMixin
 from .effectiveness import _EffectivenessStorageMixin
 from .resume import _ResumeStorageMixin
 from .revert import _RevertStorageMixin
+from .rows import (
+    IndexInfoRow,
+    IndexListRow,
+    SqliteMasterNameRow,
+    StorageSequenceValueRow,
+    TableInfoRow,
+    decode_row,
+    fetch_row,
+    fetch_rows,
+)
 from .sessions import SessionEventsAfter, _SessionStorageMixin
 
 SCHEMA_VERSION: Final[int] = 1
@@ -819,11 +829,7 @@ class SqliteSessionStore(
     @classmethod
     def _assert_canonical_schema(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
         existing_tables = {
-            cast(str, row["name"])
-            for row in cast(
-                list[sqlite3.Row],
-                connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall(),
-            )
+            decode_row(row, SqliteMasterNameRow)["name"] for row in fetch_rows(connection, "SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         missing_tables = sorted(set(cls._CANONICAL_SCHEMA) - existing_tables)
         if missing_tables:
@@ -903,34 +909,16 @@ class SqliteSessionStore(
     @staticmethod
     def _table_columns(*, connection: sqlite3.Connection, table_name: str) -> tuple[tuple[str, str, int, str | None, int], ...]:
         return tuple(
-            (
-                cast(str, row["name"]),
-                cast(str, row["type"]),
-                cast(int, row["notnull"]),
-                cast(str | None, row["dflt_value"]),
-                cast(int, row["pk"]),
-            )
-            for row in cast(
-                list[sqlite3.Row],
-                connection.execute(f"PRAGMA table_info({table_name})").fetchall(),
-            )
+            (column["name"], column["type"], column["notnull"], column["dflt_value"], column["pk"])
+            for column in (decode_row(row, TableInfoRow) for row in fetch_rows(connection, f"PRAGMA table_info({table_name})"))
         )
 
     @staticmethod
     def _table_unique_indexes(*, connection: sqlite3.Connection, table_name: str) -> frozenset[tuple[str, ...]]:
         return frozenset(
-            tuple(
-                cast(str, column_row["name"])
-                for column_row in cast(
-                    list[sqlite3.Row],
-                    connection.execute(f"PRAGMA index_info({cast(str, index_row['name'])})").fetchall(),
-                )
-            )
-            for index_row in cast(
-                list[sqlite3.Row],
-                connection.execute(f"PRAGMA index_list({table_name})").fetchall(),
-            )
-            if cast(int, index_row["unique"]) == 1 and cast(str, index_row["origin"]) == "u"
+            tuple(decode_row(column_row, IndexInfoRow)["name"] for column_row in fetch_rows(connection, f"PRAGMA index_info({index['name']})"))
+            for index in (decode_row(row, IndexListRow) for row in fetch_rows(connection, f"PRAGMA index_list({table_name})"))
+            if index["unique"] == 1 and index["origin"] == "u"
         )
 
     @staticmethod
@@ -1023,21 +1011,19 @@ class SqliteSessionStore(
 
     @staticmethod
     def _next_sequence_value(*, connection: sqlite3.Connection, scope: str) -> int:
-        row = cast(
-            sqlite3.Row | None,
-            connection.execute(
-                """
+        row = fetch_row(
+            connection,
+            """
                 UPDATE storage_sequences
                 SET value = value + 1
                 WHERE scope = ?
                 RETURNING value
                 """,
-                (scope,),
-            ).fetchone(),
+            (scope,),
         )
         if row is None:
             raise RuntimeError(f"runtime storage sequence is missing: {scope}")
-        return cast(int, row["value"])
+        return decode_row(row, StorageSequenceValueRow)["value"]
 
     def _next_timestamp(self, *, connection: sqlite3.Connection) -> int:
         return self._next_sequence_value(connection=connection, scope="sessions")
