@@ -18,7 +18,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import cast
 
 from ..mcp import McpToolDescriptor, McpToolSafety
 from .config import RuntimeMcpServerConfig
@@ -75,27 +74,30 @@ def _optional_bool_or_none(payload: Mapping[str, object], key: str) -> bool | No
 def _descriptor_from_payload(server_name: str, payload: object) -> McpToolDescriptor | None:
     if not isinstance(payload, dict):
         return None
-    entry = cast(dict[str, object], payload)
+    entry: Mapping[str, object] = payload
     tool_name = entry.get("name")
     input_schema = entry.get("input_schema")
     if not isinstance(tool_name, str) or not tool_name or not isinstance(input_schema, dict):
         return None
     raw_safety = entry.get("safety")
-    safety_payload = cast(dict[str, object], raw_safety) if isinstance(raw_safety, dict) else {}
+    safety_payload: Mapping[str, object] = raw_safety if isinstance(raw_safety, dict) else {}
+    raw_description = entry.get("description")
+    raw_disabled_reason = entry.get("disabled_reason")
+    raw_source = safety_payload.get("source")
     return McpToolDescriptor(
         server_name=server_name,
         tool_name=tool_name,
-        description=cast(str, entry.get("description")) if isinstance(entry.get("description"), str) else "",
-        input_schema=cast(dict[str, object], input_schema),
+        description=raw_description if isinstance(raw_description, str) else "",
+        input_schema=input_schema,
         safety=McpToolSafety(
             read_only=safety_payload.get("read_only") is True,
             destructive=_optional_bool_or_none(safety_payload, "destructive"),
             idempotent=_optional_bool_or_none(safety_payload, "idempotent"),
             open_world=_optional_bool_or_none(safety_payload, "open_world"),
-            source=(cast(str, safety_payload["source"]) if isinstance(safety_payload.get("source"), str) else "default-deny"),
+            source=raw_source if isinstance(raw_source, str) else "default-deny",
         ),
         enabled=entry.get("enabled") is not False,
-        disabled_reason=cast(str, entry["disabled_reason"]) if isinstance(entry.get("disabled_reason"), str) else None,
+        disabled_reason=raw_disabled_reason if isinstance(raw_disabled_reason, str) else None,
     )
 
 
@@ -143,7 +145,7 @@ class McpToolCatalogCache:
             return {}
         if not isinstance(raw_payload, dict):
             return {}
-        payload = cast(dict[str, object], raw_payload)
+        payload: Mapping[str, object] = raw_payload
         if payload.get("version") != CACHE_VERSION:
             return {}
         raw_servers = payload.get("servers")
@@ -155,15 +157,13 @@ class McpToolCatalogCache:
         for raw_name, raw_entry in server_entries.items():
             if not isinstance(raw_name, str) or not raw_name or not isinstance(raw_entry, dict):
                 continue
-            entry = cast(dict[str, object], raw_entry)
+            entry: Mapping[str, object] = raw_entry
             identity = entry.get("identity")
             raw_tools = entry.get("tools")
             if not isinstance(identity, str) or not identity or not isinstance(raw_tools, list):
                 continue
             descriptors = tuple(
-                descriptor
-                for descriptor in (_descriptor_from_payload(raw_name, tool) for tool in cast(list[object], raw_tools))
-                if descriptor is not None
+                descriptor for descriptor in (_descriptor_from_payload(raw_name, tool) for tool in raw_tools) if descriptor is not None
             )
             entries[raw_name] = (identity, descriptors)
         return entries

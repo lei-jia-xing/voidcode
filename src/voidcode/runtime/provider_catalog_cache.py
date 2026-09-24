@@ -4,13 +4,18 @@ import json
 import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, TypeIs
 
 from ..provider.model_catalog import ProviderModelCatalog
 from ..provider.registry import ModelProviderRegistry
 from .provider_metadata import catalog_metadata_from_payload
 
 logger = logging.getLogger(__name__)
+
+
+def is_provider_discovery_mode(value: object) -> TypeIs[Literal["configured_base_url", "disabled", "unavailable"]]:
+    """Whether a persisted ``discovery_mode`` token names one of the catalog discovery modes."""
+    return value in ("configured_base_url", "disabled", "unavailable")
 
 
 class RuntimeProviderCatalogCache:
@@ -30,7 +35,8 @@ class RuntimeProviderCatalogCache:
             return
         if not isinstance(raw_payload, dict):
             return
-        raw_providers = cast(dict[str, object], raw_payload).get("providers")
+        payload: Mapping[str, object] = raw_payload
+        raw_providers = payload.get("providers")
         if not isinstance(raw_providers, dict):
             return
 
@@ -41,44 +47,31 @@ class RuntimeProviderCatalogCache:
                 continue
             if not isinstance(raw_catalog, dict):
                 continue
-            catalog_payload = cast(dict[str, object], raw_catalog)
+            catalog_payload: Mapping[str, object] = raw_catalog
             raw_models = catalog_payload.get("models", [])
             if not isinstance(raw_models, list):
                 continue
-            models = tuple(raw_model for raw_model in cast(list[object], raw_models) if isinstance(raw_model, str) and raw_model)
+            models = tuple(raw_model for raw_model in raw_models if isinstance(raw_model, str) and raw_model)
             raw_metadata = catalog_payload.get("model_metadata", {})
             metadata_payloads: Mapping[str, object] = raw_metadata if isinstance(raw_metadata, dict) else {}
             model_metadata = {
-                model: catalog_metadata_from_payload(payload)
-                for model, raw_payload in metadata_payloads.items()
-                if isinstance(model, str) and isinstance(raw_payload, dict)
-                for payload in (cast(dict[str, object], raw_payload),)
+                model: catalog_metadata_from_payload(raw_entry)
+                for model, raw_entry in metadata_payloads.items()
+                if isinstance(model, str) and isinstance(raw_entry, dict)
             }
             raw_discovery_mode = catalog_payload.get("discovery_mode")
-            discovery_mode = (
-                cast(
-                    Literal[
-                        "configured_base_url",
-                        "disabled",
-                        "unavailable",
-                    ],
-                    raw_discovery_mode,
-                )
-                if raw_discovery_mode in {"configured_base_url", "disabled", "unavailable"}
-                else "unavailable"
-            )
+            discovery_mode = raw_discovery_mode if is_provider_discovery_mode(raw_discovery_mode) else "unavailable"
+            raw_source = catalog_payload.get("source")
+            raw_last_refresh_status = catalog_payload.get("last_refresh_status")
+            raw_last_error = catalog_payload.get("last_error")
             hydrated[provider_name] = ProviderModelCatalog(
                 provider=provider_name,
                 models=models,
                 refreshed=bool(catalog_payload.get("refreshed", False)),
                 model_metadata=model_metadata,
-                source=(cast(str, catalog_payload["source"]) if isinstance(catalog_payload.get("source"), str) else "unknown"),
-                last_refresh_status=(
-                    cast(str, catalog_payload["last_refresh_status"])
-                    if isinstance(catalog_payload.get("last_refresh_status"), str)
-                    else "unavailable"
-                ),
-                last_error=(cast(str, catalog_payload["last_error"]) if isinstance(catalog_payload.get("last_error"), str) else None),
+                source=raw_source if isinstance(raw_source, str) else "unknown",
+                last_refresh_status=raw_last_refresh_status if isinstance(raw_last_refresh_status, str) else "unavailable",
+                last_error=raw_last_error if isinstance(raw_last_error, str) else None,
                 discovery_mode=discovery_mode,
             )
         catalog.update(hydrated)

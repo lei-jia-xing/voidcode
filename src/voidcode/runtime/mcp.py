@@ -27,7 +27,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
-from mcp.types import CallToolResult, Implementation, InitializeResult, ListToolsResult, Tool
+from mcp.types import CallToolResult, Implementation, ListToolsResult, Tool
 
 from ..mcp import (
     MCP_CLIENT_NAME,
@@ -108,7 +108,7 @@ def mcp_server_for_tool_name(tool_name: str, server_names: Iterable[str]) -> str
 def _validate_input_schema(raw_schema: object) -> dict[str, object]:
     if not isinstance(raw_schema, dict):
         raise ValueError("inputSchema must be a JSON object")
-    schema = dict(cast(dict[str, object], raw_schema))
+    schema = dict(raw_schema)
     schema_type = schema.get("type")
     if schema_type is not None and schema_type != "object":
         raise ValueError("inputSchema type must be 'object'")
@@ -116,8 +116,7 @@ def _validate_input_schema(raw_schema: object) -> dict[str, object]:
     if required is not None:
         if not isinstance(required, list):
             raise ValueError("inputSchema required must be an array of strings")
-        required_items = cast(list[object], required)
-        if not all(isinstance(item, str) for item in required_items):
+        if not all(isinstance(item, str) for item in required):
             raise ValueError("inputSchema required must be an array of strings")
     properties = schema.get("properties")
     if properties is not None and not isinstance(properties, dict):
@@ -180,8 +179,7 @@ def _validate_call_arguments_against_schema(
 ) -> None:
     required = input_schema.get("required")
     if isinstance(required, list):
-        required_items = cast(list[object], required)
-        required_names = [name for name in required_items if isinstance(name, str)]
+        required_names = [name for name in required if isinstance(name, str)]
         missing = [name for name in required_names if name not in arguments]
         if missing:
             joined = ", ".join(missing)
@@ -199,8 +197,7 @@ def _validate_call_arguments_against_schema(
             continue
         if not isinstance(raw_expected_schema, dict):
             continue
-        expected_schema = cast(dict[str, object], raw_expected_schema)
-        expected_type = expected_schema.get("type")
+        expected_type = raw_expected_schema.get("type")
         value = arguments[raw_key]
         if expected_type == "string" and not isinstance(value, str):
             raise ValueError(f"MCP[{tool_name}]: argument '{raw_key}' must be a string")
@@ -311,7 +308,10 @@ class _RunningMcpServer:
         session_context: AbstractContextManager[ClientSession],
         session: ClientSession,
         stderr_log: IO[str] | None,
-        initialize_result: InitializeResult,
+        # The SDK's initialize result is retained verbatim for diagnostics; the
+        # runtime never reads its fields, so it is stored as the opaque object
+        # the SDK session returned.
+        initialize_result: object,
         scope: Literal["runtime", "session"],
         owner_session_id: str | None,
         transport: Literal["stdio", "remote-http"] = "stdio",
@@ -747,16 +747,13 @@ class ManagedMcpManager:
                         command=[],
                         url=server_config.url,
                     )
-                initialize_result = cast(
-                    InitializeResult,
-                    self._call_sdk_session(
-                        session,
-                        stage="startup",
-                        method="initialize",
-                        server_name=server_name,
-                        workspace_root=workspace_root,
-                        operation=lambda session=session: session.initialize(),
-                    ),
+                initialize_result = self._call_sdk_session(
+                    session,
+                    stage="startup",
+                    method="initialize",
+                    server_name=server_name,
+                    workspace_root=workspace_root,
+                    operation=lambda session=session: session.initialize(),
                 )
             except FileNotFoundError as exc:
                 self._close_partial_server(

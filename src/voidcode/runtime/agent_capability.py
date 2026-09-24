@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import cast
+from collections.abc import Mapping
 
 from ..agent.models import AgentManifest
 from .background.routing import CALLABLE_SUBAGENT_PRESETS
@@ -36,10 +36,13 @@ def validate_agent_capability_snapshot(
         "runtime",
         "execution",
     )
+    sections: dict[str, Mapping[str, object]] = {}
     for field in object_fields:
-        if not isinstance(snapshot.get(field), dict):
+        value = snapshot.get(field)
+        if not isinstance(value, dict):
             raise AgentCapabilitySnapshotVersionError(f"agent_capability_snapshot v2 requires a {field} object")
-    tools = cast(dict[str, object], snapshot["tools"])
+        sections[field] = value
+    tools = sections["tools"]
     required_tool_fields = {
         "manifest_allowlist",
         "request_allowlist",
@@ -88,11 +91,11 @@ def agent_capability_prompt_snapshot(
     }
     raw_agent = runtime_config_payload.get("agent")
     if isinstance(raw_agent, dict):
-        raw_internal = cast(dict[str, object], raw_agent).get("runtime_internal")
+        raw_internal = raw_agent.get("runtime_internal")
         if isinstance(raw_internal, dict):
-            raw_materialization = cast(dict[str, object], raw_internal).get("prompt_materialization")
+            raw_materialization = raw_internal.get("prompt_materialization")
             if isinstance(raw_materialization, dict):
-                prompt["materialization"] = cast(dict[str, object], raw_materialization)
+                prompt["materialization"] = raw_materialization
     if "materialization" not in prompt and manifest is not None:
         materialization = manifest.prompt_materialization
         if materialization is not None:
@@ -133,16 +136,11 @@ def agent_capability_delegation_snapshot(
     raw_delegation = metadata.get("delegation")
     delegation = parse_delegation_metadata(raw_delegation) if raw_delegation is not None else {}
     selected_preset = delegation.get("selected_preset")
-    parent_delegation = (
-        cast(dict[str, object], parent_capability_snapshot.get("delegation"))
-        if parent_capability_snapshot is not None and isinstance(parent_capability_snapshot.get("delegation"), dict)
-        else {}
-    )
+    raw_parent_delegation = parent_capability_snapshot.get("delegation") if parent_capability_snapshot is not None else None
+    parent_delegation: Mapping[str, object] = raw_parent_delegation if isinstance(raw_parent_delegation, dict) else {}
     parent_allowed = parent_delegation.get("allowed_child_presets")
     allowed_parent_presets = (
-        tuple(item for item in cast(list[object], parent_allowed) if isinstance(item, str))
-        if isinstance(parent_allowed, list)
-        else CALLABLE_SUBAGENT_PRESETS
+        tuple(item for item in parent_allowed if isinstance(item, str)) if isinstance(parent_allowed, list) else CALLABLE_SUBAGENT_PRESETS
     )
     allowed_child_presets = [preset for preset in CALLABLE_SUBAGENT_PRESETS if preset in allowed_parent_presets]
     return {
