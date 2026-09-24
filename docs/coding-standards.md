@@ -21,8 +21,7 @@ VoidCode 当前更重视代码的清晰性、小规模变更以及可重复的�
 ## cast 与 fallback
 
 - `cast` 只在**命名边界**上使用，并在代码里写明边界：JSON/HTTP 解码（`json.loads` → `dict[str, object]`）、SQLite 行解码（`runtime/storage/rows.py::decode_row`）、第三方 SDK 桩（`Any` kwargs、`Omit` 哨兵、联合返回）、无类型动态查找（ASGI `Scope`、`__dict__` monkeypatch）、pydantic `errors()` 字典、已落盘 JSON blob 上对 `raw_*`/`payload`/`metadata`/`state` 的 `.get(...)`/`["..."]`，以及 CLI 参数边界（四个命令模块统一 `click.Choice(...)` 收窄并在调用点注明边界，不在路由处 `cast`）。
-- 计数（`src/voidcode` + `scripts` 全仓 `cast(`）：**518 → 447 → 107 → 100**。其中 `runtime/**`（除 `storage/`、`context/`）231 → 33 → 30，`runtime/storage/**` 110 → 20，`graph/`+`tools/`+`hook/`+`cli/`+`skills/`+`server.py`+`scripts/` 78 → 25 → 21。
-- 剩余 100 处即上面那几类边界本身，不再有过度防御：`json.loads`/落盘 payload 解码、经 `decode_row` 的 SQLite 行解码、第三方 SDK 桩、无类型动态查找、pydantic `errors()`、CLI `click.Choice` 边界。
+- 全仓（`src/voidcode` + `scripts`）`cast(` 约 100 处，全部落在上述命名边界，不再有过度防御。
 - **已关闭的上限（不是遗忘）**：约 152 处对内部无类型 `dict[str, object]` 状态的容器 `cast` 已按每个状态对象一个 `TypedDict` 消除（`_PlannedTurn`、`_StreamedToolCallState`、`HookPresetPayload` 等）；10 处对未校验 dict 的 TypedDict 断言已改为**构造即校验**——逐字段构造 + `TypeIs` 谓词收窄 literal/enum（范例 `provider_table.py`、`is_routing_mode`、`is_tool_intent_status`）。持久化/序列化状态仍是普通 `dict`（`TypedDict` 只用于内存态），不用 dataclass 取代。
 - **仍存在的上限**：`runtime/storage/**` 里 `decode_row` 之外仍按查询各留一套行形状，尚未合并为表级解码器（升级路径：每表一个 `row → TypedDict`）；个别结构适配 `cast`——`runtime/service.py` 的 `BackgroundProcessPersistence`（升级路径：拆出 Protocol）、`runtime/run_loop.py` 的 graph 请求 `context_window`（升级路径：graph 侧给该字段具体类型）。
 - fallback 判定已定案，不再重开：真正可选值上的 `is not None else`、带声明优先级的来源合并、恒等映射（`.get(name, name)`）都合法；约 40 处"替换成具体值"的三元与 3 处契约键 `.get(k, default)` 候选是低风险保留。

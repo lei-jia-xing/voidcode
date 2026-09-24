@@ -49,7 +49,7 @@ voidcode/
 | `ToolRegistry` | class | `src/voidcode/runtime/service.py` | current built-in tool registry |
 
 ## CONVENTIONS
-- Python is pinned to 3.13 only.
+- Python is pinned to 3.14 only.
 - Use `uv` for Python env/deps; `mise` only orchestrates tasks and `.venv` loading.
 - Repo-level verification is `mise run check`; it chains Python and frontend checks.
 - Pre-commit runs hygiene + Ruff + ty through `uv run`.
