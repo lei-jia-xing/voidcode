@@ -1272,11 +1272,7 @@ class InspectionCoordinator:
             return payload
         if capability.supported is False:
             payload["status"] = "unsupported"
-            payload["reason"] = (
-                "model_metadata_disallows_reasoning_effort"
-                if capability.source == "model_metadata"
-                else "provider_default_disallows_reasoning_effort"
-            )
+            payload["reason"] = "model_metadata_disallows_reasoning_effort"
             return payload
         if capability.supported is None:
             payload["status"] = "forwarded_unverified"

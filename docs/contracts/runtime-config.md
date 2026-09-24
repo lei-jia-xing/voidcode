@@ -82,7 +82,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 ```json
 {
   "workspace": "/workspace/project",
-  "model": "opencode/gpt-5.4",
+  "model": "opencode-zen/gpt-5.4",
   "approval_mode": "ask",
   "execution_engine": "provider",
   "hooks": {
@@ -119,7 +119,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
   },
   "agent": {
     "preset": "leader",
-    "model": "opencode/gpt-5.4",
+    "model": "opencode-zen/gpt-5.4",
     "execution_engine": "provider"
   },
   "lsp": {
@@ -146,7 +146,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `agent`：agent preset 的 runtime 消费入口。当前顶层 active run 仅使用 builtin `leader`（默认或显式选择）；runtime-owned delegation path 上的 child run 可执行 builtin child preset（包括只读 plan subagent `product`）或本地自定义 `mode: subagent` manifest。`product` 不能作为 top-level active agent。
 - `policy`：Runtime Harness Policy v1 配置入口，只能提供 schema-bounded narrowing/default intent；runtime hard denials、persisted snapshot、agent manifest 与 request/session 边界仍按固定优先级收口。
 - `agents`：按 agent preset 配置 model / fallback defaults。这里是“已发现 preset 的配置覆盖/别名入口”，不是 manifest 定义入口；内置 preset key 与已发现本地 manifest key 可省略 `preset`，其他 alias key 必须显式声明 `preset`。
-- `reasoning_effort`：可选的 runtime-owned reasoning-effort hint（例如 `low` / `medium` / `high`）。能力判定以 **model 自身** 的 catalog metadata（`supports_reasoning_effort` / `supported_effort_levels` / `default_reasoning_effort`）为准：model metadata 显式 `supports_reasoning_effort=false` 时 runtime 在请求早期 fail-fast；model metadata 缺省时才回退到 provider 级 allowlist（`provider_supports_reasoning_effort`，只对上游 API 不接受该字段的单上游 provider 返回 `False`）；两者都未知时按 best-effort 透传，并在 readiness 中标记为 `status="forwarded_unverified"`（`reason="model_capability_unknown"`），不静默当作已支持。多上游网关（`opencode-go`）不提供 provider 级结论：其目录覆盖的 model 由 model metadata 判定，目录没有的 model 一律透传并记录为 unverified。`supported_effort_levels` 同时决定 clamp：转发前会向下对齐到该 model 真实支持的档位。
+- `reasoning_effort`：可选的 runtime-owned reasoning-effort hint（例如 `low` / `medium` / `high`）。能力判定**只**以 model 自身的 catalog metadata（`supports_reasoning_effort` / `supported_effort_levels` / `default_reasoning_effort`）为准，没有 provider 级判定：model metadata 显式 `supports_reasoning_effort=false` 时 runtime 在请求早期 fail-fast，显式 `true` 时通过；metadata 缺省的 model 一律按 best-effort 透传，并在 readiness 中标记为 `status="forwarded_unverified"`（`reason="model_capability_unknown"`），不静默当作已支持。这条判定对所有 provider（含多上游网关 `opencode-go`）一致：model metadata 是唯一权威，provider 名不再参与能力结论。`supported_effort_levels` 同时决定 clamp：转发前会向下对齐到该 model 真实支持的档位。`off` 是「关闭推理」的请求状态而不是 ladder 档位：它仍是 CLI / config / frontend 接受的输入，转发形态由 `provider/thinking_rules.json` 中该 provider/model 行的 `disable_mode` 数据解析（实现见 `src/voidcode/provider/reasoning_effort.py::disabled_reasoning_kwargs`）。
 
 ### Execution engine 生命周期决策
 
@@ -197,7 +197,9 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `context_window.default_tool_result_chars`：单个 tool result provider payload 的明确字符 hard cap；默认 `6000`，`null` 表示不截断单个结果
 - `context_window.per_tool_result_chars`：对象，按 tool name 覆盖单个结果字符 hard cap
 - provider context 不再使用 whole-context token budget 或 `chars/4` 估算丢弃历史；没有 provider usage 时，完整历史交给 provider，由 provider context-limit error/runtime recovery 处理
+- compaction 的窗口由随包 catalog 提供：`max_input_tokens`（无上游 `limit.input` 时由 `context_window - max_output_tokens` 派生）优先，否则 `context_window`；调用方显式提供的 `context_window` / `threshold_*` / `reserve_tokens` 仍然优先于它，catalog 未描述的 model 则让 compaction 保持 unsized
 - token usage 只来自 provider response/terminal stream，并保留 `None`（未报告）与 `0`（观测到零）的区别；它是后验 turn usage，不是下一轮 transcript 余额
+- `provider_usage.latest.cost_usd` / `provider_usage.cumulative.cost_usd`：USD 金额，由该 turn 自己的 usage 与 catalog 的扁平 `cost_per_*` 费率（加可选的 long-context 政策 tier）在 graph 中计算一次，写入 `latest` 并累加到 `cumulative`；token 桶保持整数、金额是 float，持久化的 usage 不会被重新计价。前端在 composer 的上下文行显示 `cumulative.cost_usd`（`$1.50 spent`），未定价的 model 整个省略而不是显示 `$0.00`
 - `lsp.enabled`：布尔值；默认 `true`（未声明即开启，显式 `false` 关闭；未配置 `servers` 时不启动任何 server 进程）
 - `lsp.servers`：对象
 
@@ -221,12 +223,13 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `mcp.servers`：对象；未声明时（默认开启状态下）自动装载内置远程 MCP descriptors：`context7`、`websearch`、`grep_app`（均为 remote-http，不 spawn 本地进程；skill-scoped 的 `playwright` 不参与默认装载）
 - `fallback_models`：顶层配置中的 provider fallback 入口；它以当前顶层 `model` 作为 preferred model，并指定有序 fallback chain
 - `provider_fallback`：runtime 内部解析后的 fallback chain 对象，不是 `.voidcode.json` 的独立公共字段
-- provider 凭据环境变量可用于 first-run discovery：设置 `VOIDCODE_MODEL=opencode-go/<model>` 与 `OPENCODE_API_KEY` 时，即使 `.voidcode.json` 没有 `providers.opencode-go` block，runtime 也会构造最小 OpenCode Go provider 配置。该 discovery 也覆盖现有标准变量：`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GOOGLE_API_KEY`、`GITHUB_COPILOT_TOKEN`、`ENDPOINT_API_KEY`、`OPENROUTER_API_KEY`、`DEEPSEEK_API_KEY`、`ZAI_API_KEY`、`ZHIPU_API_KEY`、`XAI_API_KEY`、`MINIMAX_API_KEY`、`KIMI_API_KEY`、`DASHSCOPE_API_KEY`、`GROQ_API_KEY`、`TOGETHER_API_KEY`、`FIREWORKS_API_KEY` 与 `MISTRAL_API_KEY`。这些值只进入运行时配置对象；`config show` 与 persisted runtime metadata 不会输出 secret。
+- provider 凭据环境变量可用于 first-run discovery：设置 `VOIDCODE_MODEL=opencode-go/<model>` 与 `OPENCODE_API_KEY` 时，即使 `.voidcode.json` 没有 `providers.opencode-go` block，runtime 也会构造最小 OpenCode Go provider 配置。该 discovery 也覆盖现有标准变量：`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GOOGLE_API_KEY`、`GITHUB_COPILOT_TOKEN`、`ENDPOINT_API_KEY`、`OPENROUTER_API_KEY`、`DEEPSEEK_API_KEY`、`ZAI_API_KEY`、`ZHIPU_API_KEY`、`XAI_API_KEY`、`MINIMAX_API_KEY`、`MOONSHOT_API_KEY`、`KIMI_API_KEY`、`DASHSCOPE_API_KEY`、`GROQ_API_KEY`、`TOGETHER_API_KEY`、`FIREWORKS_API_KEY` 与 `MISTRAL_API_KEY`，以及 W6 新增 vendor 的 `AIAND_API_KEY`、`ALIBABA_TOKEN_PLAN_API_KEY`、`BASETEN_API_KEY`、`CLINE_API_KEY`、`COREWEAVE_API_KEY`（回退 `WANDB_API_KEY`）、`GMI_API_KEY`（回退 `GMICLOUD_API_KEY`）、`HUGGINGFACE_HUB_TOKEN`（回退 `HF_TOKEN`）、`KILO_API_KEY`、`NOVITA_API_KEY`、`NVIDIA_API_KEY`、`VENICE_API_KEY`、`WAFER_SERVERLESS_API_KEY`（回退 `WAFER_API_KEY`）、`XIAOMI_API_KEY`、`XIAOMI_TOKEN_PLAN_AMS_API_KEY` / `XIAOMI_TOKEN_PLAN_CN_API_KEY` / `XIAOMI_TOKEN_PLAN_SGP_API_KEY`（均回退 `XIAOMI_API_KEY`）与 `ZENMUX_API_KEY`；完整且权威的映射是 `provider/provider_table.json` 的 `env_vars`。这些值只进入运行时配置对象；`config show` 与 persisted runtime metadata 不会输出 s…
 - provider 命名只有一套语义：机器标识是小写 vendor id（`minimax`，用于 registry key、`providers.<id>`、`provider/model` 前缀、`<ID>_API_KEY`、catalog key 与 `/api/providers` 的 `name`），人类标签由 `provider/naming.py` 单一来源给出（`MiniMax`，用于 `/api/providers` 的 `label`、`provider inspect` 与 `doctor` 的 provider 行）。配置与 CLI/HTTP 输入（`provider/model`、`providers.<id>`、web settings save、`providers.custom.<name>`）按 trim + 小写归一后再匹配，写回配置时使用 canonical id。既非内置 id、也未在 `providers.custom.<name>` 声明的 provider id 会明确报错并列出全部 canonical id 与声明方式，不再静默回退到 `providers.endpoint`；需要通用 OpenAI-compatible 网关时使用内置 `endpoint` id 或声明自定义 provider。`provider/model` 的 model 段保持原样发往上游，catalog/能力表/fallback 链比较忽略大小写，vendor 的大小写差异用 `model_map` 表达。
 - provider endpoint 解析是 per-provider 的：`providers.<name>.base_url` 优先，其次才是该 provider 自身的默认 host；某个 provider 的配置缺失不会让请求回落到另一个 vendor 的 endpoint（包括 `api.openai.com`）。配置 block 完全缺失时按同一默认 host 解析；模型列表从解析出的 `base_url` 推导，没有独立的 discovery URL 配置项。`providers.google` 使用 `service_account` auth 时不产生 discovery 可用的凭据，因此该模式下 discovery 记为禁用。
 - 既没有配置 `base_url`、自身也没有默认 host 的 provider 会以 `not_configured` provider error 失败（不可重试、允许 fallback），而非静默借用其它 host。
+- 一次 usage/limit（HTTP 429 或 402，kind `rate_limit`）turn 不进 provider 内联重试 lane：runtime 为该运行武装了 rate-limit lane（后台任务）时延后重试（按 `retry_after` 等待，`ProviderTerminalDecision(kind="background_rate_limit_retry")`），否则交给 fallback 链的下一个 provider；`decide_provider_error_policy` 对 `rate_limit` 有独立分支，永远不会返回 `ProviderTransientRetryDecision`（`provider/README.md` → 「错误边界」）。
 - `voidcode provider inspect <provider>` 的 payload 包含 `endpoint.base_url`（wire 实际使用、已按 transport 规则归一化的基础 URL）与 `endpoint.source`（`config` / `provider_default` / `endpoint_default`）。
-- `providers.opencode` / `providers.opencode-go` 是「一个 host、多种 wire」的网关：实际 wire 由模型决定，不由 provider 名决定；routing 表以 `provider/opencode.py` / `provider/opencode_go.py` 中的常量为准。默认路由是 OpenAI-compatible chat-completions（`opencode-go` 的默认 base URL 归一化为 `https://opencode.ai/zen/go/v1`，Zen 为 `https://opencode.ai/zen/v1`）；`opencode-go/minimax-m3` 与 Zen 的 `claude-*` / `qwen3.5-plus` / `qwen3.6-plus` 走 Anthropic Messages（host root，凭据以 `x-api-key` 发送）；Zen 的 `gemini-*` 走 Google generative-ai wire（`<base>/models/<model>:generateContent`，凭据以 `x-goog-api-key` 发送）。上游为 OpenAI Responses API 的模型（`opencode-go/gpt-5.6-luna`、Zen 的 `gpt-*` / `grok-*` / `muse-spark-*`）VoidCode 未实现，会以 `unsupported_feature`（不可重试、允许 fallback）失败，不会降级到 chat-completions。没有 routing 条目的模型使用该 provider 的默认路由；`model_map` 别名先解析再选 wire，别名指向被路由的模型时走该模型的 wire（并把解析后的模型名发给上游）；`providers.<name>.base_url` 对默认路由与 Zen 的 Google 路由仍然优先。
+- `providers.opencode-zen` / `providers.opencode-go` 是「一个 host、多种 wire」的网关：实际 wire 由模型决定，不由 provider 名决定；解析链为 catalog 行的 `api` → `provider/api_routes.json` 的 pin → provider table 的 wire（`api_routes.json` 按 provider 分组、声明序 first-match-wins，matcher 为 `exact` / `prefix` / `substring` / `token` / `glob`，可带 `strip_prefix`）。默认路由是 OpenAI-compatible chat-completions（`opencode-go` 的默认 base URL 归一化为 `https://opencode.ai/zen/go/v1`，Zen 为 `https://opencode.ai/zen/v1`）；解析 wire 为 `anthropic-messages` 的模型走 Anthropic Messages（host root，凭据以 `x-api-key` 发送）；解析 wire 为 `google-generative-ai` 的模型走 Google wire（`<base>/models/<model>:generateContent`，凭据以 `x-goog-api-key` 发送）；`opencode-go/minimax-m3` 解析为 chat-completions（此前误判为 Anthropic）。wire 为 OpenAI Responses API 的模型 VoidCode 未实现，会以 `unsupported_feature`（不可重试、允许 fallback）失败，不会降级到 chat-completions。没有 routing 条目的模型使用该 provider 的默认路由；`model_map` 别名先解析再选 wire，别名指向被路由的模型时走该模型的 wire（并把解析后的模型名发给上游）；`providers.<name>.base_url` 对默认路由与 Zen 的 Google 路由仍然优先。
 - 两个 OpenCode 网关按会话路由：每条 wire 的每个请求都必须带 `x-opencode-session: <conversation id>`（缺失时网关返回 HTTP 400 `MissingSessionID`）与 `x-opencode-client`；runtime 在请求时从 runtime session id 解析 `x-opencode-session`（wire client 跨 turn 复用），请求没有 session id 时该 header 不发送。
 - `providers.google` 的 auth 同时决定 endpoint surface：`api_key` / `oauth` 沿用原语义（只有 auth 未提供凭据时才回退到 `GOOGLE_API_KEY`）；`service_account` 会把 `auth.service_account_json_path` 指向的文件加载为 cloud-platform ADC 凭据并选择 Vertex AI surface（不会静默替换成 `GOOGLE_API_KEY`；文件缺失或无法解析时产生 `missing_auth`，不可重试、允许 fallback）。未配置 auth block 且没有 API key 的纯 ADC 用户，只要提供 `project` 和/或 `region` 也会选择 Vertex；`api_key` + `project`（无 `region`）保持原有 Gemini API endpoint。`providers.google.base_url` 是完整的 endpoint root（含版本段），SDK 不会再追加自己的 `v1beta` / `v1beta1`，并在设置自定义 base URL 时跳过自身的 ADC project 解析。
 - `agent.preset`：agent preset id。可解析 builtin `leader`、`worker`、`advisor`、`explore`、`researcher`、`product`，以及本地发现的 markdown manifest id（见下方“本地 markdown agent manifest”）。
@@ -516,7 +519,7 @@ workspace 本地覆盖路径保持为：
 
 对于 fresh run，`RuntimeRequest.metadata["reasoning_effort"]` 可以作为窄范围的请求级覆盖；`execution_engine` 同样会进入显式 / 仓库本地 / 环境 / 默认值解析，并在会话恢复时优先采用持久化的会话配置。未知 metadata 会因 request schema 拒绝，不能静默忽略。
 
-`reasoning_effort` 的 capability-aware 校验由 runtime 在请求处理早期完成，判定顺序固定为：先取解析后的 `provider/model` 的 model metadata `supports_reasoning_effort`（显式 `False` → 抛 `RuntimeRequestError`；显式 `True` → 通过），metadata 缺省时才回退到 provider 级 allowlist（`provider_supports_reasoning_effort`），两者都未知时按 best-effort 透传，并在 provider readiness 中报告 `capability_source="unknown"` 与 `status="forwarded_unverified"`。readiness payload 不再声明具体的 provider 参数名：不同 adapter 使用 `extra_body.thinking.type`、`extra_body.reasoning_effort`、`thinking`、`thinking_config` 等不同字段，凭 provider 名猜测会给出错误信息。
+`reasoning_effort` 的 capability-aware 校验由 runtime 在请求处理早期完成，判定顺序固定为：先取解析后的 `provider/model` 的 model metadata `supports_reasoning_effort`（显式 `False` → 抛 `RuntimeRequestError`；显式 `True` → 通过），metadata 缺省即视为未知（没有 provider 级 allowlist / denylist 判定），此时按 best-effort 透传，并在 provider readiness 中报告 `capability_source="unknown"` 与 `status="forwarded_unverified"`。readiness payload 不再声明具体的 provider 参数名：不同 adapter 使用 `extra_body.thinking.type`、`extra_body.reasoning_effort`、`thinking`、`thinking_config` 等不同字段，凭 provider 名猜测会给出错误信息。
 
 ## 当前代码锚点
 
@@ -546,7 +549,7 @@ workspace 本地覆盖路径保持为：
 ```json
 {
   "runtime_config": {
-    "model": "opencode/gpt-5.4-pro",
+    "model": "opencode-zen/gpt-5.4-pro",
     "approval_mode": "ask",
     "execution_engine": "provider",
     "reasoning_effort": "high"

@@ -64,8 +64,15 @@ def session_with_provider_usage_metadata(
             return raw_value
         raise ValueError(f"persisted provider_usage.cumulative.{key} must be an integer")
 
-    cumulative_payload: dict[str, int] = {}
+    cumulative_payload: dict[str, int | float] = {}
     for key, value in usage_payload.items():
+        if key == "cost_usd":
+            # Money accumulates as a float; the token buckets stay integers.
+            previous_cost = cumulative.get(key, 0)
+            if not isinstance(previous_cost, (int, float)) or isinstance(previous_cost, bool):
+                raise ValueError("persisted provider_usage.cumulative.cost_usd must be a number")
+            cumulative_payload[key] = float(previous_cost) + float(value or 0.0)
+            continue
         cumulative_payload[key] = _int_value(key) if value is None else _int_value(key) + value
     latest_payload = {
         **usage_payload,
@@ -73,7 +80,7 @@ def session_with_provider_usage_metadata(
     }
     cumulative_payload_with_rate = {
         **cumulative_payload,
-        "cache_hit_rate": _cache_hit_rate(cumulative_payload["cache_read_tokens"], cumulative_payload["uncached_input_tokens"]),
+        "cache_hit_rate": _cache_hit_rate(_int_value("cache_read_tokens"), _int_value("uncached_input_tokens")),
     }
     raw_turn_count = provider_usage.get("turn_count", 0)
     turn_count = 0

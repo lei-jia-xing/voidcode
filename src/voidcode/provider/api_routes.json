@@ -1,0 +1,302 @@
+{
+  "schema": "api-routes/v1",
+  "routes": [
+    {
+      "provider": "github-copilot",
+      "match": {
+        "type": "glob",
+        "value": "claude-haiku-*"
+      },
+      "api": "anthropic-messages",
+      "source": "omp behavior.kdl:174-175"
+    },
+    {
+      "provider": "github-copilot",
+      "match": {
+        "type": "glob",
+        "value": "claude-sonnet-*"
+      },
+      "api": "anthropic-messages",
+      "source": "omp behavior.kdl:174-175"
+    },
+    {
+      "provider": "github-copilot",
+      "match": {
+        "type": "glob",
+        "value": "claude-opus-*"
+      },
+      "api": "anthropic-messages",
+      "source": "omp behavior.kdl:174-175"
+    },
+    {
+      "provider": "github-copilot",
+      "match": {
+        "type": "glob",
+        "value": "claude-fable-*"
+      },
+      "api": "anthropic-messages",
+      "source": "omp behavior.kdl:174-175"
+    },
+    {
+      "provider": "github-copilot",
+      "match": {
+        "type": "glob",
+        "value": "claude-mythos-*"
+      },
+      "api": "anthropic-messages",
+      "source": "discovered-only fallback (0 shipped catalog rows): omp behavior.kdl:174-175"
+    },
+    {
+      "provider": "github-copilot",
+      "match": {
+        "type": "exact",
+        "value": "grok-4.5"
+      },
+      "api": "openai-responses",
+      "source": "omp behavior.kdl:176"
+    },
+    {
+      "provider": "github-copilot",
+      "match": {
+        "type": "exact",
+        "value": "grok-4.6"
+      },
+      "api": "openai-responses",
+      "source": "omp behavior.kdl:176"
+    },
+    {
+      "provider": "github-copilot",
+      "match": {
+        "type": "prefix",
+        "value": "gpt-5"
+      },
+      "api": "openai-responses",
+      "source": "omp behavior.kdl:176"
+    },
+    {
+      "provider": "github-copilot",
+      "match": {
+        "type": "prefix",
+        "value": "gpt-6"
+      },
+      "api": "openai-responses",
+      "source": "omp behavior.kdl:176"
+    },
+    {
+      "provider": "github-copilot",
+      "match": {
+        "type": "prefix",
+        "value": "oswe"
+      },
+      "api": "openai-responses",
+      "source": "discovered-only fallback (0 shipped catalog rows): omp behavior.kdl:176"
+    },
+    {
+      "provider": "github-copilot",
+      "match": {
+        "type": "prefix",
+        "value": "mai-"
+      },
+      "api": "openai-responses",
+      "source": "omp behavior.kdl:176"
+    },
+    {
+      "provider": "zai",
+      "match": {
+        "type": "exact",
+        "value": "glm-5.3-flash"
+      },
+      "api": "openai-completions",
+      "source": "omp behavior.kdl:191"
+    },
+    {
+      "provider": "opencode-zen",
+      "match": {
+        "type": "prefix",
+        "value": "muse-spark-"
+      },
+      "api": "openai-responses",
+      "source": "omp behavior.kdl:200"
+    },
+    {
+      "provider": "opencode-zen",
+      "match": {
+        "type": "exact",
+        "value": "gpt-6-astra"
+      },
+      "api": "openai-responses",
+      "source": "omp behavior.kdl:200"
+    },
+    {
+      "provider": "opencode-zen",
+      "match": {
+        "type": "exact",
+        "value": "minimax-m3"
+      },
+      "api": "openai-completions",
+      "source": "omp behavior.kdl:201"
+    },
+    {
+      "provider": "opencode-zen",
+      "match": {
+        "type": "exact",
+        "value": "minimax-m3-free"
+      },
+      "api": "openai-completions",
+      "source": "discovered-only fallback (0 shipped catalog rows): omp behavior.kdl:201"
+    },
+    {
+      "provider": "opencode-go",
+      "match": {
+        "type": "prefix",
+        "value": "muse-spark-"
+      },
+      "api": "openai-responses",
+      "source": "omp behavior.kdl:207"
+    },
+    {
+      "provider": "opencode-go",
+      "match": {
+        "type": "exact",
+        "value": "deepseek-v4-flash"
+      },
+      "api": "openai-responses",
+      "source": "omp behavior.kdl:207-208"
+    },
+    {
+      "provider": "opencode-go",
+      "match": {
+        "type": "exact",
+        "value": "muse-spark-1.2"
+      },
+      "api": "openai-responses",
+      "source": "discovered-only fallback (0 shipped catalog rows): omp behavior.kdl:207-208"
+    },
+    {
+      "provider": "opencode-go",
+      "match": {
+        "type": "exact",
+        "value": "muse-spark-1.3"
+      },
+      "api": "openai-responses",
+      "source": "discovered-only fallback (0 shipped catalog rows): omp behavior.kdl:207-208"
+    },
+    {
+      "provider": "opencode-go",
+      "match": {
+        "type": "exact",
+        "value": "minimax-m2.7"
+      },
+      "api": "openai-completions",
+      "source": "omp behavior.kdl:209-210"
+    },
+    {
+      "provider": "opencode-go",
+      "match": {
+        "type": "exact",
+        "value": "minimax-m3"
+      },
+      "api": "openai-completions",
+      "source": "omp behavior.kdl:209-210"
+    },
+    {
+      "provider": "opencode-go",
+      "match": {
+        "type": "exact",
+        "value": "minimax-m3-free"
+      },
+      "api": "openai-completions",
+      "source": "discovered-only fallback (0 shipped catalog rows): omp behavior.kdl:209-210"
+    },
+    {
+      "provider": "opencode-go",
+      "match": {
+        "type": "exact",
+        "value": "qwen3.5-plus"
+      },
+      "api": "openai-completions",
+      "source": "discovered-only fallback (0 shipped catalog rows): omp behavior.kdl:209-210"
+    },
+    {
+      "provider": "opencode-go",
+      "match": {
+        "type": "exact",
+        "value": "qwen3.6-plus"
+      },
+      "api": "openai-completions",
+      "source": "omp behavior.kdl:209-210"
+    },
+    {
+      "provider": "opencode-zen",
+      "match": {
+        "type": "exact",
+        "value": "claude-3-5-haiku"
+      },
+      "api": "anthropic-messages",
+      "source": "discovered-only fallback (0 shipped catalog rows): upstream provider.npm @ai-sdk/anthropic; id is status=deprecated upstream so it has no generated catalog row"
+    },
+    {
+      "provider": "opencode-zen",
+      "match": {
+        "type": "exact",
+        "value": "claude-opus-4-1"
+      },
+      "api": "anthropic-messages",
+      "source": "discovered-only fallback (0 shipped catalog rows): upstream provider.npm @ai-sdk/anthropic; id is status=deprecated upstream so it has no generated catalog row"
+    },
+    {
+      "provider": "opencode-zen",
+      "match": {
+        "type": "exact",
+        "value": "gemini-3-pro"
+      },
+      "api": "google-generative-ai",
+      "source": "discovered-only fallback (0 shipped catalog rows): upstream provider.npm @ai-sdk/google; id is status=deprecated upstream so it has no generated catalog row"
+    },
+    {
+      "provider": "opencode-zen",
+      "match": {
+        "type": "exact",
+        "value": "minimax-m2.1-free"
+      },
+      "api": "anthropic-messages",
+      "source": "discovered-only fallback (0 shipped catalog rows): upstream provider.npm @ai-sdk/anthropic; id is status=deprecated upstream so it has no generated catalog row"
+    },
+    {
+      "provider": "opencode-zen",
+      "match": {
+        "type": "exact",
+        "value": "minimax-m2.5-free"
+      },
+      "api": "anthropic-messages",
+      "source": "discovered-only fallback (0 shipped catalog rows): upstream provider.npm @ai-sdk/anthropic; id is status=deprecated upstream so it has no generated catalog row"
+    },
+    {
+      "provider": "opencode-zen",
+      "match": {
+        "type": "exact",
+        "value": "qwen3.6-plus-free"
+      },
+      "api": "anthropic-messages",
+      "source": "discovered-only fallback (0 shipped catalog rows): upstream provider.npm @ai-sdk/anthropic; id is status=deprecated upstream so it has no generated catalog row"
+    },
+    {
+      "provider": "opencode-go",
+      "match": {
+        "type": "exact",
+        "value": "grok-4.5"
+      },
+      "api": "openai-responses",
+      "source": "discovered-only fallback (0 shipped catalog rows): upstream provider.npm @ai-sdk/openai; id is status=deprecated upstream so it has no generated catalog row"
+    },
+    {
+      "provider": "opencode-go",
+      "match": {
+        "type": "exact",
+        "value": "minimax-m2.5"
+      },
+      "api": "anthropic-messages",
+      "source": "discovered-only fallback (0 shipped catalog rows): upstream provider.npm @ai-sdk/anthropic; id is status=deprecated upstream so it has no generated catalog row"
+    }
+  ]
+}

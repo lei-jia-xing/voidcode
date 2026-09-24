@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-"""Canonical reasoning-effort values and provider-specific mapping helpers.
+from .thinking_rules import DisableMode, ThinkingRule
+
+"""Canonical reasoning-effort values and the data-driven thinking-request mapping.
 
 This module is intentionally dependency-free and leaf: it is importable from
 `runtime/` without pulling in a provider SDK or adapter, so effort
 normalization, clamping, and provider mapping can be shared across the
-runtime control plane and provider backends.
+runtime control plane and provider backends. The provider-specific mapping is
+*data*: which field carries the effort, which vendor spelling turns reasoning
+off and which budgets apply come from `thinking_rules.json`.
 """
-
 REASONING_EFFORT_OFF = "off"
 REASONING_EFFORT_MINIMAL = "minimal"
 REASONING_EFFORT_LOW = "low"
@@ -71,17 +74,6 @@ def clamp_effort_to_supported(effort: str, supported: tuple[str, ...] | None) ->
     return min(supported_canonical, key=canonical_by_name.__getitem__)
 
 
-# Providers whose compatible endpoint takes a binary `thinking.type` switch
-# instead of a graded `reasoning_effort` value: Z.AI and ZhipuAI (both endpoints
-# are read through `extra_body`, because the upstream APIs read these fields from
-# the request body rather than as top-level OpenAI SDK parameters).
-_BINARY_THINKING_PROVIDERS = frozenset({"zai", "zhipuai"})
-
-# DeepSeek takes graded levels through the request body and turns thinking off
-# with the same binary switch.
-_EFFORT_IN_REQUEST_BODY_PROVIDERS = frozenset({"deepseek"})
-
-
 def lowest_supported_effort(supported: tuple[str, ...] | None) -> str | None:
     """Return the lowest canonical level in `supported`, or None if it lists none."""
     if not supported:
@@ -93,85 +85,76 @@ def lowest_supported_effort(supported: tuple[str, ...] | None) -> str | None:
     return min(levels, key=canonical_by_name.__getitem__)
 
 
-def map_effort_for_provider(
+def reasoning_kwargs(
     *,
-    provider_name: str,
+    rule: ThinkingRule,
     effort: str,
-    supported_levels: tuple[str, ...] | None = None,
-) -> dict[str, object]:
-    """Map an already-clamped canonical effort to the request kwargs a provider expects.
-
-    The *level* is decided by `clamp_effort_to_supported` from the model's own
-    metadata; this function only chooses which request field carries it and which
-    known binary thinking switch applies:
-
-    - Z.AI / ZhipuAI: binary `extra_body.thinking.type` of "enabled"/"disabled".
-    - DeepSeek: graded level through `extra_body.reasoning_effort`, disabled
-      through `extra_body.thinking.type = "disabled"`.
-    - Everything else: a top-level `reasoning_effort` kwarg.
-
-    `off` is resolved by `explicit_off_kwargs`, which never sends a bare "none" to
-    a model that does not accept it.
-    """
-    if effort == REASONING_EFFORT_OFF:
-        return explicit_off_kwargs(provider_name=provider_name, supported_levels=supported_levels)
-    if provider_name in _BINARY_THINKING_PROVIDERS:
-        return {"extra_body": {"thinking": {"type": "enabled"}}}
-    if provider_name in _EFFORT_IN_REQUEST_BODY_PROVIDERS:
-        return {"extra_body": {"reasoning_effort": effort}}
-    return {"reasoning_effort": effort}
-
-
-def explicit_off_kwargs(
-    *,
-    provider_name: str,
     supported_levels: tuple[str, ...] | None,
 ) -> dict[str, object]:
-    """Resolve the request kwargs for an explicit `off` (do not reason).
+    """Map a canonical effort to the OpenAI-wire request kwargs the row's format uses.
 
-    The known binary disable forms win: Z.AI/ZhipuAI and DeepSeek turn thinking
-    off with `thinking.type = "disabled"`. For every other provider the hint means
-    "reason as little as this model can", so the lowest level the model actually
-    supports is sent. That follows the dominant convention in Oh My Pi's catalog:
-    107 of the 259 models VoidCode ships declare a `lowest-effort` disable mode and
-    only 4 accept a literal `"none"`; OMP never sends "none" to the former
-    (`packages/ai/.../tBt` writes the vendor switch, and `reasoningDisableMode:
-    "lowest-effort"` substitutes the lowest supported effort). A model that lists
-    no supported level gets no effort parameter at all.
+    ``effort`` is already clamped to the model's own ladder by
+    `clamp_effort_to_supported`; this function only chooses the field and the
+    vendor spelling. ``off`` is the "reasoning disabled" request state, never a
+    ladder member: it resolves through the row's ``disable_mode`` (OMP's
+    ``encodeChatCompletionsDisabledReasoning``), and a model whose row says it
+    always reasons (``requires_effort``) is clamped to its lowest level instead.
     """
-    if provider_name in _BINARY_THINKING_PROVIDERS or provider_name in _EFFORT_IN_REQUEST_BODY_PROVIDERS:
-        return {"extra_body": {"thinking": {"type": "disabled"}}}
-    lowest = lowest_supported_effort(supported_levels)
-    if lowest is None:
-        return {}
-    return {"reasoning_effort": lowest}
+    if effort == REASONING_EFFORT_OFF:
+        return disabled_reasoning_kwargs(rule=rule, supported_levels=supported_levels)
+    if rule.mode == "binary":
+        # The vendor reads its thinking switch from the request body, so the
+        # ladder level never reaches the wire as an effort value.
+        return _binary_thinking_kwargs(rule.disable_mode, enabled=True)
+    return {"reasoning_effort": rule.mapped_effort(effort)}
 
 
-_PROVIDERS_WITHOUT_REASONING_EFFORT = frozenset({"qwen", "kimi", "minimax"})
+def disabled_reasoning_kwargs(
+    *,
+    rule: ThinkingRule,
+    supported_levels: tuple[str, ...] | None,
+) -> dict[str, object]:
+    """Request kwargs for an explicit ``off`` (do not reason), per the row's spelling."""
+    if rule.requires_effort:
+        # The model always reasons: ask for as little as it can rather than
+        # disabling, which its API does not accept (``thinking.requiresEffort``).
+        lowest = lowest_supported_effort(supported_levels)
+        return {"reasoning_effort": rule.mapped_effort(lowest)} if lowest is not None else {}
+    match rule.disable_mode:
+        case "lowest-effort":
+            lowest = lowest_supported_effort(supported_levels)
+            return {"reasoning_effort": rule.mapped_effort(lowest)} if lowest is not None else {}
+        case "none-effort":
+            return {"reasoning_effort": "none"}
+        case "openrouter-enabled-false":
+            return {"extra_body": {"reasoning": {"enabled": False}}}
+        case _:
+            return _binary_thinking_kwargs(rule.disable_mode, enabled=False)
 
 
-def provider_supports_reasoning_effort(provider_name: str, model_name: str) -> bool | None:
-    """Provider-level fallback for reasoning-effort capability.
+def _binary_thinking_kwargs(disable_mode: DisableMode, *, enabled: bool) -> dict[str, object]:
+    """The body shape one binary thinking format uses, for either state."""
+    match disable_mode:
+        case "zai-thinking-disabled":
+            return {"extra_body": {"thinking": {"type": "enabled" if enabled else "disabled"}}}
+        case "qwen-enable-thinking-false":
+            return {} if enabled else {"extra_body": {"enable_thinking": False}}
+        case _:
+            return {}
 
-    Model metadata is the authority: `validate_reasoning_effort_capability` /
-    `resolve_reasoning_effort_capability` consult the resolved model's own
-    `supports_reasoning_effort` first and only fall back to this provider-level
-    answer when the model metadata is silent.
 
-    Returns False for single-upstream providers whose API does not take the
-    OpenAI-style `reasoning_effort` field the OpenAI-compatible adapter sends
-    (Qwen/Kimi/MiniMax are explicitly unsupported here).
-    Z.AI and ZhipuAI are binary (thinking.type), not reasoning_effort: True only for reasoning GLM models.
-    Returns None (unknown → passthrough, reported as `forwarded_unverified`)
-    otherwise - including every `opencode-go` model, because that gateway forwards
-    to whichever upstream serves the model, so a model the shipped catalog does not
-    describe must not be judged by its provider name. The shipped catalog answers
-    for the opencode-go models it lists (35 of the gateway's 38).
-    """
-    provider = provider_name.strip().lower()
-    if provider in _PROVIDERS_WITHOUT_REASONING_EFFORT:
-        return False
-    if provider in {"zai", "zhipuai"}:
-        model = model_name.strip().lower()
-        return True if model.startswith(("glm-5", "glm-z1")) else False
-    return None
+__all__ = [
+    "ALL_EFFORTS",
+    "CANONICAL_EFFORTS",
+    "REASONING_EFFORT_HIGH",
+    "REASONING_EFFORT_MAX",
+    "REASONING_EFFORT_MEDIUM",
+    "REASONING_EFFORT_MINIMAL",
+    "REASONING_EFFORT_OFF",
+    "REASONING_EFFORT_XHIGH",
+    "clamp_effort_to_supported",
+    "disabled_reasoning_kwargs",
+    "lowest_supported_effort",
+    "normalize_reasoning_effort",
+    "reasoning_kwargs",
+]

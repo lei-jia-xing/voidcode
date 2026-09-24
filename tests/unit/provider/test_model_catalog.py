@@ -16,6 +16,7 @@ from voidcode.provider.model_catalog import (
     discover_available_models,
 )
 from voidcode.provider.provider_config import anthropic_compatible_endpoint_config, google_provider_config
+from voidcode.provider.provider_table import PROVIDER_TABLE
 
 
 @dataclass
@@ -273,9 +274,9 @@ def test_anthropic_wire_vendor_sends_its_own_credential_header(monkeypatch: pyte
 
 def test_anthropic_wire_vendor_with_a_bearer_listing_sends_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = _capture_discovery_request(monkeypatch)
-    config = anthropic_compatible_endpoint_config("kimi-coding", AnthropicProviderConfig(api_key="kimi-key"))
+    config = anthropic_compatible_endpoint_config("kimi-code", AnthropicProviderConfig(api_key="kimi-key"))
 
-    result = discover_available_models("kimi-coding", config)
+    result = discover_available_models("kimi-code", config)
 
     assert captured.url == "https://api.kimi.com/coding/v1/models"
     assert captured.headers["anthropic-version"] == "2023-06-01"
@@ -286,7 +287,7 @@ def test_anthropic_wire_vendor_with_a_bearer_listing_sends_bearer(monkeypatch: p
 def test_discovery_is_disabled_for_a_vendor_without_a_listing() -> None:
     # Copilot publishes no listing: the plan reports disabled instead of probing.
     result = discover_available_models(
-        "copilot",
+        "github-copilot",
         ProviderEndpointConfig(base_url="https://api.individual.githubcopilot.com", api_key="copilot-token"),
     )
 
@@ -316,9 +317,9 @@ def test_anthropic_wire_vendor_uses_the_shared_data_parser(monkeypatch: pytest.M
     # ``data`` may hold bare model-id strings; only the shared parser accepts
     # that shape, so parsing one proves the Anthropic wire routes through it.
     captured = _capture_discovery_request(monkeypatch, payload={"data": ["kimi-k2", {"id": "kimi-k3"}]})
-    config = anthropic_compatible_endpoint_config("kimi-coding", AnthropicProviderConfig(api_key="kimi-key"))
+    config = anthropic_compatible_endpoint_config("kimi-code", AnthropicProviderConfig(api_key="kimi-key"))
 
-    result = discover_available_models("kimi-coding", config)
+    result = discover_available_models("kimi-code", config)
 
     assert captured.url == "https://api.kimi.com/coding/v1/models"
     assert result.models == ("kimi-k2", "kimi-k3")
@@ -348,3 +349,49 @@ def test_discovery_dispatch_keys_on_the_wire_not_the_provider_name(monkeypatch: 
     assert captured.url == "https://gw.example.test/v1/models"
     assert "anthropic-version" not in captured.headers
     assert captured.headers["authorization"] == "Bearer gw-key"
+
+
+def test_shipped_catalog_covers_exactly_the_providers_with_upstream_keys() -> None:
+    # The generator emits one catalog entry per provider-table row that names
+    # models.dev keys, so a table edit that is not followed by a regeneration
+    # (or a hand-edited artifact) fails here.
+    expected = {row.id for row in PROVIDER_TABLE if row.models_dev_keys}
+
+    assert set(model_catalog._load_static_catalog()) == expected
+
+
+@pytest.mark.parametrize(
+    ("wire", "base_url", "expected"),
+    [
+        # A base that already names its version mid-path: the listing hangs off the
+        # base itself (deepinfra's `.../v1/openai` -> live listing at `.../openai/models`;
+        # the old rule appended another `/v1/models` and 404'd). Every other shape is
+        # the URL the P5 probe observed live.
+        ("openai-completions", "https://api.deepinfra.com/v1/openai", "https://api.deepinfra.com/v1/openai/models"),
+        ("openai-completions", "https://api.novita.ai/openai/v1", "https://api.novita.ai/openai/v1/models"),
+        ("openai-completions", "https://api.deepseek.com", "https://api.deepseek.com/v1/models"),
+        (
+            "openai-completions",
+            "https://dashscope.aliyuncs.com/compatible-mode",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+        ),
+        ("openai-completions", "https://api.x.ai", "https://api.x.ai/v1/models"),
+        ("openai-completions", "https://gw.example.test/v1/models", "https://gw.example.test/v1/models"),
+        ("anthropic-messages", "https://api.anthropic.com", "https://api.anthropic.com/v1/models"),
+        ("anthropic-messages", "https://api.kimi.com/coding", "https://api.kimi.com/coding/v1/models"),
+        ("google-generative-ai", "https://generativelanguage.googleapis.com", "https://generativelanguage.googleapis.com/v1beta/models"),
+        ("google-generative-ai", "https://gw.example.test/v1beta", "https://gw.example.test/v1beta/models"),
+    ],
+)
+def test_the_listing_url_rule_matches_the_probed_paths(wire: str, base_url: str, expected: str) -> None:
+    assert model_catalog._models_url(wire, base_url) == expected
+
+
+def test_the_version_mid_path_base_is_probed_at_its_own_listing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The rule above is the one the fetch actually uses, not a parallel copy."""
+    config = ProviderEndpointConfig(base_url="https://api.deepinfra.com/v1/openai", api_key="k")
+
+    captured = _capture_discovery_request(monkeypatch)
+    discover_available_models("deepinfra", config)
+
+    assert captured.url == "https://api.deepinfra.com/v1/openai/models"

@@ -598,7 +598,7 @@ class _SingleThenBatchTurnProvider:
     graph's in-memory ``_pending_tool_calls``.
     """
 
-    name = "opencode"
+    name = "opencode-zen"
 
     def __init__(self) -> None:
         self.propose_turn_tool_result_counts: list[int] = []
@@ -1907,7 +1907,7 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
     resolution_module = importlib.import_module("voidcode.provider.resolution")
     registry_module = importlib.import_module("voidcode.provider.registry")
     provider_model = resolution_module.resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=registry_module.ModelProviderRegistry.with_defaults(),
     )
 

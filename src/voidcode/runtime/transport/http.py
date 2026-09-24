@@ -1960,6 +1960,8 @@ class RuntimeTransportApp(FastAPI):
                 "modalities_output": list(metadata.modalities_output) if metadata.modalities_output is not None else None,
                 "model_status": metadata.model_status,
                 "tool_feedback_mode": metadata.tool_feedback_mode,
+                "api": metadata.api,
+                "display_name": metadata.display_name,
             }.items()
             if value is not None
         }

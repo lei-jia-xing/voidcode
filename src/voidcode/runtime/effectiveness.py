@@ -138,6 +138,9 @@ class ToolEffectivenessReport:
     uncached_input_tokens: int
     tools: tuple[ToolEffectivenessStats, ...]
     models: tuple[ModelEditEffectivenessStats, ...] = ()
+    #: USD across every session's ``provider_usage.cumulative``; ``None`` when no
+    #: session carried a priced usage (an unpriced model yields no number at all).
+    cost_usd: float | None = None
 
     @property
     def success_rate(self) -> float | None:
@@ -180,6 +183,7 @@ class ToolEffectivenessReport:
                 "cache_write_tokens": self.cache_write_tokens,
                 "uncached_input_tokens": self.uncached_input_tokens,
                 "cache_hit_rate": self.cache_hit_rate,
+                "cost_usd": self.cost_usd,
             },
             "tools": [tool.to_payload() for tool in self.tools],
             "models": [model.to_payload() for model in self.models],
@@ -330,6 +334,8 @@ def project_tool_effectiveness(
     )
     metadata_by_session = session_metadata or {}
     usage_totals = Counter[str]()
+    cost_total = 0.0
+    cost_seen = False
     for metadata in metadata_by_session.values():
         provider_usage = metadata.get("provider_usage")
         if not isinstance(provider_usage, Mapping):
@@ -343,6 +349,10 @@ def project_tool_effectiveness(
             value = typed_cumulative.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 usage_totals[key] += value
+        cumulative_cost = typed_cumulative.get("cost_usd")
+        if isinstance(cumulative_cost, (int, float)) and not isinstance(cumulative_cost, bool):
+            cost_total += float(cumulative_cost)
+            cost_seen = True
     return ToolEffectivenessReport(
         schema_version=1,
         workspace_id=workspace_id,
@@ -361,6 +371,7 @@ def project_tool_effectiveness(
         cache_read_tokens=usage_totals["cache_read_tokens"],
         cache_write_tokens=usage_totals["cache_write_tokens"],
         uncached_input_tokens=usage_totals["uncached_input_tokens"],
+        cost_usd=cost_total if cost_seen else None,
         tools=tools,
         models=models,
     )

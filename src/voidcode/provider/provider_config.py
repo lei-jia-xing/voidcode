@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from .config import (
+    PROVIDER_WIRES,
     AnthropicProviderConfig,
     CopilotProviderConfig,
     EndpointAuthScheme,
@@ -11,39 +12,35 @@ from .config import (
     ProviderEndpointConfig,
     openai_compatible_default_base_url,
 )
+from .provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
 
-# Vendor defaults for the providers whose wire is the OpenAI chat protocol.
-# A config that names no ``base_url`` resolves to the provider's own host here
-# -- never to another vendor's -- and a provider absent from this table has no
-# default at all: an unconfigured provider is rejected instead of guessed at.
-_DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-# Copilot credentials must never reach ``api.openai.com``.
-_DEFAULT_COPILOT_BASE_URL = "https://api.individual.githubcopilot.com"
+# Vendor defaults for the providers whose wire is the OpenAI chat protocol, read
+# from the provider table: OpenAI itself, Copilot, and every shared
+# OpenAI-compatible vendor. The named endpoints (``endpoint``, ``opencode-zen``,
+# ``openrouter``) are deliberately absent -- each resolves its own host -- so a
+# config that names no ``base_url`` for one of them is rejected instead of
+# guessed at.
 _DEFAULT_OPENAI_WIRE_BASE_URLS: dict[str, str] = {
-    "openai": _DEFAULT_OPENAI_BASE_URL,
-    "copilot": _DEFAULT_COPILOT_BASE_URL,
+    provider_id: PROVIDER_TABLE_BY_ID[provider_id].default_base_url
+    for provider_id, wire in PROVIDER_WIRES.items()
+    if wire.shape in ("openai", "copilot", "openai_compatible")
 }
 
 # Vendor defaults for the providers whose wire is the Anthropic Messages
-# protocol. Same contract as the OpenAI wire table above: a provider absent from
-# this table has no default of its own, so a caller must refuse to run rather
-# than point the wire at a host it does not own. The Anthropic SDK transport in
-# ``anthropic_native`` keeps its own construction default for direct use only.
-_DEFAULT_ANTHROPIC_WIRE_BASE_URLS: dict[str, str] = {
-    "anthropic": "https://api.anthropic.com",
-    # Kimi's coding subscription API and MiniMax's China-region Anthropic
-    # surface; hosts taken from pi's provider definitions.
-    "kimi-coding": "https://api.kimi.com/coding",
-    "minimax-cn": "https://api.minimaxi.com/anthropic",
-}
+# protocol: exactly the table rows on that wire. Same contract as the OpenAI
+# wire table above -- a provider absent from this table has no default of its
+# own, so a caller must refuse to run rather than point the wire at a host it
+# does not own. The Anthropic SDK transport in ``anthropic_native`` keeps its
+# own construction default for direct use only.
+_DEFAULT_ANTHROPIC_WIRE_BASE_URLS: dict[str, str] = {row.id: row.default_base_url for row in PROVIDER_TABLE if row.wire == "anthropic-messages"}
 
 # Google's config names no base URL by default -- the SDK resolves its own -- so
 # the listing derives from the Gemini API host the SDK would use.
-_DEFAULT_GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com"
+_DEFAULT_GOOGLE_BASE_URL = next(row.default_base_url for row in PROVIDER_TABLE if row.wire == "google-generative-ai")
 
 # The endpoint provider is a user-supplied OpenAI-compatible gateway. Without
 # configuration it assumes the conventional local gateway.
-DEFAULT_ENDPOINT_BASE_URL = "http://127.0.0.1:4000/v1"
+DEFAULT_ENDPOINT_BASE_URL = PROVIDER_TABLE_BY_ID["endpoint"].default_base_url
 
 # The credential header an Anthropic-wire vendor's model listing wants. The wire
 # itself always speaks ``x-api-key`` with the raw key, which is the default; a
@@ -51,7 +48,7 @@ DEFAULT_ENDPOINT_BASE_URL = "http://127.0.0.1:4000/v1"
 _ANTHROPIC_WIRE_LISTING_DEFAULT_AUTH: tuple[str, EndpointAuthScheme] = ("x-api-key", "token")
 _ANTHROPIC_WIRE_LISTING_AUTH: dict[str, tuple[str, EndpointAuthScheme]] = {
     # Kimi's coding subscription lists with ``Authorization: Bearer``.
-    "kimi-coding": ("Authorization", "bearer"),
+    "kimi-code": ("Authorization", "bearer"),
     # MiniMax CN's listing names its own key header.
     "minimax-cn": ("X-Api-Key", "token"),
 }
@@ -65,7 +62,7 @@ def provider_has_model_listing(provider_name: str, config: ProviderEndpointConfi
     Copilot publishes none, and Google's listing needs a credential the request
     can send, which a service-account (or absent) config does not resolve.
     """
-    if provider_name == "copilot":
+    if provider_name == "github-copilot":
         return False
     if provider_name == "google":
         return config is not None and config.api_key is not None
@@ -90,7 +87,7 @@ def openai_provider_config(config: OpenAIProviderConfig | None) -> ProviderEndpo
         api_key=None if config is None else config.api_key,
         # OpenAI's own host, stated here instead of borrowed from the transport's
         # construction default.
-        base_url=configured_base_url or _DEFAULT_OPENAI_BASE_URL,
+        base_url=configured_base_url or _DEFAULT_OPENAI_WIRE_BASE_URLS["openai"],
         timeout_seconds=None if config is None else config.timeout_seconds,
         model_map={},
         openai_organization=None if config is None else config.organization,
@@ -166,7 +163,7 @@ def copilot_provider_config(config: CopilotProviderConfig | None) -> ProviderEnd
         api_key=token,
         # Copilot calls its own host: a Copilot token must never be sent to
         # ``api.openai.com`` just because no base URL was configured.
-        base_url=configured_base_url or _DEFAULT_COPILOT_BASE_URL,
+        base_url=configured_base_url or _DEFAULT_OPENAI_WIRE_BASE_URLS["github-copilot"],
         timeout_seconds=None if config is None else config.timeout_seconds,
     )
 

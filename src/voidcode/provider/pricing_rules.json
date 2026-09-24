@@ -1,0 +1,142 @@
+{
+  "schema": "pricing-rules/v1",
+  "omp_ref": "can1357/oh-my-pi @ d49918fab2dba3986927f2d46721629ed0f3a02c",
+  "note": "OMP's long-context-cost KDL axis only: absolute rates, or threshold + multiplier over the model's own base rate. The mirror's context_over_200k / tiers[] are never read (OMP's models.dev row type has no tier field, openai-compat.ts:121-126).",
+  "rows": [
+    {
+      "provider": "openai",
+      "match": {
+        "type": "exact",
+        "value": "gpt-5.6"
+      },
+      "threshold": 272000,
+      "inclusive": false,
+      "rates": {
+        "input": 10,
+        "output": 45,
+        "cache_read": 1,
+        "cache_write": 12.5
+      },
+      "source": "rules/providers/openai.kdl:140-148"
+    },
+    {
+      "provider": "openai",
+      "match": {
+        "type": "prefix",
+        "value": "gpt-5.6-sol"
+      },
+      "threshold": 272000,
+      "inclusive": false,
+      "rates": {
+        "input": 10,
+        "output": 45,
+        "cache_read": 1,
+        "cache_write": 12.5
+      },
+      "source": "rules/providers/openai.kdl:140-148"
+    },
+    {
+      "provider": "openai",
+      "match": {
+        "type": "prefix",
+        "value": "gpt-5.6-luna"
+      },
+      "threshold": 272000,
+      "inclusive": false,
+      "rates": {
+        "input": 0.4,
+        "output": 1.8,
+        "cache_read": 0.04,
+        "cache_write": 0.5
+      },
+      "source": "rules/providers/openai.kdl:149-157"
+    },
+    {
+      "provider": "openai",
+      "match": {
+        "type": "prefix",
+        "value": "gpt-5.6-terra"
+      },
+      "threshold": 272000,
+      "inclusive": false,
+      "rates": {
+        "input": 4,
+        "output": 18,
+        "cache_read": 0.4,
+        "cache_write": 5
+      },
+      "source": "rules/providers/openai.kdl:158-166"
+    },
+    {
+      "provider": "openai",
+      "match": {
+        "type": "prefix",
+        "value": "gpt-6-astra"
+      },
+      "threshold": 272000,
+      "inclusive": false,
+      "rates": {
+        "input": 20,
+        "output": 75,
+        "cache_read": 2,
+        "cache_write": 25
+      },
+      "source": "rules/providers/openai.kdl:171-179"
+    },
+    {
+      "provider": "xai",
+      "match": {
+        "type": "exact",
+        "value": "grok-4.3"
+      },
+      "threshold": 200000,
+      "inclusive": true,
+      "multiplier": 2.0,
+      "source": "rules/classes/xai.kdl:9-12"
+    },
+    {
+      "provider": "xai",
+      "match": {
+        "type": "exact",
+        "value": "grok-4.5"
+      },
+      "threshold": 200000,
+      "inclusive": true,
+      "multiplier": 2.0,
+      "source": "rules/classes/xai.kdl:9-12"
+    },
+    {
+      "provider": "xai",
+      "match": {
+        "type": "exact",
+        "value": "grok-4.6"
+      },
+      "threshold": 200000,
+      "inclusive": true,
+      "multiplier": 2.0,
+      "source": "rules/classes/xai.kdl:9-12"
+    },
+    {
+      "provider": "xai",
+      "match": {
+        "type": "exact",
+        "value": "grok-build-0.1"
+      },
+      "threshold": 200000,
+      "inclusive": true,
+      "multiplier": 2.0,
+      "source": "rules/classes/xai.kdl:9-12"
+    },
+    {
+      "provider": "xai",
+      "match": {
+        "type": "prefix",
+        "value": "grok-4.20"
+      },
+      "threshold": 200000,
+      "inclusive": true,
+      "multiplier": 2.0,
+      "source": "rules/classes/xai.kdl:9-12"
+    }
+  ]
+}

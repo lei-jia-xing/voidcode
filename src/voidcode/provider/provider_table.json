@@ -1,0 +1,537 @@
+{
+  "schema": "provider-table/v1",
+  "rows": [
+    {
+      "id": "openai",
+      "label": "OpenAI",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.openai.com/v1",
+      "env_vars": [
+        "OPENAI_API_KEY"
+      ],
+      "models_dev_keys": [
+        "openai"
+      ],
+      "notes": "pi routes OpenAI via openai-responses; voidcode has no Responses adapter, stays openai-completions.",
+      "wire_source": "model"
+    },
+    {
+      "id": "anthropic",
+      "label": "Anthropic",
+      "wire": "anthropic-messages",
+      "default_base_url": "https://api.anthropic.com",
+      "env_vars": [
+        "ANTHROPIC_API_KEY"
+      ],
+      "models_dev_keys": [
+        "anthropic"
+      ],
+      "wire_source": "model"
+    },
+    {
+      "id": "google",
+      "label": "Google",
+      "wire": "google-generative-ai",
+      "default_base_url": "https://generativelanguage.googleapis.com",
+      "env_vars": [
+        "GOOGLE_API_KEY"
+      ],
+      "models_dev_keys": [
+        "google"
+      ],
+      "notes": "upstream env list = [GOOGLE_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, GEMINI_API_KEY]; pi names GEMINI_API_KEY, voidcode GOOGLE_API_KEY.",
+      "wire_source": "model"
+    },
+    {
+      "id": "deepseek",
+      "label": "DeepSeek",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.deepseek.com",
+      "env_vars": [
+        "DEEPSEEK_API_KEY"
+      ],
+      "models_dev_keys": [
+        "deepseek"
+      ],
+      "wire_source": "model"
+    },
+    {
+      "id": "xai",
+      "label": "xAI",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.x.ai",
+      "env_vars": [
+        "XAI_API_KEY"
+      ],
+      "models_dev_keys": [
+        "xai"
+      ],
+      "notes": "renamed from grok (id/env only, host unchanged); pi wire=openai-responses, voidcode stays openai-completions.",
+      "wire_source": "model"
+    },
+    {
+      "id": "qwen",
+      "label": "Qwen",
+      "wire": "openai-completions",
+      "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode",
+      "env_vars": [
+        "DASHSCOPE_API_KEY"
+      ],
+      "models_dev_keys": [
+        "alibaba-cn"
+      ],
+      "notes": "id kept; source key moved to alibaba-cn (upstream api exactly .../compatible-mode/v1 + DASHSCOPE_API_KEY). qwen-portal absent upstream and is another host (portal.qwen.ai).",
+      "wire_source": "model"
+    },
+    {
+      "id": "zai",
+      "label": "Z.AI",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.z.ai/api/paas/v4",
+      "env_vars": [
+        "ZAI_API_KEY"
+      ],
+      "models_dev_keys": [
+        "zai"
+      ],
+      "notes": "pi wire=anthropic-messages; voidcode stays openai-completions. upstream key zai declares env ZHIPU_API_KEY, voidcode uses ZAI_API_KEY.",
+      "wire_source": "model"
+    },
+    {
+      "id": "zhipuai",
+      "label": "ZhipuAI",
+      "wire": "openai-completions",
+      "default_base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "env_vars": [
+        "ZHIPU_API_KEY",
+        "ZAI_API_KEY"
+      ],
+      "models_dev_keys": [
+        "zhipuai"
+      ],
+      "notes": "id kept; source key zhipuai (upstream api exactly .../api/paas/v4). zhipuai-coding-plan is a separate product line (/api/coding/paas/v4).",
+      "wire_source": "model"
+    },
+    {
+      "id": "moonshot",
+      "label": "Moonshot",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.moonshot.ai",
+      "env_vars": [
+        "MOONSHOT_API_KEY",
+        "KIMI_API_KEY"
+      ],
+      "models_dev_keys": [
+        "moonshotai"
+      ],
+      "notes": "renamed from kimi; MOONSHOT_API_KEY first, KIMI_API_KEY kept as fallback.",
+      "wire_source": "model"
+    },
+    {
+      "id": "minimax",
+      "label": "MiniMax",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.minimax.io",
+      "env_vars": [
+        "MINIMAX_API_KEY"
+      ],
+      "models_dev_keys": [
+        "minimax"
+      ],
+      "notes": "no longer merges minimax-cn. pi wire=anthropic-messages; voidcode stays openai-completions.",
+      "wire_source": "model"
+    },
+    {
+      "id": "minimax-cn",
+      "label": "MiniMax CN",
+      "wire": "anthropic-messages",
+      "default_base_url": "https://api.minimaxi.com/anthropic",
+      "env_vars": [
+        "MINIMAX_CN_API_KEY"
+      ],
+      "models_dev_keys": [
+        "minimax-cn"
+      ],
+      "notes": "split out of minimax; Anthropic wire. env deliberately distinct from minimax (upstream key minimax-cn declares MINIMAX_API_KEY; upstream host is api.minimax.cn, voidcode host api.minimaxi.com).",
+      "wire_source": "model"
+    },
+    {
+      "id": "opencode-zen",
+      "label": "OpenCode Zen",
+      "wire": "openai-completions",
+      "default_base_url": "https://opencode.ai/zen/v1",
+      "env_vars": [
+        "OPENCODE_API_KEY"
+      ],
+      "models_dev_keys": [
+        "opencode"
+      ],
+      "notes": "renamed from opencode; per-model routing (claude-*/qwen*-plus -> anthropic-messages, gemini-* -> google-generative-ai) is handled by api_routes (W2), default wire shown here.",
+      "wire_source": "model"
+    },
+    {
+      "id": "opencode-go",
+      "label": "OpenCode Go",
+      "wire": "openai-completions",
+      "default_base_url": "https://opencode.ai/zen/go",
+      "env_vars": [
+        "OPENCODE_API_KEY"
+      ],
+      "models_dev_keys": [
+        "opencode-go"
+      ],
+      "notes": "declared base .../zen/go is normalized to .../zen/go/v1 at the wire. pi flags minimax-m3 as openai-completions (W2 fix).",
+      "wire_source": "model"
+    },
+    {
+      "id": "github-copilot",
+      "label": "GitHub Copilot",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.individual.githubcopilot.com",
+      "env_vars": [
+        "GITHUB_COPILOT_TOKEN"
+      ],
+      "models_dev_keys": [
+        "github-copilot"
+      ],
+      "notes": "renamed from copilot (id only, host kept). upstream key env=GITHUB_TOKEN; pi COPILOT_GITHUB_TOKEN; voidcode GITHUB_COPILOT_TOKEN kept as fallback. wire_source=provider: the catalog still records upstream truth (claude-* -> anthropic-messages, gpt-5*/grok-4.5/4.6/oswe*/mai-* -> openai-responses) but dispatch stays on our implemented chat-completions wire. OMP's copilot Anthropic route needs a parsed credential envelope, Authorization: Bearer, the Copilot identity headers and a negotiated integration id (pi anthropic.ts:2017-2041,3423); none of that is verifiable without a live Copilot token.",
+      "wire_source": "provider"
+    },
+    {
+      "id": "groq",
+      "label": "Groq",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.groq.com/openai/v1",
+      "env_vars": [
+        "GROQ_API_KEY"
+      ],
+      "models_dev_keys": [
+        "groq"
+      ],
+      "wire_source": "model"
+    },
+    {
+      "id": "together",
+      "label": "Together",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.together.ai/v1",
+      "env_vars": [
+        "TOGETHER_API_KEY"
+      ],
+      "models_dev_keys": [
+        "togetherai"
+      ],
+      "notes": "host api.together.ai kept (working today); pi declares api.together.xyz.",
+      "wire_source": "model"
+    },
+    {
+      "id": "fireworks",
+      "label": "Fireworks",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.fireworks.ai/inference/v1",
+      "env_vars": [
+        "FIREWORKS_API_KEY"
+      ],
+      "models_dev_keys": [
+        "fireworks-ai"
+      ],
+      "notes": "pi does not reference this key in its descriptors, but upstream models.dev DOES carry fireworks-ai (34 models) at .../inference/v1/.",
+      "wire_source": "model"
+    },
+    {
+      "id": "mistral",
+      "label": "Mistral",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.mistral.ai/v1",
+      "env_vars": [
+        "MISTRAL_API_KEY"
+      ],
+      "models_dev_keys": [
+        "mistral"
+      ],
+      "wire_source": "model"
+    },
+    {
+      "id": "openrouter",
+      "label": "OpenRouter",
+      "wire": "openai-completions",
+      "default_base_url": "https://openrouter.ai/api/v1",
+      "env_vars": [
+        "OPENROUTER_API_KEY"
+      ],
+      "models_dev_keys": [],
+      "notes": "runtime-only (no models.dev key). pi wire=openrouter pseudo-wire; voidcode stays openai-completions.",
+      "wire_source": "model"
+    },
+    {
+      "id": "endpoint",
+      "label": "Endpoint",
+      "wire": "openai-completions",
+      "default_base_url": "http://127.0.0.1:4000/v1",
+      "env_vars": [
+        "ENDPOINT_API_KEY",
+        "ENDPOINT_BASE_URL"
+      ],
+      "models_dev_keys": [],
+      "notes": "voidcode-only user-supplied OpenAI-compatible gateway; no pi counterpart.",
+      "wire_source": "model"
+    },
+    {
+      "id": "kimi-code",
+      "label": "Kimi For Coding",
+      "wire": "anthropic-messages",
+      "default_base_url": "https://api.kimi.com/coding",
+      "env_vars": [
+        "KIMI_CODING_API_KEY"
+      ],
+      "models_dev_keys": [],
+      "notes": "renamed from kimi-coding. KIMI_CODING_API_KEY is deliberately not shared with moonshot: api.kimi.com/coding vs api.moonshot.ai. pi wire/base UNVERIFIED; no OAuth login.",
+      "wire_source": "model"
+    },
+    {
+      "id": "aiand",
+      "label": "ai&",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.aiand.com/v1",
+      "env_vars": [
+        "AIAND_API_KEY"
+      ],
+      "models_dev_keys": [
+        "aiand"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://api.aiand.com/v1/models` -> 200 (JSON listing `data[11]`). Re-run it before enabling anything that assumes this host. pi attests api=openai-completions (pi-provider-table.md:40).",
+      "wire_source": "model"
+    },
+    {
+      "id": "alibaba-token-plan",
+      "label": "Alibaba Token Plan",
+      "wire": "openai-completions",
+      "default_base_url": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+      "env_vars": [
+        "ALIBABA_TOKEN_PLAN_API_KEY"
+      ],
+      "models_dev_keys": [
+        "alibaba-token-plan"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/models` -> 401 (JSON error `{\"request_id\": \"8baeb3bb-7244-4a77-94f6-3aba67452fcc\", \"code`). Re-run it before enabling anything that assumes this host. upstream api matches pi exactly; key alibaba-token-plan (28 models).",
+      "wire_source": "model"
+    },
+    {
+      "id": "baseten",
+      "label": "Baseten",
+      "wire": "openai-completions",
+      "default_base_url": "https://inference.baseten.co/v1",
+      "env_vars": [
+        "BASETEN_API_KEY"
+      ],
+      "models_dev_keys": [
+        "baseten"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://inference.baseten.co/v1/models` -> 401 (non-json body). Re-run it before enabling anything that assumes this host. pi attests api=openai-completions (pi-provider-table.md:47).",
+      "wire_source": "model"
+    },
+    {
+      "id": "cline-pass",
+      "label": "ClinePass",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.cline.bot/api/v1",
+      "env_vars": [
+        "CLINE_API_KEY"
+      ],
+      "models_dev_keys": [
+        "cline-pass"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://api.cline.bot/api/v1/models` -> 200 (JSON listing `data[458]`). Re-run it before enabling anything that assumes this host. pi attests api=openai-completions (pi-provider-table.md:51).",
+      "wire_source": "model"
+    },
+    {
+      "id": "coreweave",
+      "label": "CoreWeave",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.inference.wandb.ai/v1",
+      "env_vars": [
+        "COREWEAVE_API_KEY",
+        "WANDB_API_KEY"
+      ],
+      "models_dev_keys": [
+        "wandb"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://api.inference.wandb.ai/v1/models` -> 403 (JSON error `{\"error\": {\"code\": \"unsupported_country_region_territory\", \"`). Re-run it before enabling anything that assumes this host. upstream key wandb (29 models); upstream env WANDB_API_KEY kept as the fallback after pi's COREWEAVE_API_KEY.",
+      "wire_source": "model"
+    },
+    {
+      "id": "gmi-cloud",
+      "label": "GMI Cloud",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.gmi-serving.com/v1",
+      "env_vars": [
+        "GMI_API_KEY",
+        "GMICLOUD_API_KEY"
+      ],
+      "models_dev_keys": [
+        "gmicloud"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://api.gmi-serving.com/v1/models` -> 401 (JSON error `{\"group\": \"api_key\", \"message\": \"API key is required.\"}`). Re-run it before enabling anything that assumes this host. upstream key gmicloud (15 models); upstream env GMICLOUD_API_KEY kept as the fallback.",
+      "wire_source": "model"
+    },
+    {
+      "id": "huggingface",
+      "label": "Hugging Face",
+      "wire": "openai-completions",
+      "default_base_url": "https://router.huggingface.co/v1",
+      "env_vars": [
+        "HUGGINGFACE_HUB_TOKEN",
+        "HF_TOKEN"
+      ],
+      "models_dev_keys": [
+        "huggingface"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://router.huggingface.co/v1/models` -> 200 (JSON listing `data[136]`). Re-run it before enabling anything that assumes this host. upstream env HF_TOKEN kept as the fallback after pi's HUGGINGFACE_HUB_TOKEN.",
+      "wire_source": "model"
+    },
+    {
+      "id": "kilo",
+      "label": "Kilo Gateway",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.kilo.ai/api/gateway",
+      "env_vars": [
+        "KILO_API_KEY"
+      ],
+      "models_dev_keys": [
+        "kilo"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://api.kilo.ai/api/gateway/v1/models` -> 200 (JSON listing `data[394]`). Re-run it before enabling anything that assumes this host. pi attests api=openai-completions (pi-provider-table.md:71).",
+      "wire_source": "model"
+    },
+    {
+      "id": "novita",
+      "label": "NovitaAI",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.novita.ai/openai/v1",
+      "env_vars": [
+        "NOVITA_API_KEY"
+      ],
+      "models_dev_keys": [
+        "novita-ai"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://api.novita.ai/openai/v1/models` -> 200 (JSON listing `data[122]`). Re-run it before enabling anything that assumes this host. pi attests .../openai/v1 (pi-provider-table.md:84) while upstream spells the same host without the segment.",
+      "wire_source": "model"
+    },
+    {
+      "id": "nvidia",
+      "label": "Nvidia",
+      "wire": "openai-completions",
+      "default_base_url": "https://integrate.api.nvidia.com/v1",
+      "env_vars": [
+        "NVIDIA_API_KEY"
+      ],
+      "models_dev_keys": [
+        "nvidia"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://integrate.api.nvidia.com/v1/models` -> 200 (JSON listing `data[82]`). Re-run it before enabling anything that assumes this host. pi attests api=openai-completions (pi-provider-table.md:85).",
+      "wire_source": "model"
+    },
+    {
+      "id": "venice",
+      "label": "Venice AI",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.venice.ai/api/v1",
+      "env_vars": [
+        "VENICE_API_KEY"
+      ],
+      "models_dev_keys": [
+        "venice"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://api.venice.ai/api/v1/models` -> 200 (JSON listing `data[123]`). Re-run it before enabling anything that assumes this host. upstream carries no api, the host is pi's (pi-provider-table.md:102).",
+      "wire_source": "model"
+    },
+    {
+      "id": "wafer-serverless",
+      "label": "Wafer",
+      "wire": "openai-completions",
+      "default_base_url": "https://pass.wafer.ai/v1",
+      "env_vars": [
+        "WAFER_SERVERLESS_API_KEY",
+        "WAFER_API_KEY"
+      ],
+      "models_dev_keys": [
+        "wafer.ai"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://pass.wafer.ai/v1/models` -> 200 (JSON listing `data[8]`). Re-run it before enabling anything that assumes this host. upstream key wafer.ai (5 models); upstream env WAFER_API_KEY kept as the fallback.",
+      "wire_source": "model"
+    },
+    {
+      "id": "xiaomi",
+      "label": "Xiaomi",
+      "wire": "openai-completions",
+      "default_base_url": "https://api.xiaomimimo.com/v1",
+      "env_vars": [
+        "XIAOMI_API_KEY"
+      ],
+      "models_dev_keys": [
+        "xiaomi"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://api.xiaomimimo.com/v1/models` -> 401 (JSON error `{\"error\": {\"message\": \"Invalid API Key\", \"param\": \"Please pr`). Re-run it before enabling anything that assumes this host. pi attests api=openai-completions (pi-provider-table.md:109).",
+      "wire_source": "model"
+    },
+    {
+      "id": "xiaomi-token-plan-ams",
+      "label": "Xiaomi Token Plan (Europe)",
+      "wire": "openai-completions",
+      "default_base_url": "https://token-plan-ams.xiaomimimo.com/v1",
+      "env_vars": [
+        "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
+        "XIAOMI_API_KEY"
+      ],
+      "models_dev_keys": [
+        "xiaomi-token-plan-ams"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://token-plan-ams.xiaomimimo.com/v1/models` -> 401 (JSON error `{\"error\": {\"message\": \"Invalid API Key\", \"param\": \"Please pr`). Re-run it before enabling anything that assumes this host. upstream env XIAOMI_API_KEY kept as the fallback.",
+      "wire_source": "model"
+    },
+    {
+      "id": "xiaomi-token-plan-cn",
+      "label": "Xiaomi Token Plan (China)",
+      "wire": "openai-completions",
+      "default_base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+      "env_vars": [
+        "XIAOMI_TOKEN_PLAN_CN_API_KEY",
+        "XIAOMI_API_KEY"
+      ],
+      "models_dev_keys": [
+        "xiaomi-token-plan-cn"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://token-plan-cn.xiaomimimo.com/v1/models` -> 401 (JSON error `{\"error\": {\"message\": \"Invalid API Key\", \"param\": \"Please pr`). Re-run it before enabling anything that assumes this host. upstream env XIAOMI_API_KEY kept as the fallback.",
+      "wire_source": "model"
+    },
+    {
+      "id": "xiaomi-token-plan-sgp",
+      "label": "Xiaomi Token Plan (Singapore)",
+      "wire": "openai-completions",
+      "default_base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+      "env_vars": [
+        "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+        "XIAOMI_API_KEY"
+      ],
+      "models_dev_keys": [
+        "xiaomi-token-plan-sgp"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://token-plan-sgp.xiaomimimo.com/v1/models` -> 401 (JSON error `{\"error\": {\"message\": \"Invalid API Key\", \"param\": \"Please pr`). Re-run it before enabling anything that assumes this host. upstream env XIAOMI_API_KEY kept as the fallback.",
+      "wire_source": "model"
+    },
+    {
+      "id": "zenmux",
+      "label": "ZenMux",
+      "wire": "openai-completions",
+      "default_base_url": "https://zenmux.ai/api/v1",
+      "env_vars": [
+        "ZENMUX_API_KEY"
+      ],
+      "models_dev_keys": [
+        "zenmux"
+      ],
+      "notes": "W6 addition; shipped-table probe record: unauthenticated `GET https://zenmux.ai/api/v1/models` -> 200 (JSON listing `data[203]`). Re-run it before enabling anything that assumes this host. This build only verified the chat-completions listing, so dispatch stays on the row's own wire and the catalog's `api` is recorded upstream truth we do not serve yet (same shape as github-copilot) until an aggregator route or a Zen-style adapter is verified.",
+      "wire_source": "provider"
+    }
+  ]
+}

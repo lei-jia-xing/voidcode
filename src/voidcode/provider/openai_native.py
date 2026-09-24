@@ -14,7 +14,9 @@ from openai import OpenAI, omit
 from ..tools.contracts import ToolCall
 from ..tools.output import redacted_argument_keys_for_tool, sanitize_tool_arguments, sanitize_tool_result_data, strip_redaction_sentinels
 from ._wire_common import (
+    DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
     OwnedTransport,
+    abort_signal_cancelled,
     iter_stream_with_timeout,
     normalize_tool_call_id,
     resolve_extra_request_headers,
@@ -27,7 +29,7 @@ from .errors import (
     redact_provider_error_details,
     redact_provider_error_message,
 )
-from .model_catalog import ToolFeedbackMode
+from .model_catalog import ProviderModelMetadata, ToolFeedbackMode
 from .protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
@@ -38,10 +40,13 @@ from .protocol import (
     WirePrefixDescriptor,
 )
 from .provider_config import openai_wire_default_base_url
-from .reasoning_effort import clamp_effort_to_supported, map_effort_for_provider, normalize_reasoning_effort
+from .provider_table import PROVIDER_TABLE_BY_ID
+from .reasoning_effort import clamp_effort_to_supported, normalize_reasoning_effort, reasoning_kwargs
+from .thinking_rules import thinking_rule_for
 from .trace import write_provider_trace
 
-_PROVIDERS_REQUIRING_REASONING_CONTENT_WITH_TOOL_CALLS = frozenset({"deepseek"})
+#: OMP's fallback cap when a model's own maximum is unknown (``types.ts:70``).
+_OUTPUT_CAP_WHEN_UNKNOWN = 64000
 
 
 def _reasoning_content_from_tool_data(segment: object) -> str | None:
@@ -55,20 +60,27 @@ def _reasoning_content_from_tool_data(segment: object) -> str | None:
     return reasoning_content if isinstance(reasoning_content, str) and reasoning_content else None
 
 
-def _requires_reasoning_content_with_tool_calls(*, provider_name: str | None, model_name: str, raw_model: str | None) -> bool:
-    if (provider_name or "").strip().lower() in _PROVIDERS_REQUIRING_REASONING_CONTENT_WITH_TOOL_CALLS:
-        return True
-    candidates = [model_name]
-    if raw_model is not None:
-        candidates.append(raw_model)
-    return any(candidate.strip().lower().startswith("deepseek-") for candidate in candidates)
+def _output_cap(metadata: ProviderModelMetadata | None) -> int:
+    """The cap the kimi family always gets: the model's own maximum, else 64000."""
+    return metadata.max_output_tokens if metadata is not None and metadata.max_output_tokens else _OUTPUT_CAP_WHEN_UNKNOWN
+
+
+def _requires_reasoning_content_with_tool_calls(*, provider_name: str | None, model_name: str) -> bool:
+    """Whether this model's tool-call replay must carry its reasoning content.
+
+    The answer is data (``thinking_rules.json``:
+    ``requires_reasoning_content_for_tool_calls``), never a provider name or a
+    model prefix.
+    """
+    rule = thinking_rule_for(provider_name or "", model_name)
+    return rule.requires_reasoning_content_for_tool_calls
 
 
 # Construction default of ``OpenAIChatCompletionsTransport`` for direct use only.
 # It is never a provider-level fallback: a provider resolves its own vendor
 # default (``provider_config.openai_wire_default_base_url``) or fails with
 # ``not_configured``.
-_DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+_DEFAULT_OPENAI_BASE_URL = PROVIDER_TABLE_BY_ID["openai"].default_base_url
 # The SDK refuses to construct a client without a credential; the placeholder only
 # satisfies that check -- ``_auth_headers``/``_request_headers`` decide what is sent.
 _PLACEHOLDER_API_KEY = "voidcode-no-api-key"
@@ -453,7 +465,6 @@ class OpenAIChatCompletionsProvider:
             # The mapped name is what actually reaches the provider, so a
             # ``model_map`` alias onto a deepseek model must still replay.
             model_name=self._model_name(request),
-            raw_model=request.raw_model,
         )
         reasoning_content_by_tool_call_id: dict[str, str] = {}
         if requires_reasoning_content:
@@ -646,15 +657,25 @@ class OpenAIChatCompletionsProvider:
             )
         model_name = self._model_name(request)
         wire = self._wire(request)
+        metadata = request.model_metadata
+        rule = thinking_rule_for(request.provider_name or self.name, model_name)
         payload: dict[str, object] = {"model": model_name, "messages": wire.messages, "stream": stream}
-        if wire.tools:
+        # The catalog is the authority on what this model accepts: a model that
+        # cannot call tools is not handed a tool schema, and one that does not
+        # reason is not handed a reasoning knob.
+        if wire.tools and (metadata is None or metadata.supports_tools is not False):
             payload["tools"] = wire.tools
             payload["tool_choice"] = "auto"
-        if request.reasoning_effort:
+        if rule.sends_output_cap_by_default:
+            # OMP sends no output cap unless the caller asks for one; the kimi
+            # family is the one exception, and it sends the model's own maximum
+            # (``resolveOpenAIOutputTokenParam``, openai-shared.ts:630-647).
+            payload[rule.max_tokens_field_or_default()] = _output_cap(metadata)
+        if request.reasoning_effort and (metadata is None or metadata.supports_reasoning is not False):
             effort = normalize_reasoning_effort(request.reasoning_effort)
-            supported = request.model_metadata.supported_effort_levels if request.model_metadata is not None else None
-            mapped = map_effort_for_provider(
-                provider_name=request.provider_name or self.name,
+            supported = metadata.supported_effort_levels if metadata is not None else None
+            mapped = reasoning_kwargs(
+                rule=rule,
                 # The clamp decides the level from the model's own metadata; the
                 # mapping only picks the request field (and needs the raw levels
                 # again to resolve an explicit "off").
@@ -818,6 +839,8 @@ class OpenAIChatCompletionsProvider:
                 timeout_seconds=self._timeout(),
                 provider_name=provider_name,
                 model_name=model_name,
+                first_event_timeout_seconds=DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
+                aborted=lambda: abort_signal_cancelled(request),
             ):
                 if request.abort_signal is not None and request.abort_signal.cancelled:
                     yield ProviderStreamEvent(kind="error", channel="error", error="provider stream cancelled", error_kind="cancelled")

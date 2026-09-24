@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...mcp import McpCachedToolSurface, McpToolDescriptor
+from ...provider.model_catalog import static_catalog_metadata
 from ...provider.protocol import ProviderAbortSignal
 from ...skills import SkillRegistry, skill_registry_with_builtins
 from ...tools.contracts import Tool, ToolResult
@@ -148,8 +149,32 @@ class StreamPrepCoordinator:
             tool_results=tool_results,
             session_metadata=session_metadata,
             policy=policy or self._default_context_window_policy,
+            # The runtime owns the budget; the catalog only supplies the number.
+            # An explicit ``context_window``/``threshold_*``/``reserve_tokens``
+            # argument to ``prepare_provider_context`` still wins over it.
+            context_window=self._context_budget_for(effective_config),
             before_compact=before_compact,
         )
+
+    @staticmethod
+    def _context_budget_for(effective_config: EffectiveRuntimeConfig) -> int | None:
+        """The window that sizes this model's compaction, ``None`` when nothing sizes it.
+
+        The model's own input cap wins over its whole window: the catalog derives
+        ``max_input_tokens`` from ``limit.input`` when upstream carries one and from
+        ``context_window - max_output_tokens`` otherwise, and that is the space a
+        request may actually use. A model the shipped catalog does not describe
+        leaves compaction unsized, exactly as before.
+        """
+        selection = effective_config.resolved_provider.active_target.selection
+        provider_name = selection.provider
+        model_name = selection.model
+        if not provider_name or not model_name:
+            return None
+        metadata = static_catalog_metadata(provider_name, model_name)
+        if metadata is None:
+            return None
+        return metadata.max_input_tokens or metadata.context_window
 
     @staticmethod
     def build_skill_registry_for_workspace(workspace: Path, skills_config: RuntimeSkillsConfig | None) -> SkillRegistry:

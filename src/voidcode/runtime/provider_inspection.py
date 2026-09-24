@@ -9,7 +9,13 @@ from ..provider.auth import (
     ProviderAuthResolutionError,
     ProviderAuthResolver,
 )
-from ..provider.config import PROVIDER_CONFIG_FIELDS, ProviderConfigEntry, ProviderConfigs, ProviderEndpointConfig
+from ..provider.config import (
+    PROVIDER_CONFIG_PAYLOAD_KEYS,
+    PROVIDER_WIRES,
+    ProviderConfigEntry,
+    ProviderConfigs,
+    ProviderEndpointConfig,
+)
 from ..provider.errors import guidance_for_provider_error_kind
 from ..provider.naming import canonical_provider_id
 from ..provider.openai_native import normalize_openai_base_url
@@ -37,13 +43,25 @@ def provider_config_entry(providers: ProviderConfigs | None, provider_name: str)
     return providers.custom.get(canonical_provider_id(provider_name))
 
 
+# The credential leaf one config shape actually reads. A provider whose payload
+# carries top-level fields takes ``api_key``; google and copilot nest theirs under
+# ``auth`` with their own field names, so naming ``api_key`` for them would point a
+# user at a key the parser rejects.
+_CREDENTIAL_LEAF_BY_SHAPE: Mapping[str, str] = {
+    "google": "auth.api_key",
+    "copilot": "auth.token",
+}
+
+
 def provider_credentials_config_path(provider_name: str) -> str:
     """Runtime config path that holds one provider's credentials."""
     canonical_name = canonical_provider_id(provider_name)
-    field_name = PROVIDER_CONFIG_FIELDS.get(canonical_name)
-    if field_name is None:
+    payload_key = PROVIDER_CONFIG_PAYLOAD_KEYS.get(canonical_name)
+    if payload_key is None:
         return f"providers.custom.{canonical_name}.api_key"
-    return f"providers.{field_name}.api_key"
+    shape = PROVIDER_WIRES[canonical_name].shape
+    leaf = _CREDENTIAL_LEAF_BY_SHAPE.get(shape, "api_key")
+    return f"providers.{payload_key}.{leaf}"
 
 
 def missing_model_guidance() -> str:
@@ -135,8 +153,8 @@ class RuntimeProviderAuthInspector:
                 failure_kind="missing_auth",
                 message=("provider auth field 'google.access_token' must be provided for google oauth auth"),
             )
-        if provider_name == "copilot":
-            config = providers.copilot
+        if provider_name == "github-copilot":
+            config = providers.github_copilot
             auth = None if config is None else config.auth
             if auth is None or auth.method != "oauth":
                 return None
@@ -145,7 +163,7 @@ class RuntimeProviderAuthInspector:
             return ProviderAuthPresence(
                 present=False,
                 failure_kind="missing_auth",
-                message=("provider auth field 'copilot.token' must be provided for copilot oauth auth"),
+                message=("provider auth field 'github-copilot.token' must be provided for github-copilot oauth auth"),
             )
         return None
 

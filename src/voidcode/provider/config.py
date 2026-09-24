@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal, cast, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic.functional_validators import BeforeValidator
@@ -13,6 +13,7 @@ from .naming import (
     UnknownProviderIdError,
     canonical_provider_id,
 )
+from .provider_table import PROVIDER_TABLE_BY_ID
 
 
 def _parse_optional_boundary_string(value: object) -> str | None:
@@ -256,25 +257,42 @@ class _OpenAICompatibleProviderConfigPayload(_ProviderPayloadModel):
 class ProviderConfigsPayload(_ProviderPayloadModel):
     openai: _OpenAIProviderConfigPayload | None = None
     anthropic: _AnthropicProviderConfigPayload | None = None
-    kimi_coding: _AnthropicProviderConfigPayload | None = Field(default=None, alias="kimi-coding")
+    kimi_code: _AnthropicProviderConfigPayload | None = Field(default=None, alias="kimi-code")
     minimax_cn: _AnthropicProviderConfigPayload | None = Field(default=None, alias="minimax-cn")
     google: _GoogleProviderConfigPayload | None = None
-    copilot: _CopilotProviderConfigPayload | None = None
+    github_copilot: _CopilotProviderConfigPayload | None = Field(default=None, alias="github-copilot")
     endpoint: _ProviderEndpointConfigPayload | None = None
-    opencode: _ProviderEndpointConfigPayload | None = None
+    opencode_zen: _ProviderEndpointConfigPayload | None = Field(default=None, alias="opencode-zen")
     openrouter: _ProviderEndpointConfigPayload | None = None
     deepseek: _OpenAICompatibleProviderConfigPayload | None = None
     zai: _OpenAICompatibleProviderConfigPayload | None = None
     zhipuai: _OpenAICompatibleProviderConfigPayload | None = None
-    grok: _OpenAICompatibleProviderConfigPayload | None = None
+    xai: _OpenAICompatibleProviderConfigPayload | None = None
     minimax: _OpenAICompatibleProviderConfigPayload | None = None
-    kimi: _OpenAICompatibleProviderConfigPayload | None = None
+    moonshot: _OpenAICompatibleProviderConfigPayload | None = None
     opencode_go: _OpenAICompatibleProviderConfigPayload | None = Field(default=None, alias="opencode-go")
     qwen: _OpenAICompatibleProviderConfigPayload | None = None
     groq: _OpenAICompatibleProviderConfigPayload | None = None
     together: _OpenAICompatibleProviderConfigPayload | None = None
     fireworks: _OpenAICompatibleProviderConfigPayload | None = None
     mistral: _OpenAICompatibleProviderConfigPayload | None = None
+    aiand: _OpenAICompatibleProviderConfigPayload | None = None
+    alibaba_token_plan: _OpenAICompatibleProviderConfigPayload | None = Field(default=None, alias="alibaba-token-plan")
+    baseten: _OpenAICompatibleProviderConfigPayload | None = None
+    cline_pass: _OpenAICompatibleProviderConfigPayload | None = Field(default=None, alias="cline-pass")
+    coreweave: _OpenAICompatibleProviderConfigPayload | None = None
+    gmi_cloud: _OpenAICompatibleProviderConfigPayload | None = Field(default=None, alias="gmi-cloud")
+    huggingface: _OpenAICompatibleProviderConfigPayload | None = None
+    kilo: _OpenAICompatibleProviderConfigPayload | None = None
+    novita: _OpenAICompatibleProviderConfigPayload | None = None
+    nvidia: _OpenAICompatibleProviderConfigPayload | None = None
+    venice: _OpenAICompatibleProviderConfigPayload | None = None
+    wafer_serverless: _OpenAICompatibleProviderConfigPayload | None = Field(default=None, alias="wafer-serverless")
+    xiaomi: _OpenAICompatibleProviderConfigPayload | None = None
+    xiaomi_token_plan_ams: _OpenAICompatibleProviderConfigPayload | None = Field(default=None, alias="xiaomi-token-plan-ams")
+    xiaomi_token_plan_cn: _OpenAICompatibleProviderConfigPayload | None = Field(default=None, alias="xiaomi-token-plan-cn")
+    xiaomi_token_plan_sgp: _OpenAICompatibleProviderConfigPayload | None = Field(default=None, alias="xiaomi-token-plan-sgp")
+    zenmux: _OpenAICompatibleProviderConfigPayload | None = None
     custom: dict[str, _ProviderEndpointConfigPayload] = Field(
         default_factory=dict,
         json_schema_extra={"propertyNames": {"pattern": _CUSTOM_PROVIDER_KEY_PATTERN}},
@@ -305,13 +323,93 @@ def _provider_config_fields() -> dict[str, tuple[str, str]]:
 _PROVIDER_CONFIG_FIELD_ENTRIES: Mapping[str, tuple[str, str]] = _provider_config_fields()
 
 #: Canonical built-in provider id -> the ``providers`` payload key that carries it.
-_PROVIDER_CONFIG_PAYLOAD_KEYS: Mapping[str, str] = {
+PROVIDER_CONFIG_PAYLOAD_KEYS: Mapping[str, str] = {
     provider_id: payload_key for provider_id, (_, payload_key) in _PROVIDER_CONFIG_FIELD_ENTRIES.items()
 }
 
 #: Canonical built-in provider id -> the ``ProviderConfigs`` field holding its
 #: configuration. Custom providers live in the ``custom`` mapping instead.
 PROVIDER_CONFIG_FIELDS: Mapping[str, str] = {provider_id: field_name for provider_id, (field_name, _) in _PROVIDER_CONFIG_FIELD_ENTRIES.items()}
+
+
+# =============================================================================
+# Provider wires
+# =============================================================================
+
+type _ProviderShape = Literal[
+    "openai",
+    "anthropic",
+    "google",
+    "copilot",
+    "endpoint",
+    "named_endpoint",
+    "openai_compatible",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class _ProviderWire:
+    """How one built-in provider is wired into the provider-config passes.
+
+    ``field_name`` names the provider in both ``ProviderConfigsPayload`` and
+    ``ProviderConfigs`` (the parser builds one from the other by keyword), and
+    ``payload_key`` is the spelling a config file uses for it. ``env_vars`` are
+    the environment variables that configure the provider, credential first: an
+    ``openai_compatible`` provider reads the rest as fallbacks, the generic
+    ``endpoint`` provider takes its base URL from the second, and every other
+    shape takes only the first.
+    """
+
+    field_name: str
+    payload_key: str
+    shape: _ProviderShape
+    env_vars: tuple[str, ...]
+
+
+#: Which config shape a ``providers.<id>`` payload field belongs to. The payload
+#: model *is* the shape -- it decides which config dataclass the parser builds --
+#: so the classification is read off the field's own annotation rather than a
+#: second list of provider ids.
+_SHAPE_BY_PAYLOAD_MODEL: Mapping[type[BaseModel], _ProviderShape] = {
+    _OpenAIProviderConfigPayload: "openai",
+    _AnthropicProviderConfigPayload: "anthropic",
+    _GoogleProviderConfigPayload: "google",
+    _CopilotProviderConfigPayload: "copilot",
+    _ProviderEndpointConfigPayload: "named_endpoint",
+    _OpenAICompatibleProviderConfigPayload: "openai_compatible",
+}
+
+
+def _payload_model_type(annotation: object) -> type[BaseModel]:
+    for argument in get_args(annotation):
+        if isinstance(argument, type) and issubclass(argument, BaseModel):
+            return argument
+    raise ValueError(f"provider payload field is not a single config model: {annotation!r}")
+
+
+def _provider_wires() -> dict[str, _ProviderWire]:
+    """Canonical provider id -> its wire, in ``providers`` payload order.
+
+    The id -> field/payload-key half is derived from the payload model, the
+    shape from that field's own config model, and the credential environment
+    variables from ``provider_table.json``. A payload field with no table row
+    raises here instead of resolving to a provider with no endpoint.
+    """
+    wires: dict[str, _ProviderWire] = {}
+    for provider_id, (field_name, payload_key) in _PROVIDER_CONFIG_FIELD_ENTRIES.items():
+        shape = _SHAPE_BY_PAYLOAD_MODEL[_payload_model_type(ProviderConfigsPayload.model_fields[field_name].annotation)]
+        if provider_id == "endpoint":
+            # The generic gateway is the one ``named_endpoint`` that owns the
+            # generic ``ENDPOINT_*`` variables and its own default host.
+            shape = "endpoint"
+        wires[provider_id] = _ProviderWire(field_name, payload_key, shape, PROVIDER_TABLE_BY_ID[provider_id].env_vars)
+    return wires
+
+
+#: Canonical provider id -> its wire. The keys are the payload model's own
+#: provider ids and the values come from the provider table, so this mapping
+#: cannot drift from either the config surface or the vendor facts.
+PROVIDER_WIRES: Mapping[str, _ProviderWire] = _provider_wires()
 
 
 def _canonicalize_provider_config_payload_keys(
@@ -349,7 +447,7 @@ def _canonical_provider_config_key(raw_key: str, *, field_path: str) -> str:
     canonical_key = canonical_provider_id(raw_key)
     if canonical_key == "custom":
         return "custom"
-    payload_key = _PROVIDER_CONFIG_PAYLOAD_KEYS.get(canonical_key)
+    payload_key = PROVIDER_CONFIG_PAYLOAD_KEYS.get(canonical_key)
     if payload_key is None:
         raise ValueError(f"{_nested_config_field(field_path, raw_key)}: {UnknownProviderIdError(raw_key).message}")
     return payload_key
@@ -398,30 +496,19 @@ class OpenAICompatibleProviderConfig:
     transient_retry: ProviderTransientRetryConfig | None = None
 
 
-# Default endpoint per provider. Only base URLs live here: the model list is
-# always discovered from the provider's own host, so there is no second list to
-# maintain and no listing URL to keep in step.
-_OPENAI_COMPATIBLE_DEFAULTS: dict[str, str] = {
-    "deepseek": "https://api.deepseek.com",
-    "zai": "https://api.z.ai/api/paas/v4",
-    "zhipuai": "https://open.bigmodel.cn/api/paas/v4",
-    "grok": "https://api.x.ai",
-    "minimax": "https://api.minimax.io",
-    "kimi": "https://api.moonshot.ai",
-    "opencode-go": "https://opencode.ai/zen/go",
-    "qwen": "https://dashscope.aliyuncs.com/compatible-mode",
-    "groq": "https://api.groq.com/openai/v1",
-    "together": "https://api.together.ai/v1",
-    "fireworks": "https://api.fireworks.ai/inference/v1",
-    "mistral": "https://api.mistral.ai/v1",
-}
-
-
-_OPENAI_COMPATIBLE_PROVIDER_NAMES = frozenset(_OPENAI_COMPATIBLE_DEFAULTS)
+# Default endpoint per provider, read from the provider table. Only base URLs
+# live there: the model list is always discovered from the provider's own host,
+# so there is no second list to maintain and no listing URL to keep in step.
+# The providers on this contract are the table rows whose config shape is
+# ``openai_compatible`` -- a named endpoint, OpenAI itself, Copilot and the
+# Anthropic-/Google-wire vendors resolve their own default elsewhere.
+_OPENAI_COMPATIBLE_PROVIDER_NAMES = frozenset(provider_id for provider_id, wire in PROVIDER_WIRES.items() if wire.shape == "openai_compatible")
 
 
 def openai_compatible_default_base_url(provider_name: str) -> str:
-    return _OPENAI_COMPATIBLE_DEFAULTS.get(provider_name, "")
+    if provider_name not in _OPENAI_COMPATIBLE_PROVIDER_NAMES:
+        return ""
+    return PROVIDER_TABLE_BY_ID[provider_name].default_base_url
 
 
 def openai_compatible_endpoint_config(
@@ -443,24 +530,6 @@ def openai_compatible_endpoint_config(
         timeout_seconds=config.timeout_seconds,
         model_map=dict(config.model_map),
     )
-
-
-# =============================================================================
-# Provider environment variables
-# =============================================================================
-
-_ZAI_API_KEY_ENV_VAR = "ZAI_API_KEY"
-_ZHIPU_API_KEY_ENV_VAR = "ZHIPU_API_KEY"
-_DEEPSEEK_API_KEY_ENV_VAR = "DEEPSEEK_API_KEY"
-_XAI_API_KEY_ENV_VAR = "XAI_API_KEY"
-_MINIMAX_API_KEY_ENV_VAR = "MINIMAX_API_KEY"
-_KIMI_API_KEY_ENV_VAR = "KIMI_API_KEY"
-_OPENCODE_API_KEY_ENV_VAR = "OPENCODE_API_KEY"
-_DASHSCOPE_API_KEY_ENV_VAR = "DASHSCOPE_API_KEY"
-_GROQ_API_KEY_ENV_VAR = "GROQ_API_KEY"
-_TOGETHER_API_KEY_ENV_VAR = "TOGETHER_API_KEY"
-_FIREWORKS_API_KEY_ENV_VAR = "FIREWORKS_API_KEY"
-_MISTRAL_API_KEY_ENV_VAR = "MISTRAL_API_KEY"
 
 
 # =============================================================================
@@ -571,25 +640,42 @@ class ProviderEndpointConfig:
 class ProviderConfigs:
     openai: OpenAIProviderConfig | None = None
     anthropic: AnthropicProviderConfig | None = None
-    kimi_coding: AnthropicProviderConfig | None = None
+    kimi_code: AnthropicProviderConfig | None = None
     minimax_cn: AnthropicProviderConfig | None = None
     google: GoogleProviderConfig | None = None
-    copilot: CopilotProviderConfig | None = None
+    github_copilot: CopilotProviderConfig | None = None
     endpoint: ProviderEndpointConfig | None = None
-    opencode: ProviderEndpointConfig | None = None
+    opencode_zen: ProviderEndpointConfig | None = None
     openrouter: ProviderEndpointConfig | None = None
     deepseek: OpenAICompatibleProviderConfig | None = None
     zai: OpenAICompatibleProviderConfig | None = None
     zhipuai: OpenAICompatibleProviderConfig | None = None
-    grok: OpenAICompatibleProviderConfig | None = None
+    xai: OpenAICompatibleProviderConfig | None = None
     minimax: OpenAICompatibleProviderConfig | None = None
-    kimi: OpenAICompatibleProviderConfig | None = None
+    moonshot: OpenAICompatibleProviderConfig | None = None
     opencode_go: OpenAICompatibleProviderConfig | None = None
     qwen: OpenAICompatibleProviderConfig | None = None
     groq: OpenAICompatibleProviderConfig | None = None
     together: OpenAICompatibleProviderConfig | None = None
     fireworks: OpenAICompatibleProviderConfig | None = None
     mistral: OpenAICompatibleProviderConfig | None = None
+    aiand: OpenAICompatibleProviderConfig | None = None
+    alibaba_token_plan: OpenAICompatibleProviderConfig | None = None
+    baseten: OpenAICompatibleProviderConfig | None = None
+    cline_pass: OpenAICompatibleProviderConfig | None = None
+    coreweave: OpenAICompatibleProviderConfig | None = None
+    gmi_cloud: OpenAICompatibleProviderConfig | None = None
+    huggingface: OpenAICompatibleProviderConfig | None = None
+    kilo: OpenAICompatibleProviderConfig | None = None
+    novita: OpenAICompatibleProviderConfig | None = None
+    nvidia: OpenAICompatibleProviderConfig | None = None
+    venice: OpenAICompatibleProviderConfig | None = None
+    wafer_serverless: OpenAICompatibleProviderConfig | None = None
+    xiaomi: OpenAICompatibleProviderConfig | None = None
+    xiaomi_token_plan_ams: OpenAICompatibleProviderConfig | None = None
+    xiaomi_token_plan_cn: OpenAICompatibleProviderConfig | None = None
+    xiaomi_token_plan_sgp: OpenAICompatibleProviderConfig | None = None
+    zenmux: OpenAICompatibleProviderConfig | None = None
     custom: dict[str, ProviderEndpointConfig] = field(default_factory=dict)
 
     def entry(self, provider_name: str) -> ProviderConfigEntry | None:
@@ -602,95 +688,6 @@ class ProviderConfigs:
         """
         field_name = PROVIDER_CONFIG_FIELDS.get(canonical_provider_id(provider_name))
         return None if field_name is None else getattr(self, field_name)
-
-
-_OPENAI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
-_ANTHROPIC_API_KEY_ENV_VAR = "ANTHROPIC_API_KEY"
-# Distinct from ``KIMI_API_KEY``/``MINIMAX_API_KEY`` on purpose: those feed the
-# OpenAI wire at ``api.moonshot.ai``/``api.minimax.io``, and one variable must
-# never send one host's credential to another host.
-_KIMI_CODING_API_KEY_ENV_VAR = "KIMI_CODING_API_KEY"
-_MINIMAX_CN_API_KEY_ENV_VAR = "MINIMAX_CN_API_KEY"
-_GOOGLE_API_KEY_ENV_VAR = "GOOGLE_API_KEY"
-_COPILOT_TOKEN_ENV_VAR = "GITHUB_COPILOT_TOKEN"
-_ENDPOINT_API_KEY_ENV_VAR = "ENDPOINT_API_KEY"
-_ENDPOINT_BASE_URL_ENV_VAR = "ENDPOINT_BASE_URL"
-_OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
-
-
-# =============================================================================
-# Provider wires
-# =============================================================================
-
-type _ProviderShape = Literal[
-    "openai",
-    "anthropic",
-    "google",
-    "copilot",
-    "endpoint",
-    "named_endpoint",
-    "openai_compatible",
-]
-
-
-@dataclass(frozen=True, slots=True)
-class _ProviderWire:
-    """How one built-in provider is wired into the provider-config passes.
-
-    ``field_name`` names the provider in both ``ProviderConfigsPayload`` and
-    ``ProviderConfigs`` (the parser builds one from the other by keyword), and
-    ``payload_key`` is the spelling a config file uses for it. ``env_vars`` are
-    the environment variables that configure the provider, credential first: an
-    ``openai_compatible`` provider reads the rest as fallbacks, the generic
-    ``endpoint`` provider takes its base URL from the second, and every other
-    shape takes only the first.
-    """
-
-    field_name: str
-    payload_key: str
-    shape: _ProviderShape
-    env_vars: tuple[str, ...]
-
-
-def _provider_wires() -> dict[str, _ProviderWire]:
-    """Canonical provider id -> its wire, in ``providers`` payload order.
-
-    The id -> field/payload-key half is derived from the payload model, so the
-    one hand-written part is the shape and the credential environment variables
-    below: adding a vendor is its payload field plus one entry here.
-    """
-    details: dict[str, tuple[_ProviderShape, tuple[str, ...]]] = {
-        "openai": ("openai", (_OPENAI_API_KEY_ENV_VAR,)),
-        "anthropic": ("anthropic", (_ANTHROPIC_API_KEY_ENV_VAR,)),
-        "kimi-coding": ("anthropic", (_KIMI_CODING_API_KEY_ENV_VAR,)),
-        "minimax-cn": ("anthropic", (_MINIMAX_CN_API_KEY_ENV_VAR,)),
-        "google": ("google", (_GOOGLE_API_KEY_ENV_VAR,)),
-        "copilot": ("copilot", (_COPILOT_TOKEN_ENV_VAR,)),
-        "endpoint": ("endpoint", (_ENDPOINT_API_KEY_ENV_VAR, _ENDPOINT_BASE_URL_ENV_VAR)),
-        "opencode": ("named_endpoint", (_OPENCODE_API_KEY_ENV_VAR,)),
-        "openrouter": ("named_endpoint", (_OPENROUTER_API_KEY_ENV_VAR,)),
-        "deepseek": ("openai_compatible", (_DEEPSEEK_API_KEY_ENV_VAR,)),
-        "zai": ("openai_compatible", (_ZAI_API_KEY_ENV_VAR,)),
-        "zhipuai": ("openai_compatible", (_ZHIPU_API_KEY_ENV_VAR, _ZAI_API_KEY_ENV_VAR)),
-        "grok": ("openai_compatible", (_XAI_API_KEY_ENV_VAR,)),
-        "minimax": ("openai_compatible", (_MINIMAX_API_KEY_ENV_VAR,)),
-        "kimi": ("openai_compatible", (_KIMI_API_KEY_ENV_VAR,)),
-        "opencode-go": ("openai_compatible", (_OPENCODE_API_KEY_ENV_VAR,)),
-        "qwen": ("openai_compatible", (_DASHSCOPE_API_KEY_ENV_VAR,)),
-        "groq": ("openai_compatible", (_GROQ_API_KEY_ENV_VAR,)),
-        "together": ("openai_compatible", (_TOGETHER_API_KEY_ENV_VAR,)),
-        "fireworks": ("openai_compatible", (_FIREWORKS_API_KEY_ENV_VAR,)),
-        "mistral": ("openai_compatible", (_MISTRAL_API_KEY_ENV_VAR,)),
-    }
-    return {
-        provider_id: _ProviderWire(field_name, payload_key, *details[provider_id])
-        for provider_id, (field_name, payload_key) in _PROVIDER_CONFIG_FIELD_ENTRIES.items()
-    }
-
-
-#: Canonical provider id -> its wire. The keys are the payload model's own
-#: provider ids, so this table cannot drift from the config surface.
-_PROVIDER_WIRES: Mapping[str, _ProviderWire] = _provider_wires()
 
 
 def _parse_google_auth_method(raw_method: str, *, field_path: str) -> GoogleAuthMethod:
@@ -788,7 +785,7 @@ def provider_configs_from_env(env: Mapping[str, str]) -> ProviderConfigs | None:
     the provider's standard API-key environment variable is enough for runtime
     provider resolution without requiring a .voidcode.json providers block.
     """
-    providers = _provider_configs_from_entries({wire.field_name: _provider_config_from_env(wire, env) for wire in _PROVIDER_WIRES.values()})
+    providers = _provider_configs_from_entries({wire.field_name: _provider_config_from_env(wire, env) for wire in PROVIDER_WIRES.values()})
     if _provider_configs_has_entries(providers):
         return providers
     return None
@@ -809,7 +806,7 @@ def merge_provider_configs(
                 getattr(primary, wire.field_name),
                 getattr(fallback, wire.field_name),
             )
-            for wire in _PROVIDER_WIRES.values()
+            for wire in PROVIDER_WIRES.values()
         },
         custom={**fallback.custom, **primary.custom},
     )
@@ -967,7 +964,7 @@ def _openai_compatible_provider_config_from_env(
 
 
 def _provider_configs_has_entries(providers: ProviderConfigs) -> bool:
-    return any(getattr(providers, wire.field_name) for wire in _PROVIDER_WIRES.values()) or bool(providers.custom)
+    return any(getattr(providers, wire.field_name) for wire in PROVIDER_WIRES.values()) or bool(providers.custom)
 
 
 def _runtime_config_field_name(field_path: str) -> str | None:
@@ -1046,7 +1043,12 @@ def _parse_provider_config_entry(
     """Parse one ``providers.<id>`` block through its shape's parser."""
     match wire.shape:
         case "openai":
-            return _parse_openai_provider_config(raw_value, field_path=field_path, env=env)
+            return _parse_openai_provider_config(
+                raw_value,
+                field_path=field_path,
+                env=env,
+                api_key_env_var=wire.env_vars[0],
+            )
         case "anthropic":
             return _parse_anthropic_provider_config(
                 raw_value,
@@ -1055,15 +1057,26 @@ def _parse_provider_config_entry(
                 api_key_env_var=wire.env_vars[0],
             )
         case "google":
-            return _parse_google_provider_config(raw_value, field_path=field_path, env=env)
+            return _parse_google_provider_config(
+                raw_value,
+                field_path=field_path,
+                env=env,
+                api_key_env_var=wire.env_vars[0],
+            )
         case "copilot":
-            return _parse_copilot_provider_config(raw_value, field_path=field_path, env=env)
+            return _parse_copilot_provider_config(
+                raw_value,
+                field_path=field_path,
+                env=env,
+                token_env_var=wire.env_vars[0],
+            )
         case "endpoint" | "named_endpoint":
             return _parse_endpoint_provider_config(
                 raw_value,
                 field_path=field_path,
                 env=env,
                 default_api_key_env_var=wire.env_vars[0],
+                default_base_url_env_var=wire.env_vars[1] if len(wire.env_vars) > 1 else None,
             )
         case "openai_compatible":
             return _parse_openai_compatible_provider_config(
@@ -1099,7 +1112,7 @@ def parse_provider_configs_payload(
                 field_path=_nested_config_field(source, wire.payload_key),
                 env=environment,
             )
-            for wire in _PROVIDER_WIRES.values()
+            for wire in PROVIDER_WIRES.values()
         },
         custom=_parse_custom_endpoint_provider_configs(
             payload.custom,
@@ -1138,7 +1151,7 @@ def serialize_provider_configs(
     if providers is None:
         return None
     serialized: dict[str, object] = {}
-    for wire in _PROVIDER_WIRES.values():
+    for wire in PROVIDER_WIRES.values():
         entry = getattr(providers, wire.field_name)
         if entry is None:
             continue
@@ -1196,6 +1209,7 @@ def _parse_openai_provider_config(
     *,
     field_path: str,
     env: Mapping[str, str],
+    api_key_env_var: str,
 ) -> OpenAIProviderConfig | None:
     if raw_value is None:
         return None
@@ -1211,7 +1225,7 @@ def _parse_openai_provider_config(
 
     api_key = payload.api_key
     if api_key is None:
-        api_key = env.get(_OPENAI_API_KEY_ENV_VAR)
+        api_key = env.get(api_key_env_var)
     return OpenAIProviderConfig(
         api_key=api_key,
         base_url=payload.base_url,
@@ -1267,6 +1281,7 @@ def _parse_google_provider_config(
     *,
     field_path: str,
     env: Mapping[str, str],
+    api_key_env_var: str,
 ) -> GoogleProviderConfig | None:
     if raw_value is None:
         return None
@@ -1284,6 +1299,7 @@ def _parse_google_provider_config(
         payload.auth,
         field_path=_nested_config_field(field_path, "auth"),
         env=env,
+        api_key_env_var=api_key_env_var,
     )
     return GoogleProviderConfig(
         auth=auth,
@@ -1303,6 +1319,7 @@ def _parse_google_auth_config(
     *,
     field_path: str,
     env: Mapping[str, str],
+    api_key_env_var: str,
 ) -> GoogleProviderAuthConfig | None:
     if raw_value is None:
         return None
@@ -1320,7 +1337,7 @@ def _parse_google_auth_config(
 
     api_key = payload.api_key
     if api_key is None:
-        api_key = env.get(_GOOGLE_API_KEY_ENV_VAR)
+        api_key = env.get(api_key_env_var)
     access_token = payload.access_token
     service_account_json_path = payload.service_account_json_path
 
@@ -1358,6 +1375,7 @@ def _parse_copilot_provider_config(
     *,
     field_path: str,
     env: Mapping[str, str],
+    token_env_var: str,
 ) -> CopilotProviderConfig | None:
     if raw_value is None:
         return None
@@ -1375,6 +1393,7 @@ def _parse_copilot_provider_config(
         payload.auth,
         field_path=_nested_config_field(field_path, "auth"),
         env=env,
+        default_token_env_var=token_env_var,
     )
     return CopilotProviderConfig(
         auth=auth,
@@ -1392,6 +1411,7 @@ def _parse_copilot_auth_config(
     *,
     field_path: str,
     env: Mapping[str, str],
+    default_token_env_var: str,
 ) -> CopilotProviderAuthConfig | None:
     if raw_value is None:
         return None
@@ -1410,9 +1430,9 @@ def _parse_copilot_auth_config(
     token = payload.token
     token_env_var = payload.token_env_var
     if token is None and token_env_var is None:
-        token = env.get(_COPILOT_TOKEN_ENV_VAR)
+        token = env.get(default_token_env_var)
         if token is not None:
-            token_env_var = _COPILOT_TOKEN_ENV_VAR
+            token_env_var = default_token_env_var
     refresh_token = payload.refresh_token
     refresh_leeway_seconds = payload.refresh_leeway_seconds
 
@@ -1453,7 +1473,8 @@ def _parse_endpoint_provider_config(
     *,
     field_path: str,
     env: Mapping[str, str],
-    default_api_key_env_var: str | None = None,
+    default_api_key_env_var: str,
+    default_base_url_env_var: str | None = None,
 ) -> ProviderEndpointConfig | None:
     if raw_value is None:
         return None
@@ -1472,14 +1493,12 @@ def _parse_endpoint_provider_config(
     if api_key is None:
         if api_key_env_var is not None:
             api_key = env.get(api_key_env_var)
-        elif default_api_key_env_var is not None:
-            api_key = env.get(default_api_key_env_var)
         else:
-            api_key = env.get(_ENDPOINT_API_KEY_ENV_VAR)
+            api_key = env.get(default_api_key_env_var)
 
     base_url = payload.base_url
-    if base_url is None:
-        base_url = env.get(_ENDPOINT_BASE_URL_ENV_VAR)
+    if base_url is None and default_base_url_env_var is not None:
+        base_url = env.get(default_base_url_env_var)
 
     raw_auth_scheme = payload.auth_scheme
     auth_scheme: EndpointAuthScheme = "bearer"
@@ -1795,6 +1814,10 @@ def _parse_custom_endpoint_provider_configs(
             provider_payload,
             field_path=_nested_config_field(field_path, raw_provider_name),
             env=env,
+            # A custom provider is an endpoint-shaped gateway: it reads the
+            # generic ENDPOINT_* variables, like the built-in ``endpoint``.
+            default_api_key_env_var=PROVIDER_TABLE_BY_ID["endpoint"].env_vars[0],
+            default_base_url_env_var=PROVIDER_TABLE_BY_ID["endpoint"].env_vars[1],
         )
         if parsed_config is None:
             continue

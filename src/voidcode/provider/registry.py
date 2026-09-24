@@ -12,7 +12,7 @@ from .config import (
     ProviderEndpointConfig,
     openai_compatible_endpoint_config,
 )
-from .copilot import CopilotModelProvider
+from .copilot import GithubCopilotModelProvider
 from .endpoint import OpenAIEndpointProvider
 from .google import GoogleModelProvider
 from .model_catalog import (
@@ -25,7 +25,7 @@ from .models import ProviderResolutionSource
 from .naming import UnknownProviderIdError, canonical_provider_id
 from .openai import OpenAIModelProvider
 from .openai_native import OpenAIChatCompletionsProvider
-from .opencode import OpenCodeModelProvider
+from .opencode import OpenCodeZenModelProvider
 from .opencode_go import OpenCodeGoModelProvider
 from .openrouter import OpenRouterModelProvider
 from .protocol import ModelTurnProvider, TurnProvider
@@ -91,10 +91,10 @@ class ModelProviderRegistry:
         # Adapters that are not shared per-wire ones: a gateway that routes per
         # model, a credential flow of its own, or a wire of its own.
         providers: dict[str, ModelTurnProvider] = {
-            "opencode": OpenCodeModelProvider(config=configs.opencode),
+            "opencode-zen": OpenCodeZenModelProvider(config=configs.opencode_zen),
             "openai": OpenAIModelProvider(config=configs.openai),
             "google": GoogleModelProvider(config=configs.google),
-            "copilot": CopilotModelProvider(config=configs.copilot),
+            "github-copilot": GithubCopilotModelProvider(config=configs.github_copilot),
             "endpoint": OpenAIEndpointProvider(name="endpoint", config=configs.endpoint),
             "openrouter": OpenRouterModelProvider(config=configs.openrouter),
             "opencode-go": OpenCodeGoModelProvider(config=configs.opencode_go),
@@ -189,16 +189,15 @@ class ModelProviderRegistry:
         canonical_name = canonical_provider_id(provider_name)
         catalog = self.model_catalog.get(canonical_name) if self.model_catalog is not None else None
         discovered = catalog.model_metadata.get(model_name) if catalog is not None else None
-        if discovered is not None and (discovered.supports_reasoning_effort is not None or discovered.supported_effort_levels is not None):
-            return discovered
         shipped = static_catalog_metadata(canonical_name, model_name)
-        if shipped is None or discovered is None:
-            return shipped if discovered is None else discovered
-        # A discovered entry - including one hydrated from a catalog cache written by
-        # an older build - owns model sizes and costs, but it may predate the shipped
-        # reasoning-effort facts. Fill only the effort fields it leaves unset instead
-        # of letting a stale cache hide the model's own capability, which is what the
-        # runtime gate and the effort clamp read.
+        if discovered is None or shipped is None:
+            return discovered if discovered is not None else shipped
+        # A discovered entry - including one hydrated from a catalog cache written
+        # by an older build - owns model sizes and costs, but it may predate the
+        # shipped reasoning-effort, wire and display facts. Fill only the fields it
+        # leaves unset instead of letting a stale cache hide them: the runtime gate
+        # and the effort clamp read the effort fields, and wire dispatch reads
+        # ``api``.
         return replace(
             discovered,
             supports_reasoning_effort=(
@@ -210,6 +209,9 @@ class ModelProviderRegistry:
             supported_effort_levels=(
                 discovered.supported_effort_levels if discovered.supported_effort_levels is not None else shipped.supported_effort_levels
             ),
+            api=discovered.api if discovered.api is not None else shipped.api,
+            display_name=discovered.display_name if discovered.display_name is not None else shipped.display_name,
+            modalities_output=(discovered.modalities_output if discovered.modalities_output is not None else shipped.modalities_output),
         )
 
     def provider_catalog(self, provider_name: str) -> ProviderModelCatalog | None:

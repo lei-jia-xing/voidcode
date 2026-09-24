@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, fields
 from functools import lru_cache
 from importlib.resources import files as _resource_files
-from typing import Literal, cast
+from typing import Final, Literal, cast
 from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -45,6 +45,8 @@ class ProviderModelMetadata:
     modalities_output: tuple[str, ...] | None = None
     model_status: str | None = None
     tool_feedback_mode: ToolFeedbackMode | None = None
+    api: str | None = None
+    display_name: str | None = None
     derived_max_input_tokens: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -56,10 +58,15 @@ class ProviderModelMetadata:
             object.__setattr__(self, "max_input_tokens", self.context_window)
             object.__setattr__(self, "derived_max_input_tokens", True)
             return
+        # Upstream sometimes reports an output cap equal to (or larger than) the
+        # whole window, which would leave a nonsensical input budget of a few
+        # tokens. Only a derivation that keeps at least half the window for input
+        # is a real cap; otherwise the window itself is the honest answer.
+        derived = self.context_window - self.max_output_tokens
         object.__setattr__(
             self,
             "max_input_tokens",
-            max(1, self.context_window - self.max_output_tokens),
+            derived if derived >= self.context_window // 2 else self.context_window,
         )
         object.__setattr__(self, "derived_max_input_tokens", True)
 
@@ -81,17 +88,33 @@ def _load_static_catalog() -> dict[str, dict[str, ProviderModelMetadata]]:
     # A packaged resource: a missing file means a broken install, not an empty
     # catalog, so the read stays loud instead of quietly reporting no metadata.
     raw = _resource_files("voidcode.provider").joinpath("model_catalog_data.json").read_text(encoding="utf-8")
-    data = json.loads(raw)
+    return _static_catalog_from_payload(json.loads(raw))
+
+
+#: Every key a shipped catalog entry may carry: the loader constructs
+#: ``ProviderModelMetadata`` from them, so a key outside this set -- a typo, or a
+#: generator that started emitting a new field without the loader -- would be
+#: silently dropped instead of read.
+_CATALOG_FIELDS: Final[frozenset[str]] = frozenset(model_field.name for model_field in fields(ProviderModelMetadata))
+
+
+def _static_catalog_from_payload(data: object) -> dict[str, dict[str, ProviderModelMetadata]]:
+    if not isinstance(data, dict):
+        raise ValueError("model_catalog_data.json must hold an object of providers")
     result: dict[str, dict[str, ProviderModelMetadata]] = {}
-    for provider, models in data.items():
+    for provider, models in cast(dict[str, object], data).items():
         if not isinstance(models, dict):
             continue
         per_provider: dict[str, ProviderModelMetadata] = {}
         for model_id, entry in models.items():
             if not isinstance(entry, dict):
                 continue
+            unknown = sorted(set(entry) - _CATALOG_FIELDS)
+            if unknown:
+                raise ValueError(f"model catalog entry {provider}/{model_id} carries unknown fields: {unknown}")
             per_provider[model_id.strip().lower()] = ProviderModelMetadata(
                 context_window=_positive_int(entry.get("context_window")),
+                max_input_tokens=_positive_int(entry.get("max_input_tokens")),
                 max_output_tokens=_positive_int(entry.get("max_output_tokens")),
                 cost_per_input_token=_non_negative_float(entry.get("cost_per_input_token")),
                 cost_per_output_token=_non_negative_float(entry.get("cost_per_output_token")),
@@ -104,7 +127,10 @@ def _load_static_catalog() -> dict[str, dict[str, ProviderModelMetadata]]:
                 supported_effort_levels=_modalities(entry.get("supported_effort_levels")),
                 supports_vision=_optional_bool(entry.get("supports_vision")),
                 modalities_input=_modalities(entry.get("modalities_input")),
+                modalities_output=_modalities(entry.get("modalities_output")),
                 model_status=_optional_str(entry.get("model_status")),
+                api=_optional_str(entry.get("api")),
+                display_name=_optional_str(entry.get("display_name")),
             )
         result[provider.strip().lower()] = per_provider
     return result
@@ -496,21 +522,39 @@ def _parse_google_discovery_payload(payload: object) -> ModelDiscoveryFetchResul
     return ModelDiscoveryFetchResult(models=tuple(model_ids), model_metadata=model_metadata)
 
 
+#: A version segment anywhere in the base path (``/v1``, ``/v3beta``, ``/v1/openai``):
+#: a base that already names an API version gets the listing appended to itself,
+#: because the vendor's listing lives under the version it documents. Probing every
+#: provider in ``provider_table.json`` (P5 matrix, ``/tmp/p5_probe.json``) confirmed
+#: this rule reproduces the live listing URL for all of them, and that the previous
+#: "append /v1/models unless the base ends with /v1" form produced
+#: ``.../v1/openai/v1/models`` (404) for a base that carries the version mid-path
+#: (deepinfra: ``https://api.deepinfra.com/v1/openai`` -> live listing at
+#: ``.../v1/openai/models``).
+_VERSION_SEGMENT = re.compile(r"/v[0-9]+(?:beta|alpha)?(?:/|$)", re.IGNORECASE)
+
+
+def _models_url(wire: str, base_url: str) -> str:
+    """The listing URL one wire requests for a provider's base URL."""
+    base = base_url.rstrip("/")
+    if wire == "anthropic-messages":
+        # The Anthropic wire appends its own version segment to the base URL.
+        return f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
+    if wire == "google-generative-ai":
+        if base.endswith("/v1beta/models"):
+            return base
+        return f"{base}/models" if base.endswith("/v1beta") else f"{base}/v1beta/models"
+    if base.endswith("/v1/models"):
+        return base
+    if _VERSION_SEGMENT.search(base):
+        return f"{base}/models"
+    return f"{base}/v1/models"
+
+
 def _fetch_data_models(
     request: DiscoveryRequest,
 ) -> ModelDiscoveryFetchResult:
-    base_url = request.base_url.rstrip("/")
-    if request.wire == "anthropic-messages":
-        # The Anthropic wire appends its own version segment to the base URL.
-        models_url = f"{base_url}/models" if base_url.endswith("/v1") else f"{base_url}/v1/models"
-    elif base_url.endswith("/v1/models"):
-        models_url = base_url
-    elif re.search(r"/v[0-9]+(?:beta|alpha)?$", base_url, re.IGNORECASE):
-        models_url = f"{base_url}/models"
-    elif base_url.endswith("/v1"):
-        models_url = f"{base_url}/models"
-    else:
-        models_url = f"{base_url}/v1/models"
+    models_url = _models_url(request.wire, request.base_url)
 
     http_request = Request(url=models_url, headers=_http_headers(request.headers), method="GET")
     with urlopen(http_request, timeout=request.timeout_seconds) as response:  # noqa: S310
@@ -520,14 +564,7 @@ def _fetch_data_models(
 
 
 def _fetch_google_models(request: DiscoveryRequest) -> ModelDiscoveryFetchResult:
-    base_url = request.base_url.rstrip("/")
-    if base_url.endswith("/v1beta/models"):
-        models_url = base_url
-    elif base_url.endswith("/v1beta"):
-        models_url = f"{base_url}/models"
-    else:
-        models_url = f"{base_url}/v1beta/models"
-
+    models_url = _models_url(request.wire, request.base_url)
     uses_google_api_key_header = any(header_name.lower() == "x-goog-api-key" for header_name in request.headers)
     uses_authorization_header = any(header_name.lower() == "authorization" for header_name in request.headers)
     if request.api_key is not None and not uses_authorization_header and not uses_google_api_key_header:

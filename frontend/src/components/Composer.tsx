@@ -42,6 +42,7 @@ export interface SessionContextUsage {
   contextWindow: number | null;
   totalTokens: number | null;
   cacheHitRate: number | null;
+  costUsd: number | null;
 }
 
 export const Composer = memo(function Composer({
@@ -694,7 +695,17 @@ function formatTotalUsage(
       t("chat.cacheHitRate", { rate: formatCachePercent(usage.cacheHitRate) }),
     );
   }
+  const costUsd = usage?.costUsd;
+  if (typeof costUsd === "number" && costUsd >= 0) {
+    parts.push(t("chat.sessionCost", { cost: formatCostUsd(costUsd) }));
+  }
   return parts.join(" · ");
+}
+
+/** An unpriced session reports no cost at all: `null` never renders as `$0.00`. */
+function formatCostUsd(costUsd: number): string {
+  if (costUsd === 0) return "$0";
+  return `$${costUsd.toFixed(costUsd >= 1 ? 2 : 4)}`;
 }
 
 function formatCachePercent(value: number): string {

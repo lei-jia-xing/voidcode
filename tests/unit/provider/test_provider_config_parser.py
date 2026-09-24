@@ -30,7 +30,7 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
             "google": {
                 "auth": {"method": "api_key"},
             },
-            "copilot": {
+            "github-copilot": {
                 "auth": {
                     "method": "oauth",
                     "token_env_var": "COPILOT_TOKEN",
@@ -50,7 +50,7 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
                     "jitter": False,
                 },
             },
-            "opencode": {
+            "opencode-zen": {
                 "auth_scheme": "none",
                 "transient_retry": {"max_retries": 0},
             },
@@ -82,7 +82,7 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
         google=GoogleProviderConfig(
             auth=GoogleProviderAuthConfig(method="api_key", api_key="google-env-key"),
         ),
-        copilot=CopilotProviderConfig(
+        github_copilot=CopilotProviderConfig(
             auth=CopilotProviderAuthConfig(
                 method="oauth",
                 token_env_var="COPILOT_TOKEN",
@@ -103,7 +103,7 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
                 jitter=False,
             ),
         ),
-        opencode=ProviderEndpointConfig(
+        opencode_zen=ProviderEndpointConfig(
             auth_scheme="none",
             auth_scheme_explicit=True,
             transient_retry=ProviderTransientRetryConfig(max_retries=0),
@@ -120,8 +120,8 @@ def test_parse_provider_configs_payload_parses_provider_blocks_directly() -> Non
     assert parsed is not None
     assert parsed.endpoint is not None
     assert parsed.endpoint.auth_scheme_explicit is True
-    assert parsed.opencode is not None
-    assert parsed.opencode.auth_scheme_explicit is True
+    assert parsed.opencode_zen is not None
+    assert parsed.opencode_zen.auth_scheme_explicit is True
     assert parsed.custom["llama-local"].auth_scheme_explicit is True
 
 
@@ -214,7 +214,7 @@ def test_parse_provider_configs_payload_rejects_duplicate_case_variant_provider_
         )
 
 
-@pytest.mark.parametrize("builtin_name", ["openai", "anthropic", "google", "copilot", "endpoint", "opencode"])
+@pytest.mark.parametrize("builtin_name", ["openai", "anthropic", "google", "github-copilot", "endpoint", "opencode-zen"])
 def test_parse_provider_configs_payload_rejects_custom_provider_name_colliding_with_builtin(
     builtin_name: str,
 ) -> None:
@@ -256,14 +256,14 @@ def test_custom_provider_name_is_canonicalised_to_lowercase() -> None:
 def test_parse_provider_fallback_payload_parses_chain_directly() -> None:
     parsed = parse_provider_fallback_payload(
         {
-            "preferred_model": "opencode/gpt-5.4",
+            "preferred_model": "opencode-zen/gpt-5.4",
             "fallback_models": ["openai/gpt-4.1", "anthropic/claude-3-7-sonnet"],
         },
         source="runtime config field 'provider_fallback'",
     )
 
     assert parsed == ProviderFallbackConfig(
-        preferred_model="opencode/gpt-5.4",
+        preferred_model="opencode-zen/gpt-5.4",
         fallback_models=("openai/gpt-4.1", "anthropic/claude-3-7-sonnet"),
     )
 
@@ -272,8 +272,8 @@ def test_parse_provider_fallback_payload_rejects_duplicate_chain_models() -> Non
     with pytest.raises(ValueError, match="provider fallback chain must not contain duplicate models"):
         _ = parse_provider_fallback_payload(
             {
-                "preferred_model": "opencode/gpt-5.4",
-                "fallback_models": ["opencode/gpt-5.4"],
+                "preferred_model": "opencode-zen/gpt-5.4",
+                "fallback_models": ["opencode-zen/gpt-5.4"],
             },
             source="runtime config field 'provider_fallback'",
         )
@@ -297,11 +297,11 @@ def test_parse_provider_fallback_payload_rejects_duplicate_chain_models() -> Non
             id="zhipuai-prefers-own-key",
         ),
         pytest.param("zhipuai", "zhipuai", {"ZAI_API_KEY": "zai-env-key"}, "zai-env-key", id="zhipuai-falls-back-to-zai"),
-        pytest.param("grok", "grok", {"XAI_API_KEY": "xai-env-key"}, "xai-env-key", id="grok"),
+        pytest.param("xai", "xai", {"XAI_API_KEY": "xai-env-key"}, "xai-env-key", id="xai"),
         # The removed GROK_API_KEY spelling must never populate the provider.
-        pytest.param("grok", "grok", {"GROK_API_KEY": "grok-env-key"}, None, id="grok-removed-env-var-ignored"),
+        pytest.param("xai", "xai", {"GROK_API_KEY": "grok-env-key"}, None, id="grok-removed-env-var-ignored"),
         pytest.param("minimax", "minimax", {"MINIMAX_API_KEY": "minimax-env-key"}, "minimax-env-key", id="minimax"),
-        pytest.param("kimi", "kimi", {"KIMI_API_KEY": "kimi-env-key"}, "kimi-env-key", id="kimi"),
+        pytest.param("moonshot", "moonshot", {"KIMI_API_KEY": "kimi-env-key"}, "kimi-env-key", id="moonshot"),
         pytest.param(
             "opencode-go",
             "opencode_go",
@@ -333,7 +333,7 @@ def test_parse_provider_config_from_env(
     (
         pytest.param({"OPENCODE_API_KEY": "opencode-go-env-key"}, "opencode_go", "opencode-go-env-key", id="opencode-go"),
         pytest.param({"DEEPSEEK_API_KEY": "deepseek-env-key"}, "deepseek", "deepseek-env-key", id="deepseek"),
-        pytest.param({"XAI_API_KEY": "xai-env-key"}, "grok", "xai-env-key", id="grok"),
+        pytest.param({"XAI_API_KEY": "xai-env-key"}, "xai", "xai-env-key", id="xai"),
         pytest.param({"ZAI_API_KEY": "zai-env-key"}, "zai", "zai-env-key", id="zai"),
         pytest.param({"ZHIPU_API_KEY": "zhipu-env-key"}, "zhipuai", "zhipu-env-key", id="zhipuai"),
         pytest.param({"DASHSCOPE_API_KEY": "qwen-env-key"}, "qwen", "qwen-env-key", id="qwen"),

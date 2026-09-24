@@ -105,7 +105,7 @@ def _deterministic_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config_module, "_default_runtime_mcp_servers", lambda: {})
 
 
-_OPENCODE = "opencode"
+_OPENCODE = "opencode-zen"
 
 # ------------------------------------------------------------------ fixture model
 
@@ -118,7 +118,7 @@ def _session_state(rich: bool) -> SessionState:
     metadata: dict[str, object] = {}
     if rich:
         metadata = {
-            "runtime_config": {"model": "opencode/gpt-5.4"},
+            "runtime_config": {"model": "opencode-zen/gpt-5.4"},
             "todos": {"version": 2, "revision": 1, "phases": [], "summary": {}},
             "runtime_policy": _runtime_policy_snapshot(),
         }

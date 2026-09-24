@@ -14,11 +14,13 @@ from voidcode.provider.reasoning_effort import (
     REASONING_EFFORT_OFF,
     REASONING_EFFORT_XHIGH,
     clamp_effort_to_supported,
+    disabled_reasoning_kwargs,
     lowest_supported_effort,
-    map_effort_for_provider,
     normalize_reasoning_effort,
-    provider_supports_reasoning_effort,
+    reasoning_kwargs,
 )
+from voidcode.provider.thinking_rules import thinking_rule_for
+from voidcode.runtime.provider_metadata import resolve_reasoning_effort_capability
 
 
 def test_constants_match_spec() -> None:
@@ -89,26 +91,59 @@ def test_lowest_supported_effort_reports_no_level(supported: tuple[str, ...] | N
     assert lowest_supported_effort(supported) is None
 
 
-def test_map_effort_for_provider_sends_lowest_supported_level_for_off() -> None:
-    # New promise: an explicit "off" no longer sends the literal "none"; the model
-    # gets the least reasoning it actually supports. `"none"` is accepted by only a
-    # handful of upstreams, while the lowest supported level is the common
-    # convention (107 of the 259 catalog models VoidCode ships disable that way).
-    assert map_effort_for_provider(
-        provider_name="openai",
-        effort=REASONING_EFFORT_OFF,
-        supported_levels=("low", "medium", "high"),
+def test_off_resolves_through_the_rows_disable_spelling() -> None:
+    """`off` is the "reasoning disabled" request state, not a ladder member: each
+    row's spelling decides the wire shape (OMP's encodeChatCompletionsDisabledReasoning)."""
+    # zai's format is a binary body switch.
+    assert disabled_reasoning_kwargs(
+        rule=thinking_rule_for("zai", "glm-5"),
+        supported_levels=("minimal", "low", "high"),
+    ) == {"extra_body": {"thinking": {"type": "disabled"}}}
+    # The openai gpt-5.6 revisions take the literal "none".
+    assert disabled_reasoning_kwargs(
+        rule=thinking_rule_for("openai", "gpt-5.6-luna"),
+        supported_levels=("low", "high"),
+    ) == {"reasoning_effort": "none"}
+    # A row with no spelling of its own asks for the least the model supports.
+    assert disabled_reasoning_kwargs(
+        rule=thinking_rule_for("deepseek", "deepseek-v4-pro"),
+        supported_levels=("low", "high", "max"),
     ) == {"reasoning_effort": "low"}
+    # openrouter's format disables with a body flag.
+    assert disabled_reasoning_kwargs(rule=thinking_rule_for("openrouter", "any-model"), supported_levels=None) == {
+        "extra_body": {"reasoning": {"enabled": False}},
+    }
+    # A model that lists no level at all gets no effort parameter.
+    assert disabled_reasoning_kwargs(rule=thinking_rule_for("groq", "any-model"), supported_levels=None) == {}
 
 
-def test_map_effort_for_provider_does_not_translate_levels_by_provider_name() -> None:
-    # Old promise: the mapping table rewrote levels per provider name ("max" became
-    # "xhigh" except for anthropic). New promise: levels are decided by the model's
-    # clamp; the mapping only chooses the request field, so providers agree.
-    for provider_name in ("openai", "anthropic", "custom"):
-        assert map_effort_for_provider(provider_name=provider_name, effort=REASONING_EFFORT_MAX) == {
-            "reasoning_effort": REASONING_EFFORT_MAX,
-        }
+def test_a_model_that_always_reasons_is_clamped_instead_of_disabled() -> None:
+    rule = thinking_rule_for("xai", "grok-4.20-0309-reasoning")
+
+    assert rule.requires_effort is True
+    assert disabled_reasoning_kwargs(rule=rule, supported_levels=("low", "high")) == {"reasoning_effort": "low"}
+    assert reasoning_kwargs(rule=rule, effort="off", supported_levels=("low", "high")) == {"reasoning_effort": "low"}
+
+
+def test_enabled_effort_uses_the_rows_field_and_effort_map() -> None:
+    # fireworks remaps minimal -> none (thinking-effort-map).
+    assert reasoning_kwargs(
+        rule=thinking_rule_for("fireworks", "accounts/fireworks/models/glm-5p3"),
+        effort="minimal",
+        supported_levels=None,
+    ) == {"reasoning_effort": "none"}
+    # xai remaps minimal/xhigh/max; unmapped levels pass through.
+    xai = thinking_rule_for("xai", "grok-4.5")
+    assert reasoning_kwargs(rule=xai, effort="max", supported_levels=None) == {"reasoning_effort": "high"}
+    assert reasoning_kwargs(rule=xai, effort="medium", supported_levels=None) == {"reasoning_effort": "medium"}
+    # zai's format is the binary switch, never reasoning_effort.
+    assert reasoning_kwargs(rule=thinking_rule_for("zai", "glm-5"), effort="high", supported_levels=None) == {
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
+    # A row with neither a map nor a format sends the clamped level verbatim.
+    assert reasoning_kwargs(rule=thinking_rule_for("deepseek", "deepseek-v4-pro"), effort="high", supported_levels=None) == {
+        "reasoning_effort": "high",
+    }
 
 
 def test_clamp_then_map_snaps_to_the_models_own_levels_for_a_shipped_model() -> None:
@@ -116,103 +151,37 @@ def test_clamp_then_map_snaps_to_the_models_own_levels_for_a_shipped_model() -> 
     gpt_5_5 = static_catalog_metadata("openai", "gpt-5.5")
     assert gpt_5_5 is not None
     assert gpt_5_5.supported_effort_levels == ("low", "medium", "high", "xhigh")
-    assert map_effort_for_provider(
-        provider_name="openai",
+    assert reasoning_kwargs(
+        rule=thinking_rule_for("openai", "gpt-5.5"),
         effort=clamp_effort_to_supported(REASONING_EFFORT_MAX, gpt_5_5.supported_effort_levels),
         supported_levels=gpt_5_5.supported_effort_levels,
     ) == {"reasoning_effort": "xhigh"}
 
     gpt_5_6 = static_catalog_metadata("openai", "gpt-5.6")
     assert gpt_5_6 is not None
-    assert map_effort_for_provider(
-        provider_name="openai",
+    assert reasoning_kwargs(
+        rule=thinking_rule_for("openai", "gpt-5.6"),
         effort=clamp_effort_to_supported(REASONING_EFFORT_MAX, gpt_5_6.supported_effort_levels),
         supported_levels=gpt_5_6.supported_effort_levels,
     ) == {"reasoning_effort": "max"}
 
 
-@pytest.mark.parametrize(
-    ("provider_name", "effort", "expected_thinking"),
-    (
-        pytest.param("zai", "off", "disabled", id="zai-off"),
-        pytest.param("zai", "high", "enabled", id="zai-high"),
-        pytest.param("zhipuai", "off", "disabled", id="zhipuai-off"),
-        pytest.param("zhipuai", "high", "enabled", id="zhipuai-high"),
-    ),
-)
-def test_map_effort_for_provider_uses_named_provider_binary(
-    provider_name: str,
-    effort: str,
-    expected_thinking: str,
-) -> None:
-    assert map_effort_for_provider(provider_name=provider_name, effort=effort) == {
-        "extra_body": {"thinking": {"type": expected_thinking}},
-    }
-
-
-@pytest.mark.parametrize("effort", CANONICAL_EFFORTS)
-def test_map_effort_for_provider_routes_deepseek_levels_through_extra_body(effort: str) -> None:
-    # Old promise: DeepSeek levels were rewritten by a hardcoded table
-    # (medium -> high). New promise: the field carries whatever the model's clamp
-    # decided, so DeepSeek is not special-cased on the level.
-    assert map_effort_for_provider(provider_name="deepseek", effort=effort) == {
-        "extra_body": {"reasoning_effort": effort},
-    }
-
-
-@pytest.mark.parametrize(
-    ("provider_name", "effort", "supported_levels", "expected"),
-    [
-        ("custom", "low", None, {"reasoning_effort": "low"}),
-        ("custom", "max", None, {"reasoning_effort": "max"}),
-        ("custom", "off", ("minimal", "high"), {"reasoning_effort": "minimal"}),
-        ("opencode-go", "high", ("low", "medium", "high"), {"reasoning_effort": "high"}),
-    ],
-)
-def test_map_effort_for_provider_uses_reasoning_effort_kwarg_for_generic_provider(
-    provider_name: str,
-    effort: str,
-    supported_levels: tuple[str, ...] | None,
-    expected: dict[str, object],
-) -> None:
-    assert (
-        map_effort_for_provider(
-            provider_name=provider_name,
-            effort=effort,
-            supported_levels=supported_levels,
-        )
-        == expected
+def test_capability_is_the_models_own_and_has_no_provider_level_fallback() -> None:
+    """A provider name never decides capability any more: a model the catalog
+    describes is judged by its row, and one it does not is simply unknown."""
+    unknown = resolve_reasoning_effort_capability(
+        provider_name="qwen",
+        model_name="not-in-any-catalog",
+        model_metadata=None,
     )
+    assert (unknown.supported, unknown.source) == (None, "unknown")
 
-
-@pytest.mark.parametrize(
-    ("provider_name", "model_name", "expected"),
-    [
-        # Old promise: the gateway answered per model through a two-name allowlist
-        # (`minimax-m2.7`/`minimax-m3` -> True, every other opencode-go model ->
-        # False). New promise: a multi-upstream gateway has no provider-level
-        # verdict, so it answers None and the shipped catalog decides per model.
-        ("opencode-go", "minimax-m2.5", None),
-        ("opencode-go", "minimax-m2.7", None),
-        ("opencode-go", "minimax-m3", None),
-        ("opencode-go", "glm-5", None),
-        ("opencode-go", "not-in-any-catalog", None),
-        ("deepseek", "deepseek-chat", None),
-        ("zai", "glm-4-flash", False),
-        ("zai", "glm-5", True),
-        ("zhipuai", "glm-4-flash", False),
-        ("zhipuai", "glm-5", True),
-        ("openai", "gpt-5", None),
-        # The surviving denies: single-upstream hosts whose API does not take the
-        # field the OpenAI-compatible adapter sends.
-        ("qwen", "not-in-any-catalog", False),
-        ("kimi", "not-in-any-catalog", False),
-        ("minimax", "not-in-any-catalog", False),
-    ],
-)
-def test_provider_supports_reasoning_effort_reports_provider_level_capability(
-    provider_name: str,
-    model_name: str,
-    expected: bool | None,
-) -> None:
-    assert provider_supports_reasoning_effort(provider_name, model_name) is expected
+    described = static_catalog_metadata("zai", "glm-5.3")
+    assert described is not None
+    verdict = resolve_reasoning_effort_capability(
+        provider_name="zai",
+        model_name="glm-5.3",
+        model_metadata=described,
+    )
+    assert verdict.source == "model_metadata"
+    assert verdict.supported == described.supports_reasoning_effort

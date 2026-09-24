@@ -1213,6 +1213,8 @@ export interface components {
          *     an entry only carries the capabilities the catalog actually knows.
          */
         ProviderModelMetadataBody: {
+            /** Api */
+            api?: string | null;
             /** Context Window */
             context_window?: number | null;
             /** Cost Per Cache Read Token */
@@ -1225,6 +1227,8 @@ export interface components {
             cost_per_output_token?: number | null;
             /** Default Reasoning Effort */
             default_reasoning_effort?: string | null;
+            /** Display Name */
+            display_name?: string | null;
             /** Max Input Tokens */
             max_input_tokens?: number | null;
             /** Max Output Tokens */

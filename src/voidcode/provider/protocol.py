@@ -166,14 +166,18 @@ class ProviderTokenUsage:
     cache_read_tokens: int | None = None
     cache_write_tokens: int | None = None
     uncached_input_tokens: int | None = None
+    #: USD for this usage, computed once from the catalog rates + the pricing
+    #: policy tier at the moment the turn reported it (never repriced later).
+    cost_usd: float | None = None
 
-    def metadata_payload(self) -> dict[str, int | None]:
+    def metadata_payload(self) -> dict[str, int | float | None]:
         return {
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cache_read_tokens": self.cache_read_tokens,
             "cache_write_tokens": self.cache_write_tokens,
             "uncached_input_tokens": self.uncached_input_tokens,
+            "cost_usd": self.cost_usd,
         }
 
     @property

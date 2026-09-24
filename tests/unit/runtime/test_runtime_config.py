@@ -248,12 +248,12 @@ def test_runtime_config_supports_provider_first_opt_in_with_stub_model(
         tmp_path,
         env={
             EXECUTION_ENGINE_ENV_VAR: "provider",
-            MODEL_ENV_VAR: "opencode/gpt-5.4",
+            MODEL_ENV_VAR: "opencode-zen/gpt-5.4",
         },
     )
 
     assert config.execution_engine == "provider"
-    assert config.model == "opencode/gpt-5.4"
+    assert config.model == "opencode-zen/gpt-5.4"
 
 
 def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Path) -> None:
@@ -334,9 +334,9 @@ def test_runtime_config_uses_environment_when_repo_file_missing(tmp_path: Path) 
 
 
 def test_runtime_config_uses_model_environment_when_repo_file_missing(tmp_path: Path) -> None:
-    config = load_runtime_config(tmp_path, env={MODEL_ENV_VAR: "opencode/gpt-5.4"})
+    config = load_runtime_config(tmp_path, env={MODEL_ENV_VAR: "opencode-zen/gpt-5.4"})
 
-    assert config.model == "opencode/gpt-5.4"
+    assert config.model == "opencode-zen/gpt-5.4"
 
 
 def test_runtime_config_uses_execution_engine_environment_when_repo_file_missing(
@@ -448,12 +448,12 @@ def test_runtime_config_rejects_non_canonical_explicit_reasoning_effort(
 
 
 def test_runtime_config_prefers_repo_file_over_environment(tmp_path: Path) -> None:
-    _write_runtime_config(tmp_path, {"approval_mode": "allow", "model": "opencode/gpt-5.4", "hooks": {"enabled": True}})
+    _write_runtime_config(tmp_path, {"approval_mode": "allow", "model": "opencode-zen/gpt-5.4", "hooks": {"enabled": True}})
 
     config = load_runtime_config(tmp_path, env={APPROVAL_MODE_ENV_VAR: "deny"})
 
     assert config.approval_mode == "allow"
-    assert config.model == "opencode/gpt-5.4"
+    assert config.model == "opencode-zen/gpt-5.4"
     assert config.hooks == RuntimeHooksConfig(enabled=True)
 
 
@@ -596,8 +596,8 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
                 "enabled": False,
                 "servers": {"pyright": {"command": ["pyright-langserver", "--stdio"]}},
             },
-            "model": "opencode/gpt-5.4",
-            "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
+            "model": "opencode-zen/gpt-5.4",
+            "fallback_models": ["opencode-zen/gpt-5.3", "custom/demo"],
             "providers": {
                 "openai": {
                     "api_key": "openai-inline-key",
@@ -623,7 +623,7 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
                     "region": "us-central1",
                     "timeout_seconds": 20,
                 },
-                "copilot": {
+                "github-copilot": {
                     "auth": {
                         "method": "token",
                         "token": "copilot-inline-token",
@@ -667,8 +667,8 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
     )
     assert config.acp is None
     assert config.provider_fallback == RuntimeProviderFallbackConfig(
-        preferred_model="opencode/gpt-5.4",
-        fallback_models=("opencode/gpt-5.3", "custom/demo"),
+        preferred_model="opencode-zen/gpt-5.4",
+        fallback_models=("opencode-zen/gpt-5.3", "custom/demo"),
     )
     assert config.providers is not None
     assert config.providers.openai == OpenAIProviderConfig(
@@ -692,7 +692,7 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
         region="us-central1",
         timeout_seconds=20.0,
     )
-    assert config.providers.copilot == CopilotProviderConfig(
+    assert config.providers.github_copilot == CopilotProviderConfig(
         auth=CopilotProviderAuthConfig(method="token", token="copilot-inline-token"),
         base_url="https://api.githubcopilot.test",
         timeout_seconds=15.0,
@@ -722,7 +722,7 @@ def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path:
                 "openai": {},
                 "anthropic": {},
                 "google": {"auth": {"method": "api_key"}},
-                "copilot": {"auth": {"method": "token", "token_env_var": "COPILOT_TOKEN"}},
+                "github-copilot": {"auth": {"method": "token", "token_env_var": "COPILOT_TOKEN"}},
                 "endpoint": {},
             }
         },
@@ -743,7 +743,7 @@ def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path:
     assert config.providers.openai == OpenAIProviderConfig(api_key="openai-env-key")
     assert config.providers.anthropic == AnthropicProviderConfig(api_key="anthropic-env-key")
     assert config.providers.google == GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="api_key", api_key="google-env-key"))
-    assert config.providers.copilot == CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN"))
+    assert config.providers.github_copilot == CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN"))
     assert config.providers.endpoint == ProviderEndpointConfig(
         api_key="endpoint-env-key",
         base_url="http://localhost:4000",
@@ -761,7 +761,7 @@ def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: 
                 "google": {
                     "auth": {"method": "api_key", "api_key": "google-repo-key"},
                 },
-                "copilot": {
+                "github-copilot": {
                     "auth": {"method": "token", "token": "copilot-repo-token"},
                 },
                 "endpoint": {"api_key": "endpoint-repo-key"},
@@ -784,7 +784,7 @@ def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: 
     assert config.providers.openai == OpenAIProviderConfig(api_key="openai-repo-key")
     assert config.providers.anthropic == AnthropicProviderConfig(api_key="anthropic-repo-key")
     assert config.providers.google == GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="api_key", api_key="google-repo-key"))
-    assert config.providers.copilot == CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token="copilot-repo-token"))
+    assert config.providers.github_copilot == CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token="copilot-repo-token"))
     assert config.providers.endpoint == ProviderEndpointConfig(
         api_key="endpoint-repo-key",
         auth_scheme="bearer",
@@ -900,12 +900,12 @@ def test_runtime_config_leaves_lsp_unset_when_no_derived_defaults_exist(tmp_path
 
 
 def test_runtime_config_accepts_provider_execution_engine(tmp_path: Path) -> None:
-    _write_runtime_config(tmp_path, {"model": "opencode/gpt-5.4"})
+    _write_runtime_config(tmp_path, {"model": "opencode-zen/gpt-5.4"})
 
     config = load_runtime_config(tmp_path, env={})
 
     assert config.execution_engine == "provider"
-    assert config.model == "opencode/gpt-5.4"
+    assert config.model == "opencode-zen/gpt-5.4"
 
 
 def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> None:
@@ -914,7 +914,7 @@ def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> No
         {
             "agent": {
                 "preset": "leader",
-                "model": "opencode/gpt-5.4",
+                "model": "opencode-zen/gpt-5.4",
                 "tools": {"builtin": {"enabled": True}},
                 "skills": {"enabled": True, "paths": [".voidcode/skills"]},
                 "mcp_binding": {"profile": "docs", "servers": ["context7", "github"]},
@@ -928,7 +928,7 @@ def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> No
     assert config.agent == RuntimeAgentConfig(
         preset="leader",
         prompt_profile="leader",
-        model="opencode/gpt-5.4",
+        model="opencode-zen/gpt-5.4",
         execution_engine="provider",
         tools=RuntimeToolsConfig(
             builtin=RuntimeToolsBuiltinConfig(enabled=True),
@@ -936,7 +936,7 @@ def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> No
         skills=RuntimeSkillsConfig(enabled=True, paths=(".voidcode/skills",)),
         mcp_binding=AgentMcpBindingIntent(profile="docs", servers=("context7", "github")),
         provider_fallback=RuntimeProviderFallbackConfig(
-            preferred_model="opencode/gpt-5.4",
+            preferred_model="opencode-zen/gpt-5.4",
             fallback_models=("custom/demo",),
         ),
     )
@@ -945,7 +945,7 @@ def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> No
 def test_runtime_config_rejects_agent_preset_alias_maps(
     tmp_path: Path,
 ) -> None:
-    _write_runtime_config(tmp_path, {"agent": {"leader": {"model": "opencode/gpt-5.4"}}})
+    _write_runtime_config(tmp_path, {"agent": {"leader": {"model": "opencode-zen/gpt-5.4"}}})
 
     with pytest.raises(
         ValueError,
@@ -964,8 +964,8 @@ def test_runtime_config_resolves_custom_primary_manifest(tmp_path: Path) -> None
                 "name: Local Planner",
                 "description: Local primary planner",
                 "mode: primary",
-                "model: opencode/planner",
-                "fallback_models: [opencode/fallback]",
+                "model: opencode-zen/planner",
+                "fallback_models: [opencode-zen/fallback]",
                 "tool_allowlist: [read, grep]",
                 "skill_refs: [planning]",
                 "preset_hook_refs: [role_reminder]",
@@ -996,10 +996,10 @@ def test_runtime_config_resolves_custom_primary_manifest(tmp_path: Path) -> None
     assert internal.manifest_tool_allowlist == ("read", "grep")
     assert internal.manifest_skill_refs == ("planning",)
     assert internal.manifest_hook_refs == ("role_reminder",)
-    assert config.agent.model == "opencode/planner"
+    assert config.agent.model == "opencode-zen/planner"
     assert config.agent.provider_fallback == RuntimeProviderFallbackConfig(
-        preferred_model="opencode/planner",
-        fallback_models=("opencode/fallback",),
+        preferred_model="opencode-zen/planner",
+        fallback_models=("opencode-zen/fallback",),
     )
     serialized_agent = serialize_runtime_agent_config(config.agent, include_runtime_internal=True)
     assert serialized_agent is not None
@@ -1022,7 +1022,7 @@ def test_runtime_config_allows_agents_key_for_discovered_custom_manifest(tmp_pat
         ),
         body="Review from markdown.",
     )
-    _write_runtime_config(tmp_path, {"agents": {"local-reviewer": {"model": "opencode/reviewer"}}})
+    _write_runtime_config(tmp_path, {"agents": {"local-reviewer": {"model": "opencode-zen/reviewer"}}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -1037,7 +1037,7 @@ def test_runtime_config_allows_agents_key_for_discovered_custom_manifest(tmp_pat
     assert internal.manifest_tool_allowlist == ("read", "grep")
     assert internal.manifest_skill_refs == ("review",)
     assert internal.manifest_hook_refs == ("role_reminder",)
-    assert agent.model == "opencode/reviewer"
+    assert agent.model == "opencode-zen/reviewer"
 
 
 def test_runtime_config_applies_manifest_fallback_models_to_configured_agent_model(
@@ -1051,19 +1051,19 @@ def test_runtime_config_applies_manifest_fallback_models_to_configured_agent_mod
                 "name: Local Reviewer",
                 "description: review",
                 "mode: subagent",
-                "fallback_models: [opencode/reviewer-fallback]",
+                "fallback_models: [opencode-zen/reviewer-fallback]",
             )
         ),
         body="Review from markdown.",
     )
-    _write_runtime_config(tmp_path, {"agents": {"local-reviewer": {"model": "opencode/reviewer"}}})
+    _write_runtime_config(tmp_path, {"agents": {"local-reviewer": {"model": "opencode-zen/reviewer"}}})
 
     config = load_runtime_config(tmp_path, env={})
 
     assert config.agents is not None
     assert config.agents["local-reviewer"].provider_fallback == RuntimeProviderFallbackConfig(
-        preferred_model="opencode/reviewer",
-        fallback_models=("opencode/reviewer-fallback",),
+        preferred_model="opencode-zen/reviewer",
+        fallback_models=("opencode-zen/reviewer-fallback",),
     )
 
 
@@ -1071,7 +1071,7 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
     agent = parse_runtime_agent_payload(
         {
             "preset": "leader",
-            "model": "opencode/gpt-5.4",
+            "model": "opencode-zen/gpt-5.4",
             "tools": {
                 "builtin": {"enabled": True},
                 "allowlist": ["read", "grep"],
@@ -1088,7 +1088,7 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
         "preset": "leader",
         "prompt_profile": "leader",
         "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
-        "model": "opencode/gpt-5.4",
+        "model": "opencode-zen/gpt-5.4",
         "tools": {
             "builtin": {"enabled": True},
             "allowlist": ["read", "grep"],
@@ -1332,7 +1332,7 @@ def test_runtime_config_parses_agents_map_with_builtin_keys(tmp_path: Path) -> N
         tmp_path,
         {
             "agents": {
-                "leader": {"model": "opencode/gpt-5.4"},
+                "leader": {"model": "opencode-zen/gpt-5.4"},
                 "worker": {"model": "anthropic/claude-3-5-sonnet"},
             }
         },
@@ -1345,7 +1345,7 @@ def test_runtime_config_parses_agents_map_with_builtin_keys(tmp_path: Path) -> N
     assert config.agents["leader"] == RuntimeAgentConfig(
         preset="leader",
         prompt_profile="leader",
-        model="opencode/gpt-5.4",
+        model="opencode-zen/gpt-5.4",
         execution_engine="provider",
     )
     assert config.agents["worker"] == RuntimeAgentConfig(
@@ -1362,8 +1362,8 @@ def test_runtime_config_parses_agents_fallback_models_shorthand(tmp_path: Path) 
         {
             "agents": {
                 "worker": {
-                    "model": "opencode/gpt-5.4",
-                    "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
+                    "model": "opencode-zen/gpt-5.4",
+                    "fallback_models": ["opencode-zen/gpt-5.3", "custom/demo"],
                 }
             }
         },
@@ -1373,20 +1373,20 @@ def test_runtime_config_parses_agents_fallback_models_shorthand(tmp_path: Path) 
 
     assert config.agents is not None
     assert config.agents["worker"].provider_fallback == RuntimeProviderFallbackConfig(
-        preferred_model="opencode/gpt-5.4",
-        fallback_models=("opencode/gpt-5.3", "custom/demo"),
+        preferred_model="opencode-zen/gpt-5.4",
+        fallback_models=("opencode-zen/gpt-5.3", "custom/demo"),
     )
     assert serialize_runtime_agent_config(config.agents["worker"], include_runtime_internal=True) == {
         "preset": "worker",
         "prompt_profile": "worker",
         "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("worker")},
-        "model": "opencode/gpt-5.4",
-        "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
+        "model": "opencode-zen/gpt-5.4",
+        "fallback_models": ["opencode-zen/gpt-5.3", "custom/demo"],
     }
 
 
 def test_runtime_config_rejects_agents_fallback_models_without_model(tmp_path: Path) -> None:
-    _write_runtime_config(tmp_path, {"agents": {"worker": {"fallback_models": ["opencode/gpt-5.3"]}}})
+    _write_runtime_config(tmp_path, {"agents": {"worker": {"fallback_models": ["opencode-zen/gpt-5.3"]}}})
 
     with pytest.raises(
         ValueError,
@@ -2021,14 +2021,14 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
             id="provider-fallback-preferred-type",
         ),
         pytest.param(
-            {"model": "opencode/gpt-5.4", "fallback_models": [1]},
+            {"model": "opencode-zen/gpt-5.4", "fallback_models": [1]},
             "runtime config field 'fallback_models.fallback_models\\[0\\]'",
             id="provider-fallback-list-item-type",
         ),
         pytest.param(
             {
-                "model": "opencode/gpt-5.4",
-                "fallback_models": ["opencode/gpt-5.4"],
+                "model": "opencode-zen/gpt-5.4",
+                "fallback_models": ["opencode-zen/gpt-5.4"],
             },
             "provider fallback chain must not contain duplicate models",
             id="provider-fallback-duplicates",
@@ -2069,7 +2069,7 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
             id="agent-plan-removed",
         ),
         pytest.param(
-            {"agent": {"leader": {"model": "opencode/gpt-5.4"}}},
+            {"agent": {"leader": {"model": "opencode-zen/gpt-5.4"}}},
             "runtime config field 'agent.leader'",
             id="agent-nested-preset-alias-removed",
         ),
@@ -2104,19 +2104,19 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
             id="providers-google-oauth-conflict",
         ),
         pytest.param(
-            {"providers": {"copilot": {"auth": {"method": "token", "token": "a", "token_env_var": "TOKEN"}}}},
-            ("runtime config field 'providers.copilot.auth.token'.*runtime config field 'providers.copilot.auth.token_env_var'"),
-            id="providers-copilot-token-conflict",
+            {"providers": {"github-copilot": {"auth": {"method": "token", "token": "a", "token_env_var": "TOKEN"}}}},
+            ("runtime config field 'providers.github-copilot.auth.token'.*runtime config field 'providers.github-copilot.auth.token_env_var'"),
+            id="providers-github-copilot-token-conflict",
         ),
         pytest.param(
-            {"providers": {"copilot": {"auth": {"method": "token", "token": "a", "refresh_token": "b"}}}},
-            "runtime config field 'providers.copilot.auth.refresh_token'",
-            id="providers-copilot-refresh-token-invalid-for-token-method",
+            {"providers": {"github-copilot": {"auth": {"method": "token", "token": "a", "refresh_token": "b"}}}},
+            "runtime config field 'providers.github-copilot.auth.refresh_token'",
+            id="providers-github-copilot-refresh-token-invalid-for-token-method",
         ),
         pytest.param(
             {
                 "providers": {
-                    "copilot": {
+                    "github-copilot": {
                         "auth": {
                             "method": "oauth",
                             "token_env_var": "TOKEN",
@@ -2125,8 +2125,8 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
                     }
                 }
             },
-            "runtime config field 'providers.copilot.auth.refresh_leeway_seconds'",
-            id="providers-copilot-refresh-leeway-invalid",
+            "runtime config field 'providers.github-copilot.auth.refresh_leeway_seconds'",
+            id="providers-github-copilot-refresh-leeway-invalid",
         ),
         pytest.param(
             {"providers": {"endpoint": {"auth_scheme": "oauth"}}},
@@ -2394,7 +2394,7 @@ def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_field
     _write_runtime_config(
         tmp_path,
         {
-            "model": "opencode/gpt-5.4",
+            "model": "opencode-zen/gpt-5.4",
             "approval_mode": "ask",
             "tui": {"leader_key": "alt+x"},
         },
@@ -2409,7 +2409,7 @@ def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_field
     )
 
     payload = json.loads(runtime_config_path(tmp_path).read_text(encoding="utf-8"))
-    assert payload["model"] == "opencode/gpt-5.4"
+    assert payload["model"] == "opencode-zen/gpt-5.4"
     assert payload["approval_mode"] == "ask"
     assert payload["tui"]["preferences"] == {
         "theme": {"name": "nord", "mode": "dark"},
@@ -2497,7 +2497,7 @@ def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(tm
     monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
     user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
     user_runtime_config_path().write_text(
-        json.dumps({"model": "opencode/gpt-5.4", "tui": {"leader_key": "alt+x"}}),
+        json.dumps({"model": "opencode-zen/gpt-5.4", "tui": {"leader_key": "alt+x"}}),
         encoding="utf-8",
     )
 
@@ -2509,7 +2509,7 @@ def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(tm
     )
 
     payload = json.loads(user_runtime_config_path().read_text(encoding="utf-8"))
-    assert payload["model"] == "opencode/gpt-5.4"
+    assert payload["model"] == "opencode-zen/gpt-5.4"
     assert payload["tui"]["leader_key"] == "alt+x"
     assert payload["tui"]["preferences"] == {
         "theme": {"name": "textual-light", "mode": "light"},
@@ -2517,7 +2517,7 @@ def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(tm
     }
 
 
-@pytest.mark.parametrize("provider", ["deepseek", "grok", "kimi-coding", "minimax-cn"])
+@pytest.mark.parametrize("provider", ["deepseek", "xai", "kimi-code", "minimax-cn"])
 def test_save_global_web_settings_writes_provider_api_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
     global_config_dir = tmp_path / "global-config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
@@ -2585,8 +2585,8 @@ def test_load_global_web_settings_canonicalises_a_stored_provider_id(tmp_path: P
     ("provider", "env"),
     [
         ("deepseek", {"DEEPSEEK_API_KEY": "deepseek-env-key"}),
-        ("grok", {"XAI_API_KEY": "xai-env-key"}),
-        ("kimi-coding", {"KIMI_CODING_API_KEY": "kimi-coding-env-key"}),
+        ("xai", {"XAI_API_KEY": "xai-env-key"}),
+        ("kimi-code", {"KIMI_CODING_API_KEY": "kimi-coding-env-key"}),
         ("minimax-cn", {"MINIMAX_CN_API_KEY": "minimax-cn-env-key"}),
     ],
 )

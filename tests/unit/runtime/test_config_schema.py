@@ -714,7 +714,7 @@ def test_provider_schema_and_parser_reject_same_invalid_values() -> None:
         {"providers": {"openai": {"timeout_seconds": 0}}},
         {"providers": {"endpoint": {"auth_scheme": "invalid"}}},
         {"providers": {"google": {"auth": {"method": "invalid"}}}},
-        {"providers": {"copilot": {"auth": {"method": "invalid"}}}},
+        {"providers": {"github-copilot": {"auth": {"method": "invalid"}}}},
         {"providers": {"endpoint": {"model_map": {"alias": ""}}}},
     )
     for payload in invalid_payloads:

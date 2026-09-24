@@ -6,7 +6,6 @@ from typing import Literal, cast
 
 from ..provider.model_catalog import ProviderModelMetadata as CatalogProviderModelMetadata
 from ..provider.model_catalog import ToolFeedbackMode
-from ..provider.reasoning_effort import provider_supports_reasoning_effort
 from .config_materializer import EffectiveRuntimeConfig
 from .contracts import ProviderModelMetadata
 
@@ -93,7 +92,7 @@ __all__ = [
 ]
 
 
-type ReasoningEffortCapabilitySource = Literal["model_metadata", "provider_default", "unknown"]
+type ReasoningEffortCapabilitySource = Literal["model_metadata", "unknown"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,10 +103,9 @@ class ReasoningEffortCapability:
     report it honestly instead of blaming the wrong layer:
 
     - ``model_metadata``: the model's own capability, from the provider catalog.
-    - ``provider_default``: the legacy provider-level allowlist, consulted only
-      when the model metadata is silent.
-    - ``unknown``: neither source knows. Callers forward best-effort and must
-      record that the capability was unverified.
+    - ``unknown``: the catalog is silent for this model. Callers forward
+      best-effort and must record that the capability was unverified. There is no
+      provider-level fallback: capability is a property of the model.
     """
 
     supported: bool | None
@@ -126,15 +124,12 @@ def resolve_reasoning_effort_capability(
     allowlist is a fallback only: a provider name must never override a model
     that declares its own capability.
     """
+    _ = provider_name, model_name  # kept in the signature: callers report them alongside the verdict
     if model_metadata is not None and model_metadata.supports_reasoning_effort is not None:
         return ReasoningEffortCapability(
             supported=model_metadata.supports_reasoning_effort,
             source="model_metadata",
         )
-    if provider_name is not None and model_name is not None:
-        provider_default = provider_supports_reasoning_effort(provider_name, model_name)
-        if provider_default is not None:
-            return ReasoningEffortCapability(supported=provider_default, source="provider_default")
     return ReasoningEffortCapability(supported=None, source="unknown")
 
 

@@ -24,8 +24,8 @@ def test_manifest_from_markdown_file_parses_frontmatter_and_body(tmp_path: Path)
                 "name: Review Helper",
                 "description: Focused reviewer",
                 "mode: subagent",
-                "model: opencode/test-model",
-                "fallback_models: [opencode/fallback]",
+                "model: opencode-zen/test-model",
+                "fallback_models: [opencode-zen/fallback]",
                 "tool_allowlist: [read, grep]",
                 "skill_refs: [code-review]",
                 "preset_hook_refs: [role_reminder]",
@@ -40,8 +40,8 @@ def test_manifest_from_markdown_file_parses_frontmatter_and_body(tmp_path: Path)
     assert manifest.mode == "subagent"
     assert manifest.source_scope == "project"
     assert manifest.source_path == str(path)
-    assert manifest.model_preference == "opencode/test-model"
-    assert manifest.fallback_models == ("opencode/fallback",)
+    assert manifest.model_preference == "opencode-zen/test-model"
+    assert manifest.fallback_models == ("opencode-zen/fallback",)
     assert manifest.tool_allowlist == ("read", "grep")
     assert manifest.skill_refs == ("code-review",)
     assert manifest.preset_hook_refs == ("role_reminder",)

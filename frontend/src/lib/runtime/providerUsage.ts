@@ -63,6 +63,25 @@ export function providerTotalTokens(
   return total > 0 ? total : null;
 }
 
+/**
+ * Cumulative USD for the session, or `null` when the model had no shipped rates
+ * (an unpriced model must not read as a free one).
+ */
+export function providerCostUsd(
+  metadata: Record<string, unknown> | undefined,
+): number | null {
+  const providerUsage = objectValue(metadata, "provider_usage");
+  const cumulative = objectValue(providerUsage, "cumulative");
+  if (cumulative && typeof cumulative.cost_usd === "number") {
+    return cumulative.cost_usd;
+  }
+  const latest = objectValue(providerUsage, "latest");
+  if (latest && typeof latest.cost_usd === "number") {
+    return latest.cost_usd;
+  }
+  return null;
+}
+
 export function providerCacheHitRate(
   metadata: Record<string, unknown> | undefined,
 ): number | null {

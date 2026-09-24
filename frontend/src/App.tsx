@@ -44,6 +44,7 @@ import {
   providerContextTokens,
   providerTotalTokens,
   providerCacheHitRate,
+  providerCostUsd,
 } from "./lib/runtime/providerUsage";
 import { RuntimeClient } from "./lib/runtime/client";
 import {
@@ -1448,6 +1449,7 @@ function sessionContextUsageFromMetadata(
     usedTokens: providerTokens,
     totalTokens: providerTotalTokens(metadata),
     cacheHitRate: providerCacheHitRate(metadata),
+    costUsd: providerCostUsd(metadata),
     contextWindow: selectedModelContextWindow(providerModel, providerModels),
   };
 }

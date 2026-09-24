@@ -14,9 +14,9 @@ _CUSTOM_CONFIG = ProviderEndpointConfig(base_url="http://localhost:11434/v1")
 def test_resolved_provider_snapshot_round_trip_with_fallback_chain() -> None:
     registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(custom={"llama-local": _CUSTOM_CONFIG}))
     resolved = resolve_provider_config(
-        model="opencode/gpt-5.4",
+        model="opencode-zen/gpt-5.4",
         provider_fallback=RuntimeProviderFallbackConfig(
-            preferred_model="opencode/gpt-5.4",
+            preferred_model="opencode-zen/gpt-5.4",
             fallback_models=("llama-local/demo",),
         ),
         registry=registry,
@@ -46,8 +46,8 @@ def test_parse_resolved_provider_snapshot_rejects_active_target_outside_target_c
                 },
                 "targets": [
                     {
-                        "raw_model": "opencode/gpt-5.4",
-                        "provider": "opencode",
+                        "raw_model": "opencode-zen/gpt-5.4",
+                        "provider": "opencode-zen",
                         "model": "gpt-5.4",
                     },
                     {
@@ -108,8 +108,8 @@ def test_parse_resolved_provider_snapshot_rejects_non_object_active_target() -> 
                 "active_target": "nope",
                 "targets": [
                     {
-                        "raw_model": "opencode/gpt-5.4",
-                        "provider": "opencode",
+                        "raw_model": "opencode-zen/gpt-5.4",
+                        "provider": "opencode-zen",
                         "model": "gpt-5.4",
                     }
                 ],
@@ -127,8 +127,8 @@ def test_parse_resolved_provider_snapshot_rejects_empty_targets() -> None:
         _ = parse_resolved_provider_snapshot(
             {
                 "active_target": {
-                    "raw_model": "opencode/gpt-5.4",
-                    "provider": "opencode",
+                    "raw_model": "opencode-zen/gpt-5.4",
+                    "provider": "opencode-zen",
                     "model": "gpt-5.4",
                 },
                 "targets": [],
@@ -146,19 +146,19 @@ def test_parse_resolved_provider_snapshot_rejects_duplicate_targets() -> None:
         _ = parse_resolved_provider_snapshot(
             {
                 "active_target": {
-                    "raw_model": "opencode/gpt-5.4",
-                    "provider": "opencode",
+                    "raw_model": "opencode-zen/gpt-5.4",
+                    "provider": "opencode-zen",
                     "model": "gpt-5.4",
                 },
                 "targets": [
                     {
-                        "raw_model": "opencode/gpt-5.4",
-                        "provider": "opencode",
+                        "raw_model": "opencode-zen/gpt-5.4",
+                        "provider": "opencode-zen",
                         "model": "gpt-5.4",
                     },
                     {
-                        "raw_model": "opencode/gpt-5.4",
-                        "provider": "opencode",
+                        "raw_model": "opencode-zen/gpt-5.4",
+                        "provider": "opencode-zen",
                         "model": "gpt-5.4",
                     },
                 ],

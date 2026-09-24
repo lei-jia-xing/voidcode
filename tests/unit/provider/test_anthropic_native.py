@@ -101,7 +101,9 @@ def test_nonstream_text_thinking_tool_usage_and_stop_reason() -> None:
     assert result.done_reason == "tool_calls"
     assert result.finish_reason_reported is True
     assert result.usage == ProviderTokenUsage(input_tokens=13, output_tokens=4, cache_read_tokens=3, cache_write_tokens=2, uncached_input_tokens=10)
-    assert fake.payloads[0]["thinking"] == {"type": "enabled", "budget_tokens": 8192}
+    # ``high`` is 16384 in OMP's ANTHROPIC_THINKING table (stream.ts:1813-1820);
+    # the pre-W3 voidcode table said 8192.
+    assert fake.payloads[0]["thinking"] == {"type": "enabled", "budget_tokens": 16384}
 
 
 def test_unconfigured_vendor_never_borrows_the_ambient_anthropic_key(monkeypatch) -> None:
@@ -109,7 +111,7 @@ def test_unconfigured_vendor_never_borrows_the_ambient_anthropic_key(monkeypatch
     resolved for ``anthropic`` must not travel to another vendor's host."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
 
-    transport = AnthropicMessagesProvider(name="kimi-coding")._transport()
+    transport = AnthropicMessagesProvider(name="kimi-code")._transport()
 
     assert isinstance(transport, AnthropicMessagesTransport)
     assert transport.base_url == "https://api.kimi.com/coding"

@@ -104,7 +104,7 @@ def _assembled_from_context_window(context_window: RuntimeContextWindow) -> Runt
 
 
 class _CapturingTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
 
     def __init__(self) -> None:
         self.requests: list[ProviderTurnRequest] = []
@@ -126,7 +126,7 @@ class _AbortSignal:
 
 
 class _MixedNonStreamingTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
@@ -137,7 +137,7 @@ class _MixedNonStreamingTurnProvider:
 
 
 class _BatchNonStreamingTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
@@ -158,7 +158,7 @@ class _BatchNonStreamingTurnProvider:
 
 
 class _MixedStreamingTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
@@ -180,7 +180,7 @@ class _MixedStreamingTurnProvider:
 
 
 class _EmptyNonStreamingTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
@@ -188,7 +188,7 @@ class _EmptyNonStreamingTurnProvider:
 
 
 class _StreamOutputTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
     stream_calls: int
     propose_calls: int
 
@@ -214,7 +214,7 @@ class _StreamOutputTurnProvider:
 
 
 class _StreamReasoningMetadataTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
@@ -237,7 +237,7 @@ class _StreamReasoningMetadataTurnProvider:
 
 
 class _StreamNoTextDoneTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
 
     def __init__(self) -> None:
         self.stream_calls = 0
@@ -255,7 +255,7 @@ class _StreamNoTextDoneTurnProvider:
 
 
 class _StreamToolTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
@@ -276,7 +276,7 @@ class _StreamToolTurnProvider:
 
 
 class _StreamChunkedToolTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
@@ -302,7 +302,7 @@ class _StreamChunkedToolTurnProvider:
 
 
 class _StreamToolSnapshotTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
@@ -328,7 +328,7 @@ class _StreamToolSnapshotTurnProvider:
 
 
 class _StreamToolBatchTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
@@ -355,7 +355,7 @@ class _StreamToolBatchTurnProvider:
 
 
 class _StreamMalformedToolTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
@@ -372,7 +372,7 @@ class _StreamMalformedToolTurnProvider:
 
 
 class _StreamMissingDoneTurnProvider:
-    name = "opencode"
+    name = "opencode-zen"
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
@@ -385,11 +385,11 @@ class _StreamMissingDoneTurnProvider:
 
 def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(
-        provider=_StubTurnProvider(name="opencode"),
+        provider=_StubTurnProvider(name="opencode-zen"),
         provider_model=provider_model,
     )
 
@@ -415,7 +415,7 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
     assert step.events[1].payload == {
         "turn": 1,
         "mode": "provider",
-        "provider": "opencode",
+        "provider": "opencode-zen",
         "model": "gpt-5.4",
         "attempt": 0,
         "streaming": False,
@@ -425,7 +425,7 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
 
 def test_provider_graph_queues_non_streaming_tool_call_batch() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
@@ -455,7 +455,7 @@ def test_provider_graph_queues_non_streaming_tool_call_batch() -> None:
 
 def test_provider_graph_discards_queued_tool_call_batch_for_different_session() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
@@ -493,7 +493,7 @@ def test_provider_graph_discards_queued_tool_call_batch_for_different_session() 
 
 def test_provider_graph_discards_queued_tool_call_batch_for_new_run() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
@@ -531,7 +531,7 @@ def test_provider_graph_discards_queued_tool_call_batch_for_new_run() -> None:
 
 def test_provider_graph_discards_queued_tool_call_batch_for_nested_new_run() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
@@ -573,7 +573,7 @@ def test_provider_graph_discards_queued_tool_call_batch_for_nested_new_run() -> 
 
 def test_provider_graph_preserves_queued_tool_call_batch_for_approval_resume() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
@@ -623,7 +623,7 @@ def test_provider_graph_preserves_queued_tool_call_batch_for_approval_resume() -
 def test_provider_graph_passes_runtime_abort_signal_to_provider() -> None:
     provider = _CapturingTurnProvider()
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(provider=provider, provider_model=provider_model)
@@ -650,7 +650,7 @@ def test_provider_graph_passes_runtime_abort_signal_to_provider() -> None:
 def test_provider_graph_resets_internal_abort_signal_between_requests() -> None:
     provider = _CapturingTurnProvider()
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(provider=provider, provider_model=provider_model)
@@ -684,11 +684,11 @@ def test_provider_graph_resets_internal_abort_signal_between_requests() -> None:
 
 def test_provider_provider_graph_finalizes_after_tool_result() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(
-        provider=_StubTurnProvider(name="opencode"),
+        provider=_StubTurnProvider(name="opencode-zen"),
         provider_model=provider_model,
     )
 
@@ -736,7 +736,7 @@ def test_provider_provider_graph_finalizes_after_tool_result() -> None:
     assert step.events[1].payload == {
         "turn": 2,
         "mode": "provider",
-        "provider": "opencode",
+        "provider": "opencode-zen",
         "model": "gpt-5.4",
         "attempt": 0,
         "streaming": False,
@@ -752,7 +752,7 @@ def test_provider_provider_graph_finalizes_after_tool_result() -> None:
 
 def test_provider_provider_graph_prefers_nonstream_tool_call_over_text() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(
@@ -780,7 +780,7 @@ def test_provider_provider_graph_prefers_nonstream_tool_call_over_text() -> None
 
 def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(
@@ -809,12 +809,12 @@ def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() ->
 
 def test_provider_graph_treats_unrecognized_nonstream_finish_reason_as_completed() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
 
     class _UnknownDoneReasonTurnProvider:
-        name = "opencode"
+        name = "opencode-zen"
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
@@ -847,12 +847,12 @@ def test_provider_graph_treats_unrecognized_nonstream_finish_reason_as_completed
 
 def test_provider_graph_treats_unrecognized_stream_finish_reason_as_completed() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
 
     class _UnknownDoneReasonStreamTurnProvider:
-        name = "opencode"
+        name = "opencode-zen"
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
@@ -888,12 +888,12 @@ def test_provider_graph_treats_unrecognized_stream_finish_reason_as_completed() 
 
 def test_provider_graph_treats_omitted_finish_reason_as_completed() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
 
     class _UnknownNonStreamingTurnProvider:
-        name = "opencode"
+        name = "opencode-zen"
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
@@ -901,7 +901,7 @@ def test_provider_graph_treats_omitted_finish_reason_as_completed() -> None:
             return ProviderTurnResult(output="done", done_reason="unknown", finish_reason_reported=True)
 
     class _UnknownStreamingTurnProvider:
-        name = "opencode"
+        name = "opencode-zen"
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
@@ -938,12 +938,12 @@ def test_provider_graph_treats_omitted_finish_reason_as_completed() -> None:
 
 def test_provider_graph_warns_when_a_terminal_turn_reported_no_finish_reason(caplog: pytest.LogCaptureFixture) -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
 
     class _AbsentFinishReasonTurnProvider:
-        name = "opencode"
+        name = "opencode-zen"
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
@@ -970,12 +970,12 @@ def test_provider_graph_warns_when_a_terminal_turn_reported_no_finish_reason(cap
 
 def test_provider_graph_logs_an_unrecognized_finish_reason_at_debug(caplog: pytest.LogCaptureFixture) -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
 
     class _UnrecognizedFinishReasonTurnProvider:
-        name = "opencode"
+        name = "opencode-zen"
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
@@ -1009,12 +1009,12 @@ def test_provider_graph_logs_an_unrecognized_finish_reason_at_debug(caplog: pyte
 
 def test_provider_provider_graph_preserves_stream_error_details() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
 
     class _DetailedStreamErrorTurnProvider:
-        name = "opencode"
+        name = "opencode-zen"
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
@@ -1074,12 +1074,12 @@ def test_provider_provider_graph_preserves_stream_error_details() -> None:
 
 def test_provider_provider_graph_prefers_parsed_stream_error_kind_over_generic_transient() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
 
     class _ContextLimitStreamErrorTurnProvider:
-        name = "opencode"
+        name = "opencode-zen"
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
@@ -1138,12 +1138,12 @@ def test_provider_provider_graph_preserves_explicit_stream_error_kind(
     error_kind: ProviderErrorKind,
 ) -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
 
     class _ExplicitKindStreamErrorTurnProvider:
-        name = "opencode"
+        name = "opencode-zen"
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
@@ -1186,7 +1186,7 @@ def test_provider_provider_graph_preserves_explicit_stream_error_kind(
 
 def test_provider_provider_graph_forwards_request_surface_to_provider() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     provider = _CapturingTurnProvider()
@@ -1232,7 +1232,7 @@ def test_provider_provider_graph_forwards_request_surface_to_provider() -> None:
                 "agent_preset": {
                     "preset": "leader",
                     "prompt_profile": "leader",
-                    "model": "opencode/gpt-5.4",
+                    "model": "opencode-zen/gpt-5.4",
                     "execution_engine": "provider",
                 }
             },
@@ -1245,14 +1245,14 @@ def test_provider_provider_graph_forwards_request_surface_to_provider() -> None:
     assert provider.requests[1].agent_preset == {
         "preset": "leader",
         "prompt_profile": "leader",
-        "model": "opencode/gpt-5.4",
+        "model": "opencode-zen/gpt-5.4",
         "execution_engine": "provider",
     }
 
 
 def test_provider_provider_graph_forwards_bounded_context_window_to_provider() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     provider = _CapturingTurnProvider()
@@ -1319,7 +1319,7 @@ def test_provider_provider_graph_forwards_bounded_context_window_to_provider() -
 
 def test_provider_provider_graph_streams_ordered_events_and_deterministic_output() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(
@@ -1351,7 +1351,7 @@ def test_provider_provider_graph_streams_ordered_events_and_deterministic_output
 
 def test_provider_graph_preserves_reasoning_stream_metadata() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(
@@ -1381,7 +1381,7 @@ def test_provider_graph_preserves_reasoning_stream_metadata() -> None:
 
 def test_provider_provider_graph_stream_done_without_text_is_rejected() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     provider = _StreamNoTextDoneTurnProvider()
@@ -1414,7 +1414,7 @@ def test_provider_provider_graph_stream_done_without_text_is_rejected() -> None:
 )
 def test_provider_provider_graph_parses_streamed_tool_call(provider_class: type[Any]) -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(
@@ -1444,7 +1444,7 @@ def test_provider_provider_graph_parses_streamed_tool_call(provider_class: type[
 
 def test_provider_provider_graph_prefers_streamed_tool_call_over_text() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(
@@ -1472,7 +1472,7 @@ def test_provider_provider_graph_prefers_streamed_tool_call_over_text() -> None:
 
 def test_provider_provider_graph_returns_streamed_tool_call_batch() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(provider=_StreamToolBatchTurnProvider(), provider_model=provider_model)
@@ -1504,7 +1504,7 @@ def test_provider_provider_graph_returns_streamed_tool_call_batch() -> None:
 
 def test_provider_provider_graph_rejects_malformed_streamed_tool_payload() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(
@@ -1531,7 +1531,7 @@ def test_provider_provider_graph_rejects_malformed_streamed_tool_payload() -> No
 
 def test_provider_provider_graph_requires_done_event_for_stream_completion() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(
@@ -1558,7 +1558,7 @@ def test_provider_provider_graph_requires_done_event_for_stream_completion() -> 
 
 def test_provider_graph_safe_boundary_reflects_pending_tool_calls() -> None:
     provider_model = resolve_provider_model(
-        "opencode/gpt-5.4",
+        "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
     graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
@@ -1592,7 +1592,7 @@ def test_provider_graph_safe_boundary_reflects_pending_tool_calls() -> None:
 
 def test_provider_graph_maps_tool_call_lifecycle_and_builds_final_call() -> None:
     class _LifecycleProvider:
-        name = "opencode"
+        name = "opencode-zen"
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
@@ -1636,7 +1636,7 @@ def test_provider_graph_maps_tool_call_lifecycle_and_builds_final_call() -> None
 
     graph = ProviderGraph(
         provider=_LifecycleProvider(),
-        provider_model=resolve_provider_model("opencode/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
+        provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
     )
     context = RuntimeContextWindow(prompt="read sample.txt")
     step = graph.step(
@@ -1662,7 +1662,7 @@ def test_provider_graph_maps_tool_call_lifecycle_and_builds_final_call() -> None
 
 def test_provider_graph_rejects_incomplete_lifecycle_call() -> None:
     class _IncompleteProvider:
-        name = "opencode"
+        name = "opencode-zen"
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
@@ -1692,7 +1692,7 @@ def test_provider_graph_rejects_incomplete_lifecycle_call() -> None:
 
     graph = ProviderGraph(
         provider=_IncompleteProvider(),
-        provider_model=resolve_provider_model("opencode/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
+        provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
     )
     context = RuntimeContextWindow(prompt="read sample.txt")
     with pytest.raises(ProviderExecutionError, match="neither output nor tool calls"):
@@ -1712,7 +1712,7 @@ def test_provider_graph_rejects_incomplete_lifecycle_call() -> None:
 
 def test_provider_graph_merges_explicit_and_complete_streamed_tool_calls() -> None:
     class _MixedToolCallProvider:
-        name = "opencode"
+        name = "opencode-zen"
 
         def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
             _ = request
@@ -1762,7 +1762,7 @@ def test_provider_graph_merges_explicit_and_complete_streamed_tool_calls() -> No
 
     graph = ProviderGraph(
         provider=_MixedToolCallProvider(),
-        provider_model=resolve_provider_model("opencode/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
+        provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
     )
     context = RuntimeContextWindow(prompt="read and write")
     step = graph.step(

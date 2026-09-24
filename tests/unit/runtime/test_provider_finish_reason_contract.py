@@ -112,7 +112,7 @@ def _response_ready_payloads(store: SqliteSessionStore, *, workspace: Path, sess
 class _UnknownThenStopStreamingProvider:
     """First attempt ends with an unrecognized finish reason; a second would succeed."""
 
-    name = "opencode"
+    name = "opencode-zen"
 
     def __init__(self) -> None:
         self.attempts = 0
@@ -131,7 +131,7 @@ class _UnknownThenStopStreamingProvider:
 class _RestartStreamingProvider:
     """Streams distinct text per attempt; ``fail_on_attempt`` raises after streaming."""
 
-    name = "opencode"
+    name = "opencode-zen"
 
     def __init__(self, *, fail_on_attempt: int | None, finish_reason: ProviderDoneReason = "stop") -> None:
         self.attempts = 0
@@ -159,7 +159,7 @@ class _RestartStreamingProvider:
 def _graph_for(provider: TurnProvider) -> ProviderGraph:
     return ProviderGraph(
         provider=provider,
-        provider_model=resolve_provider_model("opencode/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
+        provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
     )
 
 

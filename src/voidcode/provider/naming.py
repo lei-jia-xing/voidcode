@@ -31,29 +31,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Final
 
-PROVIDER_LABELS: Final[Mapping[str, str]] = {
-    "openai": "OpenAI",
-    "anthropic": "Anthropic",
-    "google": "Google",
-    "copilot": "Copilot",
-    "endpoint": "Endpoint",
-    "opencode": "OpenCode",
-    "opencode-go": "OpenCode Go",
-    "openrouter": "OpenRouter",
-    "deepseek": "DeepSeek",
-    "zai": "Z.AI",
-    "zhipuai": "ZhipuAI",
-    "grok": "Grok",
-    "minimax": "MiniMax",
-    "minimax-cn": "MiniMax CN",
-    "kimi": "Kimi",
-    "kimi-coding": "Kimi For Coding",
-    "qwen": "Qwen",
-    "groq": "Groq",
-    "together": "Together",
-    "fireworks": "Fireworks",
-    "mistral": "Mistral",
-}
+from .provider_table import PROVIDER_TABLE
+
+PROVIDER_LABELS: Final[Mapping[str, str]] = {row.id: row.label for row in PROVIDER_TABLE}
 
 # Built-in provider ids are the label table's keys: one table, no second list.
 BUILTIN_PROVIDER_IDS: Final[frozenset[str]] = frozenset(PROVIDER_LABELS)

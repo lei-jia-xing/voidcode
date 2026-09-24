@@ -9,7 +9,9 @@ from dataclasses import dataclass, replace
 from typing import Final, Literal, cast
 
 from ..provider.errors import parse_provider_stream_error
+from ..provider.model_catalog import static_catalog_metadata
 from ..provider.models import ResolvedProviderModel
+from ..provider.pricing_rules import usage_cost_usd
 from ..provider.protocol import (
     ProviderAbortSignal,
     ProviderExecutionError,
@@ -178,6 +180,34 @@ class ProviderGraph:
     def cancel_current_turn(self) -> None:
         self._abort_signal.set_cancelled(True)
 
+    def _priced_usage(self, usage: ProviderTokenUsage | None) -> ProviderTokenUsage | None:
+        """The turn's usage with its cost attached, from the catalog rates + policy tier.
+
+        Money is computed here, once, from the usage this turn reported and the
+        model the runtime resolved: a persisted usage record is never repriced.
+        """
+        if usage is None or usage.cost_usd is not None:
+            return usage
+        selection = self._provider_model.selection
+        provider_name = selection.provider
+        model_name = selection.model
+        if not provider_name or not model_name:
+            return usage
+        return replace(
+            usage,
+            cost_usd=usage_cost_usd(
+                provider_id=provider_name,
+                model_id=model_name,
+                usage=usage,
+                # The SHIPPED catalog, deliberately: the request metadata is the
+                # discovery-merged entry, and a gateway refresh that drops a row's
+                # pricing would silently zero the cost. A price that moves with a
+                # listing refresh is worse than a slightly stale one -- the same
+                # reason the compaction budget reads the shipped row.
+                metadata=static_catalog_metadata(provider_name, model_name),
+            ),
+        )
+
     def stream_step(
         self,
         request: GraphRunRequest,
@@ -326,7 +356,7 @@ class ProviderGraph:
                 events=planning_events,
                 tool_call=first_tool_call,
                 tool_calls=turn_result.tool_calls,
-                provider_usage=turn_result.usage,
+                provider_usage=self._priced_usage(turn_result.usage),
                 reasoning=turn_result.reasoning,
             )
 
@@ -351,7 +381,7 @@ class ProviderGraph:
                 events=finalize_events,
                 output=turn_result.output,
                 is_finished=True,
-                provider_usage=turn_result.usage,
+                provider_usage=self._priced_usage(turn_result.usage),
                 reasoning=turn_result.reasoning,
             )
 
@@ -369,7 +399,7 @@ class ProviderGraph:
         return ProviderStep(
             events=planning_events,
             tool_calls=turn_result.tool_calls,
-            provider_usage=turn_result.usage,
+            provider_usage=self._priced_usage(turn_result.usage),
         )
 
     @property
@@ -666,7 +696,7 @@ class ProviderGraph:
                 events=planning_events + tuple(stream_events),
                 tool_call=first_tool_call,
                 tool_calls=streamed_tool_calls,
-                provider_usage=provider_usage,
+                provider_usage=self._priced_usage(provider_usage),
             )
 
         if not output.strip():
@@ -707,7 +737,7 @@ class ProviderGraph:
             events=finalize_events,
             output=output,
             is_finished=True,
-            provider_usage=provider_usage,
+            provider_usage=self._priced_usage(provider_usage),
         )
 
     def _parse_streamed_tool_calls(

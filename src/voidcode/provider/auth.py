@@ -144,7 +144,6 @@ def _provider_id_field_map(payload_type: type) -> Mapping[str, str]:
 
 #: Endpoint-shaped built-ins: canonical provider id -> ``ProviderConfigs`` field.
 ENDPOINT_SHAPED_BUILTIN_FIELDS: Mapping[str, str] = _provider_id_field_map(_ProviderEndpointConfigPayload)
-ENDPOINT_SHAPED_BUILTIN_IDS: frozenset[str] = frozenset(ENDPOINT_SHAPED_BUILTIN_FIELDS)
 
 #: OpenAI-compatible built-ins: canonical provider id -> ``ProviderConfigs`` field.
 OPENAI_COMPATIBLE_BUILTIN_FIELDS: Mapping[str, str] = _provider_id_field_map(_OpenAICompatibleProviderConfigPayload)
@@ -227,10 +226,10 @@ class ProviderAuthResolver:
                 methods=_GOOGLE_METHODS,
                 default_method=configured or "api_key",
             )
-        if provider == "copilot":
+        if provider == "github-copilot":
             configured = None
-            if self._providers.copilot is not None and self._providers.copilot.auth is not None:
-                configured = self._providers.copilot.auth.method
+            if self._providers.github_copilot is not None and self._providers.github_copilot.auth is not None:
+                configured = self._providers.github_copilot.auth.method
             return ProviderAuthMethodsResponse(
                 provider=provider,
                 methods=_COPILOT_METHODS,
@@ -287,7 +286,7 @@ class ProviderAuthResolver:
             )
         if request.provider == "google":
             return self._authorize_google(request)
-        if request.provider == "copilot":
+        if request.provider == "github-copilot":
             return self._authorize_copilot(request)
         endpoint_config = self._endpoint_provider_config(request.provider)
         if endpoint_config is not None:
@@ -404,7 +403,7 @@ class ProviderAuthResolver:
 
     def callback(self, request: ProviderAuthCallbackRequest) -> ProviderAuthMaterial:
         callback_supported = (request.provider == "google" and request.method == "oauth") or (
-            request.provider == "copilot" and request.method == "oauth"
+            request.provider == "github-copilot" and request.method == "oauth"
         )
         if not callback_supported:
             raise self._error(
@@ -432,7 +431,7 @@ class ProviderAuthResolver:
                 provider=request.provider,
             )
             return self._api_key_material(request.provider, request.method, token)
-        if request.provider == "copilot" and request.method == "oauth":
+        if request.provider == "github-copilot" and request.method == "oauth":
             token = self._required_payload_str(
                 payload,
                 key="token",
@@ -549,7 +548,7 @@ class ProviderAuthResolver:
         )
 
     def _authorize_copilot(self, request: ProviderAuthAuthorizeRequest) -> ProviderAuthAuthorizeResult:
-        provider_config: CopilotProviderConfig | None = self._providers.copilot
+        provider_config: CopilotProviderConfig | None = self._providers.github_copilot
         configured_method = None
         if provider_config is not None and provider_config.auth is not None:
             configured_method = provider_config.auth.method
@@ -566,7 +565,7 @@ class ProviderAuthResolver:
             payload,
             key="token",
             field_path="provider auth authorize payload.token",
-            provider="copilot",
+            provider="github-copilot",
         )
         if token is None and auth is not None and auth.token is not None:
             token = auth.token
@@ -576,33 +575,33 @@ class ProviderAuthResolver:
         if method == "token":
             if token is None:
                 raise self._error(
-                    provider="copilot",
+                    provider="github-copilot",
                     code="missing_credentials",
                     kind="missing_auth",
-                    message=("provider auth field 'copilot.token' must be provided for copilot token auth"),
+                    message=("provider auth field 'github-copilot.token' must be provided for github-copilot token auth"),
                 )
             return ProviderAuthAuthorizeResult(
-                provider="copilot",
+                provider="github-copilot",
                 method=method,
                 status="authorized",
-                material=self._api_key_material("copilot", method, token),
+                material=self._api_key_material("github-copilot", method, token),
             )
 
         refresh = self._optional_payload_str(
             payload,
             key="refresh_token",
             field_path="provider auth authorize payload.refresh_token",
-            provider="copilot",
+            provider="github-copilot",
         )
         if refresh is None and auth is not None:
             refresh = auth.refresh_token
         if token is None:
             return ProviderAuthAuthorizeResult(
-                provider="copilot",
+                provider="github-copilot",
                 method=method,
                 status="needs_callback",
                 callback=ProviderAuthCallback(
-                    state=self._new_callback_state("copilot", "oauth"),
+                    state=self._new_callback_state("github-copilot", "oauth"),
                     instructions="exchange Copilot OAuth code for token and call callback",
                 ),
             )
@@ -611,11 +610,11 @@ class ProviderAuthResolver:
         if refresh is not None:
             metadata["refresh_token"] = refresh
         return ProviderAuthAuthorizeResult(
-            provider="copilot",
+            provider="github-copilot",
             method=method,
             status="authorized",
             material=ProviderAuthMaterial(
-                provider="copilot",
+                provider="github-copilot",
                 method=method,
                 headers={"Authorization": f"Bearer {token}"},
                 metadata=metadata,

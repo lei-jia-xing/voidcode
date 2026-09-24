@@ -75,9 +75,9 @@ def sentinel_workspace(tmp_path_factory: pytest.TempPathFactory) -> Path:
     write_config(
         workspace,
         {
-            "model": "opencode/sentinel-model",
+            "model": "opencode-zen/sentinel-model",
             "providers": {
-                "opencode": {
+                "opencode-zen": {
                     "api_key_env_var": "OPENAI_API_KEY",
                     "base_url": "https://sentinel.invalid/v1",
                 }
@@ -212,7 +212,7 @@ def test_config_show_marks_env_credential_provider_ready_without_printing_it(sen
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     # The sentinel is a real credential for the configured provider, so readiness must see it.
-    assert payload["provider_readiness"]["provider"] == "opencode"
+    assert payload["provider_readiness"]["provider"] == "opencode-zen"
     assert payload["provider_readiness"]["auth_present"] is True
     assert SENTINEL_CREDENTIAL not in result.stdout
     assert SENTINEL_CREDENTIAL not in result.stderr

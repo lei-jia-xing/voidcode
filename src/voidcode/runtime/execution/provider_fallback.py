@@ -13,7 +13,11 @@ from ...provider.errors import ProviderExecutionError
 from ...provider.naming import canonical_provider_id
 from ..config import RuntimeProvidersConfig
 
-PROVIDER_TRANSIENT_RETRYABLE_KINDS = frozenset({"rate_limit", "transient_failure"})
+#: The kinds the provider's own transient-retry lane owns. ``rate_limit`` is
+#: deliberately absent: a usage/limit answer is decided by the rate-limit branch in
+#: ``decide_provider_error_policy`` (defer to the runtime's rate-limit lane, else
+#: fallback), never by an inline provider retry.
+PROVIDER_TRANSIENT_RETRYABLE_KINDS = frozenset({"transient_failure"})
 PROVIDER_FALLBACK_ALLOWED_KINDS = frozenset(
     {
         "missing_auth",
@@ -127,17 +131,26 @@ def decide_provider_error_policy(
     default_retryable = error.kind in PROVIDER_TRANSIENT_RETRYABLE_KINDS
     retryable = default_retryable if error.retryable is None else error.retryable
     fallback_permitted = fallback_allowed(error)
-    if error.kind == "rate_limit" and background_rate_limit_retry and error.retryable is not False and error.fallback_allowed is not False:
-        return ProviderTerminalDecision(
-            kind="background_rate_limit_retry",
-            payload={
-                "provider_error_kind": error.kind,
-                "provider": error.provider_name,
-                "model": error.model_name,
-                "background_retry_deferred_fallback": True,
-                **({"provider_error_details": error.details} if error.details is not None else {}),
-            },
-        )
+    if error.kind == "rate_limit":
+        # A usage/limit answer never takes the provider's own transient-retry lane:
+        # OMP's `isProviderRetryableError` returns false for `isUsageLimit` and hands
+        # both 402 and 429 to credential rotation (`error/retryable.ts:45-46`). voidcode
+        # has no rotation, so the rate-limited turn either defers to the runtime's own
+        # rate-limit lane (armed for background tasks) or moves on to fallback -- the
+        # generic transient retry below is unreachable for this kind whatever the error
+        # carries.
+        if background_rate_limit_retry and error.retryable is not False and error.fallback_allowed is not False:
+            return ProviderTerminalDecision(
+                kind="background_rate_limit_retry",
+                payload={
+                    "provider_error_kind": error.kind,
+                    "provider": error.provider_name,
+                    "model": error.model_name,
+                    "background_retry_deferred_fallback": True,
+                    **({"provider_error_details": error.details} if error.details is not None else {}),
+                },
+            )
+        retryable = False
     if retryable and provider_retry_attempt < transient_retry_config.max_retries:
         retry_attempt = provider_retry_attempt + 1
         delay_ms = provider_transient_retry_delay_ms(

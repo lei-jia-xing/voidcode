@@ -809,6 +809,8 @@ class ProviderModelMetadataBody(ResponseModel):
     modalities_output: list[str] | None = None
     model_status: str | None = None
     tool_feedback_mode: Literal["standard", "synthetic_user_message"] | None = None
+    api: str | None = None
+    display_name: str | None = None
 
 
 @final

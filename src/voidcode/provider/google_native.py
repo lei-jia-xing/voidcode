@@ -24,25 +24,21 @@ from .reasoning_effort import (
     REASONING_EFFORT_OFF,
     REASONING_EFFORT_XHIGH,
     clamp_effort_to_supported,
+    lowest_supported_effort,
     normalize_reasoning_effort,
 )
+from .thinking_rules import thinking_rule_for
 
 # Gemini thinking is configured through ``types.ThinkingConfig``. The installed
 # SDK types document their own conventions: ``thinking_budget`` accepts ``0``
 # (disabled) and ``-1`` (automatic) and states that every other value and
 # allowed range is model dependent, while ``thinking_level`` is the Gemini 3
-# enum ``MINIMAL``/``LOW``/``MEDIUM``/``HIGH``. Graded budgets therefore use the
-# same canonical ladder as the other adapters and ``xhigh``/``max`` clamp to
-# ``high`` (mirroring ``reasoning_effort.map_effort_for_provider`` for Google).
-_GOOGLE_THINKING_BUDGETS: dict[str, int] = {
-    REASONING_EFFORT_MINIMAL: 1024,
-    REASONING_EFFORT_LOW: 2048,
-    REASONING_EFFORT_MEDIUM: 4096,
-    REASONING_EFFORT_HIGH: 8192,
-    REASONING_EFFORT_XHIGH: 8192,
-    REASONING_EFFORT_MAX: 8192,
-}
+# enum ``MINIMAL``/``LOW``/``MEDIUM``/``HIGH``. Which of the two a model reads is
+# a data row (``thinking_rules.json``: ``google-level`` vs ``budget``), and the
+# budgets come from that row.
 _GOOGLE_THINKING_LEVELS: dict[str, types.ThinkingLevel] = {
+    # ``mapEffortToGoogleThinkingLevel`` (``model-thinking.ts:85-110``), values
+    # identical to OMP's mapper including the ``xhigh``/``max`` -> HIGH clamp.
     REASONING_EFFORT_MINIMAL: types.ThinkingLevel.MINIMAL,
     REASONING_EFFORT_LOW: types.ThinkingLevel.LOW,
     REASONING_EFFORT_MEDIUM: types.ThinkingLevel.MEDIUM,
@@ -50,13 +46,6 @@ _GOOGLE_THINKING_LEVELS: dict[str, types.ThinkingLevel] = {
     REASONING_EFFORT_XHIGH: types.ThinkingLevel.HIGH,
     REASONING_EFFORT_MAX: types.ThinkingLevel.HIGH,
 }
-
-
-def _uses_thinking_level(model_name: str | None) -> bool:
-    """Gemini 3 selects thinking with the level enum; older families use a token budget."""
-    return (model_name or "").strip().lower().startswith("gemini-3")
-
-
 # Service account credentials carry no scope of their own; the Vertex AI /
 # Gemini enterprise endpoints authorize with the cloud-platform scope.
 _GOOGLE_CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
@@ -261,27 +250,36 @@ class GoogleGenAIProvider:
     def _thinking_config(self, request: ProviderTurnRequest) -> types.ThinkingConfig | None:
         """Translate the canonical reasoning effort into Gemini thinking settings.
 
-        No hint means "leave the request untouched" (the server default applies).
-        An explicit ``off`` disables thinking instead of silently dropping the
-        field. ``xhigh``/``max`` clamp to the highest level this mapping knows.
+        The row's ``mode`` picks the knob: ``google-level`` models take the level
+        enum (``mapEffortToGoogleThinkingLevel``), every other Google model takes a
+        token budget (``getGoogleBudget``: the row's own table, else ``-1`` for the
+        server's dynamic budget). No hint means "leave the request untouched"; an
+        explicit ``off`` disables thinking instead of silently dropping the field.
         """
         if not request.reasoning_effort:
             return None
+        metadata = request.model_metadata
+        if metadata is not None and metadata.supports_reasoning is False:
+            return None
+        rule = thinking_rule_for(request.provider_name or self.name, request.model_name or "")
         effort = normalize_reasoning_effort(request.reasoning_effort)
-        supported = request.model_metadata.supported_effort_levels if request.model_metadata is not None else None
+        supported = metadata.supported_effort_levels if metadata is not None else None
         effort = clamp_effort_to_supported(effort, supported)
-        if _uses_thinking_level(request.model_name):
+        if effort == REASONING_EFFORT_OFF and rule.requires_effort:
+            # The model always reasons: ask for as little as it can instead.
+            lowest = lowest_supported_effort(supported)
+            if lowest is not None:
+                effort = lowest
+        if rule.mode == "google-level":
             if effort == REASONING_EFFORT_OFF:
                 # Gemini 3 has no fully disabled level below MINIMAL, so "off"
                 # asks for the lowest level and suppresses thought summaries.
                 return types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL, include_thoughts=False)
-            return types.ThinkingConfig(
-                thinking_level=_GOOGLE_THINKING_LEVELS[effort],
-                include_thoughts=True,
-            )
+            return types.ThinkingConfig(thinking_level=_GOOGLE_THINKING_LEVELS[effort], include_thoughts=True)
         if effort == REASONING_EFFORT_OFF:
             return types.ThinkingConfig(thinking_budget=0, include_thoughts=False)
-        return types.ThinkingConfig(thinking_budget=_GOOGLE_THINKING_BUDGETS[effort], include_thoughts=True)
+        budget = rule.budget_for(effort)
+        return types.ThinkingConfig(thinking_budget=budget if budget is not None else -1, include_thoughts=True)
 
     @staticmethod
     def _finish_reason(value: object) -> str:
@@ -307,10 +305,17 @@ class GoogleGenAIProvider:
         cache_read = getattr(usage, "cached_content_token_count", None)
         if not any(isinstance(value, int) for value in (input_tokens, output_tokens, cache_read)):
             return None
+        # ``prompt_token_count`` includes the cached part, so the uncached bucket
+        # is the remainder: without it every Google turn would price its input at
+        # zero (the provider reports no separate uncached count).
+        uncached = None
+        if isinstance(input_tokens, int):
+            uncached = max(0, input_tokens - (cache_read if isinstance(cache_read, int) else 0))
         return ProviderTokenUsage(
             input_tokens=input_tokens if isinstance(input_tokens, int) else None,
             output_tokens=output_tokens if isinstance(output_tokens, int) else None,
             cache_read_tokens=cache_read if isinstance(cache_read, int) else None,
+            uncached_input_tokens=uncached,
         )
 
     @staticmethod

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
 from .anthropic_native import AnthropicMessagesProvider
@@ -13,6 +14,7 @@ from .model_catalog import ToolFeedbackMode
 from .model_routing import ModelRoute, RoutedTurnProvider, WireRouting
 from .openai_native import OpenAIChatCompletionsProvider
 from .protocol import TurnProvider
+from .provider_table import PROVIDER_TABLE_BY_ID
 
 # These gateways reject the OpenAI ``tool`` role, so completed tool results are
 # replayed as a synthetic user message instead.
@@ -22,8 +24,9 @@ _TOOL_FEEDBACK_OVERRIDES: dict[str, ToolFeedbackMode] = {
 
 # OpenCode Go is one gateway host speaking two wires: the Anthropic SDK appends
 # its own ``/v1/messages`` path segment, so the Anthropic route carries the host
-# root rather than the ``/v1`` chat-completions prefix.
-_GO_ANTHROPIC_BASE_URL = "https://opencode.ai/zen/go"
+# root rather than the ``/v1`` chat-completions prefix. That root IS the table's
+# ``default_base_url``, so the constant is read from the table rather than restated.
+_OPENCODE_GO = PROVIDER_TABLE_BY_ID["opencode-go"]
 
 # The Go gateway routes per conversation: a turn that does not name the
 # conversation it belongs to is rejected with HTTP 400 ``MissingSessionID``, on
@@ -49,17 +52,22 @@ _OPENCODE_EXTRA_REQUEST_HEADERS: dict[str, str] = {
 # with ``tool_feedback_model_overrides={"minimax-m2.7": "synthetic_user_message"}``,
 # restoring the override only if the standard form fails while the synthetic one
 # succeeds.
-_GO_ROUTING = WireRouting(
-    default=ModelRoute(wire="openai-chat-completions"),
-    overrides={
-        # MiniMax M3 is served over Anthropic Messages while every other Go
-        # model speaks chat-completions at ``…/zen/go/v1``.
-        "minimax-m3": ModelRoute(wire="anthropic-messages", base_url=_GO_ANTHROPIC_BASE_URL),
-        # Upstream serves ``gpt-5.6-luna`` over the OpenAI Responses API, which
-        # VoidCode does not implement. Sending it down chat-completions would
-        # target an endpoint that does not serve it, so it fails typed instead.
-        "gpt-5.6-luna": None,
-    },
+
+# The wires the Go gateway serves. Each model's wire comes from its catalog row
+# (generated from OMP's route pins and upstream npm hints); this map is only the
+# gateway's own wire vocabulary, so a wire it does not serve -- the OpenAI
+# Responses API, which VoidCode does not implement -- is absent and fails typed
+# instead of being sent to an endpoint that does not serve the model.
+_GO_API_TO_ROUTE: Mapping[str, ModelRoute] = {
+    "openai-completions": ModelRoute(wire="openai-chat-completions"),
+    # The Anthropic SDK appends its own ``/v1/messages`` path segment, so the
+    # Anthropic route carries the host root rather than the ``/v1`` prefix.
+    "anthropic-messages": ModelRoute(wire="anthropic-messages", base_url=_OPENCODE_GO.default_base_url),
+}
+_GO_WIRE_ROUTING = WireRouting(
+    provider="opencode-go",
+    api_to_route=_GO_API_TO_ROUTE,
+    default_api=PROVIDER_TABLE_BY_ID["opencode-go"].wire,
 )
 
 
@@ -110,7 +118,7 @@ class OpenCodeGoModelProvider:
                 # so the route base URL stays authoritative.
                 config=AnthropicProviderConfig(
                     api_key=None if endpoint is None else endpoint.api_key,
-                    base_url=route.base_url or _GO_ANTHROPIC_BASE_URL,
+                    base_url=route.base_url or _OPENCODE_GO.default_base_url,
                     timeout_seconds=None if endpoint is None else endpoint.timeout_seconds,
                 ),
                 extra_request_headers=_OPENCODE_EXTRA_REQUEST_HEADERS,
@@ -130,7 +138,7 @@ class OpenCodeGoModelProvider:
         endpoint = self.provider_config()
         return RoutedTurnProvider(
             name=self.name,
-            routing=_GO_ROUTING,
+            routing=_GO_WIRE_ROUTING,
             build=self._wire,
             model_map={} if endpoint is None else endpoint.model_map,
         )

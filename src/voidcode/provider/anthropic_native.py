@@ -20,7 +20,9 @@ from ..tools.output import (
     strip_redaction_sentinels,
 )
 from ._wire_common import (
+    DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
     OwnedTransport,
+    abort_signal_cancelled,
     iter_stream_with_timeout,
     normalize_tool_call_id,
     resolve_extra_request_headers,
@@ -43,26 +45,25 @@ from .protocol import (
     WirePrefixDescriptor,
 )
 from .provider_config import anthropic_wire_default_base_url
-from .reasoning_effort import clamp_effort_to_supported, normalize_reasoning_effort
+from .provider_table import PROVIDER_TABLE_BY_ID
+from .reasoning_effort import clamp_effort_to_supported, lowest_supported_effort, normalize_reasoning_effort
+from .thinking_rules import ThinkingRule, thinking_rule_for
 from .trace import write_provider_trace
 
-_DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
+_DEFAULT_ANTHROPIC_BASE_URL = PROVIDER_TABLE_BY_ID["anthropic"].default_base_url
 _DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_TIMEOUT_SECONDS = 300.0
-_DEFAULT_MAX_TOKENS = 8192
+# OMP's output-token arithmetic (``packages/ai/src/stream.ts:1799-1810``): a
+# request with no known cap asks for this much, and a thinking request keeps
+# this much room for the answer itself after the thinking budget.
+_OUTPUT_CAP_WHEN_UNKNOWN = 64000
+_OUTPUT_FALLBACK_BUFFER = 4000
+_MIN_OUTPUT_TOKENS = 1024
 # The SDK refuses to construct a client without a credential, and an explicit
 # credential also stops it from reading ambient ones (``ANTHROPIC_API_KEY``,
 # profile, workload identity). The placeholder only satisfies that check:
 # ``_default_headers`` decides which credential headers are sent.
 _PLACEHOLDER_API_KEY = "voidcode-no-api-key"
-_THINKING_BUDGETS = {
-    "minimal": 1024,
-    "low": 2048,
-    "medium": 4096,
-    "high": 8192,
-    "xhigh": 16384,
-    "max": 32768,
-}
 
 
 class AnthropicTransport(Protocol):
@@ -450,24 +451,23 @@ class AnthropicMessagesProvider:
             )
         system, messages = self._messages_and_system(request)
         wire = self._wire(request)
-        max_tokens = (
-            request.model_metadata.max_output_tokens if request.model_metadata and request.model_metadata.max_output_tokens else _DEFAULT_MAX_TOKENS
-        )
+        metadata = request.model_metadata
+        model_name = request.model_name or ""
+        rule = thinking_rule_for(request.provider_name or self.name, model_name)
+        # The Anthropic Messages API requires ``max_tokens``, so the cap is the
+        # model's own maximum (OMP's ``maxAllowedTokens``); 64000 is only the
+        # unknown-model fallback, never a ceiling over a larger known model.
+        model_max_tokens = metadata.max_output_tokens if metadata is not None and metadata.max_output_tokens else _OUTPUT_CAP_WHEN_UNKNOWN
+        max_tokens = model_max_tokens
         payload: dict[str, object] = {"model": request.model_name, "max_tokens": max_tokens, "messages": messages, "stream": stream}
         if system:
             payload["system"] = system
-        if wire.tools:
+        if wire.tools and (metadata is None or metadata.supports_tools is not False):
             payload["tools"] = wire.tools
             payload["tool_choice"] = {"type": "auto"}
-        if request.reasoning_effort:
-            effort = normalize_reasoning_effort(request.reasoning_effort)
-            supported = request.model_metadata.supported_effort_levels if request.model_metadata is not None else None
-            effort = clamp_effort_to_supported(effort, supported)
-            if effort != "off":
-                budget = _THINKING_BUDGETS[effort]
-                payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
-                if isinstance(payload["max_tokens"], int) and payload["max_tokens"] <= budget:
-                    payload["max_tokens"] = budget + 1
+        budget = _thinking_payload(payload, request=request, rule=rule)
+        if budget is not None:
+            payload["max_tokens"] = _max_tokens_with_thinking(payload["max_tokens"], budget, model_max_tokens)
         retention = request.cache_retention if request.cache_retention is not None else (self.config.cache_retention if self.config else "none")
         if retention in {"short", "long"}:
             cache_control = {"type": "ephemeral", "ttl": "5m" if retention == "short" else "1h"}
@@ -621,7 +621,12 @@ class AnthropicMessagesProvider:
             stop_reason: str | None = None
             message_stopped = False
             for raw_chunk in iter_stream_with_timeout(
-                raw_stream, timeout_seconds=self._timeout(), provider_name=provider_name, model_name=model_name
+                raw_stream,
+                timeout_seconds=self._timeout(),
+                provider_name=provider_name,
+                model_name=model_name,
+                first_event_timeout_seconds=DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
+                aborted=lambda: abort_signal_cancelled(request),
             ):
                 if request.abort_signal is not None and request.abort_signal.cancelled:
                     yield ProviderStreamEvent(kind="error", channel="error", error="provider stream cancelled", error_kind="cancelled")
@@ -753,3 +758,51 @@ class AnthropicMessagesProvider:
 
 
 __all__ = ["AnthropicMessagesProvider", "AnthropicMessagesTransport", "AnthropicTransport", "AnthropicTransportError"]
+
+
+def _thinking_payload(payload: dict[str, object], *, request: ProviderTurnRequest, rule: ThinkingRule) -> int | None:
+    """Write the thinking knob the row's mode names, returning its token budget.
+
+    The Anthropic Messages wire carries ``thinking.budget_tokens`` (``budget`` /
+    ``anthropic-budget-effort``) and, for the adaptive modes, ``output_config.effort``.
+    A model that cannot reason is never handed the knob, and ``off`` simply omits
+    it -- the wire has no "disabled" body field.
+    """
+    if not request.reasoning_effort:
+        return None
+    metadata = request.model_metadata
+    if metadata is not None and metadata.supports_reasoning is False:
+        return None
+    effort = normalize_reasoning_effort(request.reasoning_effort)
+    supported = metadata.supported_effort_levels if metadata is not None else None
+    clamped = clamp_effort_to_supported(effort, supported)
+    if clamped == "off":
+        if not rule.requires_effort:
+            return None
+        # The model always reasons: ask for as little as it can instead.
+        lowest = lowest_supported_effort(supported)
+        if lowest is None:
+            return None
+        clamped = lowest
+    if rule.mode != "budget":
+        return None
+    budget = rule.budget_for(clamped)
+    if budget is None:
+        return None
+    payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+    return budget
+
+
+def _max_tokens_with_thinking(max_tokens: object, budget: int, max_allowed_tokens: int) -> object:
+    """``ensureMaxTokensForThinking`` (``packages/ai/src/providers/anthropic.ts:3602-3625``).
+
+    The cap can never exceed the model's own maximum, and the thinking budget's
+    buffer can only raise a cap that is smaller than ``budget + 4000`` -- it never
+    shrinks one. ``64000`` is the unknown-model fallback, not a ceiling.
+    """
+    if not isinstance(max_tokens, int):
+        return max_tokens
+    current = min(max_tokens, max_allowed_tokens)
+    raised = min(max(current, budget + _OUTPUT_FALLBACK_BUFFER), max_allowed_tokens)
+    # The floor can never exceed the model's own maximum either.
+    return min(max(raised, _MIN_OUTPUT_TOKENS), max_allowed_tokens)

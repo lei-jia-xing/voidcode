@@ -75,7 +75,7 @@ def test_background_task_storage_preserves_stable_request_metadata_round_trip(
             prompt="read sample.txt",
             metadata={
                 "abort_requested": False,
-                "agent": {"preset": "leader", "model": "opencode/gpt-5.4"},
+                "agent": {"preset": "leader", "model": "opencode-zen/gpt-5.4"},
                 "provider_stream": True,
                 "skills": ["alpha", "beta"],
             },
@@ -88,7 +88,7 @@ def test_background_task_storage_preserves_stable_request_metadata_round_trip(
 
     assert loaded.request.metadata == {
         "abort_requested": False,
-        "agent": {"preset": "leader", "model": "opencode/gpt-5.4"},
+        "agent": {"preset": "leader", "model": "opencode-zen/gpt-5.4"},
         "provider_stream": True,
         "skills": ["alpha", "beta"],
     }

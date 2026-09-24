@@ -1365,7 +1365,7 @@
             }
           ]
         },
-        "kimi-coding": {
+        "kimi-code": {
           "anyOf": [
             {
               "$ref": "#/$defs/anthropicProviderConfig"
@@ -1395,7 +1395,7 @@
             }
           ]
         },
-        "copilot": {
+        "github-copilot": {
           "anyOf": [
             {
               "$ref": "#/$defs/copilotProviderConfig"
@@ -1415,7 +1415,7 @@
             }
           ]
         },
-        "opencode": {
+        "opencode-zen": {
           "anyOf": [
             {
               "$ref": "#/$defs/endpointProviderConfig"
@@ -1465,7 +1465,7 @@
             }
           ]
         },
-        "grok": {
+        "xai": {
           "anyOf": [
             {
               "$ref": "#/$defs/openAICompatibleProviderConfig"
@@ -1485,7 +1485,7 @@
             }
           ]
         },
-        "kimi": {
+        "moonshot": {
           "anyOf": [
             {
               "$ref": "#/$defs/openAICompatibleProviderConfig"
@@ -1555,12 +1555,182 @@
             }
           ]
         },
+        "aiand": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "alibaba-token-plan": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "baseten": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cline-pass": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coreweave": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gmi-cloud": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "huggingface": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kilo": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "novita": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nvidia": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "venice": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "wafer-serverless": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "xiaomi": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "xiaomi-token-plan-ams": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "xiaomi-token-plan-cn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "xiaomi-token-plan-sgp": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "zenmux": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/openAICompatibleProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "custom": {
           "additionalProperties": {
             "$ref": "#/$defs/endpointProviderConfig"
           },
           "propertyNames": {
-            "pattern": "^(?!(?:openai|anthropic|google|copilot|endpoint|opencode|opencode-go|openrouter|deepseek|zai|zhipuai|grok|minimax|minimax-cn|kimi|kimi-coding|qwen|groq|together|fireworks|mistral)$)(?!.*[/]).+$"
+            "pattern": "^(?!(?:openai|anthropic|google|deepseek|xai|qwen|zai|zhipuai|moonshot|minimax|minimax-cn|opencode-zen|opencode-go|github-copilot|groq|together|fireworks|mistral|openrouter|endpoint|kimi-code|aiand|alibaba-token-plan|baseten|cline-pass|coreweave|gmi-cloud|huggingface|kilo|novita|nvidia|venice|wafer-serverless|xiaomi|xiaomi-token-plan-ams|xiaomi-token-plan-cn|xiaomi-token-plan-sgp|zenmux)$)(?!.*[/]).+$"
           },
           "type": "object"
         }

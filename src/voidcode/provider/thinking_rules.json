@@ -1,0 +1,237 @@
+{
+  "schema": "thinking-rules/v1",
+  "omp_ref": "can1357/oh-my-pi @ d49918fab2dba3986927f2d46721629ed0f3a02c",
+  "budget_tables": {
+    "anthropic-thinking": {
+      "minimal": 1024,
+      "low": 4096,
+      "medium": 8192,
+      "high": 16384,
+      "xhigh": 32768,
+      "max": 32768
+    },
+    "google-thinking": {
+      "minimal": 1024,
+      "low": 4096,
+      "medium": 8192,
+      "high": 16384,
+      "xhigh": 24575,
+      "max": 32768
+    }
+  },
+  "rows": [
+    {
+      "provider": "openai",
+      "mode": "effort",
+      "max_tokens_field": "max_completion_tokens",
+      "source": "openai.kdl:100 thinking-mode effort; resolve.ts:497 useMaxTokens=false"
+    },
+    {
+      "provider": "anthropic",
+      "mode": "budget",
+      "budgets": "anthropic-thinking",
+      "source": "anthropic-messages wire carries thinking.budget_tokens (anthropic.ts:3602-3625)"
+    },
+    {
+      "provider": "google",
+      "mode": "budget",
+      "budgets": "google-thinking",
+      "source": "google.kdl:13,18 thinking-mode budget"
+    },
+    {
+      "provider": "deepseek",
+      "mode": "effort",
+      "max_tokens_field": "max_tokens",
+      "reasoning_content_field": "reasoning_content",
+      "requires_reasoning_content_for_tool_calls": true,
+      "source": "deepseek.kdl:15 effort, :97 max-tokens-field max_tokens, :98 reasoning-content-field, :100 requires-reasoning-content-for-tool-calls"
+    },
+    {
+      "provider": "xai",
+      "mode": "effort",
+      "effort_map": {
+        "minimal": "low",
+        "xhigh": "high",
+        "max": "high"
+      },
+      "source": "xai.kdl:43-47 reasoning-effort-map, :49 thinking-mode effort"
+    },
+    {
+      "provider": "zai",
+      "mode": "binary",
+      "disable_mode": "zai-thinking-disabled",
+      "max_tokens_field": "max_tokens",
+      "source": "zai.kdl:41-51 thinking-mode budget on OMP's anthropic wire; voidcode serves zai over openai-completions, where the request knob is the thinking-format binary switch; resolve.ts:406 isZai -> max_tokens"
+    },
+    {
+      "provider": "zhipuai",
+      "mode": "binary",
+      "disable_mode": "zai-thinking-disabled",
+      "max_tokens_field": "max_tokens",
+      "reasoning_content_field": "reasoning_content",
+      "source": "zhipu-coding-plan.kdl:10-12 thinking-format zai; :24,36,42,49 reasoning-content-field; resolve.ts:407 isZhipu -> max_tokens"
+    },
+    {
+      "provider": "moonshot",
+      "mode": "binary",
+      "disable_mode": "zai-thinking-disabled",
+      "max_tokens_field": "max_tokens",
+      "source": "moonshot.kdl:12-16 thinking-format zai; resolve.ts:405 isMoonshotNative -> max_tokens"
+    },
+    {
+      "provider": "minimax-cn",
+      "mode": "budget",
+      "budgets": "anthropic-thinking",
+      "source": "descriptor-only provider on the anthropic-messages wire (anthropic.ts:3602-3625)"
+    },
+    {
+      "provider": "opencode-zen",
+      "mode": "effort",
+      "source": "opencode-zen.kdl:25-31 thinking-mode effort; the anthropic-wire models it serves carry their own budget rows; opencode-zen.kdl:11-15 reasoning-content-field + requires-reasoning-content-for-tool-calls",
+      "reasoning_content_field": "reasoning_content",
+      "requires_reasoning_content_for_tool_calls": true
+    },
+    {
+      "provider": "opencode-go",
+      "mode": "effort",
+      "max_tokens_field": "max_tokens",
+      "source": "opencode-go.kdl:28 effort, :42 max-tokens-field max_tokens; opencode-go.kdl:19-23,43-44 reasoning-content-field + requires-reasoning-content-for-tool-calls",
+      "reasoning_content_field": "reasoning_content",
+      "requires_reasoning_content_for_tool_calls": true
+    },
+    {
+      "provider": "github-copilot",
+      "mode": "effort",
+      "source": "github-copilot.kdl:23-39 thinking-mode effort"
+    },
+    {
+      "provider": "groq",
+      "mode": "effort",
+      "source": "groq.kdl:7 thinking-mode effort"
+    },
+    {
+      "provider": "together",
+      "mode": "effort",
+      "source": "together.kdl:10 thinking-mode effort"
+    },
+    {
+      "provider": "fireworks",
+      "mode": "effort",
+      "effort_map": {
+        "minimal": "none"
+      },
+      "max_tokens_field": "max_tokens",
+      "source": "fireworks.kdl:9-11 minimal->none, :20 effort; resolve.ts:409 isFireworks -> max_tokens"
+    },
+    {
+      "provider": "mistral",
+      "mode": "effort",
+      "max_tokens_field": "max_tokens",
+      "source": "mistral.kdl:7 effort; resolve.ts:404 isMistral -> max_tokens"
+    },
+    {
+      "provider": "openrouter",
+      "mode": "effort",
+      "disable_mode": "openrouter-enabled-false",
+      "source": "openrouter.kdl:139-140; resolveReasoningDisableMode openrouter"
+    },
+    {
+      "provider": "kimi-code",
+      "mode": "budget",
+      "budgets": "anthropic-thinking",
+      "reasoning_content_field": "reasoning_content",
+      "source": "kimi-code.kdl:30,37 reasoning-content-field; anthropic-messages wire carries thinking.budget_tokens"
+    },
+    {
+      "provider": "qwen",
+      "mode": "effort",
+      "disable_mode": "qwen-enable-thinking-false",
+      "source": "resolveReasoningDisableMode: dashscope host -> thinkingFormat qwen -> qwen-enable-thinking-false"
+    },
+    {
+      "provider": "openai",
+      "match": {
+        "type": "prefix",
+        "value": "gpt-5.6"
+      },
+      "disable_mode": "none-effort",
+      "source": "openai.kdl:103,124,132"
+    },
+    {
+      "provider": "openai",
+      "match": {
+        "type": "prefix",
+        "value": "gpt-5.1-codex"
+      },
+      "disable_mode": "none-effort",
+      "source": "discovered-only fallback (0 shipped catalog rows): openai.kdl:124"
+    },
+    {
+      "provider": "google",
+      "match": {
+        "type": "prefix",
+        "value": "gemini-3"
+      },
+      "mode": "google-level",
+      "source": "OMP generated rows carry thinking.mode google-level for the Gemini 3 family (types.ts:67-73)"
+    },
+    {
+      "provider": "xai",
+      "match": {
+        "type": "exact",
+        "value": "grok-4.20-0309-reasoning"
+      },
+      "requires_effort": true,
+      "source": "xai.kdl:73 thinking-requires-effort #true"
+    },
+    {
+      "provider": "moonshot",
+      "match": {
+        "type": "prefix",
+        "value": "kimi-k3"
+      },
+      "disable_mode": "lowest-effort",
+      "source": "moonshot.kdl:14 family k3 overrides thinking-format to openai, so its enabled knob is reasoning_effort",
+      "mode": "effort"
+    },
+    {
+      "provider": "opencode-zen",
+      "match": {
+        "type": "prefix",
+        "value": "claude-"
+      },
+      "mode": "budget",
+      "budgets": "anthropic-thinking",
+      "source": "the claude-* models resolve to the anthropic-messages wire (npm hint); OMP's anthropic wire carries thinking.budget_tokens"
+    },
+    {
+      "provider": "opencode-zen",
+      "match": {
+        "type": "prefix",
+        "value": "qwen3."
+      },
+      "mode": "budget",
+      "budgets": "anthropic-thinking",
+      "source": "the qwen3.* models resolve to the anthropic-messages wire (npm hint); OMP's anthropic wire carries thinking.budget_tokens"
+    },
+    {
+      "provider": "opencode-zen",
+      "match": {
+        "type": "prefix",
+        "value": "gemini-3"
+      },
+      "mode": "google-level",
+      "source": "the gemini-3* models resolve to the google-generative-ai wire; same level rule as the google provider"
+    },
+    {
+      "provider": "opencode-go",
+      "match": {
+        "type": "exact",
+        "value": "qwen3.8-flash"
+      },
+      "mode": "budget",
+      "budgets": "anthropic-thinking",
+      "source": "opencode-go.kdl:94 thinking-mode budget"
+    }
+  ]
+}

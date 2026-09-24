@@ -23,7 +23,7 @@ from .config import (
     serialize_provider_configs,
     serialize_provider_fallback_config,
 )
-from .copilot import CopilotModelProvider
+from .copilot import GithubCopilotModelProvider
 from .endpoint import OpenAIEndpointProvider
 from .errors import (
     ProviderContextLimitError,
@@ -46,7 +46,7 @@ from .models import (
 )
 from .openai import OpenAIModelProvider
 from .openai_native import OpenAIChatCompletionsProvider, OpenAIChatCompletionsTransport, OpenAITransport
-from .opencode import OpenCodeModelProvider
+from .opencode import OpenCodeZenModelProvider
 from .opencode_go import OpenCodeGoModelProvider
 from .openrouter import OpenRouterModelProvider
 from .protocol import (
@@ -78,7 +78,7 @@ __all__ = [
     "AnthropicMessagesTransport",
     "AnthropicTransport",
     "AnthropicCompatibleModelProvider",
-    "CopilotModelProvider",
+    "GithubCopilotModelProvider",
     "GoogleModelProvider",
     "OpenAIEndpointProvider",
     "ModelTurnProvider",
@@ -91,7 +91,7 @@ __all__ = [
     "OpenAITransport",
     "OpenAIModelProvider",
     "OpenAICompatibleModelProvider",
-    "OpenCodeModelProvider",
+    "OpenCodeZenModelProvider",
     "ProviderAuthAuthorizeRequest",
     "ProviderAuthAuthorizeResult",
     "ProviderAuthCallback",

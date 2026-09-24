@@ -1719,7 +1719,7 @@ def _first_configured_provider_name(providers: RuntimeProvidersConfig | None) ->
 def _provider_api_key_present(providers: RuntimeProvidersConfig | None, provider: str | None) -> bool:
     """Whether one provider has a credential, told by its own config shape.
 
-    The entry type decides where the credential lives: ``google`` and ``copilot``
+    The entry type decides where the credential lives: ``google`` and ``github-copilot``
     nest it under ``auth``, every other config shape carries ``api_key``. The
     provider set itself comes from the config table.
     """
@@ -1740,7 +1740,7 @@ def _set_provider_api_key_payload(*, raw_providers: object, provider: str, api_k
     """Write one provider's API key in that provider's own config shape.
 
     The provider set is the config table (``PROVIDER_CONFIG_FIELDS``), and every
-    id in it writes a top-level ``api_key``; only ``google`` and ``copilot`` nest
+    id in it writes a top-level ``api_key``; only ``google`` and ``github-copilot`` nest
     it under ``auth``, which no table carries.
     """
     if provider not in provider_config.PROVIDER_CONFIG_FIELDS:
@@ -1755,7 +1755,7 @@ def _set_provider_api_key_payload(*, raw_providers: object, provider: str, api_k
         auth_payload["method"] = raw_method if isinstance(raw_method, str) and raw_method else "api_key"
         auth_payload["api_key"] = api_key
         nested_payload["auth"] = auth_payload
-    elif provider == "copilot":
+    elif provider == "github-copilot":
         auth = nested_payload.get("auth")
         auth_payload = dict(cast(dict[str, object], auth)) if isinstance(auth, dict) else {"method": "token"}
         raw_method = auth_payload.get("method")

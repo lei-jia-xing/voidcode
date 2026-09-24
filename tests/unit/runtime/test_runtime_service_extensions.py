@@ -128,7 +128,7 @@ _STANDIN_PROVIDERS = RuntimeProvidersConfig(custom={provider_name: ProviderEndpo
 
 
 def _provider_runtime_config() -> RuntimeConfig:
-    return RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4")
+    return RuntimeConfig(execution_engine="provider", model="opencode-zen/gpt-5.4")
 
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
@@ -709,36 +709,6 @@ class _BlockingBackgroundTaskGraph:
             if not self.release_first.wait(timeout=2.0):
                 raise RuntimeError("first background task was not released")
         return _StubStep(output=request.prompt, is_finished=True)
-
-
-class _RateLimitOnceModelProvider:
-    def __init__(self, *, name: str) -> None:
-        self.name = name
-        self.attempts = 0
-
-    def turn_provider(self) -> _RateLimitOnceTurnProvider:
-        return _RateLimitOnceTurnProvider(model_provider=self)
-
-
-@dataclass(slots=True)
-class _RateLimitOnceTurnProvider:
-    model_provider: _RateLimitOnceModelProvider
-
-    @property
-    def name(self) -> str:
-        return self.model_provider.name
-
-    def propose_turn(self, request: object) -> ProviderTurnResult:
-        turn_request = cast(ProviderTurnRequest, request)
-        self.model_provider.attempts += 1
-        if self.model_provider.attempts == 1:
-            raise ProviderExecutionError(
-                kind="rate_limit",
-                provider_name=self.name,
-                model_name=turn_request.model_name or "gpt-5.4",
-                message="rate limited once",
-            )
-        return ProviderTurnResult(output="primary recovered")
 
 
 class _TwoEpisodeTransientModelProvider:
@@ -1361,7 +1331,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
         mcp_manager=_StubMcpManager(),
         config=RuntimeConfig(
             execution_engine="provider",
-            model="opencode/gpt-5.4",
+            model="opencode-zen/gpt-5.4",
             skills=RuntimeSkillsConfig(enabled=True),
             agent=RuntimeAgentConfig(
                 preset="leader",
@@ -1399,7 +1369,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     binding_snapshot = cast(dict[str, object], skill_snapshot["binding_snapshot"])
     assert binding_snapshot["approval_mode"] == "ask"
     assert binding_snapshot["execution_engine"] == "provider"
-    assert binding_snapshot["model"] == "opencode/gpt-5.4"
+    assert binding_snapshot["model"] == "opencode-zen/gpt-5.4"
     assert binding_snapshot["agent"] == capability_snapshot["agent"]
     assert binding_snapshot["mcp"] == capability_snapshot["mcp"]
 
@@ -1529,8 +1499,8 @@ def test_runtime_pattern_permission_rule_asks_for_workspace_write(tmp_path: Path
 def test_runtime_pattern_permission_rule_denies_shell_command(tmp_path: Path) -> None:
     registry = ModelProviderRegistry(
         providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
+            "opencode-zen": _ScriptedModelProvider(
+                name="opencode-zen",
                 outcomes=(
                     ProviderTurnResult(
                         tool_call=ToolCall(
@@ -1548,7 +1518,7 @@ def test_runtime_pattern_permission_rule_denies_shell_command(tmp_path: Path) ->
         config=RuntimeConfig(
             approval_mode="allow",
             execution_engine="provider",
-            model="opencode/gpt-5.4",
+            model="opencode-zen/gpt-5.4",
             permission=ExternalDirectoryPermissionConfig(
                 rules=(
                     PatternPermissionRule(
@@ -3095,12 +3065,12 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
             ),
             policy=RuntimePolicyConfig(tool_policy=RuntimePolicyToolPolicyConfig(default="deny", allowed=("read",))),
             execution_engine="provider",
-            model="opencode/gpt-5.4",
+            model="opencode-zen/gpt-5.4",
             tool_timeout_seconds=11,
             reasoning_effort="high",
             provider_fallback=RuntimeProviderFallbackConfig(
-                preferred_model="opencode/gpt-5.4",
-                fallback_models=("opencode/gpt-5.3",),
+                preferred_model="opencode-zen/gpt-5.4",
+                fallback_models=("opencode-zen/gpt-5.3",),
             ),
             providers=RuntimeProvidersConfig(
                 custom={
@@ -3119,12 +3089,12 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
                 preset="leader",
                 hook_refs=("role_reminder",),
                 context_transform_refs=("runtime_file_rules",),
-                model="opencode/gpt-5.4",
+                model="opencode-zen/gpt-5.4",
             ),
             context_window=RuntimeContextWindowConfig(),
             lsp=RuntimeLspConfig(enabled=True),
             mcp=RuntimeMcpConfig(enabled=True),
-            agents={"leader": RuntimeAgentConfig(preset="leader", model="opencode/gpt-5.4")},
+            agents={"leader": RuntimeAgentConfig(preset="leader", model="opencode-zen/gpt-5.4")},
         ),
     )
 
@@ -3158,12 +3128,12 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
     assert effective.permission.rules == (PatternPermissionRule(tool="read", path="docs/**", decision="allow"),)
     assert effective.policy == RuntimePolicyConfig(tool_policy=RuntimePolicyToolPolicyConfig(default="deny", allowed=("read",)))
     assert effective.execution_engine == "provider"
-    assert effective.model == "opencode/gpt-5.4"
+    assert effective.model == "opencode-zen/gpt-5.4"
     assert effective.tool_timeout_seconds == 11
     assert effective.reasoning_effort == "high"
     assert effective.provider_fallback == RuntimeProviderFallbackConfig(
-        preferred_model="opencode/gpt-5.4",
-        fallback_models=("opencode/gpt-5.3",),
+        preferred_model="opencode-zen/gpt-5.4",
+        fallback_models=("opencode-zen/gpt-5.3",),
     )
     assert effective.providers == RuntimeProvidersConfig(
         custom={
@@ -3181,7 +3151,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
         prompt_profile="leader",
         hook_refs=("role_reminder",),
         context_transform_refs=("runtime_file_rules",),
-        model="opencode/gpt-5.4",
+        model="opencode-zen/gpt-5.4",
         execution_engine="provider",
     )
     assert effective.context_window == RuntimeContextWindowConfig()
@@ -3194,7 +3164,7 @@ def test_runtime_config_request_metadata_overrides_supported_fields(
         workspace=tmp_path,
         config=RuntimeConfig(
             execution_engine="provider",
-            model="opencode/original",
+            model="opencode-zen/original",
             reasoning_effort="low",
             agent=RuntimeAgentConfig(
                 preset="leader",
@@ -3208,7 +3178,7 @@ def test_runtime_config_request_metadata_overrides_supported_fields(
             prompt="hello",
             metadata=validate_runtime_request_metadata(
                 {
-                    "agent": {"preset": "leader", "model": "opencode/gpt-5.4"},
+                    "agent": {"preset": "leader", "model": "opencode-zen/gpt-5.4"},
                     "reasoning_effort": "medium",
                     "context_transform_refs": ["runtime_file_rules"],
                 }
@@ -3216,13 +3186,13 @@ def test_runtime_config_request_metadata_overrides_supported_fields(
         )
     )
 
-    assert resolved.model == "opencode/gpt-5.4"
+    assert resolved.model == "opencode-zen/gpt-5.4"
     assert resolved.reasoning_effort == "medium"
     assert resolved.agent == RuntimeAgentConfig(
         preset="leader",
         prompt_profile="leader",
         context_transform_refs=("runtime_file_rules",),
-        model="opencode/gpt-5.4",
+        model="opencode-zen/gpt-5.4",
         execution_engine="provider",
     )
 
@@ -3287,7 +3257,7 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
         graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
             execution_engine="provider",
-            model="opencode/gpt-5.4",
+            model="opencode-zen/gpt-5.4",
             agent=RuntimeAgentConfig(
                 preset="leader",
                 tools=RuntimeToolsConfig(allowlist=("read", "task", "yield")),
@@ -3932,7 +3902,7 @@ def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_cle
             model="fresh/model",
             agent=RuntimeAgentConfig(
                 preset="leader",
-                model="opencode/gpt-5.4",
+                model="opencode-zen/gpt-5.4",
             ),
         ),
     )
@@ -3980,7 +3950,7 @@ def test_runtime_effective_runtime_config_recovers_provider_engine(tmp_path: Pat
             providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="provider",
-            model="opencode/gpt-5.4",
+            model="opencode-zen/gpt-5.4",
         ),
     )
     _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="single-agent-config"))
@@ -3993,7 +3963,7 @@ def test_runtime_effective_runtime_config_recovers_provider_engine(tmp_path: Pat
 
     assert effective.approval_mode == "allow"
     assert effective.execution_engine == "provider"
-    assert effective.model == "opencode/gpt-5.4"
+    assert effective.model == "opencode-zen/gpt-5.4"
 
 
 def test_runtime_product_agent_config_is_not_top_level_selectable(
@@ -4008,7 +3978,7 @@ def test_runtime_product_agent_config_is_not_top_level_selectable(
             config=RuntimeConfig(
                 agent=RuntimeAgentConfig(
                     preset="product",
-                    model="opencode/gpt-5.4",
+                    model="opencode-zen/gpt-5.4",
                 )
             ),
         )
@@ -4045,8 +4015,8 @@ def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Pa
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
+            "opencode-zen": _ScriptedModelProvider(
+                name="opencode-zen",
                 outcomes=(ProviderTurnResult(output="allowed tools captured"),),
                 created_providers=created_providers,
             )
@@ -4057,7 +4027,7 @@ def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Pa
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
                 preset="leader",
-                model="opencode/gpt-5.4",
+                model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(allowlist=("read",)),
             )
         ),
@@ -4075,7 +4045,7 @@ def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Pa
         "preset": "leader",
         "prompt_profile": "leader",
         "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
-        "model": "opencode/gpt-5.4",
+        "model": "opencode-zen/gpt-5.4",
         "tools": {"allowlist": ["read"]},
     }
 
@@ -4084,8 +4054,8 @@ def test_runtime_agent_tool_default_set_further_narrows_allowlist(tmp_path: Path
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
+            "opencode-zen": _ScriptedModelProvider(
+                name="opencode-zen",
                 outcomes=(ProviderTurnResult(output="default tools captured"),),
                 created_providers=created_providers,
             )
@@ -4096,7 +4066,7 @@ def test_runtime_agent_tool_default_set_further_narrows_allowlist(tmp_path: Path
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
                 preset="leader",
-                model="opencode/gpt-5.4",
+                model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(
                     allowlist=("read", "grep"),
                     default=("grep", "write"),
@@ -4118,8 +4088,8 @@ def test_runtime_agent_empty_tool_allowlist_exposes_no_tools(tmp_path: Path) -> 
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
+            "opencode-zen": _ScriptedModelProvider(
+                name="opencode-zen",
                 outcomes=(ProviderTurnResult(output="no tools exposed"),),
                 created_providers=created_providers,
             )
@@ -4130,7 +4100,7 @@ def test_runtime_agent_empty_tool_allowlist_exposes_no_tools(tmp_path: Path) -> 
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
                 preset="leader",
-                model="opencode/gpt-5.4",
+                model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(allowlist=()),
             )
         ),
@@ -4148,8 +4118,8 @@ def test_runtime_agent_empty_default_set_exposes_no_tools(tmp_path: Path) -> Non
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
+            "opencode-zen": _ScriptedModelProvider(
+                name="opencode-zen",
                 outcomes=(ProviderTurnResult(output="empty default captured"),),
                 created_providers=created_providers,
             )
@@ -4160,7 +4130,7 @@ def test_runtime_agent_empty_default_set_exposes_no_tools(tmp_path: Path) -> Non
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
                 preset="leader",
-                model="opencode/gpt-5.4",
+                model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(
                     allowlist=("read", "grep"),
                     default=(),
@@ -4181,8 +4151,8 @@ def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path:
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
+            "opencode-zen": _ScriptedModelProvider(
+                name="opencode-zen",
                 outcomes=(ProviderTurnResult(output="no builtins exposed"),),
                 created_providers=created_providers,
             )
@@ -4193,7 +4163,7 @@ def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path:
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
                 preset="leader",
-                model="opencode/gpt-5.4",
+                model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(
                     builtin=RuntimeToolsBuiltinConfig(enabled=False),
                 ),
@@ -4212,7 +4182,7 @@ def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path:
         "preset": "leader",
         "prompt_profile": "leader",
         "runtime_internal": {"prompt_materialization": _prompt_materialization_payload("leader")},
-        "model": "opencode/gpt-5.4",
+        "model": "opencode-zen/gpt-5.4",
         "tools": {"builtin": {"enabled": False}},
     }
 
@@ -4223,8 +4193,8 @@ def test_runtime_agent_builtin_tools_disabled_preserves_injected_non_builtin_too
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
+            "opencode-zen": _ScriptedModelProvider(
+                name="opencode-zen",
                 outcomes=(ProviderTurnResult(output="custom tools captured"),),
                 created_providers=created_providers,
             )
@@ -4236,7 +4206,7 @@ def test_runtime_agent_builtin_tools_disabled_preserves_injected_non_builtin_too
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
                 preset="leader",
-                model="opencode/gpt-5.4",
+                model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(
                     builtin=RuntimeToolsBuiltinConfig(enabled=False),
                 ),
@@ -4376,8 +4346,8 @@ def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
     target = tmp_path / "blocked.txt"
     registry = ModelProviderRegistry(
         providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
+            "opencode-zen": _ScriptedModelProvider(
+                name="opencode-zen",
                 outcomes=(
                     ProviderTurnResult(
                         tool_call=ToolCall(
@@ -4394,7 +4364,7 @@ def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
                 preset="leader",
-                model="opencode/gpt-5.4",
+                model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(allowlist=("read",)),
             )
         ),
@@ -4412,8 +4382,8 @@ def test_runtime_delegated_child_schema_matches_raw_allowlist_guard(tmp_path: Pa
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
+            "opencode-zen": _ScriptedModelProvider(
+                name="opencode-zen",
                 outcomes=(
                     ProviderTurnResult(output="parent done"),
                     ProviderTurnResult(
@@ -4465,13 +4435,13 @@ def test_runtime_delegated_child_schema_matches_raw_allowlist_guard(tmp_path: Pa
 
 
 def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -> None:
-    registry = ModelProviderRegistry(providers={"opencode": _WriteThenResultAwareModelProvider(name="opencode")})
+    registry = ModelProviderRegistry(providers={"opencode-zen": _WriteThenResultAwareModelProvider(name="opencode-zen")})
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
                 preset="leader",
-                model="opencode/gpt-5.4",
+                model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(allowlist=("write",)),
             )
         ),
@@ -4486,7 +4456,7 @@ def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
                 preset="leader",
-                model="opencode/gpt-5.4",
+                model="opencode-zen/gpt-5.4",
                 tools=RuntimeToolsConfig(allowlist=("read",)),
             )
         ),
@@ -4512,10 +4482,10 @@ def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_p
             providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="deterministic",
-            model="opencode/gpt-5.4",
+            model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
-                preferred_model="opencode/gpt-5.4",
-                fallback_models=("opencode/gpt-5.3", "custom/demo"),
+                preferred_model="opencode-zen/gpt-5.4",
+                fallback_models=("opencode-zen/gpt-5.3", "custom/demo"),
             ),
         ),
     )
@@ -4530,8 +4500,8 @@ def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_p
     effective = resumed_runtime.effective_runtime_config(session_id="fallback-config")
 
     assert effective.provider_fallback == RuntimeProviderFallbackConfig(
-        preferred_model="opencode/gpt-5.4",
-        fallback_models=("opencode/gpt-5.3", "custom/demo"),
+        preferred_model="opencode-zen/gpt-5.4",
+        fallback_models=("opencode-zen/gpt-5.3", "custom/demo"),
     )
 
 
@@ -4546,10 +4516,10 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_fallback_mod
             providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="deterministic",
-            model="opencode/gpt-5.4",
+            model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
-                preferred_model="opencode/gpt-5.4",
-                fallback_models=("opencode/gpt-5.3", "custom/demo"),
+                preferred_model="opencode-zen/gpt-5.4",
+                fallback_models=("opencode-zen/gpt-5.3", "custom/demo"),
             ),
         ),
     )
@@ -4605,9 +4575,9 @@ def test_runtime_persists_resolved_provider_snapshot_in_runtime_metadata(tmp_pat
             providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="deterministic",
-            model="opencode/gpt-5.4",
+            model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
-                preferred_model="opencode/gpt-5.4",
+                preferred_model="opencode-zen/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
         ),
@@ -4618,14 +4588,14 @@ def test_runtime_persists_resolved_provider_snapshot_in_runtime_metadata(tmp_pat
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["resolved_provider"] == {
         "active_target": {
-            "raw_model": "opencode/gpt-5.4",
-            "provider": "opencode",
+            "raw_model": "opencode-zen/gpt-5.4",
+            "provider": "opencode-zen",
             "model": "gpt-5.4",
         },
         "targets": [
             {
-                "raw_model": "opencode/gpt-5.4",
-                "provider": "opencode",
+                "raw_model": "opencode-zen/gpt-5.4",
+                "provider": "opencode-zen",
                 "model": "gpt-5.4",
             },
             {
@@ -4649,9 +4619,9 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_provider_f
             providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="deterministic",
-            model="opencode/gpt-5.4",
+            model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
-                preferred_model="opencode/gpt-5.4",
+                preferred_model="opencode-zen/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
         ),
@@ -4702,9 +4672,9 @@ def test_runtime_effective_runtime_config_accepts_non_first_active_target_in_sna
             providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="deterministic",
-            model="opencode/gpt-5.4",
+            model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
-                preferred_model="opencode/gpt-5.4",
+                preferred_model="opencode-zen/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
         ),
@@ -4742,9 +4712,9 @@ def test_runtime_effective_runtime_config_accepts_non_first_active_target_in_sna
     )
     effective = resumed_runtime.effective_runtime_config(session_id="active-target-fallback")
 
-    assert effective.model == "opencode/gpt-5.4"
+    assert effective.model == "opencode-zen/gpt-5.4"
     assert effective.provider_fallback == RuntimeProviderFallbackConfig(
-        preferred_model="opencode/gpt-5.4",
+        preferred_model="opencode-zen/gpt-5.4",
         fallback_models=("custom/demo",),
     )
 
@@ -4761,9 +4731,9 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_resolved_p
             providers=_STANDIN_PROVIDERS,
             approval_mode="allow",
             execution_engine="deterministic",
-            model="opencode/gpt-5.4",
+            model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
-                preferred_model="opencode/gpt-5.4",
+                preferred_model="opencode-zen/gpt-5.4",
                 fallback_models=("custom/demo",),
             ),
         ),
@@ -4784,8 +4754,8 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_resolved_p
         runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
         runtime_config["resolved_provider"] = {
             "active_target": {
-                "raw_model": "opencode/gpt-5.4",
-                "provider": "opencode",
+                "raw_model": "opencode-zen/gpt-5.4",
+                "provider": "opencode-zen",
                 "model": "gpt-5.4",
             },
             "targets": [

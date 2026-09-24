@@ -16,7 +16,7 @@ from voidcode.provider.config import (
     ProviderEndpointConfig,
     openai_compatible_endpoint_config,
 )
-from voidcode.provider.copilot import CopilotModelProvider
+from voidcode.provider.copilot import GithubCopilotModelProvider
 from voidcode.provider.endpoint import OpenAIEndpointProvider
 from voidcode.provider.google import GoogleModelProvider
 from voidcode.provider.naming import UnknownProviderIdError
@@ -34,7 +34,7 @@ def test_registry_anthropic_wire_vendors_share_one_adapter() -> None:
     registry = ModelProviderRegistry.with_defaults()
 
     for provider_id, base_url in (
-        ("kimi-coding", "https://api.kimi.com/coding"),
+        ("kimi-code", "https://api.kimi.com/coding"),
         ("minimax-cn", "https://api.minimaxi.com/anthropic"),
     ):
         provider = registry.resolve(provider_id)
@@ -59,8 +59,18 @@ def test_registry_registers_concrete_provider_adapters() -> None:
     assert isinstance(registry.resolve("openai"), OpenAIModelProvider)
     assert isinstance(registry.resolve("anthropic"), AnthropicCompatibleModelProvider)
     assert isinstance(registry.resolve("google"), GoogleModelProvider)
-    assert isinstance(registry.resolve("copilot"), CopilotModelProvider)
+    assert isinstance(registry.resolve("github-copilot"), GithubCopilotModelProvider)
     assert isinstance(registry.resolve("endpoint"), OpenAIEndpointProvider)
+
+
+@pytest.mark.parametrize("removed_id", ["grok", "kimi", "opencode", "copilot", "kimi-coding"])
+def test_registry_rejects_the_ids_the_rename_removed(removed_id: str) -> None:
+    # The rename is a hard cutover: an old id must fail loudly instead of
+    # resolving to the provider that replaced it.
+    registry = ModelProviderRegistry.with_defaults()
+
+    with pytest.raises(UnknownProviderIdError):
+        registry.resolve(removed_id)
 
 
 def test_registry_canonicalises_provider_id_case() -> None:
@@ -150,9 +160,9 @@ def test_registry_resolve_with_metadata_distinguishes_builtin_and_custom_sources
     ("provider_id", "provider_configs", "base_url"),
     (
         pytest.param(
-            "opencode",
+            "opencode-zen",
             ProviderConfigs(
-                opencode=ProviderEndpointConfig(
+                opencode_zen=ProviderEndpointConfig(
                     api_key="opencode-key",
                     base_url="https://opencode-proxy.example.test/zen/v1",
                 )

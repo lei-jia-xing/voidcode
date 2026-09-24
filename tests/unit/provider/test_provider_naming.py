@@ -27,7 +27,7 @@ from voidcode.provider.naming import (
 )
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_config
-from voidcode.runtime.provider_inspection import ProviderSummaryProjector
+from voidcode.runtime.provider_inspection import ProviderSummaryProjector, provider_credentials_config_path
 
 _MINI_MAX_SPELLINGS = (
     "minimax/minimax-m2.5",
@@ -160,6 +160,33 @@ def test_provider_summary_pairs_the_canonical_id_with_the_label() -> None:
     assert (summary.name, summary.label) == ("minimax", "MiniMax")
     assert summary.current is True
     assert summary.configured is True
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "expected"),
+    [
+        # Top-level `api_key` shapes: openai, anthropic, named endpoints and
+        # every shared OpenAI-compatible vendor.
+        ("openai", "providers.openai.api_key"),
+        ("anthropic", "providers.anthropic.api_key"),
+        ("endpoint", "providers.endpoint.api_key"),
+        ("opencode-zen", "providers.opencode-zen.api_key"),
+        ("kimi-code", "providers.kimi-code.api_key"),
+        ("minimax", "providers.minimax.api_key"),
+        ("minimax-cn", "providers.minimax-cn.api_key"),
+        # Nested `auth.*` shapes: google reads `auth.api_key`, copilot `auth.token`.
+        ("google", "providers.google.auth.api_key"),
+        ("github-copilot", "providers.github-copilot.auth.token"),
+        # A declared custom provider is endpoint-shaped: top-level `api_key`.
+        ("local-gw", "providers.custom.local-gw.api_key"),
+    ],
+)
+def test_credentials_config_path_names_the_key_a_user_writes(provider_id: str, expected: str) -> None:
+    # Remediation text must name the spelling the config file actually accepts:
+    # the payload key (not the Python field name) and the credential leaf the
+    # provider's own shape reads (top-level `api_key`, or `auth.api_key` /
+    # `auth.token` for the nested shapes).
+    assert provider_credentials_config_path(provider_id) == expected
 
 
 def test_provider_summary_label_degrades_for_an_unlabelled_custom_provider() -> None:
