@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal, cast
+from typing import Literal, TypedDict
 
 type HookPresetRef = Literal[
     "role_reminder",
@@ -76,6 +76,22 @@ _FORBIDDEN_HOOK_PRESET_ACTIONS: frozenset[str] = frozenset(
 )
 
 
+class HookPresetPayload(TypedDict):
+    """Plain-dict hook preset entry written to snapshots and guidance payloads.
+
+    ``ref``/``kind``/``source`` stay ``str`` because that is their wire shape:
+    the persisted snapshot carries the literal token, and the parser validates
+    membership before the entry is trusted.
+    """
+
+    ref: str
+    kind: str
+    source: str
+    event_scopes: tuple[HookPresetEventScope, ...]
+    allowed_actions: tuple[HookPresetAction, ...]
+    guidance: str
+
+
 def validate_hook_preset_event_scopes(
     scopes: tuple[str, ...],
     *,
@@ -145,7 +161,7 @@ class HookPreset:
 @dataclass(frozen=True, slots=True)
 class ResolvedHookPresetSnapshot:
     refs: tuple[str, ...]
-    presets: tuple[dict[str, object], ...]
+    presets: tuple[HookPresetPayload, ...]
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -168,8 +184,8 @@ class ResolvedHookPresetSnapshot:
             "<hook_presets>",
         ]
         for preset in self.presets:
-            event_scopes = ", ".join(cast(tuple[str, ...], preset["event_scopes"]))
-            allowed_actions = ", ".join(cast(tuple[str, ...], preset["allowed_actions"]))
+            event_scopes = ", ".join(preset["event_scopes"])
+            allowed_actions = ", ".join(preset["allowed_actions"])
             lines.extend(
                 (
                     "  <hook_preset>",
@@ -344,7 +360,7 @@ def validate_hook_preset_refs(
 def resolve_hook_preset_refs(refs: tuple[str, ...]) -> ResolvedHookPresetSnapshot:
     _ = validate_hook_preset_refs(refs, field_path="hook preset refs")
     seen_refs: list[str] = []
-    presets: list[dict[str, object]] = []
+    presets: list[HookPresetPayload] = []
     for ref in refs:
         if ref in seen_refs:
             continue
@@ -373,7 +389,7 @@ def hook_preset_snapshot_from_payload(payload: object) -> ResolvedHookPresetSnap
     if not isinstance(raw_presets, list):
         return None
     refs: list[str] = []
-    presets: list[dict[str, object]] = []
+    presets: list[HookPresetPayload] = []
     for index, raw_preset in enumerate(raw_presets):
         if not isinstance(raw_preset, dict):
             raise ValueError(f"persisted hook preset snapshot presets[{index}] must be an object")
@@ -435,8 +451,8 @@ def hook_preset_snapshot_from_payload(payload: object) -> ResolvedHookPresetSnap
     return ResolvedHookPresetSnapshot(refs=tuple(refs), presets=tuple(presets))
 
 
-def _hook_preset_payload(preset: Mapping[str, object]) -> dict[str, object]:
+def _hook_preset_payload(preset: HookPresetPayload) -> dict[str, object]:
     payload = dict(preset)
-    payload["event_scopes"] = list(cast(tuple[str, ...], preset["event_scopes"]))
-    payload["allowed_actions"] = list(cast(tuple[str, ...], preset["allowed_actions"]))
+    payload["event_scopes"] = list(preset["event_scopes"])
+    payload["allowed_actions"] = list(preset["allowed_actions"])
     return payload

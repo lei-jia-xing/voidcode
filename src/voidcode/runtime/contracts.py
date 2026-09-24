@@ -100,14 +100,21 @@ type RuntimeRequestMetadataPayload = RuntimeRequestMetadata | InternalRuntimeReq
 
 type RoutingSchemaMode = Literal["permissive", "strict"]
 
+type RoutingMode = Literal["sync", "background"]
+
 
 def is_schema_mode(value: object) -> TypeIs[RoutingSchemaMode]:
     """Whether an untrusted ``schema_mode`` token names one of the delegation schema modes."""
     return value in ("permissive", "strict")
 
 
+def is_routing_mode(value: object) -> TypeIs[RoutingMode]:
+    """Whether an untrusted ``mode`` token names one of the delegation modes."""
+    return value in ("sync", "background")
+
+
 class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
-    mode: Literal["sync", "background"]
+    mode: RoutingMode
     subagent_type: str
     description: str
     command: str
@@ -148,14 +155,6 @@ class TodosStateMetadata(TypedDict):
     summary: dict[str, object]
 
 
-class ContextProjectionMetadata(TypedDict, total=False):
-    # 结构由 context/window.py ContextProjection.metadata_payload 定义
-    # （context/window.py:121-）；深度校验委托 owner，P1 只做 depth-1。
-    version: int
-    projection_id: str | None
-    source_event_sequence: int
-
-
 class ContextCompactedStateMetadata(TypedDict, total=False):
     last_summary_anchor: str | None
     last_original_tool_result_count: int
@@ -170,13 +169,16 @@ class ContextTransformAppliedStateMetadata(TypedDict, total=False):
 
 class RuntimeStateMetadata(TypedDict, total=False):
     run_id: str
-    acp: AcpStateMetadata
-    context_projection: ContextProjectionMetadata
-    context_projection_summary: dict[str, str]
-    todos: TodosStateMetadata
-    pending_tool_intent: PendingToolIntentMetadata
-    context_compacted: ContextCompactedStateMetadata
-    context_transform_applied: ContextTransformAppliedStateMetadata
+    # Nested sections are validated to be objects only
+    # (``_validate_runtime_state_metadata_types``); each section's owner parses
+    # its own shape on read (context/window.py, todos.py, acp.py, ...).
+    acp: dict[str, object]
+    context_projection: dict[str, object]
+    context_projection_summary: dict[str, object]
+    todos: dict[str, object]
+    pending_tool_intent: dict[str, object]
+    context_compacted: dict[str, object]
+    context_transform_applied: dict[str, object]
 
 
 RUNTIME_STATE_METADATA_KEYS = frozenset(RuntimeStateMetadata.__annotations__)
@@ -474,7 +476,7 @@ def validate_runtime_request_metadata(
         joined = ", ".join(unknown_keys)
         raise RuntimeRequestError(f"unsupported request metadata field(s): {joined}")
 
-    normalized: dict[str, object] = {}
+    normalized: InternalRuntimeRequestMetadata = {}
 
     if "abort_requested" in metadata:
         abort_requested = metadata["abort_requested"]
@@ -572,9 +574,7 @@ def validate_runtime_request_metadata(
             raise RuntimeRequestError("request metadata 'keep_alive_turn' must be a boolean")
         normalized["keep_alive_turn"] = keep_alive_turn
 
-    if allow_internal_fields:
-        return cast(InternalRuntimeRequestMetadata, normalized)
-    return cast(RuntimeRequestMetadata, normalized)
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -582,7 +582,9 @@ class RuntimeRequest:
     prompt: str
     session_id: str | None = None
     parent_session_id: str | None = None
-    metadata: RuntimeRequestMetadataPayload = field(default_factory=_empty_runtime_request_metadata)
+    # A validated payload, or a loose mapping forwarded from persisted session
+    # metadata (readers only ever ``.get`` individual keys).
+    metadata: RuntimeRequestMetadataPayload | dict[str, object] = field(default_factory=_empty_runtime_request_metadata)
     allocate_session_id: bool = False
 
     @property

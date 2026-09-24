@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Literal, TypeIs, cast
+from typing import TYPE_CHECKING, Literal, TypeIs
 
 from .execution import SubagentExecutionContract
 from .routing import (
@@ -89,13 +89,13 @@ class BackgroundTaskRequestSnapshot:
         return subagent_routing_identity_from_metadata(self.metadata)
 
     def as_runtime_request(self) -> RuntimeRequest:
-        from ..contracts import RuntimeRequest, RuntimeRequestMetadataPayload
+        from ..contracts import RuntimeRequest
 
         return RuntimeRequest(
             prompt=self.prompt,
             session_id=self.session_id,
             parent_session_id=self.parent_session_id,
-            metadata=cast(RuntimeRequestMetadataPayload, self.metadata),
+            metadata=self.metadata,
             allocate_session_id=self.allocate_session_id,
         )
 

@@ -19,6 +19,16 @@ from ..question import (
     PendingQuestionPrompt,
 )
 from ..session import session_metadata_for_persistence
+from .rows import (
+    SessionApprovalRecoveryRow,
+    SessionEventRow,
+    SessionPendingApprovalRow,
+    SessionPendingQuestionRow,
+    SessionResumeCheckpointRow,
+    decode_row,
+    fetch_row,
+    fetch_rows,
+)
 from .shared import (
     _pending_operation_class,
     _pending_path_scope,
@@ -181,20 +191,18 @@ class _ResumeStorageMixin(_MixinBase):
 
     def load_pending_approval(self, *, workspace: Path, session_id: str) -> PendingApproval | None:
         with self._connect(workspace) as connection:
-            row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
+            row = fetch_row(
+                connection,
+                """
                     SELECT pending_approval_json
                     FROM sessions
                     WHERE workspace_id = ? AND session_id = ?
                     """,
-                    (str(workspace), session_id),
-                ).fetchone(),
+                (str(workspace), session_id),
             )
         if row is None:
             raise UnknownSessionError(f"unknown session: {session_id}")
-        payload = cast(str | None, row["pending_approval_json"])
+        payload = decode_row(row, SessionPendingApprovalRow)["pending_approval_json"]
         if payload is None:
             return None
         try:
@@ -284,20 +292,18 @@ class _ResumeStorageMixin(_MixinBase):
         instances and processes.
         """
         with self._write_connect(workspace) as connection:
-            row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
+            row = fetch_row(
+                connection,
+                """
                     SELECT pending_approval_json
                     FROM sessions
                     WHERE workspace_id = ? AND session_id = ?
                     """,
-                    (str(workspace), session_id),
-                ).fetchone(),
+                (str(workspace), session_id),
             )
             if row is None:
                 raise UnknownSessionError(f"unknown session: {session_id}")
-            payload = cast(str | None, row["pending_approval_json"])
+            payload = decode_row(row, SessionPendingApprovalRow)["pending_approval_json"]
             if payload is None:
                 return False
             try:
@@ -340,26 +346,30 @@ class _ResumeStorageMixin(_MixinBase):
         terminal and is sealed as failed instead.
         """
         with self._write_connect(workspace) as connection:
-            session_row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
+            session_row = fetch_row(
+                connection,
+                """
                     SELECT status, pending_approval_json, resume_checkpoint_json
                     FROM sessions
                     WHERE workspace_id = ? AND session_id = ?
                     """,
-                    (str(workspace), session_id),
-                ).fetchone(),
+                (str(workspace), session_id),
             )
             if session_row is None:
                 raise UnknownSessionError(f"unknown session: {session_id}")
-            pending_payload = cast(str | None, session_row["pending_approval_json"])
+            session_data = decode_row(session_row, SessionApprovalRecoveryRow)
+            pending_payload = session_data["pending_approval_json"]
             if pending_payload is None:
                 return False
+            checkpoint_payload = session_data["resume_checkpoint_json"]
+            if checkpoint_payload is None:
+                # ``resume_checkpoint_json`` is nullable in the DDL; a waiting
+                # approval always writes one, so its absence is corrupt state.
+                raise RuntimeError(f"persisted approval recovery state for session {session_id!r} is corrupt")
             try:
                 pending_decoded = json.loads(pending_payload)
-                checkpoint_decoded = json.loads(cast(str, session_row["resume_checkpoint_json"]))
-            except (TypeError, json.JSONDecodeError) as exc:
+                checkpoint_decoded = json.loads(checkpoint_payload)
+            except json.JSONDecodeError as exc:
                 raise RuntimeError(f"persisted approval recovery state for session {session_id!r} is corrupt") from exc
             if not isinstance(pending_decoded, dict) or not isinstance(checkpoint_decoded, dict):
                 raise RuntimeError(f"persisted approval recovery state for session {session_id!r} is corrupt")
@@ -369,19 +379,17 @@ class _ResumeStorageMixin(_MixinBase):
             checkpoint = cast(dict[str, object], checkpoint_decoded)
             if checkpoint.get("kind") != "approval_wait":
                 return False
-            event_rows = cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    """
+            event_rows = fetch_rows(
+                connection,
+                """
                     SELECT sequence, event_type, source, payload_json
                     FROM session_events
                     WHERE workspace_id = ? AND session_id = ?
                     ORDER BY sequence ASC
                     """,
-                    (str(workspace), session_id),
-                ).fetchall(),
+                (str(workspace), session_id),
             )
-            events = tuple(self._event_envelope_from_row(session_id=session_id, row=row) for row in event_rows)
+            events = tuple(self._event_envelope_from_row(session_id=session_id, row=decode_row(row, SessionEventRow)) for row in event_rows)
             request_events = [
                 event
                 for event in events
@@ -509,20 +517,18 @@ class _ResumeStorageMixin(_MixinBase):
 
     def load_pending_question(self, *, workspace: Path, session_id: str) -> PendingQuestion | None:
         with self._connect(workspace) as connection:
-            row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
+            row = fetch_row(
+                connection,
+                """
                     SELECT pending_question_json
                     FROM sessions
                     WHERE workspace_id = ? AND session_id = ?
                     """,
-                    (str(workspace), session_id),
-                ).fetchone(),
+                (str(workspace), session_id),
             )
         if row is None:
             raise UnknownSessionError(f"unknown session: {session_id}")
-        payload = cast(str | None, row["pending_question_json"])
+        payload = decode_row(row, SessionPendingQuestionRow)["pending_question_json"]
         if payload is None:
             return None
         try:
@@ -631,35 +637,31 @@ class _ResumeStorageMixin(_MixinBase):
 
     def load_resume_checkpoint(self, *, workspace: Path, session_id: str) -> dict[str, object] | None:
         with self._connect(workspace) as connection:
-            row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
+            row = fetch_row(
+                connection,
+                """
                     SELECT resume_checkpoint_json
                     FROM sessions
                     WHERE workspace_id = ? AND session_id = ?
                     """,
-                    (str(workspace), session_id),
-                ).fetchone(),
+                (str(workspace), session_id),
             )
         if row is None:
             raise UnknownSessionError(f"unknown session: {session_id}")
-        payload = cast(str | None, row["resume_checkpoint_json"])
+        payload = decode_row(row, SessionResumeCheckpointRow)["resume_checkpoint_json"]
         if payload is None:
             return None
         return self._decode_resume_checkpoint_payload(payload)
 
     def _read_pending_approval_json(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> str | None:
-        row = cast(
-            sqlite3.Row | None,
-            connection.execute(
-                ("SELECT pending_approval_json FROM sessions WHERE workspace_id = ? AND session_id = ?"),
-                (str(workspace), session_id),
-            ).fetchone(),
+        row = fetch_row(
+            connection,
+            ("SELECT pending_approval_json FROM sessions WHERE workspace_id = ? AND session_id = ?"),
+            (str(workspace), session_id),
         )
         if row is None:
             return None
-        return cast(str | None, row["pending_approval_json"])
+        return decode_row(row, SessionPendingApprovalRow)["pending_approval_json"]
 
     def _approval_wait_resume_checkpoint(
         self,

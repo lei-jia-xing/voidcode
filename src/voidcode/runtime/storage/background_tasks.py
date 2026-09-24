@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from ..background.models import (
     BackgroundTaskRef,
@@ -20,9 +20,11 @@ from ..background.models import (
     validate_background_task_id,
 )
 from ..contracts import (
+    RoutingSchemaMode,
     RuntimeRequest,
     RuntimeResponse,
     UnknownBackgroundTaskError,
+    is_schema_mode,
 )
 from ..events import (
     DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
@@ -30,6 +32,16 @@ from ..events import (
     RUNTIME_QUESTION_REQUESTED,
 )
 from ..session import normalize_persisted_session_metadata
+from .rows import (
+    BackgroundTaskReconcileRow,
+    BackgroundTaskRow,
+    BackgroundTaskStatusCountRow,
+    BackgroundTaskSummaryRow,
+    SessionRuntimeStateRow,
+    decode_row,
+    fetch_row,
+    fetch_rows,
+)
 
 if TYPE_CHECKING:
     from .shared import _StorageMixinBase
@@ -40,6 +52,18 @@ else:
 
 
 class _BackgroundTaskStorageMixin(_MixinBase):
+    @staticmethod
+    def _require_schema_mode(value: str) -> RoutingSchemaMode:
+        """Narrow a persisted ``schema_mode`` token to its declared enum.
+
+        The column is plain ``TEXT``; every writer normalizes through
+        ``_background_task_schema_declaration_from_request``, so a value outside
+        the enum is corrupt state and raises rather than silently defaulting.
+        """
+        if not is_schema_mode(value):
+            raise ValueError(f"invalid background task schema_mode: {value!r}")
+        return value
+
     @staticmethod
     def _background_task_runtime_state_defaults() -> dict[str, object]:
         return {
@@ -100,7 +124,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         return request_id if isinstance(request_id, str) else None
 
     @classmethod
-    def _background_task_runtime_state_from_session_row(cls, row: sqlite3.Row | None) -> dict[str, object]:
+    def _background_task_runtime_state_from_session_row(cls, row: SessionRuntimeStateRow | None) -> dict[str, object]:
         if row is None:
             return cls._background_task_runtime_state_defaults()
         status = row["status"]
@@ -112,7 +136,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         }
 
     @classmethod
-    def _background_task_summary_from_row(cls, row: sqlite3.Row) -> StoredBackgroundTaskSummary:
+    def _background_task_summary_from_row(cls, row: BackgroundTaskSummaryRow) -> StoredBackgroundTaskSummary:
         return StoredBackgroundTaskSummary(
             task=BackgroundTaskRef(id=row["task_id"]),
             status=cls._parse_background_task_status(row["status"]),
@@ -127,7 +151,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             output_schema=_BackgroundTaskStorageMixin._output_schema_from_json(
                 row["output_schema_json"],
             ),
-            schema_mode=row["schema_mode"],
+            schema_mode=_BackgroundTaskStorageMixin._require_schema_mode(row["schema_mode"]),
         )
 
     @staticmethod
@@ -139,7 +163,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             return None
         return parsed
 
-    def _background_task_durable_payload(self, row: sqlite3.Row) -> dict[str, object]:
+    def _background_task_durable_payload(self, row: BackgroundTaskRow) -> dict[str, object]:
         durable_payload: dict[str, object] = {
             "task_id": row["task_id"],
             "parent_session_id": row["request_parent_session_id"],
@@ -407,19 +431,17 @@ class _BackgroundTaskStorageMixin(_MixinBase):
     def load_background_task(self, *, workspace: Path, task_id: str) -> BackgroundTaskState:
         task_id = validate_background_task_id(task_id)
         with self._connect(workspace) as connection:
-            row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
+            row = fetch_row(
+                connection,
+                """
                     SELECT * FROM background_tasks
                     WHERE workspace_id = ? AND task_id = ?
                     """,
-                    (str(workspace), task_id),
-                ).fetchone(),
+                (str(workspace), task_id),
             )
         if row is None:
             raise UnknownBackgroundTaskError(f"unknown background task: {task_id}")
-        return self._background_task_state_from_row(row)
+        return self._background_task_state_from_row(decode_row(row, BackgroundTaskRow))
 
     def _list_task_summaries(
         self,
@@ -430,10 +452,9 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         order_sql: str,
     ) -> tuple[StoredBackgroundTaskSummary, ...]:
         with self._connect(workspace) as connection:
-            rows = cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    f"""
+            rows = fetch_rows(
+                connection,
+                f"""
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
                            , created_at_unix_ms, keep_alive, steer_prompt
                            , output_schema_json, schema_mode
@@ -441,10 +462,9 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     WHERE workspace_id = ?{where_sql}
                     ORDER BY {order_sql}
                     """,
-                    (str(workspace), *params),
-                ).fetchall(),
+                (str(workspace), *params),
             )
-        return tuple(self._background_task_summary_from_row(row) for row in rows)
+        return tuple(self._background_task_summary_from_row(decode_row(row, BackgroundTaskSummaryRow)) for row in rows)
 
     def list_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]:
         return self._list_task_summaries(
@@ -508,22 +528,20 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         child_session_id: str,
     ) -> BackgroundTaskState | None:
         with self._connect(workspace) as connection:
-            row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
+            row = fetch_row(
+                connection,
+                """
                     SELECT *
                     FROM background_tasks
                     WHERE workspace_id = ? AND session_id = ?
                     ORDER BY updated_at DESC, task_id DESC
                     LIMIT 1
                     """,
-                    (str(workspace), child_session_id),
-                ).fetchone(),
+                (str(workspace), child_session_id),
             )
         if row is None:
             return None
-        return self._background_task_state_from_row(row)
+        return self._background_task_state_from_row(decode_row(row, BackgroundTaskRow))
 
     def mark_background_task_running(
         self,
@@ -972,10 +990,9 @@ class _BackgroundTaskStorageMixin(_MixinBase):
     ) -> tuple[BackgroundTaskState, ...]:
         incomplete_status_predicate = "background_tasks.status IN ('queued', 'running')" if include_queued else "background_tasks.status = 'running'"
         with self._write_connect(workspace) as connection:
-            rows = cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    f"""
+            rows = fetch_rows(
+                connection,
+                f"""
                     SELECT background_tasks.task_id, background_tasks.cancel_requested_at,
                            background_tasks.delegated_reminder_json
                     FROM background_tasks
@@ -995,19 +1012,19 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                       )
                     ORDER BY background_tasks.updated_at ASC, background_tasks.task_id ASC
                     """,
-                    (str(workspace),),
-                ).fetchall(),
+                (str(workspace),),
             )
             if not rows:
                 return ()
             reconciled_task_ids: list[str] = []
             for row in rows:
-                task_id = row["task_id"]
-                cancel_requested_at = row["cancel_requested_at"]
+                task_data = decode_row(row, BackgroundTaskReconcileRow)
+                task_id = task_data["task_id"]
+                cancel_requested_at = task_data["cancel_requested_at"]
                 updated_at = self._next_background_task_timestamp(connection=connection)
                 if cancel_requested_at is not None:
                     delegated_reminder_json = self._stop_delegated_reminder_state(
-                        existing_payload=row["delegated_reminder_json"],
+                        existing_payload=task_data["delegated_reminder_json"],
                         stop_condition="cancellation",
                         stopped_at_unix_ms=self._current_unix_ms(),
                     )
@@ -1149,7 +1166,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             )
             connection.commit()
 
-    def _background_task_state_from_row(self, row: sqlite3.Row) -> BackgroundTaskState:
+    def _background_task_state_from_row(self, row: BackgroundTaskRow) -> BackgroundTaskState:
         metadata = json.loads(row["request_metadata_json"])
         if not isinstance(metadata, dict):
             raise ValueError("background task metadata must decode to an object")
@@ -1182,7 +1199,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             keep_alive=bool(row["keep_alive"]),
             steer_prompt=row["steer_prompt"],
             output_schema=self._output_schema_from_json(row["output_schema_json"]),
-            schema_mode=row["schema_mode"],
+            schema_mode=_BackgroundTaskStorageMixin._require_schema_mode(row["schema_mode"]),
             structured_output=self._output_schema_from_json(row["structured_output_json"]),
             schema_validation=self._schema_validation_from_json(row["schema_validation_json"]),
         )
@@ -1193,20 +1210,18 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         connection: sqlite3.Connection,
         workspace: Path,
         task_id: str,
-    ) -> sqlite3.Row:
-        row = cast(
-            sqlite3.Row | None,
-            connection.execute(
-                """
+    ) -> BackgroundTaskRow:
+        row = fetch_row(
+            connection,
+            """
                 SELECT * FROM background_tasks
                 WHERE workspace_id = ? AND task_id = ?
                 """,
-                (str(workspace), task_id),
-            ).fetchone(),
+            (str(workspace), task_id),
         )
         if row is None:
             raise UnknownBackgroundTaskError(f"unknown background task: {task_id}")
-        return row
+        return decode_row(row, BackgroundTaskRow)
 
     def _next_background_task_timestamp(self, *, connection: sqlite3.Connection) -> int:
         return self._next_sequence_value(connection=connection, scope="background_tasks")
@@ -1220,34 +1235,28 @@ class _BackgroundTaskStorageMixin(_MixinBase):
     ) -> dict[str, object]:
         if session_id is None:
             return self._background_task_runtime_state_defaults()
-        row = cast(
-            sqlite3.Row | None,
-            connection.execute(
-                """
+        row = fetch_row(
+            connection,
+            """
                 SELECT status, pending_approval_json, pending_question_json
                 FROM sessions
                 WHERE workspace_id = ? AND session_id = ?
                 """,
-                (str(workspace), session_id),
-            ).fetchone(),
+            (str(workspace), session_id),
         )
-        return self._background_task_runtime_state_from_session_row(row)
+        return self._background_task_runtime_state_from_session_row(None if row is None else decode_row(row, SessionRuntimeStateRow))
 
     @staticmethod
     def _background_task_status_counts(*, connection: sqlite3.Connection, workspace: Path) -> dict[str, int]:
-        return {
-            row["status"]: row["count"]
-            for row in cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    """
-                    SELECT status, COUNT(*) AS count
-                    FROM background_tasks
-                    WHERE workspace_id = ?
-                    GROUP BY status
-                    ORDER BY status ASC
-                    """,
-                    (str(workspace),),
-                ).fetchall(),
-            )
-        }
+        rows = fetch_rows(
+            connection,
+            """
+                SELECT status, COUNT(*) AS count
+                FROM background_tasks
+                WHERE workspace_id = ?
+                GROUP BY status
+                ORDER BY status ASC
+                """,
+            (str(workspace),),
+        )
+        return {row["status"]: row["count"] for row in (decode_row(raw, BackgroundTaskStatusCountRow) for raw in rows)}

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal, TypedDict, TypeIs, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, TypeIs
+
+if TYPE_CHECKING:
+    from .contracts import TodosStateMetadata
 
 TodoStatus = Literal["pending", "in_progress", "completed", "abandoned", "blocked"]
 TODO_STATUSES: tuple[TodoStatus, ...] = (
@@ -37,7 +40,7 @@ class RuntimeTodoSummary(TypedDict):
 _TODO_STATE_KEYS = frozenset({"version", "revision", "phases", "summary"})
 
 
-def runtime_todo_state_from_payload(raw_state: object) -> dict[str, object]:
+def runtime_todo_state_from_payload(raw_state: object) -> TodosStateMetadata:
     if not isinstance(raw_state, dict):
         raise ValueError("runtime todo state must be an object")
     state: Mapping[str, object] = raw_state
@@ -143,12 +146,12 @@ def todo_state_payload(
     phases: tuple[RuntimeTodoPhase, ...],
     *,
     revision: int,
-) -> dict[str, object]:
+) -> TodosStateMetadata:
     return {
         "version": 2,
         "revision": revision,
         "phases": [{"name": phase["name"], "tasks": [dict(task) for task in phase["tasks"]]} for phase in phases],
-        "summary": todo_summary(phases),
+        "summary": dict(todo_summary(phases)),
     }
 
 
@@ -174,7 +177,7 @@ def todo_event_payload(
     }
 
 
-def todo_state_from_session_metadata(session_metadata: dict[str, object]) -> dict[str, object] | None:
+def todo_state_from_session_metadata(session_metadata: dict[str, object]) -> TodosStateMetadata | None:
     from .session_metadata_helpers import runtime_state_todos
 
     todo_state = runtime_state_todos(session_metadata)
@@ -188,7 +191,7 @@ def render_provider_todo_state(session_metadata: dict[str, object]) -> str | Non
     if todo_state is None:
         return None
     phases = _parse_phases(todo_state["phases"])
-    active_phases = tuple(
+    active_phases: tuple[RuntimeTodoPhase, ...] = tuple(
         {"name": phase["name"], "tasks": [task for task in phase["tasks"] if task["status"] in {"pending", "in_progress", "blocked"}]}
         for phase in phases
     )
@@ -203,7 +206,7 @@ def render_provider_todo_state(session_metadata: dict[str, object]) -> str | Non
     ]
     for phase in active_phases:
         lines.append(f"{phase['name']}:")
-        for task in cast(list[RuntimeTodoTask], phase["tasks"]):
+        for task in phase["tasks"]:
             blocker = f" (blocked: {task['blocker']})" if task.get("blocker") else ""
             lines.append(f"- [{task['status']}] {task['content']}{blocker}")
     return "\n".join(lines)

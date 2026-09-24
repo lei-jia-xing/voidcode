@@ -3094,7 +3094,7 @@ class VoidCodeRuntime(RuntimeSurface):
         request_metadata = active_metadata.get("request_metadata")
         if not isinstance(request_metadata, dict):
             return False
-        active_request_metadata = VoidCodeRuntime._fresh_request_metadata(cast(RuntimeRequestMetadataPayload, request_metadata))
+        active_request_metadata = VoidCodeRuntime._fresh_request_metadata(request_metadata)
         persisted_request_metadata = VoidCodeRuntime._request_metadata_from_session_metadata(result.session.metadata)
         if active_request_metadata != persisted_request_metadata:
             return True
@@ -3114,7 +3114,7 @@ class VoidCodeRuntime(RuntimeSurface):
             "background_task_id",
         }
         request_metadata = {key: value for key, value in metadata.items() if key in request_metadata_keys}
-        return VoidCodeRuntime._fresh_request_metadata(cast(RuntimeRequestMetadataPayload, request_metadata))
+        return VoidCodeRuntime._fresh_request_metadata(request_metadata)
 
     def queue_steering(
         self,
@@ -3223,7 +3223,7 @@ class VoidCodeRuntime(RuntimeSurface):
         validate_id(session_id)
         response = self._load_stored_response(session_id=session_id)
         intent = runtime_state_pending_tool_intent(response.session.metadata)
-        return cast(dict[str, object], intent) if intent is not None else None
+        return intent if intent is not None else None
 
     def pending_tool_recovery(self, session_id: str) -> dict[str, object] | None:
         """Return the deterministic recovery action for an unsettled tool."""
@@ -4337,8 +4337,8 @@ class VoidCodeRuntime(RuntimeSurface):
         )
 
     @staticmethod
-    def _fresh_request_metadata(metadata: RuntimeRequestMetadataPayload) -> dict[str, object]:
-        return fresh_request_metadata(cast(dict[str, object], metadata))
+    def _fresh_request_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
+        return fresh_request_metadata(metadata)
 
     @staticmethod
     def _persisted_selected_skill_names(

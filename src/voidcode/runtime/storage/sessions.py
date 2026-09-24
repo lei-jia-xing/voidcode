@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
@@ -27,6 +28,21 @@ from ..session import (
     session_metadata_for_persistence,
 )
 from ..todos import runtime_todo_phases_from_payload, todo_state_payload
+from .rows import (
+    SessionCreatedAtRow,
+    SessionCreatedAtUnixMsRow,
+    SessionEventRow,
+    SessionLastEventSequenceRow,
+    SessionListRow,
+    SessionLoadRow,
+    SessionMetadataRow,
+    SessionPromptRow,
+    SessionStatusMetadataRow,
+    SessionStatusRow,
+    decode_row,
+    fetch_row,
+    fetch_rows,
+)
 from .shared import _assert_terminal_session_events_allowed
 
 if TYPE_CHECKING:
@@ -159,7 +175,7 @@ class _SessionStorageMixin(_MixinBase):
         return updated_at
 
     @staticmethod
-    def _todo_state_from_events(events: tuple[EventEnvelope, ...]) -> dict[str, object] | None:
+    def _todo_state_from_events(events: tuple[EventEnvelope, ...]) -> Mapping[str, object] | None:
         for event in reversed(events):
             if event.event_type != RUNTIME_TODO_UPDATED:
                 continue
@@ -193,13 +209,14 @@ class _SessionStorageMixin(_MixinBase):
         commit before this read is retained; a queue writer that starts after
         this transaction commits its update afterward and is not overwritten.
         """
-        row = connection.execute(
+        row = fetch_row(
+            connection,
             "SELECT metadata_json FROM sessions WHERE workspace_id = ? AND session_id = ?",
             (str(workspace), session_id),
-        ).fetchone()
+        )
         if row is None:
             return metadata
-        stored_metadata = json.loads(cast(str, row["metadata_json"]))
+        stored_metadata = json.loads(decode_row(row, SessionMetadataRow)["metadata_json"])
         if not isinstance(stored_metadata, dict):
             return metadata
 
@@ -288,30 +305,29 @@ class _SessionStorageMixin(_MixinBase):
     def list_sessions(self, *, workspace: Path) -> tuple[StoredSessionSummary, ...]:
         self._auto_prune_sessions_for_list(workspace=workspace)
         with self._connect(workspace) as connection:
-            rows = cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    """
+            rows = fetch_rows(
+                connection,
+                """
                 SELECT session_id, parent_session_id, status, turn, prompt, updated_at
                 FROM sessions
                 WHERE workspace_id = ?
                 ORDER BY updated_at DESC, session_id ASC
                 """,
-                    (str(workspace),),
-                ).fetchall(),
+                (str(workspace),),
             )
+        decoded_rows = tuple(decode_row(row, SessionListRow) for row in rows)
         return tuple(
             StoredSessionSummary(
                 session=SessionRef(
-                    id=cast(str, row["session_id"]),
-                    parent_id=cast(str | None, row["parent_session_id"]),
+                    id=row["session_id"],
+                    parent_id=row["parent_session_id"],
                 ),
-                status=self._parse_session_status(cast(str, row["status"])),
-                turn=cast(int, row["turn"]),
-                prompt=cast(str, row["prompt"]),
-                updated_at=cast(int, row["updated_at"]),
+                status=self._parse_session_status(row["status"]),
+                turn=row["turn"],
+                prompt=row["prompt"],
+                updated_at=row["updated_at"],
             )
-            for row in rows
+            for row in decoded_rows
         )
 
     def _auto_prune_sessions_for_list(self, *, workspace: Path) -> None:
@@ -346,16 +362,14 @@ class _SessionStorageMixin(_MixinBase):
             # Verify the session exists before mutating any session state. We hold a
             # write lock from BEGIN IMMEDIATE, so this read is consistent with the
             # subsequent UPDATE.
-            existing_row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
-                    SELECT status
-                    FROM sessions
-                    WHERE workspace_id = ? AND session_id = ?
-                    """,
-                    (str(workspace), session_id),
-                ).fetchone(),
+            existing_row = fetch_row(
+                connection,
+                """
+                SELECT status
+                FROM sessions
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+                (str(workspace), session_id),
             )
             if existing_row is None:
                 raise UnknownSessionError(f"unknown session: {session_id}")
@@ -364,7 +378,7 @@ class _SessionStorageMixin(_MixinBase):
             # append entry point delivers it.
             _assert_terminal_session_events_allowed(
                 session_id=session_id,
-                status=cast(str, existing_row["status"]),
+                status=decode_row(existing_row, SessionStatusRow)["status"],
                 events=((event_type, source, payload, dedupe_key),),
             )
             # Claim the dedupe slot before touching the session row. Losing the
@@ -385,23 +399,21 @@ class _SessionStorageMixin(_MixinBase):
                     connection.commit()
                     return None
             updated_at = self._next_timestamp(connection=connection)
-            sequence_row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
+            sequence_row = fetch_row(
+                connection,
+                """
                     UPDATE sessions
                     SET updated_at = ?, last_event_sequence = last_event_sequence + 1
                     WHERE workspace_id = ? AND session_id = ?
                     RETURNING last_event_sequence
                     """,
-                    (updated_at, str(workspace), session_id),
-                ).fetchone(),
+                (updated_at, str(workspace), session_id),
             )
             if sequence_row is None:
                 # Session disappeared mid-transaction; should not happen under
                 # BEGIN IMMEDIATE but kept defensively.
                 raise UnknownSessionError(f"unknown session: {session_id}")
-            sequence = cast(int, sequence_row["last_event_sequence"])
+            sequence = decode_row(sequence_row, SessionLastEventSequenceRow)["last_event_sequence"]
             event = EventEnvelope(
                 session_id=session_id,
                 sequence=sequence,
@@ -445,16 +457,14 @@ class _SessionStorageMixin(_MixinBase):
         checkpoint is upserted in the same transaction.
         """
         with self._write_connect(workspace) as connection:
-            status_row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    "SELECT status FROM sessions WHERE workspace_id = ? AND session_id = ?",
-                    (str(workspace), session_id),
-                ).fetchone(),
+            status_row = fetch_row(
+                connection,
+                "SELECT status FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
             )
             if status_row is None:
                 raise UnknownSessionError(f"unknown session: {session_id}")
-            status = cast(str, status_row["status"])
+            status = decode_row(status_row, SessionStatusRow)["status"]
             _assert_terminal_session_events_allowed(
                 session_id=session_id,
                 status=status,
@@ -482,21 +492,19 @@ class _SessionStorageMixin(_MixinBase):
                     if inserted_delivery.rowcount == 0:
                         continue
                 updated_at = self._next_timestamp(connection=connection)
-                sequence_row = cast(
-                    sqlite3.Row | None,
-                    connection.execute(
-                        """
+                sequence_row = fetch_row(
+                    connection,
+                    """
                         UPDATE sessions
                         SET updated_at = ?, last_event_sequence = last_event_sequence + 1
                         WHERE workspace_id = ? AND session_id = ?
                         RETURNING last_event_sequence
                         """,
-                        (updated_at, str(workspace), session_id),
-                    ).fetchone(),
+                    (updated_at, str(workspace), session_id),
                 )
                 if sequence_row is None:
                     raise UnknownSessionError(f"unknown session: {session_id}")
-                sequence = cast(int, sequence_row["last_event_sequence"])
+                sequence = decode_row(sequence_row, SessionLastEventSequenceRow)["last_event_sequence"]
                 event = EventEnvelope(
                     session_id=session_id,
                     sequence=sequence,
@@ -583,12 +591,10 @@ class _SessionStorageMixin(_MixinBase):
         checkpoint_json: str
         metadata_json: str
         with self._write_connect(workspace) as connection:
-            existing = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    "SELECT 1 FROM sessions WHERE workspace_id = ? AND session_id = ?",
-                    (str(workspace), session_id),
-                ).fetchone(),
+            existing = fetch_row(
+                connection,
+                "SELECT 1 FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
             )
             persisted_metadata = self._merge_runtime_owned_metadata(
                 connection=connection,
@@ -721,16 +727,14 @@ class _SessionStorageMixin(_MixinBase):
 
     def has_session(self, *, workspace: Path, session_id: str) -> bool:
         with self._connect(workspace) as connection:
-            row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
+            row = fetch_row(
+                connection,
+                """
                     SELECT 1
                     FROM sessions
                     WHERE workspace_id = ? AND session_id = ?
                     """,
-                    (str(workspace), session_id),
-                ).fetchone(),
+                (str(workspace), session_id),
             )
         return row is not None
 
@@ -755,16 +759,14 @@ class _SessionStorageMixin(_MixinBase):
         durable status without materializing the full event log.
         """
         with self._connect(workspace) as connection:
-            row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    "SELECT status FROM sessions WHERE workspace_id = ? AND session_id = ?",
-                    (str(workspace), session_id),
-                ).fetchone(),
+            row = fetch_row(
+                connection,
+                "SELECT status FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
             )
         if row is None:
             raise UnknownSessionError(f"unknown session: {session_id}")
-        return self._parse_session_status(cast(str, row["status"]))
+        return self._parse_session_status(decode_row(row, SessionStatusRow)["status"])
 
     def read_session_events_after(
         self,
@@ -785,42 +787,39 @@ class _SessionStorageMixin(_MixinBase):
         runtime applies its policy projection afterwards.
         """
         with self._connect(workspace) as connection:
-            session_row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
+            session_row = fetch_row(
+                connection,
+                """
                     SELECT status, metadata_json
                     FROM sessions
                     WHERE workspace_id = ? AND session_id = ?
                     """,
-                    (str(workspace), session_id),
-                ).fetchone(),
+                (str(workspace), session_id),
             )
             if session_row is None:
                 raise UnknownSessionError(f"unknown session: {session_id}")
-            metadata = cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"])))
+            session_state = decode_row(session_row, SessionStatusMetadataRow)
+            metadata = cast(dict[str, object], json.loads(session_state["metadata_json"]))
             marker = self._revert_marker_from_metadata(metadata)
             revert_cutoff = marker.sequence if marker is not None and marker.active else None
-            event_rows = cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    """
+            event_rows = fetch_rows(
+                connection,
+                """
                     SELECT sequence, event_type, source, payload_json
                     FROM session_events
                     WHERE workspace_id = ? AND session_id = ? AND sequence > ?
                       AND (? IS NULL OR sequence < ?)
                     ORDER BY sequence ASC
                     """,
-                    (str(workspace), session_id, after_sequence, revert_cutoff, revert_cutoff),
-                ).fetchall(),
+                (str(workspace), session_id, after_sequence, revert_cutoff, revert_cutoff),
             )
         return SessionEventsAfter(
-            status=self._parse_session_status(cast(str, session_row["status"])),
+            status=self._parse_session_status(session_state["status"]),
             metadata=metadata,
-            events=tuple(self._event_envelope_from_row(session_id=session_id, row=row) for row in event_rows),
+            events=tuple(self._event_envelope_from_row(session_id=session_id, row=decode_row(row, SessionEventRow)) for row in event_rows),
         )
 
-    def _event_envelope_from_row(self, *, session_id: str, row: sqlite3.Row) -> EventEnvelope:
+    def _event_envelope_from_row(self, *, session_id: str, row: SessionEventRow) -> EventEnvelope:
         return EventEnvelope(
             session_id=session_id,
             sequence=row["sequence"],
@@ -856,44 +855,41 @@ class _SessionStorageMixin(_MixinBase):
         intent, not a storage-level compaction.
         """
         with self._connect(workspace) as connection:
-            session_row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
+            session_row = fetch_row(
+                connection,
+                """
                 SELECT session_id, parent_session_id, status, turn, output, metadata_json
                 FROM sessions
                 WHERE workspace_id = ? AND session_id = ?
                 """,
-                    (str(workspace), session_id),
-                ).fetchone(),
+                (str(workspace), session_id),
             )
             if session_row is None:
                 raise UnknownSessionError(f"unknown session: {session_id}")
-            event_rows = cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    """
+            session_data = decode_row(session_row, SessionLoadRow)
+            event_rows = fetch_rows(
+                connection,
+                """
                 SELECT sequence, event_type, source, payload_json
                 FROM session_events
                 WHERE workspace_id = ? AND session_id = ?
                 ORDER BY sequence ASC
                 """,
-                    (str(workspace), session_id),
-                ).fetchall(),
+                (str(workspace), session_id),
             )
-        metadata = normalize_persisted_session_metadata(cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"]))))
+        metadata = normalize_persisted_session_metadata(cast(dict[str, object], json.loads(session_data["metadata_json"])))
         session = SessionState(
             session=SessionRef(
-                id=cast(str, session_row["session_id"]),
-                parent_id=cast(str | None, session_row["parent_session_id"]),
+                id=session_data["session_id"],
+                parent_id=session_data["parent_session_id"],
             ),
-            status=self._parse_session_status(cast(str, session_row["status"])),
-            turn=cast(int, session_row["turn"]),
+            status=self._parse_session_status(session_data["status"]),
+            turn=session_data["turn"],
             metadata=metadata,
         )
-        events = tuple(self._event_envelope_from_row(session_id=session_id, row=row) for row in event_rows)
+        events = tuple(self._event_envelope_from_row(session_id=session_id, row=decode_row(row, SessionEventRow)) for row in event_rows)
         marker = self._revert_marker_from_metadata(session.metadata)
-        output = cast(str | None, session_row["output"])
+        output = session_data["output"]
         if filter_reverted and marker is not None and marker.active:
             events = tuple(event for event in events if event.sequence < marker.sequence)
             session = SessionState(
@@ -912,20 +908,18 @@ class _SessionStorageMixin(_MixinBase):
             filter_reverted=False,
         )
         with self._connect(workspace) as connection:
-            row = cast(
-                sqlite3.Row | None,
-                connection.execute(
-                    """
+            row = fetch_row(
+                connection,
+                """
                     SELECT prompt
                     FROM sessions
                     WHERE workspace_id = ? AND session_id = ?
                     """,
-                    (str(workspace), session_id),
-                ).fetchone(),
+                (str(workspace), session_id),
             )
         if row is None:
             raise UnknownSessionError(f"unknown session: {session_id}")
-        prompt = cast(str, row["prompt"])
+        prompt = decode_row(row, SessionPromptRow)["prompt"]
         summary, error = self._result_summary(response=response, prompt=prompt)
         return RuntimeSessionResult(
             session=response.session,
@@ -970,40 +964,34 @@ class _SessionStorageMixin(_MixinBase):
         return f"{response.session.status.capitalize()} session", None
 
     def _read_created_at(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int:
-        row = cast(
-            sqlite3.Row | None,
-            connection.execute(
-                "SELECT created_at FROM sessions WHERE workspace_id = ? AND session_id = ?",
-                (str(workspace), session_id),
-            ).fetchone(),
+        row = fetch_row(
+            connection,
+            "SELECT created_at FROM sessions WHERE workspace_id = ? AND session_id = ?",
+            (str(workspace), session_id),
         )
         if row is not None:
-            return cast(int, row["created_at"])
+            return decode_row(row, SessionCreatedAtRow)["created_at"]
         return self._next_auxiliary_timestamp(connection=connection)
 
     def _read_created_at_unix_ms(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int | None:
-        row = cast(
-            sqlite3.Row | None,
-            connection.execute(
-                "SELECT created_at_unix_ms FROM sessions WHERE workspace_id = ? AND session_id = ?",
-                (str(workspace), session_id),
-            ).fetchone(),
+        row = fetch_row(
+            connection,
+            "SELECT created_at_unix_ms FROM sessions WHERE workspace_id = ? AND session_id = ?",
+            (str(workspace), session_id),
         )
-        if row is not None and row["created_at_unix_ms"] is not None:
-            return cast(int, row["created_at_unix_ms"])
-        return None
+        if row is None:
+            return None
+        return decode_row(row, SessionCreatedAtUnixMsRow)["created_at_unix_ms"]
 
     @staticmethod
     def _read_last_event_sequence(*, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int:
-        row = cast(
-            sqlite3.Row | None,
-            connection.execute(
-                "SELECT last_event_sequence FROM sessions WHERE workspace_id = ? AND session_id = ?",
-                (str(workspace), session_id),
-            ).fetchone(),
+        row = fetch_row(
+            connection,
+            "SELECT last_event_sequence FROM sessions WHERE workspace_id = ? AND session_id = ?",
+            (str(workspace), session_id),
         )
         if row is not None:
-            return cast(int, row["last_event_sequence"])
+            return decode_row(row, SessionLastEventSequenceRow)["last_event_sequence"]
         return 0
 
     @staticmethod

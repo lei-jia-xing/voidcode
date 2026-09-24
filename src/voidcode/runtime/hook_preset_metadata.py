@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import cast
 
 from ..hook.presets import ResolvedHookPresetSnapshot, hook_preset_snapshot_from_payload
 from .config import RuntimeAgentConfig
@@ -39,9 +38,9 @@ def hook_preset_event_payload_from_session_metadata(
     snapshot = resolved_hook_preset_snapshot_from_session_metadata(metadata)
     if snapshot is None or not snapshot.presets:
         return None
-    kinds = [cast(str, preset["kind"]) for preset in snapshot.presets]
-    event_scopes = sorted({scope for preset in snapshot.presets for scope in cast(tuple[str, ...], preset["event_scopes"])})
-    allowed_actions = sorted({action for preset in snapshot.presets for action in cast(tuple[str, ...], preset["allowed_actions"])})
+    kinds = [preset["kind"] for preset in snapshot.presets]
+    event_scopes = sorted({scope for preset in snapshot.presets for scope in preset["event_scopes"]})
+    allowed_actions = sorted({action for preset in snapshot.presets for action in preset["allowed_actions"]})
     return {
         "refs": list(snapshot.refs),
         "kinds": kinds,
@@ -61,7 +60,7 @@ def debug_hook_preset_snapshot(
         return None
     return RuntimeHookPresetSnapshot(
         refs=tuple(snapshot.refs),
-        kinds=tuple(cast(str, preset["kind"]) for preset in snapshot.presets),
+        kinds=tuple(preset["kind"] for preset in snapshot.presets),
         source="builtin",
         count=len(snapshot.presets),
     )

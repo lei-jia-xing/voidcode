@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from ..contracts import (
     RuntimeSessionRevertMarker,
@@ -12,6 +12,7 @@ from ..contracts import (
 from ..events import EventEnvelope
 from ..session import normalize_persisted_session_metadata
 from ..session_metadata_helpers import session_metadata_with_runtime_state_updates
+from .rows import SessionEventRow, SessionMetadataRow, decode_row, fetch_row, fetch_rows
 
 if TYPE_CHECKING:
     from .shared import _StorageMixinBase
@@ -82,34 +83,30 @@ class _RevertStorageMixin(_MixinBase):
         workspace: Path,
         session_id: str,
     ) -> tuple[dict[str, object], tuple[EventEnvelope, ...]]:
-        session_row = cast(
-            sqlite3.Row | None,
-            connection.execute(
-                """
+        session_row = fetch_row(
+            connection,
+            """
                 SELECT metadata_json
                 FROM sessions
                 WHERE workspace_id = ? AND session_id = ?
                 """,
-                (str(workspace), session_id),
-            ).fetchone(),
+            (str(workspace), session_id),
         )
         if session_row is None:
             raise UnknownSessionError(f"unknown session: {session_id}")
-        event_rows = cast(
-            list[sqlite3.Row],
-            connection.execute(
-                """
+        event_rows = fetch_rows(
+            connection,
+            """
                 SELECT sequence, event_type, source, payload_json
                 FROM session_events
                 WHERE workspace_id = ? AND session_id = ?
                 ORDER BY sequence ASC
                 """,
-                (str(workspace), session_id),
-            ).fetchall(),
+            (str(workspace), session_id),
         )
-        events = tuple(self._event_envelope_from_row(session_id=session_id, row=row) for row in event_rows)
+        events = tuple(self._event_envelope_from_row(session_id=session_id, row=decode_row(row, SessionEventRow)) for row in event_rows)
         return (
-            normalize_persisted_session_metadata(json.loads(cast(str, session_row["metadata_json"]))),
+            normalize_persisted_session_metadata(json.loads(decode_row(session_row, SessionMetadataRow)["metadata_json"])),
             events,
         )
 

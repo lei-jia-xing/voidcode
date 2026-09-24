@@ -6,10 +6,13 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Literal, TypeIs, cast
+from typing import TYPE_CHECKING, Final, Literal, TypeIs, cast
 
 from ..skills.models import SkillMetadata
 from ..skills.registry import SkillRegistry
+
+if TYPE_CHECKING:
+    from .contracts import SkillSnapshotMetadata
 
 type SkillSnapshotSource = Literal["run", "resume", "replay"]
 
@@ -131,7 +134,7 @@ def runtime_context_from_payload(payload: dict[str, str]) -> SkillRuntimeContext
     )
 
 
-def _snapshot_payload_without_hash(snapshot: SkillExecutionSnapshot) -> dict[str, object]:
+def _snapshot_payload_without_hash(snapshot: SkillExecutionSnapshot) -> SkillSnapshotMetadata:
     return {
         "snapshot_version": snapshot.snapshot_version,
         "source": snapshot.source,
@@ -187,7 +190,7 @@ def build_skill_execution_snapshot(
     )
 
 
-def snapshot_payload(snapshot: SkillExecutionSnapshot) -> dict[str, object]:
+def snapshot_payload(snapshot: SkillExecutionSnapshot) -> SkillSnapshotMetadata:
     payload = _snapshot_payload_without_hash(snapshot)
     payload["snapshot_hash"] = snapshot.snapshot_hash
     return payload

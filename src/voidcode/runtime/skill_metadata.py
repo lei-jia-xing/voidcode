@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import cast
 
 from .config import RuntimeAgentConfig
@@ -66,7 +67,7 @@ def selected_skill_names_for_agent(
     return tuple(selected_names)
 
 
-def fresh_request_metadata(metadata: dict[str, object]) -> dict[str, object]:
+def fresh_request_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
     sanitized = dict(metadata)
     sanitized.pop("applied_skills", None)
     sanitized.pop("applied_skill_payloads", None)

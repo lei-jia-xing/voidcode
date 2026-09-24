@@ -8,7 +8,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from ...hook.config import RuntimeHookSurface
@@ -21,10 +21,8 @@ from ..config import RuntimeConfig
 from ..contracts import (
     BackgroundTaskGroupResult,
     BackgroundTaskResult,
-    InternalRuntimeRequestMetadata,
     RuntimeRequest,
     RuntimeRequestError,
-    RuntimeRequestMetadataPayload,
     RuntimeResponse,
     RuntimeSessionResult,
     UnknownBackgroundTaskError,
@@ -1580,7 +1578,7 @@ class RuntimeBackgroundTaskSupervisor:
                         prompt=prompt_from_events(child_response.events),
                         session_id=task.session_id,
                         parent_session_id=task.parent_session_id,
-                        metadata=cast(RuntimeRequestMetadataPayload, cancelled_metadata),
+                        metadata=cancelled_metadata,
                     ),
                     response=cancelled_response,
                 )
@@ -3047,16 +3045,13 @@ class RuntimeBackgroundTaskSupervisor:
                     prompt=turn_prompt,
                     session_id=session_id,
                     parent_session_id=dispatch_task.request.parent_session_id,
-                    metadata=cast(
-                        InternalRuntimeRequestMetadata,
-                        {
-                            **dispatch_task.request.metadata,
-                            **({"background_rate_limit_retry": True} if retry_count < _BACKGROUND_TASK_RATE_LIMIT_RETRIES else {}),
-                            "background_task_id": task_id,
-                            "background_run": True,
-                            **({"keep_alive_turn": True} if keep_alive_turn else {}),
-                        },
-                    ),
+                    metadata={
+                        **dispatch_task.request.metadata,
+                        **({"background_rate_limit_retry": True} if retry_count < _BACKGROUND_TASK_RATE_LIMIT_RETRIES else {}),
+                        "background_task_id": task_id,
+                        "background_run": True,
+                        **({"keep_alive_turn": True} if keep_alive_turn else {}),
+                    },
                     allocate_session_id=False,
                 )
                 for chunk in runtime.run_with_persistence(

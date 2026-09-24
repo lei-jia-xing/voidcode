@@ -15,10 +15,6 @@ from .contracts import (
     PLAN_STATE_METADATA_KEYS,
     RUNTIME_STATE_METADATA_KEYS,
     SKILL_SNAPSHOT_METADATA_KEYS,
-    ContextCompactedStateMetadata,
-    ContextProjectionMetadata,
-    ContextTransformAppliedStateMetadata,
-    PendingToolIntentMetadata,
     PlanStateMetadata,
     RuntimeResponse,
     RuntimeStateMetadata,
@@ -26,6 +22,8 @@ from .contracts import (
     SkillSnapshotMetadata,
     TodosStateMetadata,
     UnknownSessionError,
+    is_routing_mode,
+    is_schema_mode,
 )
 from .permission import DelegationGovernance
 from .permission_policy import (
@@ -37,7 +35,7 @@ from .session import (
     session_metadata_for_persistence,
     validate_session_workspace,
 )
-from .skills import snapshot_from_payload
+from .skills import snapshot_from_payload, snapshot_payload
 from .todos import (
     runtime_todo_phases_from_payload,
     runtime_todo_state_from_payload,
@@ -79,61 +77,13 @@ def _reject_unknown_metadata_keys(
         raise ValueError(f"persisted {structure_name} field '{unknown_keys[0]}' is not supported")
 
 
-def _validate_runtime_state_metadata_types(payload: dict[str, object]) -> None:
-    if "run_id" in payload:
-        run_id = payload["run_id"]
-        if not isinstance(run_id, str) or not run_id:
-            raise ValueError("persisted runtime_state field 'run_id' must be a non-empty string")
-    for field in (
-        "acp",
-        "context_projection",
-        "context_projection_summary",
-        "todos",
-        "pending_tool_intent",
-        "context_compacted",
-        "context_transform_applied",
-    ):
-        if field in payload and not isinstance(payload[field], dict):
-            raise ValueError(f"persisted runtime_state field '{field}' must be an object")
-
-
-def _validate_plan_state_metadata_types(payload: dict[str, object]) -> None:
-    if "status" not in payload:
-        raise ValueError("persisted plan_state is missing required field 'status'")
-    for field in ("status", "approval_request_id", "blocked_tool", "last_error"):
-        if field in payload and not isinstance(payload[field], str):
-            raise ValueError(f"persisted plan_state field '{field}' must be a string")
-    if payload["status"] not in _PLAN_STATE_STATUSES:
-        joined = ", ".join(sorted(_PLAN_STATE_STATUSES))
-        raise ValueError(f"persisted plan_state field 'status' must be one of: {joined}")
-
-
-def _validate_delegation_metadata_types(payload: dict[str, object]) -> None:
-    required_fields = {"mode"}
-    missing_fields = sorted(required_fields - payload.keys())
-    if missing_fields:
-        raise ValueError("persisted delegation is missing required field(s): " + ", ".join(missing_fields))
-    for field in ("subagent_type", "description", "command", "selected_preset", "selected_execution_engine", "parallel_group_id"):
-        if field in payload and not isinstance(payload[field], str):
-            raise ValueError(f"persisted delegation field '{field}' must be a string")
-    if payload["mode"] not in {"sync", "background"}:
-        raise ValueError("persisted delegation field 'mode' must be one of: sync, background")
-    for field in ("depth", "remaining_spawn_budget", "parallel_group_size"):
-        if field in payload:
-            value = payload[field]
-            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise ValueError(f"persisted delegation field '{field}' must be a non-negative integer")
-    if "output_schema" in payload and not isinstance(payload["output_schema"], dict):
-        raise ValueError("persisted delegation field 'output_schema' must be an object")
-    if "schema_mode" in payload and payload["schema_mode"] not in {"permissive", "strict"}:
-        raise ValueError("persisted delegation field 'schema_mode' must be one of: permissive, strict")
-
-
 def parse_runtime_state_metadata(raw: object) -> RuntimeStateMetadata:
     """Parse the present ``session.metadata["runtime_state"]`` payload.
 
     Unknown keys and invalid field types are rejected. Nested sections are
-    optional, and the returned mapping is a shallow copy of the input.
+    optional, and the returned mapping is a shallow copy of the input. Their
+    contents are typed ``dict[str, object]``: only "is an object" is checked
+    here, and each section's owner parses its own shape on read.
     """
     if not isinstance(raw, dict):
         raise ValueError("persisted runtime_state must be an object")
@@ -143,8 +93,28 @@ def parse_runtime_state_metadata(raw: object) -> RuntimeStateMetadata:
         allowed_keys=RUNTIME_STATE_METADATA_KEYS,
         structure_name="runtime_state",
     )
-    _validate_runtime_state_metadata_types(payload)
-    return cast(RuntimeStateMetadata, payload)
+    normalized: RuntimeStateMetadata = {}
+    if "run_id" in payload:
+        run_id = payload["run_id"]
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("persisted runtime_state field 'run_id' must be a non-empty string")
+        normalized["run_id"] = run_id
+    for field in (
+        "acp",
+        "context_projection",
+        "context_projection_summary",
+        "todos",
+        "pending_tool_intent",
+        "context_compacted",
+        "context_transform_applied",
+    ):
+        if field not in payload:
+            continue
+        value = payload[field]
+        if not isinstance(value, dict):
+            raise ValueError(f"persisted runtime_state field '{field}' must be an object")
+        normalized[field] = value
+    return normalized
 
 
 def parse_plan_state_metadata(raw: object) -> PlanStateMetadata:
@@ -162,8 +132,23 @@ def parse_plan_state_metadata(raw: object) -> PlanStateMetadata:
         allowed_keys=PLAN_STATE_METADATA_KEYS,
         structure_name="plan_state",
     )
-    _validate_plan_state_metadata_types(payload)
-    return cast(PlanStateMetadata, payload)
+    if "status" not in payload:
+        raise ValueError("persisted plan_state is missing required field 'status'")
+    status = payload["status"]
+    if not isinstance(status, str):
+        raise ValueError("persisted plan_state field 'status' must be a string")
+    if status not in _PLAN_STATE_STATUSES:
+        joined = ", ".join(sorted(_PLAN_STATE_STATUSES))
+        raise ValueError(f"persisted plan_state field 'status' must be one of: {joined}")
+    normalized: PlanStateMetadata = {"status": status}
+    for field in ("approval_request_id", "blocked_tool", "last_error"):
+        if field not in payload:
+            continue
+        value = payload[field]
+        if not isinstance(value, str):
+            raise ValueError(f"persisted plan_state field '{field}' must be a string")
+        normalized[field] = value
+    return normalized
 
 
 def parse_delegation_metadata(raw: object) -> RuntimeSubagentRoutingMetadata:
@@ -181,8 +166,38 @@ def parse_delegation_metadata(raw: object) -> RuntimeSubagentRoutingMetadata:
         allowed_keys=DELEGATION_METADATA_KEYS,
         structure_name="delegation",
     )
-    _validate_delegation_metadata_types(payload)
-    return cast(RuntimeSubagentRoutingMetadata, payload)
+    if "mode" not in payload:
+        raise ValueError("persisted delegation is missing required field(s): mode")
+    normalized: RuntimeSubagentRoutingMetadata = {}
+    mode = payload["mode"]
+    if not is_routing_mode(mode):
+        raise ValueError("persisted delegation field 'mode' must be one of: sync, background")
+    normalized["mode"] = mode
+    for field in ("subagent_type", "description", "command", "selected_preset", "selected_execution_engine", "parallel_group_id"):
+        if field not in payload:
+            continue
+        value = payload[field]
+        if not isinstance(value, str):
+            raise ValueError(f"persisted delegation field '{field}' must be a string")
+        normalized[field] = value
+    for field in ("depth", "remaining_spawn_budget", "parallel_group_size"):
+        if field not in payload:
+            continue
+        value = payload[field]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"persisted delegation field '{field}' must be a non-negative integer")
+        normalized[field] = value
+    if "output_schema" in payload:
+        output_schema = payload["output_schema"]
+        if not isinstance(output_schema, dict):
+            raise ValueError("persisted delegation field 'output_schema' must be an object")
+        normalized["output_schema"] = output_schema
+    if "schema_mode" in payload:
+        schema_mode = payload["schema_mode"]
+        if not is_schema_mode(schema_mode):
+            raise ValueError("persisted delegation field 'schema_mode' must be one of: permissive, strict")
+        normalized["schema_mode"] = schema_mode
+    return normalized
 
 
 def parse_skill_snapshot_metadata(raw: object) -> SkillSnapshotMetadata:
@@ -190,7 +205,7 @@ def parse_skill_snapshot_metadata(raw: object) -> SkillSnapshotMetadata:
 
     Unknown top-level keys are rejected before ``snapshot_from_payload``
     validates the required fields, ``snapshot_version``, field types, and
-    ``snapshot_hash``.
+    ``snapshot_hash``; the canonical typed payload is rebuilt from the snapshot.
     """
     if not isinstance(raw, dict):
         raise ValueError("persisted skill_snapshot must be an object")
@@ -200,8 +215,7 @@ def parse_skill_snapshot_metadata(raw: object) -> SkillSnapshotMetadata:
         allowed_keys=SKILL_SNAPSHOT_METADATA_KEYS,
         structure_name="skill_snapshot",
     )
-    _ = snapshot_from_payload(payload)
-    return cast(SkillSnapshotMetadata, payload)
+    return snapshot_payload(snapshot_from_payload(payload))
 
 
 def _runtime_state_payload(metadata: Mapping[str, object]) -> RuntimeStateMetadata:
@@ -220,30 +234,30 @@ def runtime_state_todos(metadata: Mapping[str, object]) -> TodosStateMetadata | 
     value = _runtime_state_payload(metadata).get("todos")
     if value is None:
         return None
-    return cast(TodosStateMetadata, runtime_todo_state_from_payload(value))
+    return runtime_todo_state_from_payload(value)
 
 
-def runtime_state_pending_tool_intent(metadata: Mapping[str, object]) -> PendingToolIntentMetadata | None:
+def runtime_state_pending_tool_intent(metadata: Mapping[str, object]) -> dict[str, object] | None:
     value = _runtime_state_payload(metadata).get("pending_tool_intent")
     return value if isinstance(value, dict) else None
 
 
-def runtime_state_context_compacted(metadata: Mapping[str, object]) -> ContextCompactedStateMetadata | None:
+def runtime_state_context_compacted(metadata: Mapping[str, object]) -> dict[str, object] | None:
     value = _runtime_state_payload(metadata).get("context_compacted")
     return value if isinstance(value, dict) else None
 
 
-def runtime_state_context_transform_applied(metadata: Mapping[str, object]) -> ContextTransformAppliedStateMetadata | None:
+def runtime_state_context_transform_applied(metadata: Mapping[str, object]) -> dict[str, object] | None:
     value = _runtime_state_payload(metadata).get("context_transform_applied")
     return value if isinstance(value, dict) else None
 
 
-def runtime_state_context_projection(metadata: Mapping[str, object]) -> ContextProjectionMetadata | None:
+def runtime_state_context_projection(metadata: Mapping[str, object]) -> dict[str, object] | None:
     value = _runtime_state_payload(metadata).get("context_projection")
     return value if isinstance(value, dict) else None
 
 
-def runtime_state_context_projection_summary(metadata: Mapping[str, object]) -> dict[str, str] | None:
+def runtime_state_context_projection_summary(metadata: Mapping[str, object]) -> dict[str, object] | None:
     value = _runtime_state_payload(metadata).get("context_projection_summary")
     return value if isinstance(value, dict) else None
 

@@ -213,8 +213,8 @@ def materialize_hook_plan(
                 "ref": preset["ref"],
                 "kind": preset["kind"],
                 "source": preset["source"],
-                "event_scopes": list(cast(tuple[str, ...], preset["event_scopes"])),
-                "allowed_actions": list(cast(tuple[str, ...], preset["allowed_actions"])),
+                "event_scopes": list(preset["event_scopes"]),
+                "allowed_actions": list(preset["allowed_actions"]),
                 "authority": "non_authoritative",
             }
             for preset in preset_snapshot.presets
@@ -287,6 +287,8 @@ def _binding_from_payload(payload: object) -> HookPlanBinding:
     event = raw.get("event")
     if not isinstance(event, str):
         raise HookPlanValidationError("hook plan binding event must be a string")
+    # Boundary: ``raw`` is a persisted hook-plan binding payload, so
+    # ``binding_id`` and ``order`` are read from an untyped decoded blob.
     return HookPlanBinding(
         binding_id=cast(str, raw.get("binding_id")),
         event=event,
