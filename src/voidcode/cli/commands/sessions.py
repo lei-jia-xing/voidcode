@@ -131,6 +131,7 @@ def _handle_sessions_resume_command(args: SessionsArgs) -> int:
             snapshot = runtime.session_debug_snapshot(session_id=session_id)
         print_json({"workspace": str(workspace), "session_id": session_id, "dry_run": True, "debug": serialize_session_debug_snapshot(snapshot)})
         return EXIT_SUCCESS
+    # CLI boundary: click.Choice(APPROVAL_DECISIONS) guarantees a PermissionResolution literal.
     approval_decision: PermissionResolution | None = cast(PermissionResolution | None, args.approval_decision)
     with open_runtime(workspace) as runtime, runtime_error_boundary():
         result = consume_session_stream(
@@ -220,6 +221,7 @@ def _handle_sessions_export_command(args: SessionsArgs) -> int:
     if output_path is None:
         output_path = Path(f"{session_id}.vcsession.zip")
     try:
+        # CLI boundary: click.Choice(BUNDLE_FORMATS) guarantees a SessionBundleFormat literal.
         written = write_session_bundle(bundle, path=output_path, fmt=cast(SessionBundleFormat | None, fmt))
     except OSError as exc:
         raise CliError(code=EXIT_RUNTIME_ERROR, message=f"cannot write session bundle {output_path}: {exc}") from None

@@ -14,6 +14,7 @@ from ..options import APPROVAL_MODES, workspace_option
 
 def _handle_tui_command(args: TuiArgs) -> int:
     workspace = args.workspace
+    # CLI boundary: click.Choice(APPROVAL_MODES) guarantees a PermissionDecision literal.
     approval_mode: PermissionDecision | None = cast(PermissionDecision | None, args.approval_mode)
 
     from ...tui import VoidCodeTUI

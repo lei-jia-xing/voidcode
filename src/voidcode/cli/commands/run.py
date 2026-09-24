@@ -41,6 +41,7 @@ def _handle_run_command(args: RunArgs) -> int:
     show_thinking = args.show_thinking
     cli_reasoning_effort = args.reasoning_effort
     cli_model = args.model
+    # CLI boundary: click.Choice(APPROVAL_MODES) guarantees a PermissionDecision literal.
     approval_mode: PermissionDecision | None = cast(PermissionDecision | None, args.approval_mode)
     config_kwargs: RuntimeConfigKwargs = {
         "approval_mode": approval_mode,

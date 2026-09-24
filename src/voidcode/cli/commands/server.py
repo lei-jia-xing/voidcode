@@ -18,6 +18,7 @@ from ..runtime_gateway import load_cli_config, open_runtime
 
 def _handle_acp_command(args: AcpArgs) -> int:
     workspace = args.workspace
+    # CLI boundary: click.Choice(APPROVAL_MODES) guarantees a PermissionDecision literal.
     acp_approval_mode: PermissionDecision | None = cast(PermissionDecision | None, args.approval_mode)
     config = load_cli_config(workspace, approval_mode=acp_approval_mode)
     with open_runtime(workspace, config) as runtime:
@@ -51,6 +52,7 @@ def acp(workspace: Path, approval_mode: str | None) -> int:
     help="Override the runtime approval mode for this server process.",
 )
 def serve_command(workspace: Path, host: str, port: int, approval_mode: str | None) -> int:
+    # CLI boundary: click.Choice(APPROVAL_MODES) guarantees a PermissionDecision literal.
     server_approval_mode: PermissionDecision | None = cast(PermissionDecision | None, approval_mode)
     config = load_cli_config(workspace, approval_mode=server_approval_mode)
     serve(workspace=workspace, host=host, port=port, config=config)
@@ -88,6 +90,7 @@ def web_command(
     approval_mode: str | None,
     open_browser: bool,
 ) -> int:
+    # CLI boundary: click.Choice(APPROVAL_MODES) guarantees a PermissionDecision literal.
     server_approval_mode: PermissionDecision | None = cast(PermissionDecision | None, approval_mode)
     config = load_cli_config(workspace, approval_mode=server_approval_mode)
     web(workspace=workspace, host=host, port=port, config=config, open_browser=open_browser)
