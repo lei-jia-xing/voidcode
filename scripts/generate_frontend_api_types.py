@@ -111,6 +111,8 @@ def _openapi_document() -> dict[str, Any]:
         "query_string": b"",
         "headers": [],
     }
+    # Boundary: the ASGI app callable and its message dicts are untyped; this
+    # drives the served document in-process rather than through a socket.
     asyncio.run(cast(Any, app)(scope, _receive, _send))
 
     start = next(message for message in sent if message["type"] == "http.response.start")
@@ -119,6 +121,7 @@ def _openapi_document() -> dict[str, Any]:
     if status != 200:
         raise SystemExit(f"{OPENAPI_ROUTE} answered {status}, expected 200: {body[:400]!r}")
 
+    # Boundary: JSON decode of the served OpenAPI document.
     document = cast(dict[str, Any], json.loads(body))
     _assert_stream_frames_published(document)
     return document
@@ -141,6 +144,8 @@ def _assert_stream_frames_published(document: dict[str, Any]) -> None:
     registering it — has to stop generation here instead of silently emitting a
     worse type.
     """
+    # Boundary: the decoded document is untyped JSON; these casts pin the
+    # nested shapes the generator traverses.
     schemas = cast(dict[str, Any], document.get("components", {}).get("schemas", {}))
     for (method, path), frame in _STREAM_FRAMES.items():
         operation = cast(dict[str, Any], document.get("paths", {}).get(path, {})).get(method)
