@@ -4,7 +4,7 @@ import fnmatch
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, cast, final
+from typing import ClassVar, final
 
 from pydantic import BaseModel, field_validator
 
@@ -132,9 +132,9 @@ class GrepTool:
     @staticmethod
     def _context_lines(lines: list[str], start: int, end: int, *, context: int) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         context = max(0, context)
-        before = [cast(dict[str, object], {"line": line_no + 1, "text": lines[line_no]}) for line_no in range(max(0, start - context), start)]
-        after = [
-            cast(dict[str, object], {"line": line_no + 1, "text": lines[line_no]}) for line_no in range(end + 1, min(len(lines), end + 1 + context))
+        before: list[dict[str, object]] = [{"line": line_no + 1, "text": lines[line_no]} for line_no in range(max(0, start - context), start)]
+        after: list[dict[str, object]] = [
+            {"line": line_no + 1, "text": lines[line_no]} for line_no in range(end + 1, min(len(lines), end + 1 + context))
         ]
         return before, after
 

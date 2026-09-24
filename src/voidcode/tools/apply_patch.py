@@ -916,6 +916,7 @@ def _with_formatter_feedback(
         workspace=workspace,
         hooks_config=hooks_config,
     )
+    # Boundary: ``changes`` are entries of the tool result's untyped ``data`` payload.
     changed_paths = [cast(str, change["path"]) for change in changes]
     # Independent write-path feedback: LSP post-edit diagnostics are collected
     # regardless of formatter feedback.

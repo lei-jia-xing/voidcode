@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 from importlib import import_module
 from pathlib import Path
-from typing import Any, ClassVar, Protocol, cast
+from typing import Any, ClassVar, Protocol
 
 from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
@@ -203,72 +203,56 @@ class LspTool:
         text_document = lsp_types.TextDocumentIdentifier(uri=candidate.as_uri())
         params: dict[str, object]
         if operation == LspOperation.WILL_RENAME_FILES:
-            destination = (workspace_root / cast(str, new_path)).resolve()
+            assert isinstance(new_path, str)
+            destination = (workspace_root / new_path).resolve()
             if not destination.is_relative_to(workspace_root):
                 raise ValueError("lsp newPath must be inside the current workspace")
             params = {"files": [{"oldUri": candidate.as_uri(), "newUri": destination.as_uri()}]}
         elif operation == LspOperation.DIAGNOSTICS:
-            params = cast(
-                dict[str, object],
-                self._converter.unstructure(
-                    lsp_types.DocumentDiagnosticParams(text_document=text_document),
-                    unstructure_as=lsp_types.DocumentDiagnosticParams,
-                ),
+            params = self._converter.unstructure(
+                lsp_types.DocumentDiagnosticParams(text_document=text_document),
+                unstructure_as=lsp_types.DocumentDiagnosticParams,
             )
         elif operation == LspOperation.DOCUMENT_SYMBOL:
-            params = cast(
-                dict[str, object],
-                self._converter.unstructure(
-                    lsp_types.DocumentSymbolParams(text_document=text_document),
-                    unstructure_as=lsp_types.DocumentSymbolParams,
-                ),
+            params = self._converter.unstructure(
+                lsp_types.DocumentSymbolParams(text_document=text_document),
+                unstructure_as=lsp_types.DocumentSymbolParams,
             )
         elif operation == LspOperation.RENAME and position is not None:
-            params = cast(
-                dict[str, object],
-                self._converter.unstructure(
-                    lsp_types.RenameParams(text_document=text_document, position=position, new_name=cast(str, new_name)),
-                    unstructure_as=lsp_types.RenameParams,
-                ),
+            assert isinstance(new_name, str)
+            params = self._converter.unstructure(
+                lsp_types.RenameParams(text_document=text_document, position=position, new_name=new_name),
+                unstructure_as=lsp_types.RenameParams,
             )
         elif operation == LspOperation.CODE_ACTION and position is not None:
             end_line_value = int(end_line) if isinstance(end_line, (int, float)) else line_value
             end_character_value = int(end_character) if isinstance(end_character, (int, float)) else character_value
             if end_line_value is None or end_character_value is None or end_line_value < 1 or end_character_value < 1:
                 raise ValueError("lsp codeAction endLine and endCharacter must be >= 1")
-            params = cast(
-                dict[str, object],
-                self._converter.unstructure(
-                    lsp_types.CodeActionParams(
-                        text_document=text_document,
-                        range=lsp_types.Range(
-                            start=position,
-                            end=lsp_types.Position(line=end_line_value - 1, character=end_character_value - 1),
-                        ),
-                        context=lsp_types.CodeActionContext(
-                            diagnostics=[self._converter.structure(item, lsp_types.Diagnostic) for item in diagnostics],
-                        ),
+            params = self._converter.unstructure(
+                lsp_types.CodeActionParams(
+                    text_document=text_document,
+                    range=lsp_types.Range(
+                        start=position,
+                        end=lsp_types.Position(line=end_line_value - 1, character=end_character_value - 1),
                     ),
-                    unstructure_as=lsp_types.CodeActionParams,
+                    context=lsp_types.CodeActionContext(
+                        diagnostics=[self._converter.structure(item, lsp_types.Diagnostic) for item in diagnostics],
+                    ),
                 ),
+                unstructure_as=lsp_types.CodeActionParams,
             )
         elif position is not None:
-            params = cast(
-                dict[str, object],
-                self._converter.unstructure(
-                    lsp_types.TextDocumentPositionParams(text_document=text_document, position=position),
-                    unstructure_as=lsp_types.TextDocumentPositionParams,
-                ),
+            params = self._converter.unstructure(
+                lsp_types.TextDocumentPositionParams(text_document=text_document, position=position),
+                unstructure_as=lsp_types.TextDocumentPositionParams,
             )
         else:
             params = {"textDocument": {"uri": candidate.as_uri()}}
         if operation == LspOperation.WORKSPACE_SYMBOL:
-            params = cast(
-                dict[str, object],
-                self._converter.unstructure(
-                    lsp_types.WorkspaceSymbolParams(query=query or ""),
-                    unstructure_as=lsp_types.WorkspaceSymbolParams,
-                ),
+            params = self._converter.unstructure(
+                lsp_types.WorkspaceSymbolParams(query=query or ""),
+                unstructure_as=lsp_types.WorkspaceSymbolParams,
             )
 
         if operation in (LspOperation.INCOMING_CALLS, LspOperation.OUTGOING_CALLS):

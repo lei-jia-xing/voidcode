@@ -200,7 +200,7 @@ def _safe_artifact_segment(value: str | None, *, fallback: str = "") -> str:
 def _diagnostics_with(existing_data: dict[str, object], diagnostic: dict[str, object]) -> list[object]:
     current = existing_data.get("diagnostics")
     if isinstance(current, list):
-        return [*cast(list[object], current), diagnostic]
+        return [*current, diagnostic]
     return [diagnostic]
 
 

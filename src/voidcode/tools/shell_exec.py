@@ -316,6 +316,8 @@ class ShellExecTool:
         progress_state = _ShellProgressState()
         timed_out = False
         aborted = False
+        # Boundary: subprocess.Popen types the PIPEs as IO[bytes] | None; the
+        # cast pins the BinaryIO shape the incremental reader expects.
         stdout_pipe = cast(BinaryIO, process.stdout)
         stderr_pipe = cast(BinaryIO, process.stderr)
         stdout_reader = threading.Thread(

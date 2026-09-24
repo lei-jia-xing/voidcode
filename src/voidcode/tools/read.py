@@ -8,7 +8,7 @@ import json
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, cast, final
+from typing import ClassVar, final
 
 from pydantic import BaseModel, field_validator
 
@@ -141,7 +141,7 @@ def _render_artifact(path: str, *, offset: int, limit: int) -> _ReadOutcome:
             "type": "artifact",
             "artifact_id": artifact_id,
             "status": status,
-            "line_count": cast(int, line_count),
+            "line_count": line_count,
             "offset": offset,
             "limit": limit,
             "next_offset": next_offset,
