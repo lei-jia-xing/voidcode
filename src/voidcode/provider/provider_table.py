@@ -17,11 +17,23 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.resources import files as _resource_files
-from typing import Final, Literal, cast
+from typing import Final, Literal, TypeIs, cast
 
 type ProviderWire = Literal["openai-completions", "anthropic-messages", "google-generative-ai"]
 
 type WireSource = Literal["model", "provider"]
+
+_WIRES: Final[tuple[ProviderWire, ...]] = ("openai-completions", "anthropic-messages", "google-generative-ai")
+
+_WIRE_SOURCES: Final[tuple[WireSource, ...]] = ("model", "provider")
+
+
+def _is_wire(value: object) -> TypeIs[ProviderWire]:
+    return value in _WIRES
+
+
+def _is_wire_source(value: object) -> TypeIs[WireSource]:
+    return value in _WIRE_SOURCES
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,22 +81,22 @@ def _row(raw: object) -> ProviderTableRow:
         raise ValueError("provider table entry is missing a non-empty 'id'")
     if not isinstance(label, str) or not label:
         raise ValueError(f"provider table entry {provider_id!r} is missing a non-empty 'label'")
-    if wire not in ("openai-completions", "anthropic-messages", "google-generative-ai"):
+    if not _is_wire(wire):
         raise ValueError(f"provider table entry {provider_id!r} has an unknown wire: {wire!r}")
     if not isinstance(default_base_url, str) or not default_base_url:
         raise ValueError(f"provider table entry {provider_id!r} is missing a non-empty 'default_base_url'")
     wire_source = entry.get("wire_source", "model")
-    if wire_source not in ("model", "provider"):
+    if not _is_wire_source(wire_source):
         raise ValueError(f"provider table entry {provider_id!r} has an unknown wire_source: {wire_source!r}")
     notes = entry.get("notes")
     return ProviderTableRow(
         id=provider_id,
         label=label,
-        wire=cast(ProviderWire, wire),
+        wire=wire,
         default_base_url=default_base_url,
         env_vars=_string_tuple(entry.get("env_vars", []), field="env_vars", provider_id=provider_id),
         models_dev_keys=_string_tuple(entry.get("models_dev_keys", []), field="models_dev_keys", provider_id=provider_id),
-        wire_source=cast(WireSource, wire_source),
+        wire_source=wire_source,
         notes=notes if isinstance(notes, str) else "",
     )
 

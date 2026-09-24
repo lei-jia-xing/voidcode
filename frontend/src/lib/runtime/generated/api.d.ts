@@ -1059,6 +1059,8 @@ export interface components {
             /** Source */
             source: string;
         };
+        /** @enum {string} */
+        PermissionResolution: "allow" | "deny";
         /**
          * ProviderContextBody
          * @description ``serialize_provider_context_snapshot``: what the model was actually sent.
@@ -2069,24 +2071,23 @@ export interface components {
         };
         /** _ApprovalResolutionRequestPayload */
         _ApprovalResolutionRequestPayload: {
-            /** Decision */
-            decision?: string | null;
+            decision?: components["schemas"]["PermissionResolution"];
             /** Request Id */
-            request_id?: string | null;
+            request_id?: string;
         };
         /** _QuestionAnswerRequestPayload */
         _QuestionAnswerRequestPayload: {
             /** Request Id */
-            request_id?: string | null;
+            request_id?: string;
             /** Responses */
             responses?: components["schemas"]["_QuestionResponsePayload"][] | null;
         };
         /** _QuestionResponsePayload */
         _QuestionResponsePayload: {
             /** Answers */
-            answers?: string[] | null;
+            answers?: string[];
             /** Header */
-            header?: string | null;
+            header?: string;
         };
         /** _RunStreamRequestPayload */
         _RunStreamRequestPayload: {
@@ -2097,7 +2098,7 @@ export interface components {
             /** Parent Session Id */
             parent_session_id?: string | null;
             /** Prompt */
-            prompt?: string | null;
+            prompt?: string;
             /** Session Id */
             session_id?: string | null;
         };
@@ -2111,7 +2112,7 @@ export interface components {
         /** _SessionRevertRequestPayload */
         _SessionRevertRequestPayload: {
             /** Sequence */
-            sequence?: number | null;
+            sequence?: number;
         };
         /** _SettingsRequestPayload */
         _SettingsRequestPayload: {
@@ -2125,7 +2126,7 @@ export interface components {
         /** _SteerSessionRequestPayload */
         _SteerSessionRequestPayload: {
             /** Content */
-            content?: string | null;
+            content?: string;
         };
         /**
          * _TaskSteerRequestPayload
@@ -2133,11 +2134,13 @@ export interface components {
          *
          *     The route has always reported its own sentences for a missing prompt and for
          *     a body that is not an object, so both live in the model instead of the
-         *     generic field-level wording.
+         *     generic field-level wording: one ``before`` validator answers both, which
+         *     keeps the sentences path-free (a field validator would prefix them with the
+         *     field name) and leaves ``prompt`` typed as the string the route reads.
          */
         _TaskSteerRequestPayload: {
             /** Prompt */
-            prompt?: unknown;
+            prompt?: string;
         };
         /**
          * _WorkspaceOpenRequestPayload
@@ -2148,7 +2151,7 @@ export interface components {
          */
         _WorkspaceOpenRequestPayload: {
             /** Path */
-            path?: string | null;
+            path?: string;
         };
     };
     responses: never;

@@ -21,7 +21,7 @@ from importlib.resources import files as _resource_files
 from typing import Final, cast
 
 from .model_catalog import ProviderModelMetadata
-from .model_match import MATCHERS, Matcher, matches
+from .model_match import Matcher, is_matcher, matches
 from .protocol import ProviderTokenUsage
 from .provider_table import require_provider_id
 
@@ -69,6 +69,9 @@ class PricingRuleRow:
             return self.rates
         if self.multiplier is None or metadata is None:
             return None
+        # ponytail: ``or 0.0`` prices an absent catalog rate as free -- see
+        # ``scripts/generate_model_catalog.py::_per_token`` for the ceiling and the
+        # upgrade path (carry ``float | None`` rates, propagate ``None`` as unpriced).
         return LongContextRates(
             input=(metadata.cost_per_input_token or 0.0) * self.multiplier,
             output=(metadata.cost_per_output_token or 0.0) * self.multiplier,
@@ -105,7 +108,7 @@ def _row(raw: object) -> PricingRuleRow:
         raise ValueError(f"pricing rule for provider {provider!r} is missing a 'match' object")
     match_map = cast(dict[str, object], match_entry)
     matcher = match_map.get("type")
-    if matcher not in MATCHERS:
+    if not is_matcher(matcher):
         raise ValueError(f"pricing rule for provider {provider!r} has an unknown matcher: {matcher!r}")
     value = match_map.get("value")
     if not isinstance(value, str) or not value:
@@ -125,7 +128,7 @@ def _row(raw: object) -> PricingRuleRow:
     source = entry.get("source")
     return PricingRuleRow(
         provider=provider,
-        matcher=cast(Matcher, matcher),
+        matcher=matcher,
         value=value,
         threshold=threshold,
         inclusive=inclusive,
@@ -192,6 +195,9 @@ def usage_cost_usd(
     """
     if metadata is None:
         return None
+    # ponytail: ``or 0.0`` prices an absent catalog rate as free -- see
+    # ``scripts/generate_model_catalog.py::_per_token`` for the ceiling and the
+    # upgrade path (carry ``float | None`` rates, propagate ``None`` as unpriced).
     rates = LongContextRates(
         input=metadata.cost_per_input_token or 0.0,
         output=metadata.cost_per_output_token or 0.0,

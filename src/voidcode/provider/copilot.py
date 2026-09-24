@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from .config import CopilotProviderConfig, ProviderEndpointConfig
 from .model_routing import ModelRoute, RoutedTurnProvider, WireRouting
 from .openai_native import OpenAIChatCompletionsProvider
-from .protocol import TurnProvider
+from .protocol import StreamableTurnProvider, TurnProvider
 from .provider_config import copilot_provider_config
 from .provider_table import PROVIDER_TABLE_BY_ID
 
@@ -37,7 +37,7 @@ class GithubCopilotModelProvider:
     def provider_config(self) -> ProviderEndpointConfig:
         return copilot_provider_config(self.config)
 
-    def _wire(self, _model: str, _route: ModelRoute) -> TurnProvider:
+    def _wire(self, _model: str, _route: ModelRoute) -> StreamableTurnProvider:
         token = None
         if self.config is not None and self.config.auth is not None:
             token = self.config.auth.token

@@ -25,6 +25,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response, Strea
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ...provider.errors import validation_reason_from_error
+from ..permission import PermissionResolution
 
 logger = logging.getLogger(__name__)
 
@@ -390,11 +391,23 @@ class JsonBodyContentTypeMiddleware:
 
 
 class _HttpBoundaryModel(BaseModel):
+    """Base for a request body whose fields the route requires.
+
+    A field declares the type it has *after* validation with
+    ``Field(default=None, validate_default=True)``: the validator then runs on the
+    default of a missing field, so an absent field fails with that field's own
+    sentence ("prompt must be a non-empty string") instead of pydantic's
+    "Field required", and the attribute reads as its real type at the route
+    instead of a ``cast``. ``validate_default`` is spelled on each such field
+    because that is the overload pydantic types as "the default need not match
+    the field's type".
+    """
+
     model_config = ConfigDict(extra="forbid", validate_default=True)
 
 
 class _RunStreamRequestPayload(_HttpBoundaryModel):
-    prompt: str | None = None
+    prompt: str = Field(default=None, validate_default=True)
     session_id: str | None = None
     parent_session_id: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
@@ -426,8 +439,8 @@ class _RunStreamRequestPayload(_HttpBoundaryModel):
 
 
 class _ApprovalResolutionRequestPayload(_HttpBoundaryModel):
-    request_id: str | None = None
-    decision: str | None = None
+    request_id: str = Field(default=None, validate_default=True)
+    decision: PermissionResolution = Field(default=None, validate_default=True)
 
     @field_validator("request_id", mode="before")
     @classmethod
@@ -438,10 +451,12 @@ class _ApprovalResolutionRequestPayload(_HttpBoundaryModel):
 
     @field_validator("decision", mode="before")
     @classmethod
-    def _validate_decision(cls, value: object) -> str:
-        if value not in ("allow", "deny"):
-            raise ValueError("must be 'allow' or 'deny'")
-        return cast(str, value)
+    def _validate_decision(cls, value: object) -> PermissionResolution:
+        if value == "allow":
+            return "allow"
+        if value == "deny":
+            return "deny"
+        raise ValueError("must be 'allow' or 'deny'")
 
 
 class _SessionCancelRequestPayload(_HttpBoundaryModel):
@@ -486,7 +501,7 @@ class _WorkspaceOpenRequestPayload(BaseModel):
 
     model_config = ConfigDict(validate_default=True)
 
-    path: str | None = None
+    path: str = Field(default=None, validate_default=True)
 
     @field_validator("path", mode="before")
     @classmethod
@@ -501,28 +516,27 @@ class _TaskSteerRequestPayload(BaseModel):
 
     The route has always reported its own sentences for a missing prompt and for
     a body that is not an object, so both live in the model instead of the
-    generic field-level wording.
+    generic field-level wording: one ``before`` validator answers both, which
+    keeps the sentences path-free (a field validator would prefix them with the
+    field name) and leaves ``prompt`` typed as the string the route reads.
     """
 
-    prompt: object = None
+    prompt: str = Field(default=None, validate_default=True)
 
     @model_validator(mode="before")
     @classmethod
-    def _validate_object(cls, value: object) -> object:
+    def _validate_body(cls, value: object) -> object:
         if not isinstance(value, dict):
             raise ValueError("request body must be a JSON object with a 'prompt' field")
-        return value
-
-    @model_validator(mode="after")
-    def _validate_prompt(self) -> _TaskSteerRequestPayload:
-        if not isinstance(self.prompt, str) or not self.prompt.strip():
+        prompt = value.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("request body 'prompt' must be a non-empty string")
-        return self
+        return value
 
 
 class _QuestionResponsePayload(_HttpBoundaryModel):
-    header: str | None = None
-    answers: tuple[str, ...] | None = None
+    header: str = Field(default=None, validate_default=True)
+    answers: tuple[str, ...] = Field(default=None, validate_default=True)
 
     @field_validator("header", mode="before")
     @classmethod
@@ -546,7 +560,7 @@ class _QuestionResponsePayload(_HttpBoundaryModel):
 
 
 class _QuestionAnswerRequestPayload(_HttpBoundaryModel):
-    request_id: str | None = None
+    request_id: str = Field(default=None, validate_default=True)
     responses: tuple[_QuestionResponsePayload, ...] | None = None
 
     @field_validator("request_id", mode="before")
@@ -565,7 +579,7 @@ class _QuestionAnswerRequestPayload(_HttpBoundaryModel):
 
 
 class _SessionRevertRequestPayload(_HttpBoundaryModel):
-    sequence: int | None = None
+    sequence: int = Field(default=None, validate_default=True)
 
     @field_validator("sequence", mode="before")
     @classmethod
@@ -576,7 +590,7 @@ class _SessionRevertRequestPayload(_HttpBoundaryModel):
 
 
 class _SteerSessionRequestPayload(_HttpBoundaryModel):
-    content: str | None = None
+    content: str = Field(default=None, validate_default=True)
 
     @field_validator("content", mode="before")
     @classmethod

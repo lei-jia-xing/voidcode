@@ -13,7 +13,7 @@ from .config import (
 from .google_native import GoogleGenAIProvider
 from .model_routing import IMPLEMENTED_API_ROUTES, ModelRoute, RoutedTurnProvider, WireRouting
 from .openai_native import OpenAIChatCompletionsProvider
-from .protocol import TurnProvider
+from .protocol import StreamableTurnProvider, TurnProvider
 from .provider_config import vendor_endpoint_config
 from .provider_table import PROVIDER_TABLE_BY_ID
 
@@ -77,7 +77,7 @@ class OpenCodeZenModelProvider:
             api_key_env_var=_OPENCODE_ZEN.env_vars[0],
         )
 
-    def _wire(self, _model: str, route: ModelRoute) -> TurnProvider:
+    def _wire(self, _model: str, route: ModelRoute) -> StreamableTurnProvider:
         endpoint = self.provider_config()
         if route.wire == "anthropic-messages":
             return AnthropicMessagesProvider(

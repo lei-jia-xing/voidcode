@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from ..runtime.context.window import ToolResultView
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
@@ -78,16 +78,20 @@ class ProviderTurnRequest:
         payload = self.assembled_context.metadata
         retained_raw = payload.get("retained_tool_result_count")
         retained_count = retained_raw if isinstance(retained_raw, int) else len(self.assembled_context.tool_results)
+        original_tool_result_count = payload.get("original_tool_result_count")
+        compaction_reason = payload.get("compaction_reason")
+        summary_anchor = payload.get("summary_anchor")
+        summary_source = payload.get("summary_source")
         return _DerivedContextWindow(
             prompt=self.assembled_context.prompt,
             tool_results=self.assembled_context.tool_results,
             continuity_state=self.assembled_context.continuity_state,
             compacted=bool(payload.get("compacted", False)),
             retained_tool_result_count=retained_count,
-            original_tool_result_count=cast(int | None, payload.get("original_tool_result_count")),
-            compaction_reason=cast(str | None, payload.get("compaction_reason")),
-            summary_anchor=cast(str | None, payload.get("summary_anchor")),
-            summary_source=cast(dict[str, object] | None, payload.get("summary_source")),
+            original_tool_result_count=original_tool_result_count if isinstance(original_tool_result_count, int) else None,
+            compaction_reason=compaction_reason if isinstance(compaction_reason, str) else None,
+            summary_anchor=summary_anchor if isinstance(summary_anchor, str) else None,
+            summary_source=summary_source if isinstance(summary_source, dict) else None,
         )
 
 
@@ -307,9 +311,8 @@ class TurnProvider(Protocol):
 
 
 @runtime_checkable
-class StreamableTurnProvider(Protocol):
-    @property
-    def name(self) -> str: ...
+class StreamableTurnProvider(TurnProvider, Protocol):
+    """A turn provider that can also answer the same turn as an event stream."""
 
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]: ...
 

@@ -154,6 +154,8 @@ class ModelProviderRegistry:
         canonical_name = canonical_provider_id(provider_name)
         provider = self.providers.get(canonical_name)
         if provider is not None:
+            # Optional capability, not a contract field: only the wire adapters expose a
+            # config, so one without it falls through to the registry's own map below.
             provider_config = getattr(provider, "provider_config", None)
             if callable(provider_config):
                 return provider_config()

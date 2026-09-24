@@ -10,13 +10,18 @@ and a row may carry several values of one kind.
 from __future__ import annotations
 
 import re
-from typing import Final, Literal
+from typing import Final, Literal, TypeIs
 
 type Matcher = Literal["exact", "prefix", "substring", "token", "glob"]
 
 MATCHERS: Final[tuple[Matcher, ...]] = ("exact", "prefix", "substring", "token", "glob")
 
 _TOKEN_SEPARATOR = re.compile(r"[^a-z0-9]+")
+
+
+def is_matcher(value: object) -> TypeIs[Matcher]:
+    """Whether an untrusted ``type`` token names one of the known matchers."""
+    return value in MATCHERS
 
 
 def glob_match(pattern: str, value: str) -> bool:
@@ -54,4 +59,4 @@ def matches(matcher: Matcher, value: str, model: str) -> bool:
             return glob_match(value, model.lower())
 
 
-__all__ = ["MATCHERS", "Matcher", "glob_match", "matches"]
+__all__ = ["MATCHERS", "Matcher", "glob_match", "is_matcher", "matches"]

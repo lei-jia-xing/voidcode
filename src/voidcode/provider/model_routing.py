@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
-from typing import cast
 
 from .api_routes import api_route_for
 from .config import RoutedWire
@@ -13,7 +12,6 @@ from .protocol import (
     ProviderTurnRequest,
     ProviderTurnResult,
     StreamableTurnProvider,
-    TurnProvider,
 )
 from .provider_table import WireSource
 
@@ -108,16 +106,16 @@ class RoutedTurnProvider:
 
     name: str
     routing: WireRouting
-    build: Callable[[str, ModelRoute], TurnProvider]
+    build: Callable[[str, ModelRoute], StreamableTurnProvider]
     model_map: Mapping[str, str] = field(default_factory=dict)
-    _providers: dict[str, TurnProvider] = field(default_factory=dict, compare=False, repr=False)
+    _providers: dict[str, StreamableTurnProvider] = field(default_factory=dict, compare=False, repr=False)
 
     def route_for(self, request: ProviderTurnRequest) -> tuple[str, ModelRoute | None]:
         """Return the routed model name and its route (``None`` == unimplemented wire)."""
         model = _routed_model(self.model_map, request.model_name or "")
         return self.routing.resolve(model, _catalog_api(self.routing.provider, model, request.model_metadata))
 
-    def _dispatch(self, request: ProviderTurnRequest) -> tuple[TurnProvider, ProviderTurnRequest]:
+    def _dispatch(self, request: ProviderTurnRequest) -> tuple[StreamableTurnProvider, ProviderTurnRequest]:
         model, route = self.route_for(request)
         if route is None:
             # Never guessed at: an unimplemented upstream wire would send the
@@ -150,7 +148,4 @@ class RoutedTurnProvider:
 
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
         provider, routed = self._dispatch(request)
-        # Wire factories only produce streamable sub-providers; the cast mirrors
-        # ``graph/provider_graph.py``'s handling of the same seam.
-        streamable = cast(StreamableTurnProvider, provider)
-        return streamable.stream_turn(routed)
+        return provider.stream_turn(routed)

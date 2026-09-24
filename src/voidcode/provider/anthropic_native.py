@@ -36,6 +36,7 @@ from .errors import (
     redact_provider_error_message,
 )
 from .protocol import (
+    ProviderDoneReason,
     ProviderExecutionError,
     ProviderStreamEvent,
     ProviderTokenUsage,
@@ -196,7 +197,7 @@ def _usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
     )
 
 
-def _done_reason(value: object) -> str:
+def _done_reason(value: object) -> ProviderDoneReason:
     if not isinstance(value, str):
         return "unknown"
     value = value.strip().lower()
@@ -468,6 +469,8 @@ class AnthropicMessagesProvider:
         budget = _thinking_payload(payload, request=request, rule=rule)
         if budget is not None:
             payload["max_tokens"] = _max_tokens_with_thinking(payload["max_tokens"], budget, model_max_tokens)
+        # Precedence: the request's own retention, else the provider config's
+        # (its field default is "none"), else -- with no config at all -- "none".
         retention = request.cache_retention if request.cache_retention is not None else (self.config.cache_retention if self.config else "none")
         if retention in {"short", "long"}:
             cache_control = {"type": "ephemeral", "ttl": "5m" if retention == "short" else "1h"}
@@ -510,7 +513,7 @@ class AnthropicMessagesProvider:
             message=message,
             retryable=True,
             fallback_allowed=True,
-            details=cast(dict[str, object], details),
+            details=details,
         )
 
     @staticmethod
@@ -569,7 +572,7 @@ class AnthropicMessagesProvider:
                 for call in calls
             )
             metadata = _response_metadata(response)
-            done_reason = cast(Any, _done_reason(stop_reason))
+            done_reason = _done_reason(stop_reason)
             if done_reason == "unknown" and finish_reason_reported:
                 # The token was reported but is not one we map; keep it for the
                 # graph's debug resolution.
@@ -732,7 +735,7 @@ class AnthropicMessagesProvider:
                     tool_call_ordinal=index,
                     parsed_arguments=self._visible_arguments(reverse.get(accumulator.tool_name, accumulator.tool_name), parsed),
                 )
-            done_reason = cast(Any, _done_reason(stop_reason))
+            done_reason = _done_reason(stop_reason)
             if done_reason == "unknown" and isinstance(stop_reason, str) and stop_reason:
                 # Reported but unrecognized: carry the token so the graph's
                 # finish_reason_reported diagnostics read it as reported.

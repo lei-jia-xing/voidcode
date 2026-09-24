@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import cast
 
 from ...provider.protocol import ProviderTokenUsage
 from ..session import SessionState
@@ -60,11 +59,11 @@ def session_with_provider_usage_metadata(
     raw_provider_usage = session.metadata.get("provider_usage")
     if raw_provider_usage is not None and not isinstance(raw_provider_usage, dict):
         raise ValueError("persisted provider_usage must be an object")
-    provider_usage = dict(cast(dict[str, object], raw_provider_usage or {}))
+    provider_usage: dict[str, object] = dict(raw_provider_usage) if isinstance(raw_provider_usage, dict) else {}
     raw_cumulative = provider_usage.get("cumulative")
     if raw_cumulative is not None and not isinstance(raw_cumulative, dict):
         raise ValueError("persisted provider_usage.cumulative must be an object")
-    cumulative = dict(cast(dict[str, object], raw_cumulative or {}))
+    cumulative: dict[str, object] = dict(raw_cumulative) if isinstance(raw_cumulative, dict) else {}
 
     def _int_value(key: str) -> int:
         return _accumulated_int(cumulative, key)

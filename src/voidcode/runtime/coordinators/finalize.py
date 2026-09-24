@@ -360,7 +360,7 @@ class FinalizeCoordinator:
                     source=event.source,
                     payload={
                         **event.payload,
-                        "runtime_policy": runtime_policy_observability_payload(cast(dict[str, object], raw_policy)),
+                        "runtime_policy": runtime_policy_observability_payload(raw_policy),
                     },
                 )
             )
@@ -402,7 +402,8 @@ class FinalizeCoordinator:
             return
 
         if deferred_failed_chunk is not None:
-            failed_event = cast(EventEnvelope, deferred_failed_chunk.event)
+            failed_event = deferred_failed_chunk.event
+            assert failed_event is not None
             cleanup_sequence = failed_event.sequence - 1
             final_chunks, finalized_session, final_sequence = finalize_run_acp(
                 self._acp_adapter,

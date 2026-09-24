@@ -26,6 +26,7 @@ from ...command import load_command_registry
 from ...command.models import CommandDefinition
 from ...mcp.redaction import redact_mcp_command
 from ...provider.auth import ProviderAuthResolver
+from ...provider.model_catalog import ToolFeedbackMode
 from ...provider.models import ResolvedProviderConfig, ResolvedProviderModel
 from ...provider.naming import provider_label
 from ...provider.registry import ModelProviderRegistry
@@ -57,6 +58,7 @@ from ..bundle import (
 from ..config import (
     RuntimeAgentConfig,
     RuntimeConfig,
+    RuntimeContextWindowConfig,
     RuntimeProviderFallbackConfig,
     load_global_web_settings,
     parse_runtime_agents_payload,
@@ -83,7 +85,6 @@ from ..contracts import (
     RuntimeBackgroundTaskStatusSnapshot,
     RuntimeProviderContextPolicyDecision,
     RuntimeProviderContextSnapshot,
-    RuntimeRequestMetadataPayload,
     RuntimeResponse,
     RuntimeSessionDebugEvent,
     RuntimeSessionDebugFailure,
@@ -128,7 +129,6 @@ from ..provider_inspection import (
 )
 from ..provider_metadata import (
     ReasoningEffortCapability,
-    ToolFeedbackMode,
     resolve_reasoning_effort_capability,
     tool_feedback_mode,
 )
@@ -277,10 +277,6 @@ def _operator_guidance(
     )
 
 
-def _fresh_request_metadata(metadata: RuntimeRequestMetadataPayload) -> dict[str, object]:
-    return fresh_request_metadata(cast(dict[str, object], metadata))
-
-
 def _request_metadata_from_session_metadata(metadata: dict[str, object]) -> dict[str, object]:
     request_metadata_keys = {
         "abort_requested",
@@ -293,7 +289,7 @@ def _request_metadata_from_session_metadata(metadata: dict[str, object]) -> dict
         "background_task_id",
     }
     request_metadata = {key: value for key, value in metadata.items() if key in request_metadata_keys}
-    return _fresh_request_metadata(cast(RuntimeRequestMetadataPayload, request_metadata))
+    return fresh_request_metadata(request_metadata)
 
 
 def _should_prefer_active_debug_snapshot(
@@ -310,7 +306,7 @@ def _should_prefer_active_debug_snapshot(
     request_metadata = active_metadata.get("request_metadata")
     if not isinstance(request_metadata, dict):
         return False
-    active_request_metadata = _fresh_request_metadata(cast(RuntimeRequestMetadataPayload, request_metadata))
+    active_request_metadata = fresh_request_metadata(request_metadata)
     persisted_request_metadata = _request_metadata_from_session_metadata(result.session.metadata)
     if active_request_metadata != persisted_request_metadata:
         return True
@@ -544,7 +540,7 @@ class InspectionCoordinator:
                     source=event.source,
                     payload={
                         **event.payload,
-                        "runtime_policy": runtime_policy_observability_payload(cast(dict[str, object], raw_policy)),
+                        "runtime_policy": runtime_policy_observability_payload(raw_policy),
                     },
                 )
             )
@@ -857,11 +853,8 @@ class InspectionCoordinator:
             pending_approval=pending_approval,
             pending_question=pending_question,
         )
-        checkpoint_kind = (
-            cast(str, resume_checkpoint.get("kind"))
-            if isinstance(resume_checkpoint, dict) and isinstance(resume_checkpoint.get("kind"), str)
-            else None
-        )
+        raw_checkpoint_kind = resume_checkpoint.get("kind") if isinstance(resume_checkpoint, dict) else None
+        checkpoint_kind = raw_checkpoint_kind if isinstance(raw_checkpoint_kind, str) else None
         terminal = result.session.status in {"completed", "failed"}
         resumable = (
             result.session.status == "waiting"
@@ -1035,9 +1028,7 @@ class InspectionCoordinator:
             diagnostic_policy_mode=context_window_config.provider_context_diagnostics,
         )
 
-    def _surface_context_window_default(self):  # type: ignore[no-untyped-def]
-        from ..config import RuntimeContextWindowConfig
-
+    def _surface_context_window_default(self) -> RuntimeContextWindowConfig:
         return RuntimeContextWindowConfig()
 
     def _active_only_session_debug_snapshot(
@@ -1051,7 +1042,8 @@ class InspectionCoordinator:
             **(dict(cast(dict[str, object], request_metadata)) if isinstance(request_metadata, dict) else {}),
             "workspace": str(self._workspace),
         }
-        prompt = cast(str, active_metadata["prompt"]) if isinstance(active_metadata.get("prompt"), str) else ""
+        raw_prompt = active_metadata.get("prompt")
+        prompt = raw_prompt if isinstance(raw_prompt, str) else ""
         session = SessionState(
             session=SessionRef(id=session_id),
             status="running",

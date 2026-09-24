@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from importlib.resources import files as _resource_files
 from typing import Final, cast
 
-from .model_match import MATCHERS, Matcher, matches
+from .model_match import Matcher, is_matcher, matches
 from .provider_table import require_provider_id
 
 
@@ -62,7 +62,7 @@ def _route(raw: object) -> ApiRoute:
         raise ValueError(f"api route for provider {provider!r} is missing a 'match' object")
     match_entry = cast(dict[str, object], match)
     matcher = match_entry.get("type")
-    if matcher not in MATCHERS:
+    if not is_matcher(matcher):
         raise ValueError(f"api route for provider {provider!r} has an unknown matcher: {matcher!r}")
     strip_prefix = match_entry.get("strip_prefix", False)
     if not isinstance(strip_prefix, bool):
@@ -70,7 +70,7 @@ def _route(raw: object) -> ApiRoute:
     source = entry.get("source")
     return ApiRoute(
         provider=provider,
-        matcher=cast(Matcher, matcher),
+        matcher=matcher,
         value=_string(match_entry, "value", provider),
         api=api,
         strip_prefix=strip_prefix,

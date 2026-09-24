@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any, cast
+from typing import Any, overload
 
 from .protocol import ProviderErrorKind, ProviderExecutionError
 
@@ -147,13 +147,21 @@ def redact_provider_error_message(value: str) -> str:
     return _redact_secret_text(value)
 
 
+@overload
+def redact_provider_error_details(value: Mapping[str, object]) -> dict[str, object]: ...
+
+
+@overload
+def redact_provider_error_details(value: object) -> object: ...
+
+
 def redact_provider_error_details(value: object) -> object:
     """Recursively redact provider diagnostics before runtime persistence."""
     return _redact_provider_error_detail(value)
 
 
 def _provider_error_details(payload: dict[str, Any]) -> dict[str, object]:
-    return cast(dict[str, object], redact_provider_error_details(payload))
+    return redact_provider_error_details(payload)
 
 
 @dataclass(frozen=True, slots=True)

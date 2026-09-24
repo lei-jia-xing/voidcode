@@ -18,6 +18,15 @@ VoidCode 当前更重视代码的清晰性、小规模变更以及可重复的�
 - 当行为改变时增加或更新测试。
 - 除非必要，避免引入新的依赖。
 
+## cast 与 fallback
+
+- `cast` 只在**命名边界**上使用，并在代码里写明边界：JSON/HTTP 解码（`json.loads` → `dict[str, object]`）、第三方 SDK 桩（`Any` kwargs、`Omit` 哨兵、联合返回）、无类型动态查找（ASGI `Scope`、`__dict__` monkeypatch）、pydantic `errors()` 字典。
+- 边界解析的范例是 `src/voidcode/provider/provider_table.py`：每个字段一种校验器（`_string_tuple` 形状），`Literal` 集合用 `TypeIs` 谓词收窄（`model_match.is_matcher`），而不是每个调用点一个 `cast`；容器边界处的 `cast(dict[str, object], ...)` 用来阻止 `Any` 向下游扩散。
+- 可选性用 `T | None` 表达并由消费方显式处理；契约要求的值缺失就直接 `raise`。请求体里"必填、但要有自己错误句"的字段用 `Field(default=None, validate_default=True)` + before 校验器，而不是 `T | None` 加路由处 `cast(T, ...)`。
+- fallback 只在**带声明优先级的来源合并**时合法：discovered 拥有 X，shipped 只填未设置的 Y（范例 `src/voidcode/provider/registry.py:194-214`），合并处写清谁优先；`.get(name, name)` 这类恒等映射同样合法。
+- 契约键缺失必须抛出，不得 `.get(k, default)` / `getattr(obj, name, default)` 兜底："缺失 ≠ 零/空"，`or 0` / `or ""` 把未知当成已知。确需保留的默认值（`_OUTPUT_CAP_WHEN_UNKNOWN`、`-1` 预算哨兵、未知计费桶写 `0.0`）必须用一行注释写明优先级与已知上限。
+- 静默 `except: pass` 只允许作为有意的探测并注释说明；其余异常必须记录、重抛或转成有类型的错误。
+
 ## 前端
 
 - 保持 Bun/Vite/React 技术栈与当前外壳一致。

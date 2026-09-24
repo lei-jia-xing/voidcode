@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 from google import genai
 from google.genai import types
@@ -14,7 +14,7 @@ from ..tools.output import redacted_argument_keys_for_tool, sanitize_tool_argume
 from ._wire_common import resolve_extra_request_headers
 from .config import GoogleProviderConfig
 from .errors import redact_provider_error_details, redact_provider_error_message
-from .protocol import ProviderExecutionError, ProviderStreamEvent, ProviderTokenUsage, ProviderTurnRequest, ProviderTurnResult
+from .protocol import ProviderDoneReason, ProviderExecutionError, ProviderStreamEvent, ProviderTokenUsage, ProviderTurnRequest, ProviderTurnResult
 from .reasoning_effort import (
     REASONING_EFFORT_HIGH,
     REASONING_EFFORT_LOW,
@@ -279,10 +279,12 @@ class GoogleGenAIProvider:
         if effort == REASONING_EFFORT_OFF:
             return types.ThinkingConfig(thinking_budget=0, include_thoughts=False)
         budget = rule.budget_for(effort)
+        # ``-1`` is the SDK's own "no explicit budget" sentinel: the model picks its
+        # own dynamic budget instead of a fixed one. It is never a user-visible number.
         return types.ThinkingConfig(thinking_budget=budget if budget is not None else -1, include_thoughts=True)
 
     @staticmethod
-    def _finish_reason(value: object) -> str:
+    def _finish_reason(value: object) -> ProviderDoneReason:
         raw = getattr(value, "name", value)
         normalized = str(raw).split(".")[-1].lower()
         if normalized in {"stop", "end_turn"}:
@@ -400,7 +402,7 @@ class GoogleGenAIProvider:
                 output=text,
                 reasoning="".join(reasoning_parts) or None,
                 usage=self._usage(response),
-                done_reason=cast(Any, finish),
+                done_reason=finish,
                 finish_reason_reported=finish_reason_reported,
                 metadata=(
                     {"finish_reason_raw": str(getattr(raw_finish, "name", raw_finish))} if finish == "unknown" and finish_reason_reported else None
@@ -417,7 +419,7 @@ class GoogleGenAIProvider:
                 message=message,
                 retryable=True,
                 fallback_allowed=True,
-                details=cast(dict[str, object], redact_provider_error_details({"exception_type": type(exc).__name__, "exception_message": message})),
+                details=redact_provider_error_details({"exception_type": type(exc).__name__, "exception_message": message}),
             ) from exc
 
     def _tool_call_from_part(self, part: object, request: ProviderTurnRequest, *, ordinal: int) -> ToolCall | None:
@@ -460,7 +462,7 @@ class GoogleGenAIProvider:
                 # finish_reason_reported diagnostics read it as reported.
                 stream_metadata = {"finish_reason_raw": str(getattr(raw_finish, "name", raw_finish))}
             yield ProviderStreamEvent(
-                kind="done", done_reason=cast(Any, done_reason), metadata=stream_metadata, usage=self._usage(last) if last is not None else None
+                kind="done", done_reason=done_reason, metadata=stream_metadata, usage=self._usage(last) if last is not None else None
             )
         except ProviderExecutionError:
             raise
@@ -473,7 +475,7 @@ class GoogleGenAIProvider:
                 message=message,
                 retryable=True,
                 fallback_allowed=True,
-                details=cast(dict[str, object], redact_provider_error_details({"exception_type": type(exc).__name__, "exception_message": message})),
+                details=redact_provider_error_details({"exception_type": type(exc).__name__, "exception_message": message}),
             ) from exc
 
 

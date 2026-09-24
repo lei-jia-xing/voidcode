@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 from importlib.resources import files as _resource_files
 from typing import Final, Literal, cast
 
-from .model_match import MATCHERS, Matcher, matches
+from .model_match import Matcher, is_matcher, matches
 from .provider_table import require_provider_id
 
 type ThinkingMode = Literal["effort", "binary", "budget", "google-level"]
@@ -168,9 +168,9 @@ def _row(raw: object, tables: Mapping[str, Mapping[str, int]]) -> ThinkingRuleRo
             raise ValueError(f"thinking rule for provider {provider!r} has a non-object 'match'")
         match_map = cast(dict[str, object], match_entry)
         raw_matcher = match_map.get("type")
-        if raw_matcher not in MATCHERS:
+        if not is_matcher(raw_matcher):
             raise ValueError(f"thinking rule for provider {provider!r} has an unknown matcher: {raw_matcher!r}")
-        matcher = cast(Matcher, raw_matcher)
+        matcher = raw_matcher
         value = _text(match_map, "value", provider)
     requires_effort = entry.get("requires_effort")
     if requires_effort is not None and not isinstance(requires_effort, bool):

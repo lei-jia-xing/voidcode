@@ -31,8 +31,8 @@ class WorkspaceRuntimeHandle(Protocol):
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None: ...
 
 
-class WorkspaceRuntimeFactory(Protocol):
-    def __call__(self, workspace: Path) -> WorkspaceRuntimeHandle: ...
+class WorkspaceRuntimeFactory[RuntimeT: WorkspaceRuntimeHandle](Protocol):
+    def __call__(self, workspace: Path) -> RuntimeT: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,12 +51,12 @@ class WorkspaceCandidate:
         )
 
 
-class WorkspaceRuntimeCoordinator:
+class WorkspaceRuntimeCoordinator[RuntimeT: WorkspaceRuntimeHandle = WorkspaceRuntimeHandle]:
     def __init__(
         self,
         *,
         initial_workspace: Path,
-        runtime_factory: WorkspaceRuntimeFactory,
+        runtime_factory: WorkspaceRuntimeFactory[RuntimeT],
         config: RuntimeConfig | None = None,
     ) -> None:
         resolved_workspace = initial_workspace.resolve()
@@ -71,7 +71,7 @@ class WorkspaceRuntimeCoordinator:
         self._lock = threading.RLock()
         self._active_requests = 0
         self._current_workspace = resolved_workspace
-        self._runtime: WorkspaceRuntimeHandle | None = None
+        self._runtime: RuntimeT | None = None
         self._recent_workspaces = self._load_recent_workspaces()
         self._remember_workspace_locked(resolved_workspace)
 
@@ -80,11 +80,13 @@ class WorkspaceRuntimeCoordinator:
         with self._lock:
             return self._current_workspace
 
-    def runtime(self):
+    def runtime(self) -> RuntimeT:
         with self._lock:
-            if self._runtime is None:
-                self._runtime = self._runtime_factory(self._current_workspace)
-            return self._runtime
+            runtime = self._runtime
+            if runtime is None:
+                runtime = self._runtime_factory(self._current_workspace)
+                self._runtime = runtime
+            return runtime
 
     def owns_runtime(self, runtime: object) -> bool:
         with self._lock:

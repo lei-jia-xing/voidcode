@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass, fields
-from typing import Literal, cast
+from typing import Literal
 
 from ..provider.model_catalog import ProviderModelMetadata as CatalogProviderModelMetadata
-from ..provider.model_catalog import ToolFeedbackMode
+from ..provider.model_catalog import tool_feedback_mode
 from .config_materializer import EffectiveRuntimeConfig
 from .contracts import ProviderModelMetadata
 
@@ -34,15 +33,8 @@ def optional_string(value: object) -> str | None:
 def optional_string_tuple(value: object) -> tuple[str, ...] | None:
     if not isinstance(value, list | tuple):
         return None
-    raw_items = cast(Iterable[object], value)
-    items = tuple(item for item in raw_items if isinstance(item, str) and item)
+    items = tuple(item for item in value if isinstance(item, str) and item)
     return items or None
-
-
-def tool_feedback_mode(value: object) -> ToolFeedbackMode | None:
-    if value in {"standard", "synthetic_user_message"}:
-        return cast(ToolFeedbackMode, value)
-    return None
 
 
 def catalog_metadata_from_payload(

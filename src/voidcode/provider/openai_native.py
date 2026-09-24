@@ -31,6 +31,7 @@ from .errors import (
 )
 from .model_catalog import ProviderModelMetadata, ToolFeedbackMode
 from .protocol import (
+    ProviderDoneReason,
     ProviderExecutionError,
     ProviderStreamEvent,
     ProviderTokenUsage,
@@ -277,7 +278,7 @@ def _usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
     return ProviderTokenUsage(input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read, uncached_input_tokens=uncached)
 
 
-def _done_reason(value: object) -> str:
+def _done_reason(value: object) -> ProviderDoneReason:
     if not isinstance(value, str) or not value.strip():
         return "stop"
     value = value.strip().lower()
@@ -374,8 +375,10 @@ class OpenAIChatCompletionsProvider:
     def provider_config(self) -> OpenAIProviderConfig | ProviderEndpointConfig | None:
         return self.config
 
-    def _config_value(self, name: str, default: object = None) -> object:
-        return default if self.config is None else getattr(self.config, name, default)
+    def _endpoint_config(self) -> ProviderEndpointConfig | None:
+        """The endpoint-shaped config, ``None`` for OpenAI's own shape or no config."""
+        config = self.config
+        return config if isinstance(config, ProviderEndpointConfig) else None
 
     def _model_name(self, request: ProviderTurnRequest) -> str:
         model_name = request.model_name
@@ -388,9 +391,9 @@ class OpenAIChatCompletionsProvider:
                 retryable=False,
                 fallback_allowed=True,
             )
-        model_map = self._config_value("model_map", {})
-        mapped = model_map.get(model_name, model_name) if isinstance(model_map, Mapping) else model_name
-        return mapped if isinstance(mapped, str) and mapped else model_name
+        endpoint = self._endpoint_config()
+        model_map = endpoint.model_map if endpoint is not None else {}
+        return model_map.get(model_name) or model_name
 
     def _transport(self) -> OpenAITransport:
         if self.transport is not None:
@@ -404,6 +407,8 @@ class OpenAIChatCompletionsProvider:
             # ``providers.openai``. A missing key means "send no credential" -- the
             # transport still hands the SDK a placeholder so it never sends an empty one.
             config = self.config
+            endpoint = config if isinstance(config, ProviderEndpointConfig) else None
+            openai_config = config if isinstance(config, OpenAIProviderConfig) else None
             base_url = None if config is None else config.base_url
             if not base_url:
                 # A provider whose config names no endpoint resolves to its own
@@ -421,17 +426,23 @@ class OpenAIChatCompletionsProvider:
                     retryable=False,
                     fallback_allowed=True,
                 )
+            # The two config shapes spell these two credentials differently:
+            # OpenAI's own config names them ``organization``/``project``, an
+            # endpoint config ``openai_organization``/``openai_project``. Only an
+            # endpoint config carries the auth header/scheme and the TLS switch.
+            organization = None if openai_config is None else openai_config.organization
+            project = None if openai_config is None else openai_config.project
+            if endpoint is not None:
+                organization = endpoint.openai_organization
+                project = endpoint.openai_project
             owned.value = OpenAIChatCompletionsTransport(
                 base_url=base_url,
                 api_key=None if config is None else config.api_key,
-                # The two config shapes spell these two credentials differently:
-                # OpenAI's own config names them ``organization``/``project``, an
-                # endpoint config ``openai_organization``/``openai_project``.
-                organization=cast(str | None, self._config_value("organization", self._config_value("openai_organization"))),
-                project=cast(str | None, self._config_value("project", self._config_value("openai_project"))),
-                auth_header=cast(str | None, self._config_value("auth_header")),
-                auth_scheme=cast(str, self._config_value("auth_scheme", "bearer")),
-                ssl_verify=cast(bool | None, self._config_value("ssl_verify")),
+                organization=organization,
+                project=project,
+                auth_header=endpoint.auth_header if endpoint is not None else None,
+                auth_scheme=endpoint.auth_scheme if endpoint is not None else "bearer",
+                ssl_verify=endpoint.ssl_verify if endpoint is not None else None,
             )
         return owned.value
 
@@ -526,15 +537,21 @@ class OpenAIChatCompletionsProvider:
                 messages.append({"role": segment.role, "content": segment.content})
         return messages
 
-    def _tool_feedback_mode_for_request(self, request: ProviderTurnRequest) -> ToolFeedbackMode:
+    def _tool_feedback_mode_for_request(self, request: ProviderTurnRequest) -> ToolFeedbackMode | None:
+        """The model's declared tool-feedback mode, ``None`` when nothing declares one.
+
+        Precedence: the adapter's own per-model override, then the request's model
+        metadata. ``None`` means the catalog declares no mode, so the turn replays
+        tool results as ``tool`` messages (the standard shape) -- the mode is not
+        substituted here, so a caller can still tell "declared standard" from "unset".
+        """
         mapped_model = self._model_name(request)
         mode = self.tool_feedback_model_overrides.get(mapped_model)
         if mode is None and request.model_name is not None:
             mode = self.tool_feedback_model_overrides.get(request.model_name)
         if mode is not None:
             return mode
-        metadata = request.model_metadata.tool_feedback_mode if request.model_metadata is not None else None
-        return metadata if metadata is not None else "standard"
+        return request.model_metadata.tool_feedback_mode if request.model_metadata is not None else None
 
     def _synthetic_feedback_messages(self, request: ProviderTurnRequest, original_to_provider: Mapping[str, str]) -> list[dict[str, object]]:
         """Replay tool results as a synthetic user turn.
@@ -636,7 +653,10 @@ class OpenAIChatCompletionsProvider:
         )
 
     def _payload(self, request: ProviderTurnRequest, *, stream: bool) -> dict[str, object]:
-        retention = request.cache_retention if request.cache_retention is not None else self._config_value("cache_retention", "none")
+        # Precedence: the request's own retention, else the endpoint config's
+        # (its field default is "none"), else -- with no endpoint config -- "none".
+        endpoint = self._endpoint_config()
+        retention = request.cache_retention if request.cache_retention is not None else (endpoint.cache_retention if endpoint is not None else "none")
         if retention not in (None, "none"):
             # Prompt caching is an Anthropic Messages feature; this adapter would
             # silently drop the request, so fail explicitly instead. Fallback stays
@@ -748,7 +768,7 @@ class OpenAIChatCompletionsProvider:
             message=message,
             retryable=True,
             fallback_allowed=True,
-            details=cast(dict[str, object], details),
+            details=details,
         )
 
     @staticmethod
@@ -807,7 +827,7 @@ class OpenAIChatCompletionsProvider:
                 output=content if isinstance(content, str) else "",
                 reasoning=_reasoning(message_mapping),
                 usage=usage,
-                done_reason=cast(Any, done_reason),
+                done_reason=done_reason,
                 finish_reason_reported=raw_token is not None,
                 metadata=metadata,
             )
@@ -893,6 +913,8 @@ class OpenAIChatCompletionsProvider:
                         try:
                             complete_first = isinstance(json.loads(fragment), dict)
                         except json.JSONDecodeError:
+                            # Deliberate probe, not swallowed failure: an incomplete
+                            # fragment is exactly the answer "this is a delta".
                             pass
                     explicit = previous.explicit_streaming or (isinstance(raw_id, str) and bool(raw_id) and not complete_first)
                     started = previous.started
@@ -983,7 +1005,7 @@ class OpenAIChatCompletionsProvider:
             event_payload: dict[str, object] = event_calls[0] if len(event_calls) == 1 else {"tool_calls": event_calls}
             yield ProviderStreamEvent(kind="content", channel="tool", text=json.dumps(event_payload))
         metadata["finish_reason_reported"] = finish_reason_reported
-        yield ProviderStreamEvent(kind="done", done_reason=cast(Any, done_reason), metadata=metadata, usage=latest_usage)
+        yield ProviderStreamEvent(kind="done", done_reason=done_reason, metadata=metadata, usage=latest_usage)
         write_provider_trace(
             request=payload,
             response={"native_stream": True},

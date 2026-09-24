@@ -13,7 +13,7 @@ from .config import (
 from .model_catalog import ToolFeedbackMode
 from .model_routing import ModelRoute, RoutedTurnProvider, WireRouting
 from .openai_native import OpenAIChatCompletionsProvider
-from .protocol import TurnProvider
+from .protocol import StreamableTurnProvider, TurnProvider
 from .provider_table import PROVIDER_TABLE_BY_ID
 
 # These gateways reject the OpenAI ``tool`` role, so completed tool results are
@@ -107,7 +107,7 @@ class OpenCodeGoModelProvider:
     def provider_config(self) -> ProviderEndpointConfig | None:
         return openai_compatible_endpoint_config(self.name, self.config)
 
-    def _wire(self, _model: str, route: ModelRoute) -> TurnProvider:
+    def _wire(self, _model: str, route: ModelRoute) -> StreamableTurnProvider:
         endpoint = self.provider_config()
         if route.wire == "anthropic-messages":
             return AnthropicMessagesProvider(

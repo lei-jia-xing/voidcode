@@ -75,6 +75,12 @@ def _decode(content: bytes) -> dict[str, object]:
 
 
 def _per_token(cost: dict[str, object], key: str) -> float:
+    # ponytail: a bucket upstream does not carry is written as 0.0, so the runtime
+    # cannot tell "upstream prices this at zero" from "upstream says nothing", and a
+    # partially-priced model is reported cheaper than it is (never more expensive).
+    # Upgrade path: emit the bucket as absent and carry ``float | None`` through
+    # ``LongContextRates``/``usage_cost_usd``, which already returns ``None`` for
+    # "unpriced".
     value = cost.get(key)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value) / 1_000_000

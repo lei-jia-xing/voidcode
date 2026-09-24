@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, fields
 from functools import lru_cache
 from importlib.resources import files as _resource_files
-from typing import Final, Literal, cast
+from typing import Final, Literal, TypeIs, cast
 from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -18,6 +18,18 @@ from .provider_config import provider_has_model_listing
 from .reasoning_effort import CANONICAL_EFFORTS
 
 type ToolFeedbackMode = Literal["standard", "synthetic_user_message"]
+
+_TOOL_FEEDBACK_MODES: Final[tuple[ToolFeedbackMode, ...]] = ("standard", "synthetic_user_message")
+
+
+def is_tool_feedback_mode(value: object) -> TypeIs[ToolFeedbackMode]:
+    """Whether an untrusted ``tool_feedback_mode`` token names one of the known modes."""
+    return value in _TOOL_FEEDBACK_MODES
+
+
+def tool_feedback_mode(value: object) -> ToolFeedbackMode | None:
+    """The declared tool-feedback mode, ``None`` when the value declares none."""
+    return value if is_tool_feedback_mode(value) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,12 +334,6 @@ def discover_available_models(
     )
 
 
-def _tool_feedback_mode(value: object) -> ToolFeedbackMode | None:
-    if value in {"standard", "synthetic_user_message"}:
-        return cast(ToolFeedbackMode, value)
-    return None
-
-
 def _timeout_for_discovery(config: ProviderEndpointConfig | None) -> float:
     if config is None or config.timeout_seconds is None:
         return 10.0
@@ -460,7 +466,7 @@ def _metadata_from_discovery_item(
         modalities_input=input_modalities,
         modalities_output=output_modalities,
         model_status=_optional_str(raw.get("status")),
-        tool_feedback_mode=_tool_feedback_mode(raw.get("tool_feedback_mode")),
+        tool_feedback_mode=tool_feedback_mode(raw.get("tool_feedback_mode")),
     )
     return metadata if metadata.payload() else None
 

@@ -405,7 +405,7 @@ def _runtime_request_from(payload: _RunStreamRequestPayload) -> RuntimeRequest:
         )
 
     return RuntimeRequest(
-        prompt=cast(str, payload.prompt),
+        prompt=payload.prompt,
         session_id=session_id,
         parent_session_id=parent_session_id,
         metadata=validate_runtime_request_metadata(payload.metadata),
@@ -1018,11 +1018,10 @@ class RuntimeTransportApp(FastAPI):
         still completes; the stop lands at the next chunk boundary.
         """
         loop = asyncio.get_running_loop()
-        chunk_queue: asyncio.Queue[object] = asyncio.Queue()
+        chunk_queue: asyncio.Queue[RuntimeStreamChunk | Exception | None] = asyncio.Queue()
         stop_event = threading.Event()
-        sentinel = object()
 
-        def _deliver(item: object) -> bool:
+        def _deliver(item: RuntimeStreamChunk | Exception | None) -> bool:
             try:
                 loop.call_soon_threadsafe(chunk_queue.put_nowait, item)
             except RuntimeError:
@@ -1040,18 +1039,19 @@ class RuntimeTransportApp(FastAPI):
             except Exception as exc:
                 _deliver(exc)
             finally:
-                _deliver(sentinel)
+                _deliver(None)
 
         worker = threading.Thread(target=_produce, name="runtime-stream-worker", daemon=True)
         worker.start()
         try:
             while True:
                 item = await chunk_queue.get()
-                if item is sentinel:
+                if item is None:
+                    # ``None`` closes the queue: the worker has stopped producing.
                     return
                 if isinstance(item, Exception):
                     raise item
-                yield cast(RuntimeStreamChunk, item)
+                yield item
         finally:
             stop_event.set()
             worker.join(timeout=_STREAM_WORKER_JOIN_SECONDS)
@@ -1370,7 +1370,7 @@ class RuntimeTransportApp(FastAPI):
 
     async def _handle_steer_background_task(self, task_id: str, payload: _TaskSteerRequestPayload) -> Response:
         task_id = self._validated_task_id(task_id)
-        prompt = cast(str, payload.prompt)
+        prompt = payload.prompt
         with self._runtime_lease() as runtime:
             try:
                 task = runtime.steer_background_task(task_id, prompt)
@@ -1408,7 +1408,7 @@ class RuntimeTransportApp(FastAPI):
         if self._workspace_coordinator is None:
             raise HttpError(404, "not found")
         try:
-            snapshot = self._workspace_coordinator.open_workspace(cast(str, payload.path))
+            snapshot = self._workspace_coordinator.open_workspace(payload.path)
         except WorkspaceOpenError as exc:
             raise HttpError(exc.status_code, str(exc), code=error_code(exc)) from None
         return json_response(self._serialize_workspace_registry_snapshot(snapshot))
@@ -1583,7 +1583,7 @@ class RuntimeTransportApp(FastAPI):
             try:
                 marker = runtime.revert_session(
                     session_id=session_id,
-                    sequence=cast(int, payload.sequence),
+                    sequence=payload.sequence,
                 )
             except ValueError as exc:
                 raise HttpError(404, str(exc)) from None
@@ -1591,7 +1591,7 @@ class RuntimeTransportApp(FastAPI):
 
     async def _handle_steer_session(self, session_id: str, payload: _SteerSessionRequestPayload) -> Response:
         session_id = self._validated_session_id(session_id)
-        content = cast(str, payload.content)
+        content = payload.content
         with self._runtime_lease() as runtime:
             try:
                 queued = runtime.queue_steering(
@@ -1624,8 +1624,8 @@ class RuntimeTransportApp(FastAPI):
             response = await asyncio.to_thread(
                 self._resume_session,
                 session_id,
-                approval_request_id=cast(str, payload.request_id),
-                approval_decision=cast(PermissionResolution, payload.decision),
+                approval_request_id=payload.request_id,
+                approval_decision=payload.decision,
             )
         except ValueError as exc:
             raise HttpError(409, str(exc), code=error_code(exc)) from None
@@ -1640,8 +1640,8 @@ class RuntimeTransportApp(FastAPI):
         session_id = self._validated_session_id(session_id)
         responses = tuple(
             QuestionResponse(
-                header=cast(str, item.header),
-                answers=cast(tuple[str, ...], item.answers),
+                header=item.header,
+                answers=item.answers,
             )
             for item in (payload.responses if payload.responses is not None else ())
         )
@@ -1649,7 +1649,7 @@ class RuntimeTransportApp(FastAPI):
             response = await asyncio.to_thread(
                 self._answer_question,
                 session_id,
-                question_request_id=cast(str, payload.request_id),
+                question_request_id=payload.request_id,
                 responses=responses,
             )
         # 409 separates "nothing pending" from this route's 404 session errors (unknown session / mismatched request id).
@@ -1737,13 +1737,11 @@ class RuntimeTransportApp(FastAPI):
         session: dict[str, object] | None,
         show_thinking: bool = False,
     ) -> dict[str, object]:
+        event = chunk.event
         return {
             "kind": chunk.kind,
             "session": session,
-            "event": RuntimeTransportApp._serialize_event(
-                chunk.event,
-                show_thinking=show_thinking,
-            ),
+            "event": None if event is None else RuntimeTransportApp._serialize_event(event, show_thinking=show_thinking),
             "output": chunk.output,
         }
 
@@ -1863,13 +1861,7 @@ class RuntimeTransportApp(FastAPI):
             "revert_marker": serialize_revert_marker(result.revert_marker),
             "transcript": [
                 {
-                    **cast(
-                        dict[str, object],
-                        RuntimeTransportApp._serialize_event(
-                            event,
-                            show_thinking=show_thinking,
-                        ),
-                    ),
+                    **RuntimeTransportApp._serialize_event(event, show_thinking=show_thinking),
                     "reverted": result.revert_marker is not None and result.revert_marker.active and event.sequence >= result.revert_marker.sequence,
                 }
                 for event in result.transcript
@@ -2155,12 +2147,10 @@ class RuntimeTransportApp(FastAPI):
 
     @staticmethod
     def _serialize_event(
-        event: EventEnvelope | None,
+        event: EventEnvelope,
         *,
         show_thinking: bool = False,
-    ) -> dict[str, object] | None:
-        if event is None:
-            return None
+    ) -> dict[str, object]:
         delegated = event.delegated_lifecycle
         payload: dict[str, object] = {
             "session_id": event.session_id,
@@ -2201,7 +2191,7 @@ def create_runtime_app(
             frontend_dist=frontend_dist,
         )
 
-    coordinator = WorkspaceRuntimeCoordinator(
+    coordinator = WorkspaceRuntimeCoordinator[RuntimeTransport](
         initial_workspace=resolved_workspace,
         runtime_factory=lambda workspace: _default_runtime_class()(
             workspace=workspace,
@@ -2211,7 +2201,7 @@ def create_runtime_app(
     )
 
     def resolved_factory() -> RuntimeTransport:
-        return cast(RuntimeTransport, coordinator.runtime())
+        return coordinator.runtime()
 
     return RuntimeTransportApp(
         runtime_factory=resolved_factory,
