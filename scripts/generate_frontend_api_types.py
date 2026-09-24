@@ -36,7 +36,7 @@ import json
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -76,7 +76,7 @@ _HEADER = """\
 """
 
 
-def _openapi_document() -> dict[str, Any]:
+def _openapi_document() -> dict[str, object]:
     """Fetch the served OpenAPI document in-process, without a server or a port.
 
     ``RuntimeTransportApp`` is built with a runtime factory that is never called:
@@ -122,7 +122,7 @@ def _openapi_document() -> dict[str, Any]:
         raise SystemExit(f"{OPENAPI_ROUTE} answered {status}, expected 200: {body[:400]!r}")
 
     # Boundary: JSON decode of the served OpenAPI document.
-    document = cast(dict[str, Any], json.loads(body))
+    document = cast(dict[str, object], json.loads(body))
     _assert_stream_frames_published(document)
     return document
 
@@ -136,7 +136,13 @@ def _import_transport() -> Any:
     return transport_http
 
 
-def _assert_stream_frames_published(document: dict[str, Any]) -> None:
+def _object_field(payload: Mapping[str, object], key: str) -> dict[str, object]:
+    """The object at ``key``, or an empty mapping when it is absent or not an object."""
+    value = payload.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _assert_stream_frames_published(document: dict[str, object]) -> None:
     """Fail loudly when a stream route no longer publishes its frame model.
 
     The frontend's stream chunk type is derived from ``components.schemas``, so a
@@ -144,22 +150,25 @@ def _assert_stream_frames_published(document: dict[str, Any]) -> None:
     registering it — has to stop generation here instead of silently emitting a
     worse type.
     """
-    # Boundary: the decoded document is untyped JSON; these casts pin the
-    # nested shapes the generator traverses.
-    schemas = cast(dict[str, Any], document.get("components", {}).get("schemas", {}))
+    # Boundary: the served document is decoded untyped JSON; each traversed level
+    # is narrowed to an object mapping rather than cast to ``Any``.
+    schemas = _object_field(_object_field(document, "components"), "schemas")
+    paths = _object_field(document, "paths")
     for (method, path), frame in _STREAM_FRAMES.items():
-        operation = cast(dict[str, Any], document.get("paths", {}).get(path, {})).get(method)
-        if operation is None:
+        path_item = paths.get(path)
+        operation = path_item.get(method) if isinstance(path_item, dict) else None
+        if not isinstance(operation, dict):
             raise SystemExit(f"the document no longer describes {method.upper()} {path}")
-        content = cast(dict[str, Any], operation.get("responses", {})).get("200", {}).get("content", {})
-        item_schema = cast(dict[str, Any], content.get("text/event-stream", {})).get("itemSchema")
+        ok_response = _object_field(_object_field(operation, "responses"), "200")
+        content = _object_field(ok_response, "content")
+        item_schema = _object_field(content, "text/event-stream").get("itemSchema")
         if item_schema != {"$ref": f"#/components/schemas/{frame}"}:
             raise SystemExit(f"{method.upper()} {path} does not publish its {frame} frame: {item_schema!r}")
         if frame not in schemas:
             raise SystemExit(f"the document registers no {frame} schema for {method.upper()} {path}")
 
 
-def _run_openapi_typescript(document: dict[str, Any]) -> str:
+def _run_openapi_typescript(document: dict[str, object]) -> str:
     """Run the pinned generator over the document and return the emitted TypeScript."""
     if not GENERATOR_BINARY.is_file():
         raise SystemExit(f"missing {GENERATOR_BINARY}; run `bun install` in frontend/ first")

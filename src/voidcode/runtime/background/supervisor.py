@@ -2177,6 +2177,8 @@ class RuntimeBackgroundTaskSupervisor:
                 workspace=self._workspace,
                 task=task,
                 lifecycle_status="waiting_approval",
+                # Dedupe seed, not a coalesce of an unknown: persisted event
+                # sequences start at 1, so 0 means the child has no event yet.
                 turn_sequence=(child_response.events[-1].sequence if child_response.events else 0),
                 approval_blocked=True,
                 payload=acp_payload,
@@ -2219,6 +2221,8 @@ class RuntimeBackgroundTaskSupervisor:
             return
         result = self.background_task_result(task=task)
         _, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
+        # Dedupe seed, not a coalesce of an unknown: persisted event sequences
+        # start at 1, so 0 means the child session has no event yet.
         turn_sequence = session_response.events[-1].sequence if session_response.events else 0
         try:
             appended = session_event_appender.append_session_event(
