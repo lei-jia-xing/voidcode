@@ -34,13 +34,12 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Literal, TypeIs, cast, overload
+from typing import Annotated, Literal, TypeIs, overload
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ..formatter import FormatterCwdPolicy
-from ..hook.config import RuntimeHooksConfig
 from ..mcp.builtin import get_builtin_mcp_descriptor
 from ..provider.config import ProviderConfigsPayload, format_runtime_config_field_error
 from ..provider.reasoning_effort import ALL_EFFORTS, normalize_reasoning_effort
@@ -121,7 +120,10 @@ CONTEXT_WINDOW_VERSION = 2
 #: Top-level config schema version accepted by the loader. Additive-only:
 #: absent (or explicit null) backfills to 1; anything else is rejected.
 CONFIG_SCHEMA_VERSION = 1
-DEFAULT_HOOK_TIMEOUT_SECONDS: float = cast(float, RuntimeHooksConfig().timeout_seconds)
+#: Default hook timeout in seconds, mirroring ``RuntimeHooksConfig``'s own
+#: ``timeout_seconds`` default. The dataclass also accepts ``None`` there (an
+#: explicit "no timeout"), which is never the default.
+DEFAULT_HOOK_TIMEOUT_SECONDS: float = 30.0
 
 
 # ---------------------------------------------------------------------------
@@ -1982,7 +1984,7 @@ SCHEMA_DEFINITION_NAMES: Mapping[str, str] = {
 
 #: Shapes folded back into a shared ``$defs`` entry so the artifact does not
 #: repeat one identical object in 17 hook slots (see ``config_schema``).
-SHARED_SCHEMA_DEFINITIONS: Mapping[str, tuple[object, str | None]] = {
+SHARED_SCHEMA_DEFINITIONS: Mapping[str, tuple[Mapping[str, object], str | None]] = {
     "commandList": (
         {"items": {"items": {"type": "string"}, "minItems": 1, "type": "array"}, "type": "array"},
         "Array of commands; each command is a non-empty argv array of strings. Commands are executed directly without an implicit shell.",

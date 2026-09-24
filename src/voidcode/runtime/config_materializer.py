@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import cast
 
 from ..provider.errors import format_invalid_provider_config_error
 from ..provider.models import ResolvedProviderConfig
@@ -462,20 +461,18 @@ def runtime_provider_config_metadata(
             if not isinstance(raw_provider, dict):
                 continue
             retained_custom: dict[str, object] = {}
-            for custom_name, raw_custom_provider in cast(dict[str, object], raw_provider).items():
+            for custom_name, raw_custom_provider in raw_provider.items():
                 if not isinstance(raw_custom_provider, dict):
                     continue
-                custom_provider_payload = cast(dict[str, object], raw_custom_provider)
-                if "transient_retry" in custom_provider_payload:
-                    retained_custom[custom_name] = {"transient_retry": custom_provider_payload["transient_retry"]}
+                if "transient_retry" in raw_custom_provider:
+                    retained_custom[custom_name] = {"transient_retry": raw_custom_provider["transient_retry"]}
             if retained_custom:
                 retained[provider_name] = retained_custom
             continue
         if not isinstance(raw_provider, dict):
             continue
-        provider_payload = cast(dict[str, object], raw_provider)
-        if "transient_retry" in provider_payload:
-            retained[provider_name] = {"transient_retry": provider_payload["transient_retry"]}
+        if "transient_retry" in raw_provider:
+            retained[provider_name] = {"transient_retry": raw_provider["transient_retry"]}
     return retained or None
 
 

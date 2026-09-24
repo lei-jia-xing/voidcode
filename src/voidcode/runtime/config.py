@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 from pydantic import ValidationError
 
@@ -412,7 +412,7 @@ def load_global_web_settings(env: Mapping[str, str] | None = None) -> RuntimeWeb
     raw_web = payload.get("web")
     configured_provider: str | None = None
     if isinstance(raw_web, dict):
-        raw_provider = cast(dict[str, object], raw_web).get("provider")
+        raw_provider = raw_web.get("provider")
         if isinstance(raw_provider, str):
             # A value written before provider ids were canonicalised (`MiniMax`)
             # names the same provider as `minimax`; report the canonical id so the
@@ -1665,7 +1665,7 @@ def save_global_web_settings(settings: RuntimeWebSettings) -> None:
     if provider:
         _validate_runtime_web_provider(provider)
         raw_web = payload.get("web")
-        web_payload = dict(cast(dict[str, object], raw_web)) if isinstance(raw_web, dict) else {}
+        web_payload: dict[str, object] = dict(raw_web) if isinstance(raw_web, dict) else {}
         web_payload["provider"] = provider
         payload["web"] = web_payload
         if settings.provider_api_key is not None:
@@ -1680,7 +1680,8 @@ def save_global_web_settings(settings: RuntimeWebSettings) -> None:
 
 def _save_tui_preferences(config_path: Path, preferences: RuntimeTuiPreferences) -> None:
     payload = _read_json_object(config_path)
-    tui_payload = cast(dict[str, object], payload.get("tui") if isinstance(payload.get("tui"), dict) else {})
+    raw_tui = payload.get("tui")
+    tui_payload: dict[str, object] = dict(raw_tui) if isinstance(raw_tui, dict) else {}
     updated_tui_payload = dict(tui_payload)
     updated_tui_payload["preferences"] = serialize_runtime_tui_preferences(preferences)
     payload["tui"] = updated_tui_payload
@@ -1746,19 +1747,19 @@ def _set_provider_api_key_payload(*, raw_providers: object, provider: str, api_k
     """
     if provider not in provider_config.PROVIDER_CONFIG_FIELDS:
         raise ValueError(f"provider '{provider}' has no writable credentials field in {RUNTIME_CONFIG_FILE_NAME}")
-    providers_payload = dict(cast(dict[str, object], raw_providers)) if isinstance(raw_providers, dict) else {}
+    providers_payload: dict[str, object] = dict(raw_providers) if isinstance(raw_providers, dict) else {}
     nested = providers_payload.get(provider)
-    nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
+    nested_payload: dict[str, object] = dict(nested) if isinstance(nested, dict) else {}
     if provider == "google":
         auth = nested_payload.get("auth")
-        auth_payload = dict(cast(dict[str, object], auth)) if isinstance(auth, dict) else {"method": "api_key"}
+        auth_payload: dict[str, object] = dict(auth) if isinstance(auth, dict) else {"method": "api_key"}
         raw_method = auth_payload.get("method")
         auth_payload["method"] = raw_method if isinstance(raw_method, str) and raw_method else "api_key"
         auth_payload["api_key"] = api_key
         nested_payload["auth"] = auth_payload
     elif provider == "github-copilot":
         auth = nested_payload.get("auth")
-        auth_payload = dict(cast(dict[str, object], auth)) if isinstance(auth, dict) else {"method": "token"}
+        auth_payload: dict[str, object] = dict(auth) if isinstance(auth, dict) else {"method": "token"}
         raw_method = auth_payload.get("method")
         auth_payload["method"] = raw_method if isinstance(raw_method, str) and raw_method else "token"
         auth_payload["token"] = api_key
@@ -1778,7 +1779,7 @@ def _read_json_object(config_path: Path) -> dict[str, object]:
         raise ValueError(f"runtime config file must contain valid JSON: {config_path}") from exc
     if not isinstance(raw_payload, dict):
         raise ValueError(f"runtime config file must contain a JSON object: {config_path}")
-    return cast(dict[str, object], raw_payload)
+    return raw_payload
 
 
 def serialize_runtime_tui_preferences(preferences: RuntimeTuiPreferences) -> dict[str, object]:

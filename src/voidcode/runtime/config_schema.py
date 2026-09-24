@@ -156,8 +156,8 @@ def _fold_shared_shapes(value: object) -> object:
             return {"$ref": f"#/$defs/{definition_name}"}
         # a field that also accepts an explicit null publishes the same shape with
         # null merged into its type; fold that back to the shared definition too
-        shared_type = cast(dict[str, object], shared_shape).get("type")
-        if isinstance(shared_type, str) and value == {**cast(dict[str, object], shared_shape), "type": [shared_type, "null"]}:
+        shared_type = shared_shape.get("type")
+        if isinstance(shared_type, str) and value == {**shared_shape, "type": [shared_type, "null"]}:
             return {"anyOf": [{"$ref": f"#/$defs/{definition_name}"}, {"type": "null"}]}
     return {key: _fold_shared_shapes(item) for key, item in value.items()}
 
@@ -165,7 +165,7 @@ def _fold_shared_shapes(value: object) -> object:
 def _shared_definition_entries() -> dict[str, dict[str, object]]:
     entries: dict[str, dict[str, object]] = {}
     for definition_name, (shared_shape, description) in SHARED_SCHEMA_DEFINITIONS.items():
-        entry = dict(cast(dict[str, object], shared_shape))
+        entry = dict(shared_shape)
         if description is not None:
             entry["description"] = description
         entries[definition_name] = entry
@@ -217,8 +217,8 @@ def _custom_agent_definition(properties: dict[str, object]) -> dict[str, object]
     *additional* entries require ``preset``. The preset list comes from the
     built-in manifest registry, the same source the loader resolves against.
     """
-    agents = cast(dict[str, object], properties.get("agents"))
-    if agents is not None:
+    agents = properties.get("agents")
+    if isinstance(agents, dict):
         agents["properties"] = {manifest.id: {"$ref": f"#/$defs/{_AGENT_CONFIG_DEFINITION_NAME}"} for manifest in list_builtin_agent_manifests()}
         agents["additionalProperties"] = {"$ref": f"#/$defs/{_CUSTOM_AGENT_DEFINITION_NAME}"}
     return {
@@ -266,8 +266,9 @@ def _fallback_chain_requires_model(target: dict[str, object]) -> None:
     ``provider/config.py`` needs a non-empty ``model`` whenever a
     ``fallback_models`` array is present, which ``if``/``then`` can express.
     """
+    existing_all_of = target.get("allOf")
     target["allOf"] = [
-        *cast(list[dict[str, object]], target.get("allOf", [])),
+        *(existing_all_of if isinstance(existing_all_of, list) else []),
         {
             "if": {
                 "properties": {"fallback_models": {"type": "array"}},
@@ -303,7 +304,7 @@ def _require_agent_preset(properties: dict[str, object]) -> None:
 
 def _runtime_config_schema_body() -> dict[str, object]:
     generated = RuntimeConfigPayload.model_json_schema(schema_generator=_RuntimeConfigSchemaGenerator)
-    published_defs, reference_map = _publish_definitions(cast(dict[str, dict[str, object]], generated.pop("$defs")))
+    published_defs, reference_map = _publish_definitions(generated.pop("$defs"))
     scalar_names = {
         name for name, definition in published_defs.items() if _is_scalar_definition(definition) and name not in SHARED_SCHEMA_DEFINITIONS
     }
@@ -313,6 +314,9 @@ def _runtime_config_schema_body() -> dict[str, object]:
         for name, definition in published_defs.items()
         if name not in scalar_names and not _is_shared_definition_shape(definition, name)
     }
+    # ``_normalize_schema`` is a generic tree rewriter (``object`` in, ``object``
+    # out) fed from pydantic's generated JSON object, so the properties subtree is
+    # a boundary read rather than a caller-known container.
     properties = cast(dict[str, object], _normalize_schema(generated.pop("properties"), reference_map, scalar_definitions))
     definitions.update(_shared_definition_entries())
     definitions[_CUSTOM_AGENT_DEFINITION_NAME] = _custom_agent_definition(properties)

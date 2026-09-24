@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, cast
+from typing import Literal
 
 from ..tools.question import QuestionTool
 from .contracts import RuntimeResponse
@@ -44,10 +44,9 @@ def pending_approval_from_response(response: RuntimeResponse) -> PendingApproval
     missing = sorted(required - payload.keys())
     if missing:
         raise ValueError(f"approval event is missing required fields: {missing!r}")
-    raw_policy_value = payload["policy"]
-    if not isinstance(raw_policy_value, dict):
+    raw_policy = payload["policy"]
+    if not isinstance(raw_policy, dict):
         raise ValueError("approval event policy must be an object")
-    raw_policy = cast(dict[str, object], raw_policy_value)
     raw_policy_mode = raw_policy.get("mode")
     policy_mode = permission_decision_or_none(raw_policy_mode)
     if policy_mode is None:
@@ -68,7 +67,7 @@ def pending_approval_from_response(response: RuntimeResponse) -> PendingApproval
     return PendingApproval(
         request_id=request_id,
         tool_name=tool_name,
-        arguments=cast(dict[str, object], arguments),
+        arguments=arguments,
         target_summary=target_summary,
         reason=reason,
         policy_mode=policy_mode,
@@ -129,7 +128,7 @@ def pending_question_from_response(response: RuntimeResponse) -> PendingQuestion
             request_id=request_id,
             tool_name=str(payload.get("tool", QuestionTool.definition.name)),
             arguments={},
-            prompts=QuestionTool.parse_prompts({"questions": cast(list[object], raw_questions)}),
+            prompts=QuestionTool.parse_prompts({"questions": raw_questions}),
         )
     return None
 
@@ -143,8 +142,7 @@ def permission_policy_for_session(
     if metadata is not None:
         persisted_runtime_config = metadata.get("runtime_config")
         if isinstance(persisted_runtime_config, dict):
-            runtime_config = cast(dict[str, object], persisted_runtime_config)
-            persisted_approval_mode = runtime_config.get("approval_mode")
+            persisted_approval_mode = persisted_runtime_config.get("approval_mode")
             parsed_approval_mode = permission_decision_or_none(persisted_approval_mode)
             if parsed_approval_mode is not None:
                 approval_mode = parsed_approval_mode

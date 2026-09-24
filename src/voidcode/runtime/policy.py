@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from ..security.redaction import (
     POLICY_DIAGNOSTIC_CHARS as _POLICY_DIAGNOSTIC_CHARS,
@@ -47,6 +47,51 @@ _ALLOWED_HOOK_SCOPES = (
     "before_compact",
 )
 _INTENT_LABEL_UNSPECIFIED = "unspecified"
+
+
+class _PolicyListSection(TypedDict, total=False):
+    """A validated ``tool_policy``/``delegation_policy`` section: declared keys only."""
+
+    default: str
+    allow: tuple[str, ...]
+    deny: tuple[str, ...]
+
+
+class _HookPolicySection(TypedDict, total=False):
+    """A validated ``hook_policy`` section: declared keys only."""
+
+    allowed_event_scopes: tuple[str, ...]
+    actions: tuple[str, ...]
+
+
+class _PromptActivationSection(TypedDict, total=False):
+    """A validated ``prompt_activation`` section: declared keys only."""
+
+    enabled: bool
+    profile_refs: tuple[str, ...]
+
+
+class RuntimePolicySnapshotPayload(TypedDict):
+    """The persisted runtime policy snapshot shape ``as_payload`` writes.
+
+    Every key is required by ``_validated_snapshot_payload``, including
+    ``created_at``, which a reader without it rejects.
+    """
+
+    schema_version: int
+    policy_version: str
+    agent_preset: str
+    agent_manifest_id: str
+    intent: Mapping[str, object]
+    tool_policy: Mapping[str, object]
+    delegation_policy: Mapping[str, object]
+    hook_policy: Mapping[str, object]
+    prompt_activation: Mapping[str, object]
+    precedence_trace: list[Mapping[str, object]]
+    diagnostics: Mapping[str, object]
+    created_at: int
+    mode: str
+    read_only: bool
 
 
 class RuntimePolicySnapshotVersionError(ValueError):
@@ -203,23 +248,21 @@ def validate_runtime_policy_config_payload(
         tool_payload = _validate_policy_list_section(
             payload["tool_policy"],
             source=f"{source}.tool_policy",
-            allowed_keys={"allow", "deny", "default"},
         )
         tool_policy = RuntimePolicyToolPolicyConfig(
-            default=_string(tool_payload.get("default")),
-            allowed=cast(tuple[str, ...], tool_payload.get("allow", ())),
-            denied=cast(tuple[str, ...], tool_payload.get("deny", ())),
+            default=tool_payload.get("default"),
+            allowed=tool_payload.get("allow", ()),
+            denied=tool_payload.get("deny", ()),
         )
     if "delegation_policy" in payload:
         delegation = _validate_policy_list_section(
             payload["delegation_policy"],
             source=f"{source}.delegation_policy",
-            allowed_keys={"allow", "deny", "default"},
         )
         delegation_policy = RuntimePolicyDelegationPolicyConfig(
-            default=_string(delegation.get("default")),
-            allowed=cast(tuple[str, ...], delegation.get("allow", ())),
-            denied=cast(tuple[str, ...], delegation.get("deny", ())),
+            default=delegation.get("default"),
+            allowed=delegation.get("allow", ()),
+            denied=delegation.get("deny", ()),
         )
     if "hook_policy" in payload:
         raw_hook_policy = _validate_hook_policy_config(
@@ -227,17 +270,14 @@ def validate_runtime_policy_config_payload(
             source=f"{source}.hook_policy",
         )
         hook_policy = RuntimePolicyHookPolicyConfig(
-            allowed_event_scopes=cast(
-                tuple[str, ...],
-                raw_hook_policy.get("allowed_event_scopes", ()),
-            ),
-            actions=cast(tuple[str, ...], raw_hook_policy.get("actions", ())),
+            allowed_event_scopes=raw_hook_policy.get("allowed_event_scopes", ()),
+            actions=raw_hook_policy.get("actions", ()),
         )
     if "prompt_activation" in payload:
         raw_prompt_activation = _validate_prompt_activation_config(payload["prompt_activation"], source=f"{source}.prompt_activation")
         prompt_activation = RuntimePolicyPromptActivationConfig(
             enabled=raw_prompt_activation.get("enabled", True) is not False,
-            profile_refs=cast(tuple[str, ...], raw_prompt_activation.get("profile_refs", ())),
+            profile_refs=raw_prompt_activation.get("profile_refs", ()),
         )
     return RuntimePolicyConfig(
         version=POLICY_VERSION,
@@ -281,32 +321,30 @@ def _validate_policy_list_section(
     value: object,
     *,
     source: str,
-    allowed_keys: set[str],
-) -> dict[str, object]:
+) -> _PolicyListSection:
     if not isinstance(value, dict):
         raise ValueError(f"{source} must be an object when provided")
     payload = value
-    _reject_unknown_keys(payload, allowed_keys=allowed_keys, source=source)
-    normalized: dict[str, object] = {}
-    for key in sorted(allowed_keys):
-        if key not in payload:
-            continue
-        if key == "default":
-            default = payload[key]
-            if not isinstance(default, str) or not default:
-                raise ValueError(f"{source}.default must be a non-empty string")
-            normalized[key] = default
-        else:
-            normalized[key] = _string_tuple(payload[key], source=f"{source}.{key}")
+    _reject_unknown_keys(payload, allowed_keys={"allow", "deny", "default"}, source=source)
+    normalized: _PolicyListSection = {}
+    if "allow" in payload:
+        normalized["allow"] = _string_tuple(payload["allow"], source=f"{source}.allow")
+    if "default" in payload:
+        default = payload["default"]
+        if not isinstance(default, str) or not default:
+            raise ValueError(f"{source}.default must be a non-empty string")
+        normalized["default"] = default
+    if "deny" in payload:
+        normalized["deny"] = _string_tuple(payload["deny"], source=f"{source}.deny")
     return normalized
 
 
-def _validate_hook_policy_config(value: object, *, source: str) -> dict[str, object]:
+def _validate_hook_policy_config(value: object, *, source: str) -> _HookPolicySection:
     if not isinstance(value, dict):
         raise ValueError(f"{source} must be an object when provided")
     payload = value
     _reject_unknown_keys(payload, allowed_keys={"allowed_event_scopes", "actions"}, source=source)
-    normalized: dict[str, object] = {}
+    normalized: _HookPolicySection = {}
     if "allowed_event_scopes" in payload:
         scopes = _string_tuple(
             payload["allowed_event_scopes"],
@@ -322,12 +360,12 @@ def _validate_hook_policy_config(value: object, *, source: str) -> dict[str, obj
     return normalized
 
 
-def _validate_prompt_activation_config(value: object, *, source: str) -> dict[str, object]:
+def _validate_prompt_activation_config(value: object, *, source: str) -> _PromptActivationSection:
     if not isinstance(value, dict):
         raise ValueError(f"{source} must be an object when provided")
     payload = value
     _reject_unknown_keys(payload, allowed_keys={"enabled", "profile_refs"}, source=source)
-    normalized: dict[str, object] = {}
+    normalized: _PromptActivationSection = {}
     if "enabled" in payload:
         enabled = payload["enabled"]
         if not isinstance(enabled, bool):
@@ -370,10 +408,7 @@ def materialize_runtime_policy_snapshot(**inputs: Any) -> RuntimePolicySnapshot:
     tool_allowed = _tool_allowed(runtime_config, policy_config)
     delegation_allowed = _delegation_allowed(
         policy_config,
-        callable_subagent_presets=cast(
-            frozenset[str] | tuple[str, ...] | None,
-            inputs.get("callable_subagent_presets"),
-        ),
+        callable_subagent_presets=inputs.get("callable_subagent_presets"),
     )
     hook_policy_request = _mapping(inputs.get("hook_policy_request"))
     hook_actions = _hook_actions(policy_config, hook_policy_request)
@@ -423,26 +458,26 @@ def runtime_policy_snapshot_from_session_metadata(metadata: dict[str, object]) -
 
 
 def _snapshot_from_payload(payload: Mapping[str, object]) -> RuntimePolicySnapshot:
-    payload = _validated_snapshot_payload(payload)
+    validated = _validated_snapshot_payload(payload)
     return RuntimePolicySnapshot(
-        agent_preset=cast(str, payload["agent_preset"]),
-        agent_manifest_id=cast(str, payload["agent_manifest_id"]),
-        intent=cast(Mapping[str, object], payload["intent"]),
-        tool_policy=cast(Mapping[str, object], payload["tool_policy"]),
-        delegation_policy=cast(Mapping[str, object], payload["delegation_policy"]),
-        hook_policy=cast(Mapping[str, object], payload["hook_policy"]),
-        prompt_activation=cast(Mapping[str, object], payload["prompt_activation"]),
-        precedence_trace=cast(Sequence[Mapping[str, object]], payload["precedence_trace"]),
-        diagnostics=cast(Mapping[str, object], payload["diagnostics"]),
-        created_at=cast(int, payload["created_at"]),
-        mode=cast(str, payload["mode"]),
-        read_only=cast(bool, payload["read_only"]),
+        agent_preset=validated["agent_preset"],
+        agent_manifest_id=validated["agent_manifest_id"],
+        intent=validated["intent"],
+        tool_policy=validated["tool_policy"],
+        delegation_policy=validated["delegation_policy"],
+        hook_policy=validated["hook_policy"],
+        prompt_activation=validated["prompt_activation"],
+        precedence_trace=validated["precedence_trace"],
+        diagnostics=validated["diagnostics"],
+        created_at=validated["created_at"],
+        mode=validated["mode"],
+        read_only=validated["read_only"],
         schema_version=POLICY_SCHEMA_VERSION,
         policy_version=POLICY_VERSION,
     )
 
 
-def _validated_snapshot_payload(payload: Mapping[str, object]) -> Mapping[str, object]:
+def _validated_snapshot_payload(payload: Mapping[str, object]) -> RuntimePolicySnapshotPayload:
     schema_version = payload.get("schema_version")
     policy_version = payload.get("policy_version")
     if schema_version != POLICY_SCHEMA_VERSION:
@@ -494,7 +529,10 @@ def _validated_snapshot_payload(payload: Mapping[str, object]) -> Mapping[str, o
         raise RuntimePolicySnapshotVersionError("runtime_policy snapshot created_at must be an integer")
     if not isinstance(payload["read_only"], bool):
         raise RuntimePolicySnapshotVersionError("runtime_policy snapshot read_only must be a boolean")
-    return payload
+    # The checks above are this reader's decode: every required field is narrowed
+    # by shape here, so the validated persisted payload is its declared payload
+    # shape from this point on.
+    return cast(RuntimePolicySnapshotPayload, payload)
 
 
 def _child_snapshot_from_parent(
