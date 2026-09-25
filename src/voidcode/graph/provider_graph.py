@@ -198,9 +198,6 @@ class ProviderGraph:
         self._pending_tool_calls_run_id: str | None = None
         self._pending_tool_calls_min_tool_result_count: int | None = None
 
-    def cancel_current_turn(self) -> None:
-        self._abort_signal.set_cancelled(True)
-
     def _priced_usage(self, usage: ProviderTokenUsage | None) -> ProviderTokenUsage | None:
         """The turn's usage with its cost attached, from the catalog rates + policy tier.
 

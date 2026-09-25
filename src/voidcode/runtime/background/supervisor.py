@@ -176,7 +176,6 @@ _BACKGROUND_TASK_DRAIN_ROUTING_FAILED = "routing-failed"
 # for queued tasks that the drain could not dispatch.
 _QUEUED_WAITING_REASON_QUEUED = "queued"
 _QUEUED_WAITING_REASON_CONCURRENCY = "concurrency_limit"
-_QUEUED_WAITING_REASON_SHUTDOWN = "blocked"
 
 
 @dataclass(frozen=True, slots=True)

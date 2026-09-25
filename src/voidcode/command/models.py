@@ -15,7 +15,6 @@ class CommandDefinition:
     description: str
     template: str
     source: CommandSource = "builtin"
-    arguments_schema: dict[str, object] | None = None
     agent: str | None = None
     mode: str | None = None
     model: str | None = None

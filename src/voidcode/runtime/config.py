@@ -393,16 +393,6 @@ def user_runtime_config_path() -> Path:
     return _user_runtime_config_path_from_env(os.environ)
 
 
-def load_global_tui_preferences(
-    env: Mapping[str, str] | None = None,
-) -> RuntimeTuiPreferences | None:
-    environment: Mapping[str, str] = os.environ if env is None else env
-    global_config = _load_user_config(environment)
-    if global_config.tui is None:
-        return None
-    return global_config.tui.preferences
-
-
 def load_global_web_settings(env: Mapping[str, str] | None = None) -> RuntimeWebSettings:
     environment: Mapping[str, str] = os.environ if env is None else env
     global_config = _load_user_config(environment)
@@ -422,14 +412,6 @@ def load_global_web_settings(env: Mapping[str, str] | None = None) -> RuntimeWeb
         provider=provider,
         provider_api_key_present=_provider_api_key_present(providers, provider),
     )
-
-
-def load_workspace_tui_preferences(workspace: Path, env: Mapping[str, str] | None = None) -> RuntimeTuiPreferences | None:
-    environment: Mapping[str, str] = os.environ if env is None else env
-    repo_local = _load_repo_local_config(workspace.resolve(), env=environment)
-    if repo_local.tui is None:
-        return None
-    return repo_local.tui.preferences
 
 
 def load_runtime_config(

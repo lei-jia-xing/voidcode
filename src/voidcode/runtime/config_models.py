@@ -76,7 +76,6 @@ type ExecutionEngineName = Literal["deterministic", "provider"]
 VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "provider")
 type RuntimeProviderContextDiagnosticMode = Literal["off", "warn", "block"]
 type RuntimeContextTransformFailureMode = Literal["ignore", "warn", "block"]
-type RuntimeAgentPresetId = str
 type RuntimeAgentPromptSource = Literal["builtin", "custom_markdown"]
 type McpTransport = Literal["stdio", "remote-http"]
 type RuntimeMcpServerScope = Literal["runtime", "session"]

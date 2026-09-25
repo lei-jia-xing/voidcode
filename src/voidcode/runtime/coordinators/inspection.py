@@ -131,7 +131,6 @@ from ..provider_inspection import (
 from ..provider_metadata import (
     ReasoningEffortCapability,
     resolve_reasoning_effort_capability,
-    tool_feedback_mode,
 )
 from ..question import PendingQuestion
 from ..review import WorkspaceReviewService
@@ -546,15 +545,6 @@ class InspectionCoordinator:
                 )
             )
         return tuple(projected)
-
-    def _session_belongs_to_workspace(self, session_id: str) -> bool:
-        try:
-            response = self._load_existing_session_if_present(session_id=session_id)
-        except ValueError:
-            return False
-        if response is None:
-            return False
-        return True
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         delegated_task = self._session_store.load_background_task_by_child_session(
@@ -1361,12 +1351,6 @@ class InspectionCoordinator:
 
     def _provider_auth_presence(self, provider_name: str | None) -> tuple[bool | None, str | None, str | None]:
         return self._provider_auth_inspector.presence(provider_name).as_tuple()
-
-    @staticmethod
-    def _tool_feedback_mode(
-        value: object,
-    ) -> object | None:
-        return tool_feedback_mode(value)
 
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
         summaries: list[AgentSummary] = []

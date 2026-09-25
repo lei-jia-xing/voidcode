@@ -250,7 +250,6 @@ from .provider_inspection import (
 )
 from .provider_metadata import (
     ReasoningEffortCapability,
-    tool_feedback_mode,
 )
 from .question import PendingQuestion, QuestionResponse
 from .resume import RuntimeResumeCoordinator
@@ -2812,12 +2811,6 @@ class VoidCodeRuntime(RuntimeSurface):
     def validate_provider_credentials(self, provider_name: str) -> ProviderValidationResult:
         return self._inspection_coordinator.validate_provider_credentials(provider_name)
 
-    @staticmethod
-    def _tool_feedback_mode(
-        value: object,
-    ) -> Literal["standard", "synthetic_user_message"] | None:
-        return tool_feedback_mode(value)
-
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
         return self._inspection_coordinator.list_agent_summaries()
 
@@ -4897,15 +4890,6 @@ class VoidCodeRuntime(RuntimeSurface):
         reason: str | None = None,
     ) -> ActiveRunInterruptResult:
         return self.interrupt_active_run(session_id, run_id=run_id, reason=reason)
-
-    def _session_belongs_to_workspace(self, session_id: str) -> bool:
-        try:
-            response = self._load_existing_session_if_present(session_id=session_id)
-        except ValueError:
-            return False
-        if response is None:
-            return False
-        return True
 
 
 @dataclass(frozen=True, slots=True)
