@@ -36,8 +36,9 @@ integration/config suites exercising them in passing, e.g.
 `tools/delegation/task.py` 76.2%, `command/models.py` 80.6%,
 `doctor/checker.py` 69.1%, `runtime/mcp.py` 39.9%):
 
-- the TUI: `src/voidcode/tui/**` (app, screens, timeline, messages) and the TUI
-  CLI wiring — all at or near zero
+- the TUI: `src/voidcode/tui/**` (app, term, region, theme, transcript,
+  statusline, composer, overlay, events, keys) and the TUI CLI wiring — the pure
+  layers carry unit suites; the `app` loop is covered by the pty integration test
 - truly near zero: `runtime/context/projection.py`, `runtime/review.py`,
   `cli/trace.py`, `tools/local_custom.py`
 - `runtime/{lsp,mcp,acp,context/rules,tool_call_preview}.py`,

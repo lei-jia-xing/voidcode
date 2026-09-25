@@ -1,4 +1,4 @@
-"""``voidcode tui``: the interactive Textual client."""
+"""``voidcode tui``: the interactive inline client."""
 
 from __future__ import annotations
 
@@ -17,14 +17,12 @@ def _handle_tui_command(args: TuiArgs) -> int:
     # CLI boundary: click.Choice(APPROVAL_MODES) guarantees a PermissionDecision literal.
     approval_mode: PermissionDecision | None = cast(PermissionDecision | None, args.approval_mode)
 
-    from ...tui import VoidCodeTUI
+    from ...tui import run_tui
 
-    app = VoidCodeTUI(workspace=workspace, approval_mode=approval_mode)
-    app.run()
-    return 0
+    return run_tui(workspace=workspace, approval_mode=approval_mode)
 
 
-@click.command(name="tui", help="Run the VoidCode interactive Textual UI.")
+@click.command(name="tui", help="Run the VoidCode interactive inline UI.")
 @workspace_option("Workspace root used to resolve relative read paths.")
 @click.option(
     "--approval-mode",

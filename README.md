@@ -91,7 +91,7 @@ are not included.
 | Command | Purpose |
 | --- | --- |
 | `voidcode run REQUEST` | Run one request through the configured provider, or through the deterministic harness when `VOIDCODE_EXECUTION_ENGINE=deterministic`. |
-| `voidcode tui` | Run the interactive Textual client. |
+| `voidcode tui` | Run the interactive inline client (native scrollback, no alternate screen). |
 | `voidcode serve` | Serve the local HTTP runtime transport. |
 | `voidcode web` | Start the web launcher (auto-assigned port; opens a browser unless `--no-open`). |
 | `voidcode acp` | Run the minimal external-facing ACP stdio JSON-RPC facade. |

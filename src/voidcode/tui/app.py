@@ -1,183 +1,261 @@
+"""Inline TUI: the app loop that owns the terminal and drives the runtime client.
+
+The renderer is split into pure layers (``term`` / ``region`` / ``transcript`` /
+``statusline`` / ``composer`` / ``overlay`` / ``events``); this module is the only
+place that knows all of them, and the only place that decides *when* a frame is
+written.
+
+Contracts implemented here:
+
+* **Commit once.** Rows of settled blocks leave the app exactly once:
+  ``Transcript.take_settled()`` -> ``LiveRegion.commit()`` ->
+  ``Terminal.commit_rows()`` (native scrollback, never repainted). One exception
+  is documented on :meth:`TuiApp._toggle_expand`: expanding a block that was
+  already committed has to re-print the settled tape, because inline scrollback
+  cannot be rewritten.
+* **Paint the tail.** Only the live tail -- unsettled blocks, the status line and
+  the composer (or the active overlay) -- enters ``Terminal.paint_frame``.
+* **Frame cadence.** At most one frame every ``MIN_RENDER_INTERVAL_MS`` (33 ms),
+  with omp's adaptive backoff (``delay >= 2 x last frame cost``, capped at
+  ``_MAX_FRAME_SECONDS``) and a deferral while the stream queue is backed up, so a
+  slow terminal receives fresh frames instead of every intermediate one.
+* **One runtime thread.** The runtime's stream API is a blocking iterator; it is
+  drained on a ``threading.Thread`` into a ``queue.Queue``. That is the old
+  Textual ``@work(thread=True)`` + ``post_message`` boundary without Textual: the
+  loop never blocks on the runtime.
+* **Alternate screen only for a fullscreen overlay.** The transcript stays on the
+  normal buffer, so terminal scrollback survives; while the alternate buffer is
+  borrowed nothing is committed and only the overlay is painted.
+
+No busy-wait: ``Terminal.read_bytes(timeout)`` with a short timeout, shorter while
+a stream is live or a frame is pending, longer when idle.
+"""
+
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterator
+import queue
+import sys
+import threading
+import time
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
+from types import MappingProxyType
+from typing import Final
 
-from rich.console import Group, RenderableType
-from rich.markdown import Markdown
-from rich.syntax import Syntax
-from rich.text import Text
-from textual import events, work
-from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Footer, Input, Static
-
-from ..runtime.config import (
-    RuntimeConfig,
-    RuntimeTuiPreferences,
-    effective_runtime_tui_preferences,
-    load_global_tui_preferences,
-    load_runtime_config,
-    load_workspace_tui_preferences,
-    merge_runtime_tui_preferences,
-)
+from ..runtime.config import RuntimeConfig, load_runtime_config
 from ..runtime.contracts import RuntimeRequest, RuntimeStreamChunk
 from ..runtime.events import EventEnvelope
 from ..runtime.permission import PermissionDecision
 from ..runtime.question import QuestionResponse
 from ..runtime.service import VoidCodeRuntime
-from .messages import (
-    ContextPanelUpdated,
-    ParentSessionEventsPolled,
-    StreamChunkReceived,
-    StreamCompleted,
-    StreamFailed,
+from ..runtime.session_metadata_helpers import session_model_identity
+from .composer import Composer, ComposerAction
+from .events import (
+    ApprovalRequest,
+    QuestionRequest,
+    SessionView,
+    ViewState,
+    format_runtime_error,
 )
-from .screens import (
-    ApprovalModal,
-    QuestionModal,
-    SessionListModal,
+from .keys import Key, KeyDecoder
+from .overlay import (
+    ApprovalOverlay,
+    Overlay,
+    OverlayOutcomeKind,
+    QuestionOverlay,
+    SessionPickerOverlay,
 )
-from .timeline import TimelineView
+from .region import LiveRegion
+from .statusline import StatusLine, StatusSegmentData
+from .term import Terminal
+from .theme import Theme, resolve_theme
+from .transcript import (
+    AssistantBlock,
+    KeyHints,
+    NoticeBlock,
+    SessionMarkerBlock,
+    ToolBlock,
+    UserBlock,
+    short_session_id,
+)
+
+__all__ = ["MIN_RENDER_INTERVAL_MS", "KeyBindingError", "TuiApp", "parse_key_binding", "run_tui"]
 
 logger = logging.getLogger(__name__)
 
-_SLASH_COMMANDS: tuple[str, ...] = ("/expand",)
+#: omp ``MIN_RENDER_INTERVAL_MS`` (``tui.ts:812``) -- the frame cadence ceiling.
+MIN_RENDER_INTERVAL_MS: Final = 1000 / 30
+_MIN_FRAME_SECONDS: Final = MIN_RENDER_INTERVAL_MS / 1000
+#: omp ``MAX_ADAPTIVE_RENDER_MS`` (``tui.ts:819``): the ~5 fps backoff floor.
+_MAX_FRAME_SECONDS: Final = 0.2
+#: omp ``OUTPUT_BACKLOG_RETRY_MS`` (``tui.ts:835``).
+_BACKLOG_RETRY_SECONDS: Final = 0.01
+#: Pending stream items above which a frame is deferred (omp defers on pending
+#: terminal bytes; our backlog is the event queue).
+_WRITE_BACKLOG_LIMIT: Final = 256
+#: Events folded per loop turn, so a flood cannot starve input or frames.
+_DRAIN_BATCH: Final = 64
+#: A lone ``ESC`` (omp ``app.interrupt``: cancel the turn, dismiss an overlay) is
+#: ambiguous until it is known not to start a sequence; ``KeyDecoder`` buffers it
+#: and resolves it on ``flush()``. This is the idle window after which the loop
+#: resolves whatever is still buffered -- the standard ESC disambiguation delay.
+_ESCAPE_FLUSH_SECONDS: Final = 0.05
+#: ``read_bytes`` timeout while a stream or a frame is pending.
+_ACTIVE_POLL_SECONDS: Final = 0.02
+#: ``read_bytes`` timeout when fully idle.
+_IDLE_POLL_SECONDS: Final = 0.25
+#: The parent-session background-notice poll (the old app's 1 s ``set_timer``).
+_BACKGROUND_POLL_SECONDS: Final = 1.0
+#: omp ``SPINNER_ADVANCE_MS`` (``loader.ts:7``).
+_SPINNER_ADVANCE_SECONDS: Final = 0.08
+#: Bounded wait for the stream thread during shutdown (it is a daemon thread).
+_SHUTDOWN_JOIN_SECONDS: Final = 2.0
+#: ``/expand`` artifact read limit, unchanged from the old app.
+_ARTIFACT_READ_LIMIT: Final = 10_000
+#: The one slash command the composer completes.
+_SLASH_COMMANDS: Final[tuple[str, ...]] = ("/expand",)
 
-# Live-only provider output: the runtime never persists these events, so their
-# sequence is the current persisted cursor rather than a fresh identity. They are
-# the client's projection of the in-flight attempt and must bypass the
-# persisted-sequence dedupe (and be retractable when the attempt restarts).
-_LIVE_ONLY_EVENT_TYPES = frozenset(
+_BACKGROUND_TERMINAL_EVENTS: Final[frozenset[str]] = frozenset(
     {
-        "graph.provider_stream",
-        "graph.tool_call_start",
-        "graph.tool_call_delta",
-        "graph.tool_call_end",
+        "runtime.background_task_completed",
+        "runtime.background_task_failed",
+        "runtime.background_task_cancelled",
+    }
+)
+
+# ---------------------------------------------------------------------------
+# Keymap
+# ---------------------------------------------------------------------------
+
+#: Actions ``config.tui.keymap`` may bind. Anything else fails loudly: the old
+#: Textual ``self.bind()`` silently accepted unknown action names.
+_ACTIONS: Final[frozenset[str]] = frozenset({"session_new", "session_resume", "tools_expand"})
+
+#: The only default binding (omp ``app.tools.expand = ctrl+o``). ``session_new``
+#: and ``session_resume`` stay unbound unless the user configures them, exactly
+#: as in the old app.
+_DEFAULT_KEYMAP: Final[Mapping[str, str]] = MappingProxyType({"tools_expand": "ctrl+o"})
+
+#: Canonical modifier order, mirroring ``keys._format_with_mods``.
+_KEY_MODIFIERS: Final[tuple[str, ...]] = ("shift", "ctrl", "alt", "super")
+#: Spellings a config may use for the canonical names the decoder emits.
+_KEY_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "esc": "escape",
+        "return": "enter",
+        "del": "delete",
+        "ins": "insert",
+        "pageup": "pageUp",
+        "pagedown": "pageDown",
+        "pgup": "pageUp",
+        "pgdn": "pageDown",
+    }
+)
+#: Named keys the decoder can emit that a binding may name.
+_KEY_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "escape",
+        "enter",
+        "tab",
+        "space",
+        "backspace",
+        "insert",
+        "delete",
+        "up",
+        "down",
+        "left",
+        "right",
+        "home",
+        "end",
+        "pageUp",
+        "pageDown",
+        "clear",
+        *(f"f{number}" for number in range(1, 13)),
     }
 )
 
 
-class _ComposerInput(Input):
-    """Composer with keyboard accessibility helpers.
+class KeyBindingError(ValueError):
+    """A ``config.tui.keymap`` entry that cannot be bound (unknown key or action)."""
 
-    - ``Tab`` completes an in-progress slash command (e.g. ``/exp`` -> ``/expand``).
-    - ``Shift+Tab`` moves focus out of the composer so the user can reach other widgets.
+
+def parse_key_binding(spec: str) -> Key:
+    """Parse ``"ctrl+o"`` into the :class:`~voidcode.tui.keys.Key` the decoder emits.
+
+    Accepts a modifier chord (``shift``/``ctrl``/``alt``/``super``), a named key
+    (``escape``, ``pageUp``, ``f5``, …) or a single printable character. Raises
+    :class:`KeyBindingError` for anything else -- the app never guesses.
     """
-
-    def on_key(self, event: events.Key) -> None:
-        if event.key == "tab":
-            if self.value.startswith("/"):
-                completed = self._complete_slash_command(self.value)
-                if completed is not None:
-                    self.value = completed
-                    self.cursor_position = len(completed)
-            event.stop()
-        elif event.key == "shift+tab":
-            event.stop()
-            self.screen.focus_next()
-
-    @staticmethod
-    def _complete_slash_command(value: str) -> str | None:
-        head, _, rest = value.partition(" ")
-        if not head.startswith("/"):
-            return None
-        candidates = [cmd for cmd in _SLASH_COMMANDS if cmd.startswith(head.lower())]
-        if len(candidates) == 1:
-            return candidates[0] + (" " + rest if rest else "")
-        return None
+    if not isinstance(spec, str):
+        raise KeyBindingError(f"key binding must be a string, got {type(spec).__name__}")
+    parts = [part.strip().lower() for part in spec.strip().split("+")]
+    if not parts or any(part == "" for part in parts):
+        raise KeyBindingError(f"invalid key binding: {spec!r}")
+    *modifiers, base = parts
+    seen: set[str] = set()
+    for modifier in modifiers:
+        if modifier not in _KEY_MODIFIERS:
+            raise KeyBindingError(f"unknown modifier {modifier!r} in key binding {spec!r}")
+        if modifier in seen:
+            raise KeyBindingError(f"duplicate modifier {modifier!r} in key binding {spec!r}")
+        seen.add(modifier)
+    name = _KEY_ALIASES.get(base, base)
+    if name not in _KEY_NAMES and not (len(name) == 1 and name.isprintable()):
+        raise KeyBindingError(f"unknown key {base!r} in key binding {spec!r}")
+    ordered = [modifier for modifier in _KEY_MODIFIERS if modifier in seen]
+    return Key("+".join([*ordered, name]))
 
 
-class VoidCodeTUI(App[int]):
-    BINDINGS = [("ctrl+o", "tools_expand", "Expand tools")]
+def parse_keymap(keymap: Mapping[str, str] | None) -> dict[str, Key]:
+    """Resolve ``config.tui.keymap`` into action -> :class:`Key`, or fail loudly.
 
-    CSS = """
-    Screen {
-        layout: vertical;
-        background: $background;
-    }
-    #main-layout {
-        height: 100%;
-        width: 100%;
-    }
-    #transcript-column {
-        width: 3fr;
-        height: 100%;
-        border-right: solid $accent;
-        background: $surface;
-    }
-    #sidebar-column {
-        width: 1fr;
-        height: 100%;
-        padding: 1;
-        background: $background;
-    }
-    #transcript-log {
-        height: 1fr;
-        border: solid $panel;
-        background: $surface;
-    }
-    .timeline-entry {
-        margin: 0 1;
-        padding: 0 1;
-    }
-    .user-message {
-        margin: 1 1 0 1;
-        padding: 0 1;
-        border-left: thick $secondary;
-        background: $panel;
-        color: $text;
-    }
-    .timeline-block {
-        margin: 0 1;
-        padding: 0;
-    }
-    .timeline-block-content {
-        padding: 0 1 1 2;
-        color: $text-muted;
-    }
-    .tool-running {
-        color: $accent;
-    }
-    .tool-pending {
-        color: $text-muted;
-    }
-    .tool-success {
-        color: $success;
-    }
-    .tool-error {
-        color: $error;
-    }
-    .thinking-block {
-        color: $text-muted;
-        border-left: tall $primary-muted;
-    }
-    .assistant-stream {
-        margin: 1 1 0 1;
-        border-left: tall $accent;
-        padding: 0 1;
-        background: $surface;
-        color: $text;
-    }
-    #current-response {
-        height: auto;
-        max-height: 12;
-        overflow-y: auto;
-        padding: 0 1;
-        color: $text-muted;
-    }
-    #composer-input {
-        dock: bottom;
-        background: $panel;
-    }
-    .sidebar-header {
-        text-style: bold;
-        color: $accent;
-        margin-top: 1;
-    }
+    The config maps a key chord to an action (``{"ctrl+o": "tools_expand"}``);
+    the resolved inverse is what the loop dispatches on.
     """
+    bindings = {action: parse_key_binding(spec) for action, spec in _DEFAULT_KEYMAP.items()}
+    for spec, action in (keymap or {}).items():
+        if action not in _ACTIONS:
+            raise KeyBindingError(f"unknown action {action!r} in config.tui.keymap (known: {', '.join(sorted(_ACTIONS))})")
+        bindings[action] = parse_key_binding(spec)
+    return bindings
+
+
+# ---------------------------------------------------------------------------
+# Stream pump items
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _StreamCompleted:
+    """The runtime iterator returned normally; ``final_status`` is its last status."""
+
+    final_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class _StreamFailed:
+    """The runtime iterator raised (transport failure)."""
+
+    error: object
+
+
+@dataclass(frozen=True, slots=True)
+class _PolledChunks:
+    """Background-notice replay fetched for ``session_id`` on the poll thread."""
+
+    session_id: str
+    chunks: tuple[RuntimeStreamChunk, ...]
+
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
+
+
+class TuiApp:
+    """One root session, one terminal, one loop."""
 
     def __init__(
         self,
@@ -185,1137 +263,799 @@ class VoidCodeTUI(App[int]):
         approval_mode: PermissionDecision | None = None,
         *,
         runtime: VoidCodeRuntime | None = None,
-        tui_preferences: RuntimeTuiPreferences | None = None,
+        keymap: Mapping[str, str] | None = None,
     ) -> None:
-        super().__init__()
-        self.workspace = workspace
-        self.approval_mode = approval_mode
-        config = load_runtime_config(workspace, approval_mode=approval_mode)
-        if runtime is None:
-            runtime = VoidCodeRuntime(workspace=workspace, config=config)
-        self.runtime = runtime
-        self.session_id: str | None = None
-        self.pending_request_id: str | None = None
-        self.pending_question_request_id: str | None = None
-        self.current_state = "Idle"
-        self._stream_active = False
-        self._session_titles: dict[str, str] = {}
-        self._current_prompt: str | None = None
-        self._global_tui_preferences = load_global_tui_preferences()
-        self._workspace_tui_preferences = load_workspace_tui_preferences(workspace)
-        self._tui_preferences = tui_preferences if tui_preferences is not None else (self._global_tui_preferences or RuntimeTuiPreferences())
-        self._pending_tool_progress: dict[str, dict[str, list[str]]] = {}
-        self._tool_display_by_call_id: dict[str, dict[str, object]] = {}
-        self._tool_content_by_call_id: dict[str, str] = {}
-        self._tool_artifact_by_call_id: dict[str, str] = {}
-        self._approval_context_by_request_id: dict[str, dict[str, object]] = {}
-        self._pending_output: list[str] = []
-        self._stream_output_buffer = ""
-        self._thinking_buffer = ""
-        self._streamed_provider_text = False
-        self._preview_flush_scheduled = False
-        self._stream_render_counter = 0
-        self._active_thinking_key: str | None = None
-        self._active_response_key: str | None = None
-        self._last_event_sequence_by_session: dict[str, int] = {}
-        self._background_event_poll_active = False
-        self._tracked_background_task_ids: set[str] = set()
-        self._background_poll_timer_scheduled = False
+        self._workspace = workspace
+        self._config: RuntimeConfig = load_runtime_config(workspace, approval_mode=approval_mode)
+        self._runtime = runtime if runtime is not None else VoidCodeRuntime(workspace=workspace, config=self._config)
+        # Fail loudly here, before the terminal is touched.
+        self._bindings = parse_keymap(keymap if keymap is not None else self._configured_keymap())
+        self._hints = KeyHints(expand=self._bindings["tools_expand"].name)
 
-        self._configure_keybindings(config)
+        self._term: Terminal | None = None
+        self._theme: Theme | None = None
+        self._view: SessionView | None = None
+        self._status: StatusLine | None = None
+        self._composer: Composer | None = None
+        self._region: LiveRegion | None = None
+        self._decoder = KeyDecoder()
 
-    def _configure_keybindings(self, config: RuntimeConfig) -> None:
-        tui_config = config.tui
-        if tui_config is not None:
-            if isinstance(tui_config.keymap, dict):
-                for k, action in tui_config.keymap.items():
-                    self.bind(k, action)
+        self._queue: queue.Queue[object] = queue.Queue()
+        self._stream_thread: threading.Thread | None = None
+        self._streaming = False
+        self._polling = False
+        self._session_id: str | None = None
+        self._tracked_tasks: set[str] = set()
+        self._next_poll_at = 0.0
 
-    def compose(self) -> ComposeResult:
-        with Horizontal(id="main-layout"):
-            with Vertical(id="transcript-column"):
-                transcript_log = TimelineView(id="transcript-log")
-                transcript_log.tooltip = "Session transcript; Tab completes /commands, Shift+Tab moves focus out of the composer"
-                yield transcript_log
-                yield Static("", id="current-response")
-                yield _ComposerInput(
-                    placeholder="Ask voidcode...",
-                    id="composer-input",
-                    tooltip=("Ask a question or type /expand <tool_call_id>. Tab completes slash commands; Shift+Tab exits the composer."),
-                )
-            with VerticalScroll(id="sidebar-column"):
-                yield Static("Status", classes="sidebar-header")
-                status_panel = Static("Idle", id="status-panel")
-                status_panel.tooltip = "Current runtime state"
-                yield status_panel
-                yield Static("Session", classes="sidebar-header")
-                session_panel = Static("None", id="session-panel")
-                session_panel.tooltip = "Active session id and prompt"
-                yield session_panel
-                yield Static("Workspace", classes="sidebar-header")
-                workspace_panel = Static("Unknown", id="workspace-panel")
-                workspace_panel.tooltip = "Workspace directory in use"
-                yield workspace_panel
-                yield Static("LSP", classes="sidebar-header")
-                lsp_panel = Static("Disabled", id="lsp-panel")
-                lsp_panel.tooltip = "Language server status"
-                yield lsp_panel
-                yield Static("Context", classes="sidebar-header")
-                context_panel = Static("Unknown", id="context-panel")
-                context_panel.tooltip = "Retained context and token budget"
-                yield context_panel
-        yield Footer()
+        self._overlay: Overlay | None = None
+        self._overlay_request_id = ""
 
-    def on_mount(self) -> None:
-        self._set_state("Idle")
-        self.query_one("#workspace-panel", Static).update(self.workspace.name)
-        self._apply_tui_preferences()
-        self._update_context_panel(None)
+        self._model = self._config.model or ""
+        self._approval_mode = self._config.approval_mode or ""
+        self._lsp_label = ""
+        self._cost_usd = 0.0
+        self._context_tokens = 0
+        #: Provider context window (0 = unknown) and the session's reasoning
+        #: effort, both refreshed outside the frame path.
+        self._context_window = 0
+        self._session_effort = ""
 
-        try:
-            lsp_state = self.runtime.current_lsp_state()
-        except Exception as exc:
-            logger.error("Failed to query LSP state: %s", exc)
-            self.query_one("#lsp-panel", Static).update("LSP err")
-        else:
-            if lsp_state.mode == "managed":
-                active_servers = [name for name, s in lsp_state.servers.items() if s.status == "running"]
-                if active_servers:
-                    self.query_one("#lsp-panel", Static).update(f"Active: {len(active_servers)}")
-                else:
-                    self.query_one("#lsp-panel", Static).update("No active servers")
-            else:
-                self.query_one("#lsp-panel", Static).update("Disabled")
+        self._quit = False
+        self._input_closed = False
+        self._cancel_requested = False
+        self._escape_deadline = 0.0
+        self._dirty = True
+        self._next_frame = 0.0
+        self._last_spinner = 0.0
 
-        self.query_one("#composer-input", Input).focus()
+    # -- construction ------------------------------------------------------
 
-    def on_unmount(self) -> None:
-        try:
-            self.runtime.__exit__(None, None, None)
-        except Exception as exc:
-            logger.error("Failed to shut down runtime: %s", exc)
+    def _configured_keymap(self) -> Mapping[str, str] | None:
+        tui_config = self._config.tui
+        return tui_config.keymap if tui_config is not None else None
 
-    def action_session_new(self) -> None:
-        self._handle_command("session.new")
-
-    def action_session_resume(self) -> None:
-        self._handle_command("session.resume")
-
-    def action_tools_expand(self) -> None:
-        timeline = self.query_one("#transcript-log", TimelineView)
-        expanded = timeline.toggle_all_blocks()
-        self.notify("Tool details expanded" if expanded else "Tool details collapsed")
-
-    def _reset_transient_view_state(self) -> None:
-        self.pending_request_id = None
-        self.pending_question_request_id = None
-        self._approval_context_by_request_id.clear()
-        self._pending_tool_progress.clear()
-        self._tool_display_by_call_id.clear()
-        self._tool_content_by_call_id.clear()
-        self._tool_artifact_by_call_id.clear()
-        self._tracked_background_task_ids.clear()
-        self._pending_output.clear()
-        self._stream_output_buffer = ""
-        self._thinking_buffer = ""
-        self._active_thinking_key = None
-        self._active_response_key = None
-
-    def _handle_command(self, command: str | None) -> None:
-        if command == "session.new":
-            self._reset_transient_view_state()
-            self.session_id = None
-            self._current_prompt = None
-            self._set_state("Idle")
-            self.query_one("#session-panel", Static).update("None")
-            self._update_context_panel(None)
-            self.query_one("#transcript-log", TimelineView).clear()
-            self.query_one("#transcript-log", TimelineView).write(Text("--- New Session ---", style="bold"))
-            self.query_one("#composer-input", Input).focus()
-        elif command == "session.resume":
-            try:
-                sessions = self.runtime.list_sessions()
-            except Exception as exc:
-                logger.error("Failed to list sessions: %s", exc)
-                self.notify("Failed to list sessions", severity="error")
-                return
-            self._session_titles = {s.session.id: s.prompt for s in sessions}
-
-            def _handle_session(session_id: str | None) -> None:
-                if session_id:
-                    self._reset_transient_view_state()
-                    self.session_id = session_id
-                    self._last_event_sequence_by_session[session_id] = 0
-
-                    short_id = session_id.removeprefix("session-")[:8]
-                    title = short_id
-                    if session_id in self._session_titles:
-                        title += f" - {self._session_titles[session_id][:30]}"
-                    self.query_one("#session-panel", Static).update(title)
-
-                    self.query_one("#transcript-log", TimelineView).clear()
-                    self.query_one("#transcript-log", TimelineView).write(Text(f"--- Resumed Session {short_id} ---", style="bold"))
-                    self._set_state("Running")
-                    self._set_stream_active(True)
-                    self._replay_stream(session_id)
-                    self.query_one("#composer-input", Input).focus()
-
-            self.push_screen(SessionListModal(sessions), _handle_session)
-
-    def _apply_tui_preferences(self) -> None:
-        merged_preferences = merge_runtime_tui_preferences(self._tui_preferences, self._workspace_tui_preferences)
-        effective = effective_runtime_tui_preferences(merged_preferences)
-        if effective.theme.name in self.available_themes:
-            self.theme = effective.theme.name
-
-        wrap = effective.reading.wrap if effective.reading.wrap is not None else True
-        self.query_one("#transcript-log", TimelineView).wrap = wrap
-
-        collapsed = effective.reading.sidebar_collapsed if effective.reading.sidebar_collapsed is not None else False
-        sidebar = self.query_one("#sidebar-column", VerticalScroll)
-        sidebar.display = not collapsed
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id != "composer-input":
-            return
-        prompt = event.value.strip()
-        if not prompt:
-            return
-
-        if prompt.startswith("/"):
-            event.input.value = ""
-            self._handle_slash_command(prompt)
-            return
-
-        event.input.value = ""
-        if self._stream_active or self.pending_request_id is not None or self.pending_question_request_id is not None:
-            if self.session_id is None:
-                event.input.value = prompt
-                self.notify("Cannot queue steering without an active session", severity="error")
-                return
-            try:
-                queued = self.runtime.queue_steering(self.session_id, prompt)
-            except Exception:
-                event.input.value = prompt
-                logger.exception("Failed to persist TUI steering message")
-                self.notify("Runtime rejected steering message", severity="error")
-                return
-            self.query_one("#transcript-log", TimelineView).write(Text(f"Steering queued ({len(queued)}): {prompt}", style="dim cyan"))
-            self.notify(f"Steering queued · {len(queued)} waiting")
-            return
-
-        self._start_prompt(prompt)
-
-    def _start_prompt(self, prompt: str) -> None:
-        self._begin_stream_render()
-        self._write_user_prompt(prompt)
-        self._set_state("Running")
-        self._set_stream_active(True)
-        self._current_prompt = prompt
-        self._streamed_provider_text = False
-        self._stream_output_buffer = ""
-        self._thinking_buffer = ""
-
-        request = RuntimeRequest(
-            prompt=prompt,
-            session_id=self.session_id,
-            allocate_session_id=self.session_id is None,
-            metadata={"provider_stream": True},
-        )
-        self._start_stream(request)
-
-    def _begin_stream_render(self) -> None:
-        self._stream_render_counter += 1
-        prefix = f"turn-{self._stream_render_counter}"
-        self._active_thinking_key = f"{prefix}-thinking"
-        self._active_response_key = f"{prefix}-response"
-
-    def _ensure_stream_render(self) -> tuple[str, str]:
-        if self._active_thinking_key is None or self._active_response_key is None:
-            self._begin_stream_render()
-        assert self._active_thinking_key is not None
-        assert self._active_response_key is not None
-        return self._active_thinking_key, self._active_response_key
-
-    def _handle_slash_command(self, raw: str) -> None:
-        parts = raw.split(maxsplit=1)
-        command = parts[0].lower()
-        arg = parts[1].strip() if len(parts) > 1 else ""
-        if command == "/expand":
-            self._handle_expand(arg)
-            return
-        self.query_one("#transcript-log", TimelineView).write(Text(f"Unknown command: {command}", style="bold red"))
-
-    def _handle_expand(self, tool_call_id: str) -> None:
-        log = self.query_one("#transcript-log", TimelineView)
-        if not tool_call_id:
-            log.write(Text("Usage: /expand <tool_call_id>", style="bold yellow"))
-            return
-
-        content: str | None = None
-        artifact_read_failed = False
-        artifact_id = self._tool_artifact_by_call_id.get(tool_call_id)
-        if artifact_id is not None and self.session_id is not None:
-            try:
-                result = self.runtime.read_tool_output_artifact(
-                    session_id=self.session_id,
-                    tool_call_id=tool_call_id,
-                    limit=10000,
-                )
-            except Exception as exc:
-                logger.error("Failed to read tool output artifact: %s", exc)
-                result = None
-                artifact_read_failed = True
-            if result is not None:
-                status = result.get("status")
-                candidate = result.get("content")
-                if status == "available" and isinstance(candidate, str):
-                    content = candidate
-
-        if content is None:
-            content = self._tool_content_by_call_id.get(tool_call_id)
-            if content is not None and artifact_read_failed:
-                log.write(Text("⚠ Artifact read failed; showing cached output", style="bold yellow"))
-
-        if content is None:
-            log.write(Text(f"✖ No stored output for tool_call_id: {tool_call_id}", style="bold red"))
-            return
-
-        if log.has_block(tool_call_id):
-            display = self._tool_display_by_call_id.get(tool_call_id)
-            path = self._display_copyable_path(display)
-            kind = self._display_field(display, "kind") or ""
-            renderable: RenderableType = Text(content)
-            if kind == "edit":
-                renderable = self._diff_renderable(content)
-            elif kind in ("read", "search"):
-                renderable = self._build_syntax_for_path(path, content) or Text(content)
-            log.update_block(tool_call_id, content=renderable)
-            log.expand_block(tool_call_id)
-            return
-
-        log.write(Text(f"── /expand {tool_call_id} ──", style="bold cyan"))
-        display = self._tool_display_by_call_id.get(tool_call_id)
-        path = self._display_copyable_path(display)
-        kind = self._display_field(display, "kind") or ""
-        if kind == "search":
-            syntax = self._build_syntax_for_path(path, content)
-            if syntax is not None:
-                log.write(syntax)
-                return
-        log.write(Text(content))
-
-    def _write_user_prompt(self, prompt: str) -> None:
-        self.query_one("#transcript-log", TimelineView).write(
-            Text(prompt),
-            classes="timeline-entry user-message",
+    def _resolve_theme(self, terminal: Terminal) -> Theme:
+        preferences = self._config.tui.preferences if self._config.tui is not None else None
+        theme_preference = preferences.theme if preferences is not None else None
+        # The runtime carries the palette name verbatim (no registry, no default);
+        # ``resolve_theme`` owns validation and the mode fallback.
+        return resolve_theme(
+            theme_preference.name if theme_preference is not None else None,
+            theme_preference.mode if theme_preference is not None and theme_preference.mode else "auto",
+            color_system=terminal.color_system,
+            glyph_preset="unicode" if terminal.unicode_ok else "ascii",
         )
 
-    def _write_question_answers(self, request_id: str, responses: tuple[QuestionResponse, ...]) -> None:
-        content = Text()
-        for index, response in enumerate(responses):
-            content.append(f"{response.header}\n", style="bold cyan")
-            content.append("; ".join(response.answers), style="green")
-            if index < len(responses) - 1:
-                content.append("\n\n")
-        self.query_one("#transcript-log", TimelineView).write_block(
-            "✓ Answered",
-            content,
-            key=f"question-answer-{request_id}",
-            collapsed=False,
-            classes="timeline-block question-answer tool-success",
+    def _setup(self, terminal: Terminal) -> None:
+        theme = self._resolve_theme(terminal)
+        width = terminal.width
+        self._theme = theme
+        self._view = SessionView(theme=theme, hints=self._hints, width=width)
+        self._status = StatusLine(theme, width)
+        self._composer = Composer(
+            theme=theme,
+            width=width,
+            placeholder="Ask voidcode...",
+            completer=self._complete_slash_command,
         )
+        self._region = LiveRegion(terminal.commit_rows, max_rows=terminal.height, paint=terminal.paint_frame)
+        self._lsp_label = self._query_lsp_label()
+        self._refresh_context_window()
 
-    def _discard_streamed_attempt(self) -> None:
-        """Retract the in-flight attempt's live projection after a provider restart.
+    def _refresh_context_window(self) -> None:
+        """Re-read the provider context window (setup, and after each turn).
 
-        The runtime keeps the retry/fallback and announces
-        ``discarded_streamed_output`` on the event because the live deltas it
-        streamed are not persisted. Clearing the buffers and the live widgets
-        leaves the surviving attempt's text as the only assistant output for the
-        turn.
+        The gauge needs a window to divide the used tokens by; the same value the
+        CLI surfaces (``provider_readiness`` -> ``context_window``). Never called
+        from the frame path: it is one guard-wrapped runtime query per turn.
         """
-        self._pending_output.clear()
-        self._stream_output_buffer = ""
-        self._streamed_provider_text = False
-        self._thinking_buffer = ""
-        log = self.query_one("#transcript-log", TimelineView)
-        if self._active_response_key is not None:
-            log.update_live(self._active_response_key, Text(""))
-        if self._active_thinking_key is not None and log.has_block(self._active_thinking_key):
-            log.update_block(self._active_thinking_key, content=Text(""))
-
-    def _write_event_line(self, event: EventEnvelope) -> None:
-        if (
-            event.event_type in {"runtime.provider_transient_retry", "runtime.provider_fallback"}
-            and event.payload.get("discarded_streamed_output") is True
-        ):
-            self._discard_streamed_attempt()
-            return
-        if event.event_type == "graph.provider_stream":
-            payload = event.payload or {}
-            if payload.get("channel") == "reasoning" and payload.get("kind") in {"delta", "content"}:
-                text = payload.get("text")
-                if isinstance(text, str) and text:
-                    self._thinking_buffer += text
-                    thinking_key, _ = self._ensure_stream_render()
-                    log = self.query_one("#transcript-log", TimelineView)
-                    thinking = Text(self._thinking_buffer, style="dim italic")
-                    if log.has_block(thinking_key):
-                        log.update_block(thinking_key, content=thinking)
-                    else:
-                        log.write_block(
-                            "◐ Thinking",
-                            thinking,
-                            key=thinking_key,
-                            collapsed=False,
-                            classes="timeline-block thinking-block",
-                        )
-                return
-            if payload.get("channel") == "text" and payload.get("kind") in {"delta", "content"}:
-                text = payload.get("text")
-                if isinstance(text, str) and text:
-                    self._streamed_provider_text = True
-                    thinking_key, _ = self._ensure_stream_render()
-                    self.query_one("#transcript-log", TimelineView).collapse_block(thinking_key)
-                    self._pending_output.append(text)
-                    self._schedule_stream_preview_flush()
-            return
-        if event.event_type not in (
-            "graph.tool_request_created",
-            "runtime.tool_started",
-            "runtime.tool_progress",
-            "runtime.tool_completed",
-            "runtime.approval_requested",
-            "runtime.failed",
-            "runtime.approval_resolved",
-            "runtime.question_requested",
-            "runtime.question_answered",
-            "runtime.background_task_idle_reminder",
-            "runtime.background_task_completed",
-            "runtime.background_task_failed",
-            "runtime.background_task_cancelled",
-            "runtime.background_task_waiting_approval",
-            "runtime.background_task_group_completed",
-            "runtime.delegated_result_available",
-        ):
-            return
-
-        payload = event.payload or {}
-        if event.event_type.startswith("runtime.background_task_") or event.event_type == "runtime.delegated_result_available":
-            self._render_background_event(event.event_type, payload, sequence=event.sequence)
-            return
-        raw_tool_name = payload.get("tool", "unknown_tool")
-        tool_name = raw_tool_name if isinstance(raw_tool_name, str) else "unknown_tool"
-        tool_call_id = payload.get("tool_call_id")
-        display = self._extract_display(payload)
-
-        if event.event_type == "graph.tool_request_created":
-            text = self._render_tool_request_line(tool_name, display)
-            log = self.query_one("#transcript-log", TimelineView)
-            if isinstance(tool_call_id, str) and tool_call_id:
-                if display is not None:
-                    self._tool_display_by_call_id[tool_call_id] = display
-                log.write_block(
-                    text.plain,
-                    self._tool_call_details(display),
-                    key=tool_call_id,
-                    classes="timeline-block tool-pending",
-                )
-            else:
-                log.write(text)
-            return
-
-        if event.event_type == "runtime.tool_started":
-            if isinstance(tool_call_id, str) and display is not None:
-                self._tool_display_by_call_id[tool_call_id] = display
-            log = self.query_one("#transcript-log", TimelineView)
-            title = self._tool_lifecycle_title("◐", tool_name, display)
-            if isinstance(tool_call_id, str) and tool_call_id:
-                if log.has_block(tool_call_id):
-                    log.update_block(tool_call_id, title=title, classes="timeline-block tool-running")
-                else:
-                    log.write_block(title, key=tool_call_id, classes="timeline-block tool-running")
-            else:
-                log.write(Text(title, style="dim"))
-            return
-
-        if event.event_type == "runtime.tool_progress":
-            self._buffer_tool_progress(payload)
-            if isinstance(tool_call_id, str):
-                self._update_tool_progress_block(tool_call_id, tool_name, display)
-            return
-
-        if event.event_type == "runtime.tool_completed":
-            self._render_tool_completed(tool_name, payload, display)
-            return
-
-        if event.event_type == "runtime.approval_requested":
-            request_id = payload.get("request_id")
-            if isinstance(request_id, str) and request_id:
-                self._approval_context_by_request_id[request_id] = payload
-            text = Text(f"⚠ Approval requested for tool: {tool_name}", style="bold yellow")
-        elif event.event_type == "runtime.approval_resolved":
-            decision = payload.get("decision", "unknown")
-            request_id = payload.get("request_id")
-            context = self._approval_context_by_request_id.pop(request_id, None) if isinstance(request_id, str) else None
-            resolved_tool = context.get("tool") if context is not None else None
-            if isinstance(resolved_tool, str) and resolved_tool:
-                text = Text(f"ℹ Approval {decision} for tool: {resolved_tool}", style="bold cyan")
-            else:
-                text = Text(f"ℹ Approval {decision}", style="bold cyan")
-        elif event.event_type == "runtime.question_requested":
-            count = payload.get("question_count", 1)
-            text = Text(f"? Agent requested input ({count})", style="bold yellow")
-        elif event.event_type == "runtime.question_answered":
-            text = Text("ℹ Answer submitted", style="bold cyan")
-        elif event.event_type == "runtime.failed":
-            diagnostics = payload.get("diagnostics")
-            summary = diagnostics.get("summary") if isinstance(diagnostics, dict) else None
-            error_msg = summary if isinstance(summary, str) else payload.get("error", "Unknown error")
-            formatted_error = self._format_runtime_error(str(error_msg))
-            text = Text(f"✖ Failed: {formatted_error}", style="bold red")
-        else:
-            text = Text(f"EVENT {event.event_type} source={event.source}", style="dim")
-
-        self.query_one("#transcript-log", TimelineView).write(text)
-
-    def _render_background_event(
-        self,
-        event_type: str,
-        payload: dict[str, object],
-        *,
-        sequence: int,
-    ) -> None:
-        log = self.query_one("#transcript-log", TimelineView)
-        task_id = payload.get("task_id")
-        task_label = task_id if isinstance(task_id, str) and task_id else "background task"
-        short_task_id = task_label.removeprefix("task-")[:12]
-        summary = payload.get("summary_output")
-        error = payload.get("error")
-        child_session_id = payload.get("child_session_id")
-
-        if event_type == "runtime.background_task_completed":
-            title = f"✓ Background completed · {short_task_id}"
-            style = "bold green"
-            body = summary if isinstance(summary, str) and summary else 'Result is available through task(operation="output").'
-        elif event_type == "runtime.background_task_failed":
-            title = f"✖ Background failed · {short_task_id}"
-            style = "bold red"
-            body = error if isinstance(error, str) and error else "Background task failed."
-        elif event_type == "runtime.background_task_cancelled":
-            title = f"■ Background cancelled · {short_task_id}"
-            style = "bold yellow"
-            body = error if isinstance(error, str) and error else "Background task was cancelled."
-        elif event_type == "runtime.background_task_waiting_approval":
-            title = f"⚠ Background waiting for approval · {short_task_id}"
-            style = "bold yellow"
-            body = "Open the child session to resolve its pending approval."
-        elif event_type == "runtime.background_task_idle_reminder":
-            title = f"◌ Background waiting · {short_task_id}"
-            style = "bold yellow"
-            reminder = payload.get("reminder")
-            body = reminder if isinstance(reminder, str) and reminder else "Delegated child session is waiting for external action."
-        elif event_type == "runtime.background_task_group_completed":
-            group_id = payload.get("parallel_group_id")
-            title = f"✓ Background group completed · {group_id or 'group'}"
-            style = "bold green"
-            body = f"Terminal tasks: {payload.get('terminal_task_count', 0)}"
-        else:
-            title = f"↳ Delegated result available · {short_task_id}"
-            style = "bold cyan"
-            body = summary if isinstance(summary, str) and summary else "Delegated result is ready to read."
-
-        if event_type in {
-            "runtime.background_task_completed",
-            "runtime.background_task_failed",
-            "runtime.background_task_cancelled",
-        } and isinstance(task_id, str):
-            self._tracked_background_task_ids.discard(task_id)
-
-        details = Text(body)
-        if isinstance(child_session_id, str) and child_session_id:
-            details.append(f"\nchild: {child_session_id}", style="dim")
-        details.append(f"\ntask: {task_label}", style="dim")
-        log.write_block(
-            title,
-            details,
-            key=f"background-event-{sequence}-{task_label}",
-            collapsed=False,
-            classes="timeline-block background-event",
-        )
-        self.notify(Text(title, style=style).plain)
-
-    def _poll_parent_session_events(self) -> None:
-        self._background_poll_timer_scheduled = False
-        if self._stream_active or self._background_event_poll_active or self.session_id is None or not self._tracked_background_task_ids:
-            if self._stream_active and self._tracked_background_task_ids:
-                self._schedule_background_event_poll()
-            return
-        self._background_event_poll_active = True
-        self._poll_parent_session_events_worker(self.session_id)
-
-    def _schedule_background_event_poll(self) -> None:
-        if self._background_poll_timer_scheduled or not self._tracked_background_task_ids:
-            return
-        self._background_poll_timer_scheduled = True
-        self.set_timer(1.0, self._poll_parent_session_events)
-
-    @work(thread=True)
-    def _poll_parent_session_events_worker(self, session_id: str) -> None:
         try:
-            last_sequence = self._last_event_sequence_by_session.get(session_id, 0)
-            replayed_chunks = tuple(self.runtime.resume_stream(session_id=session_id))
-            new_chunks = self._ordered_new_event_chunks(replayed_chunks, after_sequence=last_sequence)
-            for chunk in new_chunks:
-                event = chunk.event
-                assert event is not None
-                if event.event_type in {
-                    "runtime.background_task_completed",
-                    "runtime.background_task_failed",
-                    "runtime.background_task_cancelled",
-                }:
-                    task_id = event.payload.get("task_id")
-                    if isinstance(task_id, str):
-                        self._tracked_background_task_ids.discard(task_id)
-            if new_chunks:
-                self.post_message(ParentSessionEventsPolled(session_id, tuple(new_chunks)))
-        except Exception as exc:
-            logger.warning("Failed to poll parent session events: %s", exc)
+            readiness = self._runtime.provider_readiness(session_id=self._session_id)
+        except Exception as error:
+            logger.error("Failed to query provider readiness: %s", error)
+            return
+        window = readiness.context_window
+        if isinstance(window, int) and not isinstance(window, bool) and window > 0:
+            self._context_window = window
+
+    def _query_lsp_label(self) -> str:
+        """The status line's LSP datum (the old sidebar's fifth panel)."""
+        try:
+            state = self._runtime.current_lsp_state()
+        except Exception as error:
+            logger.error("Failed to query LSP state: %s", error)
+            return "lsp err"
+        if state.mode != "managed":
+            return "lsp off"
+        active = [name for name, server in state.servers.items() if server.status == "running"]
+        return f"lsp {len(active)}" if active else "lsp idle"
+
+    # -- entry point -------------------------------------------------------
+
+    def run(self) -> int:
+        terminal = Terminal.open()
+        self._term = terminal
+        try:
+            self._setup(terminal)
+            self._loop(terminal)
         finally:
-            self._background_event_poll_active = False
-            if self._tracked_background_task_ids:
-                self.call_from_thread(self._schedule_background_event_poll)
+            self._shutdown(terminal)
+        return 0
 
-    @staticmethod
-    def _ordered_new_event_chunks(
-        chunks: tuple[RuntimeStreamChunk, ...],
-        *,
-        after_sequence: int,
-    ) -> list[RuntimeStreamChunk]:
-        ordered: list[tuple[int, RuntimeStreamChunk]] = []
-        for chunk in chunks:
+    # -- loop --------------------------------------------------------------
+
+    def _loop(self, terminal: Terminal) -> None:
+        while not self._quit:
+            self._read_input(terminal)
+            # A closed input side ends the session once the in-flight turn and
+            # the pending frame are done; until then it keeps being serviced.
+            if self._input_closed and not self._streaming and not self._dirty and self._queue.empty():
+                return
+            self._drain_queue()
+            self._maybe_poll(time.monotonic())
+            self._maybe_render()
+
+    def _read_input(self, terminal: Terminal) -> None:
+        """Fold whatever input is available; mark the input closed at its end.
+
+        ``Terminal.has_input`` covers the "no descriptor at all" case, where a
+        blocking-read loop would spin forever instead of ending.
+        """
+        if not terminal.has_input:
+            self._input_closed = True
+            return
+        now = time.monotonic()
+        data = terminal.read_bytes(self._read_timeout(now))
+        if data:
+            self._escape_deadline = now + _ESCAPE_FLUSH_SECONDS
+            for key in self._decoder.feed(data):
+                self._handle_key(key)
+                if self._quit:
+                    return
+            return
+        if terminal.eof:
+            self._input_closed = True
+            for key in self._decoder.flush():
+                self._handle_key(key)
+            return
+        if self._escape_deadline and now >= self._escape_deadline:
+            self._escape_deadline = 0.0
+            for key in self._decoder.flush():
+                self._handle_key(key)
+
+    def _read_timeout(self, now: float) -> float:
+        """Short enough to service a pending frame, long enough to stay cheap."""
+        if self._queue.qsize() > _WRITE_BACKLOG_LIMIT:
+            # Backlogged: do not wait for input at all, drain first.
+            return 0.0
+        if self._streaming or self._dirty:
+            return _ACTIVE_POLL_SECONDS
+        timeout = _IDLE_POLL_SECONDS
+        if self._tracked_tasks and self._session_id is not None:
+            # Floor at the active timeout: a poll that is due (or overdue) must be
+            # serviced promptly, without a zero-timeout spin.
+            timeout = min(timeout, max(_ACTIVE_POLL_SECONDS, self._next_poll_at - now))
+        return timeout
+
+    def _maybe_render(self) -> None:
+        assert self._term is not None
+        now = time.monotonic()
+        if self._term.resize_pending():
+            self._apply_resize()
+        self._tick_spinner(now)
+        if not self._dirty or now < self._next_frame:
+            return
+        if self._queue.qsize() > _WRITE_BACKLOG_LIMIT:
+            # A backlog means more events are already waiting: compose one fresh
+            # frame after draining instead of painting every intermediate one.
+            self._next_frame = now + _BACKLOG_RETRY_SECONDS
+            return
+        started = time.monotonic()
+        self._render()
+        ended = time.monotonic()
+        self._dirty = False
+        self._schedule_next_frame(started, ended)
+
+    def _schedule_next_frame(self, started: float, ended: float) -> None:
+        cost = ended - started
+        interval = _MIN_FRAME_SECONDS if cost <= _MIN_FRAME_SECONDS else min(_MAX_FRAME_SECONDS, cost * 2)
+        self._next_frame = ended + interval
+
+    def _tick_spinner(self, now: float) -> None:
+        """Advance live tool spinners while a turn streams (the liveness signal)."""
+        if not self._streaming or now - self._last_spinner < _SPINNER_ADVANCE_SECONDS:
+            return
+        self._last_spinner = now
+        for block in self._view_blocks():
+            if isinstance(block, ToolBlock) and block.streaming:
+                block.spinner_frame += 1
+                self._dirty = True
+
+    def _apply_resize(self) -> None:
+        assert self._term is not None and self._view is not None
+        width = self._term.width
+        self._view.set_width(width)
+        if self._status is not None:
+            self._status.set_width(width)
+        if self._composer is not None:
+            self._composer.set_width(width)
+        if self._region is not None:
+            self._region.clear()
+        self._dirty = True
+
+    # -- frames ------------------------------------------------------------
+
+    def _render(self) -> None:
+        assert self._term is not None and self._region is not None and self._view is not None
+        if self._term.alt_screen:
+            # Alt-screen borrow: paint the overlay only, never the scrollback.
+            self._term.paint_frame(self._overlay_rows())
+            return
+        settled = self._view.transcript().take_settled()
+        if not self._term.is_tty:
+            # Off-tty the terminal is a log, not a screen: only durable rows are
+            # written (no live region, no status line, no composer, no escapes).
+            if settled:
+                self._region.commit(settled)
+            return
+        if settled:
+            self._region.commit(settled)
+            # The terminal erased the live region with the commit; drop the stale
+            # ledger too so the next frame is painted in full.
+            self._region.clear()
+        self._region.set_live(self._live_frame())
+
+    def _live_frame(self) -> Sequence[str]:
+        assert self._view is not None and self._status is not None and self._composer is not None
+        rows = list(self._view.transcript().live_rows())
+        if rows:
+            rows.append("")
+        status = self._status.render(self._status_data(self._view.view_state()))
+        if status:
+            rows.append(status)
+        rows.extend(self._overlay_rows() if self._overlay is not None else self._composer.render())
+        return rows
+
+    def _overlay_rows(self) -> list[str]:
+        assert self._term is not None
+        if self._overlay is None:
+            return []
+        rows = list(self._overlay.render(self._term.width))
+        if self._term.alt_screen and len(rows) > self._term.height:
+            # ponytail: alt-screen overlays are top-cropped (no viewport); the
+            # session picker's type-to-filter is the long-list path.
+            rows = rows[: self._term.height]
+        return rows
+
+    def _status_data(self, state: ViewState) -> StatusSegmentData:
+        window = self._context_window
+        # Thinking level: session metadata first, effective config as fallback.
+        return replace(
+            state.status,
+            model=self._model,
+            thinking=self._session_effort or self._config.reasoning_effort or "off",
+            mode=self._approval_mode,
+            path=str(self._workspace),
+            lsp=self._lsp_label,
+            cost_usd=self._cost_usd,
+            context_percent=self._context_tokens / window * 100 if window else None,
+            context_window=window,
+            context_tokens=self._context_tokens,
+        )
+
+    # -- events ------------------------------------------------------------
+
+    def _drain_queue(self) -> None:
+        for _ in range(_DRAIN_BATCH):
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                return
+            if isinstance(item, RuntimeStreamChunk):
+                self._consume_chunk(item)
+            elif isinstance(item, _PolledChunks):
+                self._consume_polled(item)
+            elif isinstance(item, _StreamCompleted):
+                self._finish_stream(item.final_status)
+            elif isinstance(item, _StreamFailed):
+                self._fail_stream(item.error)
+
+    def _consume_chunk(self, chunk: RuntimeStreamChunk) -> None:
+        assert self._view is not None
+        self._session_id = chunk.session.session.id
+        if self._cancel_requested:
+            # ``escape`` arrived before the runtime allocated the session id.
+            self._cancel_requested = False
+            self._cancel_active_run()
+        self._harvest_metadata(chunk.session.metadata)
+        if chunk.kind == "event" and chunk.event is not None:
             event = chunk.event
-            if chunk.kind == "event" and event is not None and event.sequence > after_sequence:
-                ordered.append((event.sequence, chunk))
-        ordered.sort(key=lambda item: item[0])
-        return [chunk for _sequence, chunk in ordered]
+            self._track_background_task(event)
+            if self._view.apply_event(event):
+                self._dirty = True
+            self._take_pending_overlay()
+        elif chunk.kind == "output" and chunk.output is not None:
+            self._consume_output(chunk.output)
 
-    @staticmethod
-    def _extract_display(payload: dict[str, object]) -> dict[str, object] | None:
-        raw = payload.get("display")
-        if isinstance(raw, dict):
-            return raw
-        return None
+    def _consume_output(self, output: str) -> None:
+        """The graph writes the complete answer after the provider deltas.
 
-    @staticmethod
-    def _display_field(display: dict[str, object] | None, key: str) -> str | None:
-        if display is None:
-            return None
-        value = display.get(key)
-        return value if isinstance(value, str) and value else None
-
-    @classmethod
-    def _display_copyable_path(cls, display: dict[str, object] | None) -> str | None:
-        if display is None:
-            return None
-        copyable = display.get("copyable")
-        if not isinstance(copyable, dict):
-            return None
-        path = copyable.get("path")
-        return path if isinstance(path, str) and path else None
-
-    def _render_tool_request_line(self, tool_name: str, display: dict[str, object] | None) -> Text:
-        title = self._display_field(display, "title")
-        summary = self._display_field(display, "summary")
-        if title and summary:
-            text = Text(f"▶ {title}: {summary}", style="bold blue")
-        elif summary:
-            text = Text(f"▶ {summary}", style="bold blue")
-        else:
-            text = Text(f"▶ Started tool: {tool_name}", style="bold blue")
-        path = self._display_copyable_path(display)
-        if path:
-            text.append(f"\n  {path}", style="dim")
-        command = self._display_command(display)
-        if command:
-            text.append(f"\n  $ {command}", style="cyan")
-        return text
-
-    @classmethod
-    def _tool_call_details(cls, display: dict[str, object] | None) -> Text:
-        if display is None:
-            return Text("")
-        lines: list[str] = []
-        args = display.get("args")
-        if isinstance(args, list):
-            lines.extend(str(arg) for arg in args if isinstance(arg, (str, int, float, bool)))
-        command = cls._display_command(display)
-        if command and command not in lines:
-            lines.insert(0, f"$ {command}")
-        path = cls._display_copyable_path(display)
-        if path and path not in lines:
-            lines.insert(0, path)
-        return Text("\n".join(lines), style="dim")
-
-    @classmethod
-    def _display_command(cls, display: dict[str, object] | None) -> str | None:
-        if display is None:
-            return None
-        copyable = display.get("copyable")
-        if not isinstance(copyable, dict):
-            return None
-        command = copyable.get("command")
-        return command if isinstance(command, str) and command else None
-
-    def _buffer_tool_progress(self, payload: dict[str, object]) -> None:
-        tool_call_id = payload.get("tool_call_id")
-        if not isinstance(tool_call_id, str) or not tool_call_id:
+        Render it only when no delta was streamed for this attempt, or the answer
+        would appear twice (the old app's ``_streamed_provider_text`` rule; the
+        view owns the flag so a retraction resets it in one place).
+        """
+        assert self._view is not None
+        if self._view.streamed_provider_text:
             return
-        chunk = payload.get("chunk")
-        if not isinstance(chunk, str) or not chunk:
+        self._view.transcript().add(AssistantBlock(text=output, settled=False))
+        self._dirty = True
+
+    def _consume_polled(self, item: _PolledChunks) -> None:
+        if item.session_id != self._session_id:
             return
-        stream = payload.get("stream")
-        stream_name = stream if isinstance(stream, str) and stream else "stdout"
-        streams = self._pending_tool_progress.setdefault(tool_call_id, {})
-        buffer = streams.setdefault(stream_name, [])
-        if buffer:
-            buffer[-1] = buffer[-1] + chunk
-        else:
-            buffer.append(chunk)
+        for chunk in item.chunks:
+            self._consume_chunk(chunk)
 
-    def _update_tool_progress_block(
-        self,
-        tool_call_id: str,
-        tool_name: str,
-        display: dict[str, object] | None,
-    ) -> None:
-        log = self.query_one("#transcript-log", TimelineView)
-        streams = self._pending_tool_progress.get(tool_call_id)
-        if not streams:
+    def _finish_stream(self, final_status: str) -> None:
+        assert self._view is not None
+        self._streaming = False
+        self._cancel_requested = False
+        self._view.finish_stream(final_status)
+        self._refresh_context_window()
+        self._dirty = True
+
+    def _fail_stream(self, error: object) -> None:
+        assert self._view is not None
+        self._streaming = False
+        self._cancel_requested = False
+        self._view.finish_stream("failed", error=error)
+        self._refresh_context_window()
+        self._dirty = True
+
+    def _harvest_metadata(self, metadata: Mapping[str, object] | None) -> None:
+        """Status-line data the runtime already delivers per chunk."""
+        if not metadata:
             return
-        content = self._tool_progress_renderable(streams)
-        title = self._tool_lifecycle_title("◐", tool_name, display)
-        if log.has_block(tool_call_id):
-            log.update_block(tool_call_id, title=title, content=content, classes="timeline-block tool-running")
-        else:
-            log.write_block(title, content, key=tool_call_id, classes="timeline-block tool-running")
+        model, _provider = session_model_identity(metadata)
+        if model:
+            self._model = model
+        effort = metadata.get("reasoning_effort")
+        if isinstance(effort, str) and effort:
+            self._session_effort = effort
+        conversation = metadata.get("context_window")
+        if isinstance(conversation, Mapping):
+            tokens = conversation.get("usage_tokens_after", conversation.get("usage_tokens_before"))
+            if isinstance(tokens, int) and not isinstance(tokens, bool):
+                self._context_tokens = tokens
+        usage = metadata.get("provider_usage")
+        cumulative = usage.get("cumulative") if isinstance(usage, Mapping) else None
+        cost = cumulative.get("cost_usd") if isinstance(cumulative, Mapping) else None
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            self._cost_usd = float(cost)
 
-    @staticmethod
-    def _tool_progress_renderable(streams: dict[str, list[str]]) -> Group:
-        entries: list[RenderableType] = []
-        for stream_name, chunks in streams.items():
-            body = "".join(chunks).rstrip()
-            if not body:
-                continue
-            style = "dim" if stream_name == "stdout" else "dim red"
-            entries.append(Text(f"└ {stream_name}", style=style))
-            entries.append(Text(body, style=style))
-        return Group(*entries)
-
-    def _tool_lifecycle_title(
-        self,
-        icon: str,
-        tool_name: str,
-        display: dict[str, object] | None,
-    ) -> str:
-        title = self._display_field(display, "title")
-        summary = self._display_field(display, "summary")
-        if title and summary:
-            return f"{icon} {title}: {summary}"
-        if summary:
-            return f"{icon} {summary}"
-        return f"{icon} {tool_name}"
-
-    def _render_tool_completed(
-        self,
-        tool_name: str,
-        payload: dict[str, object],
-        display: dict[str, object] | None,
-    ) -> None:
-        log = self.query_one("#transcript-log", TimelineView)
-        tool_call_id = payload.get("tool_call_id")
-        tool_call_id_str = tool_call_id if isinstance(tool_call_id, str) else None
-        if tool_name == "task" and payload.get("status") == "ok":
-            background_task_id = payload.get("task_id")
-            background_status = payload.get("status")
-            if isinstance(background_task_id, str) and background_task_id and background_status in {"queued", "running", "ok"}:
-                self._tracked_background_task_ids.add(background_task_id)
-                self._schedule_background_event_poll()
-
-        if display is None and tool_call_id_str is not None:
-            display = self._tool_display_by_call_id.get(tool_call_id_str)
-
-        status = payload.get("status")
-        is_error = status == "error"
-        header_style = "bold red" if is_error else "bold green"
-        icon = "✖" if is_error else "✔"
-
-        header = self._tool_lifecycle_title(icon, tool_name, display)
-        body: list[RenderableType] = []
-        streams = self._pending_tool_progress.pop(tool_call_id_str, None) if tool_call_id_str is not None else None
-        if streams:
-            body.append(self._tool_progress_renderable(streams))
-
-        kind = self._display_field(display, "kind") or ""
-        content = payload.get("content")
-        if isinstance(content, str) and content and tool_call_id_str is not None:
-            self._tool_content_by_call_id[tool_call_id_str] = content
-            artifact = payload.get("artifact_id")
-            if isinstance(artifact, str) and artifact:
-                self._tool_artifact_by_call_id[tool_call_id_str] = artifact
-
-        if isinstance(content, str) and content and kind != "write":
-            path = self._display_copyable_path(display)
-            if kind == "edit":
-                body.append(self._diff_renderable(content))
-            elif kind in ("read", "search"):
-                body.append(self._build_syntax_for_path(path, content) or self._content_preview(content, tool_call_id_str))
-            else:
-                body.append(self._content_preview(content, tool_call_id_str))
-
-        rendered_body: RenderableType = Group(*body)
-        if tool_call_id_str is not None:
-            if log.has_block(tool_call_id_str):
-                log.update_block(
-                    tool_call_id_str,
-                    title=header,
-                    content=rendered_body,
-                    classes=f"timeline-block tool-{'error' if is_error else 'success'}",
-                )
-            else:
-                log.write_block(header, rendered_body, key=tool_call_id_str, classes=f"timeline-block tool-{'error' if is_error else 'success'}")
-        else:
-            log.write(Text(header, style=header_style))
-            for renderable in body:
-                log.write(renderable)
-
-    @staticmethod
-    def _build_syntax_for_path(path: str | None, content: str) -> Syntax | None:
-        if not path:
-            return None
-        try:
-            lexer = Syntax.guess_lexer(path, code=content)
-        except Exception:
-            return None
-        try:
-            return Syntax(content, lexer, line_numbers=True, theme="monokai")
-        except Exception:
-            return None
-
-    @staticmethod
-    def _diff_renderable(content: str) -> Text:
-        lines = content.splitlines()
-        if not any(line.startswith(("+++", "---", "@@")) for line in lines):
-            return Text(content)
-        text = Text()
-        for line in lines:
-            if line.startswith("+++"):
-                text.append(line + "\n", style="bold green")
-            elif line.startswith("---"):
-                text.append(line + "\n", style="bold red")
-            elif line.startswith("+"):
-                text.append(line + "\n", style="green")
-            elif line.startswith("-"):
-                text.append(line + "\n", style="red")
-            elif line.startswith("@@"):
-                text.append(line + "\n", style="blue")
-            else:
-                text.append(line + "\n")
-        return text
-
-    @staticmethod
-    def _content_preview(
-        content: str,
-        tool_call_id: str | None,
-        *,
-        max_lines: int = 10,
-        preview_head_lines: int = 5,
-    ) -> Text:
-        lines = content.splitlines()
-        if len(lines) <= max_lines:
-            return Text(content)
-        head = "\n".join(lines[:preview_head_lines])
-        remaining = len(lines) - preview_head_lines
-        hint = f"\n… {remaining} more lines"
-        if tool_call_id:
-            hint += f" · Ctrl+O or /expand {tool_call_id}"
-        text = Text(head)
-        text.append(hint, style="dim")
-        return text
-
-    @staticmethod
-    def _format_runtime_error(error: object) -> str:
-        if not isinstance(error, str):
-            return "Unknown error"
-        cleaned = error.removeprefix("Error: ").strip()
-        for prefix in ("Runtime failed:", "runtime failed:"):
-            if cleaned.startswith(prefix):
-                cleaned = cleaned[len(prefix) :].strip()
-                break
-        return cleaned or error
-
-    @staticmethod
-    def _context_int_value(context_window: dict[str, object], key: str) -> int | None:
-        value = context_window.get(key)
-        return value if isinstance(value, int) else None
-
-    @staticmethod
-    def _context_str_value(context_window: dict[str, object], key: str, default: str = "unknown") -> str:
-        value = context_window.get(key, default)
-        return value if isinstance(value, str) else default
-
-    def _context_panel_label(self, metadata: dict[str, object] | None) -> str:
-        if not metadata or "context_window" not in metadata:
-            return "Unknown"
-
-        cw = metadata["context_window"]
-        if not isinstance(cw, dict):
-            return "Unknown"
-        context_window = cw
-
-        retained = self._context_int_value(context_window, "retained_tool_result_count")
-        text = f"{retained} results" if retained is not None else "unknown results"
-
-        if self._context_int_value(context_window, "compacted") or context_window.get("compacted") is True:
-            reason = self._context_str_value(context_window, "compaction_reason")
-            text += f"\n[Compacted: {reason}]"
-
-        return text
-
-    def _update_context_panel(self, metadata: dict[str, object] | None) -> None:
-        self.query_one("#context-panel", Static).update(self._context_panel_label(metadata))
-
-    @work(thread=True)
-    def _update_context_panel_worker(self, metadata: dict[str, object] | None) -> None:
-        label = self._context_panel_label(metadata)
-        self.post_message(ContextPanelUpdated(label))
-
-    def on_context_panel_updated(self, message: ContextPanelUpdated) -> None:
-        # Async updates may arrive while a modal is the active screen. Sidebar
-        # widgets belong to the root screen, so never resolve them through the
-        # current-screen App.query_one() path.
-        if not self.screen_stack:
+    def _track_background_task(self, event: EventEnvelope) -> None:
+        payload = event.payload or {}
+        task_id = payload.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
             return
-        self.screen_stack[0].query_one("#context-panel", Static).update(message.label)
+        if event.event_type == "runtime.tool_completed" and payload.get("tool") == "task":
+            if payload.get("status") in {"ok", "queued", "running"}:
+                self._tracked_tasks.add(task_id)
+        elif event.event_type in _BACKGROUND_TERMINAL_EVENTS:
+            self._tracked_tasks.discard(task_id)
 
-    def _schedule_stream_preview_flush(self) -> None:
-        if self._preview_flush_scheduled:
-            return
-        self._preview_flush_scheduled = True
-        self.set_timer(0.1, self._flush_stream_preview)
+    # -- runtime threads ---------------------------------------------------
 
-    def _flush_stream_preview(self) -> None:
-        self._preview_flush_scheduled = False
-        if not self._pending_output:
-            return
-        output = "".join(self._pending_output)
-        self._pending_output.clear()
-        self._stream_output_buffer += output
-        _, response_key = self._ensure_stream_render()
-        log = self.query_one("#transcript-log", TimelineView)
-        preview = Text(self._stream_output_buffer)
-        if not log.update_live(response_key, preview):
-            log.write_live(response_key, preview)
-
-    def _set_state(self, state: str) -> None:
-        self.current_state = state
-        self.query_one("#status-panel", Static).update(state)
-        current = self.query_one("#current-response", Static)
-        if state == "Idle":
-            current.update("")
-        elif state == "Running":
-            current.update("Working...")
-        elif state == "Waiting approval":
-            current.update("Waiting for approval...")
-        elif state == "Waiting input":
-            current.update("Waiting for your answer...")
-        elif state == "Completed":
-            current.update("")
-        elif state == "Failed":
-            current.update("Stream failed.")
-
-    def _set_stream_active(self, active: bool) -> None:
-        self._stream_active = active
-        self.query_one("#composer-input", Input).disabled = False
+    def _start_stream(self, open_stream: Callable[[], Iterator[RuntimeStreamChunk]]) -> None:
+        self._streaming = True
+        self._stream_thread = threading.Thread(target=self._pump_stream, args=(open_stream,), name="voidcode-tui-stream", daemon=True)
+        self._stream_thread.start()
 
     def _pump_stream(self, open_stream: Callable[[], Iterator[RuntimeStreamChunk]]) -> None:
+        """Drain one blocking runtime iterator into the queue (worker thread)."""
         last_status = "Idle"
         saw_chunk = False
         try:
             for chunk in open_stream():
                 saw_chunk = True
                 last_status = chunk.session.status
-                self.post_message(StreamChunkReceived(chunk))
+                self._queue.put(chunk)
             if not saw_chunk:
                 raise ValueError("runtime stream emitted no chunks")
-            self.post_message(StreamCompleted(last_status))
         except Exception as error:
-            self.post_message(StreamFailed(error))
+            self._queue.put(_StreamFailed(error))
+            return
+        self._queue.put(_StreamCompleted(last_status))
 
-    @work(thread=True)
-    def _replay_stream(self, session_id: str) -> None:
-        self._pump_stream(lambda: self.runtime.resume_stream(session_id=session_id))
+    def _maybe_poll(self, now: float) -> None:
+        """Replay the parent session's tail while idle with tracked background work.
 
-    @work(thread=True)
-    def _start_stream(self, request: RuntimeRequest) -> None:
-        self._pump_stream(lambda: self.runtime.run_stream(request))
+        Background/delegated notices are persisted events on the *parent* session
+        and the runtime has no subscription, so an idle client has to ask -- this
+        is the old app's 1 s poll, ported. The view's sequence dedupe drops the
+        events already applied.
+        """
+        if self._polling or self._streaming or self._session_id is None or not self._tracked_tasks:
+            return
+        if now < self._next_poll_at:
+            return
+        self._polling = True
+        self._next_poll_at = now + _BACKGROUND_POLL_SECONDS
+        session_id = self._session_id
+        threading.Thread(target=self._poll_worker, args=(session_id,), name="voidcode-tui-poll", daemon=True).start()
 
-    @work(thread=True)
-    def _resume_stream(self, session_id: str, request_id: str, decision: Literal["allow", "deny"]) -> None:
-        self._pump_stream(
-            lambda: self.runtime.resume_stream(
+    def _poll_worker(self, session_id: str) -> None:
+        try:
+            chunks = tuple(self._runtime.resume_stream(session_id=session_id))
+        except Exception as error:
+            logger.warning("Failed to poll parent session events: %s", error)
+        else:
+            self._queue.put(_PolledChunks(session_id, chunks))
+        finally:
+            self._polling = False
+
+    # -- keys --------------------------------------------------------------
+
+    def _handle_key(self, key: Key) -> None:
+        if self._overlay is not None:
+            self._handle_overlay_key(key)
+            return
+        for action, binding in self._bindings.items():
+            if key.name == binding.name:
+                self._run_action(action)
+                return
+        assert self._composer is not None
+        outcome = self._composer.handle_key(key)
+        if outcome.action is ComposerAction.SUBMIT:
+            self._submit(outcome.text)
+        elif outcome.action is ComposerAction.CANCEL_TURN:
+            self._cancel_turn()
+        elif outcome.action is ComposerAction.INTERRUPT:
+            self._quit = True
+        # Any key may have moved the cursor or changed the draft/completion; the
+        # frame diff makes an unchanged repaint free.
+        self._dirty = True
+
+    def _run_action(self, action: str) -> None:
+        if action == "tools_expand":
+            self._toggle_expand()
+        elif action == "session_new":
+            self._command_session_new()
+        else:
+            self._command_session_resume()
+
+    def _handle_overlay_key(self, key: Key) -> None:
+        overlay = self._overlay
+        assert overlay is not None
+        outcome = overlay.handle_key(key)
+        if outcome.kind is OverlayOutcomeKind.PENDING:
+            self._dirty = True
+            return
+        if isinstance(overlay, ApprovalOverlay):
+            # Every dismissal path (``escape``, a cancel outcome) denies: the old
+            # modal bound escape to deny and treated a ``None`` dismissal as deny.
+            decision = "allow" if outcome.kind is OverlayOutcomeKind.DONE and outcome.payload == "allow" else "deny"
+            request_id = self._overlay_request_id
+            self._close_overlay()
+            self._resolve_approval(request_id, decision)
+        elif isinstance(overlay, QuestionOverlay):
+            payload = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            request_id = self._overlay_request_id
+            self._close_overlay()
+            if isinstance(payload, tuple):
+                self._answer_question(request_id, payload)
+        else:
+            session_id = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if isinstance(session_id, str) and session_id:
+                self._open_resumed_session(session_id)
+
+    # -- flows -------------------------------------------------------------
+
+    def _submit(self, text: str) -> None:
+        prompt = text.strip()
+        if not prompt:
+            return
+        if prompt.startswith("/"):
+            self._slash_command(prompt)
+            return
+        if self._streaming or self._overlay is not None:
+            self._steer(prompt)
+            return
+        self._start_prompt(prompt)
+
+    def _start_prompt(self, prompt: str) -> None:
+        assert self._view is not None
+        self._view.transcript().add(UserBlock(text=prompt))
+        request = RuntimeRequest(
+            prompt=prompt,
+            session_id=self._session_id,
+            allocate_session_id=self._session_id is None,
+            metadata={"provider_stream": True},
+        )
+        self._start_stream(lambda: self._runtime.run_stream(request))
+        self._dirty = True
+
+    def _steer(self, prompt: str) -> None:
+        if self._session_id is None:
+            self._notice("✖ Cannot queue steering without an active session")
+            return
+        try:
+            queued = self._runtime.queue_steering(self._session_id, prompt)
+        except Exception as error:
+            logger.exception("Failed to persist TUI steering message")
+            self._notice(f"✖ Runtime rejected steering message: {format_runtime_error(error)}")
+            return
+        self._notice(f"↳ Steering queued ({len(queued)}): {prompt}")
+
+    def _resolve_approval(self, request_id: str, decision: str) -> None:
+        assert self._view is not None
+        self._view.resolve_overlay(request_id)
+        if self._session_id is None:
+            self._notice("✖ Approval cannot be answered without a session")
+            return
+        session_id = self._session_id
+        self._start_stream(
+            lambda: self._runtime.resume_stream(
                 session_id=session_id,
                 approval_request_id=request_id,
-                approval_decision=decision,
+                approval_decision="allow" if decision == "allow" else "deny",
             )
         )
+        self._dirty = True
 
-    @work(thread=True)
-    def _answer_question_stream(
-        self,
-        session_id: str,
-        request_id: str,
-        responses: tuple[QuestionResponse, ...],
-    ) -> None:
-        self._pump_stream(
-            lambda: self.runtime.answer_question_stream(
-                session_id,
+    def _answer_question(self, request_id: str, payload: tuple[tuple[str, tuple[str, ...]], ...]) -> None:
+        assert self._view is not None
+        self._view.resolve_overlay(request_id)
+        responses = tuple(QuestionResponse(header=header, answers=tuple(answers)) for header, answers in payload)
+        if self._session_id is None:
+            self._notice("✖ Question cannot be answered without a session")
+            return
+        session_id = self._session_id
+        self._start_stream(
+            lambda: self._runtime.answer_question_stream(
+                session_id=session_id,
                 question_request_id=request_id,
                 responses=responses,
             )
         )
+        self._dirty = True
 
-    def on_stream_chunk_received(self, message: StreamChunkReceived) -> None:
-        chunk = message.chunk
-        self.session_id = chunk.session.session.id
+    def _command_session_new(self) -> None:
+        assert self._view is not None
+        self._view.reset_for_new_session()
+        self._view.transcript().add(SessionMarkerBlock(label="New Session"))
+        self._session_id = None
+        self._model = self._config.model or ""
+        self._session_effort = ""
+        self._cost_usd = 0.0
+        self._context_tokens = 0
+        self._tracked_tasks.clear()
+        self._next_poll_at = 0.0
+        self._dirty = True
 
-        if chunk.session.metadata:
-            self._update_context_panel_worker(chunk.session.metadata)
-
-        if chunk.kind == "event" and chunk.event is not None:
-            event_sequence = chunk.event.sequence
-            # Live-only deltas share the persisted cursor by contract, so the
-            # sequence dedupe (which exists for replayed persisted events) must
-            # not swallow them.
-            if event_sequence > 0 and chunk.event.event_type not in _LIVE_ONLY_EVENT_TYPES:
-                last_sequence = self._last_event_sequence_by_session.get(self.session_id, 0)
-                if event_sequence <= last_sequence:
-                    return
-                self._last_event_sequence_by_session[self.session_id] = event_sequence
-            self._flush_stream_preview()
-            if self.session_id:
-                short_id = self.session_id.removeprefix("session-")[:8]
-                title = short_id
-                if self.session_id in self._session_titles:
-                    title += f" - {self._session_titles[self.session_id][:30]}"
-                elif self._current_prompt:
-                    title += f" - {self._current_prompt[:30]}"
-                self.query_one("#session-panel", Static).update(title)
-
-            event = chunk.event
-            self._write_event_line(event)
-
-            if chunk.session.status == "waiting" and event.event_type == "runtime.approval_requested":
-                payload = event.payload or {}
-                request_id = payload.get("request_id")
-                self.pending_request_id = request_id if isinstance(request_id, str) and request_id else None
-                self._set_state("Waiting approval")
-                self._set_stream_active(False)
-
-                def _handle_decision(decision: Literal["allow", "deny"] | None) -> None:
-                    if decision is None:
-                        decision = "deny"
-                    if self.session_id is None or self.pending_request_id is None:
-                        return
-                    request_id = self.pending_request_id
-                    self.pending_request_id = None
-                    self._set_state("Running")
-                    self._set_stream_active(True)
-                    self._resume_stream(self.session_id, request_id, decision)
-
-                self.push_screen(ApprovalModal(event), _handle_decision)
-                return
-
-            if chunk.session.status == "waiting" and event.event_type == "runtime.question_requested":
-                payload = event.payload or {}
-                request_id = payload.get("request_id")
-                self.pending_question_request_id = request_id if isinstance(request_id, str) and request_id else None
-                self._set_state("Waiting input")
-                self._set_stream_active(False)
-
-                def _handle_answers(responses: tuple[QuestionResponse, ...] | None) -> None:
-                    if responses is None or self.session_id is None or self.pending_question_request_id is None:
-                        return
-                    question_request_id = self.pending_question_request_id
-                    self._write_question_answers(question_request_id, responses)
-                    self.pending_question_request_id = None
-                    self._set_state("Running")
-                    self._set_stream_active(True)
-                    self._answer_question_stream(self.session_id, question_request_id, responses)
-
-                self.push_screen(QuestionModal(event), _handle_answers)
-                return
-
-            if event.event_type == "runtime.failed":
-                self._set_state("Failed")
-            elif chunk.session.status == "running":
-                self._set_state("Running")
-            elif chunk.session.status == "completed":
-                self._set_state("Completed")
-
-        elif chunk.kind == "output" and chunk.output is not None:
-            # The graph emits the complete final answer after provider deltas.
-            # Do not append it a second time when we already rendered deltas.
-            if not self._streamed_provider_text:
-                self._pending_output.append(chunk.output)
-                self._schedule_stream_preview_flush()
-
-    def on_parent_session_events_polled(self, message: ParentSessionEventsPolled) -> None:
-        if self.session_id != message.session_id:
+    def _command_session_resume(self) -> None:
+        try:
+            sessions = self._runtime.list_sessions()
+        except Exception as error:
+            logger.error("Failed to list sessions: %s", error)
+            self._notice(f"✖ Failed to list sessions: {format_runtime_error(error)}")
             return
-        for chunk in message.chunks:
-            self.on_stream_chunk_received(StreamChunkReceived(chunk))
+        entries = [(summary.session.id, summary.prompt) for summary in sessions]
+        self._overlay = SessionPickerOverlay(sessions=entries, theme=self._theme)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._enter_alt_screen()
+        self._dirty = True
 
-    def on_stream_completed(self, message: StreamCompleted) -> None:
-        self._flush_stream_preview()
-        if message.final_status == "waiting":
-            # The waiting chunk has already updated the underlying screen and
-            # opened the approval modal. Do not query main-screen widgets while
-            # that modal is the active screen.
+    def _open_resumed_session(self, session_id: str) -> None:
+        assert self._view is not None
+        self._view.reset_for_new_session()
+        self._session_id = session_id
+        self._session_effort = ""
+        self._tracked_tasks.clear()
+        self._next_poll_at = 0.0
+        short_id = short_session_id(session_id)
+        self._view.transcript().add(SessionMarkerBlock(label=f"Resumed Session {short_id}"))
+        self._start_stream(lambda: self._runtime.resume_stream(session_id=session_id))
+        self._dirty = True
+
+    def _cancel_turn(self) -> None:
+        """``escape``: interrupt the active run through the runtime's cancel surface."""
+        if not self._streaming:
             return
-        if message.final_status == "failed":
-            self._set_state("Failed")
+        if self._session_id is None:
+            # The runtime allocates the session id and only the first chunk carries
+            # it: remember the press instead of dropping it.
+            self._cancel_requested = True
+            self._notice("■ Turn cancel requested")
+            return
+        self._cancel_active_run()
+
+    def _cancel_active_run(self) -> None:
+        assert self._session_id is not None
+        try:
+            result = self._runtime.cancel_session(self._session_id, reason="tui_turn_cancel")
+        except Exception as error:
+            logger.error("Failed to cancel the active run: %s", error)
+            self._notice(f"✖ Cancel failed: {format_runtime_error(error)}")
+            return
+        self._notice("■ Turn cancel requested" if result.interrupted else "■ No active run to cancel")
+
+    # -- slash commands ----------------------------------------------------
+
+    def _complete_slash_command(self, word: str) -> Sequence[str]:
+        if not word.startswith("/"):
+            return ()
+        lowered = word.lower()
+        return [command for command in _SLASH_COMMANDS if command.startswith(lowered)]
+
+    def _slash_command(self, raw: str) -> None:
+        command, _, argument = raw.partition(" ")
+        if command.lower() == "/expand":
+            self._expand(argument.strip())
+            return
+        self._notice(f"✖ Unknown command: {command}")
+
+    def _expand(self, tool_call_id: str) -> None:
+        """``/expand <tool_call_id>``: artifact first, cached content second."""
+        assert self._view is not None
+        if not tool_call_id:
+            self._view.expand_tool("", "")
+            self._dirty = True
+            return
+        content: str | None = None
+        artifact_failed = False
+        artifact_id = self._view.pending_tool_artifact(tool_call_id)
+        if artifact_id is not None and self._session_id is not None:
+            result: Mapping[str, object] | None
+            try:
+                result = self._runtime.read_tool_output_artifact(
+                    session_id=self._session_id,
+                    tool_call_id=tool_call_id,
+                    limit=_ARTIFACT_READ_LIMIT,
+                )
+            except Exception as error:
+                logger.error("Failed to read tool output artifact: %s", error)
+                artifact_failed = True
+                result = None
+            if isinstance(result, Mapping) and result.get("status") == "available":
+                candidate = result.get("content")
+                if isinstance(candidate, str):
+                    content = candidate
+        if content is None:
+            content = self._view.tool_content(tool_call_id)
+            if content is not None and artifact_failed:
+                self._notice("⚠ Artifact read failed; showing cached output")
+        if content is None:
+            self._notice(f"✖ No stored output for tool_call_id: {tool_call_id}")
+            return
+        self._view.expand_tool(tool_call_id, content)
+        self._rewrite_settled()
+
+    def _toggle_expand(self) -> None:
+        """``tools_expand``: expand or collapse every block.
+
+        Expanding a block that was already committed rewrites rows that live in
+        native scrollback, which cannot be rewritten: the settled tape is printed
+        once more, expanded (see :meth:`_rewrite_settled`).
+        """
+        assert self._view is not None
+        blocks = self._view.transcript().blocks
+        if not blocks:
+            return
+        self._view.transcript().set_expanded(not all(block.expanded for block in blocks))
+        self._rewrite_settled()
+
+    def _rewrite_settled(self) -> None:
+        """Re-print the settled tape after a change inside the committed prefix.
+
+        Inline scrollback cannot be rewritten, and ``take_settled``'s row cursor
+        cannot see an edit that kept the total length: without the rewind it would
+        hand out a misaligned suffix and commit garbage rows.
+        """
+        assert self._view is not None
+        self._view.transcript().rewind()
+        self._dirty = True
+
+    def _notice(self, text: str) -> None:
+        assert self._view is not None
+        self._view.transcript().add(NoticeBlock(text=text))
+        self._dirty = True
+
+    # -- overlays ----------------------------------------------------------
+
+    def _take_pending_overlay(self) -> None:
+        assert self._view is not None
+        if self._overlay is not None:
+            return
+        pending = self._view.take_pending_overlay()
+        if pending is None:
+            return
+        if isinstance(pending, ApprovalRequest):
+            self._overlay = ApprovalOverlay(
+                tool=pending.tool,
+                target=pending.target,
+                reason=pending.reason,
+                arguments=pending.arguments,
+                theme=self._theme,
+            )
+        elif isinstance(pending, QuestionRequest):
+            self._overlay = QuestionOverlay(questions=pending.questions, theme=self._theme)
         else:
-            if self._stream_output_buffer and self._active_response_key is not None:
-                log = self.query_one("#transcript-log", TimelineView)
-                log.update_live(
-                    self._active_response_key,
-                    Markdown(self._stream_output_buffer),
-                )
-                log.finish_live(self._active_response_key)
-            if self._thinking_buffer and self._active_thinking_key is not None:
-                log = self.query_one("#transcript-log", TimelineView)
-                log.update_block(
-                    self._active_thinking_key,
-                    title="Thinking",
-                    content=Text(self._thinking_buffer, style="dim italic"),
-                    classes="timeline-block thinking-block",
-                )
-                log.collapse_block(self._active_thinking_key)
-            self._stream_output_buffer = ""
-            self._thinking_buffer = ""
-            self._active_thinking_key = None
-            self._active_response_key = None
-            self._set_state("Idle")
-        self._set_stream_active(False)
-        self.query_one("#composer-input", Input).focus()
+            return
+        self._overlay_request_id = pending.request_id
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._enter_alt_screen()
+        self._dirty = True
 
-    def on_stream_failed(self, message: StreamFailed) -> None:
-        self._flush_stream_preview()
-        self.query_one("#transcript-log", TimelineView).write(Text(f"Error: {self._format_runtime_error(message.error)}", style="bold red"))
-        self.pending_request_id = None
-        self.pending_question_request_id = None
-        self._set_state("Failed")
-        self._set_stream_active(False)
-        self.query_one("#composer-input", Input).focus()
+    def _enter_alt_screen(self) -> None:
+        assert self._term is not None and self._region is not None
+        if self._term.alt_screen or self._overlay is None:
+            return
+        if not self._overlay.wants_fullscreen(self._term.width, self._term.height):
+            return
+        # The live rows must not leak into the alternate buffer.
+        self._region.clear()
+        self._term.enter_alt_screen()
+
+    def _close_overlay(self) -> None:
+        self._overlay = None
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(True)
+        if self._term is not None and self._term.alt_screen:
+            self._term.leave_alt_screen()
+            if self._region is not None:
+                self._region.clear()
+        # An approval/question that arrived while this overlay owned the keyboard
+        # is still pending: open it now instead of leaving the turn stuck.
+        self._take_pending_overlay()
+        self._dirty = True
+
+    # -- helpers -----------------------------------------------------------
+
+    def _view_blocks(self) -> Sequence[object]:
+        if self._view is None:
+            return ()
+        return self._view.transcript().blocks
+
+    def _shutdown(self, terminal: Terminal) -> None:
+        if self._streaming and self._session_id is not None:
+            try:
+                self._runtime.cancel_session(self._session_id, reason="tui_shutdown")
+            except Exception as error:
+                logger.warning("Failed to cancel the active run on shutdown: %s", error)
+        thread = self._stream_thread
+        if thread is not None and thread.is_alive():
+            thread.join(_SHUTDOWN_JOIN_SECONDS)
+        try:
+            self._runtime.__exit__(None, None, None)
+        except Exception as error:
+            logger.error("Failed to shut down runtime: %s", error)
+        finally:
+            terminal.close()
+
+
+def run_tui(
+    *,
+    workspace: Path,
+    approval_mode: PermissionDecision | None = None,
+    runtime: VoidCodeRuntime | None = None,
+    keymap: Mapping[str, str] | None = None,
+) -> int:
+    """Run the inline TUI until the user exits; returns the process exit code."""
+    try:
+        app = TuiApp(
+            workspace,
+            approval_mode,
+            runtime=runtime,
+            keymap=keymap,
+        )
+    except KeyBindingError as error:
+        print(f"voidcode tui: {error}", file=sys.stderr)
+        return 2
+    return app.run()
