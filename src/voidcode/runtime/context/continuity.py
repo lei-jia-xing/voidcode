@@ -14,7 +14,14 @@ from .window import RuntimeContextSegment
 # relationship is documented here instead of being asserted mechanically
 # because these keys are deliberately exempted from integrity checking while
 # RUNTIME_STATE_METADATA_KEYS describes the full writable key space.
-_RECOVERABLE_RUNTIME_CONTEXT_KEYS = frozenset({"context_projection", "context_projection_summary"})
+#
+# ``reminders`` joins them for the opposite ownership reason: the per-call
+# reminder counters are advanced inside the run loop after the iteration
+# checkpoint was captured, so a checkpoint taken earlier in the same turn would
+# otherwise mismatch the stored row and reject a legitimate resume. The stored
+# row is authoritative for these counters (the checkpoint only carries whatever
+# the session held when it was written).
+_RECOVERABLE_RUNTIME_CONTEXT_KEYS = frozenset({"context_projection", "context_projection_summary", "reminders"})
 _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS = frozenset({"context_window"})
 # Runtime-owned interaction queue (steer / follow-up) lives in session metadata
 # and is delivered at the next provider turn. It is not part of the

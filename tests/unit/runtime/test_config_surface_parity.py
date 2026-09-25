@@ -296,6 +296,12 @@ _HAND_WRITTEN_CORPUS: list[tuple[str, dict[str, object]]] = [
     ("context.transform_policy_bad", {"context_window": {"context_transform_failure_policy": "x"}}),
     ("context.threshold_zero", {"context_window": {"provider_context_oversized_feedback_chars": 0}}),
     ("context.unknown_key", {"context_window": {"nope": 1}}),
+    ("context.compaction_threshold_zero", {"context_window": {"compaction": {"threshold_tokens": 0}}}),
+    (
+        "context.compaction_ok",
+        {"context_window": {"compaction": {"threshold_tokens": 9000, "keep_recent_tool_tokens": 500}}},
+    ),
+    ("context.compaction_unknown_key", {"context_window": {"compaction": {"nope": 1}}}),
     # --- lsp ---------------------------------------------------------------
     ("lsp.server_unknown_preset", {"lsp": {"servers": {"s": {"preset": "nope"}}}}),
     ("lsp.server_command_empty", {"lsp": {"servers": {"s": {"command": []}}}}),
@@ -321,6 +327,14 @@ _HAND_WRITTEN_CORPUS: list[tuple[str, dict[str, object]]] = [
     ("background.model_concurrency_ok", {"background_task": {"model_concurrency": {"a": 2}}}),
     ("background.reminders_string", {"background_task": {"delegated_reminders_enabled": "yes"}}),
     ("background.unknown_key", {"background_task": {"nope": 1}}),
+    # --- reminders ---------------------------------------------------------
+    ("reminders.enabled_string", {"reminders": {"enabled": "yes"}}),
+    ("reminders.enabled_ok", {"reminders": {"enabled": False}}),
+    ("reminders.max_per_cycle_zero", {"reminders": {"todo": {"max_per_cycle": 0}}}),
+    ("reminders.max_per_cycle_string", {"reminders": {"todo": {"max_per_cycle": "3"}}}),
+    ("reminders.ok", {"reminders": {"enabled": True, "todo": {"max_per_cycle": 2}}}),
+    ("reminders.todo_not_object", {"reminders": {"todo": 5}}),
+    ("reminders.unknown_key", {"reminders": {"nope": 1}}),
     # --- permission --------------------------------------------------------
     ("permission.rule_missing_decision", {"permission": {"rules": [{"tool": "write"}]}}),
     ("permission.rule_bad_decision", {"permission": {"rules": [{"decision": "nope"}]}}),

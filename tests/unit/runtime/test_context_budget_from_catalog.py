@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 from voidcode.provider.model_catalog import static_catalog_metadata
-from voidcode.runtime.context.window import prepare_provider_context
+from voidcode.runtime.context.window import ContextWindowPolicy, prepare_provider_context
 from voidcode.runtime.coordinators.stream_prep import StreamPrepCoordinator
+from voidcode.tools.contracts import ToolResult
+
+#: Small pruning knobs so a tiny fixture exercises the real decision.
+_POLICY = ContextWindowPolicy(default_tool_result_chars=None, keep_recent_tool_tokens=0, min_savings_tokens=1)
+
+
+def _tool_results(count: int = 20) -> tuple[ToolResult, ...]:
+    return tuple(ToolResult(tool_name="read", status="ok", content="x" * 3_000) for _ in range(count))
 
 
 class _Selection:
@@ -25,15 +33,32 @@ class _Config:
 
 
 def test_small_context_model_compacts_earlier_than_a_large_one() -> None:
-    """The catalog window is what decides: the same prompt must compact against a
-    small window and not against a large one."""
+    """The catalog window decides the trigger: the same view is pruned against a
+    small window and left byte-identical against a large one."""
+    results = _tool_results()  # 20 x 3000 chars ~ 15k tokens
     prompt = "x" * 200_000  # ~50k tokens at the estimator's chars-per-token
 
-    small = prepare_provider_context(prompt=prompt, tool_results=(), session_metadata={}, context_window=30_000)
-    large = prepare_provider_context(prompt=prompt, tool_results=(), session_metadata={}, context_window=400_000)
+    small = prepare_provider_context(
+        prompt=prompt,
+        tool_results=results,
+        session_metadata={},
+        policy=_POLICY,
+        context_window=30_000,
+        payload_bytes=0,
+    )
+    large = prepare_provider_context(
+        prompt=prompt,
+        tool_results=results,
+        session_metadata={},
+        policy=_POLICY,
+        context_window=400_000,
+        payload_bytes=0,
+    )
 
     assert small.compacted is True
+    assert small.dropped_tool_result_count > 0
     assert large.compacted is False
+    assert [view.content for view in large.tool_results] == [result.content for result in results]
 
 
 def test_the_budget_is_the_models_input_cap_from_the_catalog() -> None:
@@ -66,7 +91,16 @@ def test_an_explicit_window_override_beats_the_catalog_budget() -> None:
     """`prepare_provider_context`'s own arguments stay authoritative: a caller that
     names a window is not second-guessed by the catalog."""
     prompt = "x" * 200_000
+    results = _tool_results()
 
-    explicit = prepare_provider_context(prompt=prompt, tool_results=(), session_metadata={}, context_window=400_000)
+    explicit = prepare_provider_context(
+        prompt=prompt,
+        tool_results=results,
+        session_metadata={},
+        policy=_POLICY,
+        context_window=400_000,
+        payload_bytes=0,
+    )
 
     assert explicit.compacted is False
+    assert explicit.dropped_tool_result_count == 0

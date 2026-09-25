@@ -1390,6 +1390,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         },
         "model": "session/model",
         "permission": _DEFAULT_PERMISSION_METADATA,
+        "reminders": {"enabled": True, "todo": {"max_per_cycle": 3}},
         "resolved_provider": {
             "active_target": {
                 "raw_model": "session/model",

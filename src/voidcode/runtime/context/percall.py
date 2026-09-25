@@ -12,14 +12,25 @@ if TYPE_CHECKING:
 def segments_to_percall_messages(
     segments: Sequence[RuntimeContextSegment],
 ) -> tuple[PerCallMessage, ...]:
-    """Bind provider segments to per-call messages; caller segments are only read."""
+    """Bind provider segments to per-call messages; caller segments are only read.
+
+    A segment whose metadata marks ``per_call`` is per-call-only: it never
+    enters the cache-prefix hash (and therefore never reaches persistence).
+    """
     from .window import RuntimeContextSegment as _Segment
 
     bound: list[PerCallMessage] = []
     for segment in segments:
         if not isinstance(segment, _Segment):
             raise ValueError("per-call binding requires RuntimeContextSegment items")
-        bound.append(PerCallMessage(role=segment.role, content=segment.content or ""))
+        metadata = segment.metadata or {}
+        bound.append(
+            PerCallMessage(
+                role=segment.role,
+                content=segment.content or "",
+                per_call=metadata.get("per_call") is True,
+            )
+        )
     return tuple(bound)
 
 

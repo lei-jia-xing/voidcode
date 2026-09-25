@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from voidcode.provider.anthropic_native import AnthropicMessagesProvider, AnthropicMessagesTransport
@@ -61,9 +62,10 @@ def _request(
     abort_signal: ProviderAbortSignal | None = None,
     cache_retention: ProviderCacheRetention | None = None,
     session_id: str | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> ProviderTurnRequest:
     return ProviderTurnRequest(
-        assembled_context=_Context(prompt="answer", segments=segments),
+        assembled_context=_Context(prompt="answer", segments=segments, metadata=metadata),
         available_tools=tools,
         provider_name="anthropic",
         model_name="claude-test",
@@ -127,3 +129,109 @@ def test_configured_vendor_sends_only_its_own_credential() -> None:
     assert isinstance(transport, AnthropicMessagesTransport)
     assert transport.base_url == "https://api.minimaxi.com/anthropic"
     assert transport.api_key == "vendor-key"
+
+
+_STABLE_SEGMENTS = (
+    ProviderContextSegment(role="system", content="stable-alpha"),
+    ProviderContextSegment(role="system", content="stable-beta"),
+    ProviderContextSegment(role="system", content="<!-- voidcode:dynamic-boundary -->"),
+)
+_CACHE_METADATA: dict[str, object] = {
+    "prompt_cache": {
+        "version": 1,
+        "boundary_present": True,
+        "stable_prefix_hash": "a" * 64,
+        "dynamic_suffix_hash": "b" * 64,
+        "stable_section_count": 3,
+        "dynamic_section_count": 2,
+    }
+}
+
+
+def _turns_payload(dynamic_text: str) -> list[dict[str, object]]:
+    fake = _FakeTransport()
+    AnthropicMessagesProvider(transport=fake).propose_turn(
+        _request(
+            segments=(
+                *_STABLE_SEGMENTS,
+                ProviderContextSegment(role="system", content=dynamic_text),
+                ProviderContextSegment(role="user", content="hi"),
+            ),
+            cache_retention="short",
+            metadata=_CACHE_METADATA,
+        )
+    )
+    system = fake.payloads[0]["system"]
+    assert isinstance(system, list)
+    return system
+
+
+def test_cache_control_lands_on_last_stable_system_block() -> None:
+    system = _turns_payload("todo: dynamic")
+    assert [block["text"] for block in system] == [
+        "stable-alpha",
+        "stable-beta",
+        "<!-- voidcode:dynamic-boundary -->",
+        "todo: dynamic",
+    ]
+    assert system[2]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
+    assert all("cache_control" not in system[index] for index in (0, 1, 3))
+
+
+def test_stable_system_blocks_are_byte_identical_across_turns() -> None:
+    first = _turns_payload("todo: first")
+    second = _turns_payload("todo: second")
+
+    def stable_bytes(blocks: list[dict[str, object]]) -> str:
+        return json.dumps(blocks[:3], sort_keys=True, ensure_ascii=True)
+
+    assert stable_bytes(first) == stable_bytes(second)
+    assert first[3]["text"] != second[3]["text"]
+    assert "cache_control" in first[2] and "cache_control" in second[2]
+
+
+def test_missing_prompt_cache_metadata_keeps_existing_wire() -> None:
+    fake = _FakeTransport()
+    definition = ToolDefinition(name="read", description="Read", input_schema={"type": "object"})
+    AnthropicMessagesProvider(transport=fake).propose_turn(
+        _request(
+            segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
+            tools=(definition,),
+            cache_retention="short",
+        )
+    )
+    payload = fake.payloads[0]
+    assert payload["system"] == "stable-alpha\n\nstable-beta\n\n<!-- voidcode:dynamic-boundary -->"
+    assert payload["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
+
+
+def test_retention_disabled_emits_no_cache_control() -> None:
+    fake = _FakeTransport()
+    AnthropicMessagesProvider(transport=fake).propose_turn(
+        _request(
+            segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
+            metadata=_CACHE_METADATA,
+        )
+    )
+    payload = fake.payloads[0]
+    assert isinstance(payload["system"], str)
+    assert "cache_control" not in payload
+
+
+def test_boundary_before_non_system_section_falls_back() -> None:
+    fake = _FakeTransport()
+    AnthropicMessagesProvider(transport=fake).propose_turn(
+        _request(
+            segments=(
+                ProviderContextSegment(role="system", content="stable"),
+                ProviderContextSegment(role="user", content="early-user"),
+                ProviderContextSegment(role="system", content="dynamic"),
+            ),
+            cache_retention="short",
+            metadata={"prompt_cache": {"version": 1, "boundary_present": True, "stable_section_count": 2}},
+        )
+    )
+    system = fake.payloads[0]["system"]
+    assert isinstance(system, list) and len(system) == 1
+    assert system[0]["text"] == "stable\n\ndynamic"
+    assert system[0]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}

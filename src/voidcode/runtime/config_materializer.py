@@ -13,15 +13,18 @@ from .config import (
     RuntimeContextWindowConfig,
     RuntimeProviderFallbackConfig,
     RuntimeProvidersConfig,
+    RuntimeRemindersConfig,
     RuntimeToolsConfig,
     parse_provider_configs_payload,
     parse_provider_fallback_payload,
     parse_runtime_context_window_payload,
     parse_runtime_policy_payload,
+    parse_runtime_reminders_payload,
     parse_runtime_tools_payload,
     serialize_provider_configs,
     serialize_runtime_agent_config,
     serialize_runtime_context_window_config,
+    serialize_runtime_reminders_config,
     serialize_runtime_tools_config,
 )
 from .config_models import (
@@ -58,6 +61,7 @@ class EffectiveRuntimeConfig:
     context_window: RuntimeContextWindowConfig | None = None
     tools: RuntimeToolsConfig | None = None
     policy: RuntimePolicyConfig | None = None
+    reminders: RuntimeRemindersConfig = field(default_factory=RuntimeRemindersConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +79,7 @@ class PersistedRuntimeConfigMaterialization:
     raw_agent: object | None
     has_agent: bool
     context_window: RuntimeContextWindowConfig | None
+    reminders: RuntimeRemindersConfig | None
     raw_resolved_provider: object | None
 
 
@@ -99,6 +104,7 @@ def serialize_runtime_config_core(config: EffectiveRuntimeConfig) -> dict[str, o
     serialized_context_window = serialize_runtime_context_window_config(config.context_window)
     if serialized_context_window is not None:
         runtime_config_metadata["context_window"] = serialized_context_window
+    runtime_config_metadata["reminders"] = serialize_runtime_reminders_config(config.reminders)
     if config.model is not None:
         runtime_config_metadata["model"] = config.model
     if config.reasoning_effort is not None:
@@ -203,6 +209,18 @@ def parse_persisted_runtime_config(
     if "tools" in runtime_config:
         tools = parse_persisted_runtime_tools_config(runtime_config.get("tools"))
 
+    reminders = None
+    if "reminders" in runtime_config:
+        try:
+            reminders = parse_runtime_reminders_payload(runtime_config.get("reminders"), source="persisted runtime_config.reminders")
+        except ValueError as exc:
+            raise ValueError(
+                _format_persisted_provider_error(
+                    "persisted runtime_config.reminders",
+                    str(exc),
+                )
+            ) from exc
+
     context_window = None
     if "context_window" in runtime_config:
         try:
@@ -236,6 +254,7 @@ def parse_persisted_runtime_config(
         raw_agent=runtime_config.get("agent"),
         has_agent="agent" in runtime_config,
         context_window=context_window,
+        reminders=reminders,
         raw_resolved_provider=runtime_config.get("resolved_provider"),
     )
 
@@ -290,6 +309,7 @@ def apply_request_runtime_config_overrides(
             context_window=resolved.context_window,
             tools=resolved.tools,
             policy=resolved.policy,
+            reminders=resolved.reminders,
         )
     if context_transform_refs is not None:
         resolved = EffectiveRuntimeConfig(
@@ -324,6 +344,7 @@ def apply_request_runtime_config_overrides(
             context_window=resolved.context_window,
             tools=resolved.tools,
             policy=resolved.policy,
+            reminders=resolved.reminders,
         )
     return resolved
 

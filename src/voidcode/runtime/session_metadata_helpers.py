@@ -31,6 +31,12 @@ from .permission_policy import (
     pending_approval_from_response,
     pending_question_from_response,
 )
+from .reminders import (
+    REMINDERS_RUNTIME_STATE_KEY,
+    TodoMidRunState,
+    TodoReminderState,
+    reminders_runtime_state_payload,
+)
 from .session import (
     SessionState,
     session_metadata_for_persistence,
@@ -108,6 +114,7 @@ def parse_runtime_state_metadata(raw: object) -> RuntimeStateMetadata:
         "pending_tool_intent",
         "context_compacted",
         "context_transform_applied",
+        "reminders",
     ):
         if field not in payload:
             continue
@@ -389,6 +396,32 @@ def session_with_context_transform_applied_state(
                 "last_emitted_run_id": current_run_id,
             },
         },
+    )
+    return _session_with_metadata(session, {**session.metadata, "runtime_state": runtime_state})
+
+
+def session_with_reminder_state(
+    session: SessionState,
+    *,
+    todo: TodoReminderState | None = None,
+    mid_run: TodoMidRunState | None = None,
+) -> SessionState:
+    """Persist per-call reminder counters through strict runtime-state validation.
+
+    The ``reminders`` section holds one sub-state per reminder kind; the writer
+    merges into the present section so updating one kind never drops the other.
+    Only counters are stored -- reminder text is per-call and never reaches
+    session metadata.
+    """
+    raw_reminders = _runtime_state_payload(session.metadata).get("reminders")
+    existing = dict(raw_reminders) if isinstance(raw_reminders, dict) else {}
+    merged = {
+        **existing,
+        **reminders_runtime_state_payload(todo=todo, mid_run=mid_run),
+    }
+    runtime_state = _runtime_state_payload_with_updates(
+        session.metadata,
+        updates={REMINDERS_RUNTIME_STATE_KEY: merged},
     )
     return _session_with_metadata(session, {**session.metadata, "runtime_state": runtime_state})
 
@@ -786,6 +819,7 @@ __all__ = [
     "session_with_current_acp_metadata",
     "session_with_plan_state",
     "session_with_run_id",
+    "session_with_reminder_state",
     "session_with_todo_state",
     "session_without_tool_intent",
     "waiting_reason_from_session",

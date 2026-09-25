@@ -396,7 +396,10 @@ class RuntimeResumeCoordinator:
                 session=graph_session_snapshot(session),
                 prompt=prompt,
                 available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
-                context_window=runtime.prepare_provider_context_window(
+                # The assembled context compiled the provider view with the
+                # payload-aware budget; its window is the render authority.
+                context_window=assembled_context.context_window
+                or runtime.prepare_provider_context_window(
                     prompt=prompt,
                     tool_results=tuple(tool_results),
                     session_metadata=session.metadata,
@@ -696,7 +699,10 @@ class RuntimeResumeCoordinator:
                 session=graph_session_snapshot(session),
                 prompt=prompt,
                 available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
-                context_window=runtime.prepare_provider_context_window(
+                # The assembled context compiled the provider view with the
+                # payload-aware budget; its window is the render authority.
+                context_window=assembled_context.context_window
+                or runtime.prepare_provider_context_window(
                     prompt=prompt,
                     tool_results=tuple(tool_results),
                     session_metadata=session.metadata,
@@ -1324,7 +1330,10 @@ class RuntimeResumeCoordinator:
                 session=graph_session_snapshot(session),
                 prompt=prompt,
                 available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
-                context_window=runtime.prepare_provider_context_window(
+                # The assembled context compiled the provider view with the
+                # payload-aware budget; its window is the render authority.
+                context_window=assembled_context.context_window
+                or runtime.prepare_provider_context_window(
                     prompt=prompt,
                     tool_results=tuple(tool_results),
                     session_metadata=session.metadata,

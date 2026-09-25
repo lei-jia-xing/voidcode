@@ -130,14 +130,17 @@ from .context.transforms import (
 )
 from .context.window import (
     BeforeCompactInput,
+    CompactionBudget,
     ContextWindowPolicy,
     RuntimeAssembledContext,
     RuntimeContextSegment,
     RuntimeContextWindow,
     ToolResultView,
     assemble_provider_context,
+    provider_usage_anchor_tokens,
 )
 from .context.window_policy import (
+    compaction_budget_from_config,
     context_window_config_from_policy,
     context_window_policy_from_config,
 )
@@ -539,6 +542,7 @@ class VoidCodeRuntime(RuntimeSurface):
             context_window=initial_context_window,
             tools=self._config.tools,
             policy=self._config.policy,
+            reminders=self._config.reminders,
         )
         if graph is not None:
             self._graph = graph
@@ -2036,7 +2040,8 @@ class VoidCodeRuntime(RuntimeSurface):
                 session=graph_session_snapshot(session),
                 prompt=request.prompt,
                 available_tools=self.provider_tool_definitions(tool_registry, effective_config),
-                context_window=self.prepare_provider_context_window(
+                context_window=assembled_context.context_window
+                or self.prepare_provider_context_window(
                     prompt=request.prompt,
                     tool_results=rehydrated_tool_results,
                     session_metadata=session.metadata,
@@ -2501,6 +2506,21 @@ class VoidCodeRuntime(RuntimeSurface):
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         self._background_task_supervisor.drain_queued_background_tasks()
         return self._background_task_supervisor.summaries_with_observability(self._session_store.list_background_tasks(workspace=self._workspace))
+
+    def has_pending_background_tasks(self, *, parent_session_id: str) -> bool:
+        """Whether a non-terminal background task will re-wake this parent session.
+
+        Read-only store projection: a queued/running/awaiting child completes
+        into a parent notification, so its completion already continues the
+        parent loop and a reminder would only add noise. Unreconciled rows count
+        as pending, which errs toward staying silent.
+        """
+        validated_parent_session_id = validate_id(parent_session_id, field_name="parent_session_id")
+        summaries = self._session_store.list_background_tasks_by_parent_session(
+            workspace=self._workspace,
+            parent_session_id=validated_parent_session_id,
+        )
+        return any(not is_background_task_terminal(summary.status) for summary in summaries)
 
     def list_background_tasks_by_parent_session(self, *, parent_session_id: str) -> tuple[StoredBackgroundTaskSummary, ...]:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
@@ -3903,6 +3923,9 @@ class VoidCodeRuntime(RuntimeSurface):
         replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
         tool_registry: ToolRegistry | None = None,
         hook_guidance: Iterable[str] | None = None,
+        reminder_segment: RuntimeContextSegment | None = None,
+        compaction_budget: CompactionBudget | None = None,
+        before_compact: BeforeCompactInput | None = None,
     ) -> RuntimeAssembledContext:
         # Mode guidance flows through the context transform registry: resolve
         # the effective mode once, render its guidance text, and let the
@@ -3994,11 +4017,22 @@ class VoidCodeRuntime(RuntimeSurface):
                 mode_transform_refs=mode_resolution.transform_refs,
             ),
         )
+        if compaction_budget is None:
+            # The catalog window and the compaction knobs are runtime-owned
+            # truth; a caller that does not supply a budget still gets the
+            # sized one so pruning (or its explicit "unsized" reason) happens.
+            compaction_budget = compaction_budget_from_config(
+                effective_config.context_window,
+                context_window=self._stream_prep_coordinator.context_budget_for_effective_config(effective_config),
+                anchor_tokens=provider_usage_anchor_tokens(session_metadata),
+            )
         assembled_context = assemble_provider_context(
             prompt=prompt,
             tool_results=tool_results,
             session_metadata=session_metadata,
             policy=policy or self._default_context_window_policy,
+            compaction_budget=compaction_budget,
+            before_compact=before_compact,
             agent_prompt_context=agent_prompt_context,
             prompt_profile_name=effective_config.agent.prompt_profile if effective_config.agent is not None else None,
             hook_preset_context=hook_preset_context,
@@ -4011,6 +4045,7 @@ class VoidCodeRuntime(RuntimeSurface):
             replayed_conversation_segments=replayed_conversation_segments,
             tool_catalog_context=tool_catalog_context,
             hook_guidance=hook_guidance if hook_guidance else None,
+            reminder_segment=reminder_segment,
         )
         raw_delegation = session_metadata.get("delegation")
         if raw_delegation is None:
@@ -4023,6 +4058,37 @@ class VoidCodeRuntime(RuntimeSurface):
             segments=assembled_context.segments,
             metadata={**assembled_context.metadata, "delegation": dict(delegation)},
             loaded_skills=assembled_context.loaded_skills,
+            context_window=assembled_context.context_window,
+        )
+
+    def reassemble_provider_context_for_overflow(
+        self,
+        *,
+        prompt: str,
+        tool_results: tuple[ToolResult | ToolResultView, ...],
+        session_metadata: dict[str, object],
+        replayed_conversation_segments: tuple[RuntimeContextSegment, ...],
+    ) -> RuntimeAssembledContext:
+        """Rebuild the provider view for a context-limit retry with a recovery budget.
+
+        The recovery target is harsher than the ordinary trigger: the whole view
+        must fit the catalog window minus reserve, so the tool results may only
+        keep what the instructions and prompt leave under that threshold. The
+        ordinary policy knobs (``context_window.compaction.*``) are reused
+        unchanged -- recovery adds a target, not a second configuration.
+        """
+        effective_config = self.effective_runtime_config_from_metadata(session_metadata)
+        budget = compaction_budget_from_config(
+            effective_config.context_window,
+            context_window=self._stream_prep_coordinator.context_budget_for_effective_config(effective_config),
+            anchor_tokens=provider_usage_anchor_tokens(session_metadata),
+        )
+        return self.assemble_provider_context(
+            prompt=prompt,
+            tool_results=tool_results,
+            session_metadata=session_metadata,
+            replayed_conversation_segments=replayed_conversation_segments,
+            compaction_budget=replace(budget, fit_payload=True),
         )
 
     def _applied_skill_contexts(
@@ -4721,6 +4787,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 context_window=context_window,
                 tools=self._config.tools,
                 policy=self._config.policy,
+                reminders=self._config.reminders,
             )
 
         persisted_runtime_config = metadata.get("runtime_config")
@@ -4785,6 +4852,9 @@ class VoidCodeRuntime(RuntimeSurface):
             context_window=context_window,
             tools=tools,
             policy=policy,
+            # A snapshot written before this key existed has no reminder policy;
+            # the live resolved config is the only remaining source.
+            reminders=materialized.reminders if materialized.reminders is not None else self._config.reminders,
         )
 
     def graph_for_session_metadata(self, metadata: dict[str, object] | None) -> RuntimeGraph:

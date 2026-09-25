@@ -24,6 +24,7 @@ from .config import RuntimeAgentConfig
 from .config_materializer import EffectiveRuntimeConfig
 from .context.window import (
     BeforeCompactInput,
+    CompactionBudget,
     ContextWindowPolicy,
     RuntimeAssembledContext,
     RuntimeContextSegment,
@@ -123,7 +124,19 @@ class RuntimeSurface(Protocol):
         replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
         tool_registry: ToolRegistry | None = None,
         hook_guidance: Iterable[str] | None = None,
+        reminder_segment: RuntimeContextSegment | None = None,
+        compaction_budget: CompactionBudget | None = None,
+        before_compact: BeforeCompactInput | None = None,
     ) -> RuntimeAssembledContext: ...
+    def reassemble_provider_context_for_overflow(
+        self,
+        *,
+        prompt: str,
+        tool_results: tuple[ToolResult | ToolResultView, ...],
+        session_metadata: dict[str, object],
+        replayed_conversation_segments: tuple[RuntimeContextSegment, ...],
+    ) -> RuntimeAssembledContext: ...
+
     def replayed_conversation_segments_for_existing_session(
         self,
         *,
@@ -220,6 +233,8 @@ class RuntimeSurface(Protocol):
     def queue_steering(self, session_id: str, content: str, *, dedupe_key: str | None = None) -> tuple[dict[str, object], ...]: ...
     def queue_completion_interaction(self, session_id: str, content: str, *, dedupe_key: str) -> tuple[dict[str, object], ...]: ...
     def queue_progress_interaction(self, session_id: str, content: str, *, dedupe_key: str) -> tuple[dict[str, object], ...]: ...
+
+    def has_pending_background_tasks(self, *, parent_session_id: str) -> bool: ...
 
     def drain_queued_messages(
         self,

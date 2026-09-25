@@ -25,8 +25,9 @@ def test_cancel_skips_compaction() -> None:
         prompt="Summarize the workspace changes.",
         tool_results=_over_budget_results(),
         session_metadata={},
-        policy=ContextWindowPolicy(),
+        policy=ContextWindowPolicy(keep_recent_tool_tokens=0, min_savings_tokens=1),
         context_window=100,
+        payload_bytes=0,
         before_compact=BeforeCompactInput(cancel=True, reason="operator_hold"),
     )
     assert window.compacted is False
@@ -45,9 +46,10 @@ def test_custom_summary_visible_in_summary_input_only() -> None:
         prompt="Summarize the workspace changes.",
         tool_results=_over_budget_results(),
         session_metadata={},
-        policy=ContextWindowPolicy(summary_strategy="model_assisted"),
+        policy=ContextWindowPolicy(summary_strategy="model_assisted", keep_recent_tool_tokens=0, min_savings_tokens=1),
         summary_projector=_projector,
         context_window=100,
+        payload_bytes=0,
         before_compact=BeforeCompactInput(custom_summary="keep the deploy notes"),
     )
     assert window.compacted is True
@@ -57,16 +59,20 @@ def test_custom_summary_visible_in_summary_input_only() -> None:
 
 
 def test_compaction_never_splits_tool_result_boundary() -> None:
+    """Pruning replaces content; it never removes a result or its pairing."""
     results = _over_budget_results()
     window = prepare_provider_context(
         prompt="Summarize the workspace changes.",
         tool_results=results,
         session_metadata={},
-        policy=ContextWindowPolicy(),
+        policy=ContextWindowPolicy(keep_recent_tool_tokens=0, min_savings_tokens=1),
         context_window=100,
+        payload_bytes=0,
     )
     assert window.compacted is True
-    original_contents = [r.content or "" for r in results]
+    assert window.dropped_tool_result_count == len(results)
     assert len(window.tool_results) == len(results)
-    for retained, original in zip(window.tool_results, original_contents, strict=True):
-        assert (retained.content or "") == original
+    for rendered, original in zip(window.tool_results, results, strict=True):
+        assert rendered.result == original
+        assert (rendered.content or "").startswith("[Runtime context pruning:")
+        assert f"omitted_bytes={len(original.content or '')}" in (rendered.content or "")

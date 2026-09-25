@@ -46,6 +46,7 @@ from .config_models import (
     AgentRuntimeInternalPayload,
     AgentToolsPayload,
     BackgroundTaskPayload,
+    CompactionPayload,
     ContextWindowPayload,
     EnvironmentRuntimeSettings,
     ExecutionEngineName,
@@ -58,6 +59,7 @@ from .config_models import (
     McpTransport,
     PermissionPayload,
     PersistedAgentPayload,
+    RemindersPayload,
     RuntimeAgentPromptSource,
     RuntimeConfigPayload,
     RuntimeContextTransformFailureMode,
@@ -91,6 +93,7 @@ from .config_models import (
     TOOL_TIMEOUT_ENV_VAR as TOOL_TIMEOUT_ENV_VAR,
 )
 from .context.transforms import validate_runtime_context_transform_refs
+from .context.window import DEFAULT_KEEP_RECENT_TOOL_TOKENS
 from .permission import (
     ExternalDirectoryPermissionConfig,
     ExternalDirectoryPolicy,
@@ -98,6 +101,7 @@ from .permission import (
     PermissionDecision,
 )
 from .policy import RuntimePolicyConfig, validate_runtime_policy_config_payload
+from .reminders import DEFAULT_TODO_REMINDER_MAX_PER_CYCLE
 
 RuntimeProviderFallbackConfig = provider_config.ProviderFallbackConfig
 RuntimeProvidersConfig = provider_config.ProviderConfigs
@@ -163,6 +167,18 @@ def _empty_context_window_tool_limits() -> dict[str, int]:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeCompactionConfig:
+    """Bounded tool-result pruning when the estimated payload reaches the budget."""
+
+    enabled: bool = True
+    #: Explicit threshold wins; absent it, the catalog window minus
+    #: ``reserve_tokens`` (15% floor) is the trigger.
+    threshold_tokens: int | None = None
+    reserve_tokens: int | None = None
+    keep_recent_tool_tokens: int = DEFAULT_KEEP_RECENT_TOOL_TOKENS
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeContextWindowConfig:
     default_tool_result_chars: int | None = 6_000
     per_tool_result_chars: Mapping[str, int] = field(default_factory=_empty_context_window_tool_limits)
@@ -170,6 +186,7 @@ class RuntimeContextWindowConfig:
     provider_context_oversized_feedback_chars: int = 8_000
     context_transform_failure_policy: RuntimeContextTransformFailureMode = "warn"
     summary_strategy: Literal["deterministic", "model_assisted"] = "deterministic"
+    compaction: RuntimeCompactionConfig = field(default_factory=RuntimeCompactionConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +216,20 @@ class RuntimeBackgroundTaskConfig:
     model_concurrency: Mapping[str, int] = field(default_factory=_empty_background_task_concurrency_map)
     delegated_reminders_enabled: bool = True
     delegated_reminder_cooldown_seconds: int = 300
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeTodoReminderConfig:
+    #: Reminder budget per user-prompt cycle; the cycle is the session's run id.
+    max_per_cycle: int = DEFAULT_TODO_REMINDER_MAX_PER_CYCLE
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeRemindersConfig:
+    """Runtime-injected per-call reminders (default on)."""
+
+    enabled: bool = True
+    todo: RuntimeTodoReminderConfig = field(default_factory=RuntimeTodoReminderConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,6 +342,7 @@ class RuntimeConfig:
     lsp: RuntimeLspConfig | None = None
     acp: RuntimeAcpConfig | None = None
     background_task: RuntimeBackgroundTaskConfig = field(default_factory=RuntimeBackgroundTaskConfig)
+    reminders: RuntimeRemindersConfig = field(default_factory=RuntimeRemindersConfig)
     mcp: RuntimeMcpConfig | None = field(default_factory=_default_runtime_mcp_config)
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
@@ -337,6 +369,7 @@ class RuntimeConfigOverrides:
     lsp: RuntimeLspConfig | None = None
     acp: RuntimeAcpConfig | None = None
     background_task: RuntimeBackgroundTaskConfig | None = None
+    reminders: RuntimeRemindersConfig | None = None
     mcp: RuntimeMcpConfig | None = None
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
@@ -466,6 +499,7 @@ def load_runtime_config(
         context_window=repo_local.context_window,
         lsp=resolved_lsp,
         background_task=repo_local.background_task or RuntimeBackgroundTaskConfig(),
+        reminders=repo_local.reminders or RuntimeRemindersConfig(),
         mcp=resolved_mcp,
         tui=resolved_tui,
         provider_fallback=repo_local.provider_fallback,
@@ -532,6 +566,7 @@ def _load_repo_local_config(
         context_window=_context_window_config_from_payload(config_payload.context_window),
         lsp=_lsp_config_from_payload(config_payload.lsp),
         background_task=_background_task_config_from_payload(config_payload.background_task),
+        reminders=_reminders_config_from_payload(config_payload.reminders),
         mcp=_mcp_config_from_payload(config_payload.mcp),
         tui=_tui_config_from_payload(config_payload.tui),
         provider_fallback=provider_fallback,
@@ -806,6 +841,18 @@ def _context_window_config_from_payload(payload: ContextWindowPayload | None) ->
         provider_context_oversized_feedback_chars=payload.provider_context_oversized_feedback_chars or 8_000,
         context_transform_failure_policy=payload.context_transform_failure_policy or "warn",
         summary_strategy=payload.summary_strategy or "deterministic",
+        compaction=_compaction_config_from_payload(payload.compaction),
+    )
+
+
+def _compaction_config_from_payload(payload: CompactionPayload | None) -> RuntimeCompactionConfig:
+    if payload is None:
+        return RuntimeCompactionConfig()
+    return RuntimeCompactionConfig(
+        enabled=payload.enabled is not False,
+        threshold_tokens=payload.threshold_tokens,
+        reserve_tokens=payload.reserve_tokens,
+        keep_recent_tool_tokens=payload.keep_recent_tool_tokens,
     )
 
 
@@ -935,6 +982,16 @@ def _background_task_config_from_payload(payload: BackgroundTaskPayload | None) 
         model_concurrency=dict(payload.model_concurrency or {}),
         delegated_reminders_enabled=payload.delegated_reminders_enabled is not False,
         delegated_reminder_cooldown_seconds=payload.delegated_reminder_cooldown_seconds,
+    )
+
+
+def _reminders_config_from_payload(payload: RemindersPayload | None) -> RuntimeRemindersConfig | None:
+    if payload is None:
+        return None
+    todo_payload = payload.todo
+    return RuntimeRemindersConfig(
+        enabled=payload.enabled is not False,
+        todo=RuntimeTodoReminderConfig(max_per_cycle=todo_payload.max_per_cycle if todo_payload is not None else DEFAULT_TODO_REMINDER_MAX_PER_CYCLE),
     )
 
 
@@ -1474,6 +1531,14 @@ def serialize_runtime_context_window_config(
         "provider_context_oversized_feedback_chars": context_window.provider_context_oversized_feedback_chars,
         "context_transform_failure_policy": context_window.context_transform_failure_policy,
         "summary_strategy": context_window.summary_strategy,
+        # Forward-only snapshot: the pruning knobs travel with the session so a
+        # resume replays the same bounded view.
+        "compaction": {
+            "enabled": context_window.compaction.enabled,
+            "threshold_tokens": context_window.compaction.threshold_tokens,
+            "reserve_tokens": context_window.compaction.reserve_tokens,
+            "keep_recent_tool_tokens": context_window.compaction.keep_recent_tool_tokens,
+        },
     }
     if context_window.default_tool_result_chars is not None:
         payload["default_tool_result_chars"] = context_window.default_tool_result_chars
@@ -1495,6 +1560,25 @@ def serialize_runtime_background_task_config(
     if background_task.model_concurrency:
         payload["model_concurrency"] = dict(background_task.model_concurrency)
     return payload
+
+
+def serialize_runtime_reminders_config(reminders: RuntimeRemindersConfig) -> dict[str, object]:
+    return {
+        "enabled": reminders.enabled,
+        "todo": {"max_per_cycle": reminders.todo.max_per_cycle},
+    }
+
+
+def parse_runtime_reminders_payload(raw_reminders: object, *, source: str) -> RuntimeRemindersConfig:
+    try:
+        reminders = _reminders_config_from_payload(
+            validate_config_section(RemindersPayload, raw_reminders, field_path="reminders"),
+        )
+    except ValueError as exc:
+        raise ValueError(f"{source}: {exc}") from exc
+    if reminders is None:
+        raise ValueError(f"{source}: must be an object")
+    return reminders
 
 
 def serialize_runtime_tools_config(config: RuntimeToolsConfig | None) -> dict[str, object] | None:

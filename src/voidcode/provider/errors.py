@@ -179,7 +179,12 @@ class ParsedProviderError:
 
 def _recovery_policy_for_kind(kind: ProviderErrorKind) -> tuple[bool | None, bool]:
     if kind == "context_limit":
-        return False, False
+        # The request did not fit the model's window, but *why* it did not fits
+        # is runtime knowledge (bounded pruning can shrink the provider view, and
+        # a bigger-window target may exist). Both lanes therefore belong to the
+        # runtime policy, exactly like ``rate_limit``: parsing only names the
+        # kind, it does not decide the recovery.
+        return None, True
     if kind in {
         "missing_auth",
         "invalid_model",

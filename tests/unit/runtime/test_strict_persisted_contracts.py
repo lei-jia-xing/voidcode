@@ -6,7 +6,7 @@ import pytest
 
 from voidcode.provider.naming import BUILTIN_PROVIDER_IDS
 from voidcode.provider.protocol import ProviderTokenUsage
-from voidcode.runtime.config import RuntimeConfig, RuntimeContextWindowConfig
+from voidcode.runtime.config import RuntimeConfig, RuntimeContextWindowConfig, RuntimeRemindersConfig, RuntimeTodoReminderConfig
 from voidcode.runtime.config_materializer import (
     PERSISTED_RUNTIME_CONFIG_KEYS,
     EffectiveRuntimeConfig,
@@ -132,6 +132,7 @@ def _accepted_persisted_runtime_config_values() -> dict[str, object]:
         "agent": {"preset": "leader"},
         "agents": {"leader": {"preset": "leader"}},
         "context_window": {"version": 2, "default_tool_result_chars": 4_000, "per_tool_result_chars": {"read": 2_000}},
+        "reminders": {"enabled": False, "todo": {"max_per_cycle": 1}},
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
         "mcp": {"mode": "managed", "configured_enabled": False, "servers": []},
     }
@@ -177,6 +178,8 @@ def test_persisted_runtime_config_accepts_representative_value_for_each_key(fiel
             default_tool_result_chars=4_000,
             per_tool_result_chars={"read": 2_000},
         )
+    elif field == "reminders":
+        assert materialized.reminders == RuntimeRemindersConfig(enabled=False, todo=RuntimeTodoReminderConfig(max_per_cycle=1))
     elif field == "agent":
         assert materialized.has_agent is True
         assert materialized.raw_agent == {"preset": "leader"}

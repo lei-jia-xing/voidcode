@@ -74,6 +74,8 @@ Runtime hook surface 与其事件名称的内部对应关系由
 - 任务状态与推理：`runtime.todo_updated`、`runtime.reasoning_part`、`runtime.reasoning_diagnostic`、`runtime.turn_progress`、`runtime.stuck_detected`
 - 策略物化：`runtime.policy_materialized`
 - 上下文变换：`runtime.context_compacted`、`runtime.context_transform_applied`（正式事件，由 `run_loop.py` 发射；payload 见下文）
+- 每轮提醒：`runtime.reminder_injected`（terminal 回合发出的 reminder 已通过 per-call 通道注入；payload 见下文）
+- provider context 恢复：`runtime.provider_context_recovery`（`context_limit` 的一次性本地裁剪/升级决策；payload 见下文）
 
 ## 已交付的 delegated/background-task 事件
 
@@ -245,6 +247,49 @@ Runtime hook surface 与其事件名称的内部对应关系由
   - `approval_blocked`
   - `result_available`
 - `runtime.acp_delegated_lifecycle` 用于对齐 ACP 侧 delegated observability；background-task 事件用于父会话/任务结果/重放等 runtime-owned delegated lifecycle surfaces。
+
+### `runtime.context_compacted`
+- source: `runtime`
+- 当前 payload:
+  - `reason: str`，`token_budget_exceeded:usage_tokens_before=…:threshold_tokens=…:pruned_tool_results=…:usage_tokens_after=…`（另有 `no_prunable_tool_content` / `already_pruned_view` / `compaction_unsized` 三种边界 reason）
+  - `compacted: bool`，仅在本次调用**实际发生缩减**时为 true
+  - `original_tool_result_count: int`、`retained_tool_result_count: int`（pairing 保留，因此两者相等）、`dropped_tool_result_count: int`（content 被占位文本替换的结果数）、`truncated_tool_result_count: int`
+  - `usage_tokens_before: int | None`：判定数字 = 实测锚点 + 增量估算（inexact）
+  - `usage_tokens_after: int | None`：裁剪后**实际发出的 segments** 上的同一口径数字，由 `assemble_provider_context` 实测写入
+  - `usage_tokens_estimated: bool`：恒为 true，提醒消费方这不是 provider usage
+  - `measured_anchor_tokens: int | None` / `estimated_delta_tokens: int | None`：这个数字里哪部分来自实测锚点（最近一次 provider usage 的 `input+cache_read+cache_write+output`）、哪部分是按 UTF-8 字节 / 4 估算的增量；锚点不可用时前者为 null
+  - `pruned_savings_tokens: int`
+  - `summary_anchor` / `projection_id` / `summary_source` / `summary_strategy` / `projection`
+- 该事件描述 runtime 对 provider view 做的**有界裁剪**：只替换最旧 tool 结果的 content，system/instruction 段与消息 pairing 不变；被裁内容带 artifact 时同时出现 `runtime_context_artifact_reference` 段，模型可经 `voidcode://artifact/<id>` 取回。计数与 usage 估算都必须真实（见 `docs/contracts/runtime-config.md` 的 `context_window.compaction`）。
+
+### `runtime.provider_context_recovery`
+- source: `runtime`
+- 当前 payload:
+  - `mode: str`：`prune`（本地有界裁剪后重试同一次调用）或 `promote`（本地裁剪已用尽/不可行，改用既有 fallback 链升级）
+  - `window_tokens_before: int | None`：失败模型的有效输入窗口（catalog `max_input_tokens`，缺失且不可比较时为 null）
+  - `window_tokens_after: int | None`：被选中的升级 target 的有效窗口（未选出候选时为 null）
+  - `candidate_count: int`：参与窗口比较的链上候选数
+  - `promotion_reason: str`：`larger_window`（选到严格更大的窗口）、`no_larger_candidate`（无严格更大的候选，保持链顺序）或 `unavailable`（不可 fallback / 链已穷尽）
+  - `outcome: str`（仅 `prune`）：`retry`（已重试）或 `unavailable`（无可裁剪内容，直接进入升级/失败）
+  - `reason: str`：触发 kind，当前为 `context_limit`
+  - `provider: str`、`model: str`：触发恢复的 provider/model
+  - `tool_result_count: int`、`dropped_tool_result_count: int`
+  - `usage_tokens_before` / `usage_tokens_after` 与 `measured_anchor_tokens` / `estimated_delta_tokens`：与 `runtime.context_compacted` 同义（实测锚点 + 字节/4 增量估算，inexact；after 为裁剪后重新组装的实际 segments 数字），并带 `usage_tokens_estimated: true`
+  - `compaction_reason: str | None`：该次恢复组装的 compaction reason（含 `compaction_unsized` 等边界）
+  - `provider_error_details: object`（可选，已 redact）
+- 升级是**窗口感知**的：候选仍来自既有 fallback 解析（同一 target 链、同一事件形状），但 `context_limit` lane 会按解析出的有效窗口（catalog `max_input_tokens`）跳过同窗/更小的候选，只挑**严格更大**的那个；没有严格更大的候选时保持既有链顺序，并在 `promotion_reason` 里如实标注 `no_larger_candidate`，不把「升了级」说成成功。该偏好只属于 `context_limit` lane，其它 provider 错误的 fallback 顺序不变。
+- 恢复语义：`context_limit` 是 runtime-owned lane（解析层不再硬判终态）。每个 turn 最多一次本地裁剪重试、最多一次 fallback 升级；`mode=promote` 之后若仍失败，以 `runtime.failed`（payload 含 `provider_error_kind=context_limit`、`resumable=true`、`context_limit_recovery`、`guidance`）结束，且该失败保持可 resume。
+
+### `runtime.reminder_injected`
+- source: `runtime`
+- 当前 payload:
+  - `reminder_type: str`：`todo`（terminal 回合的完成提醒）或 `todo_mid_run`（回合进行中的停滞提醒）
+  - `attempt: int`，本 cycle 内第几次提醒（从 1 开始）
+  - `max_attempts: int`，本 cycle 的提醒上限
+  - `incomplete_todo_count: int`，本次被提醒的未完成 todo 条目数
+  - `mutation_count: int`，仅 `reminder_type = "todo_mid_run"` 出现：本次 nudge 依据的变更类工具调用计数
+- 该事件表示运行时在一个 terminal assistant 回合（无待执行 tool call）通过 **per-call reminder 通道**注入了一条提醒：reminder 作为 provider context 的尾部 segment 只对本次 provider 调用可见，不写入 SQLite transcript，也不进入 per-call cache hash（`hook/percall.py` 的 `PerCallMessage(per_call=True)` 语义）。reminder 文本本身不是持久化 truth，客户端不得把它当作会话历史或用户输入回显。
+- 触发点、触发阈值、每 cycle 预算、抑制条件与计数器持久化（含 `reminder_type = "todo_mid_run"` 的 mid-run nudge，对齐 upstream pi-coding-agent 的 todo tracker）由 `docs/contracts/runtime-config.md` 的 `reminders` 节定义，该节是这些语义的唯一 owner；本条只描述本事件的 payload 与「运行时注入了一条提醒」这一事实。
 
 ### `graph.loop_step`
 - source: `graph`

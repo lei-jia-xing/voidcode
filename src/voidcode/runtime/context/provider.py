@@ -707,7 +707,11 @@ def _context_window_diagnostics(
     context_metadata: dict[str, object],
 ) -> list[RuntimeProviderContextDiagnostic]:
     diagnostics: list[RuntimeProviderContextDiagnostic] = []
-    dropped = context_metadata.get("dropped_tool_result_count")
+    continuity = context_metadata.get("projection")
+    continuity_payload = continuity if isinstance(continuity, dict) else None
+    dropped = continuity_payload.get("dropped_tool_result_count") if continuity_payload is not None else None
+    if isinstance(dropped, bool):
+        dropped = None
     if isinstance(dropped, int) and dropped > 0:
         diagnostics.append(
             RuntimeProviderContextDiagnostic(
@@ -719,8 +723,6 @@ def _context_window_diagnostics(
                 details={"dropped_tool_result_count": dropped},
             )
         )
-    continuity = context_metadata.get("projection")
-    continuity_payload = continuity if isinstance(continuity, dict) else None
     if continuity_payload is not None and not continuity_payload.get("summary_text") and dropped:
         diagnostics.append(
             RuntimeProviderContextDiagnostic(

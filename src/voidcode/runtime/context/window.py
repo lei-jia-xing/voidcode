@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 from ...agent.prompt_sections import dynamic_boundary_marker
 from ...hook.percall import PerCallRewriteOutcome
@@ -32,6 +33,31 @@ from .transforms import (
 _CONTINUITY_OBJECTIVE_PREVIEW_CHARS = 160
 _COMPACTION_PREVIEW_ITEM_LIMIT = 8
 _COMPACTION_PREVIEW_CHAR_LIMIT = 240
+
+#: Token accounting labels and estimator ratios (UTF-8 bytes / 4).
+_TOKEN_ESTIMATE_BYTES_PER_TOKEN = 4
+_TOKEN_RESERVE_NUMERATOR = 15
+_TOKEN_RESERVE_DENOMINATOR = 100
+#: Reserve floor for the compaction threshold (upstream: ``max(15% of window, 16384)``).
+DEFAULT_CONTEXT_RESERVE_TOKENS = 16_384
+
+#: Default bounded-pruning knobs (overridable by ``context_window.compaction``).
+DEFAULT_KEEP_RECENT_TOOL_TOKENS = 20_000
+DEFAULT_MIN_SAVINGS_TOKENS = 20_000
+DEFAULT_MIN_PRUNE_TOKENS = 50
+
+#: Tool results whose content is never replaced by a pruning placeholder: the
+#: plan surface (todo) and skill/rule bodies carry instructions the model must
+#: keep verbatim, and a placeholder would silently drop them.
+_PRUNE_PROTECTED_TOOL_NAMES: Final = frozenset({"todo", "skill"})
+#: Rule/rulebook reads go through the ``voidcode://rule/<name>`` internal URL
+#: (``tools/read.py::RULE_URI_PREFIX``), so that is the scheme worth protecting.
+#: Artifacts are deliberately *not* protected: pruning is what points the model at
+#: them.
+_PRUNE_PROTECTED_PATH_PREFIXES: Final = ("voidcode://rule/",)
+_PRUNE_PROTECTED_PATH_PARTS: Final = (".voidcode/rules",)
+#: Scalar ``data`` values longer than this are dropped from a pruned result.
+_PRUNE_SCALAR_DATA_CHARS = 256
 
 
 def _empty_tool_limits() -> dict[str, int]:
@@ -135,11 +161,20 @@ class ContextProjection:
 
 @dataclass(frozen=True, slots=True)
 class ContextWindowPolicy:
-    # Whole-context compaction is not performed without authoritative provider
-    # usage. This cap is an explicit character limit for one tool payload.
+    # Per-result bound: this cap is an explicit character limit for one tool
+    # payload. Whole-context pruning is token-budget driven (below), never
+    # character driven.
     default_tool_result_chars: int | None = 6_000
     per_tool_result_chars: Mapping[str, int] = field(default_factory=_empty_tool_limits)
     summary_strategy: Literal["deterministic", "model_assisted"] = "deterministic"
+    # Bounded pruning. Once the estimated provider payload reaches the budget
+    # threshold, the oldest prunable tool results have their content replaced by
+    # a bounded placeholder until the remaining tool content fits
+    # ``keep_recent_tool_tokens`` (estimated tokens, UTF-8 bytes / 4 — inexact).
+    compaction_enabled: bool = True
+    keep_recent_tool_tokens: int = DEFAULT_KEEP_RECENT_TOOL_TOKENS
+    min_savings_tokens: int = DEFAULT_MIN_SAVINGS_TOKENS
+    min_prune_tokens: int = DEFAULT_MIN_PRUNE_TOKENS
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "per_tool_result_chars", dict(self.per_tool_result_chars))
@@ -150,9 +185,22 @@ class ContextWindowPolicy:
                 raise ValueError("per_tool_result_chars tool names must be non-empty")
             if limit < 1:
                 raise ValueError("per_tool_result_chars limits must be >= 1")
+        for field_name in ("keep_recent_tool_tokens", "min_savings_tokens"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        if isinstance(self.min_prune_tokens, bool) or not isinstance(self.min_prune_tokens, int) or self.min_prune_tokens < 1:
+            raise ValueError("min_prune_tokens must be >= 1")
 
     def metadata_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {"version": 1, "summary_strategy": self.summary_strategy}
+        payload: dict[str, object] = {
+            "version": 1,
+            "summary_strategy": self.summary_strategy,
+            "compaction_enabled": self.compaction_enabled,
+            "keep_recent_tool_tokens": self.keep_recent_tool_tokens,
+            "min_savings_tokens": self.min_savings_tokens,
+            "min_prune_tokens": self.min_prune_tokens,
+        }
         if self.default_tool_result_chars is not None:
             payload["default_tool_result_chars"] = self.default_tool_result_chars
         if self.per_tool_result_chars:
@@ -179,6 +227,20 @@ class RuntimeContextWindow:
     original_tool_result_count: int = 0
     retained_tool_result_count: int = 0
     truncated_tool_result_count: int = 0
+    #: Results whose content was replaced by a bounded pruning placeholder; the
+    #: message/tool pairing is preserved, so ``original == retained + dropped``.
+    dropped_tool_result_count: int = 0
+    #: Decision token numbers before/after pruning: the measured provider anchor
+    #: plus an estimated increment (UTF-8 bytes / 4). ``None`` when the call
+    #: could not size the full payload.
+    usage_tokens_before: int | None = None
+    usage_tokens_after: int | None = None
+    #: Token accounting provenance: ``usage_tokens_*`` are the decision numbers
+    #: (anchor + estimated increment when the provider reported usage); these
+    #: fields say which part was measured and which was estimated.
+    measured_anchor_tokens: int | None = None
+    estimated_delta_tokens: int | None = None
+    pruned_savings_tokens: int = 0
     continuity_state: ContextProjection | None = None
     summary_anchor: str | None = None
     summary_source: dict[str, int] | None = None
@@ -194,6 +256,19 @@ class RuntimeContextWindow:
         }
         if self.truncated_tool_result_count:
             payload["truncated_tool_result_count"] = self.truncated_tool_result_count
+        if self.dropped_tool_result_count:
+            payload["dropped_tool_result_count"] = self.dropped_tool_result_count
+        if self.usage_tokens_before is not None:
+            payload["usage_tokens_before"] = self.usage_tokens_before
+            payload["usage_tokens_after"] = self.usage_tokens_after
+            payload["usage_tokens_estimated"] = True
+        # Provenance is always reported: a consumer must be able to tell a
+        # measured anchor from a pure estimate even when the call could not size
+        # the full payload (``usage_tokens_before`` absent).
+        payload["measured_anchor_tokens"] = self.measured_anchor_tokens
+        payload["estimated_delta_tokens"] = self.estimated_delta_tokens
+        if self.pruned_savings_tokens:
+            payload["pruned_savings_tokens"] = self.pruned_savings_tokens
         if self.continuity_state is not None:
             payload["projection"] = self.continuity_state.metadata_payload()
         if self.summary_anchor is not None:
@@ -215,6 +290,8 @@ class ToolResultView:
     clipped: bool = False
     original_content_chars: int | None = None
     content_char_limit: int | None = None
+    #: True when the budget replaced the content with a pruning placeholder.
+    pruned: bool = False
     _isolated_data: dict[str, object] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -240,11 +317,11 @@ class ToolResultView:
 
     @property
     def truncated(self) -> bool:
-        return self.clipped or self.result.truncated
+        return self.pruned or self.clipped or self.result.truncated
 
     @property
     def partial(self) -> bool:
-        return True if self.clipped else self.result.partial
+        return True if self.pruned or self.clipped else self.result.partial
 
     @property
     def reference(self) -> str | None:
@@ -264,11 +341,9 @@ class ToolResultView:
 
 @dataclass(frozen=True, slots=True)
 class ToolResultProjection:
-    prepared_results: tuple[ToolResultView, ...]
-    retained_indexes: tuple[int, ...]
-    dropped_indexes: tuple[int, ...]
+    #: Provider-facing views, in provider order (pairing preserved; content may
+    #: already carry char-cap clipping).
     retained_results: tuple[ToolResultView, ...]
-    dropped_results: tuple[ToolResultView, ...]
     truncated_count: int
 
 
@@ -280,6 +355,9 @@ class RuntimeAssembledContext:
     segments: tuple[RuntimeContextSegment, ...]
     metadata: dict[str, object]
     loaded_skills: tuple[dict[str, object], ...] = ()
+    #: The bounded provider view this assembly was rendered from: the compiled
+    #: window owns the honest compaction counts for the segments above.
+    context_window: RuntimeContextWindow | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -663,10 +741,6 @@ def _dropped_tool_diagnostics(
     return tuple(diagnostics)
 
 
-def _select_recent_tool_result_indexes(results: Sequence[ToolResult | ToolResultView]) -> tuple[int, ...]:
-    return tuple(range(len(results)))
-
-
 def _tool_limit_for_result(result: ToolResult | ToolResultView, policy: ContextWindowPolicy) -> int | None:
     return policy.per_tool_result_chars.get(result.tool_name, policy.default_tool_result_chars)
 
@@ -938,25 +1012,241 @@ def _pending_state_segment(session_metadata: Mapping[str, object]) -> RuntimeCon
     )
 
 
+def _result_data_bytes(result: ToolResult | ToolResultView) -> int:
+    """UTF-8 bytes of the result's ``data`` payload the provider receives.
+
+    Tool results carry their body in ``data`` (a read result's ``lines`` /
+    ``raw_content``), so a content-only estimate under-counts the real request.
+    ``json.dumps`` mirrors the adapters' wire encoding.
+    """
+    data = result.data
+    if not data:
+        return 0
+    try:
+        encoded = json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
+    except TypeError, ValueError:
+        return 0
+    return len(encoded.encode("utf-8"))
+
+
+def _result_payload_bytes(result: ToolResult | ToolResultView) -> int:
+    """Provider-visible UTF-8 bytes of one tool result (content plus its data payload)."""
+    return len((result.content or "").encode("utf-8")) + _result_data_bytes(result)
+
+
+def pruning_data_payload(result: ToolResult | ToolResultView, *, omitted_bytes: int) -> dict[str, object]:
+    """Bounded replacement for a pruned result's ``data``.
+
+    Scalars survive (path/status/line counts stay readable); containers and long
+    bodies are dropped, so the placeholder costs dozens of chars instead of the
+    whole payload while the value stays a JSON object (adapter wire shape
+    unchanged).
+    """
+    payload: dict[str, object] = {"context_pruned": True, "omitted_payload_bytes": omitted_bytes}
+    for key, value in result.data.items():
+        if isinstance(value, (dict, list, tuple, set)):
+            continue
+        if isinstance(value, str) and len(value) > _PRUNE_SCALAR_DATA_CHARS:
+            continue
+        payload[key] = value
+    return payload
+
+
+def _positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _pruned_view_count(results: Sequence[ToolResult | ToolResultView]) -> int:
+    """How many views in a provider view already carry a pruning placeholder."""
+    return sum(1 for result in results if isinstance(result, ToolResultView) and result.pruned)
+
+
+def _is_prune_protected(result: ToolResult | ToolResultView) -> bool:
+    """Whether a result's content must survive pruning verbatim."""
+    if result.tool_name in _PRUNE_PROTECTED_TOOL_NAMES:
+        return True
+    raw_path = result.data.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return False
+    if raw_path.startswith(_PRUNE_PROTECTED_PATH_PREFIXES):
+        return True
+    return any(part in raw_path for part in _PRUNE_PROTECTED_PATH_PARTS)
+
+
+def pruning_placeholder(result: ToolResult | ToolResultView, *, omitted_bytes: int, omitted_tokens: int) -> str:
+    """Bounded placeholder that states the omitted scale (and how to recover it)."""
+    artifact_id = _artifact_metadata_string(result, "artifact_id")
+    parts = [
+        f"[Runtime context pruning: {result.tool_name} result content omitted;",
+        f"omitted_bytes={omitted_bytes};",
+        f"estimated_omitted_tokens={omitted_tokens};",
+        f"status={result.status};",
+        "message and tool pairing preserved.",
+    ]
+    if artifact_id is not None:
+        parts.append(f"artifact_id={artifact_id};")
+        parts.append(f'read(path="voidcode://artifact/{artifact_id}") recovers the full output.')
+    parts.append("]")
+    return " ".join(parts)
+
+
+@dataclass(frozen=True, slots=True)
+class PrunedToolResults:
+    """Outcome of bounded content pruning over one provider view."""
+
+    rendered_results: tuple[ToolResultView, ...]
+    #: Pre-placeholder views of the pruned results, in provider order.
+    pruned_views: tuple[ToolResultView, ...]
+    pruned_indexes: tuple[int, ...]
+    saved_tokens: int = 0
+
+
+def prune_tool_results_for_budget(
+    results: tuple[ToolResultView, ...],
+    *,
+    target_tokens: int,
+    min_savings_tokens: int,
+    min_prune_tokens: int,
+) -> PrunedToolResults:
+    """Replace the oldest prunable tool content with placeholders until it fits ``target_tokens``.
+
+    Deterministic: the outcome depends only on the result order, the budget and
+    the protection set. Results below ``min_prune_tokens`` and protected results
+    are left verbatim; when the reclaimed estimate is under
+    ``min_savings_tokens`` nothing is pruned at all, so a marginal overage never
+    rewrites the view.
+    """
+    remaining = sum(estimate_tokens_for_bytes(_result_payload_bytes(result)) for result in results)
+    if remaining <= target_tokens:
+        return PrunedToolResults(rendered_results=results, pruned_views=(), pruned_indexes=())
+    rendered = list(results)
+    pruned_views: list[ToolResultView] = []
+    pruned_indexes: list[int] = []
+    saved_tokens = 0
+    for index, view in enumerate(results):
+        if remaining <= target_tokens:
+            break
+        content = view.content or ""
+        payload_bytes = _result_payload_bytes(view)
+        payload_tokens = estimate_tokens_for_bytes(payload_bytes)
+        if payload_tokens < min_prune_tokens or _is_prune_protected(view):
+            continue
+        placeholder = pruning_placeholder(view, omitted_bytes=payload_bytes, omitted_tokens=payload_tokens)
+        pruned_data = pruning_data_payload(view, omitted_bytes=_result_data_bytes(view)) if view.data else view.data
+        placeholder_bytes = len(placeholder.encode("utf-8")) + len(
+            json.dumps(pruned_data, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        )
+        reclaimed = payload_tokens - estimate_tokens_for_bytes(placeholder_bytes)
+        if reclaimed <= 0:
+            continue
+        rendered[index] = replace(
+            view,
+            result=replace(view.result, data=pruned_data),
+            content=placeholder,
+            pruned=True,
+            original_content_chars=len(content),
+            content_char_limit=None,
+        )
+        pruned_views.append(view)
+        pruned_indexes.append(index)
+        saved_tokens += reclaimed
+        remaining -= reclaimed
+    if saved_tokens < min_savings_tokens:
+        return PrunedToolResults(rendered_results=results, pruned_views=(), pruned_indexes=())
+    return PrunedToolResults(
+        rendered_results=tuple(rendered),
+        pruned_views=tuple(pruned_views),
+        pruned_indexes=tuple(pruned_indexes),
+        saved_tokens=saved_tokens,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CompactionBudget:
+    """Budget inputs that authorize bounded pruning for one provider call.
+
+    The runtime resolves these from the effective config (catalog window plus the
+    ``context_window.compaction`` group); ``None`` means "not sized", which leaves
+    pruning to a caller that can size the whole request.
+    """
+
+    context_window: int | None = None
+    threshold_tokens: int | None = None
+    reserve_tokens: int | None = None
+    #: Recovery target: prune until the *whole* provider view fits the threshold
+    #: (catalog window minus reserve), not merely until the tool content fits
+    #: ``keep_recent_tool_tokens``. Set by the runtime's context-limit recovery.
+    fit_payload: bool = False
+    #: Last provider-reported context size (``provider_usage.latest``); when
+    #: present the budget decision is anchor + estimated increment instead of a
+    #: pure estimate. ``None`` means no usable report.
+    anchor_tokens: int | None = None
+
+
+def _continuity_provider_sections(
+    continuity_state: ContextProjection | None,
+    *,
+    prompt: str,
+) -> tuple[str, tuple[PromptAssemblySection, ...]]:
+    """Render ``(continuity summary, artifact reference sections)`` for a plan build."""
+    if continuity_state is None:
+        return "", ()
+    summary = ""
+    summary_text = continuity_state.summary_text
+    if isinstance(summary_text, str) and summary_text.strip():
+        provider_summary = _provider_continuity_summary(summary_text.strip(), prompt=prompt)
+        if provider_summary:
+            summary = f"Runtime context projection:\n{provider_summary}"
+    return (
+        summary,
+        tuple(
+            PromptAssemblySection(
+                role=segment.role,
+                content=segment.content or "",
+                source=metadata_source(segment.metadata or {}, fallback="runtime_context_artifact_reference"),
+                tier="recent",
+                metadata={} if segment.metadata is None else dict(segment.metadata),
+            )
+            for segment in _artifact_reference_segments(continuity_state)
+        ),
+    )
+
+
+def _provider_payload_bytes(
+    plan: PromptAssemblyPlan,
+    *,
+    replayed_conversation_segments: tuple[RuntimeContextSegment, ...],
+) -> int:
+    """Chars the provider sees outside the current prompt and the tool results.
+
+    The prompt is excluded because :func:`prepare_provider_context` adds it
+    itself; the tool results are excluded because they are the content the budget
+    decision actually bounds.
+    """
+    plan_bytes = sum(len(section.content.encode("utf-8")) for section in plan.sections if section.source != "current_user_prompt")
+    replay_bytes = sum(len((segment.content or "").encode("utf-8")) for segment in replayed_conversation_segments)
+    return plan_bytes + replay_bytes
+
+
 def project_tool_results_for_context_window(
     *,
     tool_results: tuple[ToolResult | ToolResultView, ...],
     policy: ContextWindowPolicy,
 ) -> ToolResultProjection:
+    """Char-cap every result into its provider-facing view (no pruning decision).
+
+    Budget pruning is a separate, explicitly budgeted step
+    (:func:`prune_tool_results_for_budget`); this projection only bounds each
+    individual payload.
+    """
     prepared_results: list[ToolResultView] = []
     truncated_count = 0
     for result in tool_results:
         prepared_result, was_truncated = _truncated_view_for_result(result, limit=_tool_limit_for_result(result, policy))
         prepared_results.append(prepared_result)
         truncated_count += int(was_truncated)
-    indexes = _select_recent_tool_result_indexes(prepared_results)
-    retained_results = tuple(prepared_results)
     return ToolResultProjection(
-        prepared_results=tuple(prepared_results),
-        retained_indexes=indexes,
-        dropped_indexes=(),
-        retained_results=retained_results,
-        dropped_results=(),
+        retained_results=tuple(prepared_results),
         truncated_count=truncated_count,
     )
 
@@ -970,59 +1260,164 @@ def prepare_provider_context(
     summary_projector: Callable[[Mapping[str, object]], str] | None = None,
     context_window: int | None = None,
     threshold_tokens: int | None = None,
-    threshold_percent: int | float | None = None,
     reserve_tokens: int | None = None,
     compaction_enabled: bool = True,
     before_compact: BeforeCompactInput | None = None,
+    payload_bytes: int | None = None,
+    fit_payload: bool = False,
+    anchor_tokens: int | None = None,
 ) -> RuntimeContextWindow:
+    """Compile the bounded provider view for one call.
+
+    ``payload_bytes`` sizes everything else the provider sees on this call
+    (instruction/system sections, replayed conversation, transform injections);
+    it is required to authorize a pruning decision, because a token estimate that
+    ignores those sections cannot know whether the request fits. ``None`` means
+    the caller cannot size the full payload: this call then only applies
+    per-result char caps and leaves pruning to the payload-aware caller
+    (:func:`assemble_provider_context`).
+
+    Every token decision number is the measured provider anchor plus an estimate
+    of everything added since: the anchor is the last provider-reported context
+    size (``anchor_tokens``), the increment is estimated at UTF-8 bytes / 4, and
+    """
     effective_policy = policy or ContextWindowPolicy()
     projection = project_tool_results_for_context_window(tool_results=tool_results, policy=effective_policy)
-    usage_tokens = estimate_tokens_for_chars(len(prompt) + sum(len(result.content or "") for result in projection.prepared_results))
-    if not should_compact(
-        usage_tokens,
-        context_window,
-        enabled=compaction_enabled,
-        strategy=effective_policy.summary_strategy,
-        threshold_tokens=threshold_tokens,
-        threshold_percent=threshold_percent,
-        reserve_tokens=reserve_tokens,
-    ):
+    measured_anchor_tokens = anchor_tokens if _positive_int(anchor_tokens) else None
+    counts: dict[str, int] = {
+        "original_tool_result_count": len(tool_results),
+        "retained_tool_result_count": len(projection.retained_results),
+        "truncated_tool_result_count": projection.truncated_count,
+    }
+
+    def _view(
+        *,
+        results: tuple[ToolResultView, ...],
+        compacted: bool,
+        reason: str | None,
+        dropped: int = 0,
+        savings: int = 0,
+        usage_before: int | None = None,
+        usage_after: int | None = None,
+        delta: int | None = None,
+        continuity: ContextProjection | None = None,
+        summary_anchor: str | None = None,
+        summary_source: dict[str, int] | None = None,
+        summary_strategy: Literal["deterministic", "model_assisted", "fallback"] = "deterministic",
+        fallback_reason: str | None = None,
+    ) -> RuntimeContextWindow:
+        """One compiled view; every branch differs only in the fields it passes."""
         return RuntimeContextWindow(
             prompt=prompt,
-            tool_results=projection.retained_results,
-            compacted=False,
-            compaction_reason=None,
-            original_tool_result_count=len(tool_results),
-            retained_tool_result_count=len(projection.retained_results),
-            truncated_tool_result_count=projection.truncated_count,
-            summary_strategy="deterministic",
+            tool_results=results,
+            compacted=compacted,
+            compaction_reason=reason,
+            **counts,
+            dropped_tool_result_count=dropped,
+            usage_tokens_before=usage_before,
+            usage_tokens_after=usage_after,
+            measured_anchor_tokens=measured_anchor_tokens,
+            estimated_delta_tokens=delta,
+            pruned_savings_tokens=savings,
+            continuity_state=continuity,
+            summary_anchor=summary_anchor,
+            summary_source=summary_source,
+            summary_strategy=summary_strategy,
+            summary_fallback_reason=fallback_reason,
         )
+
+    if payload_bytes is None:
+        return _view(results=projection.retained_results, compacted=False, reason=None)
+    delta_tokens = estimate_tokens_for_bytes(
+        payload_bytes + len(prompt.encode("utf-8")) + sum(_result_payload_bytes(result) for result in projection.retained_results)
+    )
+    usage_tokens = (measured_anchor_tokens or 0) + delta_tokens
     threshold = resolve_threshold_tokens(
         context_window,
         threshold_tokens=threshold_tokens,
-        threshold_percent=threshold_percent,
         reserve_tokens=reserve_tokens,
     )
+    if threshold <= 0:
+        # Nothing sizes this model's compaction (catalog miss): say so instead of
+        # silently returning an unbounded view.
+        return _view(
+            results=projection.retained_results,
+            compacted=False,
+            reason=f"compaction_unsized:usage_tokens={usage_tokens}:no_context_window",
+            usage_before=usage_tokens,
+            usage_after=usage_tokens,
+            delta=delta_tokens,
+        )
     # ponytail: sync-only seam, no executor calls; custom_summary capped by
     # existing preview/projector limits, add explicit max chars if projector input grows.
     if before_compact is not None and before_compact.cancel:
-        return RuntimeContextWindow(
-            prompt=prompt,
-            tool_results=projection.retained_results,
+        return _view(
+            results=projection.retained_results,
             compacted=False,
-            compaction_reason=before_compact.reason,
-            original_tool_result_count=len(tool_results),
-            retained_tool_result_count=len(projection.retained_results),
-            truncated_tool_result_count=projection.truncated_count,
-            summary_strategy="deterministic",
+            reason=before_compact.reason,
+            usage_before=usage_tokens,
+            usage_after=usage_tokens,
+            delta=delta_tokens,
         )
+    if not should_compact(
+        usage_tokens,
+        context_window,
+        enabled=compaction_enabled and effective_policy.compaction_enabled,
+        strategy=effective_policy.summary_strategy,
+        threshold_tokens=threshold_tokens,
+        reserve_tokens=reserve_tokens,
+    ):
+        # Under threshold the view stays byte-identical; a view that already
+        # carries placeholders (recompiled from an earlier bounded window) still
+        # reports them instead of claiming nothing was dropped.
+        already_pruned = _pruned_view_count(projection.retained_results)
+        return _view(
+            results=projection.retained_results,
+            compacted=already_pruned > 0,
+            reason=(f"already_pruned_view:pruned_tool_results={already_pruned}" if already_pruned else None),
+            dropped=already_pruned,
+            usage_before=usage_tokens,
+            usage_after=usage_tokens,
+            delta=delta_tokens,
+        )
+    prune_target = effective_policy.keep_recent_tool_tokens
+    if fit_payload:
+        # Recovery asks for the whole view to fit, so the tool results may only
+        # keep whatever the instructions/prompt leave under the threshold.
+        non_tool_tokens = estimate_tokens_for_bytes(payload_bytes + len(prompt.encode("utf-8")))
+        prune_target = max(0, threshold - non_tool_tokens)
+    pruned = prune_tool_results_for_budget(
+        projection.retained_results,
+        target_tokens=prune_target,
+        # The savings floor guards *routine* pruning against churn. Recovery
+        # (``fit_payload``) exists because the request did not fit at all, so a
+        # small but sufficient reclaim must not be rejected for being small; the
+        # per-result ``min_prune_tokens`` floor still applies.
+        min_savings_tokens=0 if fit_payload else effective_policy.min_savings_tokens,
+        min_prune_tokens=effective_policy.min_prune_tokens,
+    )
+    if not pruned.pruned_indexes:
+        return _view(
+            results=projection.retained_results,
+            compacted=False,
+            reason=(
+                "token_budget_exceeded:no_prunable_tool_content:"
+                f"usage_tokens={usage_tokens}:threshold_tokens={threshold}:keep_recent_tool_tokens={effective_policy.keep_recent_tool_tokens}"
+            ),
+            usage_before=usage_tokens,
+            usage_after=usage_tokens,
+            delta=delta_tokens,
+        )
+    delta_tokens_after = estimate_tokens_for_bytes(
+        payload_bytes + len(prompt.encode("utf-8")) + sum(_result_payload_bytes(result) for result in pruned.rendered_results)
+    )
     continuity_state = _build_continuity_state(
         prompt=prompt,
         session_metadata=session_metadata,
-        dropped_results=projection.dropped_results,
-        dropped_result_indexes=projection.dropped_indexes,
-        retained_results=projection.retained_results,
-        retained_count=len(projection.retained_results),
+        dropped_results=pruned.pruned_views,
+        dropped_result_indexes=pruned.pruned_indexes,
+        retained_results=pruned.rendered_results,
+        retained_count=len(pruned.rendered_results),
         preview_item_limit=_COMPACTION_PREVIEW_ITEM_LIMIT,
         preview_char_limit=_COMPACTION_PREVIEW_CHAR_LIMIT,
     )
@@ -1045,19 +1440,25 @@ def prepare_provider_context(
     )
     continuity_state = replace(continuity_state, summary_text=summary_text)
     summary_anchor, summary_source = continuity_summary_metadata(continuity_state)
-    return RuntimeContextWindow(
-        prompt=prompt,
-        tool_results=projection.retained_results,
+    return _view(
+        results=pruned.rendered_results,
         compacted=True,
-        compaction_reason=f"token_budget_exceeded:usage_tokens={usage_tokens}:threshold_tokens={threshold}",
-        original_tool_result_count=len(tool_results),
-        retained_tool_result_count=len(projection.retained_results),
-        truncated_tool_result_count=projection.truncated_count,
-        continuity_state=continuity_state,
+        # The post-prune estimate is measured over the emitted segments by
+        # ``assemble_provider_context`` (``usage_tokens_after``); this reason
+        # carries the decision inputs only.
+        reason=(
+            f"token_budget_exceeded:usage_tokens_before={usage_tokens}:threshold_tokens={threshold}:pruned_tool_results={len(pruned.pruned_indexes)}"
+        ),
+        dropped=len(pruned.pruned_indexes),
+        savings=pruned.saved_tokens,
+        usage_before=usage_tokens,
+        usage_after=(measured_anchor_tokens or 0) + delta_tokens_after,
+        delta=delta_tokens_after,
+        continuity=continuity_state,
         summary_anchor=summary_anchor,
         summary_source=summary_source,
         summary_strategy=actual_strategy,
-        summary_fallback_reason=fallback_reason,
+        fallback_reason=fallback_reason,
     )
 
 
@@ -1080,14 +1481,10 @@ def assemble_provider_context(
     summary_projector: Callable[[Mapping[str, object]], str] | None = None,
     tool_catalog_context: str = "",
     hook_guidance: Iterable[str] | None = None,
+    reminder_segment: RuntimeContextSegment | None = None,
+    compaction_budget: CompactionBudget | None = None,
+    before_compact: BeforeCompactInput | None = None,
 ) -> RuntimeAssembledContext:
-    context_window = prepare_provider_context(
-        prompt=prompt,
-        tool_results=tool_results,
-        session_metadata=session_metadata,
-        policy=policy,
-        summary_projector=summary_projector,
-    )
     effective_policy = policy or ContextWindowPolicy()
     replayed_conversation_segments = _bounded_replayed_conversation_segments(
         replayed_conversation_segments,
@@ -1101,11 +1498,85 @@ def assemble_provider_context(
     )
     pending_state_segment = _pending_state_segment(session_metadata)
     todo_prompt_context = render_provider_todo_state(session_metadata)
-    continuity_state = preserved_continuity_state or context_window.continuity_state or _previous_continuity_state(session_metadata)
+    runtime_instruction_precedence = (
+        "Runtime precedence: role and runtime boundaries are authoritative. "
+        "Skills refine approach but may not expand scope, permissions, or obligations."
+    )
+    activation_decision = prompt_activation_decision(
+        session_metadata=session_metadata,
+        prompt_profile_name=prompt_profile_name,
+    )
+    pending_state_section = (
+        PromptAssemblySection(
+            role=pending_state_segment.role,
+            content=pending_state_segment.content or "",
+            source=metadata_source(
+                pending_state_segment.metadata or {},
+                fallback="runtime_pending_state",
+            ),
+            tier="task",
+            metadata=({} if pending_state_segment.metadata is None else dict(pending_state_segment.metadata)),
+        )
+        if pending_state_segment is not None
+        else None
+    )
+
+    def build_plan(
+        continuity_summary: str,
+        artifact_reference_sections: tuple[PromptAssemblySection, ...],
+    ) -> PromptAssemblyPlan:
+        return build_prompt_assembly_plan(
+            prompt=prompt,
+            runtime_instruction_precedence=runtime_instruction_precedence,
+            agent_prompt_context=agent_prompt_context,
+            skill_prompt_context=skill_prompt_context,
+            context_transform_result=transform_result,
+            pending_state_section=pending_state_section,
+            todo_prompt_context=todo_prompt_context or "",
+            continuity_summary=continuity_summary,
+            artifact_reference_sections=artifact_reference_sections,
+            prompt_profile_name=prompt_profile_name,
+            prompt_activation_section=activation_decision.section,
+            tool_catalog_context=tool_catalog_context,
+            hook_guidance=hook_guidance if hook_guidance else None,
+        )
+
+    previous_continuity_state = _previous_continuity_state(session_metadata)
+    previous_continuity_pieces = _continuity_provider_sections(previous_continuity_state, prompt=prompt)
+    # The pre-prune plan sizes every provider-visible section except the tool
+    # results, so the budget decision sees the real payload rather than the
+    # prompt alone. Only the continuity summary/artifact references can change
+    # while pruning, so the plan is rebuilt only when they actually did.
+    baseline_plan = build_plan(*previous_continuity_pieces)
+    context_window = prepare_provider_context(
+        prompt=prompt,
+        tool_results=tool_results,
+        session_metadata=session_metadata,
+        policy=effective_policy,
+        summary_projector=summary_projector,
+        context_window=None if compaction_budget is None else compaction_budget.context_window,
+        threshold_tokens=None if compaction_budget is None else compaction_budget.threshold_tokens,
+        reserve_tokens=None if compaction_budget is None else compaction_budget.reserve_tokens,
+        before_compact=before_compact,
+        fit_payload=compaction_budget is not None and compaction_budget.fit_payload,
+        payload_bytes=(
+            None
+            if compaction_budget is None
+            else _provider_payload_bytes(baseline_plan, replayed_conversation_segments=replayed_conversation_segments)
+        ),
+        anchor_tokens=None if compaction_budget is None else compaction_budget.anchor_tokens,
+    )
+    # This turn's pruning outcome outranks the persisted projection: the artifact
+    # references and dropped-result facts must describe the view the provider is
+    # about to receive, and the persisted projection is only carried forward
+    # through ``_build_continuity_state``.
+    continuity_state = context_window.continuity_state or preserved_continuity_state or previous_continuity_state
     if continuity_state is not None and continuity_state.projection_id is None:
         anchor, _ = continuity_summary_metadata(continuity_state)
         if anchor is not None:
             continuity_state = replace(continuity_state, projection_id=anchor)
+    continuity_pieces = _continuity_provider_sections(continuity_state, prompt=prompt)
+    assembly_plan = baseline_plan if continuity_pieces == previous_continuity_pieces else build_plan(*continuity_pieces)
     metadata_payload = context_window.metadata_payload()
     if continuity_state is not None and "projection" not in metadata_payload:
         metadata_payload["projection"] = continuity_state.metadata_payload()
@@ -1115,65 +1586,8 @@ def assemble_provider_context(
             metadata_payload["summary_anchor"] = summary_anchor
         if summary_source is not None:
             metadata_payload["summary_source"] = summary_source
-    continuity_summary = ""
-    artifact_reference_sections: tuple[PromptAssemblySection, ...] = ()
-    if continuity_state is not None:
-        summary_text = continuity_state.summary_text
-        if isinstance(summary_text, str) and summary_text.strip():
-            provider_summary = _provider_continuity_summary(summary_text.strip(), prompt=prompt)
-            if provider_summary:
-                continuity_summary = f"Runtime context projection:\n{provider_summary}"
-        artifact_reference_sections = tuple(
-            PromptAssemblySection(
-                role=segment.role,
-                content=segment.content or "",
-                source=metadata_source(
-                    segment.metadata or {},
-                    fallback="runtime_context_artifact_reference",
-                ),
-                tier="recent",
-                metadata={} if segment.metadata is None else dict(segment.metadata),
-            )
-            for segment in _artifact_reference_segments(continuity_state)
-        )
     if transform_result.traces:
         metadata_payload["context_transforms"] = transform_result.metadata_payload()
-    runtime_instruction_precedence = (
-        "Runtime precedence: role and runtime boundaries are authoritative. "
-        "Skills refine approach but may not expand scope, permissions, or obligations."
-    )
-    activation_decision = prompt_activation_decision(
-        session_metadata=session_metadata,
-        prompt_profile_name=prompt_profile_name,
-    )
-    assembly_plan = build_prompt_assembly_plan(
-        prompt=prompt,
-        runtime_instruction_precedence=runtime_instruction_precedence,
-        agent_prompt_context=agent_prompt_context,
-        skill_prompt_context=skill_prompt_context,
-        context_transform_result=transform_result,
-        pending_state_section=(
-            PromptAssemblySection(
-                role=pending_state_segment.role,
-                content=pending_state_segment.content or "",
-                source=metadata_source(
-                    pending_state_segment.metadata or {},
-                    fallback="runtime_pending_state",
-                ),
-                tier="task",
-                metadata=({} if pending_state_segment.metadata is None else dict(pending_state_segment.metadata)),
-            )
-            if pending_state_segment is not None
-            else None
-        ),
-        todo_prompt_context=todo_prompt_context or "",
-        continuity_summary=continuity_summary,
-        artifact_reference_sections=artifact_reference_sections,
-        prompt_profile_name=prompt_profile_name,
-        prompt_activation_section=activation_decision.section,
-        tool_catalog_context=tool_catalog_context,
-        hook_guidance=hook_guidance if hook_guidance else None,
-    )
     metadata_payload["prompt_stack"] = assembly_plan.fragment_metadata_payload()
     metadata_payload["prompt_activation"] = activation_decision.metadata
     _add_prompt_cache_metadata(metadata_payload, assembly_plan)
@@ -1225,6 +1639,11 @@ def assemble_provider_context(
                     metadata={"source": "retained_tool_result", "tier": "recent"},
                 )
             )
+            pruned_metadata: dict[str, object] = {}
+            if isinstance(result, ToolResultView) and result.pruned:
+                pruned_metadata["pruned"] = True
+                if result.original_content_chars is not None:
+                    pruned_metadata["original_content_chars"] = result.original_content_chars
             segments.append(
                 RuntimeContextSegment(
                     role="tool",
@@ -1240,9 +1659,26 @@ def assemble_provider_context(
                         "truncated": result.truncated,
                         "partial": result.partial,
                         "reference": result.reference,
+                        **pruned_metadata,
                     },
                 )
             )
+    if compaction_budget is not None:
+        # Measured on the segments the provider will actually receive (the
+        # per-call reminder is appended after this and is not part of the
+        # compaction decision). Estimated tokens, never provider usage.
+        measured_payload_tokens = estimate_tokens_for_bytes(sum(len((segment.content or "").encode("utf-8")) for segment in segments))
+        context_window = replace(
+            context_window,
+            usage_tokens_after=(context_window.measured_anchor_tokens or 0) + measured_payload_tokens,
+            estimated_delta_tokens=measured_payload_tokens,
+        )
+        metadata_payload["usage_tokens_after"] = context_window.usage_tokens_after
+        metadata_payload["usage_tokens_estimated"] = True
+    if reminder_segment is not None:
+        # Tail-appended per-call reminder: reaches the provider for this call
+        # only (see ``segments_to_percall_messages``), never the transcript.
+        segments.append(reminder_segment)
     metadata_payload["context_tiers"] = _context_tier_metadata(segments)
     metadata_payload["context_tier_policy"] = {
         "version": 1,
@@ -1258,6 +1694,7 @@ def assemble_provider_context(
         segments=tuple(segments),
         metadata=metadata_payload,
         loaded_skills=loaded_skills,
+        context_window=context_window,
     )
 
 
@@ -1288,32 +1725,56 @@ def _add_prompt_cache_metadata(
 
 # Token estimator seam (deterministic-first, no tokenizer dependency).
 
-_TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4
-_TOKEN_RESERVE_NUMERATOR = 15
-_TOKEN_RESERVE_DENOMINATOR = 100
+#: Local estimator: UTF-8 bytes / 4 (ceil). Matches the upstream pi-agent-core
+#: default (`(byteLength(text) + 3) >> 2`), and unlike a per-character ratio it
+#: does not under-count non-ASCII payloads (Chinese text is ~3 bytes per char).
 
 
-@dataclass(frozen=True, slots=True)
-class TokenBudgetCheck:
-    """Verdict from :func:`check_token_budget`."""
-
-    fits: bool
-    tokens: int
-    exact: bool = False
-
-
-def estimate_tokens_for_chars(chars: int, chars_per_token: int = _TOKEN_ESTIMATE_CHARS_PER_TOKEN) -> int:
-    """Ceiling char/4 guess; non-positive input estimates to 0."""
-    if chars <= 0:
+def estimate_tokens_for_bytes(
+    byte_count: int,
+    bytes_per_token: int = _TOKEN_ESTIMATE_BYTES_PER_TOKEN,
+) -> int:
+    """Ceiling UTF-8-bytes/4 guess; non-positive input estimates to 0."""
+    if byte_count <= 0:
         return 0
-    if chars_per_token <= 0:
-        raise ValueError("chars_per_token must be >= 1")
-    return -(-chars // chars_per_token)
+    if bytes_per_token <= 0:
+        raise ValueError("bytes_per_token must be >= 1")
+    return -(-byte_count // bytes_per_token)
+
+
+def provider_usage_anchor_tokens(session_metadata: Mapping[str, object]) -> int | None:
+    """Last provider-reported context size, usable as a measured anchor.
+
+    Upstream semantics: ``input + cache_read + cache_write + output`` -- the
+    reported input (cache reads included) plus this turn's output, because the
+    output becomes history on the next request. voidcode's usage buckets *are*
+    the provider's own numbers (there is no separate orchestration bucket to
+    subtract), so nothing is deducted here. A missing or all-zero report has no
+    anchor to offer and returns ``None``.
+    """
+    raw_usage = session_metadata.get("provider_usage")
+    if not isinstance(raw_usage, dict):
+        return None
+    raw_latest = raw_usage.get("latest")
+    if not isinstance(raw_latest, dict):
+        return None
+    total = 0
+    reported = False
+    for key in ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens"):
+        value = raw_latest.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            total += value
+            reported = True
+    return total if reported and total > 0 else None
+
+
+def _reserve_floor(floor: int) -> int:
+    return floor if isinstance(floor, int) and not isinstance(floor, bool) and floor >= 0 else 0
 
 
 def effective_reserve_tokens(context_window: int | None, floor: int = 0) -> int:
     """15% output reserve over the catalog window; None/degenerate → floor, never raises."""
-    safe_floor = max(0, floor) if isinstance(floor, int) and not isinstance(floor, bool) else 0
+    safe_floor = _reserve_floor(floor)
     if context_window is None or isinstance(context_window, bool) or not isinstance(context_window, int) or context_window <= 0:
         return safe_floor
     return max(
@@ -1326,33 +1787,16 @@ def resolve_budget_reserve_tokens(
     context_window: int | None,
     *,
     reserve_tokens: int | None = None,
-    floor: int = 0,
+    floor: int = DEFAULT_CONTEXT_RESERVE_TOKENS,
 ) -> int:
-    """Explicit override wins; otherwise derive from the catalog window (None → floor)."""
+    """Explicit override wins; otherwise ``max(15% of the catalog window, floor)``.
+
+    The default floor is upstream's 16384, so a small window keeps a usable
+    reserve instead of shrinking to a few percent of itself.
+    """
     if reserve_tokens is not None and isinstance(reserve_tokens, int) and not isinstance(reserve_tokens, bool) and reserve_tokens >= 0:
         return reserve_tokens
     return effective_reserve_tokens(context_window, floor)
-
-
-def check_token_budget(
-    text: str | Sequence[str] | None,
-    budget_tokens: int,
-    *,
-    chars_per_token: int = _TOKEN_ESTIMATE_CHARS_PER_TOKEN,
-) -> TokenBudgetCheck:
-    """Cheap-first probe: byte length is a hard upper bound, so a fitting bound skips estimation."""
-    if text is None:
-        combined = ""
-    elif isinstance(text, str):
-        combined = text
-    else:
-        combined = "".join(text)
-    budget = budget_tokens if isinstance(budget_tokens, int) and not isinstance(budget_tokens, bool) else 0
-    byte_len = len(combined.encode("utf-8"))
-    if byte_len <= budget:
-        return TokenBudgetCheck(fits=True, tokens=byte_len, exact=False)
-    estimated = estimate_tokens_for_chars(len(combined), chars_per_token)
-    return TokenBudgetCheck(fits=estimated <= budget, tokens=estimated, exact=False)
 
 
 def _clamp_threshold(value: int, context_window: int) -> int:
@@ -1370,19 +1814,20 @@ def resolve_threshold_tokens(
     context_window: int | None,
     *,
     threshold_tokens: int | None = None,
-    threshold_percent: int | float | None = None,
     reserve_tokens: int | None = None,
-    floor: int = 0,
+    floor: int = DEFAULT_CONTEXT_RESERVE_TOKENS,
 ) -> int:
-    """Fixed tokens (clamped [1, cw-1]) beat percent (clamped [1, 99]); else cw minus reserve."""
-    if context_window is None or isinstance(context_window, bool) or not isinstance(context_window, int) or context_window <= 0:
-        return 0
+    """An explicit fixed threshold (clamped [1, cw-1]) beats the derived one.
+
+    An explicit ``threshold_tokens`` is authoritative even without a catalog
+    window: only the reserve-derived threshold needs one, so a model the catalog
+    does not describe can still opt into bounded pruning.
+    """
     fixed = _coerce_threshold_int(threshold_tokens)
+    if context_window is None or isinstance(context_window, bool) or not isinstance(context_window, int) or context_window <= 0:
+        return max(1, fixed) if fixed is not None and fixed > 0 else 0
     if fixed is not None:
         return _clamp_threshold(fixed, context_window)
-    if threshold_percent is not None and isinstance(threshold_percent, (int, float)) and not isinstance(threshold_percent, bool):
-        clamped_percent = max(1, min(int(threshold_percent), 99))
-        return _clamp_threshold((context_window * clamped_percent) // 100, context_window)
     reserve = resolve_budget_reserve_tokens(context_window, reserve_tokens=reserve_tokens, floor=floor)
     return max(1, context_window - reserve)
 
@@ -1394,7 +1839,6 @@ def should_compact(
     enabled: bool = True,
     strategy: str = "deterministic",
     threshold_tokens: int | None = None,
-    threshold_percent: int | float | None = None,
     reserve_tokens: int | None = None,
 ) -> bool:
     """True when usage reaches the compaction threshold; disabled/off/degenerate never compacts."""
@@ -1408,7 +1852,6 @@ def should_compact(
     threshold = resolve_threshold_tokens(
         context_window,
         threshold_tokens=threshold_tokens,
-        threshold_percent=threshold_percent,
         reserve_tokens=reserve_tokens,
     )
     if threshold <= 0:

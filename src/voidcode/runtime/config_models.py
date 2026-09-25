@@ -43,8 +43,10 @@ from ..formatter import FormatterCwdPolicy
 from ..mcp.builtin import get_builtin_mcp_descriptor
 from ..provider.config import ProviderConfigsPayload, format_runtime_config_field_error
 from ..provider.reasoning_effort import ALL_EFFORTS, normalize_reasoning_effort
+from .context.window import DEFAULT_KEEP_RECENT_TOOL_TOKENS
 from .permission import PermissionDecision
 from .policy import runtime_policy_allowed_hook_scopes
+from .reminders import DEFAULT_TODO_REMINDER_MAX_PER_CYCLE
 
 #: The ``runtime_internal`` sub-object of a persisted agent payload.
 AGENT_RUNTIME_INTERNAL_CONFIG_KEY = "runtime_internal"
@@ -1037,6 +1039,33 @@ class SkillsPayload(_PayloadModel):
         return _parse_string_list(value, field_path="skills.paths")
 
 
+class CompactionPayload(_PayloadModel):
+    """Bounded tool-result pruning knobs."""
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    enabled: bool | None = True
+    threshold_tokens: int | None = Field(default=None, ge=1)
+    reserve_tokens: int | None = Field(default=None, ge=1)
+    keep_recent_tool_tokens: int = Field(default=DEFAULT_KEEP_RECENT_TOOL_TOKENS, ge=0)
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _validate_enabled(cls, value: object) -> bool:
+        if value is None:
+            return True
+        return _parse_non_null_bool(value, field_path="context_window.compaction.enabled")
+
+    @field_validator("threshold_tokens", "reserve_tokens", "keep_recent_tool_tokens", mode="before")
+    @classmethod
+    def _reject_bool(cls, value: object, info: ValidationInfo) -> object:
+        # ``bool`` is an ``int`` subclass, which ``Field(ge=...)`` would accept;
+        # reject it here and let the field constraint own every range check.
+        if isinstance(value, bool):
+            raise ValueError(f"runtime config field 'context_window.compaction.{info.field_name}' must be an integer")
+        return value
+
+
 class ContextWindowPayload(_PayloadModel):
     model_config = ConfigDict(extra="forbid", validate_default=True)
 
@@ -1069,6 +1098,10 @@ class ContextWindowPayload(_PayloadModel):
         ),
     )
     summary_strategy: RuntimeSummaryStrategy | None = "deterministic"
+    compaction: CompactionPayload | None = Field(
+        default=None,
+        description="Bounded pruning of tool-result content when the estimated provider payload reaches the budget threshold.",
+    )
 
     @field_validator("version", mode="before")
     @classmethod
@@ -1478,6 +1511,34 @@ class BackgroundTaskPayload(_PayloadModel):
 
 
 # ---------------------------------------------------------------------------
+# reminders
+# ---------------------------------------------------------------------------
+
+
+class TodoRemindersPayload(_PayloadModel):
+    max_per_cycle: int = Field(default=DEFAULT_TODO_REMINDER_MAX_PER_CYCLE, ge=1)
+
+    @field_validator("max_per_cycle", mode="before")
+    @classmethod
+    def _validate_max_per_cycle(cls, value: object) -> int:
+        return _parse_concurrency_limit(value, field_path="reminders.todo.max_per_cycle")
+
+
+class RemindersPayload(_PayloadModel):
+    """Runtime-owned per-call reminders injected into an active session."""
+
+    enabled: bool | None = True
+    todo: TodoRemindersPayload | None = None
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _validate_enabled(cls, value: object) -> bool:
+        if value is None:
+            return True
+        return _parse_non_null_bool(value, field_path="reminders.enabled")
+
+
+# ---------------------------------------------------------------------------
 # agents
 # ---------------------------------------------------------------------------
 
@@ -1727,6 +1788,10 @@ class RuntimeConfigPayload(_PayloadModel):
         default=None,
         description="Background task queue and concurrency limits.",
     )
+    reminders: RemindersPayload | None = Field(
+        default=None,
+        description="Runtime-injected per-call reminders for an active session (default on).",
+    )
     agent: AgentPayload | None = None
     agents: dict[str, AgentPayload] | None = Field(
         default=None,
@@ -1834,6 +1899,7 @@ class PersistedRuntimeConfigPayload(_PayloadModel):
     agent: object | None = None
     agents: object | None = None
     context_window: ContextWindowPayload | None = None
+    reminders: RemindersPayload | None = None
     lsp: object | None = None
     mcp: object | None = None
 
@@ -1916,6 +1982,7 @@ SCHEMA_DEFINITION_NAMES: Mapping[str, str] = {
     "ToolsLocalPayload": "localToolsConfig",
     "SkillsPayload": "skillsConfig",
     "ContextWindowPayload": "contextWindowConfig",
+    "CompactionPayload": "compactionConfig",
     "LspPayload": "lspConfig",
     "LspServerPayload": "lspServerConfig",
     "McpPayload": "mcpConfig",
@@ -1924,6 +1991,8 @@ SCHEMA_DEFINITION_NAMES: Mapping[str, str] = {
     "TuiPreferencesPayload": "tuiPreferencesConfig",
     "TuiThemePreferencesPayload": "tuiThemePreferencesConfig",
     "BackgroundTaskPayload": "backgroundTaskConfig",
+    "RemindersPayload": "remindersConfig",
+    "TodoRemindersPayload": "todoRemindersConfig",
     "AgentPayload": "agentConfig",
     "AgentMcpBindingPayload": "agentMcpBindingConfig",
     "ProviderConfigsPayload": "providersConfig",

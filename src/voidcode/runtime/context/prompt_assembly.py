@@ -121,7 +121,9 @@ def prompt_activation_decision(
         "activated": existing_records,
     }
     if not enabled or already_active:
-        base_metadata["activated_this_turn"] = session_metadata.get("_prompt_activation_this_run") is True
+        # A previously activated prompt is inert for this turn; the one-shot
+        # activation signal is the transition into the branch below.
+        base_metadata["activated_this_turn"] = False
         return PromptActivationDecision(section=None, metadata=base_metadata)
 
     guidance = prompt_activation_guidance_block(

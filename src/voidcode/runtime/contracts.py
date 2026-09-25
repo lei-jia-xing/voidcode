@@ -159,6 +159,8 @@ class RuntimeStateMetadata(TypedDict, total=False):
     pending_tool_intent: dict[str, object]
     context_compacted: dict[str, object]
     context_transform_applied: dict[str, object]
+    # Per-call reminder cycle counters (``reminders.py``); never reminder text.
+    reminders: dict[str, object]
 
 
 RUNTIME_STATE_METADATA_KEYS = frozenset(RuntimeStateMetadata.__annotations__)

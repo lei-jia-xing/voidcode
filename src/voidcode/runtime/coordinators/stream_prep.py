@@ -149,12 +149,18 @@ class StreamPrepCoordinator:
             tool_results=tool_results,
             session_metadata=session_metadata,
             policy=policy or self._default_context_window_policy,
-            # The runtime owns the budget; the catalog only supplies the number.
-            # An explicit ``context_window``/``threshold_*``/``reserve_tokens``
-            # argument to ``prepare_provider_context`` still wins over it.
-            context_window=self._context_budget_for(effective_config),
             before_compact=before_compact,
+            # Pruning needs a basis that covers every provider-visible section;
+            # this seam cannot size the assembled payload, so the compaction
+            # decision belongs to ``assemble_provider_context`` (which compiles
+            # the window with ``compaction_budget_from_config``). Here the
+            # runtime still owns the per-result char caps and the hook seam.
+            payload_bytes=None,
         )
+
+    def context_budget_for_effective_config(self, effective_config: EffectiveRuntimeConfig) -> int | None:
+        """The catalog-derived window that sizes this model's compaction."""
+        return self._context_budget_for(effective_config)
 
     @staticmethod
     def _context_budget_for(effective_config: EffectiveRuntimeConfig) -> int | None:

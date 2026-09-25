@@ -784,7 +784,11 @@ class _ResumeStorageMixin(_MixinBase):
                 response=response,
                 last_event_sequence=last_event_sequence,
             )
-        if failure_event.payload.get("provider_error_kind") != "transient_failure":
+        # ``context_limit`` is resumable by policy: the runtime already tried
+        # bounded pruning and any bigger-window fallback target, so the user's
+        # remaining lever is shrinking the session (or switching model) and
+        # resuming the same turn.
+        if failure_event.payload.get("provider_error_kind") not in {"transient_failure", "context_limit"}:
             return self._terminal_resume_checkpoint(
                 request=request,
                 response=response,

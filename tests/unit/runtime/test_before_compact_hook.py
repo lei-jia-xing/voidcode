@@ -80,8 +80,9 @@ def test_cancelling_hook_skips_compaction_with_reason() -> None:
         prompt="Summarize the workspace changes.",
         tool_results=_over_budget_results(),
         session_metadata={},
-        policy=ContextWindowPolicy(),
+        policy=ContextWindowPolicy(keep_recent_tool_tokens=0, min_savings_tokens=1),
         context_window=100,
+        payload_bytes=0,
         before_compact=before_compact,
     )
     assert window.compacted is False
@@ -104,9 +105,10 @@ def test_guidance_hook_reaches_summary_input_bounded() -> None:
         prompt="Summarize the workspace changes.",
         tool_results=_over_budget_results(),
         session_metadata={},
-        policy=ContextWindowPolicy(summary_strategy="model_assisted"),
+        policy=ContextWindowPolicy(summary_strategy="model_assisted", keep_recent_tool_tokens=0, min_savings_tokens=1),
         summary_projector=_projector,
         context_window=100,
+        payload_bytes=0,
         before_compact=before_compact,
     )
     assert window.compacted is True
@@ -127,8 +129,9 @@ def test_hook_error_fails_open_and_compaction_proceeds() -> None:
         prompt="Summarize the workspace changes.",
         tool_results=_over_budget_results(),
         session_metadata={},
-        policy=ContextWindowPolicy(),
+        policy=ContextWindowPolicy(keep_recent_tool_tokens=0, min_savings_tokens=1),
         context_window=100,
+        payload_bytes=0,
         before_compact=None,
     )
     assert window.compacted is True
@@ -179,9 +182,10 @@ def test_extra_context_is_bounded_and_carried_to_projector_input() -> None:
         prompt="Summarize the workspace changes.",
         tool_results=_over_budget_results(),
         session_metadata={},
-        policy=ContextWindowPolicy(summary_strategy="model_assisted"),
+        policy=ContextWindowPolicy(summary_strategy="model_assisted", keep_recent_tool_tokens=0, min_savings_tokens=1),
         summary_projector=_projector,
         context_window=100,
+        payload_bytes=0,
         before_compact=before_compact,
     )
     assert window.compacted is True

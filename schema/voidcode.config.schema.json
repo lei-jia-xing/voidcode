@@ -225,6 +225,17 @@
         }
       ]
     },
+    "reminders": {
+      "description": "Runtime-injected per-call reminders for an active session (default on).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/remindersConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "agent": {
       "anyOf": [
         {
@@ -511,6 +522,37 @@
       },
       "type": "object"
     },
+    "compactionConfig": {
+      "additionalProperties": false,
+      "description": "Bounded tool-result pruning knobs.",
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "threshold_tokens": {
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reserve_tokens": {
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "keep_recent_tool_tokens": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "contextWindowConfig": {
       "additionalProperties": false,
       "properties": {
@@ -590,6 +632,17 @@
                 "model_assisted"
               ],
               "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "compaction": {
+          "description": "Bounded pruning of tool-result content when the estimated provider payload reaches the budget threshold.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/compactionConfig"
             },
             {
               "type": "null"
@@ -1737,6 +1790,29 @@
       },
       "type": "object"
     },
+    "remindersConfig": {
+      "additionalProperties": false,
+      "description": "Runtime-owned per-call reminders injected into an active session.",
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "todo": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/todoRemindersConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
     "skillsConfig": {
       "additionalProperties": false,
       "properties": {
@@ -1754,6 +1830,16 @@
             "array",
             "null"
           ]
+        }
+      },
+      "type": "object"
+    },
+    "todoRemindersConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "max_per_cycle": {
+          "minimum": 1,
+          "type": "integer"
         }
       },
       "type": "object"

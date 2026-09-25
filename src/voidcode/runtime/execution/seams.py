@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 from ...graph.contracts import RuntimeGraph
@@ -127,6 +127,92 @@ def select_graph_for_effective_config(
     if cache is not None and not force_rebuild:
         cache[cache_key] = selection.graph
     return selection
+
+
+def provider_target_window_tokens(target: ResolvedProviderModel | None) -> int | None:
+    """Effective input window of one resolved provider target.
+
+    Reads the catalog's ``max_input_tokens``, which ``ProviderModelMetadata``
+    already derives from ``context_window - max_output_tokens`` when upstream
+    carries no explicit input limit. ``None`` means the catalog does not describe
+    the model, so two targets cannot be compared.
+    """
+    metadata = None if target is None else target.metadata
+    if metadata is None:
+        return None
+    return metadata.max_input_tokens or metadata.context_window
+
+
+@dataclass(frozen=True, slots=True)
+class ContextLimitPromotion:
+    """Window-aware promotion choice for one ``context_limit`` turn."""
+
+    selection: RuntimeGraphSelection | None
+    window_tokens_before: int | None
+    window_tokens_after: int | None
+    candidate_count: int
+    #: ``larger_window`` (a strictly larger candidate was picked),
+    #: ``no_larger_candidate`` (none existed; the generic chain-order target is
+    #: kept) or ``unavailable`` (fallback not permitted / chain exhausted).
+    promotion_reason: Literal["larger_window", "no_larger_candidate", "unavailable"]
+
+
+def context_limit_promotion_for_provider_error(
+    *,
+    error: ProviderExecutionError,
+    provider_chain: ResolvedProviderChain,
+    config: EffectiveRuntimeConfig,
+    provider_attempt: int,
+) -> ContextLimitPromotion:
+    """Choose the escalation target for a ``context_limit`` failure, window-aware.
+
+    Candidates are exactly the chain entries the generic fallback considers, in
+    chain order; the first candidate whose effective catalog window is *strictly*
+    larger than the failing target's wins. A same-or-smaller window is never
+    selected just because it comes first in the chain. With no strictly larger
+    candidate the generic chain-order selection is returned unchanged (and the
+    event says so), so every other provider error keeps its existing ordering.
+    """
+    before = provider_target_window_tokens(provider_chain.target_at(provider_attempt))
+    next_attempt = provider_attempt + 1
+    candidate_count = 0
+    chosen_attempt: int | None = None
+    for index in range(next_attempt, len(provider_chain.all_targets)):
+        target = provider_chain.target_at(index)
+        if target is None:
+            break
+        candidate_count += 1
+        window = provider_target_window_tokens(target)
+        if before is not None and window is not None and window > before:
+            chosen_attempt = index
+            break
+    if chosen_attempt is not None:
+        target = provider_chain.target_at(chosen_attempt)
+        assert target is not None
+        return ContextLimitPromotion(
+            selection=RuntimeGraphSelection(
+                graph=build_runtime_graph(engine_name=config.execution_engine, provider_model=target),
+                provider_attempt=chosen_attempt,
+                provider_target=target,
+            ),
+            window_tokens_before=before,
+            window_tokens_after=provider_target_window_tokens(target),
+            candidate_count=candidate_count,
+            promotion_reason="larger_window",
+        )
+    selection = fallback_graph_for_provider_error(
+        error=error,
+        provider_chain=provider_chain,
+        config=config,
+        provider_attempt=provider_attempt,
+    )
+    return ContextLimitPromotion(
+        selection=selection,
+        window_tokens_before=before,
+        window_tokens_after=None if selection is None else provider_target_window_tokens(selection.provider_target),
+        candidate_count=candidate_count,
+        promotion_reason="no_larger_candidate" if selection is not None else "unavailable",
+    )
 
 
 def fallback_graph_for_provider_error(

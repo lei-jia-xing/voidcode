@@ -74,10 +74,12 @@ from .events import (
     RUNTIME_CONTEXT_COMPACTED,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_PROVIDER_CONTEXT_POLICY,
+    RUNTIME_PROVIDER_CONTEXT_RECOVERY,
     RUNTIME_PROVIDER_FALLBACK,
     RUNTIME_PROVIDER_TRANSIENT_RETRY,
     RUNTIME_QUESTION_REQUESTED,
     RUNTIME_REASONING_PART,
+    RUNTIME_REMINDER_INJECTED,
     RUNTIME_SKILL_LOADED,
     RUNTIME_TODO_UPDATED,
     RUNTIME_TOOL_INPUT_PROCESSED,
@@ -104,7 +106,9 @@ from .execution.provider_fallback import (
     provider_transient_retry_config,
 )
 from .execution.seams import (
+    ContextLimitPromotion,
     RuntimeGraphSelection,
+    context_limit_promotion_for_provider_error,
     fallback_graph_for_provider_error,
     select_graph_for_effective_config,
 )
@@ -131,13 +135,27 @@ from .hook_runtime import (
     run_lifecycle_hooks_for_session,
     run_tool_hooks_for_session,
 )
-from .mode import runtime_read_only_from_metadata
+from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .permission import PendingApproval, PermissionPolicy, PermissionResolution
 from .question import PendingQuestion
+from .reminders import (
+    TODO_MID_RUN_KIND,
+    TODO_REMINDER_KIND,
+    ReminderSuppression,
+    decide_todo_mid_run_nudge,
+    decide_todo_reminder,
+    incomplete_todo_phases,
+    todo_mid_run_segment,
+    todo_mid_run_state_from_metadata,
+    todo_mutation_count,
+    todo_reminder_segment,
+    todo_reminder_state_from_metadata,
+)
 from .session import SessionState, SessionStatus
 from .session_metadata_helpers import (
     clear_tool_execution_intent,
     delegation_depth_from_metadata,
+    parse_plan_state_metadata,
     persist_tool_execution_intent,
     remaining_spawn_budget_from_metadata,
     runtime_state_context_compacted,
@@ -151,6 +169,7 @@ from .session_metadata_helpers import (
     session_with_context_window_payload_metadata,
     session_with_current_acp_metadata,
     session_with_plan_state,
+    session_with_reminder_state,
     session_with_todo_state,
 )
 from .skill_metadata import skill_snapshot_from_metadata
@@ -284,6 +303,46 @@ def _finalized_step_session(
     return session, provider_attempt, final_step_status
 
 
+def _terminal_provider_error_payload(
+    payload: dict[str, object],
+    *,
+    recovery: _ContextLimitRecoveryState,
+    error: ProviderExecutionError,
+) -> dict[str, object]:
+    """Terminal provider-error payload, naming the way out of a context-limit failure.
+
+    A ``context_limit`` failure stays resumable, so the payload must say what the
+    remaining lever is instead of only reporting that the call failed.
+    """
+    if error.kind != "context_limit":
+        return payload
+    outcome = "prune" if recovery.pruned else "unavailable"
+    return {
+        **payload,
+        "context_limit_recovery": outcome,
+        "resumable": True,
+        "guidance": (
+            "Provider rejected the request as over its context window"
+            + (" after bounded pruning." if recovery.pruned else "; nothing was prunable.")
+            + " Reduce the session context or configure a larger-window model, then resume this"
+            " session (voidcode sessions resume): the same turn is retried."
+        ),
+    }
+
+
+def _runtime_waits_for_user(session: SessionState) -> bool:
+    """Whether the session already parked on an answer the runtime is waiting for.
+
+    Approval and question waits pause the loop for a user decision, so a
+    "keep working" nudge would contradict the pending state the same turn
+    already renders (``context/window.py::_pending_state_segment``).
+    """
+    raw_plan_state = session.metadata.get("plan_state")
+    if raw_plan_state is None:
+        return False
+    return parse_plan_state_metadata(raw_plan_state).get("status") in {"waiting_approval", "waiting_question"}
+
+
 def _replayed_conversation_segments(
     request: GraphRunRequest,
 ) -> tuple[RuntimeContextSegment, ...]:
@@ -334,6 +393,23 @@ def _provider_attempt_reset_after_tool_result(
         graph_request=clean_request,
         session=clean_session,
     )
+
+
+@dataclass(slots=True)
+class _ContextLimitRecoveryState:
+    """Run-local context-limit recovery bookkeeping.
+
+    Deliberately not persisted: recovery is a property of the in-flight turn, and
+    a resumed session must be allowed to try its own recovery once more (the
+    persisted session metadata owns nothing about retries).
+    """
+
+    #: The local pruning lever ran (whether or not it reclaimed anything): the
+    #: escalation still happens when nothing was prunable.
+    prune_attempted: bool = False
+    #: The local pruning lever actually shrank the view.
+    pruned: bool = False
+    promoted: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1246,6 +1322,11 @@ class RuntimeRunLoopCoordinator:
         pending_provider_attempt_reset: _ProviderAttemptReset | None = None
         first_iteration = True
         stuck_detected_emitted = False
+        # Reminder to append at the tail of the next turn's provider segments;
+        # cleared once assembled. Never persisted, never in the cache prefix.
+        pending_reminder_segment: RuntimeContextSegment | None = None
+        # One bounded-pruning recovery per turn; see ``_ContextLimitRecoveryState``.
+        context_limit_recovery = _ContextLimitRecoveryState()
         self._pending_hook_guidance = []
         checkpoint_tool_result_count = len(tool_results)
         # Run-local watermark propagated to graph events, hooks, and diagnostics.
@@ -1315,12 +1396,23 @@ class RuntimeRunLoopCoordinator:
                 first_iteration=first_iteration,
                 before_compact=before_compact_input,
             )
-            session, assembled_context = yield from self._assemble_turn_context(
+            session, sequence, mid_run_segment = yield from self._todo_mid_run_nudge_step(
+                session=session,
+                sequence=sequence,
+                tool_results=provider_tool_results,
+                active_graph_request=active_graph_request,
+                tool_registry=tool_registry,
+                effective_runtime_config=runtime.effective_runtime_config_from_metadata(session.metadata),
+            )
+            session, assembled_context, context_window = yield from self._assemble_turn_context(
                 active_graph_request=active_graph_request,
                 context_window=context_window,
                 session=session,
                 hook_guidance=turn_hook_guidance,
+                reminder_segment=pending_reminder_segment or mid_run_segment,
+                before_compact=before_compact_input,
             )
+            pending_reminder_segment = None
             active_graph_request = graph_request_for_session(
                 GraphRunRequest(
                     session=graph_session_snapshot(session),
@@ -1365,6 +1457,8 @@ class RuntimeRunLoopCoordinator:
                 verdict = yield from self._apply_provider_error_policy(
                     exc=exc,
                     session=session,
+                    tool_results=provider_tool_results,
+                    context_limit_recovery=context_limit_recovery,
                     sequence=sequence,
                     active_graph_request=active_graph_request,
                     context_window=context_window,
@@ -1431,6 +1525,17 @@ class RuntimeRunLoopCoordinator:
                         active_graph_request=active_graph_request,
                     )
                     return
+                session, sequence, pending_reminder_segment = yield from self._todo_reminder_step(
+                    session=session,
+                    sequence=sequence,
+                    tool_results=tool_results,
+                    available_tools=current_available_tools,
+                    effective_runtime_config=effective_runtime_config,
+                )
+                if pending_reminder_segment is not None:
+                    # Incomplete todos: run one more turn with the reminder
+                    # appended at the tail instead of ending the session.
+                    continue
                 yield from self._emit_final_step_artifacts(
                     runtime=runtime,
                     session=current_chunk_session,
@@ -1971,7 +2076,9 @@ class RuntimeRunLoopCoordinator:
         context_window: RuntimeContextWindow,
         session: SessionState,
         hook_guidance: Iterable[str] | None = None,
-    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, ProviderAssembledContext]]:
+        reminder_segment: RuntimeContextSegment | None = None,
+        before_compact: BeforeCompactInput | None = None,
+    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, ProviderAssembledContext, RuntimeContextWindow]]:
         runtime = self._surface
         current_graph_request = active_graph_request
         current_prompt = current_graph_request.prompt
@@ -1998,10 +2105,16 @@ class RuntimeRunLoopCoordinator:
             skill_prompt_context=skill_prompt_context,
             replayed_conversation_segments=_replayed_conversation_segments(current_graph_request),
             hook_guidance=(*self._drain_pending_hook_guidance(), *(hook_guidance or ())) or None,
+            reminder_segment=reminder_segment,
+            before_compact=before_compact,
         )
+        # The assembled context compiled the provider view with a payload-aware
+        # budget, so its window owns the honest compaction counts for these
+        # segments (the pre-assembly window never sized the full request).
+        effective_context_window = assembled_context.context_window or context_window
         context_window_payload = {
+            **effective_context_window.metadata_payload(),
             **assembled_context.metadata,
-            **context_window.metadata_payload(),
         }
         session = session_with_context_window_payload_metadata(
             session,
@@ -2028,7 +2141,7 @@ class RuntimeRunLoopCoordinator:
                     payload=payload,
                 )
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-        return session, assembled_context
+        return session, assembled_context, effective_context_window
 
     def _emit_turn_context_events(
         self,
@@ -2158,6 +2271,129 @@ class RuntimeRunLoopCoordinator:
                 status=final_step_status,
             )
         return is_final_step, session, current_chunk_session, provider_attempt, False
+
+    def _reminder_suppression(
+        self,
+        *,
+        session: SessionState,
+        available_tools: tuple[ToolDefinition, ...],
+    ) -> ReminderSuppression:
+        """Shared "the loop is already parked" predicate for every reminder kind."""
+        delegated_child = session.session.parent_id is not None
+        waits_for_user = _runtime_waits_for_user(session)
+        pending_background_task = (
+            not delegated_child and not waits_for_user and self._surface.has_pending_background_tasks(parent_session_id=session.session.id)
+        )
+        return ReminderSuppression(
+            delegated_child=delegated_child,
+            runtime_waits_for_user=waits_for_user,
+            pending_background_task=pending_background_task,
+            plan_mode=runtime_mode_from_metadata(session.metadata) == "plan",
+            todo_tool_available=any(definition.name == TODO_REMINDER_KIND for definition in available_tools),
+        )
+
+    def _todo_mid_run_nudge_step(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        tool_results: tuple[ToolResult | ToolResultView, ...],
+        active_graph_request: GraphRunRequest,
+        tool_registry: ToolRegistry,
+        effective_runtime_config: EffectiveRuntimeConfig,
+    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, RuntimeContextSegment | None]]:
+        """Insert one mid-run todo nudge before the next provider call.
+
+        Upstream ``takeMidRunNudge``: while a turn is still running, a stale todo
+        list (at least ``TODO_MID_RUN_MUTATION_THRESHOLD`` mutation-tool results
+        since the last todo touch) earns a per-call nudge, at most
+        ``TODO_MID_RUN_MAX_PER_CYCLE`` per cycle. It rides the same tail-segment
+        channel as the completion reminder: never persisted, never in the cache
+        prefix, and it does not touch output/tool-result semantics.
+        """
+        if not effective_runtime_config.reminders.enabled or effective_runtime_config.execution_engine != "provider":
+            return session, sequence, None
+        todo_state = todo_state_from_session_metadata(session.metadata)
+        phases = runtime_todo_phases_from_payload(todo_state["phases"]) if todo_state is not None else ()
+        read_only_tool_names = frozenset(definition.name for definition in tool_registry.definitions() if definition.read_only)
+        stored_state = todo_mid_run_state_from_metadata(session.metadata)
+        decision = decide_todo_mid_run_nudge(
+            state=stored_state,
+            run_id=runtime_state_run_id(session.metadata),
+            mutations=todo_mutation_count(tool_results, read_only_tool_names=read_only_tool_names),
+            incomplete_count=sum(len(contents) for _name, contents in incomplete_todo_phases(phases)),
+            suppression=self._reminder_suppression(session=session, available_tools=active_graph_request.available_tools),
+        )
+        if decision.state != stored_state:
+            session = session_with_reminder_state(session, mid_run=decision.state)
+        if not decision.injects:
+            return session, sequence, None
+        envelope = self._persist_event(
+            session_id=session.session.id,
+            event_type=RUNTIME_REMINDER_INJECTED,
+            source="runtime",
+            payload={
+                "reminder_type": TODO_MID_RUN_KIND,
+                "attempt": decision.attempt,
+                "max_attempts": decision.max_attempts,
+                "mutation_count": decision.mutation_count,
+                "incomplete_todo_count": decision.incomplete_count,
+            },
+        )
+        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+        return session, envelope.sequence, todo_mid_run_segment(decision)
+
+    def _todo_reminder_step(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        tool_results: list[ToolResult],
+        available_tools: tuple[ToolDefinition, ...],
+        effective_runtime_config: EffectiveRuntimeConfig,
+    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, RuntimeContextSegment | None]]:
+        """Decide, persist and announce the terminal-turn todo reminder.
+
+        Returns the per-call tail segment the continuation turn must append, or
+        ``None`` when the channel stays silent (disabled, a non-provider engine
+        whose graph has no model call to append to, no unfinished todo, previous
+        reminder still awaiting progress, attempt budget spent, waiting on the
+        user, a pending background task that will re-wake the loop, or a
+        delegated child, which must terminate through ``yield``).
+        """
+        if not effective_runtime_config.reminders.enabled or effective_runtime_config.execution_engine != "provider":
+            return session, sequence, None
+        todo_state = todo_state_from_session_metadata(session.metadata)
+        phases = runtime_todo_phases_from_payload(todo_state["phases"]) if todo_state is not None else ()
+        stored_state = todo_reminder_state_from_metadata(session.metadata)
+        decision = decide_todo_reminder(
+            max_per_cycle=effective_runtime_config.reminders.todo.max_per_cycle,
+            state=stored_state,
+            run_id=runtime_state_run_id(session.metadata),
+            incomplete_phases=incomplete_todo_phases(phases),
+            tool_result_count=len(tool_results),
+            suppression=self._reminder_suppression(
+                session=session,
+                available_tools=available_tools,
+            ),
+        )
+        if decision.state != stored_state:
+            session = session_with_reminder_state(session, todo=decision.state)
+        if not decision.injects:
+            return session, sequence, None
+        envelope = self._persist_event(
+            session_id=session.session.id,
+            event_type=RUNTIME_REMINDER_INJECTED,
+            source="runtime",
+            payload={
+                "reminder_type": TODO_REMINDER_KIND,
+                "attempt": decision.attempt,
+                "max_attempts": decision.max_attempts,
+                "incomplete_todo_count": decision.incomplete_count,
+            },
+        )
+        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+        return session, envelope.sequence, todo_reminder_segment(decision)
 
     def _invoke_provider_step(
         self,
@@ -2316,11 +2552,98 @@ class RuntimeRunLoopCoordinator:
                 streamed_reasoning_texts.append(reasoning_text)
         return graph_step, sequence, streamed_reasoning_texts
 
+    def _context_limit_recovery_step(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,  # noqa: ARG002 - the persisted envelope owns the sequence, mirroring the fallback branches.
+        provider_error: ProviderExecutionError,
+        active_graph_request: GraphRunRequest,
+        context_window: RuntimeContextWindow,
+        tool_results: tuple[ToolResult | ToolResultView, ...],
+        context_limit_recovery: _ContextLimitRecoveryState,
+        graph: RuntimeGraph,
+    ) -> Generator[RuntimeStreamChunk, None, _ProviderErrorPolicyVerdict | None]:
+        """One bounded-pruning recovery for a ``context_limit`` failure.
+
+        Rebuilds the provider view with a recovery budget (the whole view must fit
+        the catalog window minus reserve) and returns a retry verdict when that
+        actually shrinks it. When nothing is prunable it returns ``None`` so the
+        generic policy promotes through the existing fallback chain, or fails
+        resumably. The lever is one-shot per turn: ``context_limit_recovery`` is
+        run-local state, so a second context_limit goes straight to promotion.
+        """
+        assembled = self._surface.reassemble_provider_context_for_overflow(
+            prompt=active_graph_request.prompt,
+            tool_results=tool_results,
+            session_metadata=session.metadata,
+            replayed_conversation_segments=_replayed_conversation_segments(active_graph_request),
+        )
+        window = assembled.context_window
+        reclaimed = window.dropped_tool_result_count if window is not None else 0
+        payload: dict[str, object] = {
+            "reason": provider_error.kind,
+            "provider": provider_error.provider_name,
+            "model": provider_error.model_name,
+            "tool_result_count": len(tool_results),
+            "dropped_tool_result_count": reclaimed,
+            "usage_tokens_before": window.usage_tokens_before if window is not None else None,
+            "usage_tokens_after": window.usage_tokens_after if window is not None else None,
+            "usage_tokens_estimated": True,
+            "measured_anchor_tokens": window.measured_anchor_tokens if window is not None else None,
+            "estimated_delta_tokens": window.estimated_delta_tokens if window is not None else None,
+            "compaction_reason": window.compaction_reason if window is not None else None,
+            **({"provider_error_details": provider_error.details} if provider_error.details is not None else {}),
+        }
+        context_limit_recovery.prune_attempted = True
+        if reclaimed == 0:
+            unavailable = self._persist_event(
+                session_id=session.session.id,
+                event_type=RUNTIME_PROVIDER_CONTEXT_RECOVERY,
+                source="runtime",
+                payload={**payload, "mode": "prune", "outcome": "unavailable"},
+            )
+            yield RuntimeStreamChunk(kind="event", session=session, event=unavailable)
+            return None
+        context_limit_recovery.pruned = True
+        envelope = self._persist_event(
+            session_id=session.session.id,
+            event_type=RUNTIME_PROVIDER_CONTEXT_RECOVERY,
+            source="runtime",
+            payload={**payload, "mode": "prune", "outcome": "retry"},
+        )
+        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+        session = session_with_context_window_payload_metadata(session, dict(assembled.metadata))
+        retry_request = graph_request_for_session(
+            GraphRunRequest(
+                session=graph_session_snapshot(session),
+                prompt=active_graph_request.prompt,
+                available_tools=active_graph_request.available_tools,
+                context_window=window if window is not None else context_window,
+                assembled_context=assembled,
+                metadata=active_graph_request.metadata,
+                abort_signal=active_graph_request.abort_signal,
+                tool_call_preview=self._tool_call_preview,
+                run_step=active_graph_request.run_step,
+            ),
+            session,
+        )
+        return {
+            "action": "retry",
+            "provider_attempt": provider_attempt_from_metadata(active_graph_request.metadata),
+            "provider_retry_attempt": provider_retry_attempt_from_metadata(active_graph_request.metadata),
+            "graph": graph,
+            "session": session,
+            "graph_request": retry_request,
+        }
+
     def _apply_provider_error_policy(
         self,
         *,
         exc: Exception,
         session: SessionState,
+        tool_results: tuple[ToolResult | ToolResultView, ...],
+        context_limit_recovery: _ContextLimitRecoveryState,
         sequence: int,
         active_graph_request: GraphRunRequest,
         context_window: RuntimeContextWindow,
@@ -2347,6 +2670,81 @@ class RuntimeRunLoopCoordinator:
                 providers=effective_runtime_config.providers,
                 provider_name=provider_error.provider_name,
             )
+            # The context_limit lane prefers a strictly larger-window candidate
+            # (its own lane policy, see ``context_limit_promotion_for_provider_error``);
+            # every other provider error keeps the generic chain-order selection.
+            promotion: ContextLimitPromotion | None = None
+            if provider_error.kind == "context_limit":
+                promotion = context_limit_promotion_for_provider_error(
+                    error=provider_error,
+                    provider_chain=effective_runtime_config.resolved_provider.target_chain,
+                    config=effective_runtime_config,
+                    provider_attempt=current_provider_attempt,
+                )
+                fallback_selection = promotion.selection
+            if provider_error.kind == "context_limit":
+                # One bounded-pruning retry per turn: the lever is spent once the
+                # run-local state records it; a second overflow escalates instead.
+                recovery_verdict = (
+                    None
+                    if context_limit_recovery.prune_attempted
+                    else (
+                        yield from self._context_limit_recovery_step(
+                            session=session,
+                            sequence=sequence,
+                            provider_error=provider_error,
+                            active_graph_request=active_graph_request,
+                            context_window=context_window,
+                            tool_results=tool_results,
+                            context_limit_recovery=context_limit_recovery,
+                            graph=graph,
+                        )
+                    )
+                )
+                if recovery_verdict is not None:
+                    return recovery_verdict
+                if context_limit_recovery.prune_attempted and context_limit_recovery.promoted:
+                    # Both levers of this turn are spent: fail terminally (the
+                    # failure stays resumable) instead of cycling the fallback
+                    # chain on a request that is over budget for every target.
+                    failed_chunk, _ = self._persist_chunk(
+                        chunk_builders.failed_chunk(
+                            session=session,
+                            sequence=sequence + 1,
+                            error=provider_error.message,
+                            payload=_terminal_provider_error_payload(
+                                {"provider_error_kind": provider_error.kind},
+                                recovery=context_limit_recovery,
+                                error=provider_error,
+                            ),
+                        )
+                    )
+                    yield failed_chunk
+                    return {"action": "exit"}
+                if context_limit_recovery.prune_attempted and not context_limit_recovery.promoted:
+                    # A prunable view was unavailable or already retried; either
+                    # way this turn escalates once.
+                    context_limit_recovery.promoted = True
+                    assert promotion is not None
+                    envelope = self._persist_event(
+                        session_id=session.session.id,
+                        event_type=RUNTIME_PROVIDER_CONTEXT_RECOVERY,
+                        source="runtime",
+                        payload={
+                            "mode": "promote",
+                            "reason": provider_error.kind,
+                            "provider": provider_error.provider_name,
+                            "model": provider_error.model_name,
+                            "fallback_target_present": fallback_selection is not None,
+                            "promotion_reason": promotion.promotion_reason,
+                            "window_tokens_before": promotion.window_tokens_before,
+                            "window_tokens_after": promotion.window_tokens_after,
+                            "candidate_count": promotion.candidate_count,
+                            **({"provider_error_details": provider_error.details} if provider_error.details is not None else {}),
+                        },
+                    )
+                    sequence = envelope.sequence
+                    yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
             fallback_target = fallback_selection.provider_target if fallback_selection is not None else None
             provider_decision = decide_provider_error_policy(
                 error=provider_error,
@@ -2537,7 +2935,7 @@ class RuntimeRunLoopCoordinator:
                         # structured payload flags (fallback_exhausted,
                         # provider_retry_exhausted, provider_retry_attempts).
                         error=provider_error.message,
-                        payload=provider_decision.payload,
+                        payload=_terminal_provider_error_payload(provider_decision.payload, recovery=context_limit_recovery, error=provider_error),
                     )
                 )
                 yield failed_chunk
@@ -2549,7 +2947,7 @@ class RuntimeRunLoopCoordinator:
                     session=session,
                     sequence=sequence + 1,
                     error=str(provider_error),
-                    payload=provider_decision.payload,
+                    payload=_terminal_provider_error_payload(provider_decision.payload, recovery=context_limit_recovery, error=provider_error),
                 )
             )
             yield failed_chunk
@@ -3966,6 +4364,14 @@ class RuntimeRunLoopCoordinator:
             "reason": context_window.compaction_reason,
             "original_tool_result_count": context_window.original_tool_result_count,
             "retained_tool_result_count": context_window.retained_tool_result_count,
+            "dropped_tool_result_count": context_window.dropped_tool_result_count,
+            "truncated_tool_result_count": context_window.truncated_tool_result_count,
+            "usage_tokens_before": context_window.usage_tokens_before,
+            "usage_tokens_after": context_window.usage_tokens_after,
+            "usage_tokens_estimated": context_window.usage_tokens_before is not None,
+            "measured_anchor_tokens": context_window.measured_anchor_tokens,
+            "estimated_delta_tokens": context_window.estimated_delta_tokens,
+            "pruned_savings_tokens": context_window.pruned_savings_tokens,
             "compacted": True,
             "summary_anchor": context_window.summary_anchor,
             "projection_id": context_window.summary_anchor,

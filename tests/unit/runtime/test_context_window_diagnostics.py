@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from voidcode.provider.protocol import ProviderContextSegment
+from voidcode.runtime.context.provider import inspect_provider_context
+from voidcode.tools.contracts import ToolResult
+
+
+@dataclass(frozen=True)
+class _Assembled:
+    segments: tuple[ProviderContextSegment, ...] = ()
+    tool_results: tuple[ToolResult, ...] = ()
+    continuity_state: object | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+def _diagnostic_codes(metadata: dict[str, object]) -> tuple[str, ...]:
+    snapshot = inspect_provider_context(
+        assembled_context=_Assembled(metadata=metadata),
+        provider="anthropic",
+        model="claude-test",
+        execution_engine="direct",
+        available_tool_count=0,
+    )
+    return tuple(diagnostic.code for diagnostic in snapshot.diagnostics)
+
+
+def test_dropped_count_is_read_from_the_nested_projection() -> None:
+    codes = _diagnostic_codes(
+        {
+            "dropped_tool_result_count": 0,
+            "projection": {"dropped_tool_result_count": 3, "retained_tool_result_count": 1},
+        }
+    )
+    assert "tool_feedback_not_retained" in codes
+
+
+def test_absent_projection_keeps_the_diagnostics_quiet() -> None:
+    assert _diagnostic_codes({"dropped_tool_result_count": 3}) == ()

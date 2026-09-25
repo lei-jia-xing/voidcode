@@ -24,6 +24,10 @@ PROVIDER_FALLBACK_ALLOWED_KINDS = frozenset(
         "not_configured",
         "rate_limit",
         "invalid_model",
+        # A request that does not fit this model's window is exactly where a
+        # larger-window target is the intended remedy (the runtime's context_limit
+        # lane picks it window-aware; see execution/seams.py).
+        "context_limit",
         "transient_failure",
         "unsupported_feature",
         "stream_tool_feedback_shape",

@@ -75,16 +75,31 @@ _REDACTED_ENV_VALUE_KEYS = frozenset(
     }
 )
 
+# Summary fields are long by construction and already bounded by context
+# compaction, so they are redacted but never truncated: a resume must see the
+# full projection rather than the metadata length cap's half-summary.
+
 
 def _looks_secret_key(key: str) -> bool:
     lowered = key.lower()
     return any(fragment in lowered for fragment in _SECRET_KEY_FRAGMENTS)
 
 
-def _scrub_text(value: str) -> str:
-    scrubbed = value
+def _redact_text(value: str) -> str:
+    """Apply the secret-value patterns without the persistence length cap.
+
+    Used for summary fields that are long by construction and already bounded by
+    context compaction, so truncating them at the metadata cap would leave the
+    model a half-summary after resume.
+    """
+    redacted = value
     for pattern in _SECRET_VALUE_PATTERNS:
-        scrubbed = pattern.sub(_REDACTED, scrubbed)
+        redacted = pattern.sub(_REDACTED, redacted)
+    return redacted
+
+
+def _scrub_text(value: str) -> str:
+    scrubbed = _redact_text(value)
     if len(scrubbed) <= _PERSISTED_STRING_LIMIT:
         return scrubbed
     return scrubbed[:_PERSISTED_STRING_LIMIT] + (
@@ -128,6 +143,8 @@ def _bounded_redacted(value: object, *, key: str | None = None) -> object:
             result.append({"__truncated__": True, "original_length": len(items)})
         return result
     if isinstance(value, str):
+        if key == "summary_text":
+            return _redact_text(value)
         return _scrub_text(value)
     return value
 
@@ -136,7 +153,6 @@ def session_metadata_for_replay(metadata: dict[str, object]) -> dict[str, object
     """Return session metadata projected for replay/resume without run-local markers."""
 
     projected = dict(metadata)
-    projected.pop("_prompt_activation_this_run", None)
     raw_runtime_policy = projected.get("runtime_policy")
     if not isinstance(raw_runtime_policy, dict):
         return projected
@@ -211,7 +227,6 @@ def session_metadata_for_persistence(
     """
 
     persisted = _bounded_redacted_mapping(metadata)
-    persisted.pop("_prompt_activation_this_run", None)
     mode = runtime_mode_from_metadata(persisted)
     read_only = runtime_read_only_from_metadata(persisted)
     observations = _policy_observations(events)

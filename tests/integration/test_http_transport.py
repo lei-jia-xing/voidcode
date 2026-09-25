@@ -539,7 +539,6 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
     expected_metadata = dict(stored.session.metadata)
     expected_metadata.pop("prompt_stack", None)
     expected_metadata.pop("provider_context", None)
-    expected_metadata.pop("_prompt_activation_this_run", None)
     assert replay_session["session"] == {"id": "transport-session"}
     assert replay_session["status"] == stored.session.status
     assert replay_session["turn"] == stored.session.turn
@@ -1218,7 +1217,6 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     expected_metadata = dict(approve_metadata)
     expected_metadata.pop("prompt_stack", None)
     expected_metadata.pop("provider_context", None)
-    expected_metadata.pop("_prompt_activation_this_run", None)
     assert replay_metadata == expected_metadata
     assert (tmp_path / "copied.txt").read_text(encoding="utf-8") == "copied marker"
 

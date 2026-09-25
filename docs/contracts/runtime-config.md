@@ -196,8 +196,27 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `skills.paths`：字符串数组
 - `context_window.default_tool_result_chars`：单个 tool result provider payload 的明确字符 hard cap；默认 `6000`，`null` 表示不截断单个结果
 - `context_window.per_tool_result_chars`：对象，按 tool name 覆盖单个结果字符 hard cap
-- provider context 不再使用 whole-context token budget 或 `chars/4` 估算丢弃历史；没有 provider usage 时，完整历史交给 provider，由 provider context-limit error/runtime recovery 处理
-- compaction 的窗口由随包 catalog 提供：`max_input_tokens`（无上游 `limit.input` 时由 `context_window - max_output_tokens` 派生）优先，否则 `context_window`；调用方显式提供的 `context_window` / `threshold_*` / `reserve_tokens` 仍然优先于它，catalog 未描述的 model 则让 compaction 保持 unsized
+- `context_window.compaction.enabled`：布尔值；默认 `true`
+- `context_window.compaction.threshold_tokens`：正整数；显式阈值（估算 tokens），缺省时按下文推导
+- `context_window.compaction.reserve_tokens`：正整数；缺省时按下文推导
+- `context_window.compaction.keep_recent_tool_tokens`：非负整数，默认 `20000`
+- provider context 使用**有界裁剪**（本轮契约）：判定数字 = **实测锚点 + 增量估算**。锚点取最近一次 provider 上报的 usage（`provider_usage.latest`），口径为 `input_tokens + cache_read_tokens + cache_write_tokens + output_tokens`（cacheRead 计入；本轮 output 会成为下一轮历史）；voidcode 的 usage 桶就是 provider 自己的数字，没有单独计入计费的 orchestration 桶，因此不做扣减。usage 缺失或全零时锚点不可用，退化为纯估算。
+- 增量 = 该轮 provider 请求中锚点之后新增的内容（当前 prompt + 全部 system/instruction 段，含 skill 正文、tool catalog、rulebook、transform 注入 + replay 段 + continuity/artifact 引用/todo + 本轮 tool 结果）；锚点已覆盖的历史不再重复计入。
+- 本地估算器为 **UTF-8 字节 / 4（向上取整）**，与上游 pi-agent-core 默认一致；不按字符数估算——中文/多字节载荷按字符会低估约 3 倍。所有数字都是 inexact 估算或实测锚点，**必须在 payload 中标明来源**（来源由 `measured_anchor_tokens` / `estimated_delta_tokens` 是否存在体现；纯估算时见 `usage_tokens_estimated`），不得把纯估算当作权威用量。
+- 判定数字达到阈值时，从**最旧的 tool 结果**开始把 content 替换为有界占位文本，直到剩余 tool 内容回到 `keep_recent_tool_tokens` 之内（tool 结果同时计入 content 与 `data` 载荷）
+- 裁剪只替换 tool result 的 content：`assistant(tool_call)` / `tool` 消息与 pairing 永不删除，system/instruction 段永不被裁剪
+- 保护集（永不裁剪，对应 `window.py` 的 `_PRUNE_PROTECTED_TOOL_NAMES` / `_PRUNE_PROTECTED_PATH_PREFIXES` / `_PRUNE_PROTECTED_PATH_PARTS`）：工具名 `todo`、`skill`；`read` 的 `voidcode://rule/<name>` 路径；`.voidcode/rules` 下的结果；被保护内容不计入节省额度。artifact **故意不保护**——裁剪正是把模型指向 `voidcode://artifact/<id>`
+- 无效裁剪下限（均为命名常量，不是配置键）：单条结果估算低于 `min_prune_tokens` 不裁；本次总节省低于 `min_savings_tokens` 则整轮不裁（避免无效抖动，此时只报告 overage，不改写视图）。**例外（紧急恢复）**：`min_savings_tokens` 只约束**常规**裁剪；`context_limit` 的一次性本地裁剪重试（`fit_payload`）把它视为 `0`——该请求已确定超窗，只要单条裁剪跨过 `min_prune_tokens` 就必须重试同一次调用，不得因「省得不够多」报 `context_limit_recovery=unavailable` 而直接进入升级/失败。
+- 被裁掉且带 `data["artifact"]` 的结果会产出 `runtime_context_artifact_reference` 段（模型可 `read(path="voidcode://artifact/<id>")` 取回完整输出）；无 artifact 的结果只留占位
+- `compacted` 仅在**实际发生缩减**时为 true；`RuntimeContextWindow` 的 `original` / `retained` / `dropped` / `truncated` 计数与 `runtime.context_compacted` payload 都是真实计数
+- catalog 未描述该 model（`context_window` 无法解析）时**不裁剪**，并以明确的 `compaction_reason`（`compaction_unsized:...`）暴露该边界，不静默返回无界视图
+- `context_limit` 恢复：provider 报 `context_limit` 时**不再由解析层硬判终态**（`retryable=None`，与 `rate_limit` 同属 runtime-owned lane），由 run loop 按顺序处理：
+  1. **一次性本地裁剪重试**：用 `context_window.compaction.*` 的 knob 重新组装 provider view，恢复目标比常规触发更狠——整个 view 要落回 `catalog window − reserve`（等价于临时把 tool 预算压到「阈值 − 指令与 prompt 的估算」）；若实际发生缩减，则重试**同一次** provider 调用一次。每个 turn 最多一次（run-local 状态，不写入会话元数据、不影响 resume）。
+  2. **升级窗口（窗口感知）**：本地裁剪不可行或重试后仍 `context_limit` 时，走**既有** provider fallback 机制（同一 target 链解析、`runtime.provider_fallback` 事件与决策形状）切换目标后重试，但候选按**有效窗口**排序：用 catalog 的 `max_input_tokens`（缺失且不可由 `context_window - max_output_tokens` 推导时为未知，不参与比较）与失败模型自己的窗口比较，只挑**严格更大**的候选；同窗或更小的候选不会因「链上在前」而被选。无严格更大候选时保持既有链顺序，并在 `runtime.provider_context_recovery` 的 `promotion_reason`（`larger_window` / `no_larger_candidate`）与 `window_tokens_before`/`window_tokens_after` 里如实记录。该偏好仅作用于 `context_limit` lane，其它 provider 错误的 fallback 顺序不变。本 turn 同样最多升级一次。
+  3. **可恢复失败**：两者都不可行时以 `runtime.failed` 结束，payload 带 `provider_error_kind=context_limit`、`resumable=true`、`context_limit_recovery`（`prune` / `unavailable`）与可执行 `guidance`（缩减上下文或配置更大窗口的模型后 `voidcode sessions resume`）。该失败**保持可 resume**（`provider_failure_retryable` checkpoint 的 kind 判定已包含 `context_limit`），失败态不会被 seal 成不可恢复。
+- 裁剪本身仍是可判定函数（给定预算 + 结果顺序 → 确定结果），恢复只在其上叠加「一次性」与「升级」两条有界策略。
+- compaction 的窗口由随包 catalog 提供：`max_input_tokens`（无上游 `limit.input` 时由 `context_window - max_output_tokens` 派生）优先，否则 `context_window`；调用方显式提供的 `context_window` / `threshold_tokens` / `reserve_tokens` 仍然优先于它，catalog 未描述的 model 则让 compaction 保持 unsized
+- 阈值 = `window − reserve`，其中 `reserve = max(floor(0.15 × window), 16384)`（对齐上游；显式 `context_window.compaction.reserve_tokens` 最高优先）。锚点不可用（无 provider usage）时仍按同一阈值做纯估算判定，并在 `usage_tokens_estimated` 里标为纯估算
 - token usage 只来自 provider response/terminal stream，并保留 `None`（未报告）与 `0`（观测到零）的区别；它是后验 turn usage，不是下一轮 transcript 余额
 - `provider_usage.latest.cost_usd` / `provider_usage.cumulative.cost_usd`：USD 金额，由该 turn 自己的 usage 与 catalog 的扁平 `cost_per_*` 费率（加可选的 long-context 政策 tier）在 graph 中计算一次，写入 `latest` 并累加到 `cumulative`；token 桶保持整数、金额是 float，持久化的 usage 不会被重新计价。前端在 composer 的上下文行显示 `cumulative.cost_usd`（`$1.50 spent`），未定价的 model 整个省略而不是显示 `$0.00`
 - `lsp.enabled`：布尔值；默认 `true`（未声明即开启，显式 `false` 关闭；未配置 `servers` 时不启动任何 server 进程）
@@ -246,6 +265,8 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `tui.keymap`：对象，值当前仅允许 `session_new`、`session_resume`、`tools_expand`
 - `tui.preferences.theme.name`：字符串，可选。runtime 只携带/合并该偏好，不做任何调色板名校验、也不提供内置调色板列表；TUI 用自己的调色板注册表解析，未知或缺失的名字回落到 `theme.mode` 对应的默认调色板。
 - `tui.preferences.theme.mode`：`auto`、`light`、`dark` 之一；缺省为 `auto`
+- `reminders.enabled`：布尔值；默认 `true`。关闭后 runtime 不再通过 per-call reminder 通道注入任何提醒（也不写 reminder 计数器）
+- `reminders.todo.max_per_cycle`：正整数；默认 `3`。一个 cycle（一次 run，即 `runtime_state.run_id`）内最多注入多少条 todo 完成提醒
 
 ### external directory permission 语义
 
@@ -258,6 +279,15 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
   - `external_directory_read = {"*": "allow"}`
   - `external_directory_write = {"*": "allow"}`
 - rule matching 使用按顺序匹配（first-match-wins）；路径在匹配前会做 canonicalization。
+
+### reminder 语义（`reminders`）
+
+- reminder 是 runtime-owned 的 **per-call** 注入通道：提醒文本作为 provider context 的尾部 segment 只对本次 provider 调用可见（`hook/percall.py` 的 `PerCallMessage(per_call=True)`），既不写入 SQLite transcript，也不进入 per-call cache hash；可持久化的只有 cycle 计数器（`SessionState.metadata["runtime_state"]["reminders"]`）与一条 `runtime.reminder_injected` 事件（见 `docs/contracts/runtime-events.md`）。
+- mid-run nudge 无独立开关：它随 `reminders.enabled` 启用，阈值（累计 12 次变更类工具调用）与每 cycle 上限（2 条）是命名常量（对齐上游），不提供配置键。
+- 第一个 reminder 类型是 todo 完成提醒：terminal assistant 回合结束时若仍有 `pending` / `in_progress` todo，runtime 注入一条 `<system-reminder>` 尾巴并继续同一 run（而不是结束回合）；提醒文本列出未完成的 phase/task 与 `(Reminder k/max)`。
+- 抑制条件：`reminders.enabled = false`、execution engine 不是 `provider`（deterministic graph 没有可注入的 provider 调用）、todo 全部完成、上一条 reminder 之后的回合没有产生新的 tool result（仍在等待 agent 行动）、本 cycle 已达 `reminders.todo.max_per_cycle`、assistant 已停在等待用户回答（`plan_state.status` 为 `waiting_question` / `waiting_approval`）、父会话仍有会重新唤醒 loop 的 background task，或当前是被委派的 child session（必须通过 `yield` 终止）。
+- cycle 由 run 标识：每次 `run` / `resume` 都是新的 cycle，`attempts` 随之复位；持久化的 `runtime_state.reminders` 因此不携带跨 run 的累计语义，也不参与 context checkpoint 的完整性校验（见 `context/continuity.py`）。
+- 该配置是仓库本地（`.voidcode.json`）配置面；像 `background_task` 一样，它随会话的 `runtime_config` 快照持久化，缺省时以当前进程解析出的默认值补齐。
 
 ### pattern-based permission rules 语义
 
