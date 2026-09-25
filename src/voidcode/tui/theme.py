@@ -823,7 +823,11 @@ class _TokenSyntaxTheme(SyntaxTheme):
         return self._default
 
     def get_background_style(self) -> Style:
-        """No background: rows carry their own block background."""
+        """No background: rows carry their own block background.
+
+        Required by ``rich.syntax.SyntaxTheme`` (abstract method), not by any
+        in-repo caller.
+        """
         return Style()
 
 

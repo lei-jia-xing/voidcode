@@ -210,12 +210,6 @@ from .execution.tool_facades import (
     _RuntimeToolCatalogFacade,
     _RuntimeTranscriptReadFacade,
 )
-from .execution.tool_replay import (
-    ToolExecutionIntent,
-    is_tool_intent_status,
-    is_tool_replay_policy,
-    recovery_action,
-)
 from .hook_preset_metadata import (
     hook_preset_event_payload_from_session_metadata,
     hook_preset_refs_for_agent,
@@ -3247,47 +3241,6 @@ class VoidCodeRuntime(RuntimeSurface):
         intent = runtime_state_pending_tool_intent(response.session.metadata)
         return intent if intent is not None else None
 
-    def pending_tool_recovery(self, session_id: str) -> dict[str, object] | None:
-        """Return the deterministic recovery action for an unsettled tool."""
-        raw_intent = self.pending_tool_intent(session_id)
-        if raw_intent is None:
-            return None
-        # The persisted intent is only object-validated at the runtime-state
-        # boundary, so every field is checked here. The previous blind casts
-        # silently coerced a non-string id via ``str(...)`` and accepted any
-        # replay/status token; a malformed value now takes the same "corrupt"
-        # path the surrounding ``except`` already defines for missing fields.
-        try:
-            tool_call_id = raw_intent["tool_call_id"]
-            tool_name = raw_intent["tool_name"]
-            arguments = raw_intent["arguments"]
-            replay_policy = raw_intent["replay_policy"]
-            status = raw_intent.get("status", "pending")
-            if not isinstance(tool_call_id, str) or not isinstance(tool_name, str) or not isinstance(arguments, dict):
-                raise ValueError("pending tool intent identifiers must be strings and arguments an object")
-            if not is_tool_replay_policy(replay_policy):
-                raise ValueError("pending tool intent replay_policy is not a known token")
-            if not is_tool_intent_status(status):
-                raise ValueError("pending tool intent status is not a known token")
-            intent = ToolExecutionIntent(
-                tool_call_id=tool_call_id,
-                tool_name=tool_name,
-                arguments=arguments,
-                replay_policy=replay_policy,
-                status=status,
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError(f"persisted pending tool intent for session {session_id!r} is corrupt") from exc
-        return {
-            "action": recovery_action(intent),
-            "message": (
-                "The interrupted tool is safe to replay."
-                if recovery_action(intent) == "replay"
-                else "The interrupted tool may have side effects and must not be replayed automatically."
-            ),
-            "intent": intent.metadata_payload(),
-        }
-
     @contextmanager
     def _active_resume_registration(
         self,
@@ -4365,10 +4318,6 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> ResolvedHookPresetSnapshot:
         refs = hook_preset_refs_for_agent(agent)
         return resolve_hook_preset_refs(refs)
-
-    @staticmethod
-    def _hook_preset_refs_for_agent(agent: RuntimeAgentConfig | None) -> tuple[str, ...]:
-        return hook_preset_refs_for_agent(agent)
 
     def _hook_preset_context_from_metadata(
         self,

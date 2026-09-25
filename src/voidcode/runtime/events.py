@@ -527,34 +527,6 @@ DELEGATED_BACKGROUND_TASK_EVENT_TYPES: Final[tuple[DelegatedBackgroundTaskEventT
     RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
 )
-DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS: Final[tuple[str, ...]] = (
-    "task_id",
-    "parent_session_id",
-    "requested_child_session_id",
-    "child_session_id",
-    "approval_request_id",
-    "question_request_id",
-)
-DELEGATED_BACKGROUND_TASK_ROUTING_FIELDS: Final[tuple[str, ...]] = (
-    "routing_mode",
-    "routing_subagent_type",
-    "routing_description",
-    "routing_command",
-)
-DELEGATED_BACKGROUND_TASK_DURABILITY_FIELDS: Final[tuple[str, ...]] = (
-    *DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS,
-    *DELEGATED_BACKGROUND_TASK_ROUTING_FIELDS,
-    "status",
-    "approval_blocked",
-    "result_available",
-    "cancellation_cause",
-)
-ACP_DELEGATED_EXECUTION_FIELDS: Final[tuple[str, ...]] = (
-    *DELEGATED_BACKGROUND_TASK_DURABILITY_FIELDS,
-    "selected_preset",
-    "selected_execution_engine",
-    "lifecycle_status",
-)
 
 _DELEGATED_EVENT_STATUS_BY_TYPE: Final[dict[DelegatedBackgroundTaskEventType | CoreEventType, DelegatedLifecycleStatus]] = {
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: "waiting_approval",
