@@ -200,6 +200,15 @@ class _NoopMcpManager:
         _ = session_id
         return ()
 
+    def cleanup_idle_session_servers(
+        self,
+        *,
+        max_idle_seconds: float,
+        active_session_ids: set[str] | None = None,
+    ) -> tuple[McpRuntimeEvent, ...]:
+        _ = max_idle_seconds, active_session_ids
+        return ()
+
     def retry_connections(self, *, workspace: Path) -> None:
         _ = workspace
 

@@ -157,6 +157,11 @@ class ActiveSessionRegistry:
             handles = self._runs.get(key)
             return len(handles) if handles is not None else 0
 
+    def active_session_ids(self, *, workspace: Path) -> set[str]:
+        """Session ids with at least one run in flight in ``workspace``."""
+        with self._lock:
+            return {key.session_id for key in self._runs if key.workspace == workspace}
+
     def metadata(self, *, workspace: Path, session_id: str) -> dict[str, object] | None:
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
         with self._lock:

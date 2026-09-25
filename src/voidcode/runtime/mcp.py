@@ -314,6 +314,7 @@ class _RunningMcpServer:
         initialize_result: object,
         scope: Literal["runtime", "session"],
         owner_session_id: str | None,
+        last_used_at: float,
         transport: Literal["stdio", "remote-http"] = "stdio",
     ) -> None:
         self.server_name = server_name
@@ -327,7 +328,7 @@ class _RunningMcpServer:
         self.owner_session_id = owner_session_id
         self.transport = transport
         self.references = 0
-        self.last_used_at = time.monotonic()
+        self.last_used_at = last_used_at
         # The Python SDK ClientSession is shared per configured server process.
         # Serialize list/call operations per server so concurrent runtime and
         # subagent calls do not interleave mutable SDK session state.
@@ -355,7 +356,11 @@ class ManagedMcpManager:
         *,
         diagnostics_collector: McpDiagnosticsCollector | None = None,
         tool_catalog_cache: McpToolCatalogCache | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        # Idle accounting reads the same monotonic clock the runtime injects in
+        # tests, so idle reaping never waits on wall time.
+        self._clock = clock
         self._configuration = McpConfigState.from_runtime_config(config)
         self._running_servers: dict[_McpServerKey, _RunningMcpServer] = {}
         self._pending_events: list[McpRuntimeEvent] = []
@@ -589,22 +594,55 @@ class ManagedMcpManager:
         max_idle_seconds: float = DEFAULT_SESSION_MCP_IDLE_TIMEOUT_SECONDS,
         active_session_ids: set[str] | None = None,
     ) -> tuple[McpRuntimeEvent, ...]:
-        now = time.monotonic()
-        active_ids = active_session_ids or set()
+        """Release session-scoped servers whose owner went away or that sat idle.
+
+        ``active_session_ids`` is the runtime's own truth about which sessions
+        have a run in flight; ``None`` means the caller cannot tell, so only the
+        idle threshold applies. Servers still owned by an active session are
+        never treated as abandoned.
+        """
+        now = self._clock()
         with self._state_lock:
-            for key, running in tuple(self._running_servers.items()):
-                if key.scope != "session":
-                    continue
-                abandoned = active_session_ids is not None and key.owner_session_id not in active_ids
-                idle = now - running.last_used_at >= max_idle_seconds
-                if abandoned or idle:
-                    self._record_server_idle_cleaned(
+            reapable = [
+                (key, reason)
+                for key, running in self._running_servers.items()
+                if (
+                    reason := self._cleanup_reason(
                         key=key,
-                        workspace_root=running.workspace_root,
-                        reason="abandoned" if abandoned else "idle_timeout",
+                        running=running,
+                        now=now,
+                        max_idle_seconds=max_idle_seconds,
+                        active_session_ids=active_session_ids,
                     )
-                    self._stop_running_server(key)
+                )
+                is not None
+            ]
+            for key, reason in reapable:
+                self._record_server_idle_cleaned(
+                    key=key,
+                    workspace_root=self._running_servers[key].workspace_root,
+                    reason=reason,
+                    cleaned_count=len(reapable),
+                )
+                self._stop_running_server(key)
         return self.drain_events()
+
+    @staticmethod
+    def _cleanup_reason(
+        *,
+        key: _McpServerKey,
+        running: _RunningMcpServer,
+        now: float,
+        max_idle_seconds: float,
+        active_session_ids: set[str] | None,
+    ) -> str | None:
+        if key.scope != "session":
+            return None
+        if active_session_ids is not None and key.owner_session_id not in active_session_ids:
+            return "abandoned"
+        if now - running.last_used_at >= max_idle_seconds:
+            return "idle_timeout"
+        return None
 
     def _ensure_running(
         self,
@@ -643,7 +681,7 @@ class ManagedMcpManager:
         with self._state_lock:
             running = self._running_servers.get(key)
             if running is not None:
-                running.last_used_at = time.monotonic()
+                running.last_used_at = self._clock()
                 self._record_server_reused(key=key, workspace_root=running.workspace_root)
                 self._record_server_acquired(key=key, workspace_root=running.workspace_root)
                 return running
@@ -695,7 +733,7 @@ class ManagedMcpManager:
         with self._state_lock:
             running = self._running_servers.get(key)
             if running is not None:
-                running.last_used_at = time.monotonic()
+                running.last_used_at = self._clock()
                 self._record_server_reused(key=key, workspace_root=running.workspace_root)
                 self._record_server_acquired(key=key, workspace_root=running.workspace_root)
                 return running
@@ -884,6 +922,7 @@ class ManagedMcpManager:
                 initialize_result=initialize_result,
                 scope=key.scope,
                 owner_session_id=key.owner_session_id,
+                last_used_at=self._clock(),
                 transport=transport,
             )
             self._running_servers[key] = running
@@ -912,7 +951,7 @@ class ManagedMcpManager:
     ) -> object:
         try:
             with running.call_lock:
-                running.last_used_at = time.monotonic()
+                running.last_used_at = self._clock()
                 return self._ensure_portal().call(operation)
         except Exception as exc:
             diagnostic = self._diagnostic_for_exception(
@@ -1310,6 +1349,7 @@ class ManagedMcpManager:
         key: _McpServerKey,
         workspace_root: Path,
         reason: str,
+        cleaned_count: int,
     ) -> None:
         self._record_event(
             McpRuntimeEvent(
@@ -1320,6 +1360,7 @@ class ManagedMcpManager:
                     **({"owner_session_id": key.owner_session_id} if key.owner_session_id else {}),
                     "workspace_root": str(workspace_root),
                     "reason": reason,
+                    "cleaned_count": cleaned_count,
                 },
             )
         )
@@ -1476,4 +1517,27 @@ def release_mcp_session_events(
         session_id=session_id,
         start_sequence=start_sequence,
         mcp_events=mcp_manager.release_session(session_id=session_id),
+    )
+
+
+def sweep_idle_mcp_session_events(
+    mcp_manager: McpManager,
+    *,
+    session_id: str,
+    start_sequence: int,
+    active_session_ids: set[str],
+) -> tuple[EventEnvelope, ...]:
+    """Reap idle session-scoped MCP servers and adapt their events to envelopes.
+
+    The runtime owns *when* this runs; the manager owns which session-scoped
+    servers count as idle or abandoned, and the threshold stays the manager's
+    default because it is not a public config key.
+    """
+    return envelopes_for_mcp_events(
+        session_id=session_id,
+        start_sequence=start_sequence,
+        mcp_events=mcp_manager.cleanup_idle_session_servers(
+            max_idle_seconds=DEFAULT_SESSION_MCP_IDLE_TIMEOUT_SECONDS,
+            active_session_ids=active_session_ids,
+        ),
     )

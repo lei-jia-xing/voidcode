@@ -79,7 +79,10 @@ class SessionSealedError(Exception):
 # * ACP lifecycle — service._append_parent_acp_delegated_lifecycle_event
 #   (RUNTIME_ACP_DELEGATED_LIFECYCLE) plus envelopes_for_acp_events
 #   (events.py / event_envelopes.py: RUNTIME_ACP_CONNECTED/DISCONNECTED/FAILED).
-# * MCP lifecycle — service._release_mcp_session_events →
+# * MCP lifecycle — runtime/mcp.py `release_mcp_session_events` (called from the
+#   finalize/resume coordinators at session end) and
+#   `sweep_idle_mcp_session_events` (called by
+#   `VoidCodeRuntime.materialize_mcp_tools_for_run` at run start) →
 #   envelopes_for_mcp_events (events.py / event_envelopes.py): the
 #   runtime.mcp_server_* release/stop/idle-clean/failure events.
 # * Delegated background-task lifecycle — background/supervisor.py

@@ -211,6 +211,21 @@ Runtime hook surface 与其事件名称的内部对应关系由
 - 这些事件由 runtime-owned ACP lifecycle 发出，并在响应/重放中按会话序列重新编号
 - 相关 ACP 运行态会写入 session metadata 的 `runtime_state.acp`，而不是用户主配置快照 `runtime_config`
 
+### `runtime.mcp_server_idle_cleaned`
+- source: `runtime`
+- 当前 payload:
+  - `server: str`：被回收的 MCP server 名
+  - `scope: str`：当前恒为 `session` —— 只有 session-scoped server 参与空闲回收；runtime-scoped server 由会话结束/运行时关闭路径释放
+  - `owner_session_id: str`（可选）：被回收 server 的 owner session
+  - `workspace_root: str`
+  - `reason: str`：`abandoned`（owner session 已不再有 in-flight run）或 `idle_timeout`（超过空闲阈值）
+  - `cleaned_count: int`：同一次清扫中被回收的 server 数量（每个 server 各发一条事件，故该字段为同批次总数，≥ 1）
+- 触发时机由 runtime 拥有：run 开始时、materialize MCP 工具**之前**顺带清扫（`VoidCodeRuntime.materialize_mcp_tools_for_run`）。判定由 manager 拥有：哪些 session-scoped server 算空闲或被遗弃，以及空闲阈值 `DEFAULT_SESSION_MCP_IDLE_TIMEOUT_SECONDS`（300s，当前不是可配置 key）。
+- runtime 用自己在飞的 run 集合（`ACTIVE_SESSION_REGISTRY`）作为 ownership truth：仍在被活跃会话持有的 server 不会被判为 `abandoned`，也不会有后台定时器在没有生命周期的空档里唤醒回收。
+- 回收只释放资源，不抛穿：manager 清理失败时 runtime 记录 warning 并继续本次 run。
+- 同一次回收会先发本事件（为什么释放），再发 `runtime.mcp_server_stopped`（状态落为 `stopped` 的事实）；两者共用 `server`/`scope`/`owner_session_id`/`workspace_root` 关联键。
+- 该事件此前只有契约与 manager 实现、没有触发点；本契约补上 payload 描述，未改变既有字段含义（additive）。
+
 ### `runtime.acp_delegated_lifecycle`
 ### `runtime.background_task_waiting_approval`
 ### `runtime.background_task_idle_reminder`

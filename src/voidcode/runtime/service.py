@@ -222,7 +222,7 @@ from .hook_runtime import (
 )
 from .interaction_queue import drain_runtime_messages, enqueue_runtime_message
 from .lsp import LspManager, LspManagerState, LspRequestResult, build_lsp_manager
-from .mcp import McpManager, build_mcp_manager, mcp_server_for_tool_name
+from .mcp import McpManager, build_mcp_manager, mcp_server_for_tool_name, sweep_idle_mcp_session_events
 from .mcp_tool_cache import McpToolCatalogCache
 from .mode import MODE_DEFINITIONS, resolve_mode, runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .paths import mcp_tool_catalog_cache_path, provider_catalog_cache_path
@@ -906,22 +906,57 @@ class VoidCodeRuntime(RuntimeSurface):
         if not self.mcp_tools_available_for_run(request_metadata=request_metadata, effective_config=effective_config):
             self.reset_tool_registry_to_base()
             return (), session, sequence, None
+        idle_cleanup_chunks, sequence = self._sweep_idle_mcp_session_servers(session=session, sequence=sequence)
         if self._mcp_manager_is_injected:
-            return self.refresh_mcp_tools_for_session(
+            refresh_chunks, session, sequence, failed_chunk = self.refresh_mcp_tools_for_session(
                 session=session,
                 sequence=sequence,
                 failure_kind=failure_kind,
             )
+            return idle_cleanup_chunks + refresh_chunks, session, sequence, failed_chunk
         surface = self.mcp_cached_surface(owner_session_id=session.session.id)
         configured_servers = self._mcp_manager.current_state().configuration.servers
         if not surface.covers(configured_servers):
-            return self.refresh_mcp_tools_for_session(
+            refresh_chunks, session, sequence, failed_chunk = self.refresh_mcp_tools_for_session(
                 session=session,
                 sequence=sequence,
                 failure_kind=failure_kind,
             )
+            return idle_cleanup_chunks + refresh_chunks, session, sequence, failed_chunk
         self._materialize_cached_mcp_tools(surface)
-        return (), session, sequence, None
+        return idle_cleanup_chunks, session, sequence, None
+
+    def _sweep_idle_mcp_session_servers(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+    ) -> tuple[tuple[RuntimeStreamChunk, ...], int]:
+        """Reap idle session-scoped MCP servers before this run acquires any.
+
+        Run start is the runtime's existing MCP seam: it is where the run is
+        about to claim MCP resources, so releasing servers whose owning session
+        is gone (or that sat idle past the manager's TTL) happens here instead
+        of in a second background owner. The sweep only releases; it never
+        connects. Failures are housekeeping noise, so a raising manager is
+        logged and cannot affect the run.
+        """
+        try:
+            envelopes = sweep_idle_mcp_session_events(
+                self._mcp_manager,
+                session_id=session.session.id,
+                start_sequence=sequence + 1,
+                active_session_ids=ACTIVE_SESSION_REGISTRY.active_session_ids(workspace=self._workspace),
+            )
+        except Exception:
+            logger.warning(
+                "idle MCP session cleanup failed before session %s started",
+                session.session.id,
+                exc_info=True,
+            )
+            return (), sequence
+        chunks = tuple(RuntimeStreamChunk(kind="event", session=session, event=envelope) for envelope in envelopes)
+        return chunks, envelopes[-1].sequence if envelopes else sequence
 
     def _materialize_cached_mcp_tools(self, surface: McpCachedToolSurface) -> None:
         """Advertise a discovered MCP surface without connecting."""
