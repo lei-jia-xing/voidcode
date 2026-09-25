@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from voidcode.provider.model_catalog import static_catalog_metadata
+from voidcode.runtime.config import RuntimeCompactionConfig
 from voidcode.runtime.context.window import ContextWindowPolicy, prepare_provider_context
 from voidcode.runtime.coordinators.stream_prep import StreamPrepCoordinator
 from voidcode.tools.contracts import ToolResult
 
-#: Small pruning knobs so a tiny fixture exercises the real decision.
-_POLICY = ContextWindowPolicy(default_tool_result_chars=None, keep_recent_tool_tokens=0, min_savings_tokens=1)
+#: No per-result cap and nothing kept recent: every result is prunable.
+_POLICY = ContextWindowPolicy(default_tool_result_chars=None, compaction=RuntimeCompactionConfig(keep_recent_tool_tokens=0))
 
 
 def _tool_results(count: int = 20) -> tuple[ToolResult, ...]:
-    return tuple(ToolResult(tool_name="read", status="ok", content="x" * 3_000) for _ in range(count))
+    # Sized so the reclaim crosses the production savings floor (20_000 tokens).
+    return tuple(ToolResult(tool_name="read", status="ok", content="x" * 5_000) for _ in range(count))
 
 
 class _Selection:
@@ -35,7 +37,7 @@ class _Config:
 def test_small_context_model_compacts_earlier_than_a_large_one() -> None:
     """The catalog window decides the trigger: the same view is pruned against a
     small window and left byte-identical against a large one."""
-    results = _tool_results()  # 20 x 3000 chars ~ 15k tokens
+    results = _tool_results()  # 20 x 5000 chars ~ 25k tokens
     prompt = "x" * 200_000  # ~50k tokens at the estimator's chars-per-token
 
     small = prepare_provider_context(

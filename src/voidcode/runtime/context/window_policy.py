@@ -13,10 +13,7 @@ def context_window_config_from_policy(
         default_tool_result_chars=policy.default_tool_result_chars,
         per_tool_result_chars=dict(policy.per_tool_result_chars),
         summary_strategy=policy.summary_strategy,
-        compaction=RuntimeCompactionConfig(
-            enabled=policy.compaction_enabled,
-            keep_recent_tool_tokens=policy.keep_recent_tool_tokens,
-        ),
+        compaction=policy.compaction,
     )
 
 
@@ -29,8 +26,7 @@ def context_window_policy_from_config(
         default_tool_result_chars=config.default_tool_result_chars,
         per_tool_result_chars=dict(config.per_tool_result_chars),
         summary_strategy=config.summary_strategy,
-        compaction_enabled=config.compaction.enabled,
-        keep_recent_tool_tokens=config.compaction.keep_recent_tool_tokens,
+        compaction=config.compaction,
     )
 
 

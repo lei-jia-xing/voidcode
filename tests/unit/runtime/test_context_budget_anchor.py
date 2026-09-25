@@ -7,6 +7,7 @@ since, and a present ``measured_anchor_tokens`` says which part was measured.
 
 from __future__ import annotations
 
+from voidcode.runtime.config import RuntimeCompactionConfig
 from voidcode.runtime.context.window import (
     ContextWindowPolicy,
     estimate_tokens_for_bytes,
@@ -26,9 +27,7 @@ def _result(content: str) -> ToolResult:
 def _policy() -> ContextWindowPolicy:
     return ContextWindowPolicy(
         default_tool_result_chars=None,
-        keep_recent_tool_tokens=0,
-        min_savings_tokens=1,
-        min_prune_tokens=1,
+        compaction=RuntimeCompactionConfig(keep_recent_tool_tokens=0),
     )
 
 
@@ -113,8 +112,9 @@ def test_anchor_reader_sums_the_reported_buckets_only_when_present() -> None:
 
 
 def test_anchor_alone_can_trigger_pruning() -> None:
-    without_anchor = _window(anchor_tokens=None, context_window=100_000)
-    with_anchor = _window(anchor_tokens=90_000, context_window=100_000)
+    # The fixture reclaims 25k tokens: above the production savings floor.
+    without_anchor = _window(anchor_tokens=None, context_window=100_000, tool_chars=100_000)
+    with_anchor = _window(anchor_tokens=90_000, context_window=100_000, tool_chars=100_000)
 
     assert without_anchor.compacted is False
     assert with_anchor.compacted is True

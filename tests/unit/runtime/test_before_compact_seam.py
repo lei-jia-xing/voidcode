@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from voidcode.runtime.config import RuntimeCompactionConfig
 from voidcode.runtime.context.window import (
     BeforeCompactInput,
     ContextWindowPolicy,
@@ -17,7 +18,8 @@ def _result(content: str, tool_name: str = "read") -> ToolResult:
 
 
 def _over_budget_results() -> tuple[ToolResult, ToolResult]:
-    return (_result("x" * 4000), _result("y" * 4000))
+    # Sized so the reclaim crosses the production savings floor (20_000 tokens).
+    return (_result("x" * 60_000), _result("y" * 60_000))
 
 
 def test_cancel_skips_compaction() -> None:
@@ -25,7 +27,7 @@ def test_cancel_skips_compaction() -> None:
         prompt="Summarize the workspace changes.",
         tool_results=_over_budget_results(),
         session_metadata={},
-        policy=ContextWindowPolicy(keep_recent_tool_tokens=0, min_savings_tokens=1),
+        policy=ContextWindowPolicy(default_tool_result_chars=None, compaction=RuntimeCompactionConfig(keep_recent_tool_tokens=0)),
         context_window=100,
         payload_bytes=0,
         before_compact=BeforeCompactInput(cancel=True, reason="operator_hold"),
@@ -46,7 +48,9 @@ def test_custom_summary_visible_in_summary_input_only() -> None:
         prompt="Summarize the workspace changes.",
         tool_results=_over_budget_results(),
         session_metadata={},
-        policy=ContextWindowPolicy(summary_strategy="model_assisted", keep_recent_tool_tokens=0, min_savings_tokens=1),
+        policy=ContextWindowPolicy(
+            default_tool_result_chars=None, summary_strategy="model_assisted", compaction=RuntimeCompactionConfig(keep_recent_tool_tokens=0)
+        ),
         summary_projector=_projector,
         context_window=100,
         payload_bytes=0,
@@ -65,7 +69,7 @@ def test_compaction_never_splits_tool_result_boundary() -> None:
         prompt="Summarize the workspace changes.",
         tool_results=results,
         session_metadata={},
-        policy=ContextWindowPolicy(keep_recent_tool_tokens=0, min_savings_tokens=1),
+        policy=ContextWindowPolicy(default_tool_result_chars=None, compaction=RuntimeCompactionConfig(keep_recent_tool_tokens=0)),
         context_window=100,
         payload_bytes=0,
     )

@@ -4,9 +4,9 @@ import hashlib
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from ...agent.prompt_sections import dynamic_boundary_marker
 from ...hook.percall import PerCallRewriteOutcome
@@ -30,6 +30,9 @@ from .transforms import (
     build_provider_context_transform_result,
 )
 
+if TYPE_CHECKING:
+    from ..config import RuntimeCompactionConfig
+
 _CONTINUITY_OBJECTIVE_PREVIEW_CHARS = 160
 _COMPACTION_PREVIEW_ITEM_LIMIT = 8
 _COMPACTION_PREVIEW_CHAR_LIMIT = 240
@@ -41,7 +44,8 @@ _TOKEN_RESERVE_DENOMINATOR = 100
 #: Reserve floor for the compaction threshold (upstream: ``max(15% of window, 16384)``).
 DEFAULT_CONTEXT_RESERVE_TOKENS = 16_384
 
-#: Default bounded-pruning knobs (overridable by ``context_window.compaction``).
+#: Default bounded-pruning knobs and floors: the knobs are overridable by
+#: ``context_window.compaction``, the two floors are fixed production constants.
 DEFAULT_KEEP_RECENT_TOOL_TOKENS = 20_000
 DEFAULT_MIN_SAVINGS_TOKENS = 20_000
 DEFAULT_MIN_PRUNE_TOKENS = 50
@@ -62,6 +66,13 @@ _PRUNE_SCALAR_DATA_CHARS = 256
 
 def _empty_tool_limits() -> dict[str, int]:
     return {}
+
+
+def _default_compaction_config() -> RuntimeCompactionConfig:
+    # Local import: ``runtime.config`` imports this module's defaults (cycle).
+    from ..config import RuntimeCompactionConfig
+
+    return RuntimeCompactionConfig()
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,19 +173,13 @@ class ContextProjection:
 @dataclass(frozen=True, slots=True)
 class ContextWindowPolicy:
     # Per-result bound: this cap is an explicit character limit for one tool
-    # payload. Whole-context pruning is token-budget driven (below), never
-    # character driven.
+    # payload. Whole-context pruning is token-budget driven (``compaction``),
+    # never character driven.
     default_tool_result_chars: int | None = 6_000
     per_tool_result_chars: Mapping[str, int] = field(default_factory=_empty_tool_limits)
     summary_strategy: Literal["deterministic", "model_assisted"] = "deterministic"
-    # Bounded pruning. Once the estimated provider payload reaches the budget
-    # threshold, the oldest prunable tool results have their content replaced by
-    # a bounded placeholder until the remaining tool content fits
-    # ``keep_recent_tool_tokens`` (estimated tokens, UTF-8 bytes / 4 — inexact).
-    compaction_enabled: bool = True
-    keep_recent_tool_tokens: int = DEFAULT_KEEP_RECENT_TOOL_TOKENS
-    min_savings_tokens: int = DEFAULT_MIN_SAVINGS_TOKENS
-    min_prune_tokens: int = DEFAULT_MIN_PRUNE_TOKENS
+    #: Bounded pruning knobs (single representation; the floors are production constants).
+    compaction: RuntimeCompactionConfig = field(default_factory=_default_compaction_config)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "per_tool_result_chars", dict(self.per_tool_result_chars))
@@ -185,21 +190,12 @@ class ContextWindowPolicy:
                 raise ValueError("per_tool_result_chars tool names must be non-empty")
             if limit < 1:
                 raise ValueError("per_tool_result_chars limits must be >= 1")
-        for field_name in ("keep_recent_tool_tokens", "min_savings_tokens"):
-            value = getattr(self, field_name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise ValueError(f"{field_name} must be a non-negative integer")
-        if isinstance(self.min_prune_tokens, bool) or not isinstance(self.min_prune_tokens, int) or self.min_prune_tokens < 1:
-            raise ValueError("min_prune_tokens must be >= 1")
 
     def metadata_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "version": 1,
             "summary_strategy": self.summary_strategy,
-            "compaction_enabled": self.compaction_enabled,
-            "keep_recent_tool_tokens": self.keep_recent_tool_tokens,
-            "min_savings_tokens": self.min_savings_tokens,
-            "min_prune_tokens": self.min_prune_tokens,
+            "compaction": asdict(self.compaction),
         }
         if self.default_tool_result_chars is not None:
             payload["default_tool_result_chars"] = self.default_tool_result_chars
@@ -1362,7 +1358,7 @@ def prepare_provider_context(
     if not should_compact(
         usage_tokens,
         context_window,
-        enabled=compaction_enabled and effective_policy.compaction_enabled,
+        enabled=compaction_enabled and effective_policy.compaction.enabled,
         strategy=effective_policy.summary_strategy,
         threshold_tokens=threshold_tokens,
         reserve_tokens=reserve_tokens,
@@ -1380,7 +1376,7 @@ def prepare_provider_context(
             usage_after=usage_tokens,
             delta=delta_tokens,
         )
-    prune_target = effective_policy.keep_recent_tool_tokens
+    prune_target = effective_policy.compaction.keep_recent_tool_tokens
     if fit_payload:
         # Recovery asks for the whole view to fit, so the tool results may only
         # keep whatever the instructions/prompt leave under the threshold.
@@ -1393,8 +1389,8 @@ def prepare_provider_context(
         # (``fit_payload``) exists because the request did not fit at all, so a
         # small but sufficient reclaim must not be rejected for being small; the
         # per-result ``min_prune_tokens`` floor still applies.
-        min_savings_tokens=0 if fit_payload else effective_policy.min_savings_tokens,
-        min_prune_tokens=effective_policy.min_prune_tokens,
+        min_savings_tokens=0 if fit_payload else DEFAULT_MIN_SAVINGS_TOKENS,
+        min_prune_tokens=DEFAULT_MIN_PRUNE_TOKENS,
     )
     if not pruned.pruned_indexes:
         return _view(
@@ -1402,7 +1398,7 @@ def prepare_provider_context(
             compacted=False,
             reason=(
                 "token_budget_exceeded:no_prunable_tool_content:"
-                f"usage_tokens={usage_tokens}:threshold_tokens={threshold}:keep_recent_tool_tokens={effective_policy.keep_recent_tool_tokens}"
+                f"usage_tokens={usage_tokens}:threshold_tokens={threshold}:keep_recent_tool_tokens={effective_policy.compaction.keep_recent_tool_tokens}"
             ),
             usage_before=usage_tokens,
             usage_after=usage_tokens,

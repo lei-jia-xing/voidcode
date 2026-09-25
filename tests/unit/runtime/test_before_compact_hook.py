@@ -15,6 +15,7 @@ from typing import Literal
 from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.hook.executor import LifecycleHookExecutionRequest, run_lifecycle_hooks
 from voidcode.runtime import EventEnvelope, RuntimeStreamChunk, SessionRef, SessionState
+from voidcode.runtime.config import RuntimeCompactionConfig
 from voidcode.runtime.context.window import (
     ContextWindowPolicy,
     prepare_provider_context,
@@ -28,7 +29,8 @@ def _result(content: str, tool_name: str = "read") -> ToolResult:
 
 
 def _over_budget_results() -> tuple[ToolResult, ToolResult]:
-    return (_result("x" * 4000), _result("y" * 4000))
+    # Sized so the reclaim crosses the production savings floor (20_000 tokens).
+    return (_result("x" * 60_000), _result("y" * 60_000))
 
 
 def _session() -> SessionState:
@@ -80,7 +82,7 @@ def test_cancelling_hook_skips_compaction_with_reason() -> None:
         prompt="Summarize the workspace changes.",
         tool_results=_over_budget_results(),
         session_metadata={},
-        policy=ContextWindowPolicy(keep_recent_tool_tokens=0, min_savings_tokens=1),
+        policy=ContextWindowPolicy(default_tool_result_chars=None, compaction=RuntimeCompactionConfig(keep_recent_tool_tokens=0)),
         context_window=100,
         payload_bytes=0,
         before_compact=before_compact,
@@ -105,7 +107,9 @@ def test_guidance_hook_reaches_summary_input_bounded() -> None:
         prompt="Summarize the workspace changes.",
         tool_results=_over_budget_results(),
         session_metadata={},
-        policy=ContextWindowPolicy(summary_strategy="model_assisted", keep_recent_tool_tokens=0, min_savings_tokens=1),
+        policy=ContextWindowPolicy(
+            default_tool_result_chars=None, summary_strategy="model_assisted", compaction=RuntimeCompactionConfig(keep_recent_tool_tokens=0)
+        ),
         summary_projector=_projector,
         context_window=100,
         payload_bytes=0,
@@ -129,7 +133,7 @@ def test_hook_error_fails_open_and_compaction_proceeds() -> None:
         prompt="Summarize the workspace changes.",
         tool_results=_over_budget_results(),
         session_metadata={},
-        policy=ContextWindowPolicy(keep_recent_tool_tokens=0, min_savings_tokens=1),
+        policy=ContextWindowPolicy(default_tool_result_chars=None, compaction=RuntimeCompactionConfig(keep_recent_tool_tokens=0)),
         context_window=100,
         payload_bytes=0,
         before_compact=None,
@@ -182,7 +186,9 @@ def test_extra_context_is_bounded_and_carried_to_projector_input() -> None:
         prompt="Summarize the workspace changes.",
         tool_results=_over_budget_results(),
         session_metadata={},
-        policy=ContextWindowPolicy(summary_strategy="model_assisted", keep_recent_tool_tokens=0, min_savings_tokens=1),
+        policy=ContextWindowPolicy(
+            default_tool_result_chars=None, summary_strategy="model_assisted", compaction=RuntimeCompactionConfig(keep_recent_tool_tokens=0)
+        ),
         summary_projector=_projector,
         context_window=100,
         payload_bytes=0,
