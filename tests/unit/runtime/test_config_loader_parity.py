@@ -47,12 +47,12 @@ def test_non_string_schema_reference_is_ignored_in_the_user_config(tmp_path: Pat
     config_home = tmp_path / "config"
     config_file = config_home / "voidcode" / "config.json"
     config_file.parent.mkdir(parents=True)
-    config_file.write_text(json.dumps({"$schema": 5, "tui": {"leader_key": "alt+y"}}), encoding="utf-8")
+    config_file.write_text(json.dumps({"$schema": 5, "tui": {"keymap": {"n": "session_new"}}}), encoding="utf-8")
 
     user_config = _load_user_config({"XDG_CONFIG_HOME": str(config_home)})
 
     assert user_config.tui is not None
-    assert user_config.tui.leader_key == "alt+y"
+    assert user_config.tui.keymap == {"n": "session_new"}
 
 
 @pytest.mark.parametrize("web_value", ["x", [], 5, True])

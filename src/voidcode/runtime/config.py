@@ -248,7 +248,6 @@ def _default_runtime_mcp_config() -> RuntimeMcpConfig:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeTuiConfig:
-    leader_key: str | None = None
     keymap: Mapping[str, str] | None = None
     preferences: RuntimeTuiPreferences | None = None
 
@@ -260,21 +259,8 @@ class RuntimeTuiThemePreferences:
 
 
 @dataclass(frozen=True, slots=True)
-class RuntimeTuiReadingPreferences:
-    wrap: bool | None = None
-    sidebar_collapsed: bool | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class RuntimeTuiPreferences:
     theme: RuntimeTuiThemePreferences | None = None
-    reading: RuntimeTuiReadingPreferences | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class EffectiveRuntimeTuiPreferences:
-    theme: RuntimeTuiThemePreferences
-    reading: RuntimeTuiReadingPreferences
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,26 +350,6 @@ class RuntimeWebSettings:
     provider: str | None = None
     provider_api_key: str | None = None
     provider_api_key_present: bool = False
-
-
-_BUILTIN_TUI_THEME_DEFAULTS: dict[RuntimeTuiThemeMode, str] = {
-    "auto": "textual-dark",
-    "light": "textual-light",
-    "dark": "textual-dark",
-}
-_BUILTIN_TEXTUAL_LIGHT_THEMES: frozenset[str] = frozenset({"textual-light", "solarized-light", "atom-one-light"})
-_BUILTIN_TEXTUAL_DARK_THEMES: frozenset[str] = frozenset(
-    {
-        "textual-dark",
-        "nord",
-        "gruvbox",
-        "textual-ansi",
-        "dracula",
-        "tokyo-night",
-        "monokai",
-        "atom-one-dark",
-    }
-)
 
 
 def runtime_config_path(workspace: Path) -> Path:
@@ -937,7 +903,6 @@ def _tui_config_from_payload(payload: TuiPayload | None) -> RuntimeTuiConfig | N
     if payload is None:
         return None
     return RuntimeTuiConfig(
-        leader_key=payload.leader_key,
         keymap=(dict(payload.keymap) if payload.keymap is not None else None),
         preferences=(
             None
@@ -947,14 +912,6 @@ def _tui_config_from_payload(payload: TuiPayload | None) -> RuntimeTuiConfig | N
                     None
                     if payload.preferences.theme is None
                     else RuntimeTuiThemePreferences(name=payload.preferences.theme.name, mode=payload.preferences.theme.mode)
-                ),
-                reading=(
-                    None
-                    if payload.preferences.reading is None
-                    else RuntimeTuiReadingPreferences(
-                        wrap=payload.preferences.reading.wrap,
-                        sidebar_collapsed=payload.preferences.reading.sidebar_collapsed,
-                    )
                 ),
             )
         ),
@@ -1565,87 +1522,46 @@ def _serialize_runtime_agent_tools_config(
 
 
 def _resolve_tui_config(global_tui: RuntimeTuiConfig | None, workspace_tui: RuntimeTuiConfig | None) -> RuntimeTuiConfig:
-    leader_key = (
-        (workspace_tui.leader_key if workspace_tui is not None else None) or (global_tui.leader_key if global_tui is not None else None) or "alt+x"
-    )
     keymap = (
         workspace_tui.keymap
         if workspace_tui is not None and workspace_tui.keymap is not None
         else (global_tui.keymap if global_tui is not None else None)
     )
-    theme, reading = _merged_tui_theme_and_reading(
+    theme = _merged_tui_theme(
         global_tui.preferences if global_tui is not None else None,
         workspace_tui.preferences if workspace_tui is not None else None,
     )
     return RuntimeTuiConfig(
-        leader_key=leader_key,
         keymap=keymap,
-        preferences=RuntimeTuiPreferences(theme=theme, reading=reading),
+        preferences=RuntimeTuiPreferences(theme=theme),
     )
 
 
-def _merged_tui_theme_and_reading(
+def _merged_tui_theme(
     global_preferences: RuntimeTuiPreferences | None,
     workspace_preferences: RuntimeTuiPreferences | None,
-) -> tuple[RuntimeTuiThemePreferences, RuntimeTuiReadingPreferences]:
-    """Merge the two preference surfaces; both halves are always populated.
+) -> RuntimeTuiThemePreferences:
+    """Merge the theme preference; ``mode`` always lands on a concrete value.
 
-    The wire shape declares ``theme``/``reading`` optional, so returning the two
-    concrete halves keeps callers from having to re-assert that this merge
-    always fills them.
+    The runtime only carries the client's theme preference: ``name`` is a free
+    string with no palette validation, and the runtime owns no palette registry.
+    The TUI resolves ``name`` against its own registry and falls back to the
+    mode default for unknown or absent names. Only ``mode`` (``auto``/``light``/
+    ``dark``) is resolved here, defaulting to ``auto``.
     """
     global_theme = global_preferences.theme if global_preferences is not None else None
     workspace_theme = workspace_preferences.theme if workspace_preferences is not None else None
-    global_reading = global_preferences.reading if global_preferences is not None else None
-    workspace_reading = workspace_preferences.reading if workspace_preferences is not None else None
-    theme = RuntimeTuiThemePreferences(
-        name=(workspace_theme.name if workspace_theme is not None else None)
-        or (global_theme.name if global_theme is not None else None)
-        or _BUILTIN_TUI_THEME_DEFAULTS["auto"],
+    return RuntimeTuiThemePreferences(
+        name=(workspace_theme.name if workspace_theme is not None else None) or (global_theme.name if global_theme is not None else None),
         mode=(workspace_theme.mode if workspace_theme is not None else None) or (global_theme.mode if global_theme is not None else None) or "auto",
     )
-    reading = RuntimeTuiReadingPreferences(
-        wrap=(
-            workspace_reading.wrap
-            if workspace_reading is not None and workspace_reading.wrap is not None
-            else (global_reading.wrap if global_reading is not None and global_reading.wrap is not None else True)
-        ),
-        sidebar_collapsed=(
-            workspace_reading.sidebar_collapsed
-            if workspace_reading is not None and workspace_reading.sidebar_collapsed is not None
-            else (global_reading.sidebar_collapsed if global_reading is not None and global_reading.sidebar_collapsed is not None else False)
-        ),
-    )
-    return theme, reading
 
 
 def merge_runtime_tui_preferences(
     base_preferences: RuntimeTuiPreferences | None,
     override_preferences: RuntimeTuiPreferences | None,
 ) -> RuntimeTuiPreferences:
-    theme, reading = _merged_tui_theme_and_reading(base_preferences, override_preferences)
-    return RuntimeTuiPreferences(theme=theme, reading=reading)
-
-
-def effective_runtime_tui_preferences(
-    preferences: RuntimeTuiPreferences | None,
-) -> EffectiveRuntimeTuiPreferences:
-    theme, reading = _merged_tui_theme_and_reading(None, preferences)
-    return EffectiveRuntimeTuiPreferences(theme=_resolve_theme_preferences(theme), reading=reading)
-
-
-def _resolve_theme_preferences(
-    theme_preferences: RuntimeTuiThemePreferences,
-) -> RuntimeTuiThemePreferences:
-    mode = theme_preferences.mode or "auto"
-    name = theme_preferences.name or _BUILTIN_TUI_THEME_DEFAULTS[mode]
-    if mode == "light" and name not in _BUILTIN_TEXTUAL_LIGHT_THEMES:
-        name = _BUILTIN_TUI_THEME_DEFAULTS[mode]
-    elif mode == "dark" and name not in _BUILTIN_TEXTUAL_DARK_THEMES:
-        name = _BUILTIN_TUI_THEME_DEFAULTS[mode]
-    elif mode == "auto" and name not in (_BUILTIN_TEXTUAL_LIGHT_THEMES | _BUILTIN_TEXTUAL_DARK_THEMES):
-        name = _BUILTIN_TUI_THEME_DEFAULTS[mode]
-    return RuntimeTuiThemePreferences(name=name, mode=mode)
+    return RuntimeTuiPreferences(theme=_merged_tui_theme(base_preferences, override_preferences))
 
 
 def save_workspace_tui_preferences(workspace: Path, preferences: RuntimeTuiPreferences) -> None:
@@ -1792,14 +1708,6 @@ def serialize_runtime_tui_preferences(preferences: RuntimeTuiPreferences) -> dic
             theme_payload["mode"] = preferences.theme.mode
         if theme_payload:
             payload["theme"] = theme_payload
-    if preferences.reading is not None:
-        reading_payload: dict[str, object] = {}
-        if preferences.reading.wrap is not None:
-            reading_payload["wrap"] = preferences.reading.wrap
-        if preferences.reading.sidebar_collapsed is not None:
-            reading_payload["sidebar_collapsed"] = preferences.reading.sidebar_collapsed
-        if reading_payload:
-            payload["reading"] = reading_payload
     return payload
 
 

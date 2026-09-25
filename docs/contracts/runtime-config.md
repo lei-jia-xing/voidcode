@@ -243,12 +243,9 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `agent.fallback_models`：agent-scoped shorthand；必须同时配置 `agent.model`，runtime 会把 `agent.model` 作为内部 `provider_fallback.preferred_model`，并把该数组作为 fallback chain；这是 agent 配置中唯一的 fallback 配置入口
 - `agents.<preset>`：按 preset 配置 delegated child / primary agent defaults；builtin key 与已发现本地 manifest key 可省略 `preset`，alias key 必须显式声明 `preset`。
 - `agents.<preset>.fallback_models`：与 `agent.fallback_models` 相同的 shorthand；delegation path 会把选中 preset 的 fallback chain 持久化到 child session metadata。
-- `tui.leader_key`：字符串
-- `tui.keymap`：对象，值当前仅允许 `command_palette`、`session_new`、`session_resume`
-- `tui.preferences.theme.name`：字符串
-- `tui.preferences.theme.mode`：`auto`、`light`、`dark` 之一
-- `tui.preferences.reading.wrap`：布尔值
-- `tui.preferences.reading.sidebar_collapsed`：布尔值
+- `tui.keymap`：对象，值当前仅允许 `session_new`、`session_resume`、`tools_expand`
+- `tui.preferences.theme.name`：字符串，可选。runtime 只携带/合并该偏好，不做任何调色板名校验、也不提供内置调色板列表；TUI 用自己的调色板注册表解析，未知或缺失的名字回落到 `theme.mode` 对应的默认调色板。
+- `tui.preferences.theme.mode`：`auto`、`light`、`dark` 之一；缺省为 `auto`
 
 ### external directory permission 语义
 
@@ -456,17 +453,15 @@ TUI 偏好与其他多数领域不同，拥有一条单独的双层优先级链�
 
 其中第一阶段已实现的 built-in defaults 为：
 
-- `tui.leader_key` -> `alt+x`
-- `tui.preferences.theme.name` -> `textual-dark`
 - `tui.preferences.theme.mode` -> `auto`
-- `tui.preferences.reading.wrap` -> `true`
-- `tui.preferences.reading.sidebar_collapsed` -> `false`
+
+runtime 不提供 `theme.name` 的内置默认值，也不持有调色板注册表；名字缺省时由 TUI 按 mode 默认调色板解析。
 
 ### 重要语义
 
 - workspace override 仍然是“局部覆盖”，不是完整快照。
 - 但当前 TUI 产品默认不会把普通偏好修改写回 workspace。
-- 普通 theme / theme mode / wrap / sidebar 修改默认写回 global default。
+- 普通 theme / theme mode 修改默认写回 global default。
 - workspace 中未覆盖的字段继续继承 global default；workspace override 只用于显式的项目级覆盖语义。
 
 ### 当前已实现的全局配置路径

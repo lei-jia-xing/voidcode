@@ -67,8 +67,8 @@ TOOL_TIMEOUT_ENV_VAR = "VOIDCODE_TOOL_TIMEOUT_SECONDS"
 REASONING_EFFORT_ENV_VAR = "VOIDCODE_REASONING_EFFORT"
 
 VALID_APPROVAL_MODES: tuple[PermissionDecision, ...] = ("allow", "deny", "ask")
-VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
-type TuiCommand = Literal["command_palette", "session_new", "session_resume"]
+VALID_TUI_COMMANDS = ("session_new", "session_resume", "tools_expand")
+type TuiCommand = Literal["session_new", "session_resume", "tools_expand"]
 
 type ExecutionEngineName = Literal["deterministic", "provider"]
 VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "provider")
@@ -1395,32 +1395,8 @@ class TuiThemePreferencesPayload(_PayloadModel):
         return _parse_runtime_tui_theme_mode(value)
 
 
-class TuiReadingPreferencesPayload(_PayloadModel):
-    wrap: bool | None = None
-    sidebar_collapsed: bool | None = None
-
-    @field_validator("wrap", mode="before")
-    @classmethod
-    def _validate_wrap(cls, value: object) -> bool | None:
-        if value is None:
-            return None
-        if not isinstance(value, bool):
-            raise ValueError("runtime config field 'tui.preferences.reading.wrap' must be a boolean when provided")
-        return value
-
-    @field_validator("sidebar_collapsed", mode="before")
-    @classmethod
-    def _validate_sidebar_collapsed(cls, value: object) -> bool | None:
-        if value is None:
-            return None
-        if not isinstance(value, bool):
-            raise ValueError("runtime config field 'tui.preferences.reading.sidebar_collapsed' must be a boolean when provided")
-        return value
-
-
 class TuiPreferencesPayload(_PayloadModel):
     theme: TuiThemePreferencesPayload | None = None
-    reading: TuiReadingPreferencesPayload | None = None
 
     @field_validator("theme", mode="before")
     @classmethod
@@ -1431,29 +1407,10 @@ class TuiPreferencesPayload(_PayloadModel):
             raise ValueError("runtime config field 'tui.preferences.theme' must be an object when provided")
         return value
 
-    @field_validator("reading", mode="before")
-    @classmethod
-    def _validate_reading(cls, value: object) -> object:
-        if value is None:
-            return None
-        if not isinstance(value, dict):
-            raise ValueError("runtime config field 'tui.preferences.reading' must be an object when provided")
-        return value
-
 
 class TuiPayload(_PayloadModel):
-    leader_key: str | None = None
     keymap: dict[str, TuiCommand] | None = None
     preferences: TuiPreferencesPayload | None = None
-
-    @field_validator("leader_key", mode="before")
-    @classmethod
-    def _validate_leader_key(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise ValueError("runtime config field 'tui.leader_key' must be a string when provided")
-        return value
 
     @field_validator("keymap", mode="before")
     @classmethod
@@ -1966,7 +1923,6 @@ SCHEMA_DEFINITION_NAMES: Mapping[str, str] = {
     "TuiPayload": "tuiConfig",
     "TuiPreferencesPayload": "tuiPreferencesConfig",
     "TuiThemePreferencesPayload": "tuiThemePreferencesConfig",
-    "TuiReadingPreferencesPayload": "tuiReadingPreferencesConfig",
     "BackgroundTaskPayload": "backgroundTaskConfig",
     "AgentPayload": "agentConfig",
     "AgentMcpBindingPayload": "agentMcpBindingConfig",

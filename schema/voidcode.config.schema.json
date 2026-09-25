@@ -1845,18 +1845,12 @@
     "tuiConfig": {
       "additionalProperties": false,
       "properties": {
-        "leader_key": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "keymap": {
           "additionalProperties": {
             "enum": [
-              "command_palette",
               "session_new",
-              "session_resume"
+              "session_resume",
+              "tools_expand"
             ],
             "type": "string"
           },
@@ -1889,34 +1883,6 @@
             {
               "type": "null"
             }
-          ]
-        },
-        "reading": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/tuiReadingPreferencesConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "tuiReadingPreferencesConfig": {
-      "additionalProperties": false,
-      "properties": {
-        "wrap": {
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "sidebar_collapsed": {
-          "type": [
-            "boolean",
-            "null"
           ]
         }
       },

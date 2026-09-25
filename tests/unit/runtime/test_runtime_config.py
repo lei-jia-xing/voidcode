@@ -44,12 +44,11 @@ from voidcode.runtime.config import (
     RuntimeToolsLocalConfig,
     RuntimeTuiConfig,
     RuntimeTuiPreferences,
-    RuntimeTuiReadingPreferences,
     RuntimeTuiThemePreferences,
     RuntimeWebSettings,
-    effective_runtime_tui_preferences,
     load_global_web_settings,
     load_runtime_config,
+    merge_runtime_tui_preferences,
     parse_runtime_agent_payload,
     parse_runtime_context_window_payload,
     runtime_config_path,
@@ -2241,24 +2240,20 @@ def test_load_global_web_settings_uses_windows_appdata_from_explicit_env(tmp_pat
 
 
 def test_parse_tui_config_returns_defaults_when_fields_missing() -> None:
-    assert _parse_tui_config({}) == RuntimeTuiConfig(leader_key=None, keymap=None)
+    assert _parse_tui_config({}) == RuntimeTuiConfig(keymap=None)
 
 
 def test_parse_tui_config_preserves_preferences_shape() -> None:
     assert _parse_tui_config(
         {
-            "leader_key": "ctrl+space",
             "preferences": {
-                "theme": {"name": "nord", "mode": "dark"},
-                "reading": {"wrap": False, "sidebar_collapsed": True},
+                "theme": {"name": "voidcode-dark", "mode": "dark"},
             },
         }
     ) == RuntimeTuiConfig(
-        leader_key="ctrl+space",
         keymap=None,
         preferences=RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name="nord", mode="dark"),
-            reading=RuntimeTuiReadingPreferences(wrap=False, sidebar_collapsed=True),
+            theme=RuntimeTuiThemePreferences(name="voidcode-dark", mode="dark"),
         ),
     )
 
@@ -2272,8 +2267,7 @@ def test_load_runtime_config_resolves_tui_preferences_from_workspace_over_global
             {
                 "tui": {
                     "preferences": {
-                        "theme": {"name": "nord", "mode": "dark"},
-                        "reading": {"wrap": False, "sidebar_collapsed": True},
+                        "theme": {"name": "voidcode-dark", "mode": "dark"},
                     }
                 }
             }
@@ -2285,8 +2279,7 @@ def test_load_runtime_config_resolves_tui_preferences_from_workspace_over_global
         {
             "tui": {
                 "preferences": {
-                    "theme": {"name": "tokyo-night"},
-                    "reading": {"wrap": True},
+                    "theme": {"name": "voidcode-light"},
                 }
             }
         },
@@ -2296,8 +2289,7 @@ def test_load_runtime_config_resolves_tui_preferences_from_workspace_over_global
 
     assert config.tui is not None
     assert config.tui.preferences == RuntimeTuiPreferences(
-        theme=RuntimeTuiThemePreferences(name="tokyo-night", mode="dark"),
-        reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=True),
+        theme=RuntimeTuiThemePreferences(name="voidcode-light", mode="dark"),
     )
 
 
@@ -2310,8 +2302,7 @@ def test_load_runtime_config_resolves_tui_preferences_from_global_when_workspace
             {
                 "tui": {
                     "preferences": {
-                        "theme": {"name": "gruvbox", "mode": "dark"},
-                        "reading": {"wrap": False, "sidebar_collapsed": True},
+                        "theme": {"name": "voidcode-dark", "mode": "dark"},
                     }
                 }
             }
@@ -2323,49 +2314,18 @@ def test_load_runtime_config_resolves_tui_preferences_from_global_when_workspace
 
     assert config.tui is not None
     assert config.tui.preferences == RuntimeTuiPreferences(
-        theme=RuntimeTuiThemePreferences(name="gruvbox", mode="dark"),
-        reading=RuntimeTuiReadingPreferences(wrap=False, sidebar_collapsed=True),
+        theme=RuntimeTuiThemePreferences(name="voidcode-dark", mode="dark"),
     )
 
 
-def test_load_runtime_config_uses_builtin_tui_preference_defaults_when_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_runtime_config_defaults_tui_theme_mode_without_a_palette_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
 
     config = load_runtime_config(tmp_path, env={})
 
     assert config.tui is not None
     assert config.tui.preferences == RuntimeTuiPreferences(
-        theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
-        reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=False),
-    )
-
-
-def test_load_runtime_config_inherits_global_leader_key_when_workspace_only_sets_preferences(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    global_config_dir = tmp_path / "global-config"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
-    user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
-    user_runtime_config_path().write_text(
-        json.dumps({"tui": {"leader_key": "ctrl+space"}}),
-        encoding="utf-8",
-    )
-    _write_runtime_config(
-        tmp_path,
-        {
-            "tui": {
-                "preferences": {
-                    "reading": {"wrap": False},
-                }
-            }
-        },
-    )
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.tui is not None
-    assert config.tui.leader_key == "ctrl+space"
-    assert config.tui.preferences == RuntimeTuiPreferences(
-        theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
-        reading=RuntimeTuiReadingPreferences(wrap=False, sidebar_collapsed=False),
+        theme=RuntimeTuiThemePreferences(name=None, mode="auto"),
     )
 
 
@@ -2396,15 +2356,14 @@ def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_field
         {
             "model": "opencode-zen/gpt-5.4",
             "approval_mode": "ask",
-            "tui": {"leader_key": "alt+x"},
+            "tui": {"keymap": {"n": "session_new"}},
         },
     )
 
     save_workspace_tui_preferences(
         tmp_path,
         RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name="nord", mode="dark"),
-            reading=RuntimeTuiReadingPreferences(wrap=False, sidebar_collapsed=True),
+            theme=RuntimeTuiThemePreferences(name="voidcode-dark", mode="dark"),
         ),
     )
 
@@ -2412,18 +2371,16 @@ def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_field
     assert payload["model"] == "opencode-zen/gpt-5.4"
     assert payload["approval_mode"] == "ask"
     assert payload["tui"]["preferences"] == {
-        "theme": {"name": "nord", "mode": "dark"},
-        "reading": {"wrap": False, "sidebar_collapsed": True},
+        "theme": {"name": "voidcode-dark", "mode": "dark"},
     }
 
 
-def test_save_workspace_tui_preferences_preserves_tui_leader_key_and_keymap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_save_workspace_tui_preferences_preserves_tui_keymap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
     _write_runtime_config(
         tmp_path,
         {
             "tui": {
-                "leader_key": "ctrl+space",
                 "keymap": {"n": "session_new"},
             }
         },
@@ -2432,17 +2389,14 @@ def test_save_workspace_tui_preferences_preserves_tui_leader_key_and_keymap(tmp_
     save_workspace_tui_preferences(
         tmp_path,
         RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name="gruvbox", mode="dark"),
-            reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=False),
+            theme=RuntimeTuiThemePreferences(name="voidcode-dark", mode="dark"),
         ),
     )
 
     payload = json.loads(runtime_config_path(tmp_path).read_text(encoding="utf-8"))
-    assert payload["tui"]["leader_key"] == "ctrl+space"
     assert payload["tui"]["keymap"] == {"n": "session_new"}
     assert payload["tui"]["preferences"] == {
-        "theme": {"name": "gruvbox", "mode": "dark"},
-        "reading": {"wrap": True, "sidebar_collapsed": False},
+        "theme": {"name": "voidcode-dark", "mode": "dark"},
     }
 
 
@@ -2453,7 +2407,7 @@ def test_save_workspace_tui_preferences_writes_only_local_override_values(tmp_pa
         {
             "tui": {
                 "preferences": {
-                    "reading": {"sidebar_collapsed": True},
+                    "theme": {"mode": "light"},
                 }
             }
         },
@@ -2462,12 +2416,12 @@ def test_save_workspace_tui_preferences_writes_only_local_override_values(tmp_pa
     save_workspace_tui_preferences(
         tmp_path,
         RuntimeTuiPreferences(
-            reading=RuntimeTuiReadingPreferences(wrap=False),
+            theme=RuntimeTuiThemePreferences(name="voidcode-dark"),
         ),
     )
 
     payload = json.loads(runtime_config_path(tmp_path).read_text(encoding="utf-8"))
-    assert payload["tui"]["preferences"] == {"reading": {"wrap": False}}
+    assert payload["tui"]["preferences"] == {"theme": {"name": "voidcode-dark"}}
 
 
 def test_save_global_tui_preferences_writes_user_config_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2476,8 +2430,7 @@ def test_save_global_tui_preferences_writes_user_config_shape(tmp_path: Path, mo
 
     save_global_tui_preferences(
         RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name="tokyo-night", mode="dark"),
-            reading=RuntimeTuiReadingPreferences(wrap=False, sidebar_collapsed=True),
+            theme=RuntimeTuiThemePreferences(name="voidcode-dark", mode="dark"),
         )
     )
 
@@ -2485,8 +2438,7 @@ def test_save_global_tui_preferences_writes_user_config_shape(tmp_path: Path, mo
     assert payload == {
         "tui": {
             "preferences": {
-                "theme": {"name": "tokyo-night", "mode": "dark"},
-                "reading": {"wrap": False, "sidebar_collapsed": True},
+                "theme": {"name": "voidcode-dark", "mode": "dark"},
             }
         }
     }
@@ -2497,23 +2449,21 @@ def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(tm
     monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
     user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
     user_runtime_config_path().write_text(
-        json.dumps({"model": "opencode-zen/gpt-5.4", "tui": {"leader_key": "alt+x"}}),
+        json.dumps({"model": "opencode-zen/gpt-5.4", "tui": {"keymap": {"n": "session_new"}}}),
         encoding="utf-8",
     )
 
     save_global_tui_preferences(
         RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name="textual-light", mode="light"),
-            reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=False),
+            theme=RuntimeTuiThemePreferences(name="voidcode-light", mode="light"),
         )
     )
 
     payload = json.loads(user_runtime_config_path().read_text(encoding="utf-8"))
     assert payload["model"] == "opencode-zen/gpt-5.4"
-    assert payload["tui"]["leader_key"] == "alt+x"
+    assert payload["tui"]["keymap"] == {"n": "session_new"}
     assert payload["tui"]["preferences"] == {
-        "theme": {"name": "textual-light", "mode": "light"},
-        "reading": {"wrap": True, "sidebar_collapsed": False},
+        "theme": {"name": "voidcode-light", "mode": "light"},
     }
 
 
@@ -2596,33 +2546,37 @@ def test_load_global_web_settings_detects_provider_env_keys(tmp_path: Path, prov
     assert settings == RuntimeWebSettings(provider=provider, provider_api_key_present=True)
 
 
-def test_effective_runtime_tui_preferences_resolves_invalid_theme_name_to_mode_default() -> None:
-    effective = effective_runtime_tui_preferences(
-        RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name="unknown-theme", mode="light"),
-            reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=False),
-        )
+def test_merge_runtime_tui_preferences_carries_unknown_theme_name_and_defaults_mode() -> None:
+    """The runtime carries the theme name verbatim; the TUI resolves palettes.
+
+    ``name`` is never validated or rewritten here, and ``mode`` defaults to
+    ``auto`` when neither side sets it.
+    """
+    merged = merge_runtime_tui_preferences(
+        RuntimeTuiPreferences(theme=RuntimeTuiThemePreferences(name="unknown-theme", mode="light")),
+        RuntimeTuiPreferences(theme=RuntimeTuiThemePreferences(name="some-other-theme")),
     )
 
-    assert effective.theme == RuntimeTuiThemePreferences(name="textual-light", mode="light")
+    assert merged.theme == RuntimeTuiThemePreferences(name="some-other-theme", mode="light")
+
+    defaulted = merge_runtime_tui_preferences(None, None)
+    assert defaulted.theme == RuntimeTuiThemePreferences(name=None, mode="auto")
 
 
-def test_parse_tui_config_preserves_valid_leader_key_and_keymap() -> None:
+def test_parse_tui_config_preserves_valid_keymap() -> None:
     assert _parse_tui_config(
         {
-            "leader_key": "ctrl+space",
             "keymap": {
                 "n": "session_new",
                 "r": "session_resume",
-                "p": "command_palette",
+                "t": "tools_expand",
             },
         }
     ) == RuntimeTuiConfig(
-        leader_key="ctrl+space",
         keymap={
             "n": "session_new",
             "r": "session_resume",
-            "p": "command_palette",
+            "t": "tools_expand",
         },
     )
 
@@ -2631,11 +2585,6 @@ def test_parse_tui_config_preserves_valid_leader_key_and_keymap() -> None:
     ("raw_value", "match"),
     [
         pytest.param([], "runtime config field 'tui'", id="shape"),
-        pytest.param(
-            {"leader_key": 3},
-            "runtime config field 'tui.leader_key'",
-            id="leader-key-type",
-        ),
         pytest.param(
             {"keymap": []},
             "runtime config field 'tui.keymap'",
@@ -2653,7 +2602,7 @@ def test_parse_tui_config_preserves_valid_leader_key_and_keymap() -> None:
         ),
         pytest.param(
             {"keymap": {"n": "quit"}},
-            "runtime config field 'tui.keymap' values must be one of: command_palette, session_new, session_resume",
+            "runtime config field 'tui.keymap' values must be one of: session_new, session_resume, tools_expand",
             id="keymap-value-enum",
         ),
         pytest.param(
@@ -2672,19 +2621,9 @@ def test_parse_tui_config_preserves_valid_leader_key_and_keymap() -> None:
             id="preferences-theme-mode-invalid",
         ),
         pytest.param(
-            {"preferences": {"reading": []}},
-            "runtime config field 'tui.preferences.reading'",
-            id="preferences-reading-shape",
-        ),
-        pytest.param(
-            {"preferences": {"reading": {"wrap": "yes"}}},
-            "runtime config field 'tui.preferences.reading.wrap'",
-            id="preferences-reading-wrap-type",
-        ),
-        pytest.param(
-            {"preferences": {"reading": {"sidebar_collapsed": "yes"}}},
-            "runtime config field 'tui.preferences.reading.sidebar_collapsed'",
-            id="preferences-reading-sidebar-collapsed-type",
+            {"preferences": {"theme": {"name": 5}}},
+            "runtime config field 'tui.preferences.theme.name'",
+            id="preferences-theme-name-type",
         ),
     ],
 )
