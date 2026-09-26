@@ -136,17 +136,6 @@ _STABLE_SEGMENTS = (
     ProviderContextSegment(role="system", content="<!-- voidcode:dynamic-boundary -->"),
 )
 
-_CACHE_METADATA: dict[str, object] = {
-    "prompt_cache": {
-        "version": 1,
-        "boundary_present": True,
-        "stable_prefix_hash": "a" * 64,
-        "dynamic_suffix_hash": "b" * 64,
-        "stable_section_count": 3,
-        "dynamic_section_count": 2,
-    }
-}
-
 
 def test_short_retention_with_tools_caches_tools_not_system_text() -> None:
     fake = _FakeTransport()
@@ -169,7 +158,6 @@ def test_short_retention_without_tools_caches_system_text() -> None:
         _request(
             segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
             cache_retention="short",
-            metadata=_CACHE_METADATA,
         )
     )
     payload = fake.payloads[0]
@@ -200,7 +188,6 @@ def test_default_retention_emits_short_cache_control() -> None:
     AnthropicMessagesProvider(transport=fake).propose_turn(
         _request(
             segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
-            metadata=_CACHE_METADATA,
         )
     )
     payload = fake.payloads[0]
@@ -215,7 +202,6 @@ def test_retention_disabled_emits_no_cache_control() -> None:
         _request(
             segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
             cache_retention="none",
-            metadata=_CACHE_METADATA,
         )
     )
     payload = fake.payloads[0]
@@ -229,7 +215,6 @@ def test_explicit_long_retention_emits_one_hour_ttl() -> None:
         _request(
             segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
             cache_retention="long",
-            metadata=_CACHE_METADATA,
         )
     )
     payload = fake.payloads[0]
