@@ -39,8 +39,7 @@ integration/config suites exercising them in passing, e.g.
 - the TUI: `src/voidcode/tui/**` (app, term, region, theme, transcript,
   statusline, composer, overlay, events, keys) and the TUI CLI wiring — the pure
   layers carry unit suites; the `app` loop is covered by the pty integration test
-- truly near zero: `runtime/context/projection.py`, `runtime/review.py`,
-  `cli/trace.py`, `tools/local_custom.py`
+- truly near zero: `runtime/review.py`, `cli/trace.py`, `tools/local_custom.py`
 - `runtime/{lsp,mcp,acp,context/rules,tool_call_preview}.py`,
   `tools/{delegation/*,process/*}.py`, `provider/{auth,trace}.py`,
   `doctor/**`, `command/**`, `formatter/executor.py`, `server.py`,

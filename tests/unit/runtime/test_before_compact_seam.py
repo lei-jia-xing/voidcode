@@ -1,8 +1,6 @@
-"""before_compact seam: cancel skips compaction, custom_summary reaches projector input only."""
+"""before_compact seam: cancel skips compaction, non-cancel input is inert."""
 
 from __future__ import annotations
-
-from collections.abc import Mapping
 
 from voidcode.runtime.config import RuntimeCompactionConfig
 from voidcode.runtime.context.window import (
@@ -37,28 +35,18 @@ def test_cancel_skips_compaction() -> None:
     assert window.continuity_state is None
 
 
-def test_custom_summary_visible_in_summary_input_only() -> None:
-    seen: dict[str, object] = {}
-
-    def _projector(facts: Mapping[str, object]) -> str:
-        seen.update(facts)
-        return "model summary"
-
+def test_non_cancel_input_leaves_compaction_untouched() -> None:
     window = prepare_provider_context(
         prompt="Summarize the workspace changes.",
         tool_results=_over_budget_results(),
         session_metadata={},
-        policy=ContextWindowPolicy(
-            default_tool_result_chars=None, summary_strategy="model_assisted", compaction=RuntimeCompactionConfig(keep_recent_tool_tokens=0)
-        ),
-        summary_projector=_projector,
+        policy=ContextWindowPolicy(default_tool_result_chars=None, compaction=RuntimeCompactionConfig(keep_recent_tool_tokens=0)),
         context_window=100,
         payload_bytes=0,
-        before_compact=BeforeCompactInput(custom_summary="keep the deploy notes"),
+        before_compact=BeforeCompactInput(),
     )
     assert window.compacted is True
-    assert seen.get("custom_summary") == "keep the deploy notes"
-    # Deterministic engine output is untouched: prompt passes through as-is.
+    assert window.continuity_state is not None
     assert window.prompt == "Summarize the workspace changes."
 
 

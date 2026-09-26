@@ -12,7 +12,6 @@ def context_window_config_from_policy(
     return RuntimeContextWindowConfig(
         default_tool_result_chars=policy.default_tool_result_chars,
         per_tool_result_chars=dict(policy.per_tool_result_chars),
-        summary_strategy=policy.summary_strategy,
         compaction=policy.compaction,
     )
 
@@ -25,7 +24,6 @@ def context_window_policy_from_config(
     return ContextWindowPolicy(
         default_tool_result_chars=config.default_tool_result_chars,
         per_tool_result_chars=dict(config.per_tool_result_chars),
-        summary_strategy=config.summary_strategy,
         compaction=config.compaction,
     )
 

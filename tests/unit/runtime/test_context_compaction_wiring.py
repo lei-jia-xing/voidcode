@@ -320,17 +320,9 @@ def test_policy_and_config_round_trip_keeps_every_compaction_knob() -> None:
     assert context_window_config_from_policy(policy) == config
 
 
-def test_model_assisted_projector_failure_falls_back() -> None:
-    def _boom(_facts: Mapping[str, object]) -> str:
-        raise RuntimeError("projector down")
-
-    window = _prepare(
-        (_result("x" * 100_000),),
-        policy=_policy(summary_strategy="model_assisted"),
-        summary_projector=_boom,
-    )
+def test_compacted_summary_is_deterministic_text() -> None:
+    window = _prepare((_result("x" * 100_000),))
 
     assert window.compacted is True
-    assert window.summary_strategy == "fallback"
-    assert window.summary_fallback_reason is not None
     assert window.continuity_state is not None and window.continuity_state.summary_text
+    assert window.summary_anchor is not None

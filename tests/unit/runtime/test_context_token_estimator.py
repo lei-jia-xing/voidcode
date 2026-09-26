@@ -62,8 +62,6 @@ def test_should_compact_default_boundary() -> None:
 
 def test_should_compact_disabled() -> None:
     assert should_compact(95000, 100000, enabled=False) is False
-    assert should_compact(95000, 100000, strategy="off") is False
-    assert should_compact(95000, 100000, strategy="disabled") is False
     assert should_compact(95000, 0) is False
     assert should_compact(95000, -100) is False
     assert should_compact(95000, None) is False

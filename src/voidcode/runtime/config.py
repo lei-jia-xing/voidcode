@@ -8,7 +8,6 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal
 
 from pydantic import ValidationError
 
@@ -185,7 +184,6 @@ class RuntimeContextWindowConfig:
     provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
     provider_context_oversized_feedback_chars: int = 8_000
     context_transform_failure_policy: RuntimeContextTransformFailureMode = "warn"
-    summary_strategy: Literal["deterministic", "model_assisted"] = "deterministic"
     compaction: RuntimeCompactionConfig = field(default_factory=RuntimeCompactionConfig)
 
 
@@ -822,7 +820,6 @@ def _context_window_config_from_payload(payload: ContextWindowPayload | None) ->
         provider_context_diagnostics=payload.provider_context_diagnostics or "warn",
         provider_context_oversized_feedback_chars=payload.provider_context_oversized_feedback_chars or 8_000,
         context_transform_failure_policy=payload.context_transform_failure_policy or "warn",
-        summary_strategy=payload.summary_strategy or "deterministic",
         compaction=_compaction_config_from_payload(payload.compaction),
     )
 
@@ -1512,7 +1509,6 @@ def serialize_runtime_context_window_config(
         "provider_context_diagnostics": context_window.provider_context_diagnostics,
         "provider_context_oversized_feedback_chars": context_window.provider_context_oversized_feedback_chars,
         "context_transform_failure_policy": context_window.context_transform_failure_policy,
-        "summary_strategy": context_window.summary_strategy,
         # Forward-only snapshot: the pruning knobs travel with the session so a
         # resume replays the same bounded view.
         "compaction": {

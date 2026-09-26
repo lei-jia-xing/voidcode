@@ -59,15 +59,6 @@ def hook_guidance_from_outcome(outcome: HookExecutionOutcome) -> tuple[str, ...]
     return tuple(collected)
 
 
-#: Bound for hook-provided custom summaries: mirrors the context-window seam
-#: preview cap (``_COMPACTION_PREVIEW_CHAR_LIMIT`` in ``context/window.py``)
-#: so projector input cannot grow past existing limits.
-BEFORE_COMPACT_GUIDANCE_CHAR_LIMIT = 240
-
-#: Bound for hook-provided compaction extra context: mirrors
-#: ``_MAX_HOOK_GUIDANCE_CHARS`` in ``context/prompt_assembly.py``.
-BEFORE_COMPACT_EXTRA_CONTEXT_CHAR_LIMIT = 2000
-
 #: Fallback compaction-skip reason when a cancelling hook carries no diagnostic.
 BEFORE_COMPACT_DEFAULT_CANCEL_REASON = "hook cancelled compaction"
 
@@ -103,32 +94,15 @@ def hook_blocked_reason(outcome: RuntimeHookOutcome, *, tool_name: str) -> str:
 def before_compact_input_from_hook_outcome(outcome: RuntimeHookOutcome) -> BeforeCompactInput | None:
     """Map one foreground hook outcome onto the ``BeforeCompactInput`` seam.
 
-    ``cancel`` skips compaction with the hook diagnostic as reason;
-    ``guidance`` last-wins into ``custom_summary`` (bounded) while every other
-    non-empty item becomes projector ``extra_context`` (bounded). Executor
-    errors (``failed_error``) and anything else fail open: the seam is
-    untouched (``None``) so compaction proceeds as configured.
+    ``cancel`` skips compaction with the hook diagnostic as reason; anything
+    else (guidance or executor errors) leaves the seam untouched (``None``) so
+    compaction proceeds as configured.
     """
     if outcome.failed_error is not None:
         return None
     if outcome.action == "cancel":
         return BeforeCompactInput(cancel=True, reason=_before_compact_cancel_reason(outcome))
-    items = [guidance for guidance in outcome.guidance if guidance.strip()]
-    if not items:
-        return None
-    # ponytail: text-only blobs appended after summary; structured retention
-    # (named facts, summary prompt control) needs the compact_contribution upgrade.
-    extra: list[str] = []
-    remaining = BEFORE_COMPACT_EXTRA_CONTEXT_CHAR_LIMIT
-    for item in items[:-1]:
-        if remaining <= 0:
-            break
-        extra.append(item[:remaining])
-        remaining -= len(extra[-1])
-    return BeforeCompactInput(
-        custom_summary=items[-1][:BEFORE_COMPACT_GUIDANCE_CHAR_LIMIT],
-        extra_context=tuple(extra),
-    )
+    return None
 
 
 def _before_compact_cancel_reason(outcome: RuntimeHookOutcome) -> str:
@@ -271,8 +245,6 @@ def run_lifecycle_hooks_for_session(
 
 
 __all__ = [
-    "BEFORE_COMPACT_EXTRA_CONTEXT_CHAR_LIMIT",
-    "BEFORE_COMPACT_GUIDANCE_CHAR_LIMIT",
     "HOOK_RECURSION_ENV_VAR",
     "RuntimeHookOutcome",
     "before_compact_input_from_hook_outcome",

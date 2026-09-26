@@ -291,7 +291,6 @@ _HAND_WRITTEN_CORPUS: list[tuple[str, dict[str, object]]] = [
     ("context.version_bad", {"context_window": {"version": 3}}),
     ("context.version_null", {"context_window": {"version": None}}),
     ("context.version_ok", {"context_window": {"version": 2}}),
-    ("context.summary_bad", {"context_window": {"summary_strategy": "x"}}),
     ("context.diagnostics_bad", {"context_window": {"provider_context_diagnostics": "x"}}),
     ("context.transform_policy_bad", {"context_window": {"context_transform_failure_policy": "x"}}),
     ("context.threshold_zero", {"context_window": {"provider_context_oversized_feedback_chars": 0}}),

@@ -80,7 +80,6 @@ type RuntimeAgentPromptSource = Literal["builtin", "custom_markdown"]
 type McpTransport = Literal["stdio", "remote-http"]
 type RuntimeMcpServerScope = Literal["runtime", "session"]
 type RuntimeTuiThemeMode = Literal["auto", "light", "dark"]
-type RuntimeSummaryStrategy = Literal["deterministic", "model_assisted"]
 #: Canonical reasoning-effort hint values, from the provider's own ladder. The
 #: enum is schema metadata: ``parse_reasoning_effort`` owns the rejection and its
 #: contract message, so it is declared here rather than as a Literal constraint.
@@ -1096,7 +1095,6 @@ class ContextWindowPayload(_PayloadModel):
             "blocking provider-context diagnostics."
         ),
     )
-    summary_strategy: RuntimeSummaryStrategy | None = "deterministic"
     compaction: CompactionPayload | None = Field(
         default=None,
         description="Bounded pruning of tool-result content when the estimated provider payload reaches the budget threshold.",
@@ -1151,13 +1149,6 @@ class ContextWindowPayload(_PayloadModel):
                 field_path=f"context_window.per_tool_result_chars.{raw_key}",
             )
         return parsed
-
-    @field_validator("summary_strategy", mode="before")
-    @classmethod
-    def _validate_summary_strategy(cls, value: object) -> object:
-        # ``None`` means unset; an invalid value keeps pydantic's Literal message,
-        # which is the message HEAD produced for this field.
-        return "deterministic" if value is None else value
 
 
 # ---------------------------------------------------------------------------
@@ -1954,7 +1945,6 @@ SCHEMA_DEFINITION_NAMES: Mapping[str, str] = {
     "ExecutionEngineName": "executionEngine",
     "RuntimeProviderContextDiagnosticMode": "providerContextDiagnosticMode",
     "RuntimeContextTransformFailureMode": "contextTransformFailureMode",
-    "RuntimeSummaryStrategy": "summaryStrategy",
     "RuntimeHookFailureMode": "hookFailureMode",
     "McpTransport": "mcpTransport",
     "RuntimeMcpServerScope": "mcpServerScope",

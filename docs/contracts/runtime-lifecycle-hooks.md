@@ -264,12 +264,9 @@ read-only policy 跳过的 bindings 走 `skipped` 分支继续循环，不产生
 
 ### `before_compact` 贡献语义
 
-`before_compact` 的 `cancel` 跳过本次 compaction（reason 取自 diagnostic，既有行为）。非 cancel 时，hook 输出按 **last-wins** 映射到 compaction 输入：
-
-- 最后一个非空 `guidance` → `custom_summary`（240 字符上限不变）。这是相对早期 first-wins 的行为变化。
-- 其余非空 `guidance` 项按执行顺序 → `BeforeCompactInput.extra_context`，拼接后追加在 summary slot 之后，总长上限 2000 字符（对齐 `prompt_assembly.py::_MAX_HOOK_GUIDANCE_CHARS`）。
-
-可达性说明：这两个字段写入 `summary_facts`，而 `summary_facts` 只在 `summary_strategy="model_assisted"` **且** 传入了 `summary_projector` 时才被读取（见 `context/projection.py::project_summary`）。runtime 目前没有生产调用点传入 projector，因此默认路径下 hook guidance 不会进入 provider view——它只是为 projector 准备好输入，供显式配置该 strategy 的调用方消费。`extra_context` 是纯文本 blob；hook 无法指定要保留的事实、控制 summary prompt 或与 summary 排序。
+`before_compact` 的 `cancel` 跳过本次 compaction（reason 取自 diagnostic，既有行为）。
+非 cancel 输出（`guidance`）不会进入 provider view：deterministic 摘要路径是唯一的
+摘要生产者，hook 无法指定要保留的事实、控制 summary prompt 或与 summary 排序。
 
 ### Runtime execution gates
 

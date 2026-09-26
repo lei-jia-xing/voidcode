@@ -274,7 +274,7 @@ Runtime hook surface 与其事件名称的内部对应关系由
   - `usage_tokens_estimated: bool`：恒为 true，提醒消费方这不是 provider usage
   - `measured_anchor_tokens: int | None` / `estimated_delta_tokens: int | None`：这个数字里哪部分来自实测锚点（最近一次 provider usage 的 `input+cache_read+cache_write+output`）、哪部分是按 UTF-8 字节 / 4 估算的增量；锚点不可用时前者为 null
   - `pruned_savings_tokens: int`
-  - `summary_anchor` / `projection_id` / `summary_source` / `summary_strategy` / `projection`
+  - `summary_anchor` / `projection_id` / `summary_source` / `projection`
 - 该事件描述 runtime 对 provider view 做的**有界裁剪**：只替换最旧 tool 结果的 content，system/instruction 段与消息 pairing 不变；被裁内容带 artifact 时同时出现 `runtime_context_artifact_reference` 段，模型可经 `voidcode://artifact/<id>` 取回。计数与 usage 估算都必须真实（见 `docs/contracts/runtime-config.md` 的 `context_window.compaction`）。
 
 ### `runtime.provider_context_recovery`

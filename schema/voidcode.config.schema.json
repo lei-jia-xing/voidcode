@@ -624,20 +624,6 @@
             }
           ]
         },
-        "summary_strategy": {
-          "anyOf": [
-            {
-              "enum": [
-                "deterministic",
-                "model_assisted"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "compaction": {
           "description": "Bounded pruning of tool-result content when the estimated provider payload reaches the budget threshold.",
           "anyOf": [

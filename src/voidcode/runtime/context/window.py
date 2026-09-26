@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
-from ...agent.prompt_sections import dynamic_boundary_marker
 from ...hook.percall import PerCallRewriteOutcome
 from ...tools.contracts import ToolDiagnostics, ToolResult, ToolResultStatus
 from ..todos import render_provider_todo_state
@@ -16,7 +15,6 @@ from .percall import (
     percall_wire_cache_prefix,
     segments_to_percall_messages,
 )
-from .projection import project_summary
 from .prompt_assembly import (
     PromptAssemblyPlan,
     PromptAssemblySection,
@@ -177,7 +175,6 @@ class ContextWindowPolicy:
     # never character driven.
     default_tool_result_chars: int | None = 6_000
     per_tool_result_chars: Mapping[str, int] = field(default_factory=_empty_tool_limits)
-    summary_strategy: Literal["deterministic", "model_assisted"] = "deterministic"
     #: Bounded pruning knobs (single representation; the floors are production constants).
     compaction: RuntimeCompactionConfig = field(default_factory=_default_compaction_config)
 
@@ -194,7 +191,6 @@ class ContextWindowPolicy:
     def metadata_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "version": 1,
-            "summary_strategy": self.summary_strategy,
             "compaction": asdict(self.compaction),
         }
         if self.default_tool_result_chars is not None:
@@ -210,8 +206,6 @@ class BeforeCompactInput:
 
     cancel: bool = False
     reason: str | None = None
-    custom_summary: str | None = None
-    extra_context: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,8 +234,6 @@ class RuntimeContextWindow:
     continuity_state: ContextProjection | None = None
     summary_anchor: str | None = None
     summary_source: dict[str, int] | None = None
-    summary_strategy: Literal["deterministic", "model_assisted", "fallback"] = "deterministic"
-    summary_fallback_reason: str | None = None
 
     def metadata_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -271,9 +263,6 @@ class RuntimeContextWindow:
             payload["summary_anchor"] = self.summary_anchor
         if self.summary_source is not None:
             payload["summary_source"] = dict(self.summary_source)
-        payload["summary_strategy"] = self.summary_strategy
-        if self.summary_fallback_reason is not None:
-            payload["summary_fallback_reason"] = self.summary_fallback_reason
         return payload
 
 
@@ -1253,7 +1242,6 @@ def prepare_provider_context(
     tool_results: tuple[ToolResult | ToolResultView, ...],
     session_metadata: dict[str, object],
     policy: ContextWindowPolicy | None = None,
-    summary_projector: Callable[[Mapping[str, object]], str] | None = None,
     context_window: int | None = None,
     threshold_tokens: int | None = None,
     reserve_tokens: int | None = None,
@@ -1299,8 +1287,6 @@ def prepare_provider_context(
         continuity: ContextProjection | None = None,
         summary_anchor: str | None = None,
         summary_source: dict[str, int] | None = None,
-        summary_strategy: Literal["deterministic", "model_assisted", "fallback"] = "deterministic",
-        fallback_reason: str | None = None,
     ) -> RuntimeContextWindow:
         """One compiled view; every branch differs only in the fields it passes."""
         return RuntimeContextWindow(
@@ -1318,8 +1304,6 @@ def prepare_provider_context(
             continuity_state=continuity,
             summary_anchor=summary_anchor,
             summary_source=summary_source,
-            summary_strategy=summary_strategy,
-            summary_fallback_reason=fallback_reason,
         )
 
     if payload_bytes is None:
@@ -1344,8 +1328,6 @@ def prepare_provider_context(
             usage_after=usage_tokens,
             delta=delta_tokens,
         )
-    # ponytail: sync-only seam, no executor calls; custom_summary capped by
-    # existing preview/projector limits, add explicit max chars if projector input grows.
     if before_compact is not None and before_compact.cancel:
         return _view(
             results=projection.retained_results,
@@ -1359,7 +1341,6 @@ def prepare_provider_context(
         usage_tokens,
         context_window,
         enabled=compaction_enabled and effective_policy.compaction.enabled,
-        strategy=effective_policy.summary_strategy,
         threshold_tokens=threshold_tokens,
         reserve_tokens=reserve_tokens,
     ):
@@ -1418,23 +1399,7 @@ def prepare_provider_context(
         preview_char_limit=_COMPACTION_PREVIEW_CHAR_LIMIT,
     )
     deterministic_summary = _continuity_summary_text(continuity_state)
-    summary_facts: dict[str, object] = {
-        "prompt": prompt,
-        "deterministic_summary": deterministic_summary,
-        "dropped_tool_result_count": continuity_state.dropped_tool_result_count,
-        "retained_tool_result_count": continuity_state.retained_tool_result_count,
-    }
-    if before_compact is not None and before_compact.custom_summary:
-        summary_facts["custom_summary"] = before_compact.custom_summary
-    if before_compact is not None and before_compact.extra_context:
-        summary_facts["hook_extra_context"] = "\n\n".join(item for item in before_compact.extra_context if item.strip())
-    summary_text, actual_strategy, fallback_reason = project_summary(
-        strategy=effective_policy.summary_strategy,
-        facts=summary_facts,
-        deterministic_summary=deterministic_summary,
-        projector=summary_projector,
-    )
-    continuity_state = replace(continuity_state, summary_text=summary_text)
+    continuity_state = replace(continuity_state, summary_text=deterministic_summary)
     summary_anchor, summary_source = continuity_summary_metadata(continuity_state)
     return _view(
         results=pruned.rendered_results,
@@ -1453,8 +1418,6 @@ def prepare_provider_context(
         continuity=continuity_state,
         summary_anchor=summary_anchor,
         summary_source=summary_source,
-        summary_strategy=actual_strategy,
-        fallback_reason=fallback_reason,
     )
 
 
@@ -1474,7 +1437,6 @@ def assemble_provider_context(
     workspace: Path | None = None,
     replay_retained_tool_messages: bool = True,
     replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
-    summary_projector: Callable[[Mapping[str, object]], str] | None = None,
     tool_catalog_context: str = "",
     hook_guidance: Iterable[str] | None = None,
     reminder_segment: RuntimeContextSegment | None = None,
@@ -1549,7 +1511,6 @@ def assemble_provider_context(
         tool_results=tool_results,
         session_metadata=session_metadata,
         policy=effective_policy,
-        summary_projector=summary_projector,
         context_window=None if compaction_budget is None else compaction_budget.context_window,
         threshold_tokens=None if compaction_budget is None else compaction_budget.threshold_tokens,
         reserve_tokens=None if compaction_budget is None else compaction_budget.reserve_tokens,
@@ -1586,7 +1547,6 @@ def assemble_provider_context(
         metadata_payload["context_transforms"] = transform_result.metadata_payload()
     metadata_payload["prompt_stack"] = assembly_plan.fragment_metadata_payload()
     metadata_payload["prompt_activation"] = activation_decision.metadata
-    _add_prompt_cache_metadata(metadata_payload, assembly_plan)
     segments: list[RuntimeContextSegment] = []
     replayed_conversation_inserted = False
     for section in assembly_plan.sections:
@@ -1692,31 +1652,6 @@ def assemble_provider_context(
         loaded_skills=loaded_skills,
         context_window=context_window,
     )
-
-
-def _add_prompt_cache_metadata(
-    metadata: dict[str, object],
-    assembly_plan: PromptAssemblyPlan,
-) -> None:
-    """Expose deterministic prompt partitions for provider-side cache keys."""
-    sections = assembly_plan.sections
-    contents = [section.content for section in sections]
-    boundary = dynamic_boundary_marker()
-    try:
-        boundary_index = contents.index(boundary)
-    except ValueError:
-        metadata["prompt_cache"] = {"version": 1, "boundary_present": False}
-        return
-    stable = "\n".join(contents[: boundary_index + 1]).encode("utf-8")
-    dynamic = "\n".join(contents[boundary_index + 1 :]).encode("utf-8")
-    metadata["prompt_cache"] = {
-        "version": 1,
-        "boundary_present": True,
-        "stable_prefix_hash": hashlib.sha256(stable).hexdigest(),
-        "dynamic_suffix_hash": hashlib.sha256(dynamic).hexdigest(),
-        "stable_section_count": boundary_index + 1,
-        "dynamic_section_count": len(contents) - boundary_index - 1,
-    }
 
 
 # Token estimator seam (deterministic-first, no tokenizer dependency).
@@ -1843,14 +1778,11 @@ def should_compact(
     context_window: int | None,
     *,
     enabled: bool = True,
-    strategy: str = "deterministic",
     threshold_tokens: int | None = None,
     reserve_tokens: int | None = None,
 ) -> bool:
-    """True when usage reaches the compaction threshold; disabled/off/degenerate never compacts."""
+    """True when usage reaches the compaction threshold; disabled/degenerate never compacts."""
     if not enabled:
-        return False
-    if isinstance(strategy, str) and strategy.lower() in {"off", "disabled"}:
         return False
     tokens = _coerce_threshold_int(context_tokens)
     if tokens is None or tokens < 0:
