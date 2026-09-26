@@ -1,8 +1,10 @@
 """Measured-anchor budget accounting.
 
 Contract (``docs/contracts/runtime-config.md`` → 预算/阈值): the compaction decision
-is the last provider-reported context size plus an estimate of everything added
-since, and a present ``measured_anchor_tokens`` says which part was measured.
+is ``max`` of the last provider-reported context size and the local full-payload
+estimate (omp ``compactionContextTokens``); a present ``measured_anchor_tokens``
+says which part was measured, and ``estimated_delta_tokens`` is the estimate's
+excess over the anchor (0 when the anchor wins).
 """
 
 from __future__ import annotations
@@ -10,7 +12,6 @@ from __future__ import annotations
 from voidcode.runtime.config import RuntimeCompactionConfig
 from voidcode.runtime.context.window import (
     ContextWindowPolicy,
-    estimate_tokens_for_bytes,
     prepare_provider_context,
     provider_usage_anchor_tokens,
 )
@@ -43,24 +44,55 @@ def _window(*, anchor_tokens: int | None, context_window: int | None = 1_000_000
     )
 
 
-# --- anchor + increment --------------------------------------------------------------
+# --- max of anchor and estimate ------------------------------------------------------
 
 
-def test_the_anchor_moves_the_decision_without_touching_the_increment() -> None:
+def test_stale_or_low_anchor_defers_to_the_full_payload_estimate() -> None:
     unanchored = _window(anchor_tokens=None)
     anchored = _window(anchor_tokens=90_000)
 
-    # Same payload, only the reported context size differs: the decision moves by
-    # exactly the anchor, and the estimated part is unchanged.
-    assert anchored.usage_tokens_before == unanchored.usage_tokens_before + 90_000
-    assert anchored.estimated_delta_tokens == unanchored.estimated_delta_tokens
+    # Same payload, only the reported context size differs: the stale 90k anchor
+    # sizes the *previous* request, so the decision is the anchor while the
+    # local estimate is reported as its excess (0 here, anchor wins).
+    assert anchored.usage_tokens_before == 90_000
+    assert anchored.measured_anchor_tokens == 90_000
+    assert anchored.estimated_delta_tokens == 0
+    assert anchored.metadata_payload()["usage_tokens_estimated"] is False
+    # ...while the same payload with no report is the estimate alone.
+    assert unanchored.usage_tokens_before == unanchored.estimated_delta_tokens
+    assert unanchored.metadata_payload()["usage_tokens_estimated"] is True
 
 
-def test_growth_in_the_payload_moves_only_the_increment() -> None:
+def test_payload_growth_past_the_anchor_moves_the_decision() -> None:
     small = _window(anchor_tokens=90_000, tool_chars=400)
-    large = _window(anchor_tokens=90_000, tool_chars=4_000)
+    large = _window(anchor_tokens=90_000, tool_chars=400_000)
 
-    assert large.usage_tokens_before - small.usage_tokens_before == estimate_tokens_for_bytes(3_600)
+    assert small.usage_tokens_before == 90_000
+    assert large.usage_tokens_before == 90_000 + large.estimated_delta_tokens
+    assert large.usage_tokens_before > 90_000
+
+    assert small.estimated_delta_tokens == 0
+    assert large.estimated_delta_tokens > 0
+
+
+def test_stale_anchor_reports_honestly_while_the_estimate_decides() -> None:
+    anchored = _window(anchor_tokens=1_000, tool_chars=400_000)
+
+    # The 1k anchor sizes the previous request; this call's full view estimates
+    # far above it, so the decision is the estimate — while the payload still
+    # reports the anchor it actually saw.
+    assert anchored.usage_tokens_before == anchored.estimated_delta_tokens + 1_000
+    assert anchored.measured_anchor_tokens == 1_000
+    assert anchored.metadata_payload()["usage_tokens_estimated"] is True
+
+
+def test_fresh_high_anchor_wins_and_reports_no_excess() -> None:
+    anchored = _window(anchor_tokens=90_000, tool_chars=400)
+
+    assert anchored.usage_tokens_before == 90_000
+    assert anchored.measured_anchor_tokens == 90_000
+    assert anchored.estimated_delta_tokens == 0
+    assert anchored.metadata_payload()["usage_tokens_estimated"] is False
 
 
 def test_non_ascii_payload_is_not_under_counted() -> None:

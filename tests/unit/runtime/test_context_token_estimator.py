@@ -54,10 +54,20 @@ def test_resolve_budget_reserve_tokens() -> None:
 
 
 def test_should_compact_default_boundary() -> None:
-    # Default threshold = cw - max(15% of cw, 16384) = 83616 for cw=100000.
+    # Default threshold = cw - max(15% of cw, 16384) = 83616 for cw=100000; the
+    # trigger is strictly greater (omp ``compaction.ts:338``).
     assert should_compact(95000, 100000) is True
     assert should_compact(83615, 100000) is False
-    assert should_compact(83616, 100000) is True
+    assert should_compact(83616, 100000) is False
+    assert should_compact(83617, 100000) is True
+
+
+def test_should_compact_boundary_is_strictly_greater() -> None:
+    # omp ``compaction.ts:338`` compares ``contextTokens > threshold``: usage
+    # exactly at the threshold does not compact.
+    threshold = resolve_threshold_tokens(100000)
+    assert should_compact(threshold, 100000) is False
+    assert should_compact(threshold + 1, 100000) is True
 
 
 def test_should_compact_disabled() -> None:

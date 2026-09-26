@@ -254,10 +254,10 @@ Runtime hook surface 与其事件名称的内部对应关系由
   - `reason: str`，`token_budget_exceeded:usage_tokens_before=…:threshold_tokens=…:pruned_tool_results=…:usage_tokens_after=…`（另有 `no_prunable_tool_content` / `already_pruned_view` / `compaction_unsized` 三种边界 reason）
   - `compacted: bool`，仅在本次调用**实际发生缩减**时为 true
   - `original_tool_result_count: int`、`retained_tool_result_count: int`（pairing 保留，因此两者相等）、`dropped_tool_result_count: int`（content 被占位文本替换的结果数）、`truncated_tool_result_count: int`
-  - `usage_tokens_before: int | None`：判定数字 = 实测锚点 + 增量估算（inexact）
+  - `usage_tokens_before: int | None`：判定数字 = `max(实测锚点, 本轮全量本地估算)`（inexact；对齐 omp `compactionContextTokens`）
   - `usage_tokens_after: int | None`：裁剪后**实际发出的 segments** 上的同一口径数字，由 `assemble_provider_context` 实测写入
-  - `usage_tokens_estimated: bool`：恒为 true，提醒消费方这不是 provider usage
-  - `measured_anchor_tokens: int | None` / `estimated_delta_tokens: int | None`：这个数字里哪部分来自实测锚点（最近一次 provider usage 的 `input+cache_read+cache_write+output`）、哪部分是按 UTF-8 字节 / 4 估算的增量；锚点不可用时前者为 null
+  - `usage_tokens_estimated: bool`：本地估算这一侧是否胜出（锚胜出时为 false，提醒消费方看 `measured_anchor_tokens` / `estimated_delta_tokens` 判定来源）
+  - `measured_anchor_tokens: int | None` / `estimated_delta_tokens: int | None`：锚（最近一次 provider usage 的 `input+cache_read+cache_write+output`）与本地全量估算超出锚的差额（`max(0, 估算 − 锚)`，锚胜出时为 0）；锚点不可用时前者为 null
   - `pruned_savings_tokens: int`
   - `summary_anchor` / `projection_id` / `summary_source` / `projection`
 - 该事件描述 runtime 对 provider view 做的**有界裁剪**：只替换最旧 tool 结果的 content，system/instruction 段与消息 pairing 不变；被裁内容带 artifact 时同时出现 `runtime_context_artifact_reference` 段，模型可经 `voidcode://artifact/<id>` 取回。计数与 usage 估算都必须真实（见 `docs/contracts/runtime-config.md` 的 `context_window.compaction`）。
@@ -274,7 +274,7 @@ Runtime hook surface 与其事件名称的内部对应关系由
   - `reason: str`：触发 kind，当前为 `context_limit`
   - `provider: str`、`model: str`：触发恢复的 provider/model
   - `tool_result_count: int`、`dropped_tool_result_count: int`
-  - `usage_tokens_before` / `usage_tokens_after` 与 `measured_anchor_tokens` / `estimated_delta_tokens`：与 `runtime.context_compacted` 同义（实测锚点 + 字节/4 增量估算，inexact；after 为裁剪后重新组装的实际 segments 数字），并带 `usage_tokens_estimated: true`
+  - `usage_tokens_before` / `usage_tokens_after` 与 `measured_anchor_tokens` / `estimated_delta_tokens`：与 `runtime.context_compacted` 同义（`max(锚, 全量估算)`，inexact；after 为裁剪后重新组装的实际 segments 数字），并带 `usage_tokens_estimated`（估算侧胜出时 true）
   - `compaction_reason: str | None`：该次恢复组装的 compaction reason（含 `compaction_unsized` 等边界）
   - `provider_error_details: object`（可选，已 redact）
 - 升级是**窗口感知**的：候选仍来自既有 fallback 解析（同一 target 链、同一事件形状），但 `context_limit` lane 会按解析出的有效窗口（catalog `max_input_tokens`）跳过同窗/更小的候选，只挑**严格更大**的那个；没有严格更大的候选时保持既有链顺序，并在 `promotion_reason` 里如实标注 `no_larger_candidate`，不把「升了级」说成成功。该偏好只属于 `context_limit` lane，其它 provider 错误的 fallback 顺序不变。

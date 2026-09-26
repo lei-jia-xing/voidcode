@@ -220,14 +220,15 @@ class RuntimeContextWindow:
     #: Results whose content was replaced by a bounded pruning placeholder; the
     #: message/tool pairing is preserved, so ``original == retained + dropped``.
     dropped_tool_result_count: int = 0
-    #: Decision token numbers before/after pruning: the measured provider anchor
-    #: plus an estimated increment (UTF-8 bytes / 4). ``None`` when the call
+    #: Decision token numbers before/after pruning: ``max`` of the measured
+    #: provider anchor and the local UTF-8-bytes/4 estimate of this call's full
+    #: provider view (omp ``compactionContextTokens``). ``None`` when the call
     #: could not size the full payload.
     usage_tokens_before: int | None = None
     usage_tokens_after: int | None = None
-    #: Token accounting provenance: ``usage_tokens_*`` are the decision numbers
-    #: (anchor + estimated increment when the provider reported usage); these
-    #: fields say which part was measured and which was estimated.
+    #: Token accounting provenance: ``measured_anchor_tokens`` is the last
+    #: provider-reported context size; ``estimated_delta_tokens`` is how far the
+    #: local full-payload estimate exceeds it (0 when the anchor wins).
     measured_anchor_tokens: int | None = None
     estimated_delta_tokens: int | None = None
     pruned_savings_tokens: int = 0
@@ -249,10 +250,11 @@ class RuntimeContextWindow:
         if self.usage_tokens_before is not None:
             payload["usage_tokens_before"] = self.usage_tokens_before
             payload["usage_tokens_after"] = self.usage_tokens_after
-            payload["usage_tokens_estimated"] = True
-        # Provenance is always reported: a consumer must be able to tell a
-        # measured anchor from a pure estimate even when the call could not size
-        # the full payload (``usage_tokens_before`` absent).
+            estimated_excess = self.estimated_delta_tokens
+            payload["usage_tokens_estimated"] = self.measured_anchor_tokens is None or (estimated_excess is not None and estimated_excess > 0)
+        # Provenance is always reported: ``estimated_delta_tokens`` is the local
+        # full-payload estimate's excess over the measured anchor (0 when the
+        # anchor wins), so a consumer can tell which side of the ``max`` won.
         payload["measured_anchor_tokens"] = self.measured_anchor_tokens
         payload["estimated_delta_tokens"] = self.estimated_delta_tokens
         if self.pruned_savings_tokens:
@@ -1261,9 +1263,11 @@ def prepare_provider_context(
     per-result char caps and leaves pruning to the payload-aware caller
     (:func:`assemble_provider_context`).
 
-    Every token decision number is the measured provider anchor plus an estimate
-    of everything added since: the anchor is the last provider-reported context
-    size (``anchor_tokens``), the increment is estimated at UTF-8 bytes / 4, and
+    The decision number is ``max`` of two measures of the *same* payload: the
+    last provider-reported context size (``anchor_tokens``) and a local
+    UTF-8-bytes/4 estimate of this call's full provider view (omp
+    ``compactionContextTokens``). They are never summed; summing would count
+    the payload twice.
     """
     effective_policy = policy or ContextWindowPolicy()
     projection = project_tool_results_for_context_window(tool_results=tool_results, policy=effective_policy)
@@ -1308,10 +1312,15 @@ def prepare_provider_context(
 
     if payload_bytes is None:
         return _view(results=projection.retained_results, compacted=False, reason=None)
-    delta_tokens = estimate_tokens_for_bytes(
+    estimated_payload_tokens = estimate_tokens_for_bytes(
         payload_bytes + len(prompt.encode("utf-8")) + sum(_result_payload_bytes(result) for result in projection.retained_results)
     )
-    usage_tokens = (measured_anchor_tokens or 0) + delta_tokens
+    anchor_value = measured_anchor_tokens or 0
+    # Same payload, two rulers: the anchor sizes the previous request, the
+    # estimate sizes this one. Take the larger, never the sum (omp
+    # ``compactionContextTokens``); summing would count the payload twice.
+    usage_tokens = max(anchor_value, estimated_payload_tokens)
+    excess_tokens = max(0, estimated_payload_tokens - anchor_value)
     threshold = resolve_threshold_tokens(
         context_window,
         threshold_tokens=threshold_tokens,
@@ -1326,7 +1335,7 @@ def prepare_provider_context(
             reason=f"compaction_unsized:usage_tokens={usage_tokens}:no_context_window",
             usage_before=usage_tokens,
             usage_after=usage_tokens,
-            delta=delta_tokens,
+            delta=excess_tokens,
         )
     if before_compact is not None and before_compact.cancel:
         return _view(
@@ -1335,7 +1344,7 @@ def prepare_provider_context(
             reason=before_compact.reason,
             usage_before=usage_tokens,
             usage_after=usage_tokens,
-            delta=delta_tokens,
+            delta=excess_tokens,
         )
     if not should_compact(
         usage_tokens,
@@ -1355,7 +1364,7 @@ def prepare_provider_context(
             dropped=already_pruned,
             usage_before=usage_tokens,
             usage_after=usage_tokens,
-            delta=delta_tokens,
+            delta=excess_tokens,
         )
     prune_target = effective_policy.compaction.keep_recent_tool_tokens
     if fit_payload:
@@ -1383,9 +1392,9 @@ def prepare_provider_context(
             ),
             usage_before=usage_tokens,
             usage_after=usage_tokens,
-            delta=delta_tokens,
+            delta=excess_tokens,
         )
-    delta_tokens_after = estimate_tokens_for_bytes(
+    estimated_payload_tokens_after = estimate_tokens_for_bytes(
         payload_bytes + len(prompt.encode("utf-8")) + sum(_result_payload_bytes(result) for result in pruned.rendered_results)
     )
     continuity_state = _build_continuity_state(
@@ -1413,8 +1422,8 @@ def prepare_provider_context(
         dropped=len(pruned.pruned_indexes),
         savings=pruned.saved_tokens,
         usage_before=usage_tokens,
-        usage_after=(measured_anchor_tokens or 0) + delta_tokens_after,
-        delta=delta_tokens_after,
+        usage_after=max(anchor_value, estimated_payload_tokens_after),
+        delta=max(0, estimated_payload_tokens_after - anchor_value),
         continuity=continuity_state,
         summary_anchor=summary_anchor,
         summary_source=summary_source,
@@ -1624,10 +1633,11 @@ def assemble_provider_context(
         # per-call reminder is appended after this and is not part of the
         # compaction decision). Estimated tokens, never provider usage.
         measured_payload_tokens = estimate_tokens_for_bytes(sum(len((segment.content or "").encode("utf-8")) for segment in segments))
+        after_anchor = context_window.measured_anchor_tokens or 0
         context_window = replace(
             context_window,
-            usage_tokens_after=(context_window.measured_anchor_tokens or 0) + measured_payload_tokens,
-            estimated_delta_tokens=measured_payload_tokens,
+            usage_tokens_after=max(after_anchor, measured_payload_tokens),
+            estimated_delta_tokens=max(0, measured_payload_tokens - after_anchor),
         )
         metadata_payload["usage_tokens_after"] = context_window.usage_tokens_after
         metadata_payload["usage_tokens_estimated"] = True
@@ -1781,7 +1791,7 @@ def should_compact(
     threshold_tokens: int | None = None,
     reserve_tokens: int | None = None,
 ) -> bool:
-    """True when usage reaches the compaction threshold; disabled/degenerate never compacts."""
+    """True when usage exceeds the compaction threshold; disabled/degenerate never compacts."""
     if not enabled:
         return False
     tokens = _coerce_threshold_int(context_tokens)
@@ -1794,4 +1804,4 @@ def should_compact(
     )
     if threshold <= 0:
         return False
-    return tokens >= threshold
+    return tokens > threshold

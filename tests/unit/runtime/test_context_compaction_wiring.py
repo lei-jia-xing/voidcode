@@ -1,10 +1,9 @@
 """Bounded provider-context pruning.
 
 Contract (``docs/contracts/runtime-config.md`` → ``context_window.compaction``):
-when the estimated payload of one provider call reaches the budget threshold, the
-oldest prunable tool results have their content replaced by a bounded placeholder
-until the remaining tool content fits ``keep_recent_tool_tokens``. Messages and
-tool pairings are never removed, system/instruction sections are never touched,
+when the estimated payload of one provider call exceeds the budget threshold, the
+oldest prunable results have their content replaced by a bounded placeholder.
+Messages and tool pairings are never removed, system/instruction sections are never touched,
 protected results (todo/skill/rule surfaces) stay verbatim, and every count
 reported on the window is real.
 """
