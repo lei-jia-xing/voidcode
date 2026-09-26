@@ -167,7 +167,7 @@ def test_short_retention_without_tools_caches_system_text() -> None:
     assert system[0]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
 
 
-def test_missing_prompt_cache_metadata_keeps_existing_wire() -> None:
+def test_short_retention_with_tools_keeps_existing_wire() -> None:
     fake = _FakeTransport()
     definition = ToolDefinition(name="read", description="Read", input_schema={"type": "object"})
     AnthropicMessagesProvider(transport=fake).propose_turn(
