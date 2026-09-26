@@ -686,10 +686,10 @@ class VoidCodeRuntime(RuntimeSurface):
         #      See docs/contracts/background-task-delegation.md →
         #      「执行所有权与 late write」.
         #   2. Stop spawned background processes.
-        #   3. Tear down ACP/MCP/LSP adapters LAST — their per-session release
-        #      events were already drained/persisted by the run loop at run end,
-        #      so adapter shutdown is purely a client-surface close and must not
-        #      race the durable session writes above.
+        #   3. Tear down ACP/MCP/LSP adapters LAST — MCP connections are
+        #      runtime-scoped and shared across sessions (never released at
+        #      session/run end), so adapter shutdown is purely a client-surface
+        #      close and must not race the durable session writes above.
         self.shutdown_background_tasks()
         self._background_process_manager.stop_all()
         _ = self.disconnect_acp()
