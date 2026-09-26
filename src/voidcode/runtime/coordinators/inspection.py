@@ -41,7 +41,6 @@ from ...tools.output import (
 from ...tools.output import (
     resolve_tool_output_artifact as resolve_tool_output_artifact_metadata,
 )
-from ...tools.runtime_context import current_runtime_tool_context
 from ..acp import (
     AcpAdapter,
     AcpAdapterState,
@@ -450,14 +449,11 @@ class InspectionCoordinator:
         arguments: dict[str, object],
         workspace: Path,
     ):
-        context = current_runtime_tool_context()
         return self._mcp_manager.call_tool(
             server_name=server_name,
             tool_name=tool_name,
             arguments=arguments,
             workspace=workspace,
-            owner_session_id=context.session_id if context is not None else None,
-            parent_session_id=context.parent_session_id if context is not None else None,
         )
 
     def shutdown_mcp(self) -> tuple[EventEnvelope, ...]:
@@ -1511,7 +1507,6 @@ class InspectionCoordinator:
                 {
                     "server": server_name,
                     "status": server_status,
-                    "scope": (runtime_state.scope if runtime_state is not None else server_config.scope),
                     "transport": server_config.transport,
                     "workspace_root": (None if runtime_state is None else runtime_state.workspace_root),
                     "stage": None if runtime_state is None else runtime_state.stage,

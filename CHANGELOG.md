@@ -12,9 +12,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-
-- **runtime:** reap idle session-scoped MCP servers at run start, before MCP tools are materialized, using the in-flight session registry as ownership truth: a session-scoped server whose owning session has no run in flight is released as `abandoned`, one idle past `DEFAULT_SESSION_MCP_IDLE_TIMEOUT_SECONDS` (300s, not a config key) as `idle_timeout`, which makes the documented-but-unreachable `runtime.mcp_server_idle_cleaned` event reachable with its `reason` and `cleaned_count` payload; the sweep only releases (it never connects), servers still owned by an active session are never treated as abandoned, and a failing manager is logged instead of breaking the run
-
 - **runtime:** add keep-alive subagent contract, storage, and steer surface
 
 - **tools:** add background task steer tool

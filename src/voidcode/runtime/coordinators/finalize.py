@@ -30,7 +30,6 @@ from ..hook_runtime import (
     hook_execution_policy_from_metadata,
     run_lifecycle_hooks_for_session,
 )
-from ..mcp import release_mcp_session_events
 from ..permission_policy import pending_approval_from_response, pending_question_from_response
 from ..session import SessionState, SessionStatus, is_session_status_terminal
 from ..session_metadata_helpers import session_without_tool_intent, waiting_reason_from_session
@@ -439,23 +438,6 @@ class FinalizeCoordinator:
                     persisted_hook_failed = self.persist_emitted_chunk(hook_failed_chunk)
                     yield persisted_hook_failed
                     release_sequence = persisted_hook_failed.event.sequence if persisted_hook_failed.event is not None else release_sequence
-            for release_event in release_mcp_session_events(
-                self._mcp_manager,
-                session_id=finalized_session.session.id,
-                start_sequence=release_sequence + 1,
-            ):
-                envelope = self.persist_emitted_event(
-                    session_id=release_event.session_id,
-                    event_type=release_event.event_type,
-                    source=release_event.source,
-                    payload=release_event.payload,
-                )
-                release_sequence = envelope.sequence
-                yield RuntimeStreamChunk(
-                    kind="event",
-                    session=finalized_session,
-                    event=envelope,
-                )
             yield RuntimeStreamChunk(
                 kind="event",
                 session=deferred_failed_chunk.session,
@@ -537,15 +519,3 @@ class FinalizeCoordinator:
                 persisted_failed_chunk = self.persist_emitted_chunk(failed_chunk)
                 yield persisted_failed_chunk
                 release_sequence = persisted_failed_chunk.event.sequence if persisted_failed_chunk.event is not None else release_sequence
-        for event in release_mcp_session_events(
-            self._mcp_manager,
-            session_id=finalized_session.session.id,
-            start_sequence=release_sequence + 1,
-        ):
-            envelope = self.persist_emitted_event(
-                session_id=event.session_id,
-                event_type=event.event_type,
-                source=event.source,
-                payload=event.payload,
-            )
-            yield RuntimeStreamChunk(kind="event", session=finalized_session, event=envelope)

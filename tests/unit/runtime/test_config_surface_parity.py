@@ -228,7 +228,6 @@ _HAND_WRITTEN_CORPUS: list[tuple[str, dict[str, object]]] = [
     ("mcp.remote.url_ok", {"mcp": {"servers": {"s": {"transport": "remote-http", "url": "https://x/y"}}}}),
     ("mcp.transport_bad", {"mcp": {"servers": {"s": {"transport": "carrier-pigeon", "command": ["x"]}}}}),
     ("mcp.env_bad_value", {"mcp": {"servers": {"s": {"command": ["x"], "env": {"A": 1}}}}}),
-    ("mcp.scope_bad", {"mcp": {"servers": {"s": {"command": ["x"], "scope": "nope"}}}}),
     ("mcp.timeout_zero", {"mcp": {"request_timeout_seconds": 0}}),
     ("mcp.timeout_ok", {"mcp": {"request_timeout_seconds": 1.5}}),
     ("mcp.unknown_key", {"mcp": {"nope": 1}}),

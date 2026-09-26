@@ -222,7 +222,7 @@ from .hook_runtime import (
 )
 from .interaction_queue import drain_runtime_messages, enqueue_runtime_message
 from .lsp import LspManager, LspManagerState, LspRequestResult, build_lsp_manager
-from .mcp import McpManager, build_mcp_manager, mcp_server_for_tool_name, sweep_idle_mcp_session_events
+from .mcp import McpManager, build_mcp_manager, mcp_server_for_tool_name
 from .mcp_tool_cache import McpToolCatalogCache
 from .mode import MODE_DEFINITIONS, resolve_mode, runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .paths import mcp_tool_catalog_cache_path, provider_catalog_cache_path
@@ -858,8 +858,8 @@ class VoidCodeRuntime(RuntimeSurface):
     def _build_mcp_tools(self) -> tuple[Tool, ...]:
         return self._stream_prep_coordinator.build_mcp_tools()
 
-    def mcp_cached_surface(self, *, owner_session_id: str | None) -> McpCachedToolSurface:
-        return self._stream_prep_coordinator.mcp_cached_surface(owner_session_id=owner_session_id)
+    def mcp_cached_surface(self) -> McpCachedToolSurface:
+        return self._stream_prep_coordinator.mcp_cached_surface()
 
     def mcp_tools_available_for_run(
         self,
@@ -906,57 +906,22 @@ class VoidCodeRuntime(RuntimeSurface):
         if not self.mcp_tools_available_for_run(request_metadata=request_metadata, effective_config=effective_config):
             self.reset_tool_registry_to_base()
             return (), session, sequence, None
-        idle_cleanup_chunks, sequence = self._sweep_idle_mcp_session_servers(session=session, sequence=sequence)
         if self._mcp_manager_is_injected:
-            refresh_chunks, session, sequence, failed_chunk = self.refresh_mcp_tools_for_session(
+            return self.refresh_mcp_tools_for_session(
                 session=session,
                 sequence=sequence,
                 failure_kind=failure_kind,
             )
-            return idle_cleanup_chunks + refresh_chunks, session, sequence, failed_chunk
-        surface = self.mcp_cached_surface(owner_session_id=session.session.id)
+        surface = self.mcp_cached_surface()
         configured_servers = self._mcp_manager.current_state().configuration.servers
         if not surface.covers(configured_servers):
-            refresh_chunks, session, sequence, failed_chunk = self.refresh_mcp_tools_for_session(
+            return self.refresh_mcp_tools_for_session(
                 session=session,
                 sequence=sequence,
                 failure_kind=failure_kind,
             )
-            return idle_cleanup_chunks + refresh_chunks, session, sequence, failed_chunk
         self._materialize_cached_mcp_tools(surface)
-        return idle_cleanup_chunks, session, sequence, None
-
-    def _sweep_idle_mcp_session_servers(
-        self,
-        *,
-        session: SessionState,
-        sequence: int,
-    ) -> tuple[tuple[RuntimeStreamChunk, ...], int]:
-        """Reap idle session-scoped MCP servers before this run acquires any.
-
-        Run start is the runtime's existing MCP seam: it is where the run is
-        about to claim MCP resources, so releasing servers whose owning session
-        is gone (or that sat idle past the manager's TTL) happens here instead
-        of in a second background owner. The sweep only releases; it never
-        connects. Failures are housekeeping noise, so a raising manager is
-        logged and cannot affect the run.
-        """
-        try:
-            envelopes = sweep_idle_mcp_session_events(
-                self._mcp_manager,
-                session_id=session.session.id,
-                start_sequence=sequence + 1,
-                active_session_ids=ACTIVE_SESSION_REGISTRY.active_session_ids(workspace=self._workspace),
-            )
-        except Exception:
-            logger.warning(
-                "idle MCP session cleanup failed before session %s started",
-                session.session.id,
-                exc_info=True,
-            )
-            return (), sequence
-        chunks = tuple(RuntimeStreamChunk(kind="event", session=session, event=envelope) for envelope in envelopes)
-        return chunks, envelopes[-1].sequence if envelopes else sequence
+        return (), session, sequence, None
 
     def _materialize_cached_mcp_tools(self, surface: McpCachedToolSurface) -> None:
         """Advertise a discovered MCP surface without connecting."""
@@ -1027,7 +992,6 @@ class VoidCodeRuntime(RuntimeSurface):
         try:
             descriptors = self._mcp_manager.list_tools(
                 workspace=self._workspace,
-                owner_session_id=session.session.id,
                 server_name=server_name,
             )
         except Exception:
@@ -1054,9 +1018,7 @@ class VoidCodeRuntime(RuntimeSurface):
         try:
             if self._mcp_manager.current_state().mode != "managed":
                 return (), session, sequence, None
-            self._tool_materialization = self._tool_materializer.materialize_mcp_tools(
-                self._build_mcp_tools_for_owner(owner_session_id=session.session.id)
-            )
+            self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._stream_prep_coordinator.build_mcp_tools())
             self._tool_registry = self._tool_materialization.registry
         except Exception:
             logger.info(
@@ -1085,9 +1047,6 @@ class VoidCodeRuntime(RuntimeSurface):
             request_metadata=request_metadata,
             effective_config=effective_config,
         )
-
-    def _build_mcp_tools_for_owner(self, *, owner_session_id: str | None) -> tuple[Tool, ...]:
-        return self._stream_prep_coordinator.build_mcp_tools_for_owner(owner_session_id=owner_session_id)
 
     def tool_registry_for_effective_config(
         self,
@@ -4240,7 +4199,7 @@ class VoidCodeRuntime(RuntimeSurface):
             "configured_enabled": mcp_state.configuration.configured_enabled,
             "mode": mcp_state.mode,
             "configured_servers": list(mcp_state.configuration.servers),
-            "governance": "runtime_session_scoped_config_gated",
+            "governance": "runtime_config_gated",
         }
         delegation_snapshot = agent_capability_delegation_snapshot(
             metadata=metadata,
@@ -4260,9 +4219,7 @@ class VoidCodeRuntime(RuntimeSurface):
                         "manifest skill_refs select catalog-visible defaults; request skills and force_load_skills apply only to this session"
                     ),
                     "hooks": ("hook preset refs materialize guidance snapshots only and do not execute lifecycle commands or expand permissions"),
-                    "mcp": (
-                        "agent MCP binding is declarative intent; runtime/session-scoped MCP lifecycle and tool allowlists remain runtime-governed"
-                    ),
+                    "mcp": ("agent MCP binding is declarative intent; runtime-scoped MCP lifecycle and tool allowlists remain runtime-governed"),
                 },
             },
             "agent": agent_capability_agent_snapshot(agent, manifest),

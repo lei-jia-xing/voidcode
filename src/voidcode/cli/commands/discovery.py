@@ -112,7 +112,6 @@ def _handle_mcp_list_command(args: McpArgs) -> int:
                     [
                         ("name", item.get("server")),
                         ("status", item.get("status")),
-                        ("scope", item.get("scope")),
                         ("transport", item.get("transport")),
                         ("command", repr(item.get("command", []))),
                         ("stage", item.get("stage")),

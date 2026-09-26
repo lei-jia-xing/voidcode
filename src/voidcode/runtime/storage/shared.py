@@ -26,7 +26,6 @@ from ..events import (
     RUNTIME_ACP_FAILED,
     RUNTIME_MCP_SERVER_ACQUIRED,
     RUNTIME_MCP_SERVER_FAILED,
-    RUNTIME_MCP_SERVER_IDLE_CLEANED,
     RUNTIME_MCP_SERVER_RELEASED,
     RUNTIME_MCP_SERVER_REUSED,
     RUNTIME_MCP_SERVER_STARTED,
@@ -79,12 +78,8 @@ class SessionSealedError(Exception):
 # * ACP lifecycle — service._append_parent_acp_delegated_lifecycle_event
 #   (RUNTIME_ACP_DELEGATED_LIFECYCLE) plus envelopes_for_acp_events
 #   (events.py / event_envelopes.py: RUNTIME_ACP_CONNECTED/DISCONNECTED/FAILED).
-# * MCP lifecycle — runtime/mcp.py `release_mcp_session_events` (called from the
-#   finalize/resume coordinators at session end) and
-#   `sweep_idle_mcp_session_events` (called by
-#   `VoidCodeRuntime.materialize_mcp_tools_for_run` at run start) →
-#   envelopes_for_mcp_events (events.py / event_envelopes.py): the
-#   runtime.mcp_server_* release/stop/idle-clean/failure events.
+# * MCP lifecycle — envelopes_for_mcp_events (events.py / event_envelopes.py):
+#   the runtime.mcp_server_* started/reused/acquired/released/stopped/failure events.
 # * Delegated background-task lifecycle — background/supervisor.py
 #   append_session_event call sites (event_type_by_status →
 #   completed/failed/cancelled; group_completed; waiting_approval;
@@ -101,7 +96,6 @@ _TERMINAL_ALLOWED_EVENT_TYPES: frozenset[str] = frozenset(
         RUNTIME_MCP_SERVER_ACQUIRED,
         RUNTIME_MCP_SERVER_RELEASED,
         RUNTIME_MCP_SERVER_STOPPED,
-        RUNTIME_MCP_SERVER_IDLE_CLEANED,
         RUNTIME_MCP_SERVER_FAILED,
         *DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
     }

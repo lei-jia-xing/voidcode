@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 type BuiltinMcpTransport = Literal["stdio", "remote-http"]
-type BuiltinMcpScope = Literal["runtime", "session"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,7 +14,6 @@ class BuiltinMcpDescriptor:
     lifecycle: str
     url: str | None = None
     command: tuple[str, ...] = ()
-    scope: BuiltinMcpScope = "runtime"
     skill_scoped: bool = False
     skill_name: str | None = None
     tags: tuple[str, ...] = ()
@@ -54,7 +52,6 @@ _BUILTIN_MCP_DESCRIPTORS: dict[str, BuiltinMcpDescriptor] = {
         command=("npx", "@playwright/mcp@latest"),
         lifecycle="skill_scoped_descriptor_only_config_gated",
         description=("Playwright browser automation MCP descriptor scoped to the builtin playwright skill."),
-        scope="session",
         skill_scoped=True,
         skill_name="playwright",
         tags=("browser", "verification", "frontend"),

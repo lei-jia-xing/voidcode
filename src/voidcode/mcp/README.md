@@ -49,7 +49,7 @@
 | `context7` | remote-http | `https://mcp.context7.com/mcp` | descriptor-only, config-gated |
 | `websearch` | remote-http | `https://mcp.exa.ai/mcp` | descriptor-only, config-gated |
 | `grep_app` | remote-http | `https://mcp.grep.app` | config-gated, 启用后可连接 |
-| `playwright` | stdio | N/A | skill-scoped, session scope |
+| `playwright` | stdio | N/A | skill-scoped |
 
 #### grep.app 端点说明
 

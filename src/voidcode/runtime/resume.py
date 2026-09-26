@@ -55,7 +55,6 @@ from .hook_runtime import (
     hook_execution_policy_from_metadata,
     run_lifecycle_hooks_for_session,
 )
-from .mcp import release_mcp_session_events
 from .permission import PendingApproval, PermissionResolution
 from .permission_policy import permission_policy_for_session
 from .provider_metadata import validate_reasoning_effort_capability
@@ -536,17 +535,6 @@ class RuntimeResumeCoordinator:
                     loop_events.append(failed_event)
                     final_session = failed_chunk.session
                     yield failed_chunk
-            for release_event in release_mcp_session_events(
-                self._mcp_manager,
-                session_id=final_session.session.id,
-                start_sequence=end_hook_outcome.last_sequence + 1,
-            ):
-                loop_events.append(release_event)
-                yield RuntimeStreamChunk(
-                    kind="event",
-                    session=final_session,
-                    event=release_event,
-                )
 
         response = RuntimeResponse(
             session=final_session,
@@ -1037,17 +1025,6 @@ class RuntimeResumeCoordinator:
                     loop_events.append(failed_event)
                     session = failed_chunk.session
                     yield failed_chunk
-            for release_event in release_mcp_session_events(
-                self._mcp_manager,
-                session_id=session.session.id,
-                start_sequence=end_hook_outcome.last_sequence + 1,
-            ):
-                loop_events.append(release_event)
-                yield RuntimeStreamChunk(
-                    kind="event",
-                    session=session,
-                    event=release_event,
-                )
 
         response = RuntimeResponse(
             session=session,
@@ -1497,14 +1474,6 @@ class RuntimeResumeCoordinator:
                     loop_events.append(failed_event)
                     final_session = failed_chunk.session
                     yield failed_chunk
-            release_events = release_mcp_session_events(
-                self._mcp_manager,
-                session_id=final_session.session.id,
-                start_sequence=end_hook_outcome.last_sequence + 1,
-            )
-            loop_events.extend(release_events)
-            for event in release_events:
-                yield RuntimeStreamChunk(kind="event", session=final_session, event=event)
 
         response = RuntimeResponse(
             session=final_session,

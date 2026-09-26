@@ -378,8 +378,6 @@ def _format_details(result: CapabilityCheckResult) -> list[str]:
         details.append(f"command: {d['command']}")
     if "transport" in d:
         details.append(f"transport: {d['transport']}")
-    if "scope" in d:
-        details.append(f"scope: {d['scope']}")
     if "configured_enabled" in d:
         details.append(f"configured_enabled: {d['configured_enabled']}")
     if "configured_server_count" in d:

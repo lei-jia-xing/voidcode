@@ -130,7 +130,6 @@ class McpServerRuntimeState:
     error: str | None = None
     command: list[str] = field(default_factory=list)
     url: str | None = None
-    scope: Literal["runtime", "session"] = "runtime"
     retry_available: bool = False
 
 
@@ -149,8 +148,6 @@ class McpManager(Protocol):
         self,
         *,
         workspace: Any,
-        owner_session_id: str | None = None,
-        parent_session_id: str | None = None,
         server_name: str | None = None,
     ) -> tuple[McpToolDescriptor, ...]: ...
 
@@ -158,8 +155,6 @@ class McpManager(Protocol):
         self,
         *,
         workspace: Any,
-        owner_session_id: str | None = None,
-        parent_session_id: str | None = None,
     ) -> McpCachedToolSurface: ...
 
     def call_tool(
@@ -169,8 +164,6 @@ class McpManager(Protocol):
         tool_name: str,
         arguments: dict[str, Any],
         workspace: Any,
-        owner_session_id: str | None = None,
-        parent_session_id: str | None = None,
     ) -> McpToolCallResult: ...
 
     def shutdown(self) -> tuple[McpRuntimeEvent, ...]: ...
@@ -178,15 +171,6 @@ class McpManager(Protocol):
     def drain_events(self) -> tuple[McpRuntimeEvent, ...]: ...
 
     def retry_connections(self, *, workspace: Any) -> None: ...
-
-    def release_session(self, *, session_id: str) -> tuple[McpRuntimeEvent, ...]: ...
-
-    def cleanup_idle_session_servers(
-        self,
-        *,
-        max_idle_seconds: float,
-        active_session_ids: set[str] | None = None,
-    ) -> tuple[McpRuntimeEvent, ...]: ...
 
 
 # Constants

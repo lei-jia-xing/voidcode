@@ -40,7 +40,6 @@ type CoreEventType = Literal[
     "runtime.mcp_server_acquired",
     "runtime.mcp_server_released",
     "runtime.mcp_server_stopped",
-    "runtime.mcp_server_idle_cleaned",
     "runtime.mcp_server_failed",
     "graph.loop_step",
     "graph.model_turn",
@@ -153,7 +152,6 @@ RUNTIME_MCP_SERVER_REUSED: Final[CoreEventType] = "runtime.mcp_server_reused"
 RUNTIME_MCP_SERVER_ACQUIRED: Final[CoreEventType] = "runtime.mcp_server_acquired"
 RUNTIME_MCP_SERVER_RELEASED: Final[CoreEventType] = "runtime.mcp_server_released"
 RUNTIME_MCP_SERVER_STOPPED: Final[CoreEventType] = "runtime.mcp_server_stopped"
-RUNTIME_MCP_SERVER_IDLE_CLEANED: Final[CoreEventType] = "runtime.mcp_server_idle_cleaned"
 RUNTIME_MCP_SERVER_FAILED: Final[CoreEventType] = "runtime.mcp_server_failed"
 GRAPH_LOOP_STEP: Final[CoreEventType] = "graph.loop_step"
 GRAPH_MODEL_TURN: Final[CoreEventType] = "graph.model_turn"
@@ -238,7 +236,6 @@ EMITTED_EVENT_TYPES: Final[tuple[CoreEventType, ...]] = (
     RUNTIME_MCP_SERVER_ACQUIRED,
     RUNTIME_MCP_SERVER_RELEASED,
     RUNTIME_MCP_SERVER_STOPPED,
-    RUNTIME_MCP_SERVER_IDLE_CLEANED,
     RUNTIME_MCP_SERVER_FAILED,
     GRAPH_LOOP_STEP,
     GRAPH_MODEL_TURN,

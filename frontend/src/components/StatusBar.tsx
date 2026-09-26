@@ -369,7 +369,6 @@ function McpSection({
             const tone = toneFromState(server.status);
             const meta = [
               server.transport ? `transport: ${server.transport}` : null,
-              server.scope ? `scope: ${server.scope}` : null,
               server.stage ? `stage: ${server.stage}` : null,
             ]
               .filter(Boolean)

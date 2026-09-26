@@ -25,7 +25,7 @@ runtime materialize agent capability 时按以下顺序收口：
 - `tools`：manifest allowlist、request allowlist/default、builtin-tool 开关、effective tool names，以及执行该 run 的 scoped tool materialization `generation`；
 - `skills`：manifest refs、selected names、force-loaded names、target-session scope；
 - `hooks`：manifest refs、resolved refs、resolved guidance snapshot、`guidance_only` materialization；
-- `mcp`：declarative binding intent、runtime configured state、configured server names、runtime/session-scoped governance label；
+- `mcp`：declarative binding intent、runtime configured state、configured server names、runtime-owned governance label；
 - `execution`：execution engine、model、resolved provider、provider fallback、reasoning controls。
 
 同一个 snapshot 也作为 skill snapshot 的 `binding_snapshot` 使用，保证 skill replay/debug 不需要从变动后的 manifest/catalog 重新推导历史绑定。
@@ -34,14 +34,13 @@ runtime materialize agent capability 时按以下顺序收口：
 
 `AgentManifest.mcp_binding` / `RuntimeAgentConfig.mcp_binding` 只表达声明式 intent：例如 profile 名称或已配置 server 名称。它不能包含 server command/env，也不能启动 MCP。
 
-MCP lifecycle 仍由 runtime/session-scoped `runtime.mcp` 管理：
+MCP lifecycle 由 runtime-owned `runtime.mcp` 管理：
 
 - `mcp.enabled` 与 `mcp.servers` 仍是 config-gated；
 - runtime 决定何时启动、刷新、关闭 MCP server；
-- session-scoped MCP 仍按 session owner 隔离；
 - MCP tools 仍必须经过 runtime tool registry、agent tool allowlist、approval 与 normal tool execution path。
 
-因此，agent MCP binding 不能绕过 runtime MCP lifecycle、approval、scope 或 tool allowlist。
+因此，agent MCP binding 不能绕过 runtime MCP lifecycle、approval 或 tool allowlist。
 
 hook bundles 也是 guidance-only。它们会进入 snapshot，帮助解释历史 session 的意图和约束，但不会改变 lifecycle hook 的执行路径，也不会扩大 permissions、tool allowlist、delegation budget，或让 hook refs 变成脚本执行入口。
 

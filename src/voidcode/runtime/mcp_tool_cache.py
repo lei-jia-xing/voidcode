@@ -37,7 +37,6 @@ def mcp_server_identity(
     payload: dict[str, object] = {
         "server": server_name,
         "transport": config.transport,
-        "scope": config.scope,
         "command": list(config.command),
         "url": config.url,
     }

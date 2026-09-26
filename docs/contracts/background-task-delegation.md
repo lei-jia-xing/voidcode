@@ -94,7 +94,7 @@ runtime 已有的基础能力：
 - parent / child linkage 只表示 runtime-owned delegated lineage，不表示任意 agent graph topology
 - result retrieval 不会把完整 child transcript 自动复制进 parent session
 - retry 是显式 runtime operation，不能引入无限自动重试；旧 terminal task 保持不可变，retry 会创建新的 queued task handle
-- MCP 只按 runtime/session scope 管理，不声明 workspace-scoped lifecycle
+- MCP 只按 runtime scope 管理，不声明 workspace-scoped lifecycle
 - `product` is a delegated read-only plan subagent (child preset). Top-level execution of `product` (e.g. `voidcode run --agent product ...` or a top-level request/runtime-config `agent=product` without delegation) must fail before run/session side effects with the stable `ValueError` message from runtime agent validation: `agent preset 'product' cannot be executed as the top-level active agent in the current runtime; executable agent presets are: leader`. Delegated execution via `task` (`subagent_type=product`) is allowed, and the child returns its plan to the leader via `yield`. This state remains visible through bounded runtime policy diagnostics and delegated/task error surfaces.
 
 ## Leader-native batch dispatch
@@ -555,11 +555,10 @@ The product plan preset is a delegated read-only child preset at this gate. Dire
 
 MCP 当前是 runtime-managed capability，不是 workspace-scoped marketplace：
 
-- runtime-scoped MCP server 可被同一 runtime 复用。
-- session-scoped MCP server 按 owner session key 管理，并在 session 完成、释放或 idle cleanup 时关闭。
+- MCP server 由同一 runtime 共享复用。
 - MCP tool discovery 与 tool call 仍通过 runtime-managed lifecycle 和 tool registry 暴露。
 - 当前不声明 workspace-scoped MCP lifecycle、MCP 生态市场式语义、dynamic MCP install flow 或 skill marketplace。
-- 自动化测试使用 fake MCP / fake stdio manager 覆盖 lifecycle、concurrency、session release 与 failure paths；CI 不需要真实 `npx @playwright/mcp` 或外部 MCP server。
+- 自动化测试使用 fake MCP / fake stdio manager 覆盖 lifecycle、concurrency 与 failure paths；CI 不需要真实 `npx @playwright/mcp` 或外部 MCP server。
 
 ## Result、retry 与 cancel flow
 

@@ -182,7 +182,7 @@ def create_doctor_for_config(
                 details={
                     "configured": False,
                     "configured_enabled": False,
-                    "scope_boundary": "runtime/session-scoped when configured",
+                    "scope_boundary": "runtime-scoped when configured",
                 },
                 error_message=("MCP is not configured; add an mcp section with servers to enable them."),
             )
@@ -197,7 +197,7 @@ def create_doctor_for_config(
                     "configured": bool(mcp_config.servers),
                     "configured_enabled": False,
                     "configured_server_count": len(mcp_config.servers or {}),
-                    "scope_boundary": "runtime/session-scoped when enabled",
+                    "scope_boundary": "runtime-scoped when enabled",
                 },
                 error_message="MCP is disabled; set mcp.enabled=true to run configured servers.",
             )
@@ -212,7 +212,7 @@ def create_doctor_for_config(
                     "configured": False,
                     "configured_enabled": True,
                     "configured_server_count": 0,
-                    "scope_boundary": "runtime/session-scoped when servers are configured",
+                    "scope_boundary": "runtime-scoped when servers are configured",
                 },
                 error_message="MCP is enabled but no servers are configured.",
             )

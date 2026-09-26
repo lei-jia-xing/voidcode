@@ -171,10 +171,9 @@ class _NoopMcpManager:
         self,
         *,
         workspace: Path,
-        owner_session_id: str | None = None,
         parent_session_id: str | None = None,
     ) -> tuple[McpToolDescriptor, ...]:
-        _ = workspace, owner_session_id, parent_session_id
+        _ = workspace, parent_session_id
         return ()
 
     def call_tool(
@@ -184,29 +183,15 @@ class _NoopMcpManager:
         tool_name: str,
         arguments: dict[str, object],
         workspace: Path,
-        owner_session_id: str | None = None,
         parent_session_id: str | None = None,
     ) -> McpToolCallResult:
-        _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
+        _ = server_name, tool_name, arguments, workspace, parent_session_id
         raise AssertionError("not used")
 
     def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
         return ()
 
     def drain_events(self) -> tuple[McpRuntimeEvent, ...]:
-        return ()
-
-    def release_session(self, *, session_id: str) -> tuple[McpRuntimeEvent, ...]:
-        _ = session_id
-        return ()
-
-    def cleanup_idle_session_servers(
-        self,
-        *,
-        max_idle_seconds: float,
-        active_session_ids: set[str] | None = None,
-    ) -> tuple[McpRuntimeEvent, ...]:
-        _ = max_idle_seconds, active_session_ids
         return ()
 
     def retry_connections(self, *, workspace: Path) -> None:
@@ -1304,12 +1289,9 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
             self,
             *,
             workspace: Path,
-            owner_session_id: str | None = None,
             parent_session_id: str | None = None,
         ) -> tuple[McpToolDescriptor, ...]:
             _ = workspace, parent_session_id
-            if owner_session_id != "capability-snapshot":
-                return ()
             return (
                 McpToolDescriptor(
                     server_name="echo",
@@ -1326,10 +1308,9 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
             tool_name: str,
             arguments: dict[str, object],
             workspace: Path,
-            owner_session_id: str | None = None,
             parent_session_id: str | None = None,
         ) -> McpToolCallResult:
-            _ = server_name, tool_name, arguments, workspace, owner_session_id, parent_session_id
+            _ = server_name, tool_name, arguments, workspace, parent_session_id
             return McpToolCallResult(content=[{"type": "text", "text": "echo"}])
 
     skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
@@ -1374,7 +1355,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     assert cast(dict[str, object], capability_snapshot["skills"])["force_loaded_names"] == ["demo"]
     assert cast(dict[str, object], capability_snapshot["hooks"])["resolved_refs"] == ["role_reminder"]
     assert cast(dict[str, object], capability_snapshot["hooks"])["authority"] == ("non_authoritative")
-    assert cast(dict[str, object], capability_snapshot["mcp"])["governance"] == ("runtime_session_scoped_config_gated")
+    assert cast(dict[str, object], capability_snapshot["mcp"])["governance"] == ("runtime_config_gated")
     binding_snapshot = cast(dict[str, object], skill_snapshot["binding_snapshot"])
     assert binding_snapshot["approval_mode"] == "ask"
     assert binding_snapshot["execution_engine"] == "provider"

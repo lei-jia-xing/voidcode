@@ -272,7 +272,6 @@ export interface McpServerStatusDetail {
   error?: string | null;
   command?: string[];
   retry_available?: boolean;
-  scope?: string | null;
   transport?: string | null;
 }
 

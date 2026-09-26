@@ -178,10 +178,6 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     # The transport/argv requirement is enforced by the loader, not published:
     # a builtin server shorthand may omit both keys (the descriptor fills them).
     assert "allOf" not in mcp_server_schema
-    assert mcp_server_properties["scope"] == {
-        "anyOf": [{"type": "string", "enum": ["runtime", "session"]}, {"type": "null"}],
-        "description": ("Runtime-scoped servers are shared by the runtime; session-scoped servers are isolated per session."),
-    }
     background_task_schema = _referenced_definition(schema, properties["background_task"])
     assert background_task_schema["additionalProperties"] is False
     background_task_properties = cast(dict[str, object], background_task_schema["properties"])

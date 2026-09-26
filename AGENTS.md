@@ -81,7 +81,7 @@ voidcode/
 - Runtime-owned delegated child execution exists for supported child presets through background task and child session surfaces; it is not an arbitrary multi-agent topology.
 - Portable session import/export is runtime-owned through `src/voidcode/runtime/bundle.py`; CLI import/export must not read or write SQLite bundle rows directly.
 - Agent manifest `skill_refs` select catalog-visible skills by default, while request `force_load_skills` and delegated `load_skills` inject full skill bodies only into the targeted runtime context.
-- MCP is runtime/session-scoped and config-gated; do not describe workspace-scoped MCP, marketplace, dynamic agents, or direct agent-to-agent bus behavior as implemented.
+- MCP is runtime-scoped and config-gated; do not describe workspace-scoped MCP, marketplace, dynamic agents, or direct agent-to-agent bus behavior as implemented.
 - Frontend source is intentionally small and flatter than the aspirational structure described in `frontend/README.md`.
 - Runtime-specific invariants and hotspot entry points live in `src/voidcode/runtime/AGENTS.md`.
 

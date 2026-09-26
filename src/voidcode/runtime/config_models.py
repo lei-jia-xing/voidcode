@@ -78,7 +78,6 @@ type RuntimeProviderContextDiagnosticMode = Literal["off", "warn", "block"]
 type RuntimeContextTransformFailureMode = Literal["ignore", "warn", "block"]
 type RuntimeAgentPromptSource = Literal["builtin", "custom_markdown"]
 type McpTransport = Literal["stdio", "remote-http"]
-type RuntimeMcpServerScope = Literal["runtime", "session"]
 type RuntimeTuiThemeMode = Literal["auto", "light", "dark"]
 #: Canonical reasoning-effort hint values, from the provider's own ladder. The
 #: enum is schema metadata: ``parse_reasoning_effort`` owns the rejection and its
@@ -359,14 +358,6 @@ def _parse_context_transform_failure_mode(value: object) -> RuntimeContextTransf
         return "warn"
     if not isinstance(value, str) or value not in ("ignore", "warn", "block"):
         raise ValueError("runtime config field 'context_window.context_transform_failure_policy' must be one of: ignore, warn, block")
-    return value
-
-
-def _parse_runtime_mcp_server_scope(value: object, *, field_path: str) -> RuntimeMcpServerScope:
-    if value is None:
-        return "runtime"
-    if not isinstance(value, str) or value not in ("runtime", "session"):
-        raise ValueError(f"runtime config field '{field_path}.scope' must be one of: runtime, session")
     return value
 
 
@@ -1242,10 +1233,6 @@ class McpServerPayload(_PayloadModel):
     transport: McpTransport | None = "stdio"
     command: tuple[str, ...] | None = Field(default=None, json_schema_extra={"items": {"type": "string"}, "minItems": 1})
     env: dict[str, str] | None = None
-    scope: RuntimeMcpServerScope | None = Field(
-        default="runtime",
-        description=("Runtime-scoped servers are shared by the runtime; session-scoped servers are isolated per session."),
-    )
     url: str | None = Field(
         default=None,
         min_length=1,
@@ -1291,12 +1278,6 @@ class McpServerPayload(_PayloadModel):
             parsed_env[key] = item
         return parsed_env
 
-    @field_validator("scope", mode="before")
-    @classmethod
-    def _validate_scope(cls, value: object, info: ValidationInfo) -> RuntimeMcpServerScope:
-        field_path = _validation_context_field_path(info, default="mcp.servers")
-        return _parse_runtime_mcp_server_scope(value, field_path=field_path)
-
     @field_validator("url", mode="before")
     @classmethod
     def _validate_url(cls, value: object, info: ValidationInfo) -> str | None:
@@ -1332,8 +1313,6 @@ def _merge_builtin_mcp_server_defaults(server_name: str, raw_server: dict[str, o
         merged.setdefault("command", list(descriptor.command))
     if descriptor.url is not None and merged.get("transport") == "remote-http":
         merged.setdefault("url", descriptor.url)
-    # Every builtin descriptor carries a non-empty scope, so this always applies.
-    merged.setdefault("scope", descriptor.scope)
     return merged
 
 
@@ -1947,7 +1926,6 @@ SCHEMA_DEFINITION_NAMES: Mapping[str, str] = {
     "RuntimeContextTransformFailureMode": "contextTransformFailureMode",
     "RuntimeHookFailureMode": "hookFailureMode",
     "McpTransport": "mcpTransport",
-    "RuntimeMcpServerScope": "mcpServerScope",
     "RuntimeTuiThemeMode": "tuiThemeMode",
     "CommandList": "commandList",
     "TuiCommand": "tuiCommand",

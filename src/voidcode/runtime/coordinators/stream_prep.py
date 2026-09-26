@@ -25,7 +25,6 @@ from ...provider.protocol import ProviderAbortSignal
 from ...skills import SkillRegistry, skill_registry_with_builtins
 from ...tools.contracts import Tool, ToolResult
 from ...tools.mcp import McpRequester
-from ...tools.runtime_context import current_runtime_tool_context
 from ..config import RuntimeSkillsConfig
 from ..config_materializer import (
     EffectiveRuntimeConfig,
@@ -249,28 +248,21 @@ class StreamPrepCoordinator:
         )
 
     def build_mcp_tools(self) -> tuple[Tool, ...]:
-        context = current_runtime_tool_context()
-        return self.build_mcp_tools_for_owner(owner_session_id=context.session_id if context is not None else None)
-
-    def build_mcp_tools_for_owner(self, *, owner_session_id: str | None) -> tuple[Tool, ...]:
         if self._mcp_manager is None or self._mcp_manager.current_state().mode != "managed":
             return ()
         assert self._request_mcp_tool_fn is not None
         return self.mcp_tools_from_descriptors(
-            self._mcp_manager.list_tools(
-                workspace=self._workspace,
-                owner_session_id=owner_session_id,
-            ),
+            self._mcp_manager.list_tools(workspace=self._workspace),
             request_mcp_tool=self._request_mcp_tool_fn,
         )
 
-    def mcp_cached_surface(self, *, owner_session_id: str | None) -> McpCachedToolSurface:
+    def mcp_cached_surface(self) -> McpCachedToolSurface:
         """Passively remembered MCP surface for the configured servers."""
         if self._mcp_manager is None:
             return McpCachedToolSurface()
         if self._mcp_manager.current_state().mode != "managed":
             return McpCachedToolSurface()
-        return self._mcp_manager.cached_surface(workspace=self._workspace, owner_session_id=owner_session_id)
+        return self._mcp_manager.cached_surface(workspace=self._workspace)
 
     @staticmethod
     def is_background_child_mcp_deferred(

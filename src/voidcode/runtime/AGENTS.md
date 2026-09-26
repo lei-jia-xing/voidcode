@@ -49,7 +49,7 @@ runtime/
 - Background task IDs and session IDs are validated as runtime boundary inputs; do not bypass validators in `contracts.py` / `task.py`.
 - Delegated child execution must enter through runtime-owned routing and background task/session contracts. CLI, HTTP, and ACP are adapters, not alternate subagent execution paths.
 - Manifest `skill_refs` are catalog/default selection metadata. `force_load_skills` and delegated `load_skills` force full skill-body injection for that request or child session without leaking parent-only skill bodies.
-- MCP servers are managed at runtime or session scope through `runtime/mcp.py`; do not document or implement workspace-scoped MCP lifecycle without a separate explicit task.
+- MCP servers are managed at runtime scope through `runtime/mcp.py`; do not document or implement workspace-scoped MCP lifecycle without a separate explicit task.
 
 ## HOTSPOTS
 - `service.py` is the central monolith. Read the surrounding methods before changing `_build_graph_for_engine_from_config`, `_tool_registry_for_effective_config`, `_execute_graph_loop`, `start_background_task`, or resume helpers.

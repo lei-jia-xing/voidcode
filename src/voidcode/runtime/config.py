@@ -62,7 +62,6 @@ from .config_models import (
     RuntimeAgentPromptSource,
     RuntimeConfigPayload,
     RuntimeContextTransformFailureMode,
-    RuntimeMcpServerScope,
     RuntimeProviderContextDiagnosticMode,
     RuntimeTuiThemeMode,
     SkillsPayload,
@@ -235,7 +234,6 @@ class RuntimeMcpServerConfig:
     transport: McpTransport = "stdio"
     command: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
-    scope: RuntimeMcpServerScope = "runtime"
     url: str | None = None
 
 
@@ -265,7 +263,6 @@ def _default_runtime_mcp_servers() -> dict[str, RuntimeMcpServerConfig]:
         servers[descriptor.name] = RuntimeMcpServerConfig(
             transport=descriptor.transport,
             command=descriptor.command,
-            scope=descriptor.scope,
             url=descriptor.url,
         )
     return servers
@@ -904,7 +901,6 @@ def _mcp_config_from_payload(payload: McpPayload | None) -> RuntimeMcpConfig | N
                     transport=server.transport or "stdio",
                     command=server.command or (),
                     env=dict(server.env or {}),
-                    scope=server.scope or "runtime",
                     url=server.url,
                 )
                 for server_name, server in payload.servers.items()
