@@ -327,7 +327,6 @@ class _RunningMcpServer:
         self.scope = scope
         self.owner_session_id = owner_session_id
         self.transport = transport
-        self.references = 0
         self.last_used_at = last_used_at
         # The Python SDK ClientSession is shared per configured server process.
         # Serialize list/call operations per server so concurrent runtime and
@@ -1310,9 +1309,6 @@ class ManagedMcpManager:
         )
 
     def _record_server_acquired(self, *, key: _McpServerKey, workspace_root: Path) -> None:
-        running = self._running_servers.get(key)
-        if running is not None:
-            running.references += 1
         self._record_event(
             McpRuntimeEvent(
                 event_type=RUNTIME_MCP_SERVER_ACQUIRED,
@@ -1328,8 +1324,6 @@ class ManagedMcpManager:
     def _record_server_released(self, *, key: _McpServerKey, reason: str) -> None:
         running = self._running_servers.get(key)
         workspace_root = running.workspace_root if running is not None else None
-        if running is not None and running.references > 0:
-            running.references -= 1
         self._record_event(
             McpRuntimeEvent(
                 event_type=RUNTIME_MCP_SERVER_RELEASED,
