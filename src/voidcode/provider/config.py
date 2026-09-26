@@ -557,10 +557,13 @@ class AnthropicProviderConfig:
     timeout_seconds: float | None = None
     transient_retry: ProviderTransientRetryConfig | None = None
     beta_headers_explicit: bool = field(default=False, compare=False, repr=False)
+    cache_retention_explicit: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.beta_headers and not self.beta_headers_explicit:
             object.__setattr__(self, "beta_headers_explicit", True)
+        if self.cache_retention != "short" and not self.cache_retention_explicit:
+            object.__setattr__(self, "cache_retention_explicit", True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -843,8 +846,12 @@ def _merge_anthropic_provider_config(
         base_url=_prefer_primary(primary.base_url, fallback.base_url),
         version=_prefer_primary(primary.version, fallback.version),
         beta_headers=(primary.beta_headers if primary.beta_headers_explicit else fallback.beta_headers),
-        cache_retention=(primary.cache_retention if primary.cache_retention != "none" else fallback.cache_retention),
+        # Provenance rides on ``*_explicit``: the field default is never a
+        # sentinel, so an unset primary inherits the fallback while an explicit
+        # ``none`` still disables caching for the merged config.
+        cache_retention=(primary.cache_retention if primary.cache_retention_explicit else fallback.cache_retention),
         beta_headers_explicit=primary.beta_headers_explicit or fallback.beta_headers_explicit,
+        cache_retention_explicit=primary.cache_retention_explicit or fallback.cache_retention_explicit,
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
         transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
     )
@@ -1268,6 +1275,7 @@ def _parse_anthropic_provider_config(
         beta_headers=payload.beta_headers or (),
         cache_retention=payload.cache_retention,
         beta_headers_explicit="beta_headers" in payload.model_fields_set,
+        cache_retention_explicit="cache_retention" in payload.model_fields_set,
         timeout_seconds=payload.timeout_seconds,
         transient_retry=_parse_transient_retry_config(
             payload.transient_retry,

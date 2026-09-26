@@ -367,6 +367,46 @@ def test_merge_provider_configs_keeps_repo_provider_over_environment_fallback() 
     assert merged.opencode_go == OpenAICompatibleProviderConfig(api_key="repo-key")
 
 
+def test_merge_anthropic_cache_retention_unset_primary_inherits_long() -> None:
+    merged = merge_provider_configs(
+        ProviderConfigs(anthropic=AnthropicProviderConfig()),
+        ProviderConfigs(anthropic=AnthropicProviderConfig(cache_retention="long", cache_retention_explicit=True)),
+    )
+
+    assert merged is not None and merged.anthropic is not None
+    assert merged.anthropic.cache_retention == "long"
+
+
+def test_merge_anthropic_cache_retention_explicit_none_survives() -> None:
+    merged = merge_provider_configs(
+        ProviderConfigs(anthropic=AnthropicProviderConfig(cache_retention="none", cache_retention_explicit=True)),
+        ProviderConfigs(anthropic=AnthropicProviderConfig(cache_retention="long", cache_retention_explicit=True)),
+    )
+
+    assert merged is not None and merged.anthropic is not None
+    assert merged.anthropic.cache_retention == "none"
+
+
+def test_merge_anthropic_cache_retention_explicit_short_wins_over_long() -> None:
+    merged = merge_provider_configs(
+        ProviderConfigs(anthropic=AnthropicProviderConfig(cache_retention="short", cache_retention_explicit=True)),
+        ProviderConfigs(anthropic=AnthropicProviderConfig(cache_retention="long", cache_retention_explicit=True)),
+    )
+
+    assert merged is not None and merged.anthropic is not None
+    assert merged.anthropic.cache_retention == "short"
+
+
+def test_merge_anthropic_cache_retention_defaults_to_short() -> None:
+    merged = merge_provider_configs(
+        ProviderConfigs(anthropic=AnthropicProviderConfig()),
+        ProviderConfigs(anthropic=AnthropicProviderConfig()),
+    )
+
+    assert merged is not None and merged.anthropic is not None
+    assert merged.anthropic.cache_retention == "short"
+
+
 def test_new_provider_configs_serialize_without_secrets() -> None:
     payload = serialize_provider_configs(
         ProviderConfigs(
