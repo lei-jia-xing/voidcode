@@ -95,6 +95,34 @@ def test_fresh_high_anchor_wins_and_reports_no_excess() -> None:
     assert anchored.metadata_payload()["usage_tokens_estimated"] is False
 
 
+def test_estimated_flag_follows_the_max_winner_in_the_observable_payload() -> None:
+    anchor_wins = _window(anchor_tokens=90_000, tool_chars=400)
+    estimate_wins = _window(anchor_tokens=1_000, tool_chars=400_000)
+    no_anchor = _window(anchor_tokens=None)
+
+    assert anchor_wins.metadata_payload()["usage_tokens_estimated"] is False
+    assert anchor_wins.metadata_payload()["measured_anchor_tokens"] == 90_000
+    assert estimate_wins.metadata_payload()["usage_tokens_estimated"] is True
+    assert no_anchor.metadata_payload()["usage_tokens_estimated"] is True
+
+
+def test_compacted_builder_reports_the_flag_from_the_same_single_source() -> None:
+    from dataclasses import replace
+
+    from voidcode.runtime.run_loop import RuntimeRunLoopCoordinator
+
+    anchor_wins = replace(_window(anchor_tokens=90_000, tool_chars=400), compacted=True)
+    estimate_wins = replace(_window(anchor_tokens=1_000, tool_chars=400_000), compacted=True)
+
+    anchor_payload = RuntimeRunLoopCoordinator._build_context_compacted_payload(anchor_wins)
+    estimate_payload = RuntimeRunLoopCoordinator._build_context_compacted_payload(estimate_wins)
+
+    assert anchor_payload is not None and estimate_payload is not None
+    assert anchor_payload["usage_tokens_estimated"] is False
+    assert anchor_payload["measured_anchor_tokens"] == 90_000
+    assert estimate_payload["usage_tokens_estimated"] is True
+
+
 def test_non_ascii_payload_is_not_under_counted() -> None:
     """A character-based ratio would under-count CJK ~3x; the byte basis does not."""
 

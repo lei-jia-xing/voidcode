@@ -227,14 +227,23 @@ class RuntimeContextWindow:
     usage_tokens_before: int | None = None
     usage_tokens_after: int | None = None
     #: Token accounting provenance: ``measured_anchor_tokens`` is the last
-    #: provider-reported context size; ``estimated_delta_tokens`` is how far the
-    #: local full-payload estimate exceeds it (0 when the anchor wins).
+    #: provider-reported context size (unchanged by this change); ``estimated_delta_tokens``
+    #: is the local full-payload estimate's excess over it — ``max(0, estimate − anchor)``,
+    #: 0 when the anchor wins. The field keeps its name for payload compatibility.
     measured_anchor_tokens: int | None = None
     estimated_delta_tokens: int | None = None
     pruned_savings_tokens: int = 0
     continuity_state: ContextProjection | None = None
     summary_anchor: str | None = None
     summary_source: dict[str, int] | None = None
+
+    @property
+    def estimate_won(self) -> bool:
+        """Whether the local full-payload estimate won the ``max`` over the measured anchor."""
+        if self.measured_anchor_tokens is None:
+            return True
+        excess = self.estimated_delta_tokens
+        return excess is not None and excess > 0
 
     def metadata_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -250,8 +259,7 @@ class RuntimeContextWindow:
         if self.usage_tokens_before is not None:
             payload["usage_tokens_before"] = self.usage_tokens_before
             payload["usage_tokens_after"] = self.usage_tokens_after
-            estimated_excess = self.estimated_delta_tokens
-            payload["usage_tokens_estimated"] = self.measured_anchor_tokens is None or (estimated_excess is not None and estimated_excess > 0)
+            payload["usage_tokens_estimated"] = self.estimate_won
         # Provenance is always reported: ``estimated_delta_tokens`` is the local
         # full-payload estimate's excess over the measured anchor (0 when the
         # anchor wins), so a consumer can tell which side of the ``max`` won.
@@ -1640,7 +1648,7 @@ def assemble_provider_context(
             estimated_delta_tokens=max(0, measured_payload_tokens - after_anchor),
         )
         metadata_payload["usage_tokens_after"] = context_window.usage_tokens_after
-        metadata_payload["usage_tokens_estimated"] = True
+        metadata_payload["usage_tokens_estimated"] = context_window.estimate_won
     if reminder_segment is not None:
         # Tail-appended per-call reminder: reaches the provider for this call
         # only (see ``segments_to_percall_messages``), never the transcript.

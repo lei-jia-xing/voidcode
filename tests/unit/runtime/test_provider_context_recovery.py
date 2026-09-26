@@ -261,6 +261,31 @@ def test_context_limit_prunes_and_retries_the_same_call(tmp_path: Path) -> None:
     assert chunks[-1].output == "recovered"
 
 
+def test_recovery_flag_tracks_the_max_winner_not_a_constant(tmp_path: Path) -> None:
+    """A fresh high anchor wins the recovery decision and the flag reports it."""
+    from voidcode.provider.protocol import ProviderTokenUsage
+
+    _workspace(tmp_path)
+    graph = _OverflowScript(
+        [
+            _Step(
+                tool_call=ToolCall(tool_name="read", arguments={"path": "big-0.txt"}),
+                provider_usage=ProviderTokenUsage(input_tokens=90_000, output_tokens=100),
+            ),
+            "overflow",
+            _Step(output="recovered", is_finished=True),
+        ]
+    )
+
+    chunks = list(_runtime(tmp_path, graph).run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID)))
+
+    recovery = _events(chunks, RUNTIME_PROVIDER_CONTEXT_RECOVERY)
+    assert [(event.payload["mode"], event.payload["outcome"]) for event in recovery] == [("prune", "retry")]
+    assert recovery[0].payload["measured_anchor_tokens"] == 90_100
+    assert recovery[0].payload["usage_tokens_estimated"] is False
+    assert chunks[-1].session.status == "completed"
+
+
 def test_a_small_overshoot_is_still_pruned_by_recovery(tmp_path: Path) -> None:
     """Recovery ignores the routine savings floor: a tiny reclaim must still retry."""
     _workspace(tmp_path)
