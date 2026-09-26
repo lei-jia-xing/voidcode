@@ -174,6 +174,15 @@ def test_unsized_model_is_reported_rather_than_silently_unbounded() -> None:
     assert window.compaction_reason.startswith("compaction_unsized")
 
 
+def test_small_window_first_turn_stays_under_threshold() -> None:
+    """16k window recovers to threshold 13600, so an empty first turn never compacts."""
+    window = _prepare((), context_window=16_000)
+
+    assert window.compacted is False
+    assert window.compaction_reason is None
+    assert window.usage_tokens_before is not None and window.usage_tokens_before < 13_600
+
+
 def test_hook_cancel_keeps_the_view_verbatim() -> None:
     from voidcode.runtime.context.window import BeforeCompactInput
 

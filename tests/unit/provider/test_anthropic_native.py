@@ -205,7 +205,8 @@ def test_missing_prompt_cache_metadata_keeps_existing_wire() -> None:
     assert payload["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
 
 
-def test_retention_disabled_emits_no_cache_control() -> None:
+def test_default_retention_emits_short_cache_control() -> None:
+    """Unconfigured provider follows the omp short default: 5-minute ephemeral breakpoint."""
     fake = _FakeTransport()
     AnthropicMessagesProvider(transport=fake).propose_turn(
         _request(
@@ -214,8 +215,36 @@ def test_retention_disabled_emits_no_cache_control() -> None:
         )
     )
     payload = fake.payloads[0]
+    assert isinstance(payload["system"], list)
+    assert payload["system"][2]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
+
+
+def test_retention_disabled_emits_no_cache_control() -> None:
+    fake = _FakeTransport()
+    AnthropicMessagesProvider(transport=fake).propose_turn(
+        _request(
+            segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
+            cache_retention="none",
+            metadata=_CACHE_METADATA,
+        )
+    )
+    payload = fake.payloads[0]
     assert isinstance(payload["system"], str)
     assert "cache_control" not in payload
+
+
+def test_explicit_long_retention_emits_one_hour_ttl() -> None:
+    fake = _FakeTransport()
+    AnthropicMessagesProvider(transport=fake).propose_turn(
+        _request(
+            segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
+            cache_retention="long",
+            metadata=_CACHE_METADATA,
+        )
+    )
+    payload = fake.payloads[0]
+    assert isinstance(payload["system"], list)
+    assert payload["system"][2]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
 
 def test_boundary_before_non_system_section_falls_back() -> None:

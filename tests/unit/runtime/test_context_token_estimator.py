@@ -46,6 +46,11 @@ def test_resolve_budget_reserve_tokens() -> None:
     assert resolve_budget_reserve_tokens(None, floor=0) == 0
     # Explicit override wins over the catalog-derived value.
     assert resolve_budget_reserve_tokens(100000, reserve_tokens=42) == 42
+    # Small-window recovery (omp ``resolveBudgetReserveTokens``): a defaulted
+    # 16384 that leaves no usable budget falls back to the 15% reserve, while
+    # an explicit 16384 is honored as configured.
+    assert resolve_budget_reserve_tokens(16000) == 2400
+    assert resolve_budget_reserve_tokens(16000, reserve_tokens=16384) == 16384
 
 
 def test_should_compact_default_boundary() -> None:
@@ -73,3 +78,8 @@ def test_resolve_threshold_tokens_priority_and_clamps() -> None:
     # Fallback: cw - reserve (max(15%, 16384)); explicit reserve wins.
     assert resolve_threshold_tokens(100000) == 83616
     assert resolve_threshold_tokens(100000, reserve_tokens=42) == 99958
+    # 16k window recovers to 13600 instead of collapsing to 1; 32k keeps cw-16384.
+    assert resolve_threshold_tokens(16000) == 13600
+    assert resolve_threshold_tokens(32000) == 15616
+    # Derived threshold never reaches the whole window even when reserve is 0.
+    assert resolve_threshold_tokens(16000, reserve_tokens=0) == 15999

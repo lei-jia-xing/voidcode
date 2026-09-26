@@ -1785,14 +1785,24 @@ def resolve_budget_reserve_tokens(
     reserve_tokens: int | None = None,
     floor: int = DEFAULT_CONTEXT_RESERVE_TOKENS,
 ) -> int:
-    """Explicit override wins; otherwise ``max(15% of the catalog window, floor)``.
+    """Budget reserve with upstream's small-window recovery for a defaulted floor.
 
-    The default floor is upstream's 16384, so a small window keeps a usable
-    reserve instead of shrinking to a few percent of itself.
+    Mirrors omp ``resolveBudgetReserveTokens``: a *defaulted* reserve that is
+    impossible for the window (``reserve >= cw - 15%*cw``, or ``reserve >= cw``)
+    falls back to the 15% proportional reserve so the derived threshold stays
+    usable. An explicit ``reserve_tokens`` — even one equal to the default —
+    always wins. Provenance is the argument being ``None``, never a value
+    comparison.
     """
     if reserve_tokens is not None and isinstance(reserve_tokens, int) and not isinstance(reserve_tokens, bool) and reserve_tokens >= 0:
         return reserve_tokens
-    return effective_reserve_tokens(context_window, floor)
+    reserve = effective_reserve_tokens(context_window, floor)
+    if context_window is None or isinstance(context_window, bool) or not isinstance(context_window, int) or context_window <= 0:
+        return reserve
+    proportional = max(1, (context_window * _TOKEN_RESERVE_NUMERATOR) // _TOKEN_RESERVE_DENOMINATOR)
+    if reserve >= context_window - proportional or reserve >= context_window:
+        return proportional
+    return reserve
 
 
 def _clamp_threshold(value: int, context_window: int) -> int:
@@ -1825,7 +1835,7 @@ def resolve_threshold_tokens(
     if fixed is not None:
         return _clamp_threshold(fixed, context_window)
     reserve = resolve_budget_reserve_tokens(context_window, reserve_tokens=reserve_tokens, floor=floor)
-    return max(1, context_window - reserve)
+    return max(1, min(context_window - 1, context_window - reserve))
 
 
 def should_compact(

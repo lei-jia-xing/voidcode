@@ -124,7 +124,7 @@ def anthropic_compatible_endpoint_config(provider_name: str, config: AnthropicPr
         timeout_seconds=None if config is None else config.timeout_seconds,
         model_map={},
         wire="anthropic-messages",
-        cache_retention="none" if config is None else config.cache_retention,
+        cache_retention="short" if config is None else config.cache_retention,
     )
 
 

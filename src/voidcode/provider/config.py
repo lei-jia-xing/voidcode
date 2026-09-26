@@ -190,7 +190,7 @@ class _AnthropicProviderConfigPayload(_ProviderPayloadModel):
     base_url: BoundaryOptionalString = None
     version: BoundaryOptionalString = None
     beta_headers: BoundaryStringList | None = ()
-    cache_retention: Literal["none", "short", "long"] = "none"
+    cache_retention: Literal["none", "short", "long"] = "short"
     timeout_seconds: BoundaryOptionalTimeout = None
     transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
@@ -553,7 +553,7 @@ class AnthropicProviderConfig:
     base_url: str | None = None
     version: str | None = None
     beta_headers: tuple[str, ...] = ()
-    cache_retention: Literal["none", "short", "long"] = "none"
+    cache_retention: Literal["none", "short", "long"] = "short"
     timeout_seconds: float | None = None
     transient_retry: ProviderTransientRetryConfig | None = None
     beta_headers_explicit: bool = field(default=False, compare=False, repr=False)
