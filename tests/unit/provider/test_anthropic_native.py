@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
 from voidcode.provider.anthropic_native import AnthropicMessagesProvider, AnthropicMessagesTransport
@@ -136,6 +135,7 @@ _STABLE_SEGMENTS = (
     ProviderContextSegment(role="system", content="stable-beta"),
     ProviderContextSegment(role="system", content="<!-- voidcode:dynamic-boundary -->"),
 )
+
 _CACHE_METADATA: dict[str, object] = {
     "prompt_cache": {
         "version": 1,
@@ -148,46 +148,35 @@ _CACHE_METADATA: dict[str, object] = {
 }
 
 
-def _turns_payload(dynamic_text: str) -> list[dict[str, object]]:
+def test_short_retention_with_tools_caches_tools_not_system_text() -> None:
+    fake = _FakeTransport()
+    definition = ToolDefinition(name="read", description="Read", input_schema={"type": "object"})
+    AnthropicMessagesProvider(transport=fake).propose_turn(
+        _request(
+            segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
+            tools=(definition,),
+            cache_retention="short",
+        )
+    )
+    payload = fake.payloads[0]
+    assert payload["system"] == "stable-alpha\n\nstable-beta\n\n<!-- voidcode:dynamic-boundary -->"
+    assert payload["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
+
+
+def test_short_retention_without_tools_caches_system_text() -> None:
     fake = _FakeTransport()
     AnthropicMessagesProvider(transport=fake).propose_turn(
         _request(
-            segments=(
-                *_STABLE_SEGMENTS,
-                ProviderContextSegment(role="system", content=dynamic_text),
-                ProviderContextSegment(role="user", content="hi"),
-            ),
+            segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
             cache_retention="short",
             metadata=_CACHE_METADATA,
         )
     )
-    system = fake.payloads[0]["system"]
-    assert isinstance(system, list)
-    return system
-
-
-def test_cache_control_lands_on_last_stable_system_block() -> None:
-    system = _turns_payload("todo: dynamic")
-    assert [block["text"] for block in system] == [
-        "stable-alpha",
-        "stable-beta",
-        "<!-- voidcode:dynamic-boundary -->",
-        "todo: dynamic",
-    ]
-    assert system[2]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
-    assert all("cache_control" not in system[index] for index in (0, 1, 3))
-
-
-def test_stable_system_blocks_are_byte_identical_across_turns() -> None:
-    first = _turns_payload("todo: first")
-    second = _turns_payload("todo: second")
-
-    def stable_bytes(blocks: list[dict[str, object]]) -> str:
-        return json.dumps(blocks[:3], sort_keys=True, ensure_ascii=True)
-
-    assert stable_bytes(first) == stable_bytes(second)
-    assert first[3]["text"] != second[3]["text"]
-    assert "cache_control" in first[2] and "cache_control" in second[2]
+    payload = fake.payloads[0]
+    system = payload["system"]
+    assert isinstance(system, list) and len(system) == 1
+    assert system[0]["text"] == "stable-alpha\n\nstable-beta\n\n<!-- voidcode:dynamic-boundary -->"
+    assert system[0]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
 
 
 def test_missing_prompt_cache_metadata_keeps_existing_wire() -> None:
@@ -215,8 +204,9 @@ def test_default_retention_emits_short_cache_control() -> None:
         )
     )
     payload = fake.payloads[0]
-    assert isinstance(payload["system"], list)
-    assert payload["system"][2]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
+    system = payload["system"]
+    assert isinstance(system, list) and len(system) == 1
+    assert system[0]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
 
 
 def test_retention_disabled_emits_no_cache_control() -> None:
@@ -243,12 +233,14 @@ def test_explicit_long_retention_emits_one_hour_ttl() -> None:
         )
     )
     payload = fake.payloads[0]
-    assert isinstance(payload["system"], list)
-    assert payload["system"][2]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    system = payload["system"]
+    assert isinstance(system, list) and len(system) == 1
+    assert system[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
 
-def test_boundary_before_non_system_section_falls_back() -> None:
+def test_mixed_roles_with_tools_caches_tools_not_system_text() -> None:
     fake = _FakeTransport()
+    definition = ToolDefinition(name="read", description="Read", input_schema={"type": "object"})
     AnthropicMessagesProvider(transport=fake).propose_turn(
         _request(
             segments=(
@@ -256,11 +248,10 @@ def test_boundary_before_non_system_section_falls_back() -> None:
                 ProviderContextSegment(role="user", content="early-user"),
                 ProviderContextSegment(role="system", content="dynamic"),
             ),
+            tools=(definition,),
             cache_retention="short",
-            metadata={"prompt_cache": {"version": 1, "boundary_present": True, "stable_section_count": 2}},
         )
     )
-    system = fake.payloads[0]["system"]
-    assert isinstance(system, list) and len(system) == 1
-    assert system[0]["text"] == "stable\n\ndynamic"
-    assert system[0]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
+    payload = fake.payloads[0]
+    assert payload["system"] == "stable\n\ndynamic"
+    assert payload["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "5m"}

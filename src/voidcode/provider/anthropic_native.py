@@ -409,47 +409,6 @@ class AnthropicMessagesProvider:
                 append_message(segment.role, {"type": "text", "text": segment.content})
         return ("\n\n".join(system_parts) if system_parts else None), messages
 
-    @staticmethod
-    def _stable_system_partition(request: ProviderTurnRequest) -> tuple[list[dict[str, object]], int] | None:
-        """Split system segments into text blocks around the prompt-cache boundary.
-
-        Returns ``(blocks, stable_block_count)`` when the prompt-cache metadata
-        marks a usable boundary and every section before it is a system segment;
-        ``None`` otherwise, so the caller keeps the pre-existing single-string
-        wire. The boundary counts *sections*, so it is validated against the
-        segment space rather than used as a block index directly.
-        """
-        metadata = request.assembled_context.metadata
-        if not isinstance(metadata, dict):
-            return None
-        prompt_cache = metadata.get("prompt_cache")
-        if not isinstance(prompt_cache, dict) or prompt_cache.get("boundary_present") is not True:
-            return None
-        stable_section_count = prompt_cache.get("stable_section_count")
-        if not isinstance(stable_section_count, int) or isinstance(stable_section_count, bool) or stable_section_count <= 0:
-            return None
-        segments = request.assembled_context.segments
-        if stable_section_count > len(segments):
-            return None
-        for segment in segments[:stable_section_count]:
-            if segment.role != "system":
-                # boundary_present promised a dynamic boundary after the stable
-                # system sections, but a non-system section sits before it. The
-                # stored count cannot locate the breakpoint, so fall back rather
-                # than cache content that changes every turn.
-                return None
-        blocks: list[dict[str, object]] = []
-        stable_block_count = 0
-        for index, segment in enumerate(segments):
-            if segment.role != "system" or not segment.content:
-                continue
-            blocks.append({"type": "text", "text": segment.content})
-            if index < stable_section_count:
-                stable_block_count += 1
-        if stable_block_count < 1 or stable_block_count > len(blocks):
-            return None
-        return blocks, stable_block_count
-
     def _wire(self, request: ProviderTurnRequest) -> ProviderWireMaterialization:
         system, messages = self._messages_and_system(request)
         original_to_provider, _ = self._tool_maps(request)
@@ -510,23 +469,12 @@ class AnthropicMessagesProvider:
         if budget is not None:
             payload["max_tokens"] = _max_tokens_with_thinking(payload["max_tokens"], budget, model_max_tokens)
         # Precedence: the request's own retention, else the provider config's
-        # (its field default is "none"), else -- with no config at all -- "none".
-        retention = request.cache_retention if request.cache_retention is not None else (self.config.cache_retention if self.config else "none")
+        # (its field default is "short", omp upstream default), else -- with no
+        # config at all -- "short".
+        retention = request.cache_retention if request.cache_retention is not None else (self.config.cache_retention if self.config else "short")
         if retention in {"short", "long"}:
             cache_control = {"type": "ephemeral", "ttl": "5m" if retention == "short" else "1h"}
-            partition = self._stable_system_partition(request)
-            if partition is not None:
-                # The stable system blocks are byte-identical across turns (the
-                # dynamic sections follow the boundary marker), so a breakpoint
-                # on the last of them caches tools + the stable prefix instead of
-                # tools alone. Every later block stays uncached.
-                blocks, stable_block_count = partition
-                blocks[stable_block_count - 1]["cache_control"] = cache_control
-                payload["system"] = blocks
-                if wire.tools:
-                    wire.tools[-1]["cache_control"] = cache_control
-                    payload["tools"] = wire.tools
-            elif wire.tools:
+            if wire.tools:
                 wire.tools[-1]["cache_control"] = cache_control
                 payload["tools"] = wire.tools
             elif system:
