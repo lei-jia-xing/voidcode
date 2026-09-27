@@ -1109,6 +1109,7 @@ def prune_tool_results_for_budget(
     target_tokens: int,
     min_savings_tokens: int,
     min_prune_tokens: int,
+    tokenizer: str | None = None,
 ) -> PrunedToolResults:
     """Replace the oldest prunable tool content with placeholders until it fits ``target_tokens``.
 
@@ -1117,8 +1118,14 @@ def prune_tool_results_for_budget(
     are left verbatim; when the reclaimed estimate is under
     ``min_savings_tokens`` nothing is pruned at all, so a marginal overage never
     rewrites the view.
+
+    Every number here is on the *decision's* ruler: tool-result text is counted
+    with the model's tokenizer (``tokenizer``), and the replacement is measured
+    by tokenizing the text that will actually replace it. Mixing rulers would
+    compare a real count against an inflated byte count, so a result judged too
+    big by one could look "saved enough" by the other.
     """
-    remaining = sum(count_payload_bytes(_result_payload_bytes(result)) for result in results)
+    remaining = sum(count_tokens(_result_payload_text(result), tokenizer) for result in results)
     if remaining <= target_tokens:
         return PrunedToolResults(rendered_results=results, pruned_views=(), pruned_indexes=())
     rendered = list(results)
@@ -1130,15 +1137,13 @@ def prune_tool_results_for_budget(
             break
         content = view.content or ""
         payload_bytes = _result_payload_bytes(view)
-        payload_tokens = count_payload_bytes(payload_bytes)
+        payload_tokens = count_tokens(_result_payload_text(view), tokenizer)
         if payload_tokens < min_prune_tokens or _is_prune_protected(view):
             continue
         placeholder = pruning_placeholder(view, omitted_bytes=payload_bytes, omitted_tokens=payload_tokens)
         pruned_data = pruning_data_payload(view, omitted_bytes=_result_data_bytes(view)) if view.data else view.data
-        placeholder_bytes = len(placeholder.encode("utf-8")) + len(
-            json.dumps(pruned_data, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-        )
-        reclaimed = payload_tokens - count_payload_bytes(placeholder_bytes)
+        pruned_data_text = json.dumps(pruned_data, ensure_ascii=False, sort_keys=True, default=str)
+        reclaimed = payload_tokens - count_tokens(placeholder + pruned_data_text, tokenizer)
         if reclaimed <= 0:
             continue
         rendered[index] = replace(
@@ -1397,6 +1402,7 @@ def prepare_provider_context(
         # per-result ``min_prune_tokens`` floor still applies.
         min_savings_tokens=0 if fit_payload else DEFAULT_MIN_SAVINGS_TOKENS,
         min_prune_tokens=DEFAULT_MIN_PRUNE_TOKENS,
+        tokenizer=tokenizer,
     )
     if not pruned.pruned_indexes:
         return _view(

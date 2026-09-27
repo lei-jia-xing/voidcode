@@ -54,6 +54,32 @@ _ENC_BY_TOKEN_COUNT: dict[int, str] = {
     128_000: "DeepSeekV3",
 }
 
+#: Per-encoding provenance and licence, recorded so the redistribution question
+#: is visible in the shipped artifact rather than implicit in this script.
+#: Two distinct cases:
+#:
+#: * ``Cl100kBase``/``O200kBase`` are byte-identical, rank for rank, to
+#:   tiktoken's own published vocabularies (MIT, upstream OpenAI). Redistributing
+#:   them is the same act as redistributing tiktoken's data files.
+#: * ``Glm5``/``Qwen3``/``KimiK2``/``DeepSeekV3`` are NOT identical to any
+#:   published tiktoken vocabulary; they were extracted from oh-my-pi's native
+#:   addon, a third-party vendored artifact. Shipping these inside a published
+#:   package is a licensing question for the user, not something this script can
+#:   settle.
+#:
+#: If cleaner provenance matters later, the four vendor tables could be sourced
+#: from each vendor's own published ``tokenizer.json`` instead of from the
+#: addon -- the UTOK1 container is plain (rank == index, raw token bytes), so
+#: dropping such a vocabulary straight in needs no format work.
+_PROVENANCE: dict[str, dict[str, str]] = {
+    "O200kBase": {"source": "tiktoken o200k_base (byte-identical)", "license": "MIT (upstream OpenAI)"},
+    "Cl100kBase": {"source": "tiktoken cl100k_base (byte-identical)", "license": "MIT (upstream OpenAI)"},
+    "Glm5": {"source": "oh-my-pi native addon (UTOK1 blob)", "license": "undetermined - third-party vendor vocabulary"},
+    "Qwen3": {"source": "oh-my-pi native addon (UTOK1 blob)", "license": "undetermined - third-party vendor vocabulary"},
+    "KimiK2": {"source": "oh-my-pi native addon (UTOK1 blob)", "license": "undetermined - third-party vendor vocabulary"},
+    "DeepSeekV3": {"source": "oh-my-pi native addon (UTOK1 blob)", "license": "undetermined - third-party vendor vocabulary"},
+}
+
 
 def _read_varint(buf: bytes, i: int) -> tuple[int, int]:
     shift = 0
@@ -137,6 +163,7 @@ def extract_vocabs(addon: Path) -> dict[str, int]:
             "raw_bytes": len(blob),
             "shipped_bytes": len(payload),
             "container": "UTOK1: magic + u32 LE count + N x (ULEB128 length + raw token bytes); rank == index",
+            **_PROVENANCE[name],
         }
         print(f"  {name:<12} tokens={len(tokens):>7} raw={len(blob):>9} bz2={len(payload):>9}")
     missing = set(_ENC_BY_TOKEN_COUNT.values()) - set(written)

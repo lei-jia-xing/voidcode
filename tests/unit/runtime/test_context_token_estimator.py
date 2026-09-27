@@ -6,6 +6,8 @@ import pytest
 
 from voidcode.provider.tokenizer import count_tokens, known_tokenizers
 from voidcode.runtime.context.window import (
+    CompactionBudget,
+    assemble_provider_context,
     count_payload_bytes,
     effective_reserve_tokens,
     resolve_budget_reserve_tokens,
@@ -118,3 +120,38 @@ def test_resolve_threshold_tokens_priority_and_clamps() -> None:
     assert resolve_threshold_tokens(32000) == 15616
     # Derived threshold never reaches the whole window even when reserve is 0.
     assert resolve_threshold_tokens(16000, reserve_tokens=0) == 15999
+
+
+def test_tagged_model_reaches_the_decision_through_the_real_entry_point() -> None:
+    """The whole point of the seam, pinned end to end.
+
+    A tagged model must produce a decision number that the pure byte estimate
+    could not: CJK is where the two rulers diverge hardest (bytes/4 is ~2x the
+    real count). If the tokenizer ever stops being resolved inside
+    ``assemble_provider_context`` — or stops being forwarded to the decision —
+    the tagged and untagged decisions collapse to the same number and this fails.
+    """
+    payload = "\u8fd9\u662f\u4e00\u4e2a\u4e2d\u6587\u6d4b\u8bd5" * 60  # CJK: 1440 utf8 bytes
+
+    def decide(provider: str, model: str) -> int:
+        metadata: dict[str, object] = {
+            "runtime_config": {"model": model, "resolved_provider": {"active_target": {"provider": provider, "raw_model": model}}},
+        }
+        view = assemble_provider_context(
+            prompt=payload,
+            tool_results=(),
+            session_metadata=metadata,
+            compaction_budget=CompactionBudget(context_window=1_000_000, anchor_tokens=0, fit_payload=False),
+        )
+        # ``usage_tokens_before`` is the decision number itself
+        # (``max(anchor, estimate)``); ``after`` is the post-assembly report.
+        return view.context_window.usage_tokens_before or 0
+
+    tagged = decide("kilo", "qwen/qwen3.6-27b")  # catalog tokenizer: qwen3
+    untagged = decide("openai", "gpt-5-model-absent-from-the-catalog")
+
+    # Both consume the identical assembled payload; only the ruler differs. The
+    # byte ruler over-counts this CJK payload by well over the rounding margin,
+    # so the two decisions cannot coincide unless the tokenizer vanished.
+    assert tagged != untagged
+    assert tagged < untagged * 0.8
