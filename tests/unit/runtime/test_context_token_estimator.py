@@ -52,6 +52,24 @@ def test_every_shipped_encoding_loads_and_counts(name: str) -> None:
     assert count_tokens("", name) == 0
 
 
+def test_qwen3_combining_marks_do_not_merge_into_a_punctuation_run() -> None:
+    """Qwen3's mark handling, pinned on the minimized failure the oracle caught.
+
+    The punctuation-run alternative must exclude ``\\p{M}`` the way upstream's
+    `` ?[^\\s\\p{L}\\p{M}\\p{N}]+`` does. When it did not, a variation selector
+    (U+FE0F) or combining mark after punctuation was swallowed into the
+    punctuation piece instead of standing alone, so a ZWJ + heart + VS16 cluster
+    counted 3 where oh-my-pi's native addon says 4. Every value below is the
+    oracle's, taken from the native addon — not recomputed from our own splitter.
+    """
+    assert count_tokens("\u200d\u2764\ufe0f", tokenizer="qwen3") == 4
+    assert count_tokens("\u200d\u2764", tokenizer="qwen3") == 3
+    assert count_tokens("\u2764\ufe0f", tokenizer="qwen3") == 1
+    # A mark exiled from a punctuation run, then the punctuation resumes.
+    assert count_tokens(".\u200d\u0301.a", tokenizer="qwen3") == 5
+    assert count_tokens("\U0001f469\u200d\u2764\ufe0f\u200d\U0001f48b\u200d\U0001f468", tokenizer="qwen3") == 16
+
+
 def test_effective_reserve_tokens_fifteen_percent() -> None:
     assert effective_reserve_tokens(100000) == 15000
 

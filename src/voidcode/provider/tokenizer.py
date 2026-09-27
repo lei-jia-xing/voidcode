@@ -61,8 +61,13 @@ _PAT_O200K: Final = "|".join(
 #: narrowed to ``[\r\n]`` (no ``/``).
 _PAT_O200K_NO_SLASH: Final = _PAT_O200K.replace(r"[\r\n/]*", r"[\r\n]*")
 #: Qwen3 additionally NFC-normalizes its input (verified against the addon:
-#: ``native("e\u0301")`` counts the precomposed ``é``).
-_PAT_QWEN3: Final = r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}{1,3}+| ?[^\s\p{L}\p{N}]++[\r\n]*+|\s++$|\s*[\r\n]|\s+(?!\S)|\s"
+#: ``native("e\u0301")`` counts the precomposed ``é``). The punctuation-run
+#: class excludes ``\p{M}``, matching upstream's
+#: `` ?[^\s\p{L}\p{M}\p{N}]+``: without that exclusion a combining mark or
+#: variation selector (``\ufe0f``) that follows punctuation was absorbed into
+#: the punctuation piece instead of standing alone, e.g. ZWJ + U+2764 + VS16
+#: counted 3 instead of the addon's 4.
+_PAT_QWEN3: Final = r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}{1,3}+| ?[^\s\p{L}\p{M}\p{N}]++[\r\n]*+|\s++$|\s*[\r\n]|\s+(?!\S)|\s"
 #: ponytail: DeepSeekV3's recovered splitter is not bit-exact. The residual is
 #: confined to a hand-written Rust whitespace-grouping rule that has no
 #: equivalent in any published tokenizer.json Split pattern: on 6202 realistic
