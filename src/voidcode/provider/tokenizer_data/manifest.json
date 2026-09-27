@@ -9,7 +9,7 @@
   },
   "DeepSeekV3": {
     "container": "UTOK1: magic + u32 LE count + N x (ULEB128 length + raw token bytes); rank == index",
-    "license": "undetermined - third-party vendor vocabulary",
+    "license": "vendor vocabulary, redistributed with the project owner's acceptance (see NOTICE)",
     "raw_bytes": 963606,
     "shipped_bytes": 486173,
     "source": "oh-my-pi native addon (UTOK1 blob)",
@@ -17,7 +17,7 @@
   },
   "Glm5": {
     "container": "UTOK1: magic + u32 LE count + N x (ULEB128 length + raw token bytes); rank == index",
-    "license": "undetermined - third-party vendor vocabulary",
+    "license": "vendor vocabulary, redistributed with the project owner's acceptance (see NOTICE)",
     "raw_bytes": 1183151,
     "shipped_bytes": 571882,
     "source": "oh-my-pi native addon (UTOK1 blob)",
@@ -25,7 +25,7 @@
   },
   "KimiK2": {
     "container": "UTOK1: magic + u32 LE count + N x (ULEB128 length + raw token bytes); rank == index",
-    "license": "undetermined - third-party vendor vocabulary",
+    "license": "vendor vocabulary, redistributed with the project owner's acceptance (see NOTICE)",
     "raw_bytes": 1269581,
     "shipped_bytes": 640060,
     "source": "oh-my-pi native addon (UTOK1 blob)",
@@ -41,7 +41,7 @@
   },
   "Qwen3": {
     "container": "UTOK1: magic + u32 LE count + N x (ULEB128 length + raw token bytes); rank == index",
-    "license": "undetermined - third-party vendor vocabulary",
+    "license": "vendor vocabulary, redistributed with the project owner's acceptance (see NOTICE)",
     "raw_bytes": 2088383,
     "shipped_bytes": 956650,
     "source": "oh-my-pi native addon (UTOK1 blob)",

@@ -1,0 +1,24 @@
+NOTICE
+======
+
+Third-party data redistributed in this distribution:
+the tokenizer vocabularies under `src/voidcode/provider/tokenizer_data/`.
+
+Two provenance cases (`manifest.json` records `source`/`license` per file):
+
+1. `Cl100kBase`, `O200kBase`
+   Source: tiktoken's published `cl100k_base` / `o200k_base` vocabularies,
+   included byte-identical, rank for rank. Licence: MIT (upstream OpenAI).
+
+2. `Glm5`, `Qwen3`, `KimiK2`, `DeepSeekV3`
+   Source: extracted from the oh-my-pi native addon (UTOK1 blobs) by
+   `scripts/extract_tokenizer_data.py`. These are the vendor vocabularies for
+   GLM-5, Qwen3, Kimi K2 and DeepSeek-V3; their own licences are not restated
+   here and are not claimed as MIT.
+
+The vendor vocabularies in case 2 are redistributed by the project owner's
+decision, because exact token counting for those models is a priority for this
+project. They are shipped as-is, with no licence granted over them beyond what
+their origin already permits.
+
+MIT covers this project's own code; see `LICENSE`.
