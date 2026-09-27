@@ -16,9 +16,21 @@ Two provenance cases (`manifest.json` records `source`/`license` per file):
    GLM-5, Qwen3, Kimi K2 and DeepSeek-V3; their own licences are not restated
    here and are not claimed as MIT.
 
+3. `ClaudeV3`, `ClaudeV47` (and `ClaudeV5`/`ClaudeV5Sonnet`, which reuse the
+   v4.7 table)
+   Source: the `CTOK\x02` containers from the oh-my-pi native addon, written by
+   oh-my-pi from the vocabulary measured by the `ctok` project
+   (<https://github.com/sanderland/ctok>), pinned at upstream revision
+   `df3b59b` (v1.0.0). Licence: **MIT** (Sander Land, ctok); oh-my-pi itself is
+   MIT (Can Boluk). These are the clearest-provenance tables in this set: the
+   measured vocabulary, its algorithm and the container all carry an MIT grant.
+
 The vendor vocabularies in case 2 are redistributed by the project owner's
 decision, because exact token counting for those models is a priority for this
 project. They are shipped as-is, with no licence granted over them beyond what
 their origin already permits.
+
+Case 3's `ctok` vocabulary is redistributed under its own MIT licence; the
+copyright notice above is the attribution that licence requires.
 
 MIT covers this project's own code; see `LICENSE`.

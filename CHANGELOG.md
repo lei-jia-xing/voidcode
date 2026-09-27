@@ -12,7 +12,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **provider:** count tokens with oh-my-pi's real tokenizers (O200kBase, Cl100kBase, Glm5, KimiK2, Qwen3, DeepSeekV3), selected per model from the catalog's new `tokenizer` field; models without one keep the `(utf8_bytes + 3) >> 2` fallback, and the four Claude encodings stay on it because their vocabulary container is not portable. Vocabularies ship bz2-compressed (3.8 MB) and load lazily; construction is fully offline.
+- **provider:** count tokens with oh-my-pi's real tokenizers (O200kBase, Cl100kBase, Glm5, KimiK2, Qwen3, DeepSeekV3), selected per model from the catalog's new `tokenizer` field; models without one keep the `(utf8_bytes + 3) >> 2` fallback. Vocabularies ship bz2-compressed (3.8 MB) and load lazily; construction is fully offline.
+
+- **provider:** count the four Claude encodings (`claude-v3`/`claude-v47`/`claude-v5`/`claude-v5-sonnet`, 64 catalog models) exactly, closing the last gap in the tokenizer ladder. Their `CTOK\x02` container is now parsed (467-entry byte-prefix OOV table plus a front-coded tiling vocabulary) and run through `sanderland/ctok`'s pipeline (MIT, pin `df3b59b`) — the same reconstruction oh-my-pi ports: NFC, quote folding, a marked stream whose single-space seam is `⟨eow⟩⟨bow⟩`, min-cost tiling, then the family's message frame. Verified at **zero mismatches** against oh-my-pi's native `countTokens` on 6000 real source chunks, 109 adversarial strings and a 241 KB mixed English/Chinese/Japanese/code document, for all four encodings. The two vocabularies add 99 KB bz2 to the package (3.90 MB total) and load lazily like the rest.
 
 - **runtime:** add keep-alive subagent contract, storage, and steer surface
 

@@ -31,7 +31,15 @@ from typing import Final, Literal
 
 import tiktoken
 
+from .claude_tokenizer import count_tokens as _claude_count_tokens
+from .claude_tokenizer import encodings as _claude_encodings
+
 _DATA_PACKAGE: Final = "voidcode.provider.tokenizer_data"
+
+#: Claude encodings, served by the vendored ctok engine instead of a tiktoken
+#: vocabulary. Held separately because that engine owns normalization and
+#: splitting, so the table's own splitter/normalization columns stay empty.
+_CLAUDE: Final[frozenset[str]] = frozenset(_claude_encodings())
 
 #: Pretokenizer patterns, recovered behaviourally from omp's hand-written Rust
 #: splitter. ``CL100K``/``O200K`` are tiktoken's own published patterns and were
@@ -69,15 +77,24 @@ _PAT_QWEN3: Final = r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N
 _PAT_DEEPSEEK: Final = r"[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|[^\S\r\n]*\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*+|\s++$|\s*[\r\n]|\s+(?!\S)|\s"
 
 #: Canonical encoding name -> (vocabulary file, splitter, unicode normalization).
-#: Canonical names are omp's ``Encoding`` enum members.
+#: Canonical names are omp's ``Encoding`` enum members. ``None`` as the
+#: vocabulary file means the encoding is served by the Claude engine rather than
+#: a single-vocabulary tiktoken build; its splitter and normalization are
+#: ``None`` because that engine owns the whole pipeline.
 _NormalizationForm = Literal["NFC", "NFD", "NFKC", "NFKD"]
-_ENCODINGS: Final[dict[str, tuple[str, str, _NormalizationForm | None]]] = {
+_ENCODINGS: Final[dict[str, tuple[str | None, str | None, _NormalizationForm | None]]] = {
     "O200kBase": ("O200kBase.utok1.bz2", _PAT_O200K, None),
     "Cl100kBase": ("Cl100kBase.utok1.bz2", _PAT_CL100K, None),
     "Glm5": ("Glm5.utok1.bz2", _PAT_CL100K, None),
     "Qwen3": ("Qwen3.utok1.bz2", _PAT_QWEN3, "NFC"),
     "KimiK2": ("KimiK2.utok1.bz2", _PAT_O200K_NO_SLASH, None),
     "DeepSeekV3": ("DeepSeekV3.utok1.bz2", _PAT_DEEPSEEK, None),
+    # The Claude encodings are not a pretokenizer over one vocabulary: they run
+    # ctok's normalize -> mark -> min-cost-tile pipeline over a CTOK container.
+    "ClaudeV3": (None, None, None),
+    "ClaudeV47": (None, None, None),
+    "ClaudeV5": (None, None, None),
+    "ClaudeV5Sonnet": (None, None, None),
 }
 
 #: Fold a catalog tokenizer value to the canonical key above. omp's per-model
@@ -129,6 +146,9 @@ def _encoding_for(name: str) -> tiktoken.Encoding:
     data over HTTP on a cold cache.
     """
     filename, pattern, _ = _ENCODINGS[name]
+    # Claude encodings carry no tiktoken vocabulary; ``count_tokens`` routes
+    # them to the Claude engine before reaching here.
+    assert filename is not None and pattern is not None, f"{name} has no tiktoken vocabulary"
     tokens = _load_utok1(bz2.decompress(files(_DATA_PACKAGE).joinpath(filename).read_bytes()))
     return tiktoken.Encoding(
         name=name,
@@ -142,17 +162,19 @@ def count_tokens(text: str, tokenizer: str | None = None) -> int:
     """Tokens ``text`` costs under ``tokenizer``, or omp's byte guess without one.
 
     ``tokenizer`` is the catalog value: an omp encoding name, in either the enum
-    spelling (``DeepSeekV3``) or the routing-table spelling (``deepseek-v3``). An
-    unknown or absent name — including the four Claude encodings, whose
-    vocabulary container is not portable — falls back to ``(utf8_bytes + 3) >> 2``,
-    the same number omp uses for a model with no tokenizer.
+    spelling (``DeepSeekV3``, ``ClaudeV47``) or the routing-table spelling
+    (``deepseek-v3``, ``claude-v47``). An unknown or absent name falls back to
+    ``(utf8_bytes + 3) >> 2``, the same number omp uses for a model with no
+    tokenizer.
     """
     if not text:
         return 0
     name = _canonical(tokenizer) if tokenizer else None
     if name is None:
         return (len(text.encode("utf-8")) + 3) >> 2
-    normalization = _ENCODINGS[name][2]
+    if name in _CLAUDE:
+        return _claude_count_tokens(text, name)
+    filename, _, normalization = _ENCODINGS[name]
     if normalization is not None:
         text = unicodedata.normalize(normalization, text)
     return len(_encoding_for(name).encode_ordinary(text))

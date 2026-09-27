@@ -28,8 +28,8 @@ def test_count_payload_tokens_without_tokenizer_uses_the_byte_estimate() -> None
     """A model with no known tokenizer keeps omp's ``(bytes + 3) >> 2``."""
     assert count_tokens("") == 0
     assert count_tokens("hello world", tokenizer=None) == 3
-    # An unshippable name (the Claude family) falls back rather than raising.
-    assert count_tokens("hello world", tokenizer="claude-v3") == 3
+    # A name outside the catalog falls back rather than raising.
+    assert count_tokens("hello world", tokenizer="no-such-encoding") == 3
 
 
 def test_count_payload_tokens_known_encoding_is_not_the_byte_estimate() -> None:
@@ -155,3 +155,31 @@ def test_tagged_model_reaches_the_decision_through_the_real_entry_point() -> Non
     # so the two decisions cannot coincide unless the tokenizer vanished.
     assert tagged != untagged
     assert tagged < untagged * 0.8
+
+
+def test_claude_encodings_count_for_real_not_the_byte_fallback() -> None:
+    """The four Claude encodings must reach their own engine, never bytes/4.
+
+    ``claude-v3`` is where the two rulers diverge most on this payload: the
+    engine counts CJK runs one token per three-character piece (49 here), while
+    the byte estimate says 36. A fallback would land on 36, so this fails if the
+    CTOK container ever stops loading or the seam stops routing to it.
+
+    The expected numbers were read off oh-my-pi's native ``countTokens`` and are
+    reproduced by the shipped vocabulary, so they pin the count, not just its
+    presence.
+    """
+    cjk = "\u4f60\u597d\u4e16\u754c" * 12
+    assert count_tokens(cjk, tokenizer="claude-v3") == 49
+    assert count_tokens(cjk, tokenizer="claude-v47") == 49
+    assert count_tokens(cjk, tokenizer="claude-v5") == 48
+    assert count_tokens(cjk, tokenizer="claude-v5-sonnet") == 48
+    # The byte estimate these must not collapse onto.
+    assert count_tokens(cjk, tokenizer=None) == 36
+
+    # Spacing is the other Claude-specific behaviour: the v3/v4.7 frame ends in
+    # a ⟨bow⟩ that absorbs one leading space, so a leading space is free, while
+    # two cost one.
+    assert count_tokens("the", tokenizer="claude-v3") == 1
+    assert count_tokens(" the", tokenizer="claude-v3") == 1
+    assert count_tokens("  the", tokenizer="claude-v3") == 2

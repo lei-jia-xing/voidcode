@@ -92,6 +92,42 @@ _PROVENANCE: dict[str, dict[str, str]] = {
     },
 }
 
+#: The Claude containers. Their contents are Sander Land's measured ctok
+#: vocabulary (MIT), vendored by oh-my-pi and shipped here for exact counts, so
+#: this is the cleanest provenance of any table in this directory: MIT upstream,
+#: with oh-my-pi's own MIT licence on the container spelling.
+_CTOK_PROVENANCE: dict[str, dict[str, str]] = {
+    "ClaudeV3": {
+        "source": "CTOK\\x02 blob from the oh-my-pi addon; vocabulary is sanderland/ctok v1.0.0 (MIT, rev df3b59b)",
+        "license": "MIT (sanderland/ctok, https://github.com/sanderland/ctok, via oh-my-pi)",
+    },
+    "ClaudeV47": {
+        "source": "CTOK\\x02 blob from the oh-my-pi addon; vocabulary is sanderland/ctok v1.0.0 (MIT, rev df3b59b)",
+        "license": "MIT (sanderland/ctok, https://github.com/sanderland/ctok, via oh-my-pi)",
+    },
+}
+
+#: CTOK blob fingerprint (vocabulary entry count, from the header's u32 at
+#: 0x0A) -> the encodings it serves. ``ClaudeV5``/``ClaudeV5Sonnet`` reuse the
+#: v4.7 vocabulary with a different message frame, so they ship no extra data.
+_CTOK_ENCODINGS: dict[str, tuple[str, ...]] = {
+    "ClaudeV3": ("ClaudeV3",),
+    "ClaudeV47": ("ClaudeV47", "ClaudeV5", "ClaudeV5Sonnet"),
+}
+
+_CTOK_MAGIC = b"CTOK\x02"
+
+#: CTOK generation -> shipped file name; ``claude_tokenizer`` reads these names.
+_CTOK_FILE: dict[str, str] = {"ClaudeV3": "ctok_v3.bin.bz2", "ClaudeV47": "ctok_v4_7.bin.bz2"}
+
+#: CTOK layout, in the manifest's terms. Verified to consume the blob exactly.
+_CTOK_CONTAINER = (
+    "CTOK\\x02: magic(5) + u8 + u8x2 + u16 LE byte-prefix count + u32 LE vocabulary count; "
+    "then <count2> x [u8 n][n bytes] byte-prefix table (the OOV byte floor); then <count> x "
+    "[u8 shared][u8 suffix_len][suffix] front-coded, bytewise-sorted tiling vocabulary "
+    "(markers spelled 01/02/04/05)"
+)
+
 
 def _read_varint(buf: bytes, i: int) -> tuple[int, int]:
     shift = 0
@@ -142,6 +178,52 @@ def _iter_utok1_blobs(addon: Path):
             yield out
 
 
+def _iter_ctok_blobs(addon: Path):
+    """Yield every decompressed ``CTOK\\x02`` frame embedded in the addon."""
+    data = addon.read_bytes()
+    import zstandard  # dev-only dependency, provided by the ``dev`` extra
+
+    for match in re.finditer(re.escape(_ZSTD_MAGIC), data):
+        offset = match.start()
+        frame_header = data[offset + 4]
+        if frame_header & 0x18:  # single-segment / checksum flags: no frame content size
+            continue
+        fcs_len = 1 if (frame_header >> 6) == 0 else (2 if (frame_header >> 6) == 1 else 4)
+        declared = int.from_bytes(data[offset + 5 : offset + 5 + fcs_len], "little")
+        try:
+            out = zstandard.ZstdDecompressor().decompress(data[offset : offset + declared + 64], max_output_size=max(declared, 1))
+        except zstandard.ZstdError:
+            continue
+        if out.startswith(_CTOK_MAGIC):
+            yield out
+
+
+def extract_claude_vocabs(addon: Path, manifest: dict[str, object]) -> None:
+    """Write one bz2'd CTOK container per Claude encoding into ``manifest``.
+
+    The container is shipped verbatim: :mod:`voidcode.provider.claude_tokenizer`
+    decodes it at load time, the same bytes the engine parses.
+    """
+    for blob in _iter_ctok_blobs(addon):
+        size = len(blob)
+        if size not in (202428, 57304):  # the two known generations
+            print(f"  skipped CTOK blob of {size} bytes (unknown size)")
+            continue
+        count = int.from_bytes(blob[0x0A:0x0E], "little")
+        name = "ClaudeV3" if size == 202428 else "ClaudeV47"
+        payload = bz2.compress(blob, compresslevel=9)
+        (DATA_DIR / f"{_CTOK_FILE[name]}").write_bytes(payload)
+        for encoding in _CTOK_ENCODINGS[name]:
+            manifest[encoding] = {
+                "tokens": count,
+                "raw_bytes": size,
+                "shipped_bytes": len(payload),
+                "container": _CTOK_CONTAINER,
+                **_CTOK_PROVENANCE[name],
+            }
+        print(f"  {name:<12} tokens={count:>7} raw={size:>9} bz2={len(payload):>9}")
+
+
 def _default_addon() -> Path:
     candidates = sorted(Path.home().glob(".omp/natives/*/pi_natives.linux-x64-modern.node"))
     if not candidates:
@@ -181,6 +263,7 @@ def extract_vocabs(addon: Path) -> dict[str, int]:
     missing = set(_ENC_BY_TOKEN_COUNT.values()) - set(written)
     if missing:
         raise SystemExit(f"addon did not yield these encodings: {sorted(missing)}")
+    extract_claude_vocabs(addon, manifest)
     (DATA_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return written
 

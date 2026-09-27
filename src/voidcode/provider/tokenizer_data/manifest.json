@@ -7,6 +7,38 @@
     "source": "tiktoken cl100k_base (byte-identical)",
     "tokens": 100256
   },
+  "ClaudeV3": {
+    "container": "CTOK\\x02: magic(5) + u8 + u8x2 + u16 LE byte-prefix count + u32 LE vocabulary count; then <count2> x [u8 n][n bytes] byte-prefix table (the OOV byte floor); then <count> x [u8 shared][u8 suffix_len][suffix] front-coded, bytewise-sorted tiling vocabulary (markers spelled 01/02/04/05)",
+    "license": "MIT (sanderland/ctok, https://github.com/sanderland/ctok, via oh-my-pi)",
+    "raw_bytes": 202428,
+    "shipped_bytes": 75045,
+    "source": "CTOK\\x02 blob from the oh-my-pi addon; vocabulary is sanderland/ctok v1.0.0 (MIT, rev df3b59b)",
+    "tokens": 48185
+  },
+  "ClaudeV47": {
+    "container": "CTOK\\x02: magic(5) + u8 + u8x2 + u16 LE byte-prefix count + u32 LE vocabulary count; then <count2> x [u8 n][n bytes] byte-prefix table (the OOV byte floor); then <count> x [u8 shared][u8 suffix_len][suffix] front-coded, bytewise-sorted tiling vocabulary (markers spelled 01/02/04/05)",
+    "license": "MIT (sanderland/ctok, https://github.com/sanderland/ctok, via oh-my-pi)",
+    "raw_bytes": 57304,
+    "shipped_bytes": 24016,
+    "source": "CTOK\\x02 blob from the oh-my-pi addon; vocabulary is sanderland/ctok v1.0.0 (MIT, rev df3b59b)",
+    "tokens": 14777
+  },
+  "ClaudeV5": {
+    "container": "CTOK\\x02: magic(5) + u8 + u8x2 + u16 LE byte-prefix count + u32 LE vocabulary count; then <count2> x [u8 n][n bytes] byte-prefix table (the OOV byte floor); then <count> x [u8 shared][u8 suffix_len][suffix] front-coded, bytewise-sorted tiling vocabulary (markers spelled 01/02/04/05)",
+    "license": "MIT (sanderland/ctok, https://github.com/sanderland/ctok, via oh-my-pi)",
+    "raw_bytes": 57304,
+    "shipped_bytes": 24016,
+    "source": "CTOK\\x02 blob from the oh-my-pi addon; vocabulary is sanderland/ctok v1.0.0 (MIT, rev df3b59b)",
+    "tokens": 14777
+  },
+  "ClaudeV5Sonnet": {
+    "container": "CTOK\\x02: magic(5) + u8 + u8x2 + u16 LE byte-prefix count + u32 LE vocabulary count; then <count2> x [u8 n][n bytes] byte-prefix table (the OOV byte floor); then <count> x [u8 shared][u8 suffix_len][suffix] front-coded, bytewise-sorted tiling vocabulary (markers spelled 01/02/04/05)",
+    "license": "MIT (sanderland/ctok, https://github.com/sanderland/ctok, via oh-my-pi)",
+    "raw_bytes": 57304,
+    "shipped_bytes": 24016,
+    "source": "CTOK\\x02 blob from the oh-my-pi addon; vocabulary is sanderland/ctok v1.0.0 (MIT, rev df3b59b)",
+    "tokens": 14777
+  },
   "DeepSeekV3": {
     "container": "UTOK1: magic + u32 LE count + N x (ULEB128 length + raw token bytes); rank == index",
     "license": "vendor vocabulary, redistributed with the project owner's acceptance (see NOTICE)",
