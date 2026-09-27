@@ -159,13 +159,43 @@ def test_missing_or_zero_usage_falls_back_to_a_pure_estimate() -> None:
 def test_anchor_reader_sums_the_reported_buckets_only_when_present() -> None:
     assert provider_usage_anchor_tokens({}) is None
     assert provider_usage_anchor_tokens({"provider_usage": {"latest": {"input_tokens": 0, "output_tokens": 0}}}) is None
+    # ``cache_read_tokens`` is a component of ``input_tokens``, so it must NOT be
+    # added again; only ``cache_write_tokens`` joins the inclusive input.
     assert (
         provider_usage_anchor_tokens(
             {"provider_usage": {"latest": {"input_tokens": 1_000, "cache_read_tokens": 9_000, "cache_write_tokens": 500, "output_tokens": 200}}}
         )
-        == 10_700
+        == 1_700
     )
     assert provider_usage_anchor_tokens({"provider_usage": {"latest": {"input_tokens": 5, "output_tokens": None}}}) == 5
+
+
+def test_the_anchor_total_matches_across_wires_that_split_the_prompt_differently() -> None:
+    """The same real prompt must yield the same anchor whichever wire reported it.
+
+    Anthropic reports uncached-only input and a separate cache-read bucket, OpenAI
+    reports the inclusive ``prompt_tokens`` with cache reads as a detail: both are
+    normalized to one stored meaning, so a payload with 9_000 cached tokens must
+    not inflate the total by adding the reads a second time.
+    """
+    from voidcode.provider.anthropic_native import _usage as anthropic_usage  # noqa: PLC0415
+    from voidcode.provider.openai_native import _usage as openai_usage  # noqa: PLC0415
+    from voidcode.runtime.execution.provider_execution_metadata import session_with_provider_usage_metadata  # noqa: PLC0415
+    from voidcode.runtime.session import SessionState  # noqa: PLC0415
+
+    wire_usages = (
+        anthropic_usage({"usage": {"input_tokens": 1_000, "cache_read_input_tokens": 9_000, "output_tokens": 200}}),
+        openai_usage({"usage": {"prompt_tokens": 10_000, "completion_tokens": 200, "prompt_tokens_details": {"cached_tokens": 9_000}}}),
+    )
+
+    totals = []
+    for wire_usage in wire_usages:
+        assert wire_usage is not None
+        stored = session_with_provider_usage_metadata(SessionState(session="s", status="running", turn=1, metadata={}), wire_usage)
+        totals.append(provider_usage_anchor_tokens(stored.metadata))
+
+    # 10_000 prompt tokens + 200 output, cache reads already inside the prompt.
+    assert totals == [10_200, 10_200]
 
 
 # --- the anchor really drives the decision ------------------------------------------

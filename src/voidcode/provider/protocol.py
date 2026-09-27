@@ -165,6 +165,12 @@ class ProviderAssembledContext(Protocol):
 class ProviderTokenUsage:
     # ``None`` means the provider did not report that metric; zero is an
     # observed zero. Keeping this distinction is required for cache telemetry.
+    #
+    # ``input_tokens`` is the *inclusive* prompt total on every wire: the cache
+    # reads are already inside it (``cache_read_tokens`` is a component, as are
+    # the ``uncached_input_tokens``). Adding ``cache_read_tokens`` back on top
+    # double-counts cache hits; the additive prompt bucket is
+    # ``cache_write_tokens``, which only Anthropic reports as a separate field.
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_read_tokens: int | None = None

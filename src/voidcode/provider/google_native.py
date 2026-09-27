@@ -306,9 +306,10 @@ class GoogleGenAIProvider:
         cache_read = getattr(usage, "cached_content_token_count", None)
         if not any(isinstance(value, int) for value in (input_tokens, output_tokens, cache_read)):
             return None
-        # ``prompt_token_count`` includes the cached part, so the uncached bucket
-        # is the remainder: without it every Google turn would price its input at
-        # zero (the provider reports no separate uncached count).
+        # ``prompt_token_count`` is the inclusive prompt total (``cached_content_token_count``
+        # is a component of it), so it is stored as-is and the uncached bucket is the
+        # remainder: without it every Google turn would price its input at zero (the
+        # provider reports no separate uncached count).
         uncached = None
         if isinstance(input_tokens, int):
             uncached = max(0, input_tokens - (cache_read if isinstance(cache_read, int) else 0))

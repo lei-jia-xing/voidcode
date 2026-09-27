@@ -1,5 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { providerCostUsd } from "./providerUsage";
+import {
+  providerContextTokens,
+  providerCostUsd,
+  providerTotalTokens,
+} from "./providerUsage";
+
+describe("provider context tokens", () => {
+  it("does not double-count cache reads that are already inside input_tokens", () => {
+    // 10_000 prompt tokens (9_000 of them cache reads, on every wire a component
+    // of input) + 500 cache writes + 200 output -> 10_700, not 19_700.
+    expect(
+      providerContextTokens({
+        provider_usage: {
+          latest: {
+            input_tokens: 10_000,
+            cache_read_tokens: 9_000,
+            cache_write_tokens: 500,
+            output_tokens: 200,
+          },
+        },
+      }),
+    ).toBe(10_700);
+    expect(providerContextTokens(undefined)).toBeNull();
+  });
+
+  it("applies the same inclusive input to the cumulative total", () => {
+    expect(
+      providerTotalTokens({
+        provider_usage: {
+          cumulative: {
+            input_tokens: 10_000,
+            cache_read_tokens: 9_000,
+            cache_write_tokens: 500,
+            output_tokens: 200,
+          },
+        },
+      }),
+    ).toBe(10_700);
+  });
+});
 
 describe("provider cost", () => {
   it("reads the session total, preferring the cumulative figure", () => {

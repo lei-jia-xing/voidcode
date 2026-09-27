@@ -187,6 +187,10 @@ def _usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
     cache_write = usage_int(raw.get("cache_creation_input_tokens"))
     if uncached_input is None and output_tokens is None and cache_read is None and cache_write is None:
         return None
+    # Anthropic's own ``input_tokens`` is uncached-only, so it is normalized here to
+    # the inclusive prompt total every other wire already reports
+    # (``ProviderTokenUsage.input_tokens``); ``cache_creation_input_tokens`` stays a
+    # separate additive bucket.
     input_tokens = uncached_input + cache_read if uncached_input is not None and cache_read is not None else uncached_input
     return ProviderTokenUsage(
         input_tokens=input_tokens,

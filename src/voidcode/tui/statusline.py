@@ -215,6 +215,9 @@ class StatusSegmentData:
     cost_usd: float = 0.0
     context_percent: float | None = None
     context_window: int = 0
+    #: Canonical context tokens the model processed on the last request
+    #: (``input + cache_write + output`` over ``provider_usage.latest``, cache reads
+    #: already inside ``input``). Supplied by the runtime, never re-derived here.
     context_tokens: int = 0
 
 

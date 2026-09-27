@@ -341,6 +341,11 @@ def project_tool_effectiveness(
         cumulative = provider_usage.get("cumulative")
         if not isinstance(cumulative, Mapping):
             continue
+        # Each bucket is accumulated on its own; the report exposes them as
+        # components, never as a sum. ``input_tokens`` is the inclusive prompt
+        # total (``cache_read_tokens`` and ``uncached_input_tokens`` are parts of
+        # it), so a caller wanting prompt tokens must not add ``cache_read_tokens``
+        # back on top; ``cache_write_tokens`` is the only additive prompt bucket.
         for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "uncached_input_tokens"):
             value = cumulative.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:

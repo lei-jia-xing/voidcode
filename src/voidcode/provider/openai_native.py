@@ -268,6 +268,9 @@ def _usage(payload: Mapping[str, object]) -> ProviderTokenUsage | None:
     raw = payload.get("usage")
     if not isinstance(raw, Mapping):
         return None
+    # ``prompt_tokens`` is the inclusive prompt total (``cached_tokens`` is a
+    # component of it), so it is stored as-is; the uncached remainder is derived
+    # for pricing/telemetry only.
     input_tokens = usage_int(raw.get("prompt_tokens"))
     output_tokens = usage_int(raw.get("completion_tokens"))
     details = raw.get("prompt_tokens_details")

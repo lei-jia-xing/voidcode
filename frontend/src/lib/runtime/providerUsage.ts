@@ -24,12 +24,12 @@ function numericValue(
 }
 
 /**
- * Used tokens for the latest turn.
- *
- * Backend semantics: `input_tokens` is the total prompt input and already
- * includes `cache_read_tokens` (cached hits are a component of the prompt).
- * Only `cache_write_tokens` (prompt cache writes) is additive on top of the
- * input, so summing `cache_read_tokens` again would double-count cache hits.
+ * Used tokens for the latest turn — the canonical context-token total:
+ * `input_tokens + cache_write_tokens + output_tokens`. Cache reads are already
+ * part of `input_tokens` on every wire, so summing `cache_read_tokens` again
+ * would double-count cache hits; this turn's output joins because it becomes
+ * history on the next request. `provider_usage_anchor_tokens` (backend) uses the
+ * same expression for the compaction anchor.
  */
 export function providerContextTokens(
   metadata: Record<string, unknown> | undefined,
@@ -41,7 +41,8 @@ export function providerContextTokens(
   }
   const total =
     numericValue(latest, "input_tokens") +
-    numericValue(latest, "cache_write_tokens");
+    numericValue(latest, "cache_write_tokens") +
+    numericValue(latest, "output_tokens");
   return total > 0 ? total : null;
 }
 

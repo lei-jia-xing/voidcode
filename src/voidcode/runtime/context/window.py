@@ -1694,12 +1694,14 @@ def estimate_tokens_for_bytes(
 def provider_usage_anchor_tokens(session_metadata: Mapping[str, object]) -> int | None:
     """Last provider-reported context size, usable as a measured anchor.
 
-    Upstream semantics: ``input + cache_read + cache_write + output`` -- the
-    reported input (cache reads included) plus this turn's output, because the
-    output becomes history on the next request. voidcode's usage buckets *are*
-    the provider's own numbers (there is no separate orchestration bucket to
-    subtract), so nothing is deducted here. A missing or all-zero report has no
-    anchor to offer and returns ``None``.
+    The canonical context-token total is ``input + cache_write + output``:
+    ``input_tokens`` is the *inclusive* prompt total every wire reports (cache
+    reads are a component, never added again), ``cache_write_tokens`` is the
+    separate prompt-cache-write bucket only Anthropic reports, and this turn's
+    output becomes history on the next request. ``cache_read_tokens`` and
+    ``uncached_input_tokens`` are components of ``input_tokens`` and must not be
+    summed. A missing or all-zero report has no anchor to offer and returns
+    ``None``.
     """
     raw_usage = session_metadata.get("provider_usage")
     if not isinstance(raw_usage, dict):
@@ -1709,7 +1711,7 @@ def provider_usage_anchor_tokens(session_metadata: Mapping[str, object]) -> int 
         return None
     total = 0
     reported = False
-    for key in ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens"):
+    for key in ("input_tokens", "cache_write_tokens", "output_tokens"):
         value = raw_latest.get(key)
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
             total += value
