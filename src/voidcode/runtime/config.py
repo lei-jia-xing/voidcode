@@ -37,6 +37,7 @@ from .config_models import (
     AGENT_PRESET_ID_PATTERN,
     AGENT_RUNTIME_INTERNAL_CONFIG_KEY,
     DEFAULT_HOOK_TIMEOUT_SECONDS,
+    DEFAULT_PROVIDER_CONTEXT_OVERSIZED_FEEDBACK_CHARS,
     ENV_SETTINGS_LOCK,
     HOOK_COMMAND_FIELDS,
     TOP_LEVEL_ENV_VARS,
@@ -181,7 +182,7 @@ class RuntimeContextWindowConfig:
     default_tool_result_chars: int | None = 6_000
     per_tool_result_chars: Mapping[str, int] = field(default_factory=_empty_context_window_tool_limits)
     provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
-    provider_context_oversized_feedback_chars: int = 8_000
+    provider_context_oversized_feedback_chars: int = DEFAULT_PROVIDER_CONTEXT_OVERSIZED_FEEDBACK_CHARS
     context_transform_failure_policy: RuntimeContextTransformFailureMode = "warn"
     compaction: RuntimeCompactionConfig = field(default_factory=RuntimeCompactionConfig)
 
@@ -815,7 +816,9 @@ def _context_window_config_from_payload(payload: ContextWindowPayload | None) ->
         default_tool_result_chars=payload.default_tool_result_chars,
         per_tool_result_chars=dict(payload.per_tool_result_chars or {}),
         provider_context_diagnostics=payload.provider_context_diagnostics or "warn",
-        provider_context_oversized_feedback_chars=payload.provider_context_oversized_feedback_chars or 8_000,
+        provider_context_oversized_feedback_chars=(
+            payload.provider_context_oversized_feedback_chars or DEFAULT_PROVIDER_CONTEXT_OVERSIZED_FEEDBACK_CHARS
+        ),
         context_transform_failure_policy=payload.context_transform_failure_policy or "warn",
         compaction=_compaction_config_from_payload(payload.compaction),
     )

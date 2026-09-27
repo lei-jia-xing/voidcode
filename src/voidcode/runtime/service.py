@@ -38,7 +38,6 @@ from ..provider.auth import (
 from ..provider.model_catalog import ToolFeedbackMode
 from ..provider.models import (
     ResolvedProviderChain,
-    ResolvedProviderConfig,
     ResolvedProviderModel,
 )
 from ..provider.naming import split_provider_model_reference
@@ -197,7 +196,6 @@ from .events import (
 from .execution import chunk_builders
 from .execution.graph_adapter import graph_request_for_session, graph_session_snapshot
 from .execution.provider_execution_metadata import (
-    provider_attempt_from_metadata,
     run_id_from_session_metadata,
 )
 from .execution.seams import (
@@ -616,7 +614,6 @@ class VoidCodeRuntime(RuntimeSurface):
             default_context_window_policy=self._default_context_window_policy,
             config_with_request_agent_override=self._config_with_request_agent_override,
             context_transform_registry_for_agent=self._context_transform_registry_for_agent,
-            context_window_policy_for_provider_attempt=self._context_window_policy_for_provider_attempt,
             workspace=self._workspace,
             global_skills_config=self._config.skills,
             skill_registry=self._skill_registry if self._skill_registry_is_injected else None,
@@ -2771,19 +2768,6 @@ class VoidCodeRuntime(RuntimeSurface):
         """
         return self._inspection_coordinator.reasoning_effort_capability(config)
 
-    def _context_window_policy_for_provider_attempt(
-        self,
-        policy: ContextWindowPolicy,
-        *,
-        resolved_provider: ResolvedProviderConfig | None,
-        provider_attempt: int,
-    ) -> ContextWindowPolicy:
-        return self._inspection_coordinator._context_window_policy_for_provider_attempt(
-            policy,
-            resolved_provider=resolved_provider,
-            provider_attempt=provider_attempt,
-        )
-
     def list_provider_summaries(self) -> tuple[ProviderSummary, ...]:
         return self._inspection_coordinator.list_provider_summaries()
 
@@ -3889,13 +3873,7 @@ class VoidCodeRuntime(RuntimeSurface):
             essential_only=(effective_config.tools is not None and effective_config.tools.essential_only is True),
             allowlist_patterns=agent_required_tool_patterns(effective_config.agent),
         )
-        provider_attempt = provider_attempt_from_metadata(session_metadata)
         policy = context_window_policy_from_config(effective_config.context_window)
-        policy = self._context_window_policy_for_provider_attempt(
-            policy,
-            resolved_provider=effective_config.resolved_provider,
-            provider_attempt=provider_attempt,
-        )
         raw_loaded = session_metadata.get("loaded_skills", [])
         loaded_skills: tuple[dict[str, object], ...] = ()
         if isinstance(raw_loaded, list):

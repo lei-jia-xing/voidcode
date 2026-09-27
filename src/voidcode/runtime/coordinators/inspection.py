@@ -69,7 +69,7 @@ from ..config_materializer import (
     parse_persisted_runtime_config,
 )
 from ..context.provider import inspect_provider_context
-from ..context.window import ContextWindowPolicy, RuntimeAssembledContext
+from ..context.window import RuntimeAssembledContext
 from ..contracts import (
     AgentSummary,
     CapabilityStatusSnapshot,
@@ -1148,16 +1148,6 @@ class InspectionCoordinator:
             model_name=model_name,
             model_metadata=model_metadata,
         )
-
-    def _context_window_policy_for_provider_attempt(
-        self,
-        policy: ContextWindowPolicy,
-        *,
-        resolved_provider: ResolvedProviderConfig | None,
-        provider_attempt: int,
-    ) -> ContextWindowPolicy:
-        _ = resolved_provider, provider_attempt
-        return policy
 
     def list_provider_summaries(self) -> tuple[ProviderSummary, ...]:
         return self._provider_summary_projector.project_all(

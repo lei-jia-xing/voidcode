@@ -123,6 +123,10 @@ CONFIG_SCHEMA_VERSION = 1
 #: ``timeout_seconds`` default. The dataclass also accepts ``None`` there (an
 #: explicit "no timeout"), which is never the default.
 DEFAULT_HOOK_TIMEOUT_SECONDS: float = 30.0
+#: Default threshold (characters) above which a retained tool feedback is
+#: reported as oversized by provider-context diagnostics. Owned here because the
+#: payload model is the config surface every other module derives from.
+DEFAULT_PROVIDER_CONTEXT_OVERSIZED_FEEDBACK_CHARS: int = 8_000
 
 
 # ---------------------------------------------------------------------------
@@ -1071,7 +1075,7 @@ class ContextWindowPayload(_PayloadModel):
         ),
     )
     provider_context_oversized_feedback_chars: int | None = Field(
-        default=8_000,
+        default=DEFAULT_PROVIDER_CONTEXT_OVERSIZED_FEEDBACK_CHARS,
         ge=1,
         description="Character threshold for oversized retained tool feedback diagnostics.",
     )
@@ -1114,7 +1118,7 @@ class ContextWindowPayload(_PayloadModel):
     @classmethod
     def _validate_provider_context_oversized_feedback_chars(cls, value: object) -> int:
         if value is None:
-            return 8_000
+            return DEFAULT_PROVIDER_CONTEXT_OVERSIZED_FEEDBACK_CHARS
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             raise ValueError("runtime config field 'context_window.provider_context_oversized_feedback_chars' must be greater than or equal to 1")
         return value

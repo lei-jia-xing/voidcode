@@ -7,8 +7,7 @@ provider context-window preparation.
 Reads via constructor-injected collaborators plus a narrow ``RuntimeSurface``
 for run/finalize-owned composition (effective config, reasoning capability).
 Cross-bucket entry points that stay owned elsewhere (request agent override,
-context-transform registry scoping, provider-attempt policy projection
-owned by the inspection coordinator) arrive as explicit callbacks so this
+context-transform registry scoping) arrive as explicit callbacks so this
 module never pierces runtime privates and adds no new storage write paths.
 """
 
@@ -45,7 +44,6 @@ from ..contracts import (
     RuntimeRequest,
     RuntimeRequestError,
 )
-from ..execution.provider_execution_metadata import provider_attempt_from_metadata
 from ..lsp import LspManager, LspRequestResult
 from ..mcp import McpManager
 from ..provider_metadata import validate_reasoning_effort_capability
@@ -67,7 +65,6 @@ class StreamPrepCoordinator:
         default_context_window_policy: ContextWindowPolicy,
         config_with_request_agent_override: Callable[..., EffectiveRuntimeConfig],
         context_transform_registry_for_agent: Callable[..., RuntimeContextTransformRegistry],
-        context_window_policy_for_provider_attempt: Callable[..., ContextWindowPolicy],
         workspace: Path,
         global_skills_config: RuntimeSkillsConfig | None,
         skill_registry: SkillRegistry | None = None,
@@ -81,7 +78,6 @@ class StreamPrepCoordinator:
         self._default_context_window_policy = default_context_window_policy
         self._config_with_request_agent_override_fn = config_with_request_agent_override
         self._context_transform_registry_for_agent_fn = context_transform_registry_for_agent
-        self._context_window_policy_for_provider_attempt_fn = context_window_policy_for_provider_attempt
         self._workspace = workspace
         self._global_skills_config = global_skills_config
         self._skill_registry = skill_registry
@@ -135,14 +131,8 @@ class StreamPrepCoordinator:
         before_compact: BeforeCompactInput | None = None,
     ) -> RuntimeContextWindow:
         effective_config = self._surface.effective_runtime_config_from_metadata(session_metadata)
-        provider_attempt = provider_attempt_from_metadata(session_metadata)
         if policy is None:
             policy = context_window_policy_from_config(effective_config.context_window)
-        policy = self._context_window_policy_for_provider_attempt_fn(
-            policy,
-            resolved_provider=effective_config.resolved_provider,
-            provider_attempt=provider_attempt,
-        )
         return prepare_provider_context(
             prompt=prompt,
             tool_results=tool_results,

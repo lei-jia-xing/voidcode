@@ -251,7 +251,11 @@ Runtime hook surface 与其事件名称的内部对应关系由
 ### `runtime.context_compacted`
 - source: `runtime`
 - 当前 payload:
-  - `reason: str`，`token_budget_exceeded:usage_tokens_before=…:threshold_tokens=…:pruned_tool_results=…:usage_tokens_after=…`（另有 `no_prunable_tool_content` / `already_pruned_view` / `compaction_unsized` 三种边界 reason）
+  - `reason: str`，`token_budget_exceeded:usage_tokens_before=…:threshold_tokens=…:pruned_tool_results=…`（**不含** `usage_tokens_after`；裁剪后数字由 payload 的 `usage_tokens_after` 承载）。边界 reason 各带前缀与自己的 `key=value`：
+    - `compaction_unsized:usage_tokens=…:no_context_window`（catalog 未描述该 model，无法解析 window）
+    - `token_budget_exceeded:no_prunable_tool_content:usage_tokens=…:threshold_tokens=…:keep_recent_tool_tokens=…`（超阈值但没有可裁剪内容）
+    - `already_pruned_view:pruned_tool_results=…`（未超阈值，但视图已带占位文本；无占位时为 null）
+    - before-compact hook 取消时为该 hook 的 reason 原文（如 `hook cancelled compaction`），无前缀
   - `compacted: bool`，仅在本次调用**实际发生缩减**时为 true
   - `original_tool_result_count: int`、`retained_tool_result_count: int`（pairing 保留，因此两者相等）、`dropped_tool_result_count: int`（content 被占位文本替换的结果数）、`truncated_tool_result_count: int`
   - `usage_tokens_before: int | None`：判定数字 = `max(实测锚点, 本轮全量本地估算)`（inexact；对齐 omp `compactionContextTokens`）

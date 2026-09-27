@@ -22,6 +22,7 @@ from ...tools.output import (
     sanitize_tool_result_data,
     strip_redaction_sentinels_from_mapping,
 )
+from ..config_models import DEFAULT_PROVIDER_CONTEXT_OVERSIZED_FEEDBACK_CHARS
 from ..contracts import (
     RuntimeProviderContextDiagnostic,
     RuntimeProviderContextDiagnosticPolicyAction,
@@ -33,7 +34,6 @@ from ..contracts import (
 )
 from .window import ToolResultView
 
-_OVERSIZED_TOOL_FEEDBACK_CHARS = 8_000
 _PROVIDER_CONTEXT_POLICY_BLOCKING_CODES = frozenset(
     {
         "missing_tool_result",
@@ -53,7 +53,7 @@ def inspect_provider_context(
     execution_engine: str,
     available_tool_count: int,
     tool_feedback_mode: ToolFeedbackMode = "standard",
-    oversized_tool_feedback_chars: int = _OVERSIZED_TOOL_FEEDBACK_CHARS,
+    oversized_tool_feedback_chars: int = DEFAULT_PROVIDER_CONTEXT_OVERSIZED_FEEDBACK_CHARS,
     diagnostic_policy_mode: RuntimeProviderContextDiagnosticPolicyMode | None = None,
 ) -> RuntimeProviderContextSnapshot:
     segments = tuple(_segment_snapshot(index, segment) for index, segment in enumerate(assembled_context.segments))
