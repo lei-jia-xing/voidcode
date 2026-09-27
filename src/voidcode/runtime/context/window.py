@@ -4,11 +4,13 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
 from ...hook.percall import PerCallRewriteOutcome
+from ...provider.model_catalog import static_catalog_metadata
+from ...provider.tokenizer import count_tokens
 from ...tools.contracts import ToolDiagnostics, ToolResult, ToolResultStatus
 from ..todos import render_provider_todo_state
 from .percall import (
@@ -187,17 +189,6 @@ class ContextWindowPolicy:
                 raise ValueError("per_tool_result_chars tool names must be non-empty")
             if limit < 1:
                 raise ValueError("per_tool_result_chars limits must be >= 1")
-
-    def metadata_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "version": 1,
-            "compaction": asdict(self.compaction),
-        }
-        if self.default_tool_result_chars is not None:
-            payload["default_tool_result_chars"] = self.default_tool_result_chars
-        if self.per_tool_result_chars:
-            payload["per_tool_result_chars"] = dict(self.per_tool_result_chars)
-        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -1024,9 +1015,25 @@ def _result_data_bytes(result: ToolResult | ToolResultView) -> int:
     return len(encoded.encode("utf-8"))
 
 
+def _result_payload_text(result: ToolResult | ToolResultView) -> str:
+    """Provider-visible text of one tool result (content plus its JSON ``data``).
+
+    The text twin of :func:`_result_payload_bytes`: the counting paths need the
+    real characters to run a tokenizer, the pruning paths only need the size.
+    """
+    data = result.data
+    if not data:
+        return result.content or ""
+    try:
+        encoded = json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
+    except TypeError, ValueError:
+        return result.content or ""
+    return (result.content or "") + encoded
+
+
 def _result_payload_bytes(result: ToolResult | ToolResultView) -> int:
     """Provider-visible UTF-8 bytes of one tool result (content plus its data payload)."""
-    return len((result.content or "").encode("utf-8")) + _result_data_bytes(result)
+    return len(_result_payload_text(result).encode("utf-8"))
 
 
 def pruning_data_payload(result: ToolResult | ToolResultView, *, omitted_bytes: int) -> dict[str, object]:
@@ -1111,7 +1118,7 @@ def prune_tool_results_for_budget(
     ``min_savings_tokens`` nothing is pruned at all, so a marginal overage never
     rewrites the view.
     """
-    remaining = sum(estimate_tokens_for_bytes(_result_payload_bytes(result)) for result in results)
+    remaining = sum(count_payload_bytes(_result_payload_bytes(result)) for result in results)
     if remaining <= target_tokens:
         return PrunedToolResults(rendered_results=results, pruned_views=(), pruned_indexes=())
     rendered = list(results)
@@ -1123,7 +1130,7 @@ def prune_tool_results_for_budget(
             break
         content = view.content or ""
         payload_bytes = _result_payload_bytes(view)
-        payload_tokens = estimate_tokens_for_bytes(payload_bytes)
+        payload_tokens = count_payload_bytes(payload_bytes)
         if payload_tokens < min_prune_tokens or _is_prune_protected(view):
             continue
         placeholder = pruning_placeholder(view, omitted_bytes=payload_bytes, omitted_tokens=payload_tokens)
@@ -1131,7 +1138,7 @@ def prune_tool_results_for_budget(
         placeholder_bytes = len(placeholder.encode("utf-8")) + len(
             json.dumps(pruned_data, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         )
-        reclaimed = payload_tokens - estimate_tokens_for_bytes(placeholder_bytes)
+        reclaimed = payload_tokens - count_payload_bytes(placeholder_bytes)
         if reclaimed <= 0:
             continue
         rendered[index] = replace(
@@ -1255,7 +1262,7 @@ def prepare_provider_context(
     context_window: int | None = None,
     threshold_tokens: int | None = None,
     reserve_tokens: int | None = None,
-    compaction_enabled: bool = True,
+    tokenizer: str | None = None,
     before_compact: BeforeCompactInput | None = None,
     payload_bytes: int | None = None,
     fit_payload: bool = False,
@@ -1320,8 +1327,9 @@ def prepare_provider_context(
 
     if payload_bytes is None:
         return _view(results=projection.retained_results, compacted=False, reason=None)
-    estimated_payload_tokens = estimate_tokens_for_bytes(
-        payload_bytes + len(prompt.encode("utf-8")) + sum(_result_payload_bytes(result) for result in projection.retained_results)
+    estimated_payload_tokens = count_payload_bytes(payload_bytes) + count_tokens(
+        prompt + "".join(_result_payload_text(result) for result in projection.retained_results),
+        tokenizer=tokenizer,
     )
     anchor_value = measured_anchor_tokens or 0
     # Same payload, two rulers: the anchor sizes the previous request, the
@@ -1357,7 +1365,7 @@ def prepare_provider_context(
     if not should_compact(
         usage_tokens,
         context_window,
-        enabled=compaction_enabled and effective_policy.compaction.enabled,
+        enabled=effective_policy.compaction.enabled,
         threshold_tokens=threshold_tokens,
         reserve_tokens=reserve_tokens,
     ):
@@ -1378,7 +1386,7 @@ def prepare_provider_context(
     if fit_payload:
         # Recovery asks for the whole view to fit, so the tool results may only
         # keep whatever the instructions/prompt leave under the threshold.
-        non_tool_tokens = estimate_tokens_for_bytes(payload_bytes + len(prompt.encode("utf-8")))
+        non_tool_tokens = count_payload_bytes(payload_bytes) + count_tokens(prompt, tokenizer=tokenizer)
         prune_target = max(0, threshold - non_tool_tokens)
     pruned = prune_tool_results_for_budget(
         projection.retained_results,
@@ -1402,8 +1410,9 @@ def prepare_provider_context(
             usage_after=usage_tokens,
             delta=excess_tokens,
         )
-    estimated_payload_tokens_after = estimate_tokens_for_bytes(
-        payload_bytes + len(prompt.encode("utf-8")) + sum(_result_payload_bytes(result) for result in pruned.rendered_results)
+    estimated_payload_tokens_after = count_payload_bytes(payload_bytes) + count_tokens(
+        prompt + "".join(_result_payload_text(result) for result in pruned.rendered_results),
+        tokenizer=tokenizer,
     )
     continuity_state = _build_continuity_state(
         prompt=prompt,
@@ -1461,6 +1470,18 @@ def assemble_provider_context(
     before_compact: BeforeCompactInput | None = None,
 ) -> RuntimeAssembledContext:
     effective_policy = policy or ContextWindowPolicy()
+    # The model's tokenizer identity: session metadata names the resolved
+    # provider/model, and the shipped catalog maps that pair to an encoding.
+    # A pair the catalog does not tag stays on the byte estimate.
+    # Imported here, not at module scope: ``session_metadata_helpers`` imports
+    # this module, so a top-level import would close the cycle.
+    from ..session_metadata_helpers import session_model_identity
+
+    _model, _provider = session_model_identity(session_metadata)
+    tokenizer: str | None = None
+    if _model:
+        _provider_metadata = static_catalog_metadata(_provider or "", _model)
+        tokenizer = None if _provider_metadata is None else _provider_metadata.tokenizer
     replayed_conversation_segments = _bounded_replayed_conversation_segments(
         replayed_conversation_segments,
         policy=effective_policy,
@@ -1531,6 +1552,7 @@ def assemble_provider_context(
         context_window=None if compaction_budget is None else compaction_budget.context_window,
         threshold_tokens=None if compaction_budget is None else compaction_budget.threshold_tokens,
         reserve_tokens=None if compaction_budget is None else compaction_budget.reserve_tokens,
+        tokenizer=tokenizer,
         before_compact=before_compact,
         fit_payload=compaction_budget is not None and compaction_budget.fit_payload,
         payload_bytes=(
@@ -1640,7 +1662,10 @@ def assemble_provider_context(
         # Measured on the segments the provider will actually receive (the
         # per-call reminder is appended after this and is not part of the
         # compaction decision). Estimated tokens, never provider usage.
-        measured_payload_tokens = estimate_tokens_for_bytes(sum(len((segment.content or "").encode("utf-8")) for segment in segments))
+        measured_payload_tokens = count_tokens(
+            "".join(segment.content or "" for segment in segments),
+            tokenizer=tokenizer,
+        )
         after_anchor = context_window.measured_anchor_tokens or 0
         context_window = replace(
             context_window,
@@ -1672,23 +1697,21 @@ def assemble_provider_context(
     )
 
 
-# Token estimator seam (deterministic-first, no tokenizer dependency).
-
-#: Local estimator: UTF-8 bytes / 4 (ceil). Matches the upstream pi-agent-core
-#: default (`(byteLength(text) + 3) >> 2`), and unlike a per-character ratio it
-#: does not under-count non-ASCII payloads (Chinese text is ~3 bytes per char).
+# Token counting seam: text goes through the model's tokenizer
+# (:func:`voidcode.provider.tokenizer.count_tokens`, omp's ladder), while the
+# sizes pruning never materializes as text stay on the byte ruler.
 
 
-def estimate_tokens_for_bytes(
-    byte_count: int,
-    bytes_per_token: int = _TOKEN_ESTIMATE_BYTES_PER_TOKEN,
-) -> int:
-    """Ceiling UTF-8-bytes/4 guess; non-positive input estimates to 0."""
+def count_payload_bytes(byte_count: int) -> int:
+    """Ceiling UTF-8-bytes/4 guess for a payload already reduced to its size.
+
+    The pruning loop sizes *placeholders* and *omitted payloads* it never
+    materializes as text, so it cannot run a real tokenizer; this keeps that
+    path on the byte ruler while the text-bearing paths use the model's.
+    """
     if byte_count <= 0:
         return 0
-    if bytes_per_token <= 0:
-        raise ValueError("bytes_per_token must be >= 1")
-    return -(-byte_count // bytes_per_token)
+    return -(-byte_count // _TOKEN_ESTIMATE_BYTES_PER_TOKEN)
 
 
 def provider_usage_anchor_tokens(session_metadata: Mapping[str, object]) -> int | None:

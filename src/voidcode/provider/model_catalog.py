@@ -59,6 +59,10 @@ class ProviderModelMetadata:
     tool_feedback_mode: ToolFeedbackMode | None = None
     api: str | None = None
     display_name: str | None = None
+    #: omp encoding name driving exact token counting (``O200kBase``,
+    #: ``deepseek-v3``, ...). ``None`` means no exact tokenizer and the runtime
+    #: falls back to the byte-count estimate. See ``provider/tokenizer.py``.
+    tokenizer: str | None = None
     derived_max_input_tokens: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -143,6 +147,7 @@ def _static_catalog_from_payload(data: object) -> dict[str, dict[str, ProviderMo
                 model_status=_optional_str(entry.get("model_status")),
                 api=_optional_str(entry.get("api")),
                 display_name=_optional_str(entry.get("display_name")),
+                tokenizer=_optional_str(entry.get("tokenizer")),
             )
         result[provider.strip().lower()] = per_provider
     return result

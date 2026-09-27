@@ -11,6 +11,7 @@ Field names in the emitted per-model entries must EXACTLY match
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from collections.abc import Mapping
@@ -25,6 +26,10 @@ from voidcode.provider.provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_I
 
 CATALOG_URL = "https://catalog.stencil.so/models.json.zstd"
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "src" / "voidcode" / "provider" / "model_catalog_data.json"
+#: Model -> tokenizer routing, extracted from oh-my-pi by
+#: ``scripts/extract_tokenizer_data.py``. The models.dev mirror carries no
+#: ``tokenizer`` field, so this extract is the only source of that identity.
+TOKENIZER_ROUTING_PATH = Path(__file__).resolve().parent.parent / "src" / "voidcode" / "provider" / "tokenizer_routing.json"
 _ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"  # little-endian 0xfd2fb528
 
 # Must stay equal to `CANONICAL_EFFORTS` (src/voidcode/provider/reasoning_effort.py):
@@ -66,6 +71,22 @@ def _fetch_raw() -> bytes:
     )
     response.raise_for_status()
     return response.content
+
+
+def _tokenizer_routing() -> dict[tuple[str, str], str]:
+    """Model -> tokenizer name, from the checked-in omp routing extract.
+
+    The models.dev mirror carries NO ``tokenizer`` field (verified against both
+    the local snapshot and the live endpoint), so the identity cannot come from
+    upstream. It comes from oh-my-pi's own per-model routing table, extracted to
+    ``provider/tokenizer_routing.json`` by
+    ``scripts/extract_tokenizer_data.py`` -- the same generator that ships the
+    vocabularies. Keys are ``(provider_id, model_id)``, both lower-case.
+    """
+    if not TOKENIZER_ROUTING_PATH.exists():
+        raise SystemExit(f"missing {TOKENIZER_ROUTING_PATH}; run scripts/extract_tokenizer_data.py first")
+    raw = json.loads(TOKENIZER_ROUTING_PATH.read_text(encoding="utf-8"))
+    return {(provider.lower(), model.lower()): name for provider, models in raw.items() for model, name in models.items()}
 
 
 def _decode(content: bytes) -> dict[str, object]:
@@ -229,17 +250,50 @@ def _provider_catalog_entries(
     return provider_models
 
 
-def main() -> int:
-    payload = _decode(_fetch_raw())
-    catalog: dict[str, dict[str, dict[str, object]]] = {}
-    for provider_id, keys in PROVIDER_KEYS.items():
-        provider_models = _provider_catalog_entries(provider_id, keys, payload)
-        if provider_models:
-            catalog[provider_id] = provider_models
-
-    OUTPUT_PATH.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+def _tag_tokenizers(catalog: dict[str, dict[str, dict[str, object]]], routing: Mapping[tuple[str, str], str]) -> int:
+    """Stamp ``tokenizer`` onto every catalog entry omp routes to an encoding."""
+    tagged = 0
     for provider_id, models in catalog.items():
-        print(f"{provider_id}: {len(models)} models")
+        for model_key, entry in models.items():
+            name = routing.get((provider_id, model_key))
+            if name is None:
+                entry.pop("tokenizer", None)
+                continue
+            entry["tokenizer"] = name
+            tagged += 1
+    return tagged
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--retag-only",
+        action="store_true",
+        help="re-stamp `tokenizer` on the committed catalog without re-fetching models.dev",
+    )
+    args = parser.parse_args(argv)
+    routing = _tokenizer_routing()
+
+    if args.retag_only:
+        # Editing the shipped catalog in place keeps one commit's diff equal to
+        # one change: a full regeneration also picks up whatever models.dev
+        # drifted since the last one, and that belongs in its own commit.
+        catalog = json.loads(OUTPUT_PATH.read_text(encoding="utf-8"))
+    else:
+        payload = _decode(_fetch_raw())
+        catalog = {}
+        for provider_id, keys in PROVIDER_KEYS.items():
+            provider_models = _provider_catalog_entries(provider_id, keys, payload)
+            if provider_models:
+                catalog[provider_id] = provider_models
+
+    tagged = _tag_tokenizers(catalog, routing)
+    OUTPUT_PATH.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    total = sum(len(models) for models in catalog.values())
+    if not args.retag_only:
+        for provider_id, models in catalog.items():
+            print(f"{provider_id}: {len(models)} models")
+    print(f"tokenizer routing: {tagged}/{total} catalog entries tagged ({tagged / total:.1%})")
     return 0
 
 

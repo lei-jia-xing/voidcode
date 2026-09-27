@@ -32,6 +32,7 @@ dependencies = [
   "pydantic",
   "pydantic-settings",
   "typing-extensions",
+  "tiktoken",
   "rich>=15.0.0",
   "httpx",
   "httpx2>=2.12.0",

@@ -1,0 +1,38 @@
+{
+  "Cl100kBase": {
+    "container": "UTOK1: magic + u32 LE count + N x (ULEB128 length + raw token bytes); rank == index",
+    "raw_bytes": 744097,
+    "shipped_bytes": 371753,
+    "tokens": 100256
+  },
+  "DeepSeekV3": {
+    "container": "UTOK1: magic + u32 LE count + N x (ULEB128 length + raw token bytes); rank == index",
+    "raw_bytes": 963606,
+    "shipped_bytes": 486173,
+    "tokens": 128000
+  },
+  "Glm5": {
+    "container": "UTOK1: magic + u32 LE count + N x (ULEB128 length + raw token bytes); rank == index",
+    "raw_bytes": 1183151,
+    "shipped_bytes": 571882,
+    "tokens": 154820
+  },
+  "KimiK2": {
+    "container": "UTOK1: magic + u32 LE count + N x (ULEB128 length + raw token bytes); rank == index",
+    "raw_bytes": 1269581,
+    "shipped_bytes": 640060,
+    "tokens": 163584
+  },
+  "O200kBase": {
+    "container": "UTOK1: magic + u32 LE count + N x (ULEB128 length + raw token bytes); rank == index",
+    "raw_bytes": 1597679,
+    "shipped_bytes": 783086,
+    "tokens": 199998
+  },
+  "Qwen3": {
+    "container": "UTOK1: magic + u32 LE count + N x (ULEB128 length + raw token bytes); rank == index",
+    "raw_bytes": 2088383,
+    "shipped_bytes": 956650,
+    "tokens": 248044
+  }
+}

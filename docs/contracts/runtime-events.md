@@ -257,7 +257,7 @@ Runtime hook surface 与其事件名称的内部对应关系由
   - `usage_tokens_before: int | None`：判定数字 = `max(实测锚点, 本轮全量本地估算)`（inexact；对齐 omp `compactionContextTokens`）
   - `usage_tokens_after: int | None`：裁剪后**实际发出的 segments** 上的同一口径数字，由 `assemble_provider_context` 实测写入
   - `usage_tokens_estimated: bool`：本地估算这一侧是否胜出（锚胜出时为 false，提醒消费方看 `measured_anchor_tokens` / `estimated_delta_tokens` 判定来源）
-  - `measured_anchor_tokens: int | None` / `estimated_delta_tokens: int | None`：锚（最近一次 provider usage 的 `input+cache_read+cache_write+output`）与本地全量估算超出锚的差额（`max(0, 估算 − 锚)`，锚胜出时为 0）；锚点不可用时前者为 null
+  - `measured_anchor_tokens: int | None` / `estimated_delta_tokens: int | None`：锚（最近一次 provider usage 的 `input+cache_write+output`，`input_tokens` 已含 cacheRead）与本地全量估算（有 `tokenizer` 的模型用真实词表，其余按 UTF-8 字节 / 4）超出锚的差额（`max(0, 估算 − 锚)`，锚胜出时为 0）；锚点不可用时前者为 null
   - `pruned_savings_tokens: int`
   - `summary_anchor` / `projection_id` / `summary_source` / `projection`
 - 该事件描述 runtime 对 provider view 做的**有界裁剪**：只替换最旧 tool 结果的 content，system/instruction 段与消息 pairing 不变；被裁内容带 artifact 时同时出现 `runtime_context_artifact_reference` 段，模型可经 `voidcode://artifact/<id>` 取回。计数与 usage 估算都必须真实（见 `docs/contracts/runtime-config.md` 的 `context_window.compaction`）。

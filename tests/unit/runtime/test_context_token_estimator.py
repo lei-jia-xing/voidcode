@@ -1,26 +1,53 @@
-"""Token estimator seam: deterministic UTF-8-bytes/4 budget helpers."""
+"""Token counting seam: the model's real tokenizer, with a byte-count fallback."""
 
 from __future__ import annotations
 
+import pytest
+
+from voidcode.provider.tokenizer import count_tokens, known_tokenizers
 from voidcode.runtime.context.window import (
+    count_payload_bytes,
     effective_reserve_tokens,
-    estimate_tokens_for_bytes,
     resolve_budget_reserve_tokens,
     resolve_threshold_tokens,
     should_compact,
 )
 
 
-def test_estimate_tokens_for_bytes_default_ratio() -> None:
-    assert estimate_tokens_for_bytes(400) == 100
-    assert estimate_tokens_for_bytes(0) == 0
-    assert estimate_tokens_for_bytes(-10) == 0
+def test_count_payload_bytes_default_ratio() -> None:
+    assert count_payload_bytes(400) == 100
+    assert count_payload_bytes(0) == 0
+    assert count_payload_bytes(-10) == 0
     # Ceiling: never undercount a partial token.
-    assert estimate_tokens_for_bytes(7) == 2
+    assert count_payload_bytes(7) == 2
 
 
-def test_estimate_tokens_for_bytes_custom_ratio() -> None:
-    assert estimate_tokens_for_bytes(100, bytes_per_token=2) == 50
+def test_count_payload_tokens_without_tokenizer_uses_the_byte_estimate() -> None:
+    """A model with no known tokenizer keeps omp's ``(bytes + 3) >> 2``."""
+    assert count_tokens("") == 0
+    assert count_tokens("hello world", tokenizer=None) == 3
+    # An unshippable name (the Claude family) falls back rather than raising.
+    assert count_tokens("hello world", tokenizer="claude-v3") == 3
+
+
+def test_count_payload_tokens_known_encoding_is_not_the_byte_estimate() -> None:
+    """A known encoding must produce a real count, never silently degrade.
+
+    CJK is the discriminating input: four characters are 12 UTF-8 bytes, so the
+    byte estimate says 3 while the vocabulary says 5 (verified against oh-my-pi's
+    native addon). If a vocabulary ever fails to load and the seam falls back,
+    this fails instead of quietly changing every budget number.
+    """
+    text = "\u4f60\u597d\u4e16\u754c"
+    assert count_tokens(text, tokenizer="Cl100kBase") == 5
+    assert count_tokens(text, tokenizer=None) == 3
+
+
+@pytest.mark.parametrize("name", known_tokenizers())
+def test_every_shipped_encoding_loads_and_counts(name: str) -> None:
+    """Each shipped vocabulary must decode and count; a bad blob fails loudly."""
+    assert count_tokens("def foo(x): return x + 1", name) > 0
+    assert count_tokens("", name) == 0
 
 
 def test_effective_reserve_tokens_fifteen_percent() -> None:

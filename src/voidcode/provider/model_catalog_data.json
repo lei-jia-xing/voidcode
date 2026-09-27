@@ -799,7 +799,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5-sonnet"
     },
     "claude-fable-5-1": {
       "api": "anthropic-messages",
@@ -829,7 +830,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5-sonnet"
     },
     "claude-haiku-4-5": {
       "api": "anthropic-messages",
@@ -852,7 +854,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "claude-haiku-4-5-20251001": {
       "api": "anthropic-messages",
@@ -875,7 +878,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "claude-opus-4-5": {
       "api": "anthropic-messages",
@@ -903,7 +907,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "claude-opus-4-5-20251101": {
       "api": "anthropic-messages",
@@ -931,7 +936,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "claude-opus-4-6": {
       "api": "anthropic-messages",
@@ -960,7 +966,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "claude-opus-4-7": {
       "api": "anthropic-messages",
@@ -990,7 +997,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v47"
     },
     "claude-opus-4-8": {
       "api": "anthropic-messages",
@@ -1020,7 +1028,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v47"
     },
     "claude-opus-5": {
       "api": "anthropic-messages",
@@ -1050,7 +1059,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5"
     },
     "claude-opus-5-5": {
       "api": "anthropic-messages",
@@ -1080,7 +1090,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5"
     },
     "claude-sonnet-4-5": {
       "api": "anthropic-messages",
@@ -1103,7 +1114,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "claude-sonnet-4-5-20250929": {
       "api": "anthropic-messages",
@@ -1126,7 +1138,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "claude-sonnet-4-6": {
       "api": "anthropic-messages",
@@ -1155,7 +1168,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "claude-sonnet-5": {
       "api": "anthropic-messages",
@@ -1185,7 +1199,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5-sonnet"
     }
   },
   "baseten": {
@@ -2836,7 +2851,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-v4-pro": {
       "api": "openai-completions",
@@ -2862,7 +2878,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     }
   },
   "fireworks": {
@@ -5524,7 +5541,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.8-27b": {
       "api": "openai-completions",
@@ -5551,7 +5569,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     }
   },
   "huggingface": {
@@ -5574,7 +5593,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-r1-0528": {
       "api": "openai-completions",
@@ -5595,7 +5615,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v3": {
       "api": "openai-completions",
@@ -5616,7 +5637,8 @@
       "supports_reasoning": false,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v3-0324": {
       "api": "openai-completions",
@@ -5637,7 +5659,8 @@
       "supports_reasoning": false,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v3.1": {
       "api": "openai-completions",
@@ -5658,7 +5681,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v3.2": {
       "api": "openai-completions",
@@ -5679,7 +5703,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v4-flash": {
       "api": "openai-completions",
@@ -5700,7 +5725,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v4-flash-0731": {
       "api": "openai-completions",
@@ -5725,7 +5751,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v4-flash-vision-exp": {
       "api": "openai-completions",
@@ -5752,7 +5779,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v4-pro": {
       "api": "openai-completions",
@@ -5776,7 +5804,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v4-pro-0813": {
       "api": "openai-completions",
@@ -5802,7 +5831,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v4.1-flash": {
       "api": "openai-completions",
@@ -5830,7 +5860,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "deepseek-v3"
     },
     "google/gemma-3-12b-it": {
       "api": "openai-completions",
@@ -6109,7 +6140,8 @@
       "supports_reasoning": false,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2-instruct-0905": {
       "api": "openai-completions",
@@ -6130,7 +6162,8 @@
       "supports_reasoning": false,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2-thinking": {
       "api": "openai-completions",
@@ -6151,7 +6184,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2.5": {
       "api": "openai-completions",
@@ -6174,7 +6208,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2.6": {
       "api": "openai-completions",
@@ -6197,7 +6232,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2.7-code": {
       "api": "openai-completions",
@@ -6219,7 +6255,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k3": {
       "api": "openai-completions",
@@ -6246,7 +6283,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "openai/gpt-oss-120b": {
       "api": "openai-completions",
@@ -6600,7 +6638,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.5-27b": {
       "api": "openai-completions",
@@ -6622,7 +6661,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.5-35b-a3b": {
       "api": "openai-completions",
@@ -6644,7 +6684,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.5-397b-a17b": {
       "api": "openai-completions",
@@ -6671,7 +6712,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.5-9b": {
       "api": "openai-completions",
@@ -6693,7 +6735,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.6-27b": {
       "api": "openai-completions",
@@ -6715,7 +6758,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.6-35b-a3b": {
       "api": "openai-completions",
@@ -6737,7 +6781,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.8-2.4t-a95b": {
       "api": "openai-completions",
@@ -6763,7 +6808,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.8-27b": {
       "api": "openai-completions",
@@ -6790,7 +6836,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "stepfun-ai/step-3.5-flash": {
       "api": "openai-completions",
@@ -7183,7 +7230,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "zai-org/glm-5.1": {
       "api": "openai-completions",
@@ -7204,7 +7252,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "zai-org/glm-5.2": {
       "api": "openai-completions",
@@ -7225,7 +7274,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "zai-org/glm-5.3": {
       "api": "openai-completions",
@@ -7251,7 +7301,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "zai-org/glm-5.3-flash": {
       "api": "openai-completions",
@@ -7278,7 +7329,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "glm5"
     }
   },
   "kilo": {
@@ -7541,7 +7593,8 @@
       "supports_reasoning": false,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-fable-5": {
       "api": "openai-completions",
@@ -7571,7 +7624,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5-sonnet"
     },
     "anthropic/claude-fable-5.1": {
       "api": "openai-completions",
@@ -7601,7 +7655,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5-sonnet"
     },
     "anthropic/claude-haiku-4.5": {
       "api": "openai-completions",
@@ -7627,7 +7682,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-opus-4.1": {
       "api": "openai-completions",
@@ -7653,7 +7709,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-opus-4.5": {
       "api": "openai-completions",
@@ -7679,7 +7736,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-opus-4.6": {
       "api": "openai-completions",
@@ -7708,7 +7766,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-opus-4.7": {
       "api": "openai-completions",
@@ -7738,7 +7797,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v47"
     },
     "anthropic/claude-opus-4.8": {
       "api": "openai-completions",
@@ -7768,7 +7828,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v47"
     },
     "anthropic/claude-opus-5": {
       "api": "openai-completions",
@@ -7798,7 +7859,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5"
     },
     "anthropic/claude-opus-5.5": {
       "api": "openai-completions",
@@ -7828,7 +7890,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5"
     },
     "anthropic/claude-sonnet-4": {
       "api": "openai-completions",
@@ -7854,7 +7917,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-sonnet-4.5": {
       "api": "openai-completions",
@@ -7880,7 +7944,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-sonnet-4.6": {
       "api": "openai-completions",
@@ -7909,7 +7974,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-sonnet-5": {
       "api": "openai-completions",
@@ -7939,7 +8005,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5-sonnet"
     },
     "arcee-ai/trinity-large-thinking": {
       "api": "openai-completions",
@@ -8239,7 +8306,8 @@
       "supports_reasoning": false,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-chat-v3-0324": {
       "api": "openai-completions",
@@ -8260,7 +8328,8 @@
       "supports_reasoning": false,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-chat-v3.1": {
       "api": "openai-completions",
@@ -8284,7 +8353,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-r1": {
       "api": "openai-completions",
@@ -8308,7 +8378,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-r1-0528": {
       "api": "openai-completions",
@@ -8332,7 +8403,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-v3.1-terminus": {
       "api": "openai-completions",
@@ -8356,7 +8428,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-v3.2": {
       "api": "openai-completions",
@@ -8380,7 +8453,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-v3.2-exp": {
       "api": "openai-completions",
@@ -8404,7 +8478,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-v4-flash": {
       "api": "openai-completions",
@@ -8429,7 +8504,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-v4-flash-0731": {
       "api": "openai-completions",
@@ -8455,7 +8531,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-v4-flash-vision-exp": {
       "api": "openai-completions",
@@ -8482,7 +8559,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-v4-pro": {
       "api": "openai-completions",
@@ -8507,7 +8585,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-v4-pro-0813": {
       "api": "openai-completions",
@@ -8533,7 +8612,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-v4.1-flash": {
       "api": "openai-completions",
@@ -8560,7 +8640,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "deepseek-v3"
     },
     "dots-studio/dots-3-note-preview:free": {
       "api": "openai-completions",
@@ -10356,7 +10437,8 @@
       "supports_reasoning": false,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2-0905": {
       "api": "openai-completions",
@@ -10377,7 +10459,8 @@
       "supports_reasoning": false,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2-thinking": {
       "api": "openai-completions",
@@ -10401,7 +10484,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2.5": {
       "api": "openai-completions",
@@ -10426,7 +10510,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2.6": {
       "api": "openai-completions",
@@ -10451,7 +10536,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2.7-code": {
       "api": "openai-completions",
@@ -10476,7 +10562,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k3": {
       "api": "openai-completions",
@@ -10504,7 +10591,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "nex-agi/nex-n2.5-mini:free": {
       "api": "openai-completions",
@@ -13171,7 +13259,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.5-27b": {
       "api": "openai-completions",
@@ -13197,7 +13286,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.5-35b-a3b": {
       "api": "openai-completions",
@@ -13223,7 +13313,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.5-397b-a17b": {
       "api": "openai-completions",
@@ -13249,7 +13340,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.5-9b": {
       "api": "openai-completions",
@@ -13275,7 +13367,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.5-flash-02-23": {
       "api": "openai-completions",
@@ -13301,7 +13394,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.5-plus-02-15": {
       "api": "openai-completions",
@@ -13327,7 +13421,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.5-plus-20260420": {
       "api": "openai-completions",
@@ -13353,7 +13448,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.6-27b": {
       "api": "openai-completions",
@@ -13379,7 +13475,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.6-35b-a3b": {
       "api": "openai-completions",
@@ -13405,7 +13502,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.6-flash": {
       "api": "openai-completions",
@@ -13431,7 +13529,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.6-max-preview": {
       "api": "openai-completions",
@@ -13455,7 +13554,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.6-plus": {
       "api": "openai-completions",
@@ -13481,7 +13581,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.7-flash": {
       "api": "openai-completions",
@@ -13508,7 +13609,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.7-max": {
       "api": "openai-completions",
@@ -13532,7 +13634,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.7-plus": {
       "api": "openai-completions",
@@ -13557,7 +13660,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.8-2.4t-a95b": {
       "api": "openai-completions",
@@ -13583,7 +13687,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.8-27b": {
       "api": "openai-completions",
@@ -13611,7 +13716,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.8-27b:free": {
       "api": "openai-completions",
@@ -13639,7 +13745,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.8-flash": {
       "api": "openai-completions",
@@ -13665,7 +13772,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.8-max-0902": {
       "api": "openai-completions",
@@ -13695,7 +13803,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.8-max-prime": {
       "api": "openai-completions",
@@ -13725,7 +13834,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.8-omni-flash": {
       "api": "openai-completions",
@@ -13752,7 +13862,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "rekaai/reka-edge": {
       "api": "openai-completions",
@@ -13956,7 +14067,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "stealth/claude-opus-4.7": {
       "api": "openai-completions",
@@ -13986,7 +14098,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v47"
     },
     "stealth/claude-opus-4.8": {
       "api": "openai-completions",
@@ -14016,7 +14129,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v47"
     },
     "stealth/claude-sonnet-4.6": {
       "api": "openai-completions",
@@ -14046,7 +14160,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "stealth/qwen3.6-plus": {
       "api": "openai-completions",
@@ -14075,7 +14190,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "stealth/space-bunny-alpha": {
       "api": "openai-completions",
@@ -14951,7 +15067,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5-turbo": {
       "api": "openai-completions",
@@ -14975,7 +15092,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5.1": {
       "api": "openai-completions",
@@ -14999,7 +15117,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5.2": {
       "api": "openai-completions",
@@ -15024,7 +15143,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5.3": {
       "api": "openai-completions",
@@ -15050,7 +15170,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5.3-flash": {
       "api": "openai-completions",
@@ -15078,7 +15199,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5.3-flashx": {
       "api": "openai-completions",
@@ -15106,7 +15228,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5.3-prime": {
       "api": "openai-completions",
@@ -15132,7 +15255,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5v-turbo": {
       "api": "openai-completions",
@@ -15188,7 +15312,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "~anthropic/claude-haiku-latest": {
       "api": "openai-completions",
@@ -15214,7 +15339,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "~anthropic/claude-opus-latest": {
       "api": "openai-completions",
@@ -15244,7 +15370,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "~anthropic/claude-sonnet-latest": {
       "api": "openai-completions",
@@ -15274,7 +15401,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "~deepseek/deepseek-flash-latest": {
       "api": "openai-completions",
@@ -15301,7 +15429,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "deepseek-v3"
     },
     "~deepseek/deepseek-pro-latest": {
       "api": "openai-completions",
@@ -15327,7 +15456,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "~deepseek/deepseek-v4-flash-latest": {
       "api": "openai-completions",
@@ -15353,7 +15483,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "~google/gemini-flash-latest": {
       "api": "openai-completions",
@@ -15441,7 +15572,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "~openai/gpt-astra-latest": {
       "api": "openai-completions",
@@ -16488,7 +16620,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "zai-glm-5-3": {
       "api": "openai-completions",
@@ -16514,7 +16647,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     }
   },
   "moonshot": {
@@ -16539,7 +16673,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "kimi-k2.7-code": {
       "api": "openai-completions",
@@ -16562,7 +16697,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "kimi-k2.7-code-highspeed": {
       "api": "openai-completions",
@@ -16585,7 +16721,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "kimi-k3": {
       "api": "openai-completions",
@@ -16614,7 +16751,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     }
   },
   "novita": {
@@ -18265,7 +18403,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v4-flash-0731": {
       "api": "openai-completions",
@@ -18290,7 +18429,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v4-pro": {
       "api": "openai-completions",
@@ -18315,7 +18455,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v4-pro-0813": {
       "api": "openai-completions",
@@ -18340,7 +18481,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "google/gemma-2-2b-it": {
       "api": "openai-completions",
@@ -18922,7 +19064,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "nvidia/cosmos-reason2-8b": {
       "api": "openai-completions",
@@ -19427,7 +19570,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.5-397b-a17b": {
       "api": "openai-completions",
@@ -19449,7 +19593,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "sarvamai/sarvam-m": {
       "api": "openai-completions",
@@ -19591,7 +19736,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5.3": {
       "api": "openai-completions",
@@ -19617,7 +19763,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5.3-flash": {
       "api": "openai-completions",
@@ -19646,7 +19793,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "glm5"
     }
   },
   "openai": {
@@ -25348,7 +25496,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v4-pro": {
       "api": "openai-completions",
@@ -25373,7 +25522,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v4-pro-0813": {
       "api": "openai-completions",
@@ -25399,7 +25549,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-ai/deepseek-v4.1-flash": {
       "api": "openai-completions",
@@ -25426,7 +25577,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "deepseek-v3"
     },
     "google/gemma-4-31b-it": {
       "api": "openai-completions",
@@ -25535,7 +25687,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2.7-code": {
       "api": "openai-completions",
@@ -25556,7 +25709,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k3": {
       "api": "openai-completions",
@@ -25584,7 +25738,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "nvidia/nemotron-3-ultra-550b-a55b": {
       "api": "openai-completions",
@@ -25700,7 +25855,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.6-plus": {
       "api": "openai-completions",
@@ -25721,7 +25877,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.7-max": {
       "api": "openai-completions",
@@ -25742,7 +25899,8 @@
       "supports_reasoning": false,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "qwen3"
     },
     "thinkingmachines/inkling": {
       "api": "openai-completions",
@@ -25797,7 +25955,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "zai-org/glm-5.3": {
       "api": "openai-completions",
@@ -25823,7 +25982,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "zai-org/glm-5.3-flash": {
       "api": "openai-completions",
@@ -25851,7 +26011,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "glm5"
     }
   },
   "venice": {
@@ -25966,7 +26127,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5-sonnet"
     },
     "claude-fable-5-1": {
       "api": "openai-completions",
@@ -25995,7 +26157,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5-sonnet"
     },
     "claude-opus-4-5": {
       "api": "openai-completions",
@@ -26017,7 +26180,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "claude-opus-4-6": {
       "api": "openai-completions",
@@ -26045,7 +26209,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "claude-opus-4-7": {
       "api": "openai-completions",
@@ -26074,7 +26239,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v47"
     },
     "claude-opus-4-8": {
       "api": "openai-completions",
@@ -26103,7 +26269,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v47"
     },
     "claude-opus-4-8-fast": {
       "api": "openai-completions",
@@ -26132,7 +26299,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v47"
     },
     "claude-opus-5": {
       "api": "openai-completions",
@@ -26161,7 +26329,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5"
     },
     "claude-opus-5-5": {
       "api": "openai-completions",
@@ -26190,7 +26359,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5"
     },
     "claude-opus-5-fast": {
       "api": "openai-completions",
@@ -26219,7 +26389,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5"
     },
     "claude-sonnet-4-5": {
       "api": "openai-completions",
@@ -26241,7 +26412,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "claude-sonnet-4-6": {
       "api": "openai-completions",
@@ -26269,7 +26441,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "claude-sonnet-5": {
       "api": "openai-completions",
@@ -26298,7 +26471,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5-sonnet"
     },
     "deepseek-v3.2": {
       "api": "openai-completions",
@@ -26324,7 +26498,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-v4-1-flash": {
       "api": "openai-completions",
@@ -26351,7 +26526,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-v4-flash": {
       "api": "openai-completions",
@@ -26377,7 +26553,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-v4-flash-0731": {
       "api": "openai-completions",
@@ -26403,7 +26580,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-v4-flash-0731-fast": {
       "api": "openai-completions",
@@ -26429,7 +26607,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-v4-pro": {
       "api": "openai-completions",
@@ -26455,7 +26634,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek-v4-pro-0813": {
       "api": "openai-completions",
@@ -26481,7 +26661,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "gemini-3-1-pro-preview": {
       "api": "openai-completions",
@@ -26969,7 +27150,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "kimi-k2-6": {
       "api": "openai-completions",
@@ -26996,7 +27178,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "kimi-k2-7-code": {
       "api": "openai-completions",
@@ -27023,7 +27206,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "kimi-k3": {
       "api": "openai-completions",
@@ -27050,7 +27234,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "kimi-k3-fast-api": {
       "api": "openai-completions",
@@ -27077,7 +27262,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "llama-3.2-3b": {
       "api": "openai-completions",
@@ -27927,7 +28113,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen-3-7-max": {
       "api": "openai-completions",
@@ -27950,7 +28137,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen-3-7-plus": {
       "api": "openai-completions",
@@ -27973,7 +28161,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen-3-8-2-4t-a95b": {
       "api": "openai-completions",
@@ -27994,7 +28183,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "qwen3"
     },
     "qwen-3-8-27b": {
       "api": "openai-completions",
@@ -28022,7 +28212,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen-3-8-flash": {
       "api": "openai-completions",
@@ -28045,7 +28236,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen-3-8-max": {
       "api": "openai-completions",
@@ -28068,7 +28260,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen3-235b-a22b-instruct-2507": {
       "api": "openai-completions",
@@ -28143,7 +28336,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen3-5-397b-a17b": {
       "api": "openai-completions",
@@ -28171,7 +28365,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen3-5-9b": {
       "api": "openai-completions",
@@ -28198,7 +28393,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen3-6-27b": {
       "api": "openai-completions",
@@ -28226,7 +28422,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen3-6-35b-a3b": {
       "api": "openai-completions",
@@ -28248,7 +28445,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen3-coder-480b-a35b-instruct-turbo": {
       "api": "openai-completions",
@@ -29643,7 +29841,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "glm-5-turbo": {
       "api": "openai-completions",
@@ -29664,7 +29863,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "glm-5.1": {
       "api": "openai-completions",
@@ -29685,7 +29885,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "glm-5.2": {
       "api": "openai-completions",
@@ -29710,7 +29911,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "glm-5.3": {
       "api": "openai-completions",
@@ -29737,7 +29939,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "glm-5.3-flash": {
       "api": "openai-completions",
@@ -29766,7 +29969,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "glm5"
     },
     "glm-5.3-flashx": {
       "api": "openai-completions",
@@ -29795,7 +29999,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "glm5"
     },
     "glm-5v-turbo": {
       "api": "openai-completions",
@@ -29849,7 +30054,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5-sonnet"
     },
     "anthropic/claude-haiku-4.5": {
       "api": "anthropic-messages",
@@ -29871,7 +30077,8 @@
       "supports_reasoning": false,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-opus-4": {
       "api": "anthropic-messages",
@@ -29899,7 +30106,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-opus-4.1": {
       "api": "anthropic-messages",
@@ -29927,7 +30135,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-opus-4.5": {
       "api": "anthropic-messages",
@@ -29955,7 +30164,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-opus-4.6": {
       "api": "anthropic-messages",
@@ -29982,7 +30192,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-opus-4.7": {
       "api": "anthropic-messages",
@@ -30010,7 +30221,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v47"
     },
     "anthropic/claude-opus-4.8": {
       "api": "anthropic-messages",
@@ -30038,7 +30250,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v47"
     },
     "anthropic/claude-sonnet-4": {
       "api": "anthropic-messages",
@@ -30066,7 +30279,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-sonnet-4.5": {
       "api": "anthropic-messages",
@@ -30094,7 +30308,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-sonnet-4.6": {
       "api": "anthropic-messages",
@@ -30121,7 +30336,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v3"
     },
     "anthropic/claude-sonnet-5": {
       "api": "anthropic-messages",
@@ -30149,7 +30365,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5-sonnet"
     },
     "anthropic/claude-sonnet-5-free": {
       "api": "anthropic-messages",
@@ -30177,7 +30394,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "claude-v5-sonnet"
     },
     "baidu/ernie-5.0-thinking-preview": {
       "api": "openai-completions",
@@ -30221,7 +30439,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-v3.2-exp": {
       "api": "openai-completions",
@@ -30242,7 +30461,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-v4-flash": {
       "api": "openai-completions",
@@ -30268,7 +30488,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "deepseek/deepseek-v4-pro": {
       "api": "openai-completions",
@@ -30294,7 +30515,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "deepseek-v3"
     },
     "google/gemini-2.5-flash": {
       "api": "openai-completions",
@@ -30734,7 +30956,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2.6": {
       "api": "openai-completions",
@@ -30757,7 +30980,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2.7-code": {
       "api": "openai-completions",
@@ -30780,7 +31004,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k2.7-code-free": {
       "api": "openai-completions",
@@ -30803,7 +31028,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k3": {
       "api": "openai-completions",
@@ -30829,7 +31055,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "moonshotai/kimi-k3-free": {
       "api": "openai-completions",
@@ -30855,7 +31082,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "kimi-k2"
     },
     "openai/gpt-5": {
       "api": "openai-responses",
@@ -31463,7 +31691,8 @@
       "supports_reasoning": false,
       "supports_reasoning_effort": false,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.5-plus": {
       "api": "openai-completions",
@@ -31490,7 +31719,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.6-plus": {
       "api": "openai-completions",
@@ -31511,7 +31741,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.7-max": {
       "api": "openai-completions",
@@ -31532,7 +31763,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "qwen3"
     },
     "qwen/qwen3.7-plus": {
       "api": "openai-completions",
@@ -31555,7 +31787,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "qwen3"
     },
     "sapiens-ai/agnes-1.5-lite": {
       "api": "openai-completions",
@@ -32314,7 +32547,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5-turbo": {
       "api": "openai-completions",
@@ -32335,7 +32569,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5.1": {
       "api": "openai-completions",
@@ -32356,7 +32591,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5.2": {
       "api": "openai-completions",
@@ -32381,7 +32617,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5.3": {
       "api": "openai-completions",
@@ -32407,7 +32644,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": false
+      "supports_vision": false,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5.3-flash": {
       "api": "openai-completions",
@@ -32436,7 +32674,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5.3-flashx": {
       "api": "openai-completions",
@@ -32465,7 +32704,8 @@
       "supports_reasoning": true,
       "supports_reasoning_effort": true,
       "supports_tools": true,
-      "supports_vision": true
+      "supports_vision": true,
+      "tokenizer": "glm5"
     },
     "z-ai/glm-5v-turbo": {
       "api": "openai-completions",

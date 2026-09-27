@@ -12,6 +12,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **provider:** count tokens with oh-my-pi's real tokenizers (O200kBase, Cl100kBase, Glm5, KimiK2, Qwen3, DeepSeekV3), selected per model from the catalog's new `tokenizer` field; models without one keep the `(utf8_bytes + 3) >> 2` fallback, and the four Claude encodings stay on it because their vocabulary container is not portable. Vocabularies ship bz2-compressed (3.8 MB) and load lazily; construction is fully offline.
+
 - **runtime:** add keep-alive subagent contract, storage, and steer surface
 
 - **tools:** add background task steer tool
