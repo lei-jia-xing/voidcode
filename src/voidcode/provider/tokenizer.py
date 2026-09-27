@@ -68,18 +68,65 @@ _PAT_O200K_NO_SLASH: Final = _PAT_O200K.replace(r"[\r\n/]*", r"[\r\n]*")
 #: the punctuation piece instead of standing alone, e.g. ZWJ + U+2764 + VS16
 #: counted 3 instead of the addon's 4.
 _PAT_QWEN3: Final = r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}{1,3}+| ?[^\s\p{L}\p{M}\p{N}]++[\r\n]*+|\s++$|\s*[\r\n]|\s+(?!\S)|\s"
-#: ponytail: DeepSeekV3's recovered splitter is not bit-exact. The residual is
-#: confined to a hand-written Rust whitespace-grouping rule that has no
-#: equivalent in any published tokenizer.json Split pattern: on 6202 realistic
-#: source chunks it disagrees on 8 (0.13%), 7 of them a horizontal-whitespace run
-#: before a non-ASCII letter or an enclosing numeral, and it always rounds
-#: *up* — the safe direction for a budget guard, which may compact early but
-#: never late. The upstream artifact that closes it is
-#: `crates/pi-natives/src/utok/scan/deepseek.rs` + `.../pretoken.rs`; read the
-#: scan order there and transcribe the exact alternation. Until then prefer this
-#: over the byte fallback: bytes/4 over-counts CJK by ~1.5x systematically,
-#: whereas this pattern's aggregate error on realistic text is +0.01%.
-_PAT_DEEPSEEK: Final = r"[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|[^\S\r\n]*\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*+|\s++$|\s*[\r\n]|\s+(?!\S)|\s"
+#: DeepSeekV3 splits in three chained ``Split(Isolated)`` stages, not one
+#: regex — upstream's own ``tokenizer.json`` (``deepseek-ai/DeepSeek-V3``,
+#: ``pre_tokenizer``) and omp's hand-written port of it
+#: (``crates/pi-natives/src/utok/scan/deepseek.rs``) agree exactly:
+#:
+#: 1. ``\p{N}{1,3}``            — digit groups, cut first
+#: 2. ``[\u4e00-\u9fa5\u3040-\u309f\u30a0-\u30ff]+`` — Han + kana runs
+#: 3. ``[!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+``
+#:    ``|[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+``
+#:    ``| ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+``
+#:
+#: `tiktoken` takes one ``pat_str``, so the three stages are folded into the
+#: alternation below — equivalent piece-for-piece, not merely in aggregate.
+#: Three things a literal transcription gets wrong:
+#:
+#: * Stage 3 runs per piece, so a match may never cross a Han/kana codepoint
+#:   (``\p{L}``/``\p{P}``/``\p{S}`` are unbounded there in the raw regex). The
+#:   stage-3 classes are CJK-bounded by set intersection, and Han/kana
+#:   codepoints get leading alternates: Han/kana letters stay a run, Han/kana
+#:   punctuation and symbols (``\u30a0``, ``\u30fb``, ...) take the punctuation
+#:   run without its ``[\r\n]*`` tail, since the piece is already CJK-bounded.
+#: * Stage 3 has no alternate for gap codepoints (an isolated digit after
+#:   stage 1, an unassigned slot, a format character), and ``Isolated`` keeps
+#:   them as pieces; `tiktoken`'s ``findall`` silently *drops* unmatched text,
+#:   so the gap runs are spelled out. Each run stops where a gap codepoint is
+#:   itself prefix-eligible and a letter follows, because that codepoint opens
+#:   a stage-3 letter match (``"\u200c\u200b" + "p"`` is gap ``\u200c``, then
+#:   the prefix piece ``\u200bp``).
+#: * The scanner's ``ws_end`` returns the whole run when it reaches a
+#:   stage-1/2 boundary, which the plain ``\s+(?!\S)`` rule does not: ``"  1"``
+#:   is the stage-1 piece ``"  "`` plus ``"1"`` while ``"  一"`` is ``"  "``
+#:   plus ``"一"``, whereas ``\s+(?!\S)`` alone would split them one space in.
+#:   The ``\s+(?=[\p{N}...]|(?![\s\S]))`` alternate supplies that bound.
+#:
+#: Verified exactly equal to the native addon: 0 mismatches on 114558 corpus
+#: inputs (19000 real source chunks, 2 mixed English/Chinese/Japanese/code
+#: documents of 241 KB + 54 KB, 12000 emoji/ZWJ-heavy, 72591 per-codepoint fuzz,
+#: 6824 random fuzz, 3064 targeted, 269 whitespace/digit, 808 adversarial), on
+#: 341399 fresh fuzz inputs, and across every Unicode scalar in four contexts
+#: (4448256 probes).
+_CJK: Final = r"\u3040-\u30ff\u4e00-\u9fa5"
+_PAT_DEEPSEEK: Final = "|".join(
+    [
+        r"[[\p{L}\p{M}]&&[" + _CJK + r"]]+",
+        r"[[\p{P}\p{S}]&&[" + _CJK + r"]]+",
+        r"[[^\r\n\p{L}\p{P}\p{S}]&&[" + _CJK + r"]][[\p{L}\p{M}]&&[" + _CJK + r"]]+",
+        r"(?:[[^\p{L}\p{M}\p{N}\p{P}\p{S}\s]&&[" + _CJK + r"]](?![[\p{L}\p{M}]&&[" + _CJK + r"]]))+",
+        r"\p{N}{1,3}",
+        r"[!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+",
+        r"[[^\r\n\p{L}\p{P}\p{S}]&&[^" + _CJK + r"]]?[[\p{L}\p{M}]&&[^" + _CJK + r"]]+",
+        r" ?[[\p{P}\p{S}]&&[^" + _CJK + r"]]+[\r\n]*",
+        r"\s*[\r\n]+",
+        # A run reaching a stage-1/2 piece boundary keeps its whole length.
+        r"\s+(?=[\p{N}" + _CJK + r"]|(?![\s\S]))",
+        r"\s+(?!\S)",
+        r"\s",
+        r"(?:[[^\p{L}\p{M}\p{N}\p{P}\p{S}\s]&&[^" + _CJK + r"]](?![[\p{L}\p{M}]&&[^" + _CJK + r"]]))+",
+    ]
+)
 
 #: Canonical encoding name -> (vocabulary file, splitter, unicode normalization).
 #: Canonical names are omp's ``Encoding`` enum members. ``None`` as the

@@ -70,6 +70,34 @@ def test_qwen3_combining_marks_do_not_merge_into_a_punctuation_run() -> None:
     assert count_tokens("\U0001f469\u200d\u2764\ufe0f\u200d\U0001f48b\u200d\U0001f468", tokenizer="qwen3") == 16
 
 
+def test_deepseek_splits_like_upstreams_three_stage_chain() -> None:
+    """DeepSeekV3's splitter, pinned on minimized inputs the oracle caught.
+
+    Upstream (``deepseek-ai/DeepSeek-V3``'s ``tokenizer.json`` and oh-my-pi's
+    port of it) splits in three chained ``Split(Isolated)`` stages, so a match
+    may not cross a Han/kana codepoint and a whitespace run reaching a stage
+    boundary keeps its whole length. Every value below is the native addon's.
+    """
+    # Wrong in *both* directions before the fix, which is the point: the old
+    # comment claimed the residual "always rounds up".
+    assert count_tokens("|alit\u00e4", tokenizer="deepseek-v3") == 4  # was 3 (under)
+    assert count_tokens("|i\u00e9", tokenizer="deepseek-v3") == 3  # was 2 (under)
+    assert count_tokens("  \u4e00", tokenizer="deepseek-v3") == 2  # was 3 (over)
+    assert count_tokens("  \u5206", tokenizer="deepseek-v3") == 2  # was 3 (over)
+    # A run before a digit or a Han/kana codepoint keeps its whole length,
+    # unlike the plain `\s+(?!\S)` rule it is easy to confuse it with.
+    assert count_tokens("  1", tokenizer="deepseek-v3") == 2
+    assert count_tokens("   1", tokenizer="deepseek-v3") == 2
+    # Han/kana punctuation and symbols are their own pieces, not letter runs.
+    assert count_tokens("\u30fb", tokenizer="deepseek-v3") == 1
+    assert count_tokens("\u30a0", tokenizer="deepseek-v3") == 2
+    assert count_tokens("\u3040", tokenizer="deepseek-v3") == 2
+    # Unassigned slots are gaps: `Isolated` keeps them, tiktoken would drop them.
+    assert count_tokens("\u200c\u200c", tokenizer="deepseek-v3") == 4
+    assert count_tokens("\u200b<ul", tokenizer="deepseek-v3") == 2
+    assert count_tokens(" \u1acf ", tokenizer="deepseek-v3") == 5  # was 4
+
+
 def test_effective_reserve_tokens_fifteen_percent() -> None:
     assert effective_reserve_tokens(100000) == 15000
 
