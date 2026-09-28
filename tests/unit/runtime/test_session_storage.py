@@ -1833,7 +1833,7 @@ def test_session_storage_bulk_append_events_assigns_contiguous_sequences(tmp_pat
         workspace=tmp_path,
         session_id="bulk-session",
         events=(
-            ("runtime.mcp_server_released", "runtime", {"server": "a"}, "bulk-1"),
+            ("runtime.mcp_server_acquired", "runtime", {"server": "a"}, "bulk-1"),
             ("runtime.mcp_server_stopped", "runtime", {"server": "b"}, "bulk-2"),
             ("runtime.acp_connected", "runtime", {}, "bulk-3"),
         ),
@@ -1842,7 +1842,7 @@ def test_session_storage_bulk_append_events_assigns_contiguous_sequences(tmp_pat
 
     assert [envelope.sequence for envelope in envelopes] == [2, 3, 4]
     assert [envelope.event_type for envelope in envelopes] == [
-        "runtime.mcp_server_released",
+        "runtime.mcp_server_acquired",
         "runtime.mcp_server_stopped",
         "runtime.acp_connected",
     ]
@@ -1858,7 +1858,7 @@ def test_session_storage_bulk_append_dedupes_within_batch(tmp_path: Path) -> Non
         workspace=tmp_path,
         session_id="bulk-dedupe-session",
         events=(
-            ("runtime.mcp_server_released", "runtime", {"server": "a"}, "dup-key"),
+            ("runtime.mcp_server_acquired", "runtime", {"server": "a"}, "dup-key"),
             ("runtime.mcp_server_stopped", "runtime", {"server": "b"}, "dup-key"),
             ("runtime.acp_connected", "runtime", {}, "fresh-key"),
         ),
@@ -1867,7 +1867,7 @@ def test_session_storage_bulk_append_dedupes_within_batch(tmp_path: Path) -> Non
 
     assert [envelope.sequence for envelope in envelopes] == [2, 3]
     assert [envelope.event_type for envelope in envelopes] == [
-        "runtime.mcp_server_released",
+        "runtime.mcp_server_acquired",
         "runtime.acp_connected",
     ]
     assert [event.sequence for event in loaded.events] == [1, 2, 3]
@@ -1921,7 +1921,7 @@ def test_session_storage_bulk_append_upserts_interrupted_checkpoint(tmp_path: Pa
     store.append_session_events(
         workspace=tmp_path,
         session_id="interrupt-session",
-        events=(("runtime.mcp_server_released", "runtime", {"server": "a"}, "interrupt-1"),),
+        events=(("runtime.mcp_server_stopped", "runtime", {"server": "a"}, "interrupt-1"),),
         interrupted_checkpoint={"kind": "interrupted", "version": 1, "prompt": "interrupted task"},
     )
 
@@ -1940,7 +1940,7 @@ def test_session_storage_bulk_append_raises_unknown_session(tmp_path: Path) -> N
         _ = store.append_session_events(
             workspace=tmp_path,
             session_id="nope",
-            events=(("runtime.mcp_server_released", "runtime", {}, None),),
+            events=(("runtime.mcp_server_stopped", "runtime", {}, None),),
         )
 
 
@@ -2026,7 +2026,7 @@ def test_session_storage_truncate_resets_last_event_sequence_watermark(tmp_path:
         workspace=tmp_path,
         session_id="truncate-watermark-session",
         events=(
-            ("runtime.mcp_server_released", "runtime", {"server": "a"}, "watermark-1"),
+            ("runtime.mcp_server_acquired", "runtime", {"server": "a"}, "watermark-1"),
             ("runtime.mcp_server_stopped", "runtime", {"server": "b"}, "watermark-2"),
             ("runtime.acp_connected", "runtime", {}, "watermark-3"),
         ),

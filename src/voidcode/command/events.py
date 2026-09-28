@@ -1,3 +1,5 @@
 from __future__ import annotations
 
-COMMAND_RESOLVED = "command.resolved"
+from ..runtime.events import COMMAND_RESOLVED
+
+__all__ = ["COMMAND_RESOLVED"]

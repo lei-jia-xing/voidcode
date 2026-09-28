@@ -51,7 +51,6 @@ from .config import RuntimeMcpConfig, RuntimeMcpServerConfig
 from .events import (
     RUNTIME_MCP_SERVER_ACQUIRED,
     RUNTIME_MCP_SERVER_FAILED,
-    RUNTIME_MCP_SERVER_RELEASED,
     RUNTIME_MCP_SERVER_REUSED,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
@@ -1086,20 +1085,6 @@ class ManagedMcpManager:
                 event_type=RUNTIME_MCP_SERVER_ACQUIRED,
                 payload={
                     "server": key.server_name,
-                },
-            )
-        )
-
-    def _record_server_released(self, *, key: _McpServerKey, reason: str) -> None:
-        running = self._running_servers.get(key)
-        workspace_root = running.workspace_root if running is not None else None
-        self._record_event(
-            McpRuntimeEvent(
-                event_type=RUNTIME_MCP_SERVER_RELEASED,
-                payload={
-                    "server": key.server_name,
-                    **({"workspace_root": str(workspace_root)} if workspace_root is not None else {}),
-                    "reason": reason,
                 },
             )
         )

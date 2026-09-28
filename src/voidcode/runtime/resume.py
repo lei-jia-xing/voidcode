@@ -302,7 +302,6 @@ class RuntimeResumeCoordinator:
             turn=stored.session.turn,
             metadata=stored.session.metadata,
         )
-        max_stored_sequence = stored.events[-1].sequence if stored.events else 0
         question_answer_result = QuestionTool.answer_tool_result(responses)
 
         checkpoint_state = self.question_resume_state_from_checkpoint(
@@ -321,43 +320,6 @@ class RuntimeResumeCoordinator:
         session = session_with_run_id(session, run_id=run_id)
         validate_session_workspace(session, session_id=stored.session.session.id, workspace=self._workspace)
         tool_results.append(question_answer_result)
-
-        sequence = max_stored_sequence + 1
-        answered_event = EventEnvelope(
-            session_id=session.session.id,
-            sequence=sequence,
-            event_type=RUNTIME_QUESTION_ANSWERED,
-            source="runtime",
-            payload={
-                "request_id": pending.request_id,
-                "responses": [{"header": response.header, "answers": list(response.answers)} for response in responses],
-            },
-        )
-        yield RuntimeStreamChunk(kind="event", session=session, event=answered_event)
-        sequence += 1
-        loop_events = [answered_event]
-        model, provider = session_model_identity(session.metadata)
-        identity_payload: dict[str, str] = {}
-        if model is not None:
-            identity_payload["model"] = model
-        if provider is not None:
-            identity_payload["provider"] = provider
-        tool_completed_event = EventEnvelope(
-            session_id=session.session.id,
-            sequence=sequence,
-            event_type="runtime.tool_completed",
-            source="tool",
-            payload={
-                **identity_payload,
-                "tool": question_answer_result.tool_name,
-                "status": question_answer_result.status,
-                "content": question_answer_result.content,
-                "error": question_answer_result.error,
-                **question_answer_result.data,
-            },
-        )
-        yield RuntimeStreamChunk(kind="event", session=session, event=tool_completed_event)
-        loop_events.append(tool_completed_event)
 
         effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
         try:
@@ -423,6 +385,56 @@ class RuntimeResumeCoordinator:
             session,
         )
         graph = runtime.graph_for_session_metadata(session.metadata)
+        model, provider = session_model_identity(session.metadata)
+        identity_payload: dict[str, str] = {}
+        if model is not None:
+            identity_payload["model"] = model
+        if provider is not None:
+            identity_payload["provider"] = provider
+        # Both answer-path events are durable truth, exactly like the approval
+        # path's ``runtime.approval_resolved``: the answer is replayed from the
+        # transcript instead of being recoverable only from the checkpoint. They
+        # are appended through the session store's append-only writer (the same
+        # one the run loop uses), which assigns the sequences and bumps the row
+        # watermark, so sequence math stays single-sourced. Appending the
+        # ``runtime.question_answered`` row is also what makes a stale re-answer
+        # impossible: ``validate_pending_question_matches_recorded_request``
+        # refuses a request whose resolution already exists in the log. The
+        # append happens here, after every pre-loop refusal, so a resume that
+        # cannot be honored (missing capability snapshot, bad checkpoint, ...)
+        # fails before it consumes the pending answer.
+        persisted_answer_events = self._session_store.append_session_events(
+            workspace=self._workspace,
+            session_id=session.session.id,
+            events=(
+                (
+                    RUNTIME_QUESTION_ANSWERED,
+                    "runtime",
+                    {
+                        "request_id": pending.request_id,
+                        "responses": [{"header": response.header, "answers": list(response.answers)} for response in responses],
+                    },
+                    None,
+                ),
+                (
+                    "runtime.tool_completed",
+                    "tool",
+                    {
+                        **identity_payload,
+                        "tool": question_answer_result.tool_name,
+                        "status": question_answer_result.status,
+                        "content": question_answer_result.content,
+                        "error": question_answer_result.error,
+                        **question_answer_result.data,
+                    },
+                    None,
+                ),
+            ),
+        )
+        loop_events: list[EventEnvelope] = list(persisted_answer_events)
+        for answer_event in persisted_answer_events:
+            yield RuntimeStreamChunk(kind="event", session=session, event=answer_event)
+        sequence = persisted_answer_events[-1].sequence
         output: str | None = None
         final_session = session
         last_sequence = sequence

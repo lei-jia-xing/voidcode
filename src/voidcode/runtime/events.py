@@ -9,8 +9,9 @@ from typing import Final, Literal
 # KnownEventType (CoreEventType | RuntimeEventType) is the authoritative stored/
 # persisted event vocabulary. EMITTED_EVENT_TYPES (Core) and RUNTIME_EVENT_TYPES
 # (Runtime) are disjoint partitions of it; KNOWN_EVENT_TYPES is their
-# concatenation. Rule is additive-only: add new wire strings, never rename or
-# remove one.
+# concatenation. Never rename a wire string, and never remove one that has ever
+# been emitted/persisted; a string that was never emitted may be removed (this
+# is why runtime.mcp_server_released was deleted).
 # waiting_approval lives only in DelegatedLifecycleStatus / the delegated event
 # layer and must never be promoted to a stored task/session status.
 # graph.provider_stream is a live-only client transport detail (converted to
@@ -38,7 +39,6 @@ type CoreEventType = Literal[
     "runtime.mcp_server_started",
     "runtime.mcp_server_reused",
     "runtime.mcp_server_acquired",
-    "runtime.mcp_server_released",
     "runtime.mcp_server_stopped",
     "runtime.mcp_server_failed",
     "graph.loop_step",
@@ -58,6 +58,7 @@ type CoreEventType = Literal[
     "runtime.approval_resolved",
     "runtime.question_requested",
     "runtime.question_answered",
+    "command.resolved",
     "runtime.failed",
 ]
 type RuntimeEventType = Literal[
@@ -150,7 +151,6 @@ RUNTIME_LSP_SERVER_FAILED: Final[CoreEventType] = "runtime.lsp_server_failed"
 RUNTIME_MCP_SERVER_STARTED: Final[CoreEventType] = "runtime.mcp_server_started"
 RUNTIME_MCP_SERVER_REUSED: Final[CoreEventType] = "runtime.mcp_server_reused"
 RUNTIME_MCP_SERVER_ACQUIRED: Final[CoreEventType] = "runtime.mcp_server_acquired"
-RUNTIME_MCP_SERVER_RELEASED: Final[CoreEventType] = "runtime.mcp_server_released"
 RUNTIME_MCP_SERVER_STOPPED: Final[CoreEventType] = "runtime.mcp_server_stopped"
 RUNTIME_MCP_SERVER_FAILED: Final[CoreEventType] = "runtime.mcp_server_failed"
 GRAPH_LOOP_STEP: Final[CoreEventType] = "graph.loop_step"
@@ -170,6 +170,7 @@ RUNTIME_APPROVAL_REQUESTED: Final[CoreEventType] = "runtime.approval_requested"
 RUNTIME_APPROVAL_RESOLVED: Final[CoreEventType] = "runtime.approval_resolved"
 RUNTIME_QUESTION_REQUESTED: Final[CoreEventType] = "runtime.question_requested"
 RUNTIME_QUESTION_ANSWERED: Final[CoreEventType] = "runtime.question_answered"
+COMMAND_RESOLVED: Final[CoreEventType] = "command.resolved"
 RUNTIME_FAILED: Final[CoreEventType] = "runtime.failed"
 
 RUNTIME_CONTEXT_COMPACTED: Final[RuntimeEventType] = "runtime.context_compacted"
@@ -234,7 +235,6 @@ EMITTED_EVENT_TYPES: Final[tuple[CoreEventType, ...]] = (
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_REUSED,
     RUNTIME_MCP_SERVER_ACQUIRED,
-    RUNTIME_MCP_SERVER_RELEASED,
     RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_MCP_SERVER_FAILED,
     GRAPH_LOOP_STEP,
@@ -254,6 +254,7 @@ EMITTED_EVENT_TYPES: Final[tuple[CoreEventType, ...]] = (
     RUNTIME_APPROVAL_RESOLVED,
     RUNTIME_QUESTION_REQUESTED,
     RUNTIME_QUESTION_ANSWERED,
+    COMMAND_RESOLVED,
     RUNTIME_FAILED,
 )
 RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (

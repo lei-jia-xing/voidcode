@@ -46,13 +46,13 @@ EventEnvelope(
 
 以下事件当前属于稳定的运行时事件契约，与 `src/voidcode/runtime/events.py` 的 `KnownEventType`（即 `KNOWN_EVENT_TYPES`，`EMITTED_EVENT_TYPES` 与 `RUNTIME_EVENT_TYPES` 的无交并集）一致。它们覆盖当前 deterministic 与 provider 两条 execution engine 路径：
 
-- 请求与技能：`runtime.request_received`、`runtime.skills_loaded`、`runtime.skills_applied`、`runtime.hook_presets_loaded`
+- 请求与技能：`runtime.request_received`、`runtime.skills_loaded`、`runtime.skills_applied`、`runtime.hook_presets_loaded`、`command.resolved`。当请求的 prompt 是斜杠命令时，运行时在解析命令后于流前导阶段持久化 `command.resolved`，payload 携带 `name`、`source`、`arguments`、`raw_arguments`、`original_prompt` 与 `rendered_prompt`
 - provider 治理：`runtime.provider_fallback`、`runtime.provider_transient_retry`、`runtime.provider_context_policy`。当被重启的那次尝试已经向客户端流出可见内容（assistant/reasoning 文本、tool-call 预览）时，事件 payload 增加 `discarded_streamed_output: true`，客户端据此丢弃该次尝试的实时投影（实时投影不进入持久化 transcript）；未流出任何内容的尝试不带此字段
 - provider 终态语义：无法识别的 `done_reason`（含缺失原因）按已完成的 stop 等价终态处理；`error` / `cancelled` 仍为失败终态
 - provider 终态诊断：`graph.response_ready` payload 记录 `finish_reason`（规范终态）与 `finish_reason_reported`。`finish_reason_reported` 为 `false` 表示上游声明终态但未给出可读取的原因，此时运行时以 `warning` 记录，使被截断但仍"正常结束"的流可被 `sessions debug` 之类检查发现；正常 `stop` 为 `true`
 - ACP：`runtime.acp_connected`、`runtime.acp_disconnected`、`runtime.acp_failed`、`runtime.acp_delegated_lifecycle`
 - LSP：`runtime.lsp_server_started`、`runtime.lsp_server_reused`、`runtime.lsp_server_startup_rejected`、`runtime.lsp_server_stopped`、`runtime.lsp_server_failed`
-- MCP：`runtime.mcp_server_started`、`runtime.mcp_server_reused`、`runtime.mcp_server_acquired`、`runtime.mcp_server_released`、`runtime.mcp_server_stopped`、`runtime.mcp_server_failed`
+- MCP：`runtime.mcp_server_started`、`runtime.mcp_server_reused`、`runtime.mcp_server_acquired`、`runtime.mcp_server_stopped`、`runtime.mcp_server_failed`
 - graph 阶段：`graph.loop_step`、`graph.model_turn`、`graph.tool_request_created`
 - 工具执行边界：`runtime.tool_lookup_succeeded`、`runtime.tool_started`、`runtime.tool_progress`、`runtime.tool_completed`、`runtime.tool_timeout`、`runtime.tool_input_processed`、`runtime.tool_hook_pre`、`runtime.tool_hook_post`
 - 权限 / 审批 / 提问：`runtime.permission_resolved`、`runtime.approval_requested`、`runtime.approval_resolved`、`runtime.question_requested`、`runtime.question_answered`
@@ -72,7 +72,7 @@ Runtime hook surface 与其事件名称的内部对应关系由
 - 会话：`runtime.session_started`、`runtime.session_ended`、`runtime.session_idle`
 - 技能绑定：`runtime.skill_loaded`、`runtime.skills_binding_mismatch`
 - 任务状态与推理：`runtime.todo_updated`、`runtime.reasoning_part`、`runtime.reasoning_diagnostic`、`runtime.turn_progress`、`runtime.stuck_detected`
-- 策略物化：`runtime.policy_materialized`
+- 策略物化：无独立事件——它是 `runtime.request_received` payload 的 `runtime_policy.materialization` 嵌套标记（`kind == "runtime_policy_materialized"`），见下文 `runtime.request_received` 一节
 - 上下文变换：`runtime.context_compacted`、`runtime.context_transform_applied`（正式事件，由 `run_loop.py` 发射；payload 见下文）
 - 每轮提醒：`runtime.reminder_injected`（terminal 回合发出的 reminder 已通过 per-call 通道注入；payload 见下文）
 - provider context 恢复：`runtime.provider_context_recovery`（`context_limit` 的一次性本地裁剪/升级决策；payload 见下文）
@@ -317,6 +317,16 @@ Runtime hook surface 与其事件名称的内部对应关系由
 ### live-only 传输细节（非词汇表成员）
 
 `graph.provider_stream` 分片只在 provider streaming 开启时向客户端实时投射，不进入持久化 transcript，也不属于 `KnownEventType`。reasoning 通道内容以 `runtime.reasoning_part` 事件表达与持久化（见 `runtime_reasoning_part_from_provider_stream`）。
+
+### resume 路径的事件持久化
+
+resume / answer 路径（`src/voidcode/runtime/resume.py`）上发出的会话事件与其他路径一视同仁地写入 `session_events`，顺序为 `runtime.question_requested` → `runtime.question_answered` → 该次回答的 `runtime.tool_completed` → 后续 graph loop 事件。`runtime.question_answered` 的 payload 携带 `request_id` 与其 `responses`（每项含 `header` 与 `answers`），因此重放 transcript 本身就能读出用户的选择；`sessions.resume_checkpoint_json` 的 `tool_results[].data.responses` 仍然是 resume 重建 provider context 所用的载体，但不再是唯一载体。该行还有第二个作用：它使同一个 `request_id` 的陈旧重答不可能发生——`validate_pending_question_matches_recorded_request` 发现日志里已有该请求的 resolution 时直接拒绝。
+
+仍保持 **live-only**、不写入 `session_events` 的 resume 投影只有一个：`runtime.skills_binding_mismatch`（payload 由 `src/voidcode/runtime/skills.py` 的 `skill_binding_mismatch_payload` 计算）。它是 resume 状态迁移的投影，没有对应的持久化行；它仍是 `KnownEventType` 成员，客户端可以在实时流上看到它，但重放 transcript 里不会出现。当前 TUI/CLI/frontend 都没有渲染该事件。
+
+重放方若需要「发生过不匹配」这一事实，只能自行比较 `resume_checkpoint_json.skill_binding_snapshot` 与 `metadata_json.skill_snapshot.binding_snapshot`（两者的差异即 `skill_binding_mismatch_payload` 计算出的不匹配）。
+
+客户端契约：客户端必须容忍 `runtime.skills_binding_mismatch` 从不出现在重放的 transcript 中，且不得假设每个实时流事件最终都会成为一条已存储的行。
 
 ### `graph.tool_call_start` / `graph.tool_call_delta` / `graph.tool_call_end`
 - source: `graph`
