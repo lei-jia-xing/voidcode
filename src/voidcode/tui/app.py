@@ -9,10 +9,13 @@ Contracts implemented here:
 
 * **Commit once.** Rows of settled blocks leave the app exactly once:
   ``Transcript.take_settled()`` -> ``LiveRegion.commit()`` ->
-  ``Terminal.commit_rows()`` (native scrollback, never repainted). One exception
-  is documented on :meth:`TuiApp._toggle_expand`: expanding a block that was
-  already committed has to re-print the settled tape, because inline scrollback
-  cannot be rewritten.
+  ``Terminal.commit_rows()`` (native scrollback, never repainted). The tape owns
+  that ledger itself (it marks the last block handed out), so no caller -- not
+  ``ctrl+o``, not a resize -- can re-emit a committed prefix or misalign a later
+  batch. A toggle that lands behind the commit boundary cannot be redrawn, and
+  ``Transcript.set_expanded`` reports that so the app can say so. The live region
+  keeps its own ledger for the overflow it flushed (a live tail taller than the
+  terminal), so the settle batch that follows cannot write those rows twice.
 * **Paint the tail.** Only the live tail -- unsettled blocks, the status line and
   the composer (or the active overlay) -- enters ``Terminal.paint_frame``.
 * **Frame cadence.** At most one frame every ``MIN_RENDER_INTERVAL_MS`` (33 ms),
@@ -112,10 +115,6 @@ _BACKGROUND_POLL_SECONDS: Final = 1.0
 _SPINNER_ADVANCE_SECONDS: Final = 0.08
 #: Bounded wait for the stream thread during shutdown (it is a daemon thread).
 _SHUTDOWN_JOIN_SECONDS: Final = 2.0
-#: ``/expand`` artifact read limit, unchanged from the old app.
-_ARTIFACT_READ_LIMIT: Final = 10_000
-#: The one slash command the composer completes.
-_SLASH_COMMANDS: Final[tuple[str, ...]] = ("/expand",)
 
 _BACKGROUND_TERMINAL_EVENTS: Final[frozenset[str]] = frozenset(
     {
@@ -243,7 +242,14 @@ class _StreamFailed:
 
 @dataclass(frozen=True, slots=True)
 class _PolledChunks:
-    """Background-notice replay fetched for ``session_id`` on the poll thread."""
+    """Background-notice replay fetched for ``session_id`` on the poll thread.
+
+    A replay is history, not a live stream: the runtime answers a bare
+    ``resume_stream`` with the persisted events *plus* one ``kind="output"``
+    chunk carrying the session's stored answer. The events are deduped by
+    sequence, but that output chunk is not an event, so it is handled by
+    :meth:`TuiApp._consume_output`'s replay rule rather than the live one.
+    """
 
     session_id: str
     chunks: tuple[RuntimeStreamChunk, ...]
@@ -304,6 +310,10 @@ class TuiApp:
         self._quit = False
         self._input_closed = False
         self._cancel_requested = False
+        #: Transient hint for a ``ctrl+o`` toggle that only reached rows already
+        #: in scrollback. It rides the live region (repainted, never committed),
+        #: like omp's ``showStatus``, so it cannot grow the scrollback.
+        self._expand_notice = ""
         self._escape_deadline = 0.0
         self._dirty = True
         self._next_frame = 0.0
@@ -337,7 +347,6 @@ class TuiApp:
             theme=theme,
             width=width,
             placeholder="Ask voidcode...",
-            completer=self._complete_slash_command,
         )
         self._region = LiveRegion(terminal.commit_rows, max_rows=terminal.height, paint=terminal.paint_frame)
         self._lsp_label = self._query_lsp_label()
@@ -507,13 +516,15 @@ class TuiApp:
         self._region.set_live(self._live_frame())
 
     def _live_frame(self) -> Sequence[str]:
-        assert self._view is not None and self._status is not None and self._composer is not None
+        assert self._view is not None and self._status is not None and self._composer is not None and self._theme is not None
         rows = list(self._view.transcript().live_rows())
         if rows:
             rows.append("")
         status = self._status.render(self._status_data(self._view.view_state()))
         if status:
             rows.append(status)
+        if self._expand_notice:
+            rows.append(f"{self._theme.fg('dim', self._expand_notice)}")
         rows.extend(self._overlay_rows() if self._overlay is not None else self._composer.render())
         return rows
 
@@ -561,7 +572,7 @@ class TuiApp:
             elif isinstance(item, _StreamFailed):
                 self._fail_stream(item.error)
 
-    def _consume_chunk(self, chunk: RuntimeStreamChunk) -> None:
+    def _consume_chunk(self, chunk: RuntimeStreamChunk, *, replay: bool = False) -> None:
         assert self._view is not None
         self._session_id = chunk.session.session.id
         if self._cancel_requested:
@@ -576,26 +587,40 @@ class TuiApp:
                 self._dirty = True
             self._take_pending_overlay()
         elif chunk.kind == "output" and chunk.output is not None:
-            self._consume_output(chunk.output)
+            self._consume_output(chunk.output, replay=replay)
 
-    def _consume_output(self, output: str) -> None:
+    def _consume_output(self, output: str, *, replay: bool = False) -> None:
         """The graph writes the complete answer after the provider deltas.
 
         Render it only when no delta was streamed for this attempt, or the answer
         would appear twice (the old app's ``_streamed_provider_text`` rule; the
         view owns the flag so a retraction resets it in one place).
+
+        ``replay`` marks the chunk as history from the background poll. A poll
+        repeats every second while a background task is tracked, and it re-sends
+        the stored answer, so appending it would reprint the transcript once per
+        second. Two rules keep a replay honest: it renders nothing when the tape
+        already holds that text, and anything it does add is settled at once --
+        an unsettled block would repeat on the next poll and grow
+        ``Transcript.live_rows()`` without bound. (A replay can never be the first
+        place an answer is seen: the poll only runs while this client is idle with
+        a tracked task, a task is only tracked from an event on this client's own
+        stream, and that stream has already consumed the turn's answer either as
+        provider deltas or as the live ``output`` chunk.)
         """
         assert self._view is not None
         if self._view.streamed_provider_text:
             return
-        self._view.transcript().add(AssistantBlock(text=output, settled=False))
+        if replay and any(isinstance(block, AssistantBlock) and block.text == output for block in self._view.transcript().blocks):
+            return
+        self._view.transcript().add(AssistantBlock(text=output, settled=replay))
         self._dirty = True
 
     def _consume_polled(self, item: _PolledChunks) -> None:
         if item.session_id != self._session_id:
             return
         for chunk in item.chunks:
-            self._consume_chunk(chunk)
+            self._consume_chunk(chunk, replay=True)
 
     def _finish_stream(self, final_status: str) -> None:
         assert self._view is not None
@@ -610,6 +635,10 @@ class TuiApp:
         self._streaming = False
         self._cancel_requested = False
         self._view.finish_stream("failed", error=error)
+        # A live approval/question whose answer never reached the runtime is
+        # re-armed by ``finish_stream``; re-open it instead of leaving the turn
+        # stuck at "Waiting input" (no further chunk arrives on a failed stream).
+        self._take_pending_overlay()
         self._refresh_context_window()
         self._dirty = True
 
@@ -674,7 +703,9 @@ class TuiApp:
         Background/delegated notices are persisted events on the *parent* session
         and the runtime has no subscription, so an idle client has to ask -- this
         is the old app's 1 s poll, ported. The view's sequence dedupe drops the
-        events already applied.
+        events already applied; the replay's stored answer chunk is not an event,
+        so ``_consume_output``'s replay rule keeps it from reprinting the
+        transcript (see :meth:`TuiApp._consume_output`).
         """
         if self._polling or self._streaming or self._session_id is None or not self._tracked_tasks:
             return
@@ -698,6 +729,9 @@ class TuiApp:
     # -- keys --------------------------------------------------------------
 
     def _handle_key(self, key: Key) -> None:
+        # The expand notice describes the previous key; it is cleared here so it
+        # behaves like omp's transient ``showStatus`` rather than a permanent row.
+        self._expand_notice = ""
         if self._overlay is not None:
             self._handle_overlay_key(key)
             return
@@ -823,8 +857,11 @@ class TuiApp:
         self._dirty = True
 
     def _command_session_new(self) -> None:
-        assert self._view is not None
+        assert self._view is not None and self._region is not None
         self._view.reset_for_new_session()
+        # The transcript is replaced, so the frame sequence is new: forget the
+        # flushed prefix (a resize must not -- see ``LiveRegion.reset_overflow``).
+        self._region.reset_overflow()
         self._view.transcript().add(SessionMarkerBlock(label="New Session"))
         self._session_id = None
         self._model = self._config.model or ""
@@ -851,8 +888,11 @@ class TuiApp:
         self._dirty = True
 
     def _open_resumed_session(self, session_id: str) -> None:
-        assert self._view is not None
+        assert self._view is not None and self._region is not None
         self._view.reset_for_new_session()
+        # A resumed session replaces the tape: its frame sequence is new, so the
+        # flushed prefix no longer describes it.
+        self._region.reset_overflow()
         self._session_id = session_id
         self._session_effort = ""
         self._tracked_tasks.clear()
@@ -886,78 +926,37 @@ class TuiApp:
 
     # -- slash commands ----------------------------------------------------
 
-    def _complete_slash_command(self, word: str) -> Sequence[str]:
-        if not word.startswith("/"):
-            return ()
-        lowered = word.lower()
-        return [command for command in _SLASH_COMMANDS if command.startswith(lowered)]
-
     def _slash_command(self, raw: str) -> None:
-        command, _, argument = raw.partition(" ")
-        if command.lower() == "/expand":
-            self._expand(argument.strip())
-            return
-        self._notice(f"✖ Unknown command: {command}")
+        """No slash commands are registered; any ``/foo`` is reported as unknown.
 
-    def _expand(self, tool_call_id: str) -> None:
-        """``/expand <tool_call_id>``: artifact first, cached content second."""
-        assert self._view is not None
-        if not tool_call_id:
-            self._view.expand_tool("", "")
-            self._dirty = True
-            return
-        content: str | None = None
-        artifact_failed = False
-        artifact_id = self._view.pending_tool_artifact(tool_call_id)
-        if artifact_id is not None and self._session_id is not None:
-            result: Mapping[str, object] | None
-            try:
-                result = self._runtime.read_tool_output_artifact(
-                    session_id=self._session_id,
-                    tool_call_id=tool_call_id,
-                    limit=_ARTIFACT_READ_LIMIT,
-                )
-            except Exception as error:
-                logger.error("Failed to read tool output artifact: %s", error)
-                artifact_failed = True
-                result = None
-            if isinstance(result, Mapping) and result.get("status") == "available":
-                candidate = result.get("content")
-                if isinstance(candidate, str):
-                    content = candidate
-        if content is None:
-            content = self._view.tool_content(tool_call_id)
-            if content is not None and artifact_failed:
-                self._notice("⚠ Artifact read failed; showing cached output")
-        if content is None:
-            self._notice(f"✖ No stored output for tool_call_id: {tool_call_id}")
-            return
-        self._view.expand_tool(tool_call_id, content)
-        self._rewrite_settled()
+        This is the only feedback a typo gets, so the path stays even though the
+        composer no longer completes anything.
+        """
+        self._notice(f"✖ Unknown command: {raw.partition(' ')[0]}")
 
     def _toggle_expand(self) -> None:
         """``tools_expand``: expand or collapse every block.
 
-        Expanding a block that was already committed rewrites rows that live in
-        native scrollback, which cannot be rewritten: the settled tape is printed
-        once more, expanded (see :meth:`_rewrite_settled`).
+        Only the live tail changes, exactly as in omp 18.3.4 (``setToolsExpanded``
+        -> ``requestRender(true)``): a block already in native scrollback keeps the
+        rows it was committed with, because scrollback cannot be rewritten and
+        re-printing it would duplicate the transcript. The notice only claims
+        "committed rows cannot be redrawn" when the toggle actually landed there
+        (``set_expanded``) and there is no live tail left to show it -- an
+        ordinary toggle with unsettled blocks still repaints them. The notice
+        rides the live region (repainted, never committed), so the gesture adds
+        zero rows to scrollback.
         """
         assert self._view is not None
-        blocks = self._view.transcript().blocks
-        if not blocks:
+        transcript = self._view.transcript()
+        if not transcript.blocks:
             return
-        self._view.transcript().set_expanded(not all(block.expanded for block in blocks))
-        self._rewrite_settled()
-
-    def _rewrite_settled(self) -> None:
-        """Re-print the settled tape after a change inside the committed prefix.
-
-        Inline scrollback cannot be rewritten, and ``take_settled``'s row cursor
-        cannot see an edit that kept the total length: without the rewind it would
-        hand out a misaligned suffix and commit garbage rows.
-        """
-        assert self._view is not None
-        self._view.transcript().rewind()
+        expanded = not all(block.expanded for block in transcript.blocks)
+        label = "enabled" if expanded else "disabled"
+        committed_only = transcript.set_expanded(expanded) and not transcript.live_rows()
+        self._expand_notice = (
+            f"Tool output expansion {label} (committed rows cannot be redrawn)" if committed_only else f"Tool output expansion {label}"
+        )
         self._dirty = True
 
     def _notice(self, text: str) -> None:

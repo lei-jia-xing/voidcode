@@ -20,10 +20,7 @@ from voidcode.tui.theme import (
 REQUIRED_SYMBOLS = (
     "status.success",
     "status.error",
-    "status.warning",
     "status.disabled",
-    "nav.expand",
-    "nav.collapse",
     "tree.horizontal",
     "boxRound.topLeft",
     "boxRound.topRight",
@@ -86,7 +83,7 @@ def test_registry_is_frozen_to_two_themes() -> None:
 
 #: omp leaves these foreground tokens to the terminal's default colour (an empty
 #: string in both palettes: ``theme/color.ts:26-29`` emits ``\\x1b[39m``).
-TERMINAL_DEFAULT_TOKENS = frozenset({"text", "toolTitle", "userMessageText", "customMessageText"})
+TERMINAL_DEFAULT_TOKENS = frozenset({"text", "toolTitle", "userMessageText"})
 
 
 @pytest.mark.parametrize("name", sorted(THEME_NAMES))
@@ -108,7 +105,7 @@ def test_default_foreground_token_uses_the_fg_only_reset() -> None:
 
 def test_256_index_tokens_render_as_ansi_256() -> None:
     theme = resolve_theme("voidcode-light", "light")
-    assert theme.get_fg_ansi("statusLineStaged") == "\x1b[38;5;28m"
+    assert theme.get_fg_ansi("statusLineCost") == "\x1b[38;5;133m"
 
 
 def test_color_depth_degrades() -> None:

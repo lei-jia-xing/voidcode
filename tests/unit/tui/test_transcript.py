@@ -116,20 +116,68 @@ def test_mark_settled_stops_streaming_and_the_pulse_row() -> None:
     assert not any("streaming" in row for row in plain(transcript.rows()))
 
 
-def test_rewind_re_hands_out_the_settled_tape() -> None:
-    """A change inside the committed prefix needs the whole tape handed out again."""
+def test_take_settled_never_re_emits_after_expand_in_place_edit() -> None:
+    """A committed block edited in place is not handed out again (Ctrl+O)."""
     transcript = tape()
-    transcript.add(NoticeBlock(text="one"))
-    handed_out = transcript.take_settled()
+    transcript.add(ToolBlock(tool="bash", title="Bash", body=[f"line-{index}" for index in range(9)], state="success"))
+    assert transcript.take_settled() == transcript.settled_rows()
+    committed = list(transcript.settled_rows())
+
+    # Ctrl+O: expand rewrites the block's rows, but they are already committed.
+    assert transcript.set_expanded(True) is True
+    assert transcript.take_settled() == []
+    assert transcript.take_settled() == []
+    # The live rendering did change; only the committed rows are frozen.
+    assert transcript.settled_rows() != committed
+
+
+def test_committed_block_shrink_does_not_re_emit_the_tape() -> None:
+    """A collapsing committed block hands out nothing (the old shrink-rewind bug)."""
+    transcript = tape()
+    block = transcript.add(ToolBlock(tool="bash", title="Bash", body=[f"line-{index}" for index in range(13)], expanded=True, state="success"))
+    first = transcript.take_settled()
+    assert first == transcript.settled_rows()
+    assert len(first) > 5
+
+    block.expanded = False  # collapse: 13 rows -> 5
     assert transcript.take_settled() == []
 
-    transcript.rewind()
-    # Expanding an already-committed block rewrote its rows in place; the caller
-    # re-prints, because native scrollback cannot be rewritten.
-    transcript.set_expanded(True)
-    again = transcript.take_settled()
-    assert again == handed_out
+
+def test_toggle_of_an_all_committed_tape_reports_it_without_re_emitting() -> None:
+    """``ctrl+o`` on a fully committed tape: honest signal, zero rows."""
+    transcript = tape()
+    transcript.add(ToolBlock(tool="bash", title="Bash", body=[f"line-{index}" for index in range(9)], state="success"))
+    transcript.take_settled()
+    assert transcript.set_expanded(True) is True
+    assert transcript.set_expanded(False) is True
     assert transcript.take_settled() == []
+
+
+def test_expand_of_a_live_block_changes_the_live_tail() -> None:
+    """A block past the commit frontier still expands visibly (Ctrl+O stays useful)."""
+    transcript = tape()
+    transcript.add(NoticeBlock(text="committed"))
+    transcript.take_settled()
+    transcript.add(ToolBlock(tool="bash", title="Bash", body=[f"line-{index}" for index in range(9)], settled=False))
+    collapsed = transcript.live_rows()
+
+    transcript.set_expanded(True)
+    assert transcript.live_rows() != collapsed
+    assert any("line-8" in row for row in plain(transcript.live_rows()))
+    assert transcript.take_settled() == []
+
+
+def test_a_replaced_tape_starts_a_fresh_ledger() -> None:
+    """A session switch clears ``blocks``; the ledger must not claim stale rows."""
+    transcript = tape()
+    transcript.add(NoticeBlock(text="old session"))
+    transcript.take_settled()
+
+    transcript.blocks.clear()
+    assert transcript.take_settled() == []
+
+    transcript.add(NoticeBlock(text="new session"))
+    assert [row.strip() for row in plain(transcript.take_settled())] == ["new session"]
 
 
 # ---------------------------------------------------------------------------

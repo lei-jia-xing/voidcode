@@ -55,25 +55,6 @@ _ANSI = re.compile(r"\x1b\[[0-9;?<>]*[a-zA-Z]|\x1b\][^\x07]*\x07")
 # ---------------------------------------------------------------------------
 
 
-def _persisted_tool_call_id(db_path: Path) -> str:
-    """One real tool call id from the runtime's persisted events.
-
-    The transcript never prints ids, and ``/expand`` is documented to take one, so
-    the test reads the runtime's own record instead of inventing an id.
-    """
-    connection = sqlite3.connect(db_path)
-    try:
-        rows = connection.execute("SELECT payload_json FROM session_events").fetchall()
-    finally:
-        connection.close()
-    for (payload,) in rows:
-        event = json.loads(payload)
-        tool_call_id = event.get("tool_call_id")
-        if isinstance(tool_call_id, str) and tool_call_id:
-            return tool_call_id
-    return ""
-
-
 def _session_status(db_path: Path) -> str:
     """Status of the session the runtime persisted (``interrupted`` after a cancel)."""
     connection = sqlite3.connect(db_path)
@@ -140,6 +121,42 @@ class _PtyTui:
                 return True
             self._pump(deadline)
         return needle in self.raw
+
+    def wait_for_committed(self, needle: str, timeout: float) -> bool:
+        """Wait until ``needle`` is a committed row, not merely a live frame.
+
+        ``wait_for`` scans the raw stream, where the row appears one frame before
+        the commit that puts it in scrollback; a test that snapshots
+        :meth:`committed_rows` right after it can miss the last row. Waiting on
+        the commit path itself removes that race.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if any(needle in row for row in self.committed_rows()):
+                return True
+            self._pump(deadline)
+        return any(needle in row for row in self.committed_rows())
+
+    def wait_for_commit_to_settle(self, timeout: float, *, quiet: float = 0.5) -> None:
+        """Wait until no new committed row has appeared for ``quiet`` seconds.
+
+        ``wait_for_committed`` returns on the *first* row carrying the text, and
+        here the read tool's body and the assistant answer are the same string: a
+        snapshot taken then can miss the answer row that settles one frame later.
+        A quiet period on the commit path is the honest "the turn finished
+        committing" signal.
+        """
+        deadline = time.monotonic() + timeout
+        previous = self.committed_rows()
+        stable_since = time.monotonic()
+        while time.monotonic() < deadline:
+            self._pump(min(deadline, time.monotonic() + 0.05))
+            rows = self.committed_rows()
+            if rows != previous:
+                previous = rows
+                stable_since = time.monotonic()
+            elif time.monotonic() - stable_since >= quiet:
+                return
 
     def wait_for_exit(self, timeout: float) -> int | None:
         deadline = time.monotonic() + timeout
@@ -231,7 +248,11 @@ def test_inline_tui_prompt_response_commit_and_clean_exit(tmp_path: Path) -> Non
         assert tui.committed_rows() == []
 
         tui.send(f"{_PROMPT}\r".encode())
-        assert tui.wait_for(_ANSWER, _ANSWER_TIMEOUT), tui.raw[-4000:]
+        assert tui.wait_for_committed(_ANSWER, _ANSWER_TIMEOUT), tui.raw[-4000:]
+        # The read tool's body carries the same text as the answer, so the first
+        # committed match is the tool row; wait for the turn to stop committing
+        # before snapshotting, or the answer row (one frame later) is missed.
+        tui.wait_for_commit_to_settle(_ANSWER_TIMEOUT)
 
         rows = tui.committed_rows()
         raw = tui.raw
@@ -254,16 +275,20 @@ def test_inline_tui_prompt_response_commit_and_clean_exit(tmp_path: Path) -> Non
         #    commit writes it once, and ordinary frames never rewrite history.
         assert raw.count(_PROMPT) <= 2, raw.count(_PROMPT)
 
-        # 5. ctrl+o expands every block. Rows of an already-committed block cannot
-        #    be rewritten in scrollback, so the settled tape is printed once more
-        #    (and only once): the prompt row is handed out a second time.
+        # 5. ctrl+o toggles expansion. Committed rows are in native scrollback and
+        #    cannot be rewritten, so the gesture must not re-print the settled tape
+        #    and must never hand a committed row to the terminal twice. Only the
+        #    live tail changes (here: the toggle notice), so the scrollback is
+        #    byte-for-byte what it was before the key.
         tui.send(b"\x0f")
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and tui.committed_rows().count(_PROMPT) < 2:
-            tui._pump(deadline)
+        assert tui.wait_for("Tool output expansion", 10.0), tui.raw[-3000:]
         expanded = tui.committed_rows()
-        assert len(expanded) > len(rows), expanded
-        assert expanded.count(_PROMPT) == 2, expanded
+        assert expanded == rows, expanded
+
+        # A second press toggles back and still commits nothing new.
+        tui.send(b"\x0f")
+        assert tui.wait_for("Tool output expansion disabled", 10.0), tui.raw[-3000:]
+        assert tui.committed_rows() == rows, tui.committed_rows()
 
         # 6. The ported palette reaches the wire: the committed user row carries the
         #    userMessageBg band and the status/tool accents carry `accent`, all as
@@ -336,7 +361,7 @@ def test_inline_tui_configured_keybindings_and_session_picker_alt_screen(tmp_pat
         assert tui.wait_for(_LEAVE_ALT, 10.0), tui.raw[-3000:]
         assert tui.wait_for("Resumed Session", 10.0), tui.raw[-3000:]
         # The resumed session's replay lands in scrollback after the borrow ends.
-        assert tui.wait_for(_ANSWER, 20.0), tui.raw[-3000:]
+        assert tui.wait_for_committed(_ANSWER, 20.0), tui.raw[-3000:]
 
         tui.send(b"\x03\x03")
         assert tui.wait_for_exit(_EXIT_TIMEOUT) == 0, tui.raw[-2000:]
@@ -348,38 +373,6 @@ def test_inline_tui_configured_keybindings_and_session_picker_alt_screen(tmp_pat
         assert any("Resumed Session" in row for row in rows), rows
         assert _ANSWER in rows
         assert raw.endswith("\x1b[?2004l\x1b[<u\x1b[0m\x1b[?25h"), raw[-80:]
-    finally:
-        tui.close()
-
-
-def test_inline_tui_expand_slash_command_reprints_the_fetched_card(tmp_path: Path) -> None:
-    """``/expand <id>``: artifact fetch -> expanded card -> settled tape re-printed."""
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    (workspace / "source.txt").write_text("hello marker\n", encoding="utf-8")
-    db_path = tmp_path / "sessions.sqlite3"
-    tui = _PtyTui(workspace, db_path)
-    try:
-        assert tui.wait_for("Ask voidcode", _PROMPT_TIMEOUT), tui.raw[-2000:]
-        tui.send(f"{_PROMPT}\r".encode())
-        assert tui.wait_for(_ANSWER, _ANSWER_TIMEOUT), tui.raw[-3000:]
-        before = tui.committed_rows()
-
-        # The transcript does not print tool call ids; read one from the runtime's
-        # own persisted events (the id `/expand` is documented to take).
-        tool_call_id = _persisted_tool_call_id(db_path)
-        assert tool_call_id
-        tui.send(f"/expand {tool_call_id}\r".encode())
-        deadline = time.monotonic() + 15.0
-        while time.monotonic() < deadline and not any("╭" in row for row in tui.committed_rows()):
-            tui._pump(deadline)
-        after = tui.committed_rows()
-        assert any("╭" in row and "Read" in row for row in after), after
-        assert len(after) > len(before), after
-
-        tui.send(b"\x03\x03")
-        assert tui.wait_for_exit(_EXIT_TIMEOUT) == 0, tui.raw[-2000:]
-        assert tui.raw.endswith("\x1b[?2004l\x1b[<u\x1b[0m\x1b[?25h"), tui.raw[-80:]
     finally:
         tui.close()
 

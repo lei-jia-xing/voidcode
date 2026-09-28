@@ -267,6 +267,7 @@ class SessionView:
         "_approval_context",
         "_last_sequence",
         "_pending",
+        "_pending_dispatched",
         "_pending_taken",
         "_session_id",
         "_state",
@@ -274,9 +275,7 @@ class SessionView:
         "_streamed_provider_text",
         "_thinking",
         "_thinking_block",
-        "_tool_artifact",
         "_tool_blocks",
-        "_tool_content",
         "_tool_display",
         "_tool_progress",
         "_transcript",
@@ -289,6 +288,10 @@ class SessionView:
         self._state = "Idle"
         self._pending: ApprovalRequest | QuestionRequest | None = None
         self._pending_taken = False
+        # True once an answer was handed to the runtime (``resolve_overlay``).
+        # Only a dispatched answer can fail to reach the runtime, so only then may
+        # ``finish_stream("failed")`` re-arm the request for another attempt.
+        self._pending_dispatched = False
         self._session_id: str | None = None
         self._last_sequence: dict[str, int] = {}
         self._stream_output = ""
@@ -298,8 +301,6 @@ class SessionView:
         self._thinking_block: ThinkingBlock | None = None
         self._tool_blocks: dict[str, ToolBlock] = {}
         self._tool_display: dict[str, dict[str, object]] = {}
-        self._tool_content: dict[str, str] = {}
-        self._tool_artifact: dict[str, str] = {}
         self._tool_progress: dict[str, dict[str, list[str]]] = {}
         self._approval_context: dict[str, dict[str, object]] = {}
 
@@ -316,14 +317,6 @@ class SessionView:
             pending=self._pending,
             status=StatusSegmentData(state=self._state, session_name=short_session_id(self._session_id)),
         )
-
-    def pending_tool_artifact(self, tool_call_id: str) -> str | None:
-        """Artifact id for a tool call, when the runtime stored one."""
-        return self._tool_artifact.get(tool_call_id)
-
-    def tool_content(self, tool_call_id: str) -> str | None:
-        """Cached tool output (the in-memory copy of the delivered content)."""
-        return self._tool_content.get(tool_call_id)
 
     @property
     def streamed_provider_text(self) -> bool:
@@ -354,11 +347,10 @@ class SessionView:
         """
         self._pending = None
         self._pending_taken = False
+        self._pending_dispatched = False
         self._approval_context.clear()
         self._tool_progress.clear()
         self._tool_display.clear()
-        self._tool_content.clear()
-        self._tool_artifact.clear()
         self._tool_blocks.clear()
         self._last_sequence.clear()
         self._stream_output = ""
@@ -391,10 +383,18 @@ class SessionView:
         self._thinking = ""
         self._streamed_provider_text = False
         if final_status == "failed":
-            self._pending = None
-            self._pending_taken = False
+            # Re-arm only a request whose answer was dispatched but never reached
+            # the runtime. A failure while the overlay is still open and
+            # unanswered must not reset the hand-out flag, or the user's own
+            # answer would re-open the same request and send it twice.
+            if self._pending_dispatched:
+                self._pending_taken = False
+                self._pending_dispatched = False
             self._state = "Failed"
         else:
+            # A non-failed finish means any in-flight answer reached the runtime,
+            # so a later failure must not re-open it.
+            self._pending_dispatched = False
             self._state = "Idle"
 
     def take_pending_overlay(self) -> ApprovalRequest | QuestionRequest | None:
@@ -409,11 +409,18 @@ class SessionView:
         return self._pending
 
     def resolve_overlay(self, request_id: str) -> None:
-        """Clear the pending overlay for ``request_id`` (approval/answer round trip)."""
+        """Record that an answer is being handed to the runtime.
+
+        The request stays pending until ``runtime.question_answered`` /
+        ``runtime.approval_resolved`` arrives, so an answer round trip that never
+        reaches the runtime can still be re-armed -- the persisted
+        ``runtime.question_requested`` event cannot re-deliver, because the
+        sequence dedupe has already consumed it. ``_pending_dispatched`` marks
+        that this attempt is in flight; only such an attempt may be re-armed.
+        """
         if self._pending is None or self._pending.request_id != request_id:
             return
-        self._pending = None
-        self._pending_taken = False
+        self._pending_dispatched = True
         self._set_state("Running")
 
     # -- event projection --------------------------------------------------
@@ -599,11 +606,6 @@ class SessionView:
         content = payload.get("content")
         body: list[str] = []
         language: str | None = None
-        if isinstance(content, str) and content and isinstance(tool_call_id, str):
-            self._tool_content[tool_call_id] = content
-            artifact = payload.get("artifact_id")
-            if isinstance(artifact, str) and artifact:
-                self._tool_artifact[tool_call_id] = artifact
         if isinstance(content, str) and content and kind != "write":
             # A write's ``content`` is the whole file; the old app never showed it.
             language = _content_language(kind, display, content)
@@ -641,6 +643,7 @@ class SessionView:
                 arguments=_format_arguments(payload.get("arguments")),
             )
             self._pending_taken = False
+            self._pending_dispatched = False
         # The old app noticed and switched state even without a usable id.
         self._transcript.add(NoticeBlock(text=f"⚠ Approval requested for tool: {tool_name}"))
         self._state = "Waiting approval"
@@ -659,6 +662,7 @@ class SessionView:
         if isinstance(request_id, str) and self._pending is not None and self._pending.request_id == request_id:
             self._pending = None
             self._pending_taken = False
+            self._pending_dispatched = False
         self._state = "Running"
         return True
 
@@ -672,6 +676,7 @@ class SessionView:
                 questions=tuple(questions) if isinstance(questions, list) else (),
             )
             self._pending_taken = False
+            self._pending_dispatched = False
         self._transcript.add(NoticeBlock(text=f"? Agent requested input ({count})"))
         self._state = "Waiting input"
         return True
@@ -682,6 +687,7 @@ class SessionView:
         if isinstance(request_id, str) and self._pending is not None and self._pending.request_id == request_id:
             self._pending = None
             self._pending_taken = False
+            self._pending_dispatched = False
         self._state = "Running"
         return True
 
@@ -733,34 +739,6 @@ class SessionView:
             text += f"\nchild: {child_session_id}"
         text += f"\ntask: {task_label}"
         self._transcript.add(BackgroundTaskBlock(text=text))
-
-    # -- expand ------------------------------------------------------------
-
-    def expand_tool(self, tool_call_id: str, content: str) -> None:
-        """``_handle_expand``: attach fetched artifact content and expand the block."""
-        if not tool_call_id:
-            self._transcript.add(NoticeBlock(text="Usage: /expand <tool_call_id>"))
-            return
-        self._tool_content[tool_call_id] = content
-        display = self._tool_display.get(tool_call_id)
-        kind = _display_field(display, "kind") or ""
-        language = _content_language(kind, display, content)
-        block = self._tool_blocks.get(tool_call_id)
-        if block is None:
-            self._transcript.add(
-                ToolBlock(
-                    tool="default",
-                    title=f"/expand {tool_call_id}",
-                    body=content.splitlines(),
-                    language=language,
-                    state="success",
-                    expanded=True,
-                )
-            )
-            return
-        block.body = content.splitlines()
-        block.language = language
-        block.expanded = True
 
     # -- helpers -----------------------------------------------------------
 

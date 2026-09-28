@@ -87,7 +87,6 @@ FG_TOKENS: Final[frozenset[str]] = frozenset(
         "text",
         "thinkingText",
         "userMessageText",
-        "customMessageText",
         "toolTitle",
         "mdHeading",
         "mdLink",
@@ -108,18 +107,11 @@ FG_TOKENS: Final[frozenset[str]] = frozenset(
         "syntaxNumber",
         "syntaxOperator",
         "syntaxPunctuation",
-        "thinkingOff",
-        "thinkingMinimal",
-        "thinkingLow",
-        "thinkingMedium",
         "thinkingHigh",
-        "thinkingXhigh",
-        "thinkingMax",
         "statusLineSep",
         "statusLineModel",
         "statusLinePath",
         "statusLineContext",
-        "statusLineStaged",
         "statusLineCost",
     }
 )
@@ -136,16 +128,16 @@ BG_TOKENS: Final[frozenset[str]] = frozenset(
 )
 
 # Provenance: defaults/titanium.json, vars resolved. A missing token inherits
-# from dark.json; ``thinkingMax`` is absent from both omp files, so it inherits
-# the nearest defined thinking level (``thinkingXhigh``).
+# from dark.json.
 #
 # Audited token-by-token against the ported source: every value matches
 # titanium.json/dark.json (dark) and light.json (light), and none is invented.
-# ``thinkingMax`` is in omp's vocabulary but left optional/unset by all three
-# palette files (``theme/schema.ts:13``); this table pins its fallback explicitly.
 # Carried only the tokens :data:`FG_TOKENS` / :data:`BG_TOKENS` name -- the
-# vocabulary this TUI resolves. Not carried: dark.json's undeclared ``link``, and
-# the ``export`` group ``pageBg``/``cardBg``/``infoBg`` (omp's page/card chrome).
+# vocabulary this TUI actually resolves; a token omp declares but no renderer
+# reads is in neither the token set nor the palettes. Not carried: dark.json's
+# undeclared ``link``, the ``thinking*`` colour levels other than the two this
+# TUI renders (``thinkingText``, ``thinkingHigh``), and the ``export`` group
+# ``pageBg``/``cardBg``/``infoBg`` (omp's page/card chrome).
 _TITANIUM: Final[Mapping[str, str | int]] = MappingProxyType(
     {
         "accent": "#00b4ff",
@@ -160,7 +152,6 @@ _TITANIUM: Final[Mapping[str, str | int]] = MappingProxyType(
         "thinkingText": "#9ca3b0",
         "userMessageBg": "#0f1216",
         "userMessageText": "",
-        "customMessageText": "",
         "toolPendingBg": "#0f1216",
         "toolSuccessBg": "#0f1216",
         "toolErrorBg": "#1a0f10",
@@ -184,19 +175,12 @@ _TITANIUM: Final[Mapping[str, str | int]] = MappingProxyType(
         "syntaxNumber": "#ffb347",
         "syntaxOperator": "#00b4ff",
         "syntaxPunctuation": "#9ca3b0",
-        "thinkingOff": "#4a5058",
-        "thinkingMinimal": "#5a6068",
-        "thinkingLow": "#6a7078",
-        "thinkingMedium": "#9ca3b0",
         "thinkingHigh": "#00b4ff",
-        "thinkingXhigh": "#d4c090",
-        "thinkingMax": "#d4c090",
         "statusLineBg": "#0f1216",
         "statusLineSep": "#2a3038",
         "statusLineModel": "#00b4ff",
         "statusLinePath": "#e8ecf4",
         "statusLineContext": "#9ca3b0",
-        "statusLineStaged": "#00ff88",
         "statusLineCost": "#d4c090",
     }
 )
@@ -217,7 +201,6 @@ _LIGHT: Final[Mapping[str, str | int]] = MappingProxyType(
         "thinkingText": "#6c6c6c",
         "userMessageBg": "#e8e8e8",
         "userMessageText": "",
-        "customMessageText": "",
         "toolPendingBg": "#e8e8f0",
         "toolSuccessBg": "#e8f0e8",
         "toolErrorBg": "#f0e8e8",
@@ -241,19 +224,12 @@ _LIGHT: Final[Mapping[str, str | int]] = MappingProxyType(
         "syntaxNumber": "#098658",
         "syntaxOperator": "#000000",
         "syntaxPunctuation": "#000000",
-        "thinkingOff": "#b0b0b0",
-        "thinkingMinimal": "#767676",
-        "thinkingLow": "#547da7",
-        "thinkingMedium": "#5a8080",
         "thinkingHigh": "#875f87",
-        "thinkingXhigh": "#8b008b",
-        "thinkingMax": "#8b008b",
         "statusLineBg": "#e0e0e0",
         "statusLineSep": "#808080",
         "statusLineModel": "#875f87",
         "statusLinePath": "#005f87",
         "statusLineContext": "#5f5f87",
-        "statusLineStaged": 28,
         "statusLineCost": 133,
     }
 )
@@ -277,16 +253,17 @@ def _split(values: Mapping[str, str | int]) -> tuple[Mapping[str, str | int], Ma
 # ---------------------------------------------------------------------------
 
 #: ``UNICODE_SYMBOLS`` (``theme/symbols.ts:369-1101``), restricted to the keys
-#: this TUI resolves. Keys keep omp's dotted ``SymbolKey`` spelling.
+#: this TUI resolves. Keys keep omp's dotted ``SymbolKey`` spelling, except
+#: ``inputCursor`` -- omp's ``symbols.inputCursor`` is its own flat theme field,
+#: not a dotted ``SymbolKey`` (``theme/tui-adapters.ts:156-161``), and it is the
+#: composer's end-of-line caret. ``nav.cursor`` stays for list/select rows.
 _UNICODE_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "status.success": "✔",
         "status.error": "✘",
-        "status.warning": "⚠",
         "status.disabled": "⦸",
         "nav.cursor": "❯",
-        "nav.expand": "▸",
-        "nav.collapse": "▾",
+        "inputCursor": "▏",
         "tree.horizontal": "─",
         "boxRound.topLeft": "╭",
         "boxRound.topRight": "╮",
@@ -311,7 +288,6 @@ _UNICODE_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
         "thinking.high": "◒ high",
         "thinking.xhigh": "◕ xhigh",
         "thinking.max": "◉ max",
-        "thinking.autoPending": "⟳",
         "checkbox.checked": "☑",
         "checkbox.unchecked": "☐",
         "radio.selected": "◉",
@@ -336,11 +312,9 @@ _ASCII_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "status.success": "[ok]",
         "status.error": "[!!]",
-        "status.warning": "[!]",
         "status.disabled": "[ ]",
         "nav.cursor": ">",
-        "nav.expand": "+",
-        "nav.collapse": "-",
+        "inputCursor": "|",
         "tree.horizontal": "-",
         "boxRound.topLeft": "+",
         "boxRound.topRight": "+",
@@ -365,7 +339,6 @@ _ASCII_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
         "thinking.high": "[high]",
         "thinking.xhigh": "[xhi]",
         "thinking.max": "[max]",
-        "thinking.autoPending": "[~]",
         "checkbox.checked": "[x]",
         "checkbox.unchecked": "[ ]",
         "radio.selected": "(o)",
@@ -675,6 +648,14 @@ class Theme:
     def symbol(self, key: str) -> str:
         """Resolve a ``SymbolKey`` from the active glyph preset."""
         return self._glyphs.symbol(key)
+
+    def input_cursor(self) -> str:
+        """The composer's end-of-line caret: ``▏``, or ``|`` on the ascii preset.
+
+        omp ``symbols.inputCursor`` (``theme/tui-adapters.ts:156-161``); the
+        editor's caret getter is ``editor.ts:1155-1165``.
+        """
+        return self._glyphs.symbol("inputCursor")
 
     def styled_symbol(self, key: str, token: str) -> str:
         """Resolve a glyph and colour it (omp ``styledSymbol``)."""

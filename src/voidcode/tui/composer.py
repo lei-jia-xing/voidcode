@@ -2,15 +2,15 @@
 
 Ports the subset of omp's editor the VoidCode TUI needs
 (``.omo/plans/tui-input-spec.md`` §3-§9): editing bindings, multi-line growth
-and word wrapping, the ``band`` composer shape, Tab completion, session
-history, and the Esc / Ctrl+C interrupt semantics.
+and word wrapping, the ``band`` composer shape, session history, and the
+Esc / Ctrl+C interrupt semantics. Tab is deliberately unbound: the editor has
+no completion source, so it inserts nothing and the app owns every ``/`` path.
 
 The class is deliberately I/O free: it never touches a terminal, ``rich``
 renderables, or the runtime. ``handle_key`` consumes a decoded :class:`Key`
 and returns a :class:`ComposerOutcome`; ``render`` returns the composer's own
-rows (input rows, then completion candidates), each already wrapped to at most
-``width`` cells. Status-row placement and the runtime cancel/exit paths belong
-to the app.
+rows (the visible input rows), each already wrapped to at most ``width`` cells.
+Status-row placement and the runtime cancel/exit paths belong to the app.
 """
 
 from __future__ import annotations
@@ -31,10 +31,15 @@ __all__ = ["Composer", "ComposerAction", "ComposerOutcome"]
 _DOUBLE_INTERRUPT_SECONDS = 0.5
 #: omp session history depth (``editor.ts:915-919``).
 _HISTORY_DEPTH = 100
-#: Completion dropdown size, omp ``clamp(3..20)`` default 10 (``editor.ts:844``).
-_COMPLETION_DEFAULT_VISIBLE = 10
 #: Paste tab expansion -- omp expands to three spaces (``editor.ts:2930``).
 _PASTE_TAB = "   "
+#: The ``band`` shape's prompt gutter. omp hard-codes this literal
+#: (``composer/band.ts:17`` ``defaultPromptGutter: "╰─ "``) -- it is NOT read
+#: from the symbol preset, so it stays ``╰─ `` under ``glyph_preset="ascii"``.
+_PROMPT_GUTTER = "╰─ "
+#: Cells the empty-draft placeholder must keep clear of the caret
+#: (omp ``PLACEHOLDER_MIN_GAP``, ``editor.ts:412``); below it the placeholder hides.
+_PLACEHOLDER_MIN_GAP = 2
 
 _NEWLINE_KEYS = frozenset({"shift+enter", "ctrl+j", "ctrl+enter", "alt+enter"})
 _WORD_LEFT_KEYS = frozenset({"alt+left", "alt+b", "ctrl+left"})
@@ -159,14 +164,12 @@ class Composer:
         theme: Theme,
         width: int,
         placeholder: str = "",
-        completer: Callable[[str], Sequence[str]] | None = None,
         max_height: int = 10,
         clock: Callable[[], float] | None = None,
     ) -> None:
         self._theme = theme
         self._width = max(1, width)
         self._placeholder = placeholder
-        self._completer = completer
         self._max_height = max(1, max_height)
         self._clock = time.monotonic if clock is None else clock
         self._text = ""
@@ -175,9 +178,9 @@ class Composer:
         self._history: list[str] = []
         self._history_index: int | None = None
         self._draft = ""
-        self._completion: list[str] | None = None
-        self._completion_index = 0
         self._last_interrupt = float("-inf")
+        # ``_cursor_glyph`` reads this for the disabled composer's liveness
+        # frame. Nothing advances it: the spinner is the app's, not the editor's.
         self._spinner_frame = 0
         self._scroll = 0
 
@@ -192,12 +195,11 @@ class Composer:
         self._width = max(1, width)
 
     def clear(self) -> None:
-        """Drop the draft, completion, and any history browsing state."""
+        """Drop the draft and any history browsing state."""
         self._text = ""
         self._cursor = 0
         self._history_index = None
         self._draft = ""
-        self._completion = None
         self._scroll = 0
 
     def set_enabled(self, enabled: bool) -> None:
@@ -215,7 +217,6 @@ class Composer:
 
     def _edited(self) -> None:
         self._history_index = None
-        self._refresh_completion()
 
     def _bounds(self) -> tuple[int, int]:
         """Start and end offsets of the logical line holding the cursor."""
@@ -267,7 +268,6 @@ class Composer:
             return
         self._text = self._history[self._history_index]
         self._cursor = 0
-        self._close_completion()
 
     def _history_down(self) -> None:
         if self._history_index is None:
@@ -279,59 +279,6 @@ class Composer:
             self._history_index = None
             self._text = self._draft
         self._cursor = len(self._text)
-        self._close_completion()
-
-    # -- completion --------------------------------------------------------
-
-    def _query_start(self) -> int:
-        start = self._cursor
-        while start > 0 and not self._text[start - 1].isspace():
-            start -= 1
-        return start
-
-    def _close_completion(self) -> None:
-        self._completion = None
-        self._completion_index = 0
-
-    def _open_completion(self) -> None:
-        if self._completer is None:
-            return
-        candidates = list(self._completer(self._text[self._query_start() : self._cursor]))
-        if not candidates:
-            self._close_completion()
-            return
-        self._completion = candidates
-        self._completion_index = 0
-
-    def _refresh_completion(self) -> None:
-        if self._completion is None:
-            return
-        if self._completer is None:
-            self._close_completion()
-            return
-        candidates = list(self._completer(self._text[self._query_start() : self._cursor]))
-        if not candidates:
-            self._close_completion()
-            return
-        self._completion = candidates
-        self._completion_index = min(self._completion_index, len(candidates) - 1)
-
-    def _select_completion(self, delta: int) -> None:
-        candidates = self._completion
-        if not candidates:
-            return
-        self._completion_index = max(0, min(len(candidates) - 1, self._completion_index + delta))
-
-    def _accept_completion(self) -> None:
-        candidates = self._completion
-        if not candidates:
-            return
-        start = self._query_start()
-        candidate = candidates[self._completion_index]
-        self._text = self._text[:start] + candidate + self._text[self._cursor :]
-        self._cursor = start + len(candidate)
-        self._close_completion()
-        self._history_index = None
 
     # -- key handling ------------------------------------------------------
 
@@ -340,20 +287,6 @@ class Composer:
         if not self._enabled:
             return ComposerOutcome()
         name = key.name
-
-        if self._completion is not None:
-            if name == "up":
-                self._select_completion(-1)
-                return ComposerOutcome()
-            if name == "down":
-                self._select_completion(1)
-                return ComposerOutcome()
-            if name in ("tab", "enter"):
-                self._accept_completion()
-                return ComposerOutcome()
-            if name == "escape":
-                self._close_completion()
-                return ComposerOutcome()
 
         if name == "escape":
             return ComposerOutcome(ComposerAction.CANCEL_TURN)
@@ -364,9 +297,6 @@ class Composer:
             return ComposerOutcome()
         if name == "enter":
             return self._submit()
-        if name == "tab":
-            self._open_completion()
-            return ComposerOutcome()
         if name == "paste":
             self._insert(_sanitize_paste(key.text))
             return ComposerOutcome()
@@ -466,37 +396,60 @@ class Composer:
     # -- rendering ---------------------------------------------------------
 
     def _prompt_gutter(self) -> str:
-        """The band shape's ``╰─ `` cue, from the theme's box glyphs."""
-        return self._theme.symbol("boxRound.bottomLeft") + self._theme.symbol("boxRound.horizontal") + " "
+        """The ``band`` shape's ``╰─ `` cue (a literal, not a preset glyph)."""
+        return _PROMPT_GUTTER
 
     def _cursor_glyph(self) -> str:
+        """The end-of-line caret: omp ``symbols.inputCursor``, never ``nav.cursor``.
+
+        A disabled composer shows the liveness spinner instead (the turn owns the
+        keyboard, and the caret means nothing while it does).
+        """
         if not self._enabled:
             frames = self._theme.spinner_frames("status")
             if frames:
                 return self._theme.fg("accent", frames[self._spinner_frame % len(frames)])
-        symbol = self._theme.symbol("nav.cursor")
+        symbol = self._theme.input_cursor()
         return self._theme.fg("accent", symbol) if symbol else ""
 
     def _decorate_cursor(self, row: str, cell: int, row_width: int, layout_width: int) -> str:
+        """Place the caret inside one content row (omp ``editor.ts:1434-1483``).
+
+        Mid-row the caret is the grapheme under it in reverse video; at
+        end-of-line it is the thin ``inputCursor`` glyph. A row with no spare
+        cell borrows its last grapheme -- underlined, so insertion after the last
+        character stays distinct from insertion before it (``editor.ts:1167-1212``).
+        """
         if cell < row_width:
             index = _index_at_cell(row, cell)
             return row[:index] + "\x1b[7m" + row[index] + "\x1b[0m" + row[index + 1 :]
         glyph = self._cursor_glyph()
-        if row_width == 0 or row_width + visible_width(glyph) <= layout_width:
+        if row_width + visible_width(glyph) <= layout_width:
             return row + glyph
-        # Row is full: borrow its last cell so the row never exceeds the width.
-        return row[:-1] + "\x1b[7m" + row[-1:] + "\x1b[0m" if row else glyph
+        if not row:
+            return clamp_row(glyph, layout_width)
+        # Row is full: borrow the cells of its last grapheme, underlined (not
+        # reverse video) so insertion after the last character stays visually
+        # distinct from insertion before it -- omp's
+        # ``#renderEndOfLineCursorAtWidthLimit`` (``editor.ts:1167-1212``).
+        index = _index_at_cell(row, row_width - 1)
+        return row[:index] + "\x1b[4m" + row[index:] + "\x1b[0m"
 
     def _empty_content(self, layout_width: int) -> str:
+        """The empty-draft row: caret at the insertion point, placeholder beside it.
+
+        omp keeps the caret first and paints the placeholder flush right,
+        separated by at least ``PLACEHOLDER_MIN_GAP`` cells, and drops the
+        placeholder when the gap cannot be honoured (``editor.ts:1312-1319``).
+        """
         glyph = self._cursor_glyph()
         if not self._placeholder:
-            return glyph
-        placeholder = clamp_row(self._placeholder, layout_width)
-        if visible_width(placeholder) < layout_width:
-            return self._theme.fg("dim", placeholder) + glyph
-        if placeholder:
-            return self._theme.fg("dim", placeholder[:-1]) + "\x1b[7m" + placeholder[-1:] + "\x1b[0m"
-        return glyph
+            return clamp_row(glyph, layout_width)
+        caret_width = visible_width(glyph)
+        gap = layout_width - caret_width - visible_width(self._placeholder)
+        if gap < _PLACEHOLDER_MIN_GAP:
+            return clamp_row(glyph, layout_width)
+        return glyph + " " * gap + self._theme.fg("dim", self._placeholder)
 
     def _input_row(self, gutter: str, content: str, layout_width: int, width: int) -> str:
         pad = " " * max(0, layout_width - visible_width(content))
@@ -567,44 +520,6 @@ class Composer:
             rows.append(self._input_row(gutter_text, text, layout_width, width))
         return rows
 
-    def _completion_rows(self) -> list[str]:
-        candidates = self._completion or []
-        if not candidates:
-            return []
-        width = self._width
-        gutter_width = min(visible_width(self._prompt_gutter()), width)
-        continuation = " " * gutter_width
-        visible = _COMPLETION_DEFAULT_VISIBLE
-        count = min(len(candidates), visible)
-        start = 0
-        if len(candidates) > count:
-            start = min(max(0, self._completion_index - count + 1), len(candidates) - count)
-        rows: list[str] = []
-        for index in range(start, start + count):
-            candidate = candidates[index]
-            if index == self._completion_index:
-                marker = self._theme.fg("accent", self._theme.symbol("nav.cursor") + " ")
-                body = self._theme.fg("accent", candidate)
-            else:
-                marker = "  "
-                body = self._theme.fg("muted", candidate)
-            gutter_cell = self._theme.fg("border", continuation) if continuation else ""
-            rows.append(clamp_row(gutter_cell + marker + body, width))
-        return rows
-
     def render(self) -> Sequence[str]:
-        """Composer rows: input rows, then completion candidates, <= width."""
-        rows = self._input_rows()
-        if self._completion is not None:
-            rows = rows + self._completion_rows()
-        return rows
-
-    def tick(self) -> bool:
-        """Advance the spinner; True when a repaint is needed."""
-        if self._enabled:
-            return False
-        frames = self._theme.spinner_frames("status")
-        if not frames:
-            return False
-        self._spinner_frame = (self._spinner_frame + 1) % len(frames)
-        return True
+        """Composer rows: the visible input rows, wrapped to <= width."""
+        return self._input_rows()

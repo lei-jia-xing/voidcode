@@ -669,19 +669,44 @@ class SessionMarkerBlock(Block):
 
 @dataclass
 class Transcript:
-    """Ordered block tape.
+    """Ordered block tape that owns the ledger of what it handed to scrollback.
 
     ``rows()`` renders the whole tape; ``settled_rows()`` / ``live_rows()`` split
     it at the first non-settled block so a caller can commit the settled prefix
     once and repaint only the live tail. Exactly one blank row separates
     non-empty blocks in both halves.
+
+    The ledger marks *blocks*, not rows. :meth:`take_settled` remembers how many
+    leading blocks it handed out and never renders one at or before that mark
+    again. A row cursor would be the wrong ledger entry: native scrollback cannot
+    be rewritten, so expanding a committed block or collapsing one would move a
+    row cursor and let the next batch start inside a committed block. Marking
+    blocks makes those edits structurally unable to re-emit a prefix or to
+    misalign a suffix -- they change what the tape renders, never what it hands
+    out.
+
+    :meth:`set_expanded` therefore also reports whether a toggle landed behind the
+    commit boundary: those rows cannot be redrawn, so the caller's only honest
+    answer is to say so.
     """
 
     theme: Theme
     width: int
     hints: KeyHints = field(default_factory=KeyHints)
     blocks: list[Block] = field(default_factory=list)
-    _taken: int = 0
+    #: Number of leading blocks whose rows are already in native scrollback.
+    _committed: int = 0
+    #: ``blocks[_committed - 1]`` by identity. The tape's owner clears ``blocks``
+    #: wholesale on a session switch; a ledger that no longer ends on the block
+    #: it recorded must start over instead of claiming rows for blocks it no
+    #: longer holds.
+    _anchor: Block | None = None
+    #: Rows last presented per committed block, parallel to ``blocks[:_committed]``
+    #: (an empty list for a block that rendered nothing).
+    _presented: list[list[str]] = field(default_factory=list)
+    #: Whether any row reached scrollback yet -- decides the leading separator of
+    #: the next batch and keeps a first empty batch from opening with a blank row.
+    _emitted_any: bool = False
 
     def add(self, block: Block) -> Block:
         """Append a block and return it (mutate the returned object in place)."""
@@ -689,13 +714,31 @@ class Transcript:
         return block
 
     def set_width(self, width: int) -> None:
-        """Change the render width (rows re-render on the next call)."""
-        self.width = max(1, width)
+        """Change the render width (rows re-render on the next call).
 
-    def set_expanded(self, expanded: bool) -> None:
-        """Expand or collapse every block (``app.tools.expand``)."""
+        A width change re-baselines the ledger to the committed blocks' current
+        rendering: the rows in scrollback were written at the old width and cannot
+        be re-derived at the new one, so treating every committed block as edited
+        would reprint the whole prefix on every resize.
+        """
+        self.width = max(1, width)
+        self._revalidate()
+        self._rebaseline()
+
+    def set_expanded(self, expanded: bool) -> bool:
+        """Expand or collapse every block (``app.tools.expand``).
+
+        Returns ``True`` when a block that is *already in scrollback* would now
+        render differently: scrollback is immutable, so the caller can only report
+        that honestly (it must not re-print the tape). The committed baseline is
+        re-recorded either way, because expansion is a re-layout.
+        """
         for block in self.blocks:
             block.expanded = expanded
+        self._revalidate()
+        changed = self._render_each(self.blocks[: self._committed]) != self._presented
+        self._rebaseline()
+        return changed
 
     def mark_settled(self) -> None:
         """Mark every block final and stop any streaming animation."""
@@ -713,54 +756,69 @@ class Transcript:
                 return index
         return len(self.blocks)
 
-    def rewind(self) -> None:
-        """Forget which settled rows were handed out (the caller owns the reset).
-
-        A settled row that changed *inside* the handed-out prefix -- expanding an
-        already-committed block, or attaching fetched content to one -- makes the
-        cursor :meth:`take_settled` keeps unusable: the tape itself cannot rewrite
-        native scrollback, and a length-based cursor cannot see an edit that did
-        not change the total. Rewinding makes ``take_settled`` hand out the whole
-        settled tape again, so the caller can re-print it.
-        """
-        self._taken = 0
-
     def rows(self) -> list[str]:
         """Every row of the tape."""
-        return self._rows_of(self.blocks)
+        return self._rows_of(self.blocks, separate=False)
 
     def settled_rows(self) -> list[str]:
         """Rows of the settled prefix (the part that goes to scrollback)."""
-        return self._rows_of(self.blocks[: self.frontier()])
+        return self._rows_of(self.blocks[: self.frontier()], separate=False)
 
     def live_rows(self) -> list[str]:
         """Rows of the live suffix (still allowed to change)."""
-        return self._rows_of(self.blocks[self.frontier() :])
+        return self._rows_of(self.blocks[self.frontier() :], separate=False)
 
     def take_settled(self) -> list[str]:
-        """Settled rows not yet handed out (commit-once bookkeeping).
+        """Settled rows not yet handed out -- each row handed out exactly once.
 
-        Rows already handed out for an unchanged prefix are never re-emitted, so
-        a caller can commit the result directly. Should a settled row shrink
-        (an expand/collapse of an already-committed block rewrites it), the
-        cursor rewinds to zero: the caller then owns the display reset, because
-        rewriting scrollback is its decision and not the tape's.
+        The ledger advances past every block it emitted, so a block already in
+        native scrollback is never rendered for emission again, whatever later
+        happens to it: a shrink or an in-place edit from :meth:`set_expanded`.
+        Nothing is re-handed-out, and there is no row offset a length change could
+        misalign.
         """
-        rows = self.settled_rows()
-        if len(rows) < self._taken:
-            self._taken = 0
-        new = rows[self._taken :]
-        self._taken = len(rows)
-        return new
+        self._revalidate()
+        new_blocks = self.blocks[self._committed : self.frontier()]
+        if not new_blocks:
+            return []
+        rendered = self._render_each(new_blocks)
+        rows = self._join(rendered, separate=self._emitted_any)
+        self._presented.extend(rendered)
+        self._committed += len(new_blocks)
+        self._anchor = new_blocks[-1]
+        self._emitted_any = self._emitted_any or bool(rows)
+        return rows
 
-    def _rows_of(self, blocks: Sequence[Block]) -> list[str]:
+    def _rebaseline(self) -> None:
+        """Re-record the committed prefix's rendering as the presented baseline."""
+        self._presented = self._render_each(self.blocks[: self._committed]) if self._committed else []
+
+    def _revalidate(self) -> None:
+        """Drop a ledger whose block list was replaced out from under it."""
+        if self._committed > len(self.blocks) or (self._committed > 0 and self.blocks[self._committed - 1] is not self._anchor):
+            self._reset_ledger()
+
+    def _reset_ledger(self) -> None:
+        self._committed = 0
+        self._anchor = None
+        self._presented = []
+        self._emitted_any = False
+
+    def _render_each(self, blocks: Sequence[Block]) -> list[list[str]]:
         renderer = _Renderer(self.theme, self.width, self.hints)
+        return [_trim_blank_edges(block.render(renderer)) for block in blocks]
+
+    def _rows_of(self, blocks: Sequence[Block], *, separate: bool) -> list[str]:
+        return self._join(self._render_each(blocks), separate=separate)
+
+    @staticmethod
+    def _join(rendered: Sequence[Sequence[str]], *, separate: bool) -> list[str]:
+        """One row list from per-block rows: blank edges trimmed, single separators."""
         rows: list[str] = []
-        for block in blocks:
-            block_rows = _trim_blank_edges(block.render(renderer))
+        for block_rows in rendered:
             if not block_rows:
                 continue
-            if rows:
+            if rows or separate:
                 rows.append("")
             rows.extend(block_rows)
         return rows

@@ -189,7 +189,6 @@ def test_tool_block_lifecycle_drives_the_display_payload() -> None:
     state.transcript().set_expanded(True)
     assert "def main():" in text(state)
     assert "└ stdout" in text(state)
-    assert state.tool_content("call-1") == "def main():\n    return 1\n"
 
 
 def test_edit_completion_renders_the_diff_gutter() -> None:
@@ -221,7 +220,6 @@ def test_write_completion_does_not_echo_the_file_body() -> None:
     )
     assert "✔ Write · src/new.py" in text(state)
     assert "secret" not in text(state)
-    assert state.tool_content("call-3") == "print('secret')\n"
 
 
 def test_search_completion_highlights_by_path_and_others_stay_plain() -> None:
@@ -337,17 +335,171 @@ def test_question_request_and_answer_round_trip() -> None:
     assert "Scope" in body and "src" in body
 
 
-def test_resolve_overlay_clears_the_matching_request_only() -> None:
+def test_resolve_overlay_keeps_the_request_until_the_resolution_event() -> None:
+    """``resolve_overlay`` records the answer; only the runtime resolves it.
+
+    Clearing here stranded a session whenever the answer round trip failed: the
+    persisted ``question_requested`` sequence is already consumed by the dedupe,
+    so nothing could re-deliver it.
+    """
     state = view()
     state.apply_event(
         envelope("runtime.question_requested", {"request_id": "question-1", "tool": "question", "question_count": 0, "questions": []}, sequence=1)
     )
+
+    # An unrelated id is ignored.
     state.resolve_overlay("question-9")
     assert state.view_state().pending is not None
+
+    # The matching id is handed over, but the request stays pending and is not
+    # handed out a second time (no re-open loop while the round trip is in flight).
+    assert state.take_pending_overlay() is not None
     state.resolve_overlay("question-1")
-    assert state.view_state().pending is None
+    assert state.view_state().pending is not None
     assert state.view_state().state == "Running"
     assert state.take_pending_overlay() is None
+
+    # The runtime's own resolution event is the clear.
+    state.apply_event(
+        envelope("runtime.question_answered", {"request_id": "question-1", "responses": [{"header": "Scope", "answers": ["src"]}]}, sequence=2)
+    )
+    assert state.view_state().pending is None
+    assert state.take_pending_overlay() is None
+
+
+def test_failed_answer_round_trip_re_arms_the_question() -> None:
+    """A failed stream gives the question back so the app can re-open it."""
+    state = view()
+    state.apply_event(
+        envelope("runtime.question_requested", {"request_id": "question-1", "tool": "question", "question_count": 0, "questions": []}, sequence=1)
+    )
+    pending = state.take_pending_overlay()
+    assert pending is not None
+    state.resolve_overlay("question-1")
+    assert state.take_pending_overlay() is None  # in flight: not handed out again
+
+    state.finish_stream("failed")
+
+    assert state.view_state().pending is pending
+    assert state.take_pending_overlay() is pending
+    assert state.view_state().state == "Failed"
+
+
+def test_successful_answer_never_hands_the_question_out_again() -> None:
+    state = view()
+    state.apply_event(
+        envelope("runtime.question_requested", {"request_id": "question-1", "tool": "question", "question_count": 0, "questions": []}, sequence=1)
+    )
+    assert state.take_pending_overlay() is not None
+    state.resolve_overlay("question-1")
+    state.finish_stream("idle")
+
+    state.apply_event(
+        envelope("runtime.question_answered", {"request_id": "question-1", "responses": [{"header": "Scope", "answers": ["src"]}]}, sequence=2)
+    )
+    assert state.view_state().pending is None
+    assert state.take_pending_overlay() is None
+    # Even a later failed turn must not resurrect a resolved question.
+    state.finish_stream("failed")
+    assert state.take_pending_overlay() is None
+
+
+def test_failed_answer_round_trip_re_arms_the_approval() -> None:
+    state = view()
+    state.apply_event(envelope("runtime.approval_requested", {"request_id": "approval-1", "tool": "shell_exec"}, sequence=1))
+    pending = state.take_pending_overlay()
+    assert pending is not None
+    state.resolve_overlay("approval-1")
+    assert state.take_pending_overlay() is None
+
+    state.finish_stream("failed")
+    assert state.take_pending_overlay() is pending
+
+    state.resolve_overlay("approval-1")
+    state.apply_event(envelope("runtime.approval_resolved", {"request_id": "approval-1", "decision": "allow"}, sequence=2))
+    assert state.view_state().pending is None
+    state.finish_stream("failed")
+    assert state.take_pending_overlay() is None
+
+
+def test_a_replayed_question_event_cannot_re_arm_on_its_own() -> None:
+    """The dedupe consumes the request once; only the failed-stream re-arm revives it."""
+    state = view()
+    request = envelope(
+        "runtime.question_requested",
+        {"request_id": "question-1", "tool": "question", "question_count": 0, "questions": []},
+        sequence=1,
+    )
+    assert state.apply_event(request) is True
+    assert state.take_pending_overlay() is not None
+    state.resolve_overlay("question-1")
+
+    # A poll/resume replay of the same persisted event is dropped by sequence.
+    assert state.apply_event(request) is False
+    assert state.take_pending_overlay() is None
+
+
+def test_failure_while_the_overlay_is_open_and_unanswered_does_not_re_arm() -> None:
+    """The user's own answer must be the first dispatch, not a re-open.
+
+    A regression guard: resetting the hand-out flag on any failure made the
+    still-open overlay re-open when the user answered it, so the same
+    ``request_id`` was answered twice.
+    """
+    state = view()
+    state.apply_event(
+        envelope("runtime.question_requested", {"request_id": "question-1", "tool": "question", "question_count": 0, "questions": []}, sequence=1)
+    )
+    pending = state.take_pending_overlay()  # the app opened the wizard
+    assert pending is not None
+
+    state.finish_stream("failed")  # transport died while the wizard was open
+
+    assert state.view_state().pending is pending
+    assert state.take_pending_overlay() is None  # not re-opened: unanswered
+    # The user's answer is the first dispatch and works normally.
+    state.resolve_overlay("question-1")
+    state.apply_event(
+        envelope("runtime.question_answered", {"request_id": "question-1", "responses": [{"header": "Scope", "answers": ["src"]}]}, sequence=2)
+    )
+    assert state.view_state().pending is None
+
+
+def test_successful_finish_disarms_the_re_arm() -> None:
+    """Once the answer round trip completes, a later failure re-opens nothing."""
+    state = view()
+    state.apply_event(
+        envelope("runtime.question_requested", {"request_id": "question-1", "tool": "question", "question_count": 0, "questions": []}, sequence=1)
+    )
+    assert state.take_pending_overlay() is not None
+    state.resolve_overlay("question-1")
+    state.finish_stream("completed")  # the dispatched answer reached the runtime
+
+    state.finish_stream("failed")
+    assert state.take_pending_overlay() is None
+
+
+def test_two_failed_round_trips_offer_exactly_one_more_attempt() -> None:
+    """Each dispatched-and-failed attempt re-arms once; no multiplicative loop."""
+    state = view()
+    state.apply_event(
+        envelope("runtime.question_requested", {"request_id": "question-1", "tool": "question", "question_count": 0, "questions": []}, sequence=1)
+    )
+    pending = state.take_pending_overlay()
+    assert pending is not None
+
+    state.resolve_overlay("question-1")  # attempt #1
+    state.finish_stream("failed")  # attempt #1 failed -> one re-arm
+    assert state.take_pending_overlay() is pending
+
+    # A second failure with no new dispatch must not hand it out again.
+    state.finish_stream("failed")
+    assert state.take_pending_overlay() is None
+
+    # The user retries; that dispatch may be re-armed again (attempt #2 failed).
+    state.resolve_overlay("question-1")
+    state.finish_stream("failed")
+    assert state.take_pending_overlay() is pending
 
 
 # ---------------------------------------------------------------------------
@@ -464,51 +616,22 @@ def test_finish_stream_settles_and_reports_a_transport_failure() -> None:
     assert state.transcript().frontier() < len(state.transcript().blocks)
 
     state.apply_event(envelope("runtime.approval_requested", {"request_id": "approval-1", "tool": "write"}, sequence=2))
+    pending = state.take_pending_overlay()  # the app opened the approval dialog
+    assert pending is not None
     state.finish_stream("failed", error="Error: connection reset")
     assert "✘ connection reset" in text(state)
-    assert state.view_state().pending is None
+    # No answer was dispatched, so the request is kept but not handed out again:
+    # the user's own answer is still the first attempt.
+    assert state.view_state().pending is pending
+    assert state.take_pending_overlay() is None
     assert state.view_state().state == "Failed"
     assert state.transcript().frontier() == len(state.transcript().blocks)
     assert "… (streaming)" not in text(state)
 
 
 # ---------------------------------------------------------------------------
-# Expand, resize, reset
+# Resize, reset
 # ---------------------------------------------------------------------------
-
-
-def test_expand_replaces_the_body_with_the_fetched_artifact() -> None:
-    state = view()
-    state.apply_event(
-        envelope(
-            "runtime.tool_completed",
-            {"tool": "read", "tool_call_id": "call-1", "status": "ok", "content": "one\n", "artifact_id": "artifact-7", "display": READ_DISPLAY},
-            sequence=1,
-            source="tool",
-        )
-    )
-    assert state.pending_tool_artifact("call-1") == "artifact-7"
-    assert state.tool_content("call-1") == "one\n"
-
-    state.expand_tool("call-1", "one\ntwo\nthree\n")
-    assert state.tool_content("call-1") == "one\ntwo\nthree\n"
-    rendered = [row.strip() for row in rows(state)]
-    assert any("three" in row for row in rendered)
-    assert any(row.startswith("╭───") and "Read · src/app.py" in row for row in rendered)
-
-
-def test_expand_for_an_unknown_tool_call_writes_its_own_block() -> None:
-    state = view()
-    state.expand_tool("call-missing", "recovered output\n")
-    rendered = text(state)
-    assert "/expand call-missing" in rendered
-    assert "recovered output" in rendered
-
-
-def test_expand_without_an_id_reports_usage() -> None:
-    state = view()
-    state.expand_tool("", "")
-    assert rows(state) == [" Usage: /expand <tool_call_id>"]
 
 
 def test_set_width_reflows_the_tape() -> None:
@@ -534,7 +657,6 @@ def test_reset_for_new_session_drops_every_traced_thing() -> None:
     assert state.view_state().state == "Idle"
     assert state.view_state().pending is None
     assert state.view_state().status.session_name == ""
-    assert state.tool_content("call-1") is None
     assert state.take_pending_overlay() is None
 
     # The sequence cursor starts over: the old app reset it per session.

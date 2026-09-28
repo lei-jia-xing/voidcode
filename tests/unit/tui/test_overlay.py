@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from voidcode.runtime.question import PendingQuestionOption, PendingQuestionPrompt, QuestionResponse
+from voidcode.tools.question import QuestionTool
 from voidcode.tui.keys import Key
 from voidcode.tui.overlay import (
     ApprovalOverlay,
@@ -76,7 +78,7 @@ def test_approval_omits_reason_and_target_when_absent() -> None:
 THREE = [
     {"header": "Shell", "question": "Which shell?", "options": [{"label": "bash", "description": "GNU"}, {"label": "zsh"}]},
     {"header": "Extras", "question": "Pick extras", "multiple": True, "options": [{"label": "vim"}, {"label": "git"}]},
-    {"header": "Name", "question": "Project name?", "options": []},
+    {"header": "Name", "question": "Project name?", "options": [{"label": "myproj"}]},
 ]
 
 
@@ -99,10 +101,7 @@ def test_page_navigation_review_and_submit_payload() -> None:
     overlay.handle_key(Key("space"))  # q2: toggle vim
     overlay.handle_key(Key("right"))  # -> q3
     assert "Question 3 of 3" in text(overlay.render(WIDTH))
-    overlay.handle_key(Key("down"))  # highlight Other…
-    overlay.handle_key(Key("enter"))  # open custom editor
-    type_text(overlay, "myproj")
-    overlay.handle_key(Key("enter"))  # commit -> review
+    overlay.handle_key(Key("enter"))  # q3: myproj -> review
     assert "Review answers" in text(overlay.render(WIDTH))
     assert overlay.handle_key(Key("enter")) == OverlayOutcome(
         OverlayOutcomeKind.DONE,
@@ -123,14 +122,46 @@ def test_multiple_select_toggles_and_does_not_advance() -> None:
     assert outcome == OverlayOutcome(OverlayOutcomeKind.DONE, (("Extras", ("vim", "git")),))
 
 
-def test_other_captures_free_text() -> None:
-    overlay = QuestionOverlay(questions=[{"header": "H", "question": "Q?", "options": [{"label": "a"}]}], theme=theme())
-    overlay.handle_key(Key("down"))  # Other…
-    overlay.handle_key(Key("enter"))  # open editor
-    type_text(overlay, "custom")
-    overlay.handle_key(Key("backspace"))
-    # commit clears the prior selection and, single-select, submits at once
-    assert overlay.handle_key(Key("enter")) == OverlayOutcome(OverlayOutcomeKind.DONE, (("H", ("custo",)),))
+def test_only_declared_labels_can_be_answered() -> None:
+    # The runtime (``QuestionTool.validate_responses``) accepts only declared
+    # option labels; highlight movement clamps to them and the ``Other…``
+    # free-text row is gone, so the wizard cannot emit anything else.
+    overlay = QuestionOverlay(
+        questions=[{"header": "H", "question": "Q?", "options": [{"label": "a"}, {"label": "b"}]}],
+        theme=theme(),
+    )
+    rendered = text(overlay.render(WIDTH))
+    assert "Other" not in rendered
+    for _ in range(6):
+        overlay.handle_key(Key("down"))  # clamped to the last declared option
+    assert overlay.handle_key(Key("enter")) == OverlayOutcome(OverlayOutcomeKind.DONE, (("H", ("b",)),))
+
+
+def test_wizard_output_is_accepted_by_runtime_validation() -> None:
+    """Whatever the wizard emits must pass the runtime's own check.
+
+    The defect this guards: the removed ``Other…`` row let the wizard produce an
+    answer that ``QuestionTool.validate_responses`` rejected.
+    """
+    overlay = wizard()
+    overlay.handle_key(Key("enter"))  # q1: bash
+    overlay.handle_key(Key("space"))  # q2: vim
+    overlay.handle_key(Key("right"))  # q3
+    overlay.handle_key(Key("enter"))  # q3: myproj -> review
+    outcome = overlay.handle_key(Key("enter"))
+    assert outcome.kind is OverlayOutcomeKind.DONE
+    assert isinstance(outcome.payload, tuple)
+    prompts = tuple(
+        PendingQuestionPrompt(
+            question=page["question"],
+            header=page["header"],
+            options=tuple(PendingQuestionOption(label=option["label"]) for option in page["options"]),
+            multiple=page.get("multiple", False),
+        )
+        for page in THREE
+    )
+    responses = tuple(QuestionResponse(header=header, answers=answers) for header, answers in outcome.payload)
+    assert QuestionTool.validate_responses(prompts, responses) == responses
 
 
 def test_submit_is_refused_while_unanswered() -> None:
@@ -148,10 +179,7 @@ def test_back_to_unanswered_question_is_marked() -> None:
     overlay.handle_key(Key("enter"))  # q1
     overlay.handle_key(Key("space"))
     overlay.handle_key(Key("right"))  # q3
-    overlay.handle_key(Key("down"))
-    overlay.handle_key(Key("enter"))
-    type_text(overlay, "x")
-    overlay.handle_key(Key("enter"))  # -> review, all answered
+    overlay.handle_key(Key("enter"))  # q3: myproj -> review, all answered
     assert "Review answers" in text(overlay.render(WIDTH))
     assert "Unanswered" not in text(overlay.render(WIDTH))
 

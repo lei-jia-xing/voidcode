@@ -29,10 +29,6 @@ def submit(c: Composer, text: str) -> None:
     c.handle_key(Key("enter"))
 
 
-def completer(query: str) -> list[str]:
-    return [candidate for candidate in ("/expand", "/exit") if candidate.startswith(query)]
-
-
 # ---------------------------------------------------------------------------
 # Submit vs newline
 # ---------------------------------------------------------------------------
@@ -213,9 +209,76 @@ def test_render_grows_with_content_and_truncates_at_max_height() -> None:
 
 def test_placeholder_shows_when_empty_only() -> None:
     c = composer(width=30, placeholder="Ask anything")
-    assert "Ask anything" in plain(list(c.render()))[0]
+    row = plain(list(c.render()))[0]
+    # Caret first, placeholder flush right with the minimum gap (omp
+    # ``PLACEHOLDER_MIN_GAP``, editor.ts:1312-1319).
+    assert visible_width(row) == 30
+    assert row.startswith("╰─ ▏")
+    assert row.endswith("Ask anything")
+    assert "Ask anything" in row
     typ(c, "x")
     assert "Ask anything" not in "".join(plain(list(c.render())))
+    assert plain(list(c.render()))[0].startswith("╰─ x▏")
+
+
+def test_placeholder_hides_when_the_row_cannot_keep_the_gap() -> None:
+    # Content width is 27 at width 30; a 25-cell placeholder leaves only the
+    # caret's 1 cell, below the 2-cell minimum gap, so it is not drawn.
+    c = composer(width=30, placeholder="P" * 25)
+    rows = list(c.render())
+    assert visible_width(rows[0]) == 30
+    assert plain(rows)[0] == "╰─ ▏"
+    assert "P" not in plain(rows)[0]
+
+
+def test_empty_draft_puts_the_caret_at_the_insertion_point() -> None:
+    assert plain(list(composer().render()))[0].startswith("╰─ ▏")
+    assert plain(list(composer(placeholder="Ask voidcode...").render()))[0].startswith("╰─ ▏")
+
+
+def test_end_of_line_caret_is_the_input_cursor_glyph_not_nav_cursor() -> None:
+    c = composer()
+    typ(c, "hello")
+    row = plain(list(c.render()))[0]
+    assert row.startswith("╰─ hello▏")
+    # The list/select glyph must never appear in a composer row (omp's editor
+    # reads ``symbols.inputCursor`` only; ``nav.cursor`` is for select widgets).
+    assert "❯" not in row
+    assert "❯" not in plain(list(composer(placeholder="Ask voidcode...").render()))[0]
+
+
+def test_ascii_preset_caret_is_a_pipe_and_the_gutter_stays_literal() -> None:
+    c = Composer(theme=theme(preset="ascii"), width=WIDTH)
+    assert plain(list(c.render()))[0].startswith("╰─ |")
+    typ(c, "hello")
+    row = plain(list(c.render()))[0]
+    assert row.startswith("╰─ hello|")
+    # The band gutter is a hard literal (composer/band.ts:17), not a preset glyph.
+    assert ">" not in row
+
+
+def test_mid_text_caret_is_reverse_video_with_no_glyph() -> None:
+    c = composer()
+    typ(c, "hello")
+    c.handle_key(Key("home"))
+    row = list(c.render())[0]
+    assert "\x1b[7mh\x1b[0m" in row
+    assert plain(list(c.render()))[0] == "╰─ hello"
+    assert "▏" not in row
+    assert "❯" not in row
+
+
+def test_full_row_caret_underlines_the_last_grapheme_instead_of_overflowing() -> None:
+    # Content width 5 at width 8: the 5-cell last visual line has no spare cell
+    # for the caret, so its last grapheme is underlined, never pushed past width.
+    c = composer(width=8)
+    paste(c, "x" * 50)
+    rows = list(c.render())
+    assert [visible_width(row) for row in rows] == [8] * len(rows)
+    last = rows[-1]
+    assert "\x1b[4mx\x1b[0m" in last
+    assert "▏" not in last
+    assert plain(last).endswith("xxxxx")
 
 
 # ---------------------------------------------------------------------------
@@ -254,49 +317,24 @@ def test_history_is_capped_at_one_hundred() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Completion
+# Tab
 # ---------------------------------------------------------------------------
 
 
-def test_completion_opens_filters_selects_accepts_and_cancels() -> None:
-    c = composer(width=30, completer=completer)
-    typ(c, "/e")
-    base_rows = len(c.render())
-    c.handle_key(Key("tab"))
-    assert len(c.render()) == base_rows + 2
-    typ(c, "xi")  # "/exi" filters out /expand
-    assert len(c.render()) == base_rows + 1
-    c.handle_key(Key("up"))
-    c.handle_key(Key("enter"))
-    assert c.value == "/exit"
-
-    c = composer(width=30, completer=completer)
-    typ(c, "/e")
-    c.handle_key(Key("tab"))
-    c.handle_key(Key("down"))
-    c.handle_key(Key("tab"))
-    assert c.value == "/exit"
-
-    c = composer(width=30, completer=completer)
-    typ(c, "/e")
-    c.handle_key(Key("tab"))
-    outcome = c.handle_key(Key("escape"))
+def test_tab_is_a_no_op_with_no_completion_surface() -> None:
+    # The editor has no completion source: Tab must neither insert text nor
+    # open a dropdown, and it must not crash or claim an action.
+    c = composer(width=30)
+    typ(c, "hello")
+    before = list(c.render())
+    outcome = c.handle_key(Key("tab"))
     assert outcome.action is ComposerAction.NONE
-    assert len(c.render()) == base_rows
+    assert outcome.text == ""
+    assert c.value == "hello"
+    assert list(c.render()) == before
 
 
-def test_tab_completes_the_expand_command_then_enter_submits() -> None:
-    c = composer(width=30, completer=lambda query: ["/expand"] if "/expand".startswith(query) else [])
-    typ(c, "/ex")
-    c.handle_key(Key("tab"))
-    c.handle_key(Key("tab"))
-    assert c.value == "/expand"
-    outcome = c.handle_key(Key("enter"))
-    assert outcome.action is ComposerAction.SUBMIT
-    assert outcome.text == "/expand"
-
-
-def test_escape_cancels_the_turn_without_completion() -> None:
+def test_escape_cancels_the_turn() -> None:
     c = composer()
     assert c.handle_key(Key("escape")).action is ComposerAction.CANCEL_TURN
 
@@ -327,8 +365,6 @@ def test_disabled_composer_ignores_every_key() -> None:
     assert c.value == ""
     assert c.handle_key(Key("enter")).action is ComposerAction.NONE
     assert c.handle_key(Key("ctrl+c")).action is ComposerAction.NONE
-    assert c.tick() is True
-
-
-def test_enabled_tick_is_a_no_op() -> None:
-    assert composer().tick() is False
+    # A disabled composer shows the theme's liveness frame instead of the caret.
+    frame = theme().fg("accent", theme().spinner_frames("status")[0])
+    assert frame in list(c.render())[0]

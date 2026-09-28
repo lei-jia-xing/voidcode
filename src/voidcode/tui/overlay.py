@@ -279,7 +279,6 @@ class _Page:
 @dataclass(slots=True)
 class _Answer:
     selected: set[str] = field(default_factory=set)
-    custom: str | None = None
 
 
 def _parse_questions(raw: object) -> tuple[_Page, ...]:
@@ -320,15 +319,17 @@ def _parse_questions(raw: object) -> tuple[_Page, ...]:
 class QuestionOverlay(_Base):
     """Multi-page question wizard (port of the old ``QuestionModal``).
 
-    Per-question header, single- and multi-select rows, an ``Other…`` free-text
-    row, a page/progress indicator, a final Review page, and submit blocked
-    while any question is unanswered. ``escape`` cancels.
+    Per-question header, single- and multi-select rows, a page/progress
+    indicator, a final Review page, and submit blocked while any question is
+    unanswered. Every answer is one of the declared option labels -- the runtime
+    (``QuestionTool.validate_responses``) accepts nothing else, so the wizard
+    offers nothing else. ``escape`` cancels.
 
     DONE payload: ``tuple[tuple[str, tuple[str, ...]], ...]`` -- ``(header,
     answers)`` per question, in question order.
     """
 
-    __slots__ = ("_answers", "_buffer", "_custom_mode", "_highlight", "_page_index", "_questions")
+    __slots__ = ("_answers", "_highlight", "_page_index", "_questions")
 
     def __init__(
         self,
@@ -341,8 +342,6 @@ class QuestionOverlay(_Base):
         self._answers = [_Answer() for _ in self._questions]
         self._page_index = 0
         self._highlight = 0
-        self._custom_mode = False
-        self._buffer = ""
 
     # -- state -------------------------------------------------------------
 
@@ -352,15 +351,10 @@ class QuestionOverlay(_Base):
 
     def _answer_values(self, index: int) -> tuple[str, ...]:
         answer = self._answers[index]
-        ordered = [option.label for option in self._questions[index].options if option.label in answer.selected]
-        if answer.custom:
-            ordered.append(answer.custom)
-        return tuple(ordered)
+        return tuple(option.label for option in self._questions[index].options if option.label in answer.selected)
 
     def _reset_view(self) -> None:
         self._highlight = 0
-        self._custom_mode = False
-        self._buffer = ""
 
     # -- key handling ------------------------------------------------------
 
@@ -381,8 +375,6 @@ class QuestionOverlay(_Base):
             return _PENDING
         if key.name == "right":
             return self._advance()
-        if self._custom_mode:
-            return self._handle_custom_key(key)
         if key.name in ("enter", "space"):
             page = self._questions[self._page_index]
             if key.name == "space" and not page.multiple:
@@ -398,28 +390,15 @@ class QuestionOverlay(_Base):
             self._reset_view()
         return _PENDING
 
-    def _handle_custom_key(self, key: Key) -> OverlayOutcome:
-        if key.name == "backspace":
-            self._buffer = self._buffer[:-1]
-            return _PENDING
-        if key.name == "enter":
-            return self._commit_custom()
-        text = _typed_text(key)
-        if text:
-            self._buffer += text
-        return _PENDING
-
     def _move_highlight(self, delta: int) -> None:
         page = self._questions[self._page_index]
-        count = len(page.options) + 1  # options + Other…
+        count = len(page.options)
         self._highlight = max(0, min(count - 1, self._highlight + delta))
 
     def _select(self, index: int) -> OverlayOutcome:
         page = self._questions[self._page_index]
         answer = self._answers[self._page_index]
         if index >= len(page.options):
-            self._custom_mode = True
-            self._buffer = answer.custom or ""
             return _PENDING
         label = page.options[index].label
         if page.multiple:
@@ -430,22 +409,7 @@ class QuestionOverlay(_Base):
             self._highlight = index
             return _PENDING
         answer.selected = {label}
-        answer.custom = None
         return self._advance()
-
-    def _commit_custom(self) -> OverlayOutcome:
-        value = self._buffer.strip()
-        if not value:
-            return _PENDING
-        page = self._questions[self._page_index]
-        answer = self._answers[self._page_index]
-        answer.custom = value
-        self._custom_mode = False
-        self._buffer = ""
-        if not page.multiple:
-            answer.selected.clear()
-            return self._advance()
-        return _PENDING
 
     def _advance(self) -> OverlayOutcome:
         if self._on_review:
@@ -493,10 +457,6 @@ class QuestionOverlay(_Base):
         body.append("")
         for index, option in enumerate(page.options):
             body.extend(self._option_lines(index, option.label, option.description, avail))
-        body.extend(self._option_lines(len(page.options), "Other…", None, avail))
-        if self._custom_mode:
-            body.append("")
-            body.append(self._input_line())
         body.append("")
         body.append(_hint(self._help_text(page), theme))
         return self._panel("Ask", body, width)
@@ -523,11 +483,7 @@ class QuestionOverlay(_Base):
         theme = self._theme
         page = self._questions[self._page_index]
         answer = self._answers[self._page_index]
-        is_other = index >= len(page.options)
-        if is_other:
-            selected = answer.custom is not None
-        else:
-            selected = label in answer.selected
+        selected = label in answer.selected
         if page.multiple:
             glyph = theme.symbol("checkbox.checked" if selected else "checkbox.unchecked")
         else:
@@ -541,17 +497,9 @@ class QuestionOverlay(_Base):
         lines = self._wrap(head, avail)
         if description:
             lines.extend(self._wrap(theme.fg("dim", f"      {description}"), avail))
-        elif is_other and answer.custom:
-            lines.extend(self._wrap(theme.fg("dim", f"      {answer.custom}"), avail))
         return lines
 
-    def _input_line(self) -> str:
-        theme = self._theme
-        return theme.fg("accent", "> ") + theme.fg("text", self._buffer) + theme.fg("dim", "▌")
-
     def _help_text(self, page: _Page) -> str:
-        if self._custom_mode:
-            return "Type answer · Enter confirm · Esc cancel"
         action = "Space/Enter toggle" if page.multiple else "Enter select"
         return f"↑/↓ move · {action} · ←/→ question · Esc cancel"
 
