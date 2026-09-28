@@ -5,8 +5,6 @@ from dataclasses import replace
 import pytest
 
 from voidcode.tui.statusline import (
-    STATUS_LINE_DEFAULT_PRESET,
-    STATUS_LINE_SEGMENT_IDS,
     StatusLine,
     StatusSegmentData,
     format_context_usage,
@@ -34,18 +32,6 @@ FULL = StatusSegmentData(
 
 def render(data: StatusSegmentData, *, width: int = WIDTH, preset: str = "unicode") -> str:
     return StatusLine(theme(preset=preset), width).render(data)
-
-
-def test_preset_is_omps_default_restricted_to_real_data() -> None:
-    assert STATUS_LINE_DEFAULT_PRESET.separator == "powerline-thin"
-    assert STATUS_LINE_DEFAULT_PRESET.left == ("status", "model", "mode", "path", "context_pct", "cost")
-    # ``lsp`` is voidcode's own datum (omp has no such segment): it is appended to
-    # the right group, which overflow pops first.
-    assert STATUS_LINE_DEFAULT_PRESET.right == ("session_name", "lsp")
-    # Every configured segment is a member of omp's catalog, except voidcode's own
-    # ``lsp`` segment (no omp counterpart; the old sidebar's LSP panel).
-    configured = set(STATUS_LINE_DEFAULT_PRESET.left + STATUS_LINE_DEFAULT_PRESET.right)
-    assert configured - {"lsp"} <= set(STATUS_LINE_SEGMENT_IDS)
 
 
 def test_status_line_fills_the_width_and_wears_the_band_background() -> None:

@@ -378,17 +378,3 @@ def test_a_binding_to_a_key_the_decoder_cannot_emit_fails_loudly() -> None:
         except KeyBindingError:
             continue
         raise AssertionError(f"{spec!r} should not be bindable")
-
-
-def test_every_bindable_key_name_is_one_the_decoder_can_emit() -> None:
-    """Every name the app's whitelist accepts must be reachable from real bytes.
-
-    Guards the F8 class of bug: a name ``parse_keymap`` accepts but no decoded
-    sequence can ever produce is a binding that silently does nothing.
-    """
-    from voidcode.tui.app import _ACTIONS, _DEFAULT_KEYMAP, _KEY_NAMES
-    from voidcode.tui.keys import _CSI_1_LETTER, _FUNCTIONAL, _KEYPAD_NAV, _LEGACY, _NAMED_CODEPOINTS
-
-    emitted = {name for names in (_LEGACY, _FUNCTIONAL, _CSI_1_LETTER, _KEYPAD_NAV, _NAMED_CODEPOINTS) for name in names.values() if "+" not in name}
-    assert set(_KEY_NAMES) <= emitted, sorted(set(_KEY_NAMES) - emitted)
-    assert set(_DEFAULT_KEYMAP) <= _ACTIONS

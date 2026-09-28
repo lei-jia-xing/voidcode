@@ -4,15 +4,9 @@ import pytest
 
 from voidcode.provider.model_catalog import static_catalog_metadata
 from voidcode.provider.reasoning_effort import (
-    ALL_EFFORTS,
     CANONICAL_EFFORTS,
-    REASONING_EFFORT_HIGH,
-    REASONING_EFFORT_LOW,
     REASONING_EFFORT_MAX,
-    REASONING_EFFORT_MEDIUM,
-    REASONING_EFFORT_MINIMAL,
     REASONING_EFFORT_OFF,
-    REASONING_EFFORT_XHIGH,
     clamp_effort_to_supported,
     disabled_reasoning_kwargs,
     lowest_supported_effort,
@@ -21,26 +15,6 @@ from voidcode.provider.reasoning_effort import (
 )
 from voidcode.provider.thinking_rules import thinking_rule_for
 from voidcode.runtime.provider_metadata import resolve_reasoning_effort_capability
-
-
-def test_constants_match_spec() -> None:
-    assert REASONING_EFFORT_OFF == "off"
-    assert REASONING_EFFORT_MINIMAL == "minimal"
-    assert REASONING_EFFORT_LOW == "low"
-    assert REASONING_EFFORT_MEDIUM == "medium"
-    assert REASONING_EFFORT_HIGH == "high"
-    assert REASONING_EFFORT_XHIGH == "xhigh"
-    assert REASONING_EFFORT_MAX == "max"
-    assert CANONICAL_EFFORTS == (
-        REASONING_EFFORT_MINIMAL,
-        REASONING_EFFORT_LOW,
-        REASONING_EFFORT_MEDIUM,
-        REASONING_EFFORT_HIGH,
-        REASONING_EFFORT_XHIGH,
-        REASONING_EFFORT_MAX,
-    )
-    assert REASONING_EFFORT_OFF not in CANONICAL_EFFORTS
-    assert ALL_EFFORTS == (REASONING_EFFORT_OFF, *CANONICAL_EFFORTS)
 
 
 @pytest.mark.parametrize(

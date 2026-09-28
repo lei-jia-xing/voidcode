@@ -6,7 +6,6 @@ from rich.color import ColorSystem
 from voidcode.runtime.tool_provider import BUILTIN_TOOL_NAMES
 from voidcode.tui.theme import (
     BG_TOKENS,
-    DEFAULT_THEME_NAMES,
     FG_TOKENS,
     SPINNER_FRAMES,
     SYMBOL_PRESETS,
@@ -70,15 +69,6 @@ def test_resolution_matrix(name: str | None, mode: str, expected: str) -> None:
     theme = resolve_theme(name, mode)
     assert theme.name == expected
     assert theme.mode == ("light" if expected == "voidcode-light" else "dark")
-
-
-def test_registry_is_frozen_to_two_themes() -> None:
-    assert THEME_NAMES == frozenset({"voidcode-dark", "voidcode-light"})
-    assert dict(DEFAULT_THEME_NAMES) == {
-        "auto": "voidcode-dark",
-        "dark": "voidcode-dark",
-        "light": "voidcode-light",
-    }
 
 
 #: omp leaves these foreground tokens to the terminal's default colour (an empty

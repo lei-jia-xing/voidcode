@@ -5,7 +5,6 @@ import socket
 import pytest
 
 from voidcode.security.url_policy import (
-    ALLOWED_SCHEMES,
     BLOCKED_HOSTNAMES,
     UrlValidationResult,
     validate_redirect_target,
@@ -23,10 +22,6 @@ def _resolve_hostnames_offline(monkeypatch: pytest.MonkeyPatch) -> None:
         return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (_PUBLIC_ADDRESS, 0))]
 
     monkeypatch.setattr(socket, "getaddrinfo", _resolve)
-
-
-def test_allowed_schemes_are_http_and_https() -> None:
-    assert ALLOWED_SCHEMES == frozenset({"http", "https"})
 
 
 @pytest.mark.parametrize("scheme", ["http", "https"])

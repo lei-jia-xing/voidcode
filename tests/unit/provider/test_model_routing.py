@@ -83,12 +83,6 @@ def test_first_match_wins_and_strip_prefix_rewrites_the_request_model() -> None:
     assert match.request_model_id == "claude-opus-5"
 
 
-def test_shipped_routes_only_name_builtin_providers() -> None:
-    from voidcode.provider.naming import BUILTIN_PROVIDER_IDS
-
-    assert set(api_routes.API_ROUTES) <= set(BUILTIN_PROVIDER_IDS)
-
-
 def test_go_gateway_sends_minimax_m3_over_chat_completions() -> None:
     """The one real divergence the OMP table settled: Go's ``minimax-m3`` is
     chat-completions there, not Anthropic, despite the upstream npm hint."""

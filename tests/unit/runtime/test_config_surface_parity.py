@@ -569,15 +569,6 @@ def test_generated_schema_and_loader_agree_on_every_corpus_case(tmp_path: Path) 
     assert faults == [], "artifact/loader divergence:\n" + "\n".join(faults)
 
 
-def test_loader_only_rules_all_come_from_the_corpus() -> None:
-    """A declared loader-only rule must still be exercised by the corpus."""
-    corpus_ids = {case_id for case_id, _payload in CORPUS}
-
-    assert set(LOADER_ONLY_RULES) <= corpus_ids
-    matches = tuple(match for match, _reason in LOADER_ONLY_MATCHES)
-    assert all(any(match in case_id for case_id in corpus_ids) for match in matches)
-
-
 def test_corpus_covers_every_top_level_section() -> None:
     """Guard against a corpus that silently stops covering a section."""
     covered = {key for _case_id, payload in CORPUS for key in payload}

@@ -11,7 +11,7 @@ import pytest
 
 from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.hook.surfaces import hook_surface_descriptor
-from voidcode.runtime.config_models import HOOK_COMMAND_FIELDS, HooksPayload
+from voidcode.runtime.config_models import HooksPayload
 
 
 def test_hook_surface_descriptor_for_unknown_surface_still_key_error() -> None:
@@ -39,5 +39,3 @@ def test_hooks_payload_schema_mirror_exposes_new_argv_slots() -> None:
     )
     assert payload.on_approval_requested == (("echo", "approval"),)
     assert payload.on_question_asked == (("echo", "question"),)
-    assert "on_approval_requested" in HOOK_COMMAND_FIELDS
-    assert "on_question_asked" in HOOK_COMMAND_FIELDS

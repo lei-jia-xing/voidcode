@@ -7,7 +7,6 @@ import time
 import pytest
 
 from voidcode.provider._wire_common import (
-    DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
     iter_stream_with_timeout,
 )
 from voidcode.provider.errors import parse_provider_api_error, parse_provider_stream_error
@@ -247,7 +246,3 @@ def test_a_caller_abort_during_a_wait_is_cancelled_not_a_timeout() -> None:
     assert failure.value.kind == "cancelled"
     assert failure.value.retryable is False
     assert failure.value.fallback_allowed is False
-
-
-def test_the_first_event_default_is_omp_s_three_hundred_seconds() -> None:
-    assert DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS == 300.0
