@@ -80,7 +80,7 @@ Lower-precedence inputs may narrow or annotate higher-precedence decisions, but 
 
 ### Bounded observability
 
-Runtime attaches a `runtime_policy` object to `runtime.request_received`, and additive clients may also consume the now-implemented standalone `runtime.policy_materialized` event. This payload is a bounded projection of the persisted `RuntimePolicySnapshot`, not a second policy source. It exposes schema/policy version, mode/read-only state, agent ids, neutral intent metadata, allowed/denied tool and delegation ids, hook policy actions/scopes, prompt-activation state, precedence trace, and diagnostics. Lists are capped, strings are preview-sized, and the payload never includes raw prompt bodies, skill bodies, env values, credentials, or unbounded metadata.
+Runtime attaches a `runtime_policy` object to `runtime.request_received`; that object carries a nested `materialization` marker (`materialization.kind == "runtime_policy_materialized"`, `source == "runtime_control_plane"`) recording that the runtime control plane has materialized policy for this turn. There is no standalone `runtime.policy_materialized` event in the event vocabulary. This payload is a bounded projection of the persisted `RuntimePolicySnapshot`, not a second policy source. It exposes schema/policy version, mode/read-only state, agent ids, neutral intent metadata, allowed/denied tool and delegation ids, hook policy actions/scopes, prompt-activation state, precedence trace, and diagnostics. Lists are capped, strings are preview-sized, and the payload never includes raw prompt bodies, skill bodies, env values, credentials, or unbounded metadata.
 
 Tool allow/deny and approval decisions remain observable through `runtime.tool_lookup_succeeded`, `runtime.permission_resolved`, `runtime.approval_requested`, `runtime.approval_resolved`, `runtime.tool_started`, `runtime.tool_completed`, and `runtime.failed` denial payloads. Delegation allow/deny remains observable through background/delegated lifecycle events and explicit runtime failure payloads for policy denials. Hook decisions remain observable through `runtime.tool_hook_pre` / `runtime.tool_hook_post` with `hook_policy.authoritative=false`. Prompt activation persists inside `RuntimePolicySnapshot.prompt_activation`; replay/resume may show historical activation records but must project run-local `activated_this_turn` as false unless the current run actually activated it.
 
@@ -117,11 +117,9 @@ Context transform 在 runtime-owned context assembly 阶段贡献有界 provider
 
 每个 `RuntimeContextTransformProvider` 都必须提供稳定的 `provider_id`、`provider_version`、`scope`、`priority` 与 `failure_policy`。当前唯一允许的 scope 是 `provider_context`：provider 只能返回有界 injection 或 diagnostic，不能修改原始 request prompt、工具参数、SQLite/session truth、approval/denial、owner boundary 或 tool allowlist。registry 负责按 `(priority, provider_id)` 排序、校验唯一 id，并将 provider metadata 与有界 trace 纳入现有 `context_transform` metadata；这不是新的 event bus 或 executor。
 
-### Provider message validation
+### Provider message validation（未实现）
 
-Provider message validator 可以在 provider execution 前检查 canonical runtime/provider message shape。
-
-validator 可以通过 runtime-owned policy decision warn 或 block，但不能变成任意 message mutation hook。
+Provider message validation **不属于**当前实现：代码库中不存在 provider message validator（无 `message_validator` / `ProviderMessageValidator` / `validate_provider_message` 符号）。这是显式非目标，而不是延后的 permissive contract；在出现经过验证的实现前，不定义该 family 的 input/output shape。
 
 ### Capability materialization
 

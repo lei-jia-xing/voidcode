@@ -2,11 +2,13 @@
 
 ## 状态
 
-这是 VoidCode 首期 typed tool-input hook 的实现契约。当前 runtime 使用
-`builtin_tool_input_handler_registry()` 作为默认空 builtin registry；显式注入的
-`ToolInputHandlerRegistry` 可以通过同一 stable composition seam 提供 handlers。当前
-没有安全、通用且经过工具语义验证的 production canonicalizer，因此默认 registry
-不伪造 path/arguments rewrite，也不通过 `.voidcode.json` 或 `ResolvedHookPlan`
+这是 VoidCode 首期 typed tool-input hook 的实现契约。当前 runtime 通过
+`builtin_tool_input_handler_registry()` 提供默认 builtin registry，其中注册了唯一一个
+binding `shell-non-interactive-env`（`_shell_non_interactive_env_handler`）：它只对
+`shell_exec` 命令的 non-interactive env 注入发出 bounded diagnostic，不改写参数。显式
+注入的 `ToolInputHandlerRegistry` 可以通过同一 stable composition seam 提供额外
+handlers。当前没有安全、通用且经过工具语义验证的 production canonicalizer，因此默认
+registry 不伪造 path/arguments rewrite，也不通过 `.voidcode.json` 或 `ResolvedHookPlan`
 声明 handler。现有 argv hooks 保持不变。
 
 实现锚点：

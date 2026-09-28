@@ -1,13 +1,23 @@
 # `voidcode.lsp`
 
-这里是 LSP 能力层的预期目录，用来承载 LSP 的预配置、语言支持定义、配置 schema 和注册中心逻辑。
+这里是 LSP 能力层，承载 LSP 的预配置、语言支持定义、配置 schema 和注册中心逻辑。它是 runtime 依赖的活代码，不是占位目录。
 
 ## 负责什么
 
-- 语言到 LSP server 的映射关系
+- 语言到 LSP server 的映射关系（`presets.py` 的 builtin server presets）
 - 默认 LSP preset 和可复用的 server 定义
-- 纯粹的配置归一化与校验辅助逻辑
-- 不依赖 runtime session 状态的 LSP 能力契约
+- 配置归一化与校验辅助逻辑（`registry.py`）
+- workspace root 探测（`roots.py::discover_workspace_root`）
+- 不依赖 runtime session 状态的 LSP 能力契约（`contracts.py`）
+
+## 模块
+
+- `contracts.py`：`LspServerPreset`、`LspServerConfigOverride`、`ResolvedLspServerConfig`
+- `presets.py`：builtin server presets 与 `get_builtin_lsp_server_preset` / `has_builtin_lsp_server_preset`
+- `registry.py`：`resolve_lsp_server_config` / `resolve_lsp_server_configs` / `match_lsp_servers_for_path` / `derive_workspace_lsp_defaults`
+- `roots.py`：`discover_workspace_root`
+
+`__init__.py` 重新导出上述符号；`runtime/config.py`、`runtime/lsp.py`（导入 `resolved/roots/registry` 定义）与 `doctor/checker.py` / `doctor/doctor.py` 都直接从 `voidcode.lsp` 导入这些定义。与此同时，`runtime/coordinators/` 从 `voidcode.runtime.lsp`（runtime 集成层）导入 `LspManager`。
 
 ## 不负责什么
 
@@ -18,8 +28,4 @@
 
 ## 与 runtime 的边界
 
-`src/voidcode/runtime/lsp.py` 仍然是 runtime 集成层。它应当依赖 `voidcode.lsp` 中可复用的定义与 schema，同时继续持有 runtime 管理的生命周期、事件和 session 生效真相。
-
-## 当前状态
-
-这个目录目前是规划中的能力层。现有实现仍然位于 `src/voidcode/runtime/lsp.py` 与 `src/voidcode/tools/lsp.py`。
+`src/voidcode/runtime/lsp.py` 是 runtime 集成层。它导入 `voidcode.lsp` 中可复用的定义与 schema（`presets` / `registry` / `roots` / `contracts`），同时继续持有 runtime 管理的生命周期、事件和 session 生效真相。工具面入口位于 `src/voidcode/tools/lsp.py`。

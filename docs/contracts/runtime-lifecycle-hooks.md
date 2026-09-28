@@ -25,11 +25,15 @@
   - `background_task_completed`
   - `background_task_failed`
   - `background_task_cancelled`
+  - `background_task_interrupted`
   - `background_task_notification_enqueued`
   - `background_task_result_read`
   - `delegated_result_available`
   - `turn_progress`
   - `stuck_detected`
+  - `approval_requested`
+  - `question_asked`
+  - `before_compact`
 
 > 注：`context_pressure` 不在当前 runtime hook surface 中——`RuntimeHookSurface` 没有该阶段，无配置键、无触发点，本契约不将其列为 shipped phase。
 
@@ -60,8 +64,8 @@
 - `src/voidcode/hook/config.py`
 - `src/voidcode/hook/README.md`
 - `src/voidcode/runtime/service.py`
-- `src/voidcode/runtime/storage.py`
-- `src/voidcode/runtime/task.py`
+- `src/voidcode/runtime/storage/`（session/event 持久化包）
+- `src/voidcode/runtime/background/models.py`（background task 状态模型）
 
 20 个 surface 的内部配置字段、phase 与事件映射以
 `src/voidcode/hook/surfaces.py::HOOK_SURFACE_DESCRIPTORS` 为单一描述源；这只减少
