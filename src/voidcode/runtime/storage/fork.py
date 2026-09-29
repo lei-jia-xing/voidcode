@@ -52,7 +52,7 @@ from ..session import (
     normalize_persisted_session_metadata,
 )
 from .rows import (
-    SessionEventRow,
+    SessionEventPrefixRow,
     SessionForkSourceRow,
     SessionLineageRow,
     decode_row,
@@ -243,13 +243,14 @@ class _ForkStorageMixin(_MixinBase):
             event_rows = fetch_rows(
                 connection,
                 """
-                SELECT sequence, event_type, source, payload_json
+                SELECT sequence, parent_sequence, event_type, source, payload_json
                 FROM session_events
                 WHERE workspace_id = ? AND session_id = ? AND sequence <= ?
                 ORDER BY sequence ASC
                 """,
                 (str(workspace), session_id, boundary),
             )
+            decoded_rows = tuple(decode_row(row, SessionEventPrefixRow) for row in event_rows)
             events = tuple(
                 EventEnvelope(
                     session_id=session_id,
@@ -258,7 +259,7 @@ class _ForkStorageMixin(_MixinBase):
                     source=self._parse_event_source(row["source"]),
                     payload=json.loads(row["payload_json"]),
                 )
-                for row in (decode_row(row, SessionEventRow) for row in event_rows)
+                for row in decoded_rows
             )
             if not events:
                 raise ValueError(f"session {session_id} has no events at or before sequence {boundary} to fork")
@@ -289,9 +290,9 @@ class _ForkStorageMixin(_MixinBase):
                         session_id, parent_session_id, workspace_id, status, turn, prompt, title, output,
                         metadata_json, pending_approval_json, pending_question_json,
                         resume_checkpoint_json, created_at, updated_at,
-                        last_event_sequence, created_at_unix_ms,
+                        last_event_sequence, leaf_sequence, created_at_unix_ms,
                         forked_from_session_id, forked_at_sequence
-                    ) VALUES (?, NULL, ?, 'interrupted', ?, ?, ?, NULL, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, NULL, ?, 'interrupted', ?, ?, ?, NULL, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         forked_id,
@@ -304,6 +305,9 @@ class _ForkStorageMixin(_MixinBase):
                         created_at,
                         updated_at,
                         boundary,
+                        # The copied prefix's newest row is the fork's position,
+                        # exactly as an append would leave it (rule 4).
+                        boundary,
                         created_at_unix_ms,
                         session_id,
                         boundary,
@@ -312,19 +316,22 @@ class _ForkStorageMixin(_MixinBase):
                 connection.executemany(
                     """
                     INSERT INTO session_events (
-                        workspace_id, session_id, sequence, event_type, source, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        workspace_id, session_id, sequence, parent_sequence, event_type, source, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
                             str(workspace),
                             forked_id,
-                            event.sequence,
-                            event.event_type,
-                            event.source,
-                            json.dumps(event.payload, sort_keys=True),
+                            row["sequence"],
+                            # The prefix copy keeps each row's parent verbatim,
+                            # so the copied chain is identical to the source.
+                            row["parent_sequence"],
+                            row["event_type"],
+                            row["source"],
+                            row["payload_json"],
                         )
-                        for event in events
+                        for row in decoded_rows
                     ],
                 )
             except sqlite3.IntegrityError as exc:  # pragma: no cover - uuid collision only

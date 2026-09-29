@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,31 +55,11 @@ from .rows import (
 )
 from .sessions import SessionEventsAfter, _SessionStorageMixin
 
-SCHEMA_VERSION: Final[int] = 3
-
-
-def _migrate_v1_sessions_title(connection: sqlite3.Connection) -> None:
-    """v1 -> v2: add the nullable user-settable session title column.
-
-    Existing rows keep ``title IS NULL`` and the list surfaces fall back to the
-    session prompt, so an upgraded install reads exactly as before until the
-    user renames a session.
-    """
-    _ = connection.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
-
-
-def _migrate_v2_sessions_fork_provenance(connection: sqlite3.Connection) -> None:
-    """v2 -> v3: add the nullable fork-provenance columns.
-
-    ``forked_from_session_id`` names the session whose event-log prefix a fork
-    copied and ``forked_at_sequence`` the copied boundary. Both stay NULL for a
-    session that was not forked. They are deliberately separate from
-    ``parent_session_id``, which means *delegated background-task child*
-    everywhere it is read (list filtering, delegation routing, parent-terminal
-    checks, orphan pruning) — provenance must not opt a fork into any of that.
-    """
-    _ = connection.execute("ALTER TABLE sessions ADD COLUMN forked_from_session_id TEXT")
-    _ = connection.execute("ALTER TABLE sessions ADD COLUMN forked_at_sequence INTEGER")
+# The storage schema is a cutover, not a migration: the in-session tree added
+# ``session_events.parent_sequence`` and ``sessions.leaf_sequence``, so the
+# version was reset to 1 and any database written before the change is now an
+# incompatible generation (see ``_raise_schema_mismatch``).
+SCHEMA_VERSION: Final[int] = 1
 
 
 @runtime_checkable
@@ -393,13 +373,6 @@ class SqliteSessionStore(
 ):
     _database_path: Path | None
     _SCHEMA_VERSION = SCHEMA_VERSION
-    _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _migrate_v1_sessions_title, 2: _migrate_v2_sessions_fork_provenance}
-    # Forward-only upgrades: _MIGRATIONS[v] migrates user_version v to v + 1,
-    # committed per step. No down-migrations, no ALTER inline in _ensure_schema.
-    # Old versions without a known step fail with the needs-upgrade error
-    # (upgrade-in-place intent, reset only as a last resort), newer versions
-    # fail with too-new, and shape drift fails with corrupt (backup-first reset
-    # guidance).
     _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal", "interrupted"})
     _SEQUENCE_SCOPES = ("sessions", "background_tasks", "auxiliary")
     _sqlite_policy = _SQLitePolicy()
@@ -423,14 +396,12 @@ class SqliteSessionStore(
             ("created_at", "INTEGER", 1, None, 0),
             ("updated_at", "INTEGER", 1, None, 0),
             ("last_event_sequence", "INTEGER", 1, None, 0),
+            ("leaf_sequence", "INTEGER", 0, None, 0),
             ("created_at_unix_ms", "INTEGER", 0, None, 0),
-            # Appended, not grouped with the other text columns: the v1 -> v2
-            # step is an ``ALTER TABLE ADD COLUMN``, which can only append, and
-            # ``_assert_canonical_table_shape`` compares column order. A fresh
-            # database must therefore declare ``title`` last too.
+            # Order here must match the fresh CREATE in ``_ensure_schema``:
+            # ``_assert_canonical_table_shape`` compares ``PRAGMA table_info``
+            # column order, so a reordered DDL fails closed.
             ("title", "TEXT", 0, None, 0),
-            # Same reason as ``title``: appended by the v2 -> v3 step, so they
-            # must be declared last (after ``title``) in the fresh CREATE too.
             ("forked_from_session_id", "TEXT", 0, None, 0),
             ("forked_at_sequence", "INTEGER", 0, None, 0),
         ),
@@ -438,6 +409,7 @@ class SqliteSessionStore(
             ("workspace_id", "TEXT", 1, None, 1),
             ("session_id", "TEXT", 1, None, 2),
             ("sequence", "INTEGER", 1, None, 3),
+            ("parent_sequence", "INTEGER", 0, None, 0),
             ("event_type", "TEXT", 1, None, 0),
             ("source", "TEXT", 1, None, 0),
             ("payload_json", "TEXT", 1, None, 0),
@@ -642,34 +614,25 @@ class SqliteSessionStore(
         return int(row[0]) == len(cls._SEQUENCE_SCOPES)
 
     @classmethod
-    def _migrate_forward(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
-        # Forward-only upgrades; fresh (0) defers to CREATE path, newer fails fast.
+    def _assert_supported_version(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
+        """Fail closed before touching the file when ``user_version`` is not this build's.
+
+        Version 0 is a fresh file and defers to the CREATE path below; the
+        current version is already verified. Anything else is a different
+        generation of the file — there are no migrations, so the version is an
+        exact match, not a floor.
+        """
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version == 0 or version == cls._SCHEMA_VERSION:
+        if version in (0, cls._SCHEMA_VERSION):
             return
-        if version > cls._SCHEMA_VERSION:
-            cls._raise_schema_mismatch(
-                database_path=database_path,
-                detail=f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}",
-                reason="too-new",
-            )
-        while version < cls._SCHEMA_VERSION:
-            migrate = cls._MIGRATIONS.get(version)
-            if migrate is None:
-                cls._raise_schema_mismatch(
-                    database_path=database_path,
-                    detail=f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}",
-                    reason="needs-upgrade",
-                )
-            migrate(connection)
-            version += 1
-            _ = connection.execute(f"PRAGMA user_version = {version}")
-            connection.commit()
-        with _BOOTSTRAP_LOCK:
-            _BOOTSTRAPPED_DATABASES.pop(str(database_path), None)
+        cls._raise_schema_mismatch(
+            database_path=database_path,
+            detail=f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}",
+            reason="too-new" if version > cls._SCHEMA_VERSION else "needs-upgrade",
+        )
 
     def _ensure_schema(self, *, connection: sqlite3.Connection, database_path: Path) -> None:
-        self._migrate_forward(connection=connection, database_path=database_path)
+        self._assert_supported_version(connection=connection, database_path=database_path)
         _ = connection.execute(
             """
             CREATE TABLE IF NOT EXISTS sessions (
@@ -687,6 +650,7 @@ class SqliteSessionStore(
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 last_event_sequence INTEGER NOT NULL,
+                leaf_sequence INTEGER,
                 created_at_unix_ms INTEGER,
                 title TEXT,
                 forked_from_session_id TEXT,
@@ -701,6 +665,7 @@ class SqliteSessionStore(
                 workspace_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 sequence INTEGER NOT NULL,
+                parent_sequence INTEGER,
                 event_type TEXT NOT NULL,
                 source TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
@@ -985,19 +950,21 @@ class SqliteSessionStore(
         if reason == "needs-upgrade":
             raise RuntimeError(
                 "sqlite runtime schema upgrade required: "
-                f"{detail}. This database needs an upgrade in place to schema version "
-                f"{SqliteSessionStore._SCHEMA_VERSION}; no automatic migration step is "
-                "available yet, so upgrade voidcode to a release that provides it and retry. "
-                "Only as a last resort, if the database is expendable and no upgrade path "
-                "exists, `uv run voidcode storage reset` clears local state (this discards sessions)."
+                f"{detail}. This build ships no schema migrations - the storage schema changed "
+                "shape in place, so an older-generation database cannot be opened by it. "
+                "There is no upgrade in place: point VOIDCODE_DB_PATH (or the configured database "
+                "path) at a new database file. Only as a last resort, if the database is expendable, "
+                "`uv run voidcode storage reset` clears local state (this discards sessions)."
             )
         if reason == "too-new":
             raise RuntimeError(
                 "sqlite runtime schema is too new: "
-                f"{detail}. This database was written by a newer voidcode "
-                f"(expected {SqliteSessionStore._SCHEMA_VERSION}); upgrade voidcode to match and retry, "
-                f"do not reset - resetting would discard sessions without closing the version gap. "
-                f"Database: '{database_path}'."
+                f"{detail}. This database was most likely written by an older voidcode whose storage "
+                "schema changed shape without a migration, so the version it stamped is not "
+                f"compatible with this build (expected {SqliteSessionStore._SCHEMA_VERSION}). "
+                "There is nothing to upgrade and resetting cannot close the gap: start from a new "
+                "database path (or remove the old database file and its -wal/-shm siblings) and "
+                f"accept that its sessions are not readable. Database: '{database_path}'."
             )
         raise RuntimeError(
             "sqlite runtime schema mismatch: "

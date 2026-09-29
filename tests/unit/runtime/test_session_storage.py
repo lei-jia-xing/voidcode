@@ -568,6 +568,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "created_at",
         "updated_at",
         "last_event_sequence",
+        "leaf_sequence",
         "created_at_unix_ms",
         "title",
         "forked_from_session_id",
@@ -922,7 +923,8 @@ def test_session_storage_schema_mismatch_errors_split_three_ways(tmp_path: Path,
         store.list_sessions(workspace=tmp_path)
     needs_upgrade_message = str(needs_upgrade_exc.value)
     assert "sqlite runtime schema upgrade required" in needs_upgrade_message
-    assert "needs an upgrade in place" in needs_upgrade_message
+    assert "no schema migrations" in needs_upgrade_message
+    assert "point VOIDCODE_DB_PATH" in needs_upgrade_message
     assert needs_upgrade_message.lower().count("reset") == 1
     assert "last resort" in needs_upgrade_message
 
@@ -935,8 +937,8 @@ def test_session_storage_schema_mismatch_errors_split_three_ways(tmp_path: Path,
         store.list_sessions(workspace=tmp_path)
     too_new_message = str(too_new_exc.value)
     assert "sqlite runtime schema is too new" in too_new_message
-    assert "do not reset" in too_new_message
-    assert "upgrade voidcode" in too_new_message
+    assert "changed shape without a migration" in too_new_message
+    assert "start from a new database path" in too_new_message
 
     corrupt_db = tmp_path / "corrupt-shape.sqlite3"
     with closing(sqlite3.connect(corrupt_db)) as connection:
@@ -1828,6 +1830,108 @@ def _seed_running_session(store: SqliteSessionStore, workspace: Path, session_id
     )
 
 
+def test_session_storage_tree_links_sequential_appends(tmp_path: Path) -> None:
+    """A first event is a root and sets the leaf; the next one follows it."""
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    _seed_running_session(store, tmp_path, "tree-session")
+
+    _ = store.append_session_events(
+        workspace=tmp_path,
+        session_id="tree-session",
+        events=(("runtime.mcp_server_acquired", "runtime", {}, None),),
+    )
+
+    with closing(sqlite3.connect(tmp_path / "sessions.sqlite3")) as connection:
+        rows = connection.execute(
+            "SELECT sequence, parent_sequence FROM session_events WHERE session_id = ? ORDER BY sequence",
+            ("tree-session",),
+        ).fetchall()
+        leaf = connection.execute("SELECT leaf_sequence FROM sessions WHERE session_id = ?", ("tree-session",)).fetchone()[0]
+
+    assert rows == [(1, None), (2, 1)]
+    assert leaf == 2
+
+    # The terminal seal's ``INSERT OR REPLACE`` rewrites every sessions column,
+    # so it must carry the position rather than reset it.
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="tree-session", session_id="tree-session"),
+        response=RuntimeResponse(
+            session=SessionState(session=SessionRef(id="tree-session"), status="completed", turn=1, metadata={}),
+            events=(),
+            output="done",
+        ),
+    )
+    with closing(sqlite3.connect(tmp_path / "sessions.sqlite3")) as connection:
+        leaf_after_seal = connection.execute("SELECT leaf_sequence FROM sessions WHERE session_id = ?", ("tree-session",)).fetchone()[0]
+    assert leaf_after_seal == 2
+
+
+def test_session_storage_bulk_append_chains_the_batch(tmp_path: Path) -> None:
+    """Each row in a multi-event append follows the previous one, not the seed."""
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    _seed_running_session(store, tmp_path, "bulk-chain-session")
+
+    _ = store.append_session_events(
+        workspace=tmp_path,
+        session_id="bulk-chain-session",
+        events=(
+            ("runtime.mcp_server_acquired", "runtime", {"server": "a"}, None),
+            ("runtime.mcp_server_stopped", "runtime", {"server": "b"}, None),
+            ("runtime.acp_connected", "runtime", {}, None),
+        ),
+    )
+
+    with closing(sqlite3.connect(tmp_path / "sessions.sqlite3")) as connection:
+        rows = connection.execute(
+            "SELECT sequence, parent_sequence FROM session_events WHERE session_id = ? ORDER BY sequence",
+            ("bulk-chain-session",),
+        ).fetchall()
+        leaf = connection.execute("SELECT leaf_sequence FROM sessions WHERE session_id = ?", ("bulk-chain-session",)).fetchone()[0]
+
+    assert rows == [(1, None), (2, 1), (3, 2), (4, 3)]
+    assert leaf == 4
+
+
+def test_session_storage_fork_copies_parents_and_leaves_leaf_at_boundary(tmp_path: Path) -> None:
+    """The prefix copy keeps each parent verbatim; the fork leaf is its boundary."""
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    _seed_running_session(store, tmp_path, "fork-tree-source")
+    _ = store.append_session_events(
+        workspace=tmp_path,
+        session_id="fork-tree-source",
+        events=(
+            ("runtime.mcp_server_acquired", "runtime", {}, None),
+            ("runtime.acp_connected", "runtime", {}, None),
+        ),
+    )
+
+    forked = store.fork_session(workspace=tmp_path, session_id="fork-tree-source")
+
+    with closing(sqlite3.connect(tmp_path / "sessions.sqlite3")) as connection:
+        fork_rows = connection.execute(
+            "SELECT sequence, parent_sequence FROM session_events WHERE session_id = ? ORDER BY sequence",
+            (forked.session.id,),
+        ).fetchall()
+        fork_leaf = connection.execute("SELECT leaf_sequence FROM sessions WHERE session_id = ?", (forked.session.id,)).fetchone()[0]
+
+    # Seed row (1, NULL) plus the two chained rows; the fork ends at its boundary.
+    assert fork_rows == [(1, None), (2, 1), (3, 2)]
+    assert fork_leaf == forked.forked_at_sequence == 3
+
+    prefix = store.fork_session(workspace=tmp_path, session_id="fork-tree-source", at_sequence=2)
+
+    with closing(sqlite3.connect(tmp_path / "sessions.sqlite3")) as connection:
+        prefix_rows = connection.execute(
+            "SELECT sequence, parent_sequence FROM session_events WHERE session_id = ? ORDER BY sequence",
+            (prefix.session.id,),
+        ).fetchall()
+        prefix_leaf = connection.execute("SELECT leaf_sequence FROM sessions WHERE session_id = ?", (prefix.session.id,)).fetchone()[0]
+
+    assert prefix_rows == [(1, None), (2, 1)]
+    assert prefix_leaf == prefix.forked_at_sequence == 2
+
+
 def test_session_storage_bulk_append_events_assigns_contiguous_sequences(tmp_path: Path) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
     _seed_running_session(store, tmp_path, "bulk-session")
@@ -2066,197 +2170,6 @@ def test_session_storage_list_sessions_shows_interrupted_session(tmp_path: Path)
 
     assert [summary.session.id for summary in listed] == ["interrupt-session"]
     assert listed[0].status == "interrupted"
-
-
-def _v1_sessions_schema(connection: sqlite3.Connection) -> None:
-    """Create the v1 (pre-title) canonical schema and stamp ``user_version = 1``.
-
-    Byte-for-byte the shape ``SqliteSessionStore`` shipped before the title
-    column, so this is a real old install, not a synthetic stub: only the
-    migration step under test can move it forward.
-    """
-    connection.executescript(
-        """
-        CREATE TABLE sessions (
-            session_id TEXT NOT NULL,
-            parent_session_id TEXT,
-            workspace_id TEXT NOT NULL,
-            status TEXT NOT NULL,
-            turn INTEGER NOT NULL,
-            prompt TEXT NOT NULL,
-            output TEXT,
-            metadata_json TEXT NOT NULL,
-            pending_approval_json TEXT,
-            pending_question_json TEXT,
-            resume_checkpoint_json TEXT,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            last_event_sequence INTEGER NOT NULL,
-            created_at_unix_ms INTEGER,
-            PRIMARY KEY (workspace_id, session_id)
-        );
-        CREATE TABLE session_events (
-            workspace_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            sequence INTEGER NOT NULL,
-            event_type TEXT NOT NULL,
-            source TEXT NOT NULL,
-            payload_json TEXT NOT NULL,
-            PRIMARY KEY (workspace_id, session_id, sequence)
-        );
-        CREATE TABLE background_tasks (
-            task_id TEXT NOT NULL,
-            workspace_id TEXT NOT NULL,
-            status TEXT NOT NULL,
-            prompt TEXT NOT NULL,
-            request_session_id TEXT,
-            request_parent_session_id TEXT,
-            request_metadata_json TEXT NOT NULL,
-            requested_child_session_id TEXT,
-            routing_mode TEXT,
-            routing_subagent_type TEXT,
-            routing_description TEXT,
-            routing_command TEXT,
-            approval_request_id TEXT,
-            question_request_id TEXT,
-            cancellation_cause TEXT,
-            result_available INTEGER NOT NULL DEFAULT 0,
-            delegated_reminder_json TEXT,
-            allocate_session_id INTEGER NOT NULL,
-            session_id TEXT,
-            error TEXT,
-            cancel_requested_at INTEGER,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            started_at INTEGER,
-            finished_at INTEGER,
-            created_at_unix_ms INTEGER,
-            started_at_unix_ms INTEGER,
-            finished_at_unix_ms INTEGER,
-            keep_alive INTEGER NOT NULL DEFAULT 0,
-            steer_prompt TEXT,
-            output_schema_json TEXT,
-            schema_mode TEXT NOT NULL DEFAULT 'permissive',
-            structured_output_json TEXT,
-            schema_validation_json TEXT,
-            PRIMARY KEY (workspace_id, task_id)
-        );
-        CREATE TABLE background_processes (
-            process_id TEXT NOT NULL,
-            workspace_id TEXT NOT NULL,
-            owner_session_id TEXT,
-            command TEXT NOT NULL,
-            cwd TEXT NOT NULL,
-            pid INTEGER NOT NULL,
-            process_group_id INTEGER,
-            process_identity TEXT,
-            stdout_path TEXT NOT NULL,
-            stderr_path TEXT NOT NULL,
-            status TEXT NOT NULL,
-            exit_code INTEGER,
-            reconciliation_reason TEXT,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            PRIMARY KEY (workspace_id, process_id)
-        );
-        CREATE TABLE session_event_deliveries (
-            workspace_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            dedupe_key TEXT NOT NULL,
-            delivered_at INTEGER NOT NULL,
-            event_sequence INTEGER NOT NULL,
-            PRIMARY KEY (workspace_id, session_id, dedupe_key)
-        );
-        CREATE TABLE storage_sequences (
-            scope TEXT PRIMARY KEY,
-            value INTEGER NOT NULL
-        );
-        INSERT INTO storage_sequences (scope, value) VALUES
-            ('sessions', 10), ('background_tasks', 0), ('auxiliary', 0);
-        PRAGMA user_version = 1;
-        """
-    )
-
-
-def test_session_storage_migrates_v1_database_preserving_rows_and_listing(tmp_path: Path) -> None:
-    """A v1 install upgrades in place: rows survive, titles start NULL, listing works."""
-    database_path = tmp_path / "legacy-v1.sqlite3"
-    workspace = tmp_path
-    with closing(sqlite3.connect(database_path)) as connection:
-        _v1_sessions_schema(connection)
-        _ = connection.execute(
-            """
-            INSERT INTO sessions (
-                session_id, workspace_id, status, turn, prompt, output, metadata_json,
-                created_at, updated_at, last_event_sequence
-            ) VALUES ('legacy-session', ?, 'completed', 1, 'legacy prompt', 'legacy output', '{}', 10, 20, 0)
-            """,
-            (str(workspace),),
-        )
-        connection.commit()
-
-    store = SqliteSessionStore(database_path=database_path)
-    listed = store.list_sessions(workspace=workspace)
-
-    assert [summary.session.id for summary in listed] == ["legacy-session"]
-    assert listed[0].prompt == "legacy prompt"
-    # Upgraded rows have no title yet; the prompt fallback is what renders them.
-    assert listed[0].title is None
-    with closing(sqlite3.connect(database_path)) as connection:
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-        legacy_title = connection.execute("SELECT title FROM sessions WHERE session_id = 'legacy-session'").fetchone()[0]
-    assert version == SCHEMA_VERSION
-    assert legacy_title is None
-
-
-def test_session_storage_migrates_v2_database_adding_fork_provenance(tmp_path: Path) -> None:
-    """A v2 install upgrades to v3 in place: rows survive, new columns start NULL.
-
-    Builds the v2 shape by hand (v1 plus the title column, stamped version 2) so
-    only the v2 -> v3 step can move it forward. Also proves the migrated file
-    passes the order-sensitive canonical shape check and can be forked.
-    """
-    database_path = tmp_path / "legacy-v2.sqlite3"
-    workspace = tmp_path
-    with closing(sqlite3.connect(database_path)) as connection:
-        _v1_sessions_schema(connection)
-        _ = connection.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
-        _ = connection.execute("PRAGMA user_version = 2")
-        _ = connection.execute(
-            """
-            INSERT INTO sessions (
-                session_id, workspace_id, status, turn, prompt, title, output, metadata_json,
-                created_at, updated_at, last_event_sequence
-            ) VALUES ('legacy-v2-session', ?, 'completed', 1, 'legacy v2 prompt', 'legacy v2 title',
-                      'legacy v2 output', '{}', 10, 20, 2)
-            """,
-            (str(workspace),),
-        )
-        connection.executemany(
-            """
-            INSERT INTO session_events (workspace_id, session_id, sequence, event_type, source, payload_json)
-            VALUES (?, 'legacy-v2-session', ?, ?, 'runtime', '{}')
-            """,
-            [(str(workspace), 1, "graph.request_received"), (str(workspace), 2, "graph.response_ready")],
-        )
-        connection.commit()
-
-    store = SqliteSessionStore(database_path=database_path)
-    listed = store.list_sessions(workspace=workspace)
-
-    assert [summary.session.id for summary in listed] == ["legacy-v2-session"]
-    assert listed[0].title == "legacy v2 title"
-    assert listed[0].forked_from_session_id is None
-    assert listed[0].forked_at_sequence is None
-    # The migrated log is intact and forkable: provenance is written, not inherited.
-    forked = store.fork_session(workspace=workspace, session_id="legacy-v2-session")
-    assert forked.forked_from_session_id == "legacy-v2-session"
-    assert forked.forked_at_sequence == 2
-    with closing(sqlite3.connect(database_path)) as connection:
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-        columns = [row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()]
-    assert version == SCHEMA_VERSION
-    assert columns[-3:] == ["title", "forked_from_session_id", "forked_at_sequence"]
 
 
 def test_session_storage_rename_round_trips_across_store_reopen(tmp_path: Path) -> None:

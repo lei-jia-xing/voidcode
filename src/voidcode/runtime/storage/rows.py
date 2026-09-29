@@ -126,6 +126,12 @@ class SessionLastEventSequenceRow(TypedDict):
     last_event_sequence: int
 
 
+class SessionLeafSequenceRow(TypedDict):
+    """The session's current tree position: NULL only for zero-event sessions."""
+
+    leaf_sequence: int | None
+
+
 class SessionRuntimeStateRow(TypedDict):
     status: str
     pending_approval_json: str | None
@@ -157,6 +163,20 @@ class SessionEffectivenessRow(TypedDict):
 
 class SessionEventRow(TypedDict):
     sequence: int
+    event_type: str
+    source: str
+    payload_json: str
+
+
+class SessionEventPrefixRow(TypedDict):
+    """The fork-prefix SELECT: one event row plus tree position.
+
+    Kept separate from ``SessionEventRow`` so the plain replay SELECTs (which
+    do not project the tree column) stay exactly as selected.
+    """
+
+    sequence: int
+    parent_sequence: int | None
     event_type: str
     source: str
     payload_json: str

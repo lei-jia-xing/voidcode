@@ -34,6 +34,7 @@ from .rows import (
     SessionEventRow,
     SessionForkProvenanceRow,
     SessionLastEventSequenceRow,
+    SessionLeafSequenceRow,
     SessionListRow,
     SessionLoadRow,
     SessionMetadataRow,
@@ -142,6 +143,14 @@ class _SessionStorageMixin(_MixinBase):
             workspace=workspace,
             session_id=session_id,
         )
+        # The tree position is owned by the incremental append path, not by this
+        # snapshot: ``INSERT OR REPLACE`` rewrites every column, so an upsert
+        # that did not carry it would reset the position on every seal.
+        leaf_sequence = self._read_leaf_sequence(
+            connection=connection,
+            workspace=workspace,
+            session_id=session_id,
+        )
         updated_at = self._next_timestamp(connection=connection)
         # The row watermark (maintained by every incremental
         # ``append_session_events``) IS the persisted truth. Clamp the sealed
@@ -169,9 +178,9 @@ class _SessionStorageMixin(_MixinBase):
                 session_id, parent_session_id, workspace_id, status, turn, prompt, title, output,
                 metadata_json, pending_approval_json, pending_question_json,
                 resume_checkpoint_json, created_at, updated_at,
-                last_event_sequence, created_at_unix_ms,
+                last_event_sequence, leaf_sequence, created_at_unix_ms,
                 forked_from_session_id, forked_at_sequence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -189,6 +198,7 @@ class _SessionStorageMixin(_MixinBase):
                 created_at,
                 updated_at,
                 last_event_sequence,
+                leaf_sequence,
                 created_at_unix_ms,
                 forked_from_session_id,
                 forked_at_sequence,
@@ -424,12 +434,21 @@ class _SessionStorageMixin(_MixinBase):
                 if inserted_delivery.rowcount == 0:
                     connection.commit()
                     return None
+            # The tree position this append hangs off: the session's current
+            # leaf. Read before the bump because the same UPDATE advances it.
+            leaf_row = fetch_row(
+                connection,
+                "SELECT leaf_sequence FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            )
+            parent_sequence = None if leaf_row is None else decode_row(leaf_row, SessionLeafSequenceRow)["leaf_sequence"]
             updated_at = self._next_timestamp(connection=connection)
             sequence_row = fetch_row(
                 connection,
                 """
                     UPDATE sessions
-                    SET updated_at = ?, last_event_sequence = last_event_sequence + 1
+                    SET updated_at = ?, last_event_sequence = last_event_sequence + 1,
+                        leaf_sequence = last_event_sequence + 1
                     WHERE workspace_id = ? AND session_id = ?
                     RETURNING last_event_sequence
                     """,
@@ -450,13 +469,14 @@ class _SessionStorageMixin(_MixinBase):
             _ = connection.execute(
                 """
                 INSERT INTO session_events (
-                    workspace_id, session_id, sequence, event_type, source, payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    workspace_id, session_id, sequence, parent_sequence, event_type, source, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(workspace),
                     event.session_id,
                     event.sequence,
+                    parent_sequence,
                     event.event_type,
                     event.source,
                     json.dumps(event.payload, sort_keys=True),
@@ -496,6 +516,12 @@ class _SessionStorageMixin(_MixinBase):
                 status=status,
                 events=events,
             )
+            leaf_row = fetch_row(
+                connection,
+                "SELECT leaf_sequence FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            )
+            parent_sequence = None if leaf_row is None else decode_row(leaf_row, SessionLeafSequenceRow)["leaf_sequence"]
             assigned: list[EventEnvelope] = []
             for event_type, source, payload, dedupe_key in events:
                 payload = self._enriched_background_task_event_payload(
@@ -521,11 +547,12 @@ class _SessionStorageMixin(_MixinBase):
                 sequence_row = fetch_row(
                     connection,
                     """
-                        UPDATE sessions
-                        SET updated_at = ?, last_event_sequence = last_event_sequence + 1
-                        WHERE workspace_id = ? AND session_id = ?
-                        RETURNING last_event_sequence
-                        """,
+                    UPDATE sessions
+                    SET updated_at = ?, last_event_sequence = last_event_sequence + 1,
+                        leaf_sequence = last_event_sequence + 1
+                    WHERE workspace_id = ? AND session_id = ?
+                    RETURNING last_event_sequence
+                    """,
                     (updated_at, str(workspace), session_id),
                 )
                 if sequence_row is None:
@@ -541,18 +568,23 @@ class _SessionStorageMixin(_MixinBase):
                 _ = connection.execute(
                     """
                     INSERT INTO session_events (
-                        workspace_id, session_id, sequence, event_type, source, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        workspace_id, session_id, sequence, parent_sequence, event_type, source, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(workspace),
                         event.session_id,
                         event.sequence,
+                        parent_sequence,
                         event.event_type,
                         event.source,
                         json.dumps(event.payload, sort_keys=True),
                     ),
                 )
+                # Chain the batch: the next row follows this one. A skipped
+                # dedupe duplicate never reaches here, so it does not perturb
+                # either column.
+                parent_sequence = sequence
                 assigned.append(event)
             if interrupted_checkpoint is not None:
                 checkpoint_updated_at = self._next_timestamp(connection=connection)
@@ -1079,6 +1111,23 @@ class _SessionStorageMixin(_MixinBase):
         if row is not None:
             return decode_row(row, SessionLastEventSequenceRow)["last_event_sequence"]
         return 0
+
+    @staticmethod
+    def _read_leaf_sequence(*, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int | None:
+        """Read the persisted tree position so a row upsert can carry it forward.
+
+        ``leaf_sequence`` is owned by the incremental append path (and by the
+        fork insert); ``_write_session_snapshot``'s ``INSERT OR REPLACE`` only
+        preserves it. An absent row (first run of a session) reads ``None``.
+        """
+        row = fetch_row(
+            connection,
+            "SELECT leaf_sequence FROM sessions WHERE workspace_id = ? AND session_id = ?",
+            (str(workspace), session_id),
+        )
+        if row is not None:
+            return decode_row(row, SessionLeafSequenceRow)["leaf_sequence"]
+        return None
 
     @staticmethod
     def _max_persisted_event_sequence(*, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int:
