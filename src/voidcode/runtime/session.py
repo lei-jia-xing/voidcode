@@ -303,6 +303,22 @@ class StoredSessionLineageEntry:
     forked_at_sequence: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class StoredSessionForestEntry:
+    """One node of the workspace fork forest, in display order (parent first).
+
+    Carries the same provenance as :class:`StoredSessionLineageEntry` plus the
+    topological ``depth`` a tree renderer indents by: 0 for a root (no
+    provenance, or a ``forked_from_session_id`` that is not part of the
+    returned forest — a fork of a deleted/disabled session is still a root).
+    """
+
+    session_id: str
+    forked_from_session_id: str | None
+    forked_at_sequence: int | None
+    depth: int
+
+
 def validate_session_workspace(
     session: SessionState,
     *,

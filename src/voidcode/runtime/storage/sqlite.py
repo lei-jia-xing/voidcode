@@ -32,6 +32,7 @@ from ..permission import PendingApproval
 from ..question import PendingQuestion
 from ..session import (
     SessionStatus,
+    StoredSessionForestEntry,
     StoredSessionLineageEntry,
     StoredSessionSummary,
 )
@@ -144,6 +145,8 @@ class SessionStore(Protocol):
     ) -> StoredSessionSummary: ...
 
     def session_lineage(self, *, workspace: Path, session_id: str | None = None) -> tuple[StoredSessionLineageEntry, ...]: ...
+
+    def session_forest(self, *, workspace: Path) -> tuple[StoredSessionForestEntry, ...]: ...
 
     def save_pending_approval(
         self,

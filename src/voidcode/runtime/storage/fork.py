@@ -31,6 +31,7 @@ from uuid import uuid4
 
 from ..contracts import (
     RuntimeSessionForkBoundaryError,
+    SessionLineageCycleError,
     UnknownSessionError,
 )
 from ..events import (
@@ -45,6 +46,7 @@ from ..events import (
 from ..session import (
     SessionRef,
     SessionStatus,
+    StoredSessionForestEntry,
     StoredSessionLineageEntry,
     StoredSessionSummary,
     normalize_persisted_session_metadata,
@@ -127,6 +129,68 @@ def _dangling_interaction(events: tuple[EventEnvelope, ...]) -> tuple[str, str] 
         if request_id not in resolved_ids:
             return ("request", f"{request_id} ({request_type})")
     return None
+
+
+def forest_from_lineage_entries(
+    entries: tuple[StoredSessionLineageEntry, ...],
+) -> tuple[StoredSessionForestEntry, ...]:
+    """Lay out a whole fork forest from flat provenance rows, parents first.
+
+    The rows' own order (``session_lineage`` sorts by ``updated_at``) is
+    deliberately ignored: a forking parent that is continued *after* its fork
+    has the newer ``updated_at`` and would otherwise sort behind its children,
+    collapsing their depth. Instead children are grouped by
+    ``forked_from_session_id`` and the forest is walked depth-first from the
+    roots, so a node's depth is always one more than its parent's.
+
+    Ordering is a stable function of the data, not of wall-clock time:
+    ``(forked_at_sequence ASC NULLS FIRST, session_id ASC)`` at every level —
+    provenance order within the tree, session id to break ties between
+    independent roots.
+
+    A row is a root when it has no provenance or when its parent is absent from
+    ``entries`` (a fork of a deleted/disabled session stays visible as a root).
+    Raises :class:`SessionLineageCycleError` when provenance contains a cycle:
+    such rows have no root, so silently dropping them would hide corruption and
+    a naive walk would never terminate.
+    """
+    children: dict[str, list[StoredSessionLineageEntry]] = {}
+    present = {entry.session_id for entry in entries}
+    roots: list[StoredSessionLineageEntry] = []
+    for entry in entries:
+        parent = entry.forked_from_session_id
+        if parent is None or parent not in present:
+            roots.append(entry)
+        else:
+            children.setdefault(parent, []).append(entry)
+
+    def _order(entry: StoredSessionLineageEntry) -> tuple[int, str]:
+        sequence = entry.forked_at_sequence
+        return (-1 if sequence is None else sequence, entry.session_id)
+
+    roots.sort(key=_order)
+    for siblings in children.values():
+        siblings.sort(key=_order)
+
+    forest: list[StoredSessionForestEntry] = []
+    placed: set[str] = set()
+    stack: list[tuple[int, StoredSessionLineageEntry]] = [(0, root) for root in reversed(roots)]
+    while stack:
+        depth, entry = stack.pop()
+        placed.add(entry.session_id)
+        forest.append(
+            StoredSessionForestEntry(
+                session_id=entry.session_id,
+                forked_from_session_id=entry.forked_from_session_id,
+                forked_at_sequence=entry.forked_at_sequence,
+                depth=depth,
+            )
+        )
+        stack.extend((depth + 1, child) for child in reversed(children.get(entry.session_id, ())))
+    if len(placed) != len(entries):
+        unplaced = sorted(entry.session_id for entry in entries if entry.session_id not in placed)
+        raise SessionLineageCycleError(f"fork provenance contains a cycle: {', '.join(unplaced)}")
+    return tuple(forest)
 
 
 class _ForkStorageMixin(_MixinBase):
@@ -334,6 +398,17 @@ class _ForkStorageMixin(_MixinBase):
         chain.reverse()
         return tuple(chain)
 
+    def session_forest(self, *, workspace: Path) -> tuple[StoredSessionForestEntry, ...]:
+        """Lay out every workspace session's fork forest, parents before children.
+
+        Storage supplies the flat provenance rows (``session_lineage`` without a
+        ``session_id``); :func:`forest_from_lineage_entries` owns the tree
+        layout so the CLI, TUI picker, and HTTP surface all indent the same
+        forest instead of each re-deriving depth from rows that are merely
+        ``updated_at``-ordered.
+        """
+        return forest_from_lineage_entries(self.session_lineage(workspace=workspace))
+
 
 def _fork_metadata(
     *,
@@ -396,4 +471,5 @@ class _RevertStorageMarker:
 __all__ = [
     "_ForkStorageMixin",
     "_dangling_interaction",
+    "forest_from_lineage_entries",
 ]

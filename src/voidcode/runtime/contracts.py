@@ -54,6 +54,19 @@ class RuntimeSessionForkBoundaryError(ValueError):
     code = "fork_boundary_splits_interaction"
 
 
+class SessionLineageCycleError(ValueError):
+    """Raised when persisted fork provenance contains a cycle.
+
+    Every session has at most one ``forked_from_session_id``, so provenance is
+    a forest — unless the stored rows are corrupted (A forked from B forked
+    from A). A cycle has no root, so it cannot be laid out as a tree; the
+    forest projection refuses it instead of walking it forever. ``code`` is the
+    stable machine-readable reason a transport carries on its error envelope.
+    """
+
+    code = "session_lineage_cycle"
+
+
 class NoPendingQuestionError(ValueError):
     """Raised when a session has no pending question to answer.
 

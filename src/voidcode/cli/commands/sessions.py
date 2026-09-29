@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
 import click
 from pydantic import AfterValidator, BaseModel, Field, TypeAdapter, ValidationError
@@ -28,13 +28,16 @@ from ...runtime.contracts import NoPendingQuestionError
 from ...runtime.permission import PermissionResolution
 from ...runtime.question import QuestionResponse
 from ...runtime.serialization import serialize_revert_marker, serialize_session_debug_snapshot
-from ...runtime.session import StoredSessionLineageEntry, StoredSessionSummary
+from ...runtime.session import StoredSessionForestEntry, StoredSessionLineageEntry, StoredSessionSummary
 from ..errors import CliError
 from ..handler_args import SessionsArgs
 from ..options import APPROVAL_DECISIONS, BUNDLE_FORMATS, json_option, show_thinking_option, workspace_option
 from ..output import emit_output
 from ..presentation import print_runtime_response
 from ..runtime_gateway import consume_session_stream, open_runtime, runtime_error_boundary, session_result_exit_code
+
+if TYPE_CHECKING:
+    from ...runtime.service import VoidCodeRuntime
 
 
 def _non_empty_text(value: str) -> str:
@@ -342,45 +345,56 @@ class _LineageRow(TypedDict):
     forked_from_session_id: str | None
     forked_at_sequence: int | None
     depth: int
+    title: str | None
 
 
-def _lineage_rows(
-    entries: tuple[StoredSessionLineageEntry, ...],
-) -> list[_LineageRow]:
-    """Project lineage entries, oldest ancestor first, depth-annotated.
+def _lineage_row(
+    entry: StoredSessionLineageEntry | StoredSessionForestEntry,
+    *,
+    depth: int,
+    title: str | None,
+) -> _LineageRow:
+    """One renderer row: the entry's provenance plus display ``depth``/``title``."""
+    return {
+        "session_id": entry.session_id,
+        "forked_from_session_id": entry.forked_from_session_id,
+        "forked_at_sequence": entry.forked_at_sequence,
+        "depth": depth,
+        "title": title,
+    }
 
-    Depth is derived client-side from the ``forked_from_session_id`` edges so
-    the caller can indent; the walk itself is a read-only ancestry chain.
+
+def _titles_by_session(runtime: VoidCodeRuntime) -> dict[str, str | None]:
+    """Map session id to its user-set title (``None`` when unset).
+
+    Ids are bare UUIDs, so the tree is unreadable without labels; titles ride
+    on the existing session listing rather than a new storage query.
     """
-    depth_by_id: dict[str, int] = {}
-    rows: list[_LineageRow] = []
-    for entry in entries:
-        parent = entry.forked_from_session_id
-        depth = 0 if parent is None else depth_by_id.get(parent, 0) + 1
-        depth_by_id[entry.session_id] = depth
-        rows.append(
-            {
-                "session_id": entry.session_id,
-                "forked_from_session_id": parent,
-                "forked_at_sequence": entry.forked_at_sequence,
-                "depth": depth,
-            }
-        )
-    return rows
+    return {summary.session.id: summary.title for summary in runtime.list_sessions()}
 
 
 def _handle_sessions_tree_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
     with open_runtime(workspace) as runtime, runtime_error_boundary():
-        entries = runtime.session_lineage(session_id=session_id)
-    rows = _lineage_rows(entries)
+        titles = _titles_by_session(runtime)
+        if session_id is None:
+            # Forest layout (roots, sibling order, depth, cycle refusal) is a
+            # runtime projection; the CLI only formats it.
+            rows = [_lineage_row(entry, depth=entry.depth, title=titles.get(entry.session_id)) for entry in runtime.session_forest()]
+        else:
+            # A named session is one ancestry chain, oldest ancestor first.
+            rows = [
+                _lineage_row(entry, depth=depth, title=titles.get(entry.session_id))
+                for depth, entry in enumerate(runtime.session_lineage(session_id=session_id))
+            ]
 
     def _print_lineage() -> None:
         for row in rows:
             indent = "  " * int(row["depth"])
+            label = f" {row['title']!r}" if row["title"] is not None else ""
             origin = f" <- {row['forked_from_session_id']}@{row['forked_at_sequence']}" if row["forked_from_session_id"] is not None else ""
-            print(f"{indent}{row['session_id']}{origin}")
+            print(f"{indent}{row['session_id']}{label}{origin}")
 
     return emit_output(
         args,

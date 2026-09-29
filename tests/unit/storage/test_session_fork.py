@@ -15,9 +15,14 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.runtime.contracts import RuntimeSessionForkBoundaryError, UnknownSessionError
-from voidcode.runtime.session import SessionRef, SessionState
+from voidcode.runtime.contracts import (
+    RuntimeSessionForkBoundaryError,
+    SessionLineageCycleError,
+    UnknownSessionError,
+)
+from voidcode.runtime.session import SessionRef, SessionState, StoredSessionLineageEntry
 from voidcode.runtime.storage import SqliteSessionStore
+from voidcode.runtime.storage.fork import forest_from_lineage_entries
 
 
 def _event_tuple(*rows: tuple[str, str, dict[str, object]]) -> tuple[tuple[str, str, dict[str, object], None], ...]:
@@ -244,3 +249,106 @@ def test_fork_provenance_survives_a_later_run_seal(tmp_path: Path) -> None:
     reloaded = {summary.session.id: summary for summary in store.list_sessions(workspace=tmp_path)}[forked.session.id]
     assert reloaded.forked_from_session_id == "source-run"
     assert reloaded.forked_at_sequence == 1
+
+
+def test_session_forest_keeps_the_parent_above_a_continued_fork(tmp_path: Path) -> None:
+    """Depth must come from provenance edges, not from the rows' ``updated_at`` order.
+
+    A parent continued *after* its forks has the newest ``updated_at`` and so
+    sorts last in ``session_lineage``; deriving depth in that order collapses
+    every fork to depth 1. The forest walk pins the parent at depth 0 and both
+    forks at depth 1, parent first.
+    """
+    store = SqliteSessionStore()
+    events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
+    _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
+    first_fork = store.fork_session(workspace=tmp_path, session_id="root")
+    second_fork = store.fork_session(workspace=tmp_path, session_id="root")
+    # Continue the original parent so its row is now the most recently updated.
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="root",
+        prompt="root continued",
+        session_metadata={"workspace": str(tmp_path)},
+        tool_results=(),
+        last_event_sequence=1,
+        create_if_missing=True,
+    )
+
+    forest = store.session_forest(workspace=tmp_path)
+
+    # Both forks share the same boundary, so they order by id behind the root.
+    first_entry, *rest = forest
+    assert first_entry.session_id == "root"
+    assert first_entry.forked_from_session_id is None
+    assert [entry.session_id for entry in rest] == sorted((first_fork.session.id, second_fork.session.id))
+    assert [entry.depth for entry in forest] == [0, 1, 1]
+    assert {entry.forked_from_session_id for entry in rest} == {"root"}
+
+
+def test_session_forest_orders_siblings_and_grandchildren_parent_first(tmp_path: Path) -> None:
+    """One depth-first order: root, its forks, then their children.
+
+    Sibling order is the data-determined ``(forked_at_sequence, session_id)``,
+    never ``updated_at``: both forks share the same boundary here, so they order
+    by id. A grandchild always follows the fork it branched from, so the printed
+    indentation is a valid tree.
+    """
+    store = SqliteSessionStore()
+    events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
+    _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
+    first_fork = store.fork_session(workspace=tmp_path, session_id="root", at_sequence=1)
+    grandchild = store.fork_session(workspace=tmp_path, session_id=first_fork.session.id, at_sequence=1)
+    second_fork = store.fork_session(workspace=tmp_path, session_id="root")
+
+    forest = store.session_forest(workspace=tmp_path)
+
+    # Depth-first: root, each fork in (sequence, id) order with its own subtree.
+    expected: list[tuple[str, int]] = [("root", 0)]
+    for sibling in sorted((first_fork.session.id, second_fork.session.id)):
+        expected.append((sibling, 1))
+        if sibling == first_fork.session.id:
+            expected.append((grandchild.session.id, 2))
+
+    assert [(entry.session_id, entry.depth) for entry in forest] == expected
+    # Parents are always emitted before their children.
+    positions = {entry.session_id: index for index, entry in enumerate(forest)}
+    for entry in forest:
+        if entry.forked_from_session_id is not None:
+            assert positions[entry.forked_from_session_id] < positions[entry.session_id]
+
+
+def test_session_forest_keeps_a_fork_of_a_deleted_parent_as_a_root() -> None:
+    """A provenance edge to a session outside the returned set must not drop it."""
+    forest = forest_from_lineage_entries(
+        (
+            StoredSessionLineageEntry(session_id="orphan", forked_from_session_id="deleted", forked_at_sequence=3),
+            StoredSessionLineageEntry(session_id="deleted-child", forked_from_session_id="orphan", forked_at_sequence=4),
+        )
+    )
+
+    assert [(entry.session_id, entry.depth) for entry in forest] == [("orphan", 0), ("deleted-child", 1)]
+    assert forest[0].forked_from_session_id == "deleted"
+
+
+def test_session_forest_breaks_root_and_sibling_ties_by_session_id() -> None:
+    """Two independent roots (and equally sequenced siblings) order by id, not insertion."""
+    forest = forest_from_lineage_entries(
+        (
+            StoredSessionLineageEntry(session_id="zeta", forked_from_session_id=None, forked_at_sequence=None),
+            StoredSessionLineageEntry(session_id="alpha", forked_from_session_id=None, forked_at_sequence=None),
+        )
+    )
+
+    assert [entry.session_id for entry in forest] == ["alpha", "zeta"]
+
+
+def test_session_forest_rejects_a_provenance_cycle() -> None:
+    """Malformed provenance has no root; the walk must refuse it, not hang."""
+    with pytest.raises(SessionLineageCycleError, match="cycle"):
+        forest_from_lineage_entries(
+            (
+                StoredSessionLineageEntry(session_id="a", forked_from_session_id="b", forked_at_sequence=1),
+                StoredSessionLineageEntry(session_id="b", forked_from_session_id="a", forked_at_sequence=2),
+            )
+        )

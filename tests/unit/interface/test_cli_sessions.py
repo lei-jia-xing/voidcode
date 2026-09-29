@@ -285,3 +285,70 @@ def test_sessions_rename_rejects_empty_title_and_unknown_session(tmp_path: Path)
     assert missing.returncode == EXIT_RUNTIME_ERROR
     assert "unknown session" in missing.stderr
     assert "Traceback" not in missing.stderr
+
+
+# ---------------------------------------------------------------------------
+# sessions tree
+# ---------------------------------------------------------------------------
+
+
+def test_sessions_tree_indents_a_parent_continued_after_its_forks(tmp_path: Path) -> None:
+    """``sessions tree`` renders the forest, not the ``updated_at`` row order.
+
+    After forking, the original session is continued so it becomes the newest
+    row; the pre-fix renderer drew the forks above their parent with depth 1 for
+    everything. The tree surfaces the parent's title at depth 0, both forks
+    beneath it, and the provenance annotation.
+    """
+    root_id = _run_session_in(tmp_path)
+    _ = run_cli("sessions", "rename", root_id, "Root session", "--workspace", str(tmp_path), cwd=tmp_path)
+    first = json.loads(run_cli("sessions", "fork", root_id, "--workspace", str(tmp_path), "--json", cwd=tmp_path).stdout)["session"]
+    second = json.loads(run_cli("sessions", "fork", root_id, "--workspace", str(tmp_path), "--json", cwd=tmp_path).stdout)["session"]
+    # Continue the root, making it the most recently updated session in the workspace.
+    _ = run_cli("run", "read sample.txt", "-r", root_id, "--workspace", str(tmp_path), cwd=tmp_path)
+    root_row = next(
+        row
+        for row in json.loads(run_cli("sessions", "list", "--workspace", str(tmp_path), "--json", cwd=tmp_path).stdout)["sessions"]
+        if row["session"]["id"] == root_id
+    )
+    assert root_row["updated_at"] > max(first["updated_at"], second["updated_at"]), "root must be the newest row for this to be the bug"
+
+    plain = run_cli("sessions", "tree", "--workspace", str(tmp_path), cwd=tmp_path)
+    assert plain.returncode == EXIT_SUCCESS
+    lines = plain.stdout.splitlines()
+    assert lines[0] == f"{root_id} 'Root session'"
+    # Same fork boundary, so siblings order by session id.
+    expected_forks = sorted((first, second), key=lambda fork: fork["session"]["id"])
+    assert lines[1] == f"  {expected_forks[0]['session']['id']} 'Root session' <- {root_id}@{expected_forks[0]['forked_at_sequence']}"
+    assert lines[2] == f"  {expected_forks[1]['session']['id']} 'Root session' <- {root_id}@{expected_forks[1]['forked_at_sequence']}"
+
+    payload = json.loads(run_cli("sessions", "tree", "--workspace", str(tmp_path), "--json", cwd=tmp_path).stdout)
+    assert payload["root"] is None
+    assert [row["depth"] for row in payload["lineage"]] == [0, 1, 1]
+    by_id = {row["session_id"]: row for row in payload["lineage"]}
+    assert by_id[root_id]["title"] == "Root session"
+    # Keys are additive: the original four survive on every row.
+    assert by_id[root_id]["forked_from_session_id"] is None
+    assert by_id[first["session"]["id"]]["forked_from_session_id"] == root_id
+
+
+def test_sessions_tree_named_session_is_one_chain_oldest_ancestor_first(tmp_path: Path) -> None:
+    """With a ``session_id`` the output is that session's ancestry, indented 0..N."""
+    root_id = _run_session_in(tmp_path)
+    _ = run_cli("sessions", "rename", root_id, "Ancestor", "--workspace", str(tmp_path), cwd=tmp_path)
+    child = json.loads(run_cli("sessions", "fork", root_id, "--workspace", str(tmp_path), "--json", cwd=tmp_path).stdout)["session"]
+    grandchild = json.loads(run_cli("sessions", "fork", child["session"]["id"], "--workspace", str(tmp_path), "--json", cwd=tmp_path).stdout)[
+        "session"
+    ]
+
+    result = run_cli("sessions", "tree", grandchild["session"]["id"], "--workspace", str(tmp_path), "--json", cwd=tmp_path)
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == EXIT_SUCCESS
+    assert payload["root"] == grandchild["session"]["id"]
+    assert [(row["session_id"], row["depth"]) for row in payload["lineage"]] == [
+        (root_id, 0),
+        (child["session"]["id"], 1),
+        (grandchild["session"]["id"], 2),
+    ]
+    assert payload["lineage"][0]["title"] == "Ancestor"

@@ -272,6 +272,7 @@ from .session import (
     SessionRef,
     SessionState,
     SessionStatus,
+    StoredSessionForestEntry,
     StoredSessionLineageEntry,
     StoredSessionSummary,
     reload_persisted_session,
@@ -2494,6 +2495,16 @@ class VoidCodeRuntime(RuntimeSurface):
         is returned so a client can lay out the whole forest.
         """
         return self._inspection_coordinator.session_lineage(session_id=session_id)
+
+    def session_forest(self) -> tuple[StoredSessionForestEntry, ...]:
+        """Read-only workspace fork forest in display order, parents first.
+
+        The single forest projection every client renders: each entry carries
+        its topological ``depth``, roots and siblings have one data-determined
+        order (provenance sequence, then session id), and a malformed cycle is
+        refused with ``SessionLineageCycleError``.
+        """
+        return self._inspection_coordinator.session_forest()
 
     def tool_effectiveness_report(self) -> ToolEffectivenessReport:
         return self._inspection_coordinator.tool_effectiveness_report()

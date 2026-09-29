@@ -155,9 +155,23 @@ StoredSessionSummary(
 
 血缘查询是**只读**的：它不修改任何会话、不触发 resume，也不改变 fork 结构。
 
+### 摆放 workspace fork 森林 (Session forest)
+
+输入：无（整片森林）。
+
+输出：
+- `tuple[StoredSessionForestEntry, ...]`：在线性血缘行之上追加拓扑 `depth`（`{session_id, forked_from_session_id, forked_at_sequence, depth}`）
+
+森林的摆放规则（由代码提供，客户端可以依赖）：
+
+- **depth 由拓扑遍历得出，不依赖行的 `updated_at` 顺序。** 一个 fork 了子会话、之后又被续接的父会话拥有更新的 `updated_at`；若按行序推 depth，子会话会塌到 depth 1。这里按 `forked_from_session_id` 分组子节点，从根开始深度优先遍历，父节点必先于子节点输出。
+- **根的定义**：`forked_from_session_id` 为空，**或**其指向的会话不在结果集内（fork 了已删除/停用的会话）——后者仍作为根出现，不会被丢弃或成环。
+- **确定性排序**：每一层的顺序为 `(forked_at_sequence 升序、NULL 在前，session_id 升序)`，与 `updated_at` 无关。
+- **环检测**：持久化的 provenance 若成环（无根），抛出 `SessionLineageCycleError`（`code = "session_lineage_cycle"`），不吞掉也不死循环。
+
 当前实现层面：
-- 运行时：`VoidCodeRuntime.session_lineage(session_id=...)`
-- CLI：`voidcode sessions tree [session_id] [--workspace] [--json]`
+- 运行时：`VoidCodeRuntime.session_lineage(session_id=...)`（单链）、`VoidCodeRuntime.session_forest()`（整片森林）
+- CLI：`voidcode sessions tree [session_id] [--workspace] [--json]`；缺省 `session_id` 时渲染森林（每行 `depth` 空格缩进、可选 `title`、以及 `<- parent@sequence` 溯源标注）；给出 `session_id` 时渲染该会话的单条祖先链。`--json` 的 `lineage` 行在本节原有四个键（`session_id` / `forked_from_session_id` / `forked_at_sequence` / `depth`）之上**新增** `title`。
 
 ### fork 语义的诚实边界 (Fork semantics — the honest limits)
 

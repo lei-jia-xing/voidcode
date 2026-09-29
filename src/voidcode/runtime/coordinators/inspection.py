@@ -145,6 +145,7 @@ from ..runtime_debug import (
 from ..session import (
     SessionRef,
     SessionState,
+    StoredSessionForestEntry,
     StoredSessionLineageEntry,
     StoredSessionSummary,
     normalize_persisted_session_metadata,
@@ -536,6 +537,10 @@ class InspectionCoordinator:
             workspace=self._workspace,
             session_id=session_id,
         )
+
+    def session_forest(self) -> tuple[StoredSessionForestEntry, ...]:
+        """Read-only workspace fork forest, parents before children."""
+        return self._session_store.session_forest(workspace=self._workspace)
 
     def tool_effectiveness_report(self) -> ToolEffectivenessReport:
         return self._session_store.tool_effectiveness_report(workspace=self._workspace)
