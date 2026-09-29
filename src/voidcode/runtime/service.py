@@ -3926,7 +3926,18 @@ class VoidCodeRuntime(RuntimeSurface):
         stored_parent_session_id = stored.session.session.parent_id
         if parent_session_id is not None and stored_parent_session_id != parent_session_id:
             return ()
-        replay_events = stored.events
+        # The replay source is the session's root→leaf *path*, never the flat
+        # event log: under a tree the flat log also holds the abandoned
+        # branches, so replaying it would leak a checked-out-away prompt or
+        # tool result into the provider context. ``stored.events`` cannot be
+        # reused for the walk (``load_session`` returns every row without the
+        # ``parent_sequence`` edges), so the one authoritative path walk in
+        # storage is called again — one extra read per replay, deliberately,
+        # rather than a second implementation of the walk here.
+        replay_events = self._session_store.session_path(
+            workspace=self._workspace,
+            session_id=stored.session.session.id,
+        )
         if current_prompt is not None:
             matching_requests = [
                 event.sequence

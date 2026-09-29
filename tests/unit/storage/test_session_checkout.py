@@ -197,3 +197,45 @@ def test_session_event_path_refuses_missing_ancestor_and_cycle() -> None:
 
     with pytest.raises(SessionTreePathError, match="no leaf"):
         session_event_path((), leaf_sequence=None)
+
+
+def test_rebuilt_todo_state_follows_the_checked_out_path(tmp_path: Path) -> None:
+    """The revert-time todo rebuild scans the path, not the abandoned branch.
+
+    ``_todo_state_from_events`` is reached through the active-revert branch:
+    the marker cuts the flat log by sequence, so without intersecting the path
+    a checkout to an older branch would rebuild todos from rows the session
+    abandoned.
+    """
+    store, workspace = _seed_store(tmp_path)
+    _seed_session(
+        store,
+        workspace=workspace,
+        session_id="s5",
+        events=(
+            ("runtime.request_received", "runtime", {"prompt": "A"}),
+            ("runtime.todo_updated", "runtime", {"phases": [{"name": "A", "tasks": [{"content": "A todo", "status": "pending"}]}], "revision": 1}),
+            ("runtime.request_received", "runtime", {"prompt": "B"}),
+            ("runtime.todo_updated", "runtime", {"phases": [{"name": "B", "tasks": [{"content": "B todo", "status": "pending"}]}], "revision": 2}),
+        ),
+    )
+    # Abandon branch B, then append C on A's branch and re-seed the runtime
+    # state a run would have snapshotted (checkout drops it).
+    store.checkout_session(workspace=workspace, session_id="s5", sequence=2)
+    store.update_session_metadata(
+        workspace=workspace,
+        session_id="s5",
+        metadata={"runtime_state": {"todos": {"phases": [{"name": "B", "tasks": [{"content": "B todo", "status": "pending"}]}]}}},
+    )
+    store.append_session_events(
+        workspace=workspace,
+        session_id="s5",
+        events=(("runtime.request_received", "runtime", {"prompt": "C"}, None),),
+    )
+    store.revert_session(workspace=workspace, session_id="s5", sequence=5)
+
+    loaded = store.load_session(workspace=workspace, session_id="s5")
+    runtime_state = cast(dict[str, object], loaded.session.metadata["runtime_state"])
+    todos = cast(dict[str, object], runtime_state["todos"])
+    phases = cast(list[dict[str, object]], todos["phases"])
+    assert phases[0]["name"] == "A"

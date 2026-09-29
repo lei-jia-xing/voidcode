@@ -262,6 +262,13 @@ class _SessionStorageMixin(_MixinBase):
 
     @staticmethod
     def _todo_state_from_events(events: tuple[EventEnvelope, ...]) -> Mapping[str, object] | None:
+        """Latest ``runtime.todo_updated`` on the given events.
+
+        The caller must pass the session's root→leaf *path* (see
+        :func:`session_event_path`), never the flat log: under a tree the flat
+        log also holds abandoned branches, so scanning it would restore todos
+        from a checked-out-away branch.
+        """
         for event in reversed(events):
             if event.event_type != RUNTIME_TODO_UPDATED:
                 continue
@@ -785,7 +792,15 @@ class _SessionStorageMixin(_MixinBase):
             connection.commit()
 
     def truncate_session_events_after(self, *, workspace: Path, session_id: str, sequence: int) -> None:
-        """Delete an orphaned event tail and its owned delivery claims."""
+        """Delete an orphaned event tail and its owned delivery claims.
+
+        The row watermark and the tree leaf are reconciled in the same
+        transaction. The leaf clamp is the ``MIN`` of its current value and the
+        highest surviving sequence: a leaf that named a deleted row would
+        otherwise point past the end of the table and make the session's path
+        unresolvable, while a leaf on an older branch must not be moved
+        forward.
+        """
         with self._write_connect(workspace) as connection:
             _ = connection.execute(
                 "DELETE FROM session_events WHERE workspace_id = ? AND session_id = ? AND sequence > ?",
@@ -805,10 +820,18 @@ class _SessionStorageMixin(_MixinBase):
                     SELECT COALESCE(MAX(sequence), 0)
                     FROM session_events
                     WHERE workspace_id = ? AND session_id = ?
+                ),
+                leaf_sequence = MIN(
+                    leaf_sequence,
+                    (
+                        SELECT MAX(sequence)
+                        FROM session_events
+                        WHERE workspace_id = ? AND session_id = ?
+                    )
                 )
                 WHERE workspace_id = ? AND session_id = ?
                 """,
-                (str(workspace), session_id, str(workspace), session_id),
+                (str(workspace), session_id, str(workspace), session_id, str(workspace), session_id),
             )
             connection.commit()
 
@@ -925,10 +948,17 @@ class _SessionStorageMixin(_MixinBase):
             return sequence
 
     def session_path(self, *, workspace: Path, session_id: str, sequence: int | None = None) -> tuple[EventEnvelope, ...]:
-        """Read-only root→leaf path for ``session_id`` at ``sequence`` (default: the leaf)."""
+        """Read-only root→leaf path for ``session_id`` at ``sequence`` (default: the leaf).
+
+        A session with no events has the empty path: its unset leaf is a
+        legitimate starting position, not a lost tree. An unset leaf with
+        events present is still the corruption case the walk refuses.
+        """
         with self._connect(workspace) as connection:
             entries = self._session_tree_entries(connection=connection, workspace=workspace, session_id=session_id)
             leaf = self._leaf_sequence(connection=connection, workspace=workspace, session_id=session_id)
+        if not entries:
+            return ()
         return session_event_path(entries, target_sequence=sequence, leaf_sequence=leaf)
 
     def has_session(self, *, workspace: Path, session_id: str) -> bool:
@@ -1115,6 +1145,12 @@ class _SessionStorageMixin(_MixinBase):
         output = session_data["output"]
         if filter_reverted and marker is not None and marker.active:
             events = tuple(event for event in events if event.sequence < marker.sequence)
+            # The revert marker cuts by sequence across the flat log, but a
+            # checkout can move the leaf to an older branch: without this
+            # intersection the cutoff would let the abandoned branch leak back
+            # into the replayed context and the rebuilt todo state.
+            path_sequences = {event.sequence for event in self.session_path(workspace=workspace, session_id=session_id)}
+            events = tuple(event for event in events if event.sequence in path_sequences)
             session = SessionState(
                 session=session.session,
                 status=session.status,
