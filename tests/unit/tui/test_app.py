@@ -467,11 +467,12 @@ def test_history_search_chord_inserts_the_picked_prompt() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _resume_app(sessions: list[tuple[str, str | None, str]]) -> TuiApp:
+def _resume_app(sessions: list[tuple[str, str | None, str]], depths: dict[str, int] | None = None) -> TuiApp:
     """A headless app whose picker is opened from a real ``list_sessions`` call.
 
     ``sessions`` is ``(id, title, prompt)`` per row, mirroring what the runtime
-    returns; the stub only replaces the runtime seam.
+    returns; ``depths`` is the fork forest (id -> depth) the runtime's
+    ``session_forest`` projects. The stub only replaces the runtime seam.
     """
 
     class _ListRuntime:
@@ -486,6 +487,12 @@ def _resume_app(sessions: list[tuple[str, str | None, str]]) -> TuiApp:
                     updated_at=1,
                 )
                 for session_id, title, prompt in sessions
+            )
+
+        def session_forest(self) -> tuple[object, ...]:
+            return tuple(
+                SimpleNamespace(session_id=session_id, forked_from_session_id=None, forked_at_sequence=None, depth=depth)
+                for session_id, depth in (depths or {}).items()
             )
 
     app = TuiApp.__new__(TuiApp)
@@ -520,3 +527,22 @@ def test_session_picker_prefers_title_and_falls_back_to_prompt() -> None:
     assert "Named label" in text
     assert "some long prompt body" not in text
     assert "fallback prompt" in text
+
+
+def test_session_picker_indents_forks_from_the_runtime_forest() -> None:
+    app = _resume_app(
+        [
+            ("session-aaaa1111", "root", "root prompt"),
+            ("session-bbbb2222", "fork", "fork prompt"),
+        ],
+        depths={"session-aaaa1111": 0, "session-bbbb2222": 1},
+    )
+
+    app._command_session_resume()
+
+    overlay = app._overlay
+    assert overlay is not None
+    rows = plain(overlay.render(80))
+    assert isinstance(rows, list)
+    fork = next(row for row in rows if "fork" in row)
+    assert fork.index("fork") == 6

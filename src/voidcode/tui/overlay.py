@@ -17,7 +17,7 @@ grammar for the chrome
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
@@ -542,18 +542,27 @@ class SessionPickerOverlay(_Base):
     ``wants_fullscreen`` is always ``True``: omp's session selector and the
     ``--resume`` picker are fullscreen overlays (``session-selector.ts``;
     plan ``.omo/plans/tui-omp-research.md`` phase 4).
+
+    ``depths`` maps a session id to its fork-forest depth; a row indents two
+    spaces per level (the CLI's ``sessions tree`` convention) and a missing id
+    renders at depth 0. Indentation is visual only -- the filter haystack is
+    the bare id/title.
     """
 
-    __slots__ = ("_filter", "_highlight", "_sessions")
+    __slots__ = ("_depths", "_filter", "_highlight", "_sessions")
 
     def __init__(
         self,
         *,
         sessions: Sequence[tuple[str, str]],
+        depths: Mapping[str, int] | None = None,
         theme: Theme | None = None,
     ) -> None:
         super().__init__(theme)
         self._sessions = tuple(sessions)
+        # Fork depth per session id (``VoidCodeRuntime.session_forest``), display
+        # only: a session absent from the map renders at depth 0.
+        self._depths = dict(depths) if depths is not None else {}
         self._filter = ""
         self._highlight = 0
 
@@ -609,7 +618,8 @@ class SessionPickerOverlay(_Base):
         else:
             for index, (session_id, title) in enumerate(matches):
                 pointer = cursor if index == self._highlight else " "
-                label = f"{pointer} {title}"
+                # Two spaces per fork level, matching the CLI's ``sessions tree`` indent.
+                label = f"{pointer} {'  ' * self._depths.get(session_id, 0)}{title}"
                 styled = self._bold("accent", label) if index == self._highlight else theme.fg("text", label)
                 short = short_session_id(session_id)
                 styled += theme.fg("dim", f"  ({short})")

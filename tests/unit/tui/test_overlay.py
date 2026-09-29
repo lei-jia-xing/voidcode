@@ -214,8 +214,8 @@ SESSIONS = [
 ]
 
 
-def picker(sessions=SESSIONS) -> SessionPickerOverlay:
-    return SessionPickerOverlay(sessions=sessions, theme=theme())
+def picker(sessions=SESSIONS, *, depths: dict[str, int] | None = None) -> SessionPickerOverlay:
+    return SessionPickerOverlay(sessions=sessions, depths=depths, theme=theme())
 
 
 def test_picker_lists_prompt_titles_and_selects_session_id() -> None:
@@ -258,6 +258,56 @@ def test_picker_escape_and_empty_cancel() -> None:
 
 def test_picker_is_always_fullscreen() -> None:
     assert picker().wants_fullscreen(WIDTH, 1000) is True
+
+
+FOREST = [
+    ("session-aaaa1111", "Refactor the overlay module"),
+    ("session-dddd4444", "Fork of refactor"),
+    ("session-cccc3333", "Grandchild of refactor"),
+    ("session-bbbb2222", "Fix CJK width bug"),
+]
+# aaaa is a root, dddd forks it, cccc forks dddd; bbbb is an unrelated root.
+DEPTHS = {
+    "session-aaaa1111": 0,
+    "session-dddd4444": 1,
+    "session-cccc3333": 2,
+    "session-bbbb2222": 0,
+}
+
+
+def _row_text(overlay: SessionPickerOverlay, needle: str) -> str:
+    return next(row for row in plain(overlay.render(WIDTH)) if needle in row)
+
+
+def test_picker_indents_rows_by_fork_depth() -> None:
+    overlay = picker(FOREST, depths=DEPTHS)
+    root = _row_text(overlay, "Refactor the overlay module")
+    child = _row_text(overlay, "Fork of refactor")
+    grandchild = _row_text(overlay, "Grandchild of refactor")
+    assert root.index("Refactor the overlay module") == 4
+    assert child.index("Fork of refactor") == root.index("Refactor the overlay module") + 2
+    assert grandchild.index("Grandchild of refactor") == root.index("Refactor the overlay module") + 4
+
+
+def test_picker_same_depth_siblings_share_an_indent() -> None:
+    overlay = picker(FOREST, depths=DEPTHS)
+    # Two unrelated roots (aaaa and bbbb) share the depth-0 column.
+    roots = {_row_text(overlay, "Refactor the overlay module").index("Refactor"), _row_text(overlay, "Fix CJK width bug").index("Fix")}
+    assert len(roots) == 1
+
+
+def test_picker_missing_forest_row_defaults_to_depth_zero() -> None:
+    overlay = picker(FOREST, depths={"session-bbbb2222": 3})
+    assert _row_text(overlay, "Refactor the overlay module").index("Refactor") == 4
+
+
+def test_picker_filtering_matches_a_title_at_non_zero_depth() -> None:
+    overlay = picker(FOREST, depths=DEPTHS)
+    type_text(overlay, "grandchild")
+    rendered = text(overlay.render(WIDTH))
+    assert "Grandchild of refactor" in rendered
+    assert "Fix CJK width bug" not in rendered
+    assert overlay.handle_key(Key("enter")) == OverlayOutcome(OverlayOutcomeKind.DONE, "session-cccc3333")
 
 
 # ---------------------------------------------------------------------------

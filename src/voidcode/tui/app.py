@@ -887,7 +887,14 @@ class TuiApp:
             self._notice(f"✖ Failed to list sessions: {format_runtime_error(error)}")
             return
         entries = [(summary.session.id, summary.title if summary.title is not None else summary.prompt) for summary in sessions]
-        self._overlay = SessionPickerOverlay(sessions=entries, theme=self._theme)
+        # Display-only fork depth for these rows, projected by the runtime; a
+        # session the forest omits still renders at depth 0.
+        try:
+            depths = {entry.session_id: entry.depth for entry in self._runtime.session_forest()}
+        except Exception as error:
+            logger.error("Failed to read session forest: %s", error)
+            depths = {}
+        self._overlay = SessionPickerOverlay(sessions=entries, depths=depths, theme=self._theme)
         self._overlay_request_id = ""
         if self._composer is not None:
             self._composer.set_enabled(False)
