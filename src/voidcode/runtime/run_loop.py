@@ -56,6 +56,7 @@ from .context.transforms import context_transform_applied_payloads
 from .context.window import (
     BeforeCompactInput,
     ContextProjection,
+    ContinuitySummaryKind,
     RuntimeContextSegment,
     RuntimeContextWindow,
     ToolResultView,
@@ -1388,6 +1389,24 @@ class RuntimeRunLoopCoordinator:
                 sequence=sequence,
                 tool_results=provider_tool_results,
             )
+            # Gate order: the hook is consulted first, so a hook cancel skips the
+            # opt-in model call entirely; then the caller-supplied summary; then
+            # the gate on the compiled window, which the run loop reads instead
+            # of resolving the config a second time. With the gate off not even
+            # ``summarize_continuity`` is called.
+            continuity_summary_override: str | None = None
+            continuity_summary_kind: str | None = None
+            if (before_compact_input is None or not before_compact_input.cancel) and (
+                active_graph_request.context_window is not None and cast(RuntimeContextWindow, active_graph_request.context_window).summary_enabled
+            ):
+                continuity_summary_override = runtime.summarize_continuity(
+                    tool_results=provider_tool_results,
+                    session_metadata=session.metadata,
+                )
+                # A failure or a blank answer degrades to the deterministic
+                # projection; only the provenance differs, and it is reported
+                # explicitly because no override is passed in that case.
+                continuity_summary_kind = "model" if continuity_summary_override is not None else "fallback"
             context_window, first_iteration = self._resolve_turn_context_window(
                 active_graph_request=active_graph_request,
                 tool_results=provider_tool_results,
@@ -1411,6 +1430,8 @@ class RuntimeRunLoopCoordinator:
                 hook_guidance=turn_hook_guidance,
                 reminder_segment=pending_reminder_segment or mid_run_segment,
                 before_compact=before_compact_input,
+                continuity_summary_override=continuity_summary_override,
+                continuity_summary_kind=cast(ContinuitySummaryKind | None, continuity_summary_kind),
             )
             pending_reminder_segment = None
             active_graph_request = graph_request_for_session(
@@ -2078,6 +2099,8 @@ class RuntimeRunLoopCoordinator:
         hook_guidance: Iterable[str] | None = None,
         reminder_segment: RuntimeContextSegment | None = None,
         before_compact: BeforeCompactInput | None = None,
+        continuity_summary_override: str | None = None,
+        continuity_summary_kind: ContinuitySummaryKind | None = None,
     ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, ProviderAssembledContext, RuntimeContextWindow]]:
         runtime = self._surface
         current_graph_request = active_graph_request
@@ -2107,6 +2130,8 @@ class RuntimeRunLoopCoordinator:
             hook_guidance=(*self._drain_pending_hook_guidance(), *(hook_guidance or ())) or None,
             reminder_segment=reminder_segment,
             before_compact=before_compact,
+            continuity_summary_override=continuity_summary_override,
+            continuity_summary_kind=continuity_summary_kind,
         )
         # The assembled context compiled the provider view with a payload-aware
         # budget, so its window owns the honest compaction counts for these

@@ -237,6 +237,11 @@ class RuntimeContextWindow:
     #: today's projection, ``"model"``/``"fallback"`` are set by the caller that
     #: supplied a model summary (see ``continuity_summary_override``).
     summary_kind: ContinuitySummaryKind = "deterministic"
+    #: The opt-in gate this view was compiled under
+    #: (``context_window.compaction.summary_enabled``). Carried on the window so
+    #: the run loop decides whether to spend a provider call without resolving
+    #: the config a second time.
+    summary_enabled: bool = False
 
     @property
     def estimate_won(self) -> bool:
@@ -1040,7 +1045,7 @@ def _result_data_bytes(result: ToolResult | ToolResultView) -> int:
     return len(encoded.encode("utf-8"))
 
 
-def _result_payload_text(result: ToolResult | ToolResultView) -> str:
+def result_payload_text(result: ToolResult | ToolResultView) -> str:
     """Provider-visible text of one tool result (content plus its JSON ``data``).
 
     The text twin of :func:`_result_payload_bytes`: the counting paths need the
@@ -1058,7 +1063,7 @@ def _result_payload_text(result: ToolResult | ToolResultView) -> str:
 
 def _result_payload_bytes(result: ToolResult | ToolResultView) -> int:
     """Provider-visible UTF-8 bytes of one tool result (content plus its data payload)."""
-    return len(_result_payload_text(result).encode("utf-8"))
+    return len(result_payload_text(result).encode("utf-8"))
 
 
 def pruning_data_payload(result: ToolResult | ToolResultView, *, omitted_bytes: int) -> dict[str, object]:
@@ -1150,7 +1155,7 @@ def prune_tool_results_for_budget(
     compare a real count against an inflated byte count, so a result judged too
     big by one could look "saved enough" by the other.
     """
-    remaining = sum(count_tokens(_result_payload_text(result), tokenizer) for result in results)
+    remaining = sum(count_tokens(result_payload_text(result), tokenizer) for result in results)
     if remaining <= target_tokens:
         return PrunedToolResults(rendered_results=results, pruned_views=(), pruned_indexes=())
     rendered = list(results)
@@ -1162,7 +1167,7 @@ def prune_tool_results_for_budget(
             break
         content = view.content or ""
         payload_bytes = _result_payload_bytes(view)
-        payload_tokens = count_tokens(_result_payload_text(view), tokenizer)
+        payload_tokens = count_tokens(result_payload_text(view), tokenizer)
         if payload_tokens < min_prune_tokens or _is_prune_protected(view):
             continue
         placeholder = pruning_placeholder(view, omitted_bytes=payload_bytes, omitted_tokens=payload_tokens)
@@ -1319,6 +1324,7 @@ def prepare_provider_context(
     the payload twice.
     """
     effective_policy = policy or ContextWindowPolicy()
+    summary_enabled = effective_policy.compaction.summary_enabled
     projection = project_tool_results_for_context_window(tool_results=tool_results, policy=effective_policy)
     measured_anchor_tokens = anchor_tokens if _positive_int(anchor_tokens) else None
     counts: dict[str, int] = {
@@ -1359,12 +1365,13 @@ def prepare_provider_context(
             summary_anchor=summary_anchor,
             summary_source=summary_source,
             summary_kind=summary_kind,
+            summary_enabled=summary_enabled,
         )
 
     if payload_bytes is None:
         return _view(results=projection.retained_results, compacted=False, reason=None)
     estimated_payload_tokens = count_payload_bytes(payload_bytes) + count_tokens(
-        prompt + "".join(_result_payload_text(result) for result in projection.retained_results),
+        prompt + "".join(result_payload_text(result) for result in projection.retained_results),
         tokenizer=tokenizer,
     )
     anchor_value = measured_anchor_tokens or 0
@@ -1448,7 +1455,7 @@ def prepare_provider_context(
             delta=excess_tokens,
         )
     estimated_payload_tokens_after = count_payload_bytes(payload_bytes) + count_tokens(
-        prompt + "".join(_result_payload_text(result) for result in pruned.rendered_results),
+        prompt + "".join(result_payload_text(result) for result in pruned.rendered_results),
         tokenizer=tokenizer,
     )
     continuity_state = _build_continuity_state(
@@ -1616,7 +1623,7 @@ def assemble_provider_context(
     continuity_state = context_window.continuity_state or preserved_continuity_state or previous_continuity_state
     effective_summary_kind: ContinuitySummaryKind = "deterministic"
     if context_window.compacted:
-        effective_summary_kind = context_window.summary_kind
+        effective_summary_kind = continuity_summary_kind or context_window.summary_kind
     elif _continuity_summary_override_text(continuity_summary_override) is not None:
         # A caller that already has a model summary (e.g. a recompiled window)
         # keeps it even when this call did not prune; the text is never faked
@@ -1624,6 +1631,15 @@ def assemble_provider_context(
         effective_summary_kind = continuity_summary_kind or "model"
         if continuity_state is not None:
             continuity_state = replace(continuity_state, summary_text=continuity_summary_override)
+    elif continuity_summary_kind is not None:
+        # An explicit kind with no override: the caller ran the opt-in summary
+        # lane and it produced nothing, so this text is that lane's fallback.
+        effective_summary_kind = continuity_summary_kind
+    if effective_summary_kind != context_window.summary_kind:
+        # The provenance the caller reported is the one the provider actually
+        # received, so the recompiled window (and the ``context_compacted``
+        # payload built from it) carries it rather than the pre-substitution one.
+        context_window = replace(context_window, summary_kind=effective_summary_kind)
     if continuity_state is not None and continuity_state.projection_id is None:
         anchor, _ = continuity_summary_metadata(continuity_state)
         if anchor is not None:

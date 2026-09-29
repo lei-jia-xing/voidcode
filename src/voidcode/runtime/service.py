@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
-from collections.abc import Generator, Iterable, Iterator, Mapping
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -43,6 +44,9 @@ from ..provider.models import (
 from ..provider.naming import split_provider_model_reference
 from ..provider.protocol import (
     ProviderAbortSignal,
+    ProviderContextSegment,
+    ProviderTurnRequest,
+    ProviderTurnResult,
 )
 from ..provider.registry import ModelProviderRegistry
 from ..provider.resolution import resolve_provider_config
@@ -131,12 +135,14 @@ from .context.window import (
     BeforeCompactInput,
     CompactionBudget,
     ContextWindowPolicy,
+    ContinuitySummaryKind,
     RuntimeAssembledContext,
     RuntimeContextSegment,
     RuntimeContextWindow,
     ToolResultView,
     assemble_provider_context,
     provider_usage_anchor_tokens,
+    result_payload_text,
 )
 from .context.window_policy import (
     compaction_budget_from_config,
@@ -319,6 +325,76 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _EXECUTABLE_AGENT_PRESETS = frozenset({"leader"})
+
+#: System prompt for the opt-in compaction summary (one module-level constant
+#: next to the call that uses it, ``VoidCodeRuntime.summarize_continuity``).
+_CONTINUITY_SUMMARY_SYSTEM_PROMPT = (
+    "You compress conversation history that is about to be discarded from a coding agent's context window.\n"
+    "Summarize the work: the objective, user constraints that must survive verbatim, what was completed, "
+    "decisions taken, files/commands/errors that matter, verification state, and open blockers.\n"
+    "Be specific and factual; never invent progress, files or results that the transcript does not show.\n"
+    "Output the summary text only -- no preamble, no commentary, no markdown fences."
+)
+
+#: Wall clock for one summary call. The call is speculative output, so it gets a
+#: hard bound rather than the provider's own (default 300s) turn timeout.
+_CONTINUITY_SUMMARY_TIMEOUT_SECONDS = 60.0
+#: Chars of context handed to the model: the whole-input cap, then the per-result
+#: preview cap applied oldest-first (the order pruning discards in).
+_CONTINUITY_SUMMARY_INPUT_CHARS = 60_000
+_CONTINUITY_SUMMARY_RESULT_CHARS = 4_000
+#: Chars kept from the answer: a summary longer than this is not a summary, and
+#: keeping it bounded keeps the continuity segment bounded too.
+_CONTINUITY_SUMMARY_OUTPUT_CHARS = 8_000
+
+
+@dataclass(frozen=True, slots=True)
+class _PlainTextProviderContext:
+    """Minimal ``ProviderAssembledContext`` for the one-shot summary call.
+
+    The call sends one system instruction plus the discarded text; every other
+    protocol field is empty, so the wire adapters' tool/replay paths stay inert.
+    """
+
+    prompt: str
+
+    @property
+    def tool_results(self) -> tuple[ToolResult, ...]:
+        return ()
+
+    @property
+    def continuity_state(self) -> None:
+        return None
+
+    @property
+    def segments(self) -> tuple[ProviderContextSegment, ...]:
+        return (
+            ProviderContextSegment(role="system", content=_CONTINUITY_SUMMARY_SYSTEM_PROMPT),
+            ProviderContextSegment(role="user", content=self.prompt),
+        )
+
+    @property
+    def metadata(self) -> dict[str, object]:
+        return {}
+
+
+def _continuity_summary_input(tool_results: Sequence[ToolResult | ToolResultView]) -> str:
+    """Bounded, provider-visible text of the results pruning is discarding.
+
+    Oldest first (the pruning order), each result previewed under its own cap so
+    one oversized payload cannot crowd out the rest, and the whole input capped
+    again so the summary call is never bigger than the content it replaces.
+    """
+    parts: list[str] = []
+    used = 0
+    for index, result in enumerate(tool_results):
+        body = result_payload_text(result)
+        preview = body[:_CONTINUITY_SUMMARY_RESULT_CHARS]
+        parts.append(f"[{index}] tool={result.tool_name} status={result.status}\n{preview}")
+        used += len(preview) + _CONTINUITY_SUMMARY_RESULT_CHARS // 2
+        if used >= _CONTINUITY_SUMMARY_INPUT_CHARS:
+            break
+    return "\n\n".join(parts)[:_CONTINUITY_SUMMARY_INPUT_CHARS]
 
 
 def _agent_effective_execution_engine(
@@ -3882,6 +3958,8 @@ class VoidCodeRuntime(RuntimeSurface):
         reminder_segment: RuntimeContextSegment | None = None,
         compaction_budget: CompactionBudget | None = None,
         before_compact: BeforeCompactInput | None = None,
+        continuity_summary_override: str | None = None,
+        continuity_summary_kind: ContinuitySummaryKind | None = None,
     ) -> RuntimeAssembledContext:
         # Mode guidance flows through the context transform registry: resolve
         # the effective mode once, render its guidance text, and let the
@@ -3996,6 +4074,8 @@ class VoidCodeRuntime(RuntimeSurface):
             tool_catalog_context=tool_catalog_context,
             hook_guidance=hook_guidance if hook_guidance else None,
             reminder_segment=reminder_segment,
+            continuity_summary_override=continuity_summary_override,
+            continuity_summary_kind=continuity_summary_kind,
         )
         raw_delegation = session_metadata.get("delegation")
         if raw_delegation is None:
@@ -4010,6 +4090,72 @@ class VoidCodeRuntime(RuntimeSurface):
             loaded_skills=assembled_context.loaded_skills,
             context_window=assembled_context.context_window,
         )
+
+    def summarize_continuity(
+        self,
+        *,
+        tool_results: tuple[ToolResult | ToolResultView, ...],
+        session_metadata: dict[str, object],
+    ) -> str | None:
+        """One-shot, runtime-owned summary of the conversation pruning is discarding.
+
+        Owned spirit: :mod:`voidcode.runtime.context` stays transport-free, so the
+        provider call lives here. One provider request through the same
+        ``turn_provider()`` seam the graph uses; provider/model/credential
+        resolution and the timeout are settled below. Any failure, a blank answer
+        or a timeout returns ``None`` -- this never raises into the run, and the
+        caller falls back to the deterministic projection.
+        """
+        prompt = _continuity_summary_input(tool_results)
+        if not prompt:
+            return None
+        try:
+            resolved = self.effective_runtime_config_from_metadata(session_metadata)
+            target = resolved.resolved_provider.active_target
+            provider = target.provider
+            if provider is None:
+                return None
+            selection = target.selection
+            request = ProviderTurnRequest(
+                assembled_context=_PlainTextProviderContext(prompt),
+                raw_model=selection.raw_model,
+                provider_name=selection.provider,
+                model_name=selection.model,
+                model_metadata=target.metadata,
+                session_id=None,
+                attempt=0,
+            )
+            outcome: list[ProviderTurnResult] = []
+            failures: list[BaseException] = []
+
+            def _call() -> None:
+                # The provider exception must not escape this thread: it would
+                # print as an unhandled thread exception while the run carries on
+                # with the deterministic projection.
+                try:
+                    outcome.append(provider.turn_provider().propose_turn(request))
+                except BaseException as exc:  # noqa: BLE001 - any failure degrades, never raises.
+                    failures.append(exc)
+
+            thread = threading.Thread(target=_call, name="runtime-continuity-summary", daemon=True)
+            thread.start()
+            thread.join(timeout=_CONTINUITY_SUMMARY_TIMEOUT_SECONDS)
+            if thread.is_alive():
+                logger.warning("continuity summary provider call timed out after %.1fs", _CONTINUITY_SUMMARY_TIMEOUT_SECONDS)
+                return None
+            if failures:
+                logger.warning("continuity summary provider call failed: %s", failures[0])
+                return None
+            if not outcome:
+                return None
+            text = outcome[0].output
+        except Exception as exc:  # noqa: BLE001 - the run must survive a summary failure.
+            logger.warning("continuity summary setup failed: %s", exc)
+            return None
+        if not isinstance(text, str):
+            return None
+        stripped = text.strip()
+        return stripped[:_CONTINUITY_SUMMARY_OUTPUT_CHARS] or None
 
     def reassemble_provider_context_for_overflow(
         self,

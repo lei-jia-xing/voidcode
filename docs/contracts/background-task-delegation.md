@@ -63,7 +63,7 @@
 - MCP 生态市场式语义、provider marketplace 或 dynamic agents marketplace
 - peer-to-peer agent bus
 - 任意 dynamic agent discovery / runtime-generated agent topology
-- #285 context assembly / compaction 的完整产品化语义
+- #285 context assembly / compaction 的完整产品化语义（**现已实现的部分**：`context_window.compaction.summary_enabled` 可选开启的模型生成压缩摘要；默认关闭，关闭时不产生任何额外 provider 调用，失败或返回空内容时回退到确定性投影。**仍不在范围内**：压缩策略本身的产品化语义——如需建模，另开 issue）
 - 由 prompt 文本承载的伪通知模型
 - 仅由客户端 toast/banner 构成的通知模型
 - 替代现有 session replay / resume 契约
@@ -649,4 +649,4 @@ mise run check
 - scheduler integration
 - UI-specific presentation choices
 - workspace-scoped MCP、marketplace、dynamic agents、peer-to-peer agent bus
-- #285 context assembly / compaction 的完整产品化语义
+- #285 context assembly / compaction 的完整产品化语义（模型生成摘要已于 `context_window.compaction.summary_enabled` 落地，默认关闭并带确定性回退；其余压缩语义仍未产品化）

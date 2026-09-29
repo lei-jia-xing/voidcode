@@ -10,9 +10,16 @@ reported on the window is real.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
 
-from voidcode.runtime.config import RuntimeCompactionConfig, RuntimeContextWindowConfig
+from voidcode.hook.config import RuntimeHooksConfig
+from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
+from voidcode.provider.protocol import ProviderTurnRequest, ProviderTurnResult
+from voidcode.provider.registry import ModelProviderRegistry
+from voidcode.runtime.config import RuntimeCompactionConfig, RuntimeConfig, RuntimeContextWindowConfig, RuntimeMcpConfig
 from voidcode.runtime.context.window import (
     CompactionBudget,
     ContextWindowPolicy,
@@ -23,7 +30,11 @@ from voidcode.runtime.context.window_policy import (
     context_window_config_from_policy,
     context_window_policy_from_config,
 )
-from voidcode.tools.contracts import ToolResult
+from voidcode.runtime.contracts import RuntimeRequest
+from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
+from voidcode.tools.contracts import ToolCall, ToolResult
+from voidcode.tools.read import ReadTool
 
 #: The pruning floors are production constants (20_000 tokens of reclaim, 50 per
 #: result), so prunable fixtures are sized in tens of thousands of bytes: this is
@@ -386,3 +397,185 @@ def test_blank_override_degrades_to_the_deterministic_summary() -> None:
 
     assert assembled.metadata["summary_kind"] == "deterministic"
     assert "## Progress Completed" in _projection_segment(assembled).content
+
+
+# --- runtime seam: the opt-in model-generated summary -------------------------
+
+
+_SUMMARY_PROMPT = "summarize the workspace"
+_SUMMARY_TEXT = "MODEL SUMMARY: the parser is patched and the migration must be rerun."
+_READ_COUNT = 30
+_READ_LINES = 120
+_CONTEXT_COMPACTED = "runtime.context_compacted"
+
+
+def _big_workspace(tmp_path: Path) -> None:
+    body = "".join(f"line {index:03d} " + "y" * 20 + "\n" for index in range(_READ_LINES))
+    for index in range(_READ_COUNT):
+        (tmp_path / f"big-{index}.txt").write_text(body, encoding="utf-8")
+
+
+class _SummaryTurnProvider:
+    """Turn provider whose only outcome is the summary answer (or a failure)."""
+
+    def __init__(self, *, outcome: str | Exception) -> None:
+        self.name = "session"
+        self.outcome = outcome
+        self.requests: list[ProviderTurnRequest] = []
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        self.requests.append(request)
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return ProviderTurnResult(output=self.outcome)
+
+
+class _SummaryModelProvider:
+    def __init__(self, *, outcome: str | Exception) -> None:
+        self.name = "session"
+        self.turn = _SummaryTurnProvider(outcome=outcome)
+
+    def turn_provider(self) -> _SummaryTurnProvider:
+        return self.turn
+
+
+@dataclass(slots=True)
+class _ReadStep:
+    tool_call: ToolCall | None = None
+    output: str | None = None
+    is_finished: bool = False
+    events: tuple[object, ...] = ()
+    reasoning: str | None = None
+    provider_usage: object | None = None
+
+
+class _ReadThenDoneGraph:
+    """Scripted graph: one read per step, then done; records the provider view."""
+
+    def __init__(self, reads: int) -> None:
+        self._reads = reads
+        self.summary_segments: list[str | None] = []
+
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> _ReadStep:
+        _ = session
+        assembled = request.assembled_context  # type: ignore[attr-defined]
+        projection = [segment.content for segment in assembled.segments if (segment.metadata or {}).get("source") == "context_projection"]
+        self.summary_segments.append(projection[0] if projection else None)
+        if len(tool_results) < self._reads:
+            return _ReadStep(tool_call=ToolCall(tool_name="read", arguments={"path": f"big-{len(tool_results)}.txt"}))
+        return _ReadStep(output="done", is_finished=True)
+
+
+def _summary_runtime(
+    tmp_path: Path,
+    *,
+    provider: _SummaryModelProvider,
+    summary_enabled: bool,
+    reads: int = _READ_COUNT,
+    hooks: RuntimeHooksConfig | None = None,
+) -> tuple[VoidCodeRuntime, _ReadThenDoneGraph]:
+    graph = _ReadThenDoneGraph(reads)
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([ReadTool()]),
+        graph=graph,  # type: ignore[arg-type]
+        config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
+            execution_engine="provider",
+            model="session/model",
+            hooks=hooks,
+            providers=ProviderConfigs(custom={"session": ProviderEndpointConfig()}),
+            context_window=RuntimeContextWindowConfig(
+                compaction=RuntimeCompactionConfig(
+                    summary_enabled=summary_enabled,
+                    threshold_tokens=2_000,
+                    keep_recent_tool_tokens=100,
+                )
+            ),
+        ),
+        model_provider_registry=ModelProviderRegistry(providers={"session": provider}),  # type: ignore[arg-type]
+        permission_policy=PermissionPolicy(mode="yolo"),
+    )
+    return runtime, graph
+
+
+def _compacted_kind(response: object) -> object:
+    payloads = [event.payload for event in response.events if event.event_type == _CONTEXT_COMPACTED]  # type: ignore[attr-defined]
+    assert payloads, "no runtime.context_compacted event"
+    return payloads[-1]["summary_kind"]
+
+
+def test_opt_in_summary_reaches_the_provider_view_as_model_kind(tmp_path: Path) -> None:
+    """Gate on + a working call: the stub's text is what the provider receives."""
+    _big_workspace(tmp_path)
+    provider = _SummaryModelProvider(outcome=_SUMMARY_TEXT)
+    runtime, graph = _summary_runtime(tmp_path, provider=provider, summary_enabled=True)
+
+    response = runtime.run(RuntimeRequest(prompt=_SUMMARY_PROMPT, session_id="summary-on"))
+
+    assert "line 000" in provider.turn.requests[0].prompt  # the discarded content, not the summary
+    projection = [text for text in graph.summary_segments if text]
+    assert projection and _SUMMARY_TEXT in projection[-1]
+    assert _compacted_kind(response) == "model"
+
+
+def test_failed_summary_keeps_the_deterministic_text_and_reports_fallback(tmp_path: Path) -> None:
+    """Gate on + a failing call: the run completes on the deterministic projection."""
+    _big_workspace(tmp_path)
+    provider = _SummaryModelProvider(outcome=RuntimeError("summary provider exploded"))
+    runtime, graph = _summary_runtime(tmp_path, provider=provider, summary_enabled=True)
+
+    response = runtime.run(RuntimeRequest(prompt=_SUMMARY_PROMPT, session_id="summary-off"))
+
+    assert provider.turn.requests, "the summary lane was attempted"
+    projection = [text for text in graph.summary_segments if text]
+    assert projection and "Runtime context projection:" in projection[-1]
+    assert "MODEL SUMMARY" not in projection[-1]
+    assert _compacted_kind(response) == "fallback"
+
+
+def test_blank_summary_degrades_like_a_failure(tmp_path: Path) -> None:
+    """Gate on + a whitespace-only answer: no override, deterministic text, fallback."""
+    _big_workspace(tmp_path)
+    provider = _SummaryModelProvider(outcome="   \n  ")
+    runtime, graph = _summary_runtime(tmp_path, provider=provider, summary_enabled=True)
+
+    response = runtime.run(RuntimeRequest(prompt=_SUMMARY_PROMPT, session_id="summary-blank"))
+
+    assert provider.turn.requests, "the summary lane was attempted"
+    projection = [text for text in graph.summary_segments if text]
+    assert projection and "Runtime context projection:" in projection[-1]
+    assert projection[-1].strip() != ""
+    assert _compacted_kind(response) == "fallback"
+
+
+def test_gate_off_spends_no_provider_call(tmp_path: Path) -> None:
+    """Gate off: the provider is never asked, and the payload reports deterministic."""
+    _big_workspace(tmp_path)
+    provider = _SummaryModelProvider(outcome=_SUMMARY_TEXT)
+    runtime, graph = _summary_runtime(tmp_path, provider=provider, summary_enabled=False)
+
+    response = runtime.run(RuntimeRequest(prompt=_SUMMARY_PROMPT, session_id="summary-disabled"))
+
+    assert provider.turn.requests == [], "gate off must not spend a provider call"
+    projection = [text for text in graph.summary_segments if text]
+    assert projection and _SUMMARY_TEXT not in projection[-1]
+    assert _compacted_kind(response) == "deterministic"
+
+
+def test_cancelling_before_compact_hook_skips_the_model_call(tmp_path: Path) -> None:
+    """Hook cancel wins the ordering: the opt-in provider call is never made."""
+    _big_workspace(tmp_path)
+    stdout = json.dumps({"action": "cancel", "diagnostic": "operator_hold"})
+    provider = _SummaryModelProvider(outcome=_SUMMARY_TEXT)
+    runtime, _graph = _summary_runtime(
+        tmp_path,
+        provider=provider,
+        summary_enabled=True,
+        hooks=RuntimeHooksConfig(enabled=True, on_before_compact=(("echo", stdout),)),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt=_SUMMARY_PROMPT, session_id="summary-hook-cancel"))
+
+    assert provider.turn.requests == [], "a cancelling hook must skip the model call"
+    assert [event for event in response.events if event.event_type == _CONTEXT_COMPACTED] == []

@@ -26,6 +26,7 @@ from .context.window import (
     BeforeCompactInput,
     CompactionBudget,
     ContextWindowPolicy,
+    ContinuitySummaryKind,
     RuntimeAssembledContext,
     RuntimeContextSegment,
     RuntimeContextWindow,
@@ -127,7 +128,17 @@ class RuntimeSurface(Protocol):
         reminder_segment: RuntimeContextSegment | None = None,
         compaction_budget: CompactionBudget | None = None,
         before_compact: BeforeCompactInput | None = None,
+        continuity_summary_override: str | None = None,
+        continuity_summary_kind: ContinuitySummaryKind | None = None,
     ) -> RuntimeAssembledContext: ...
+
+    # --- opt-in model-generated compaction summary (runtime-owned transport) ---
+    def summarize_continuity(
+        self,
+        *,
+        tool_results: tuple[ToolResult | ToolResultView, ...],
+        session_metadata: dict[str, object],
+    ) -> str | None: ...
     def reassemble_provider_context_for_overflow(
         self,
         *,
