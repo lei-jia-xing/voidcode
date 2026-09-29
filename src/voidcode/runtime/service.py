@@ -2492,7 +2492,9 @@ class VoidCodeRuntime(RuntimeSurface):
 
         With ``session_id`` the walk follows ``forked_from_session_id`` upward
         from that session; without it every workspace session's provenance row
-        is returned so a client can lay out the whole forest.
+        is returned so a client can lay out the whole forest. Delegated
+        background-task children (``parent_session_id`` set) are excluded from
+        the whole-workspace read: they are not fork nodes.
         """
         return self._inspection_coordinator.session_lineage(session_id=session_id)
 

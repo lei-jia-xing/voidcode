@@ -1905,8 +1905,16 @@ export interface components {
          *     ``title`` is the user-settable label (``null`` until a rename), not a
          *     prompt-derived one: deriving display text stays client-side so the server
          *     never ships a second copy of the client's labeling rules.
+         *
+         *     ``depth`` is the row's topological fork depth, read from the runtime's
+         *     ``session_forest`` projection rather than re-derived here. ``null`` means
+         *     the session is not part of that forest (this list is filtered to top-level
+         *     sessions, which the forest superset can omit); the client renders ``null``
+         *     at depth 0.
          */
         SessionSummaryBody: {
+            /** Depth */
+            depth?: number | null;
             /** Prompt */
             prompt: string;
             session: components["schemas"]["SessionRefBody"];

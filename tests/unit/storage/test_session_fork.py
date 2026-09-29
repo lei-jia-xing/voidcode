@@ -331,6 +331,65 @@ def test_session_forest_keeps_a_fork_of_a_deleted_parent_as_a_root() -> None:
     assert forest[0].forked_from_session_id == "deleted"
 
 
+def test_session_forest_excludes_delegated_children(tmp_path: Path) -> None:
+    """A delegated child (``parent_session_id`` set) is not a fork node.
+
+    Delegation and fork use separate columns; the forest describes fork
+    provenance only, so a delegated child must not be classified as a root the
+    way a plain ``NULL forked_from_session_id`` row would be. Every other
+    surface (CLI/HTTP list) filters these out, so the forest must too.
+    """
+    store = SqliteSessionStore()
+    events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
+    _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="delegated-child",
+        prompt="child work",
+        session_metadata={"workspace": str(tmp_path)},
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+        parent_session_id="root",
+    )
+
+    forest = store.session_forest(workspace=tmp_path)
+
+    assert [entry.session_id for entry in forest] == ["root"]
+    # Only the whole-workspace forest read excludes delegated children; the
+    # named-session ancestry walk still sees them.
+    assert [entry.session_id for entry in store.session_lineage(workspace=tmp_path, session_id="delegated-child")] == ["delegated-child"]
+
+
+def test_session_forest_keeps_a_fork_of_a_delegated_child_as_a_root(tmp_path: Path) -> None:
+    """Excluding a delegated child leaves its fork an orphan root, not a gap.
+
+    The fork's ``forked_from_session_id`` points at the excluded child, so the
+    existing orphan rule applies: it stays visible as a root instead of
+    vanishing from the tree.
+    """
+    store = SqliteSessionStore()
+    events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
+    _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="delegated-child",
+        prompt="child work",
+        session_metadata={"workspace": str(tmp_path)},
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+        parent_session_id="root",
+    )
+    store.append_session_events(workspace=tmp_path, session_id="delegated-child", events=events)
+    fork_of_child = store.fork_session(workspace=tmp_path, session_id="delegated-child")
+
+    forest = store.session_forest(workspace=tmp_path)
+
+    assert [(entry.session_id, entry.depth) for entry in forest] == [("root", 0), (fork_of_child.session.id, 0)]
+    assert forest[1].forked_from_session_id == "delegated-child"
+
+
 def test_session_forest_breaks_root_and_sibling_ties_by_session_id() -> None:
     """Two independent roots (and equally sequenced siblings) order by id, not insertion."""
     forest = forest_from_lineage_entries(

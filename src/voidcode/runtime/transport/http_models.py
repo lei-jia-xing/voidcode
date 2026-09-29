@@ -172,6 +172,12 @@ class SessionSummaryBody(ResponseModel):
     ``title`` is the user-settable label (``null`` until a rename), not a
     prompt-derived one: deriving display text stays client-side so the server
     never ships a second copy of the client's labeling rules.
+
+    ``depth`` is the row's topological fork depth, read from the runtime's
+    ``session_forest`` projection rather than re-derived here. ``null`` means
+    the session is not part of that forest (this list is filtered to top-level
+    sessions, which the forest superset can omit); the client renders ``null``
+    at depth 0.
     """
 
     session: SessionRefBody
@@ -180,6 +186,7 @@ class SessionSummaryBody(ResponseModel):
     prompt: str
     updated_at: int
     title: str | None = None
+    depth: int | None = None
 
 
 @final

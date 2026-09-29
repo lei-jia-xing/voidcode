@@ -141,6 +141,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **runtime:** make the session surfaces agree on delegated background-task children — `session_forest()` (and the whole-workspace `session_lineage()` read it builds from) now excludes rows with `parent_session_id` set, so a delegated child is no longer misclassified as a fork root in `voidcode sessions tree`; the orphan rule keeps a fork *of* a delegated child visible as a root instead of dropping it
+
+- **tui:** exclude delegated background-task children from the resume picker, matching `sessions list` and `GET /api/sessions` (pre-existing inconsistency)
+
 - **provider:** default Anthropic-wire `cache_retention` to `short` (was `none`), matching omp upstream: every Anthropic Messages request now carries the 5-minute ephemeral breakpoint unless explicitly set to `none`, and `long` selects the 1-hour TTL; no `PI_CACHE_RETENTION` env var (config key is sufficient)
 
 - **provider:** split Qwen3 text the way upstream does when a combining mark or variation selector sits after punctuation — `_PAT_QWEN3`'s punctuation-run class now excludes `\p{M}` (upstream: ` ?[^\s\p{L}\p{M}\p{N}]+`), so a ZWJ/VS16 emoji cluster such as `\u200d❤\ufe0f` counts 4 like oh-my-pi's native addon instead of 3; the residual was ~1/10000 on real source chunks but ~9% on emoji-heavy text, and all six byte-exact encodings (plus Qwen3 now) measure 0 mismatches over 114k inputs across 12 corpora

@@ -85,7 +85,7 @@ from ..serialization import (
     serialize_session_debug_snapshot,
 )
 from ..service import VoidCodeRuntime
-from ..session import SessionState, StoredSessionSummary
+from ..session import SessionState, StoredSessionForestEntry, StoredSessionSummary
 from ..storage.shared import SessionSealedError
 from ..workspace import WorkspaceOpenError, WorkspaceRuntimeCoordinator
 from .http_contract import (
@@ -320,6 +320,8 @@ class RuntimeTransport(Protocol):
     ) -> ActiveRunInterruptResult: ...
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]: ...
+
+    def session_forest(self) -> tuple[StoredSessionForestEntry, ...]: ...
 
     def web_settings(self) -> dict[str, object]: ...
 
@@ -1242,7 +1244,13 @@ class RuntimeTransportApp(FastAPI):
             # The flat session list is the main-session surface: delegated child
             # sessions belong only to the child-session view and are reachable
             # through the task/delegated-context endpoints, so exclude them here.
-            payload = [self._serialize_stored_session_summary(item) for item in runtime.list_sessions() if item.session.parent_id is None]
+            top_level = [item for item in runtime.list_sessions() if item.session.parent_id is None]
+            # Display-only fork depth comes from the runtime's forest projection
+            # -- the same one the CLI tree and TUI picker render -- so no client
+            # re-derives depth from provenance. The forest is a superset of this
+            # filtered list: a row it omits serializes a null depth, never raises.
+            depths = {entry.session_id: entry.depth for entry in runtime.session_forest()}
+            payload = [self._serialize_stored_session_summary(item, depth=depths.get(item.session.id)) for item in top_level]
         return json_response(payload)
 
     async def _handle_start_background_task(self, payload: _RunStreamRequestPayload) -> Response:
@@ -1758,7 +1766,7 @@ class RuntimeTransportApp(FastAPI):
         }
 
     @staticmethod
-    def _serialize_stored_session_summary(summary: StoredSessionSummary) -> dict[str, object]:
+    def _serialize_stored_session_summary(summary: StoredSessionSummary, *, depth: int | None) -> dict[str, object]:
         return {
             "session": _serialize_session_ref(summary.session),
             "status": summary.status,
@@ -1766,6 +1774,7 @@ class RuntimeTransportApp(FastAPI):
             "prompt": summary.prompt,
             "updated_at": summary.updated_at,
             "title": summary.title,
+            "depth": depth,
         }
 
     @staticmethod

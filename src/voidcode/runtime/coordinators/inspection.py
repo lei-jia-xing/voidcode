@@ -530,7 +530,12 @@ class InspectionCoordinator:
         )
 
     def session_lineage(self, *, session_id: str | None = None) -> tuple[StoredSessionLineageEntry, ...]:
-        """Read-only fork ancestry: oldest ancestor first, the named session last."""
+        """Read-only fork ancestry: oldest ancestor first, the named session last.
+
+        Without ``session_id`` the whole-workspace provenance read excludes
+        delegated background-task children (``parent_session_id`` set), which are
+        not fork nodes; the named-session walk is unaffected.
+        """
         if session_id is not None:
             validate_id(session_id)
         return self._session_store.session_lineage(

@@ -886,7 +886,14 @@ class TuiApp:
             logger.error("Failed to list sessions: %s", error)
             self._notice(f"✖ Failed to list sessions: {format_runtime_error(error)}")
             return
-        entries = [(summary.session.id, summary.title if summary.title is not None else summary.prompt) for summary in sessions]
+        # Main-session surface, like ``sessions list``/HTTP: delegated
+        # background-task children are reachable only from the child-session
+        # view, so they never appear as resume targets here.
+        entries = [
+            (summary.session.id, summary.title if summary.title is not None else summary.prompt)
+            for summary in sessions
+            if summary.session.parent_id is None
+        ]
         # Display-only fork depth for these rows, projected by the runtime; a
         # session the forest omits still renders at depth 0.
         try:

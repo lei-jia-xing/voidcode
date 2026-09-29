@@ -467,11 +467,17 @@ def test_history_search_chord_inserts_the_picked_prompt() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _resume_app(sessions: list[tuple[str, str | None, str]], depths: dict[str, int] | None = None) -> TuiApp:
+def _resume_app(
+    sessions: list[tuple[str, str | None, str]],
+    depths: dict[str, int] | None = None,
+    *,
+    parents: dict[str, str] | None = None,
+) -> TuiApp:
     """A headless app whose picker is opened from a real ``list_sessions`` call.
 
     ``sessions`` is ``(id, title, prompt)`` per row, mirroring what the runtime
-    returns; ``depths`` is the fork forest (id -> depth) the runtime's
+    returns; ``parents`` maps a delegated child id to its ``parent_id`` (absent =
+    a main session); ``depths`` is the fork forest (id -> depth) the runtime's
     ``session_forest`` projects. The stub only replaces the runtime seam.
     """
 
@@ -479,7 +485,7 @@ def _resume_app(sessions: list[tuple[str, str | None, str]], depths: dict[str, i
         def list_sessions(self) -> tuple[object, ...]:
             return tuple(
                 SimpleNamespace(
-                    session=SimpleNamespace(id=session_id, parent_id=None),
+                    session=SimpleNamespace(id=session_id, parent_id=(parents or {}).get(session_id)),
                     title=title,
                     prompt=prompt,
                     status="completed",
@@ -546,3 +552,29 @@ def test_session_picker_indents_forks_from_the_runtime_forest() -> None:
     assert isinstance(rows, list)
     fork = next(row for row in rows if "fork" in row)
     assert fork.index("fork") == 6
+
+
+def test_session_picker_excludes_delegated_children_but_keeps_forks() -> None:
+    """The resume picker is a main-session surface like ``sessions list``/HTTP.
+
+    A delegated child (``parent_id`` set) must not be offered as a resume
+    target; a fork (``parent_id`` None) still is.
+    """
+    app = _resume_app(
+        [
+            ("session-aaaa1111", "root", "root prompt"),
+            ("session-bbbb2222", "fork", "fork prompt"),
+            ("session-cccc3333", "child", "child prompt"),
+        ],
+        depths={"session-aaaa1111": 0, "session-bbbb2222": 1},
+        parents={"session-cccc3333": "session-aaaa1111"},
+    )
+
+    app._command_session_resume()
+
+    overlay = app._overlay
+    assert overlay is not None
+    rendered = plain(overlay.render(80))
+    text = rendered if isinstance(rendered, str) else " ".join(rendered)
+    assert "fork" in text
+    assert "child" not in text

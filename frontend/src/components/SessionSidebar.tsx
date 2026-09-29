@@ -313,12 +313,18 @@ const SessionListItem = memo(function SessionListItem({
     sessionSummary.session.id,
     sessionSummary.title,
   );
+  // Fork depth projected by the runtime's forest (`GET /api/sessions`), display
+  // only: a session the forest omits renders at depth 0. One indent step per
+  // level (the sidebar's 12px spacing unit, as in ReviewPanel's tree) is the
+  // web counterpart of the CLI tree's two spaces per level.
+  const depth = sessionSummary.depth ?? 0;
 
   return (
     <button
       type="button"
       onClick={() => onSelectSession(sessionSummary.session.id)}
       disabled={isDisabled}
+      style={{ paddingLeft: `${12 + depth * 12}px` }}
       className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg transition-colors overflow-hidden border ${
         isActive
           ? "bg-[var(--vc-surface-2)] border-[color:var(--vc-border-strong)] text-[var(--vc-text-primary)]"

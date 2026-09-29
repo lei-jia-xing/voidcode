@@ -1207,6 +1207,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         "turn": 1,
         "prompt": _multi_step_prompt(),
         "title": None,
+        "depth": 0,
     }
     assert replay_response.status == 200
     replay_session = cast(dict[str, object], replay_payload["session"])
@@ -1855,6 +1856,7 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(
         "turn": 1,
         "prompt": "read sample.txt",
         "title": None,
+        "depth": 0,
     }
     assert replay_response.status == 200
     assert cast(dict[str, object], replay_payload["session"])["session"] == {"id": "streamed-session"}

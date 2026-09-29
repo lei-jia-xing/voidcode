@@ -85,7 +85,7 @@ from voidcode.runtime.contracts import (
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.permission import PermissionResolution
 from voidcode.runtime.question import QuestionResponse
-from voidcode.runtime.session import SessionRef, SessionState, StoredSessionSummary
+from voidcode.runtime.session import SessionRef, SessionState, StoredSessionForestEntry, StoredSessionSummary
 from voidcode.runtime.transport import http_models
 from voidcode.runtime.transport.http_models import ResponseModel
 from voidcode.runtime.workspace import WorkspaceRuntimeCoordinator
@@ -656,6 +656,17 @@ class _FixtureRuntime:
             StoredSessionSummary(
                 session=SessionRef(id="sess-2", parent_id="parent-1"), status="interrupted", turn=1, prompt="child", updated_at=1001
             ),
+        )
+
+    def session_forest(self) -> tuple[StoredSessionForestEntry, ...]:
+        # The transport reads the list's ``depth`` from this projection, so both
+        # wire shapes are pinned: ``rich`` supplies a depth (the shape a real
+        # workspace has) and ``minimal`` omits the session entirely (``null``).
+        if not self.rich:
+            return ()
+        return (
+            StoredSessionForestEntry(session_id="sess-1", forked_from_session_id=None, forked_at_sequence=None, depth=0),
+            StoredSessionForestEntry(session_id="sess-2", forked_from_session_id="sess-1", forked_at_sequence=2, depth=1),
         )
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:

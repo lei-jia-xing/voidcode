@@ -344,9 +344,12 @@ class _ForkStorageMixin(_MixinBase):
         """Read-only walk of fork ancestry, oldest ancestor first, fork last.
 
         With ``session_id`` the walk starts there and follows
-        ``forked_from_session_id`` upward. Without it, every workspace session is
-        returned so a caller can layout the whole forest. Disabled/deleted
-        ancestors simply stop the walk.
+        ``forked_from_session_id`` upward. Without it, every workspace session
+        participating in fork provenance is returned so a caller can layout the
+        whole forest. Delegated background-task children (``parent_session_id``
+        set) are excluded there: they are not fork nodes and belong only to the
+        child-session view, matching the ``list_sessions`` filter every other
+        surface applies. Disabled/deleted ancestors simply stop the walk.
         """
         with self._connect(workspace) as connection:
             if session_id is None:
@@ -355,7 +358,7 @@ class _ForkStorageMixin(_MixinBase):
                     """
                     SELECT session_id, forked_from_session_id, forked_at_sequence
                     FROM sessions
-                    WHERE workspace_id = ?
+                    WHERE workspace_id = ? AND parent_session_id IS NULL
                     ORDER BY updated_at ASC, session_id ASC
                     """,
                     (str(workspace),),
