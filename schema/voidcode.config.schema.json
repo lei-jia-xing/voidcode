@@ -532,6 +532,13 @@
             "null"
           ]
         },
+        "summary_enabled": {
+          "description": "Opt-in model-generated compaction summary. Off by default. When on, the compaction summary comes from a provider call and falls back to the deterministic projection if that call fails.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "threshold_tokens": {
           "minimum": 1,
           "type": [

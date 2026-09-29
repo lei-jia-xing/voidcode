@@ -325,3 +325,64 @@ def test_compacted_summary_is_deterministic_text() -> None:
     assert window.compacted is True
     assert window.continuity_state is not None and window.continuity_state.summary_text
     assert window.summary_anchor is not None
+
+
+# --- model summary substitution ----------------------------------------------
+
+
+def _projection_segment(assembled: object) -> object:
+    for segment in assembled.segments:  # type: ignore[attr-defined]
+        if isinstance(segment.metadata, dict) and segment.metadata.get("source") == "context_projection":
+            return segment
+    raise AssertionError("no context_projection segment")
+
+
+def test_model_summary_override_replaces_the_text_but_not_the_counts() -> None:
+    """An override swaps only the summary text; every counter stays the real pruning outcome."""
+    results = tuple(_result("x" * _PRUNABLE_CHARS) for _index in range(6))
+    budget = CompactionBudget(context_window=1_000)
+    policy = _policy(keep_recent_tool_tokens=26_000)
+
+    deterministic = assemble_provider_context(
+        prompt=_PRUNE_PROMPT,
+        tool_results=results,
+        session_metadata={},
+        policy=policy,
+        compaction_budget=budget,
+    )
+    substituted = assemble_provider_context(
+        prompt=_PRUNE_PROMPT,
+        tool_results=results,
+        session_metadata={},
+        policy=policy,
+        compaction_budget=budget,
+        continuity_summary_override="  MODEL SUMMARY TEXT  ",
+    )
+
+    assert substituted.metadata["summary_kind"] == "model"
+    assert deterministic.metadata["summary_kind"] == "deterministic"
+    segment = _projection_segment(substituted)
+    assert segment.content == "Runtime context projection:\nMODEL SUMMARY TEXT"
+    # Counts describe the real pruning, never the substituted string.
+    for key in ("original_tool_result_count", "retained_tool_result_count", "dropped_tool_result_count"):
+        assert substituted.metadata[key] == deterministic.metadata[key]
+    assert substituted.metadata["dropped_tool_result_count"] == 4
+    # The anchor identifies the summary actually shown, so it moves with the text.
+    assert substituted.metadata["summary_anchor"] != deterministic.metadata["summary_anchor"]
+
+
+def test_blank_override_degrades_to_the_deterministic_summary() -> None:
+    """An empty model response must not blank the continuity segment."""
+    results = tuple(_result("x" * _PRUNABLE_CHARS) for _index in range(6))
+
+    assembled = assemble_provider_context(
+        prompt=_PRUNE_PROMPT,
+        tool_results=results,
+        session_metadata={},
+        policy=_policy(keep_recent_tool_tokens=26_000),
+        compaction_budget=CompactionBudget(context_window=1_000),
+        continuity_summary_override="   ",
+    )
+
+    assert assembled.metadata["summary_kind"] == "deterministic"
+    assert "## Progress Completed" in _projection_segment(assembled).content

@@ -48,6 +48,7 @@ def compaction_budget_from_config(
         context_window=context_window,
         threshold_tokens=compaction.threshold_tokens,
         reserve_tokens=compaction.reserve_tokens,
+        summary_enabled=compaction.summary_enabled,
         anchor_tokens=anchor_tokens,
     )
 

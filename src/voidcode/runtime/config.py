@@ -171,6 +171,9 @@ class RuntimeCompactionConfig:
     """Bounded tool-result pruning when the estimated payload reaches the budget."""
 
     enabled: bool = True
+    #: Opt-in model-generated compaction summary; off by default so compaction
+    #: never spends provider tokens unless the operator asks for it.
+    summary_enabled: bool = False
     #: Explicit threshold wins; absent it, the catalog window minus
     #: ``reserve_tokens`` (15% floor) is the trigger.
     threshold_tokens: int | None = None
@@ -830,6 +833,7 @@ def _compaction_config_from_payload(payload: CompactionPayload | None) -> Runtim
         return RuntimeCompactionConfig()
     return RuntimeCompactionConfig(
         enabled=payload.enabled is not False,
+        summary_enabled=payload.summary_enabled is True,
         threshold_tokens=payload.threshold_tokens,
         reserve_tokens=payload.reserve_tokens,
         keep_recent_tool_tokens=payload.keep_recent_tool_tokens,
@@ -1513,6 +1517,7 @@ def serialize_runtime_context_window_config(
         # resume replays the same bounded view.
         "compaction": {
             "enabled": context_window.compaction.enabled,
+            "summary_enabled": context_window.compaction.summary_enabled,
             "threshold_tokens": context_window.compaction.threshold_tokens,
             "reserve_tokens": context_window.compaction.reserve_tokens,
             "keep_recent_tool_tokens": context_window.compaction.keep_recent_tool_tokens,

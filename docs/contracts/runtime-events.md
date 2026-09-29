@@ -264,6 +264,7 @@ Runtime hook surface 与其事件名称的内部对应关系由
   - `measured_anchor_tokens: int | None` / `estimated_delta_tokens: int | None`：锚（最近一次 provider usage 的 `input+cache_write+output`，`input_tokens` 已含 cacheRead）与本地全量估算（有 `tokenizer` 的模型用真实词表，其余按 UTF-8 字节 / 4）超出锚的差额（`max(0, 估算 − 锚)`，锚胜出时为 0）；锚点不可用时前者为 null
   - `pruned_savings_tokens: int`
   - `summary_anchor` / `projection_id` / `summary_source` / `projection`
+  - `summary_kind: "deterministic" | "model" | "fallback"`：本段 continuity 摘要文本的来源。`deterministic` 为今天由 tool-result 事实确定性拼出的投影；`model` 为 `context_window.compaction.summary_enabled` 开启且一次模型调用成功生成后替换的文本（`summary_anchor` / `projection_id` 是对**替换后**文本重算的 sha256，仍如实标识该摘要）；`fallback` 表示该特性已开启但调用失败或返回空内容，视图回退到确定性文本。任何情况下 `original_tool_result_count` / `dropped_tool_result_count` 等计数都来自真实的裁剪结果，模型文本不会伪造计数。
 - 该事件描述 runtime 对 provider view 做的**有界裁剪**：只替换最旧 tool 结果的 content，system/instruction 段与消息 pairing 不变；被裁内容带 artifact 时同时出现 `runtime_context_artifact_reference` 段，模型可经 `voidcode://artifact/<id>` 取回。计数与 usage 估算都必须真实（见 `docs/contracts/runtime-config.md` 的 `context_window.compaction`）。
 
 ### `runtime.provider_context_recovery`

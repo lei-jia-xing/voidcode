@@ -199,6 +199,12 @@ class BeforeCompactInput:
     reason: str | None = None
 
 
+#: Provenance of the provider-facing continuity summary: the deterministic
+#: projection built here today, one produced by a model call the runtime made,
+#: or the deterministic text used because that call failed or returned nothing.
+ContinuitySummaryKind = Literal["deterministic", "model", "fallback"]
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeContextWindow:
     prompt: str
@@ -227,6 +233,10 @@ class RuntimeContextWindow:
     continuity_state: ContextProjection | None = None
     summary_anchor: str | None = None
     summary_source: dict[str, int] | None = None
+    #: Provenance of the summary text this view carries; ``"deterministic"`` is
+    #: today's projection, ``"model"``/``"fallback"`` are set by the caller that
+    #: supplied a model summary (see ``continuity_summary_override``).
+    summary_kind: ContinuitySummaryKind = "deterministic"
 
     @property
     def estimate_won(self) -> bool:
@@ -264,6 +274,8 @@ class RuntimeContextWindow:
             payload["summary_anchor"] = self.summary_anchor
         if self.summary_source is not None:
             payload["summary_source"] = dict(self.summary_source)
+        if self.compacted:
+            payload["summary_kind"] = self.summary_kind
         return payload
 
 
@@ -620,6 +632,19 @@ def _facts_from_tool_results(
                 parts.append(f"summary={_line_preview(summary_output, limit=preview_char_limit)}")
             delegated.append(" ".join(parts))
     return tuple(progress), tuple(blockers), tuple(refs), tuple(delegated)
+
+
+def _continuity_summary_override_text(override: str | None) -> str | None:
+    """The caller-supplied model summary, or ``None`` when there is nothing to substitute.
+
+    A blank or whitespace-only override is treated as absent, so an empty model
+    response degrades to the deterministic projection instead of blanking the
+    provider's continuity segment.
+    """
+    if override is None:
+        return None
+    stripped = override.strip()
+    return stripped or None
 
 
 def _continuity_summary_text(state: ContextProjection) -> str:
@@ -1180,6 +1205,9 @@ class CompactionBudget:
     context_window: int | None = None
     threshold_tokens: int | None = None
     reserve_tokens: int | None = None
+    #: Opt-in model-generated compaction summary (``context_window.compaction.summary_enabled``).
+    #: The budget only carries the gate; the runtime owns the summary call.
+    summary_enabled: bool = False
     #: Recovery target: prune until the *whole* provider view fits the threshold
     #: (catalog window minus reserve), not merely until the tool content fits
     #: ``keep_recent_tool_tokens``. Set by the runtime's context-limit recovery.
@@ -1272,6 +1300,7 @@ def prepare_provider_context(
     payload_bytes: int | None = None,
     fit_payload: bool = False,
     anchor_tokens: int | None = None,
+    continuity_summary_override: str | None = None,
 ) -> RuntimeContextWindow:
     """Compile the bounded provider view for one call.
 
@@ -1311,6 +1340,7 @@ def prepare_provider_context(
         continuity: ContextProjection | None = None,
         summary_anchor: str | None = None,
         summary_source: dict[str, int] | None = None,
+        summary_kind: ContinuitySummaryKind = "deterministic",
     ) -> RuntimeContextWindow:
         """One compiled view; every branch differs only in the fields it passes."""
         return RuntimeContextWindow(
@@ -1328,6 +1358,7 @@ def prepare_provider_context(
             continuity_state=continuity,
             summary_anchor=summary_anchor,
             summary_source=summary_source,
+            summary_kind=summary_kind,
         )
 
     if payload_bytes is None:
@@ -1432,6 +1463,12 @@ def prepare_provider_context(
     )
     deterministic_summary = _continuity_summary_text(continuity_state)
     continuity_state = replace(continuity_state, summary_text=deterministic_summary)
+    substituted_summary = _continuity_summary_override_text(continuity_summary_override)
+    if substituted_summary is not None:
+        # Only the human-readable text is swapped; the counts, dropped-result
+        # facts and previews below stay the real ones, and the anchor is
+        # recomputed over the substituted text so it keeps identifying it.
+        continuity_state = replace(continuity_state, summary_text=substituted_summary)
     summary_anchor, summary_source = continuity_summary_metadata(continuity_state)
     return _view(
         results=pruned.rendered_results,
@@ -1450,6 +1487,7 @@ def prepare_provider_context(
         continuity=continuity_state,
         summary_anchor=summary_anchor,
         summary_source=summary_source,
+        summary_kind="model" if substituted_summary is not None else "deterministic",
     )
 
 
@@ -1474,6 +1512,8 @@ def assemble_provider_context(
     reminder_segment: RuntimeContextSegment | None = None,
     compaction_budget: CompactionBudget | None = None,
     before_compact: BeforeCompactInput | None = None,
+    continuity_summary_override: str | None = None,
+    continuity_summary_kind: ContinuitySummaryKind | None = None,
 ) -> RuntimeAssembledContext:
     effective_policy = policy or ContextWindowPolicy()
     # The model's tokenizer identity: session metadata names the resolved
@@ -1567,12 +1607,23 @@ def assemble_provider_context(
             else _provider_payload_bytes(baseline_plan, replayed_conversation_segments=replayed_conversation_segments)
         ),
         anchor_tokens=None if compaction_budget is None else compaction_budget.anchor_tokens,
+        continuity_summary_override=continuity_summary_override,
     )
     # This turn's pruning outcome outranks the persisted projection: the artifact
     # references and dropped-result facts must describe the view the provider is
     # about to receive, and the persisted projection is only carried forward
     # through ``_build_continuity_state``.
     continuity_state = context_window.continuity_state or preserved_continuity_state or previous_continuity_state
+    effective_summary_kind: ContinuitySummaryKind = "deterministic"
+    if context_window.compacted:
+        effective_summary_kind = context_window.summary_kind
+    elif _continuity_summary_override_text(continuity_summary_override) is not None:
+        # A caller that already has a model summary (e.g. a recompiled window)
+        # keeps it even when this call did not prune; the text is never faked
+        # into the counters, which stay on the window's pruning outcome.
+        effective_summary_kind = continuity_summary_kind or "model"
+        if continuity_state is not None:
+            continuity_state = replace(continuity_state, summary_text=continuity_summary_override)
     if continuity_state is not None and continuity_state.projection_id is None:
         anchor, _ = continuity_summary_metadata(continuity_state)
         if anchor is not None:
@@ -1590,6 +1641,7 @@ def assemble_provider_context(
             metadata_payload["summary_source"] = summary_source
     if transform_result.traces:
         metadata_payload["context_transforms"] = transform_result.metadata_payload()
+    metadata_payload["summary_kind"] = effective_summary_kind
     metadata_payload["prompt_stack"] = assembly_plan.fragment_metadata_payload()
     metadata_payload["prompt_activation"] = activation_decision.metadata
     segments: list[RuntimeContextSegment] = []

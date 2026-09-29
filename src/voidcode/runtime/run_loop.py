@@ -4376,6 +4376,7 @@ class RuntimeRunLoopCoordinator:
             "summary_anchor": context_window.summary_anchor,
             "projection_id": context_window.summary_anchor,
             "summary_source": context_window.summary_source,
+            "summary_kind": context_window.summary_kind,
             "projection": (context_window.continuity_state.metadata_payload() if context_window.continuity_state is not None else None),
         }
 

@@ -1064,6 +1064,14 @@ class CompactionPayload(_PayloadModel):
     model_config = ConfigDict(extra="forbid", validate_default=True)
 
     enabled: bool | None = True
+    summary_enabled: bool | None = Field(
+        default=False,
+        description=(
+            "Opt-in model-generated compaction summary. Off by default. When on, the "
+            "compaction summary comes from a provider call and falls back to the "
+            "deterministic projection if that call fails."
+        ),
+    )
     threshold_tokens: int | None = Field(default=None, ge=1)
     reserve_tokens: int | None = Field(default=None, ge=1)
     keep_recent_tool_tokens: int = Field(default=DEFAULT_KEEP_RECENT_TOOL_TOKENS, ge=0)
@@ -1074,6 +1082,12 @@ class CompactionPayload(_PayloadModel):
         if value is None:
             return True
         return _parse_non_null_bool(value, field_path="context_window.compaction.enabled")
+
+    @field_validator("summary_enabled", mode="before")
+    @classmethod
+    def _validate_summary_enabled(cls, value: object) -> bool:
+        parsed = _parse_optional_bool(value, field_path="context_window.compaction.summary_enabled")
+        return parsed if parsed is not None else False
 
     @field_validator("threshold_tokens", "reserve_tokens", "keep_recent_tool_tokens", mode="before")
     @classmethod
