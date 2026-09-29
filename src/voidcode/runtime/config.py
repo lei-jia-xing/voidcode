@@ -450,6 +450,7 @@ def load_runtime_config(
             explicit=approval_mode,
             repo_local=repo_local.approval_mode,
             environment=env_overrides.approval_mode,
+            user=global_config.approval_mode,
         ),
         permission=repo_local.permission or ExternalDirectoryPermissionConfig(),
         policy=repo_local.policy,
@@ -457,6 +458,7 @@ def load_runtime_config(
             explicit=model,
             repo_local=repo_local.model,
             environment=env_overrides.model,
+            user=global_config.model,
         ),
         execution_engine=_resolve_execution_engine(
             explicit=execution_engine,
@@ -588,8 +590,14 @@ def _load_user_config(env: Mapping[str, str]) -> RuntimeConfigOverrides:
     payload = _read_json_object(config_path)
     # The provider parser owns its messages, so it sees the raw payload.
     providers = _parse_providers_config(payload.get("providers"), env=env)
-    config_payload = validate_config_model(UserConfigPayload, payload)
+    config_payload = validate_config_model(
+        UserConfigPayload,
+        payload,
+        context={"config_file": str(config_path)},
+    )
     return RuntimeConfigOverrides(
+        approval_mode=config_payload.approval_mode,
+        model=config_payload.model,
         tui=_tui_config_from_payload(config_payload.tui),
         providers=providers,
         hooks=_hooks_config_from_payload(config_payload.hooks),
@@ -1834,11 +1842,15 @@ def _resolve_approval_mode(
     explicit: ApprovalMode | None,
     repo_local: ApprovalMode | None,
     environment: str | None,
+    user: ApprovalMode | None,
 ) -> ApprovalMode:
     if explicit is not None:
         return explicit
     if repo_local is not None:
         return repo_local
+    # The environment is parsed (and rejected) before the user layer is
+    # considered, so a set-but-invalid env value still fails loudly rather than
+    # silently falling through to the machine-wide baseline.
     parsed_environment = parse_approval_mode(
         environment,
         source=f"environment variable {APPROVAL_MODE_ENV_VAR}",
@@ -1846,10 +1858,18 @@ def _resolve_approval_mode(
     )
     if parsed_environment is not None:
         return parsed_environment
+    if user is not None:
+        return user
     return DEFAULT_APPROVAL_MODE
 
 
-def _resolve_model(*, explicit: str | None, repo_local: str | None, environment: str | None) -> str | None:
+def _resolve_model(
+    *,
+    explicit: str | None,
+    repo_local: str | None,
+    environment: str | None,
+    user: str | None,
+) -> str | None:
     if explicit is not None:
         return explicit
     if repo_local is not None:
@@ -1858,6 +1878,8 @@ def _resolve_model(*, explicit: str | None, repo_local: str | None, environment:
         if not environment:
             raise ValueError(f"environment variable {MODEL_ENV_VAR} must be a non-empty string")
         return environment
+    if user is not None:
+        return user
     return None
 
 

@@ -139,3 +139,26 @@ def test_user_only_hooks_load_without_repo_local(tmp_path: Path) -> None:
 
     assert config.hooks is not None
     assert config.hooks.pre_tool == (("echo", "user-pre"),)
+
+
+def test_user_level_approval_mode_and_model_apply_but_yield_to_the_project_file(tmp_path: Path) -> None:
+    """The user file is a machine-wide baseline: honoured alone, overridden by the project file."""
+    user_config_home = tmp_path / "user-config"
+    user_config_path = user_config_home / "voidcode" / "config.json"
+    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    user_config_path.write_text(
+        json.dumps({"approval_mode": "yolo", "model": "user/model"}),
+        encoding="utf-8",
+    )
+
+    user_only = load_runtime_config(tmp_path, env={"XDG_CONFIG_HOME": str(user_config_home)})
+    assert user_only.approval_mode == "yolo"
+    assert user_only.model == "user/model"
+
+    (tmp_path / ".voidcode.json").write_text(
+        json.dumps({"approval_mode": "always-ask", "model": "repo/model"}),
+        encoding="utf-8",
+    )
+    project_wins = load_runtime_config(tmp_path, env={"XDG_CONFIG_HOME": str(user_config_home)})
+    assert project_wins.approval_mode == "always-ask"
+    assert project_wins.model == "repo/model"

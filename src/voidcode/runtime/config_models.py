@@ -1921,6 +1921,18 @@ class UserConfigPayload(_PayloadModel):
     """The user-level ``config.json`` input surface."""
 
     schema_ref: str | None = Field(default=None, alias="$schema")
+    #: Machine-wide baseline for the same resolution chain as the workspace file:
+    #: ``explicit > repo-local > environment > user > default`` (see
+    #: ``runtime/config.py``). The user layer is the least specific, so a project
+    #: file and the environment both override it.
+    approval_mode: ApprovalMode | None = Field(
+        default=None,
+        description="Machine-wide default approval policy mode; project config and environment override it.",
+    )
+    model: str | None = Field(
+        default=None,
+        description="Machine-wide default provider/model identifier; project config and environment override it.",
+    )
     tui: TuiPayload | None = None
     #: ``web`` is read opaquely by the web-settings surface today (``load_global_web_settings``),
     #: so it stays untyped here: any value is accepted exactly as HEAD accepted it.
@@ -1928,6 +1940,20 @@ class UserConfigPayload(_PayloadModel):
     providers: ProviderConfigsPayload | None = None
     #: User-global hook commands, concatenated before repo-local commands per surface.
     hooks: HooksPayload | None = None
+
+    @field_validator("approval_mode", mode="before")
+    @classmethod
+    def _validate_approval_mode(cls, value: object, info: ValidationInfo) -> ApprovalMode | None:
+        return parse_approval_mode(value, source=_config_field_source(info, "approval_mode"), allow_none=True)
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _validate_model(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("runtime config field 'model' must be a string when provided")
+        return value
 
     @field_validator("tui", "providers", mode="before")
     @classmethod

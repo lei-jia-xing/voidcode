@@ -10,12 +10,12 @@
 
 ### 用户级配置不在发布 schema 内（已接受的限制）
 
-用户级 `~/.config/voidcode/config.json`（`UserConfigPayload`）不属于随包发布的 `schema/voidcode.config.schema.json`，因此它没有对应的 artifact，也没有 loader-vs-artifact 语料行；这是**已接受的限制而非遗漏**。它的 loader 行为由 `tests/unit/runtime/test_config_loader_parity.py`（`$schema` 容忍、`web` 容忍、providers 解析先于模型）与 `tests/unit/runtime/test_runtime_config.py` 中的 XDG/用户配置用例固定。若将来需要用户级 schema，应单独决策并单独生成 artifact。
+用户级 `~/.config/voidcode/config.json`（`UserConfigPayload`）不属于随包发布的 `schema/voidcode.config.schema.json`，因此它没有对应的 artifact，也没有 loader-vs-artifact 语料行；这是**已接受的限制而非遗漏**。用户级文件当前接受的键为 `$schema`、`approval_mode`、`model`、`tui`、`web`、`providers`、`hooks`；其中 `approval_mode` / `model` 是该链中**最不具体**的一层（机器级基线，见下），其余键的语义各自独立。它的 loader 行为由 `tests/unit/runtime/test_config_loader_parity.py`（`$schema` 容忍、`web` 容忍、providers 解析先于模型）与 `tests/unit/runtime/test_runtime_config.py` 中的 XDG/用户配置用例固定。若将来需要用户级 schema，应单独决策并单独生成 artifact。
 
 
 配置输入的**形状**只在一个模块中定义：`src/voidcode/runtime/config_models.py`（payload 模型 + 共享的取值校验器）。仓库本地 `.voidcode.json`、用户级 `config.json`、环境变量、请求 metadata 覆盖与持久化的 `runtime_config` 快照都通过这些模型校验与类型化。
 
-维护者须知：**模型拥有形状，不拥有策略。** 优先级（environment → user → repo → request → persisted session metadata）、合并规则、默认值与“未设置”的解析、哪些值属于 recovery-critical 必须写入会话快照，以及 provider / policy 语义，全部留在原有 owner：
+维护者须知：**模型拥有形状，不拥有策略。** 配置来源包括环境变量、用户级文件、仓库本地文件、请求 metadata 覆盖与持久化的会话快照，但**哪个来源覆盖哪个**不属于本模块：`approval_mode` / `model` 的唯一有序链见下文「推荐优先级」（其余字段各自的合并/覆盖规则由各自的 owner 定义，例如 hooks 为拼接语义）。此外还有合并规则、默认值与“未设置”的解析、哪些值属于 recovery-critical 必须写入会话快照，以及 provider / policy 语义，全部留在原有 owner：
 
 - `src/voidcode/runtime/config.py`：加载顺序、优先级、合并、默认应用与文件读写
 - `src/voidcode/runtime/config_materializer.py`：持久化快照的序列化/解析边界
@@ -57,7 +57,7 @@ uv run python scripts/generate_config_schema.py --check  # 校验是否过期（
 目前 hooks/config 的 MVP 收敛目标已经锁定：
 
 - hooks 继续保持 runtime-owned，但当前已不再只限 `pre_tool` / `post_tool`，而是同时包含 `session_start`、`session_end`、`session_idle`、`background_task_registered`、`background_task_started`、`background_task_progress`、`background_task_completed`、`background_task_failed`、`background_task_cancelled`、`background_task_notification_enqueued`、`background_task_result_read`、`delegated_result_available`、`turn_progress` 与 `stuck_detected` 等已解析的 lifecycle hook phases
-- 显式 / 仓库本地 / 环境 / 默认值这条完整优先级链当前适用于 `approval_mode`、`model`、`execution_engine` 和 `reasoning_effort`
+- 显式 / 仓库本地 / 环境 / 用户 / 默认值这条完整优先级链当前适用于 `approval_mode` 与 `model`；`execution_engine` 和 `reasoning_effort` 仍为显式 / 仓库本地 / 环境 / 默认值（用户级文件不接受这两个键）
 - 单一可见检查面为 CLI：`voidcode config show --workspace <path> [--session <id>]`
 - 当前 schema-backed 配置 UX 包含 `voidcode config schema` 与 `voidcode config init`
 - 恢复会话的配置覆盖仍存放在 `SessionState.metadata["runtime_config"]`，并继续覆盖新的 runtime 默认值
@@ -563,12 +563,15 @@ workspace 本地覆盖路径保持为：
 
 ## 推荐优先级
 
-`load_runtime_config()` 使用以下唯一解析顺序：
+`load_runtime_config()` 使用以下唯一解析顺序（`approval_mode` / `model`）：
 
 1. 显式参数和 request-level 覆盖
-2. 仓库本地配置文件
-3. 环境变量
-4. 内置默认值
+2. 仓库本地配置文件（`<workspace>/.voidcode.json`）
+3. 环境变量（`VOIDCODE_APPROVAL_MODE` / `VOIDCODE_MODEL`）
+4. 用户级配置文件（`~/.config/voidcode/config.json`）
+5. 内置默认值
+
+用户级文件是机器级基线：它比项目文件（更具体）和环境变量（更显式）都弱，因此在这两者存在时被覆盖。环境变量这一层仍严格按契约解析——设置为非法值时直接抛错，不会静默落到用户级基线；空字符串的处理与既有行为一致（`model` 为空直接抛错）。
 
 对于恢复的会话，持久化在 `SessionState.metadata["runtime_config"]` 中的 `approval_mode` / `model` 就是会话覆盖，并且优先级高于新的 CLI / 客户端覆盖。
 
