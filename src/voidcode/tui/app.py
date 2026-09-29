@@ -67,6 +67,7 @@ from .overlay import (
     ApprovalOverlay,
     Overlay,
     OverlayOutcomeKind,
+    PromptHistoryOverlay,
     QuestionOverlay,
     SessionPickerOverlay,
 )
@@ -130,12 +131,12 @@ _BACKGROUND_TERMINAL_EVENTS: Final[frozenset[str]] = frozenset(
 
 #: Actions ``config.tui.keymap`` may bind. Anything else fails loudly: the old
 #: Textual ``self.bind()`` silently accepted unknown action names.
-_ACTIONS: Final[frozenset[str]] = frozenset({"session_new", "session_resume", "tools_expand"})
+_ACTIONS: Final[frozenset[str]] = frozenset({"app.session.new", "app.session.resume", "app.tools.expand", "app.display.reset", "app.history.search"})
 
-#: The only default binding (omp ``app.tools.expand = ctrl+o``). ``session_new``
-#: and ``session_resume`` stay unbound unless the user configures them, exactly
+#: The only default binding (omp ``app.tools.expand = ctrl+o``). ``app.session.*``
+#: and the two added actions stay unbound unless the user configures them, exactly
 #: as in the old app.
-_DEFAULT_KEYMAP: Final[Mapping[str, str]] = MappingProxyType({"tools_expand": "ctrl+o"})
+_DEFAULT_KEYMAP: Final[Mapping[str, str]] = MappingProxyType({"app.tools.expand": "ctrl+o"})
 
 #: Canonical modifier order, mirroring ``keys._format_with_mods``.
 _KEY_MODIFIERS: Final[tuple[str, ...]] = ("shift", "ctrl", "alt", "super")
@@ -210,7 +211,7 @@ def parse_key_binding(spec: str) -> Key:
 def parse_keymap(keymap: Mapping[str, str] | None) -> dict[str, Key]:
     """Resolve ``config.tui.keymap`` into action -> :class:`Key`, or fail loudly.
 
-    The config maps a key chord to an action (``{"ctrl+o": "tools_expand"}``);
+    The config maps a key chord to an action (``{"ctrl+o": "app.tools.expand"}``);
     the resolved inverse is what the loop dispatches on.
     """
     bindings = {action: parse_key_binding(spec) for action, spec in _DEFAULT_KEYMAP.items()}
@@ -276,7 +277,7 @@ class TuiApp:
         self._runtime = runtime if runtime is not None else VoidCodeRuntime(workspace=workspace, config=self._config)
         # Fail loudly here, before the terminal is touched.
         self._bindings = parse_keymap(keymap if keymap is not None else self._configured_keymap())
-        self._hints = KeyHints(expand=self._bindings["tools_expand"].name)
+        self._hints = KeyHints(expand=self._bindings["app.tools.expand"].name)
 
         self._term: Terminal | None = None
         self._theme: Theme | None = None
@@ -752,12 +753,16 @@ class TuiApp:
         self._dirty = True
 
     def _run_action(self, action: str) -> None:
-        if action == "tools_expand":
+        if action == "app.tools.expand":
             self._toggle_expand()
-        elif action == "session_new":
+        elif action == "app.session.new":
             self._command_session_new()
-        else:
+        elif action == "app.session.resume":
             self._command_session_resume()
+        elif action == "app.display.reset":
+            self._command_display_reset()
+        else:
+            self._command_history_search()
 
     def _handle_overlay_key(self, key: Key) -> None:
         overlay = self._overlay
@@ -779,11 +784,16 @@ class TuiApp:
             self._close_overlay()
             if isinstance(payload, tuple):
                 self._answer_question(request_id, payload)
-        else:
+        elif isinstance(overlay, SessionPickerOverlay):
             session_id = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
             self._close_overlay()
             if isinstance(session_id, str) and session_id:
                 self._open_resumed_session(session_id)
+        else:
+            prompt = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if isinstance(prompt, str) and prompt and self._composer is not None:
+                self._composer.set_text(prompt)
 
     # -- flows -------------------------------------------------------------
 
@@ -884,6 +894,35 @@ class TuiApp:
         self._enter_alt_screen()
         self._dirty = True
 
+    def _command_display_reset(self) -> None:
+        """``app.display.reset``: force a full repaint of the live region.
+
+        Committed rows live in native scrollback and are never rewritten, so the
+        reset only drops the terminal's paint cache: the next frame is emitted in
+        full instead of being diffed against the previous one. It repairs a live
+        region the terminal corrupted; it cannot recover lost scrollback.
+        """
+        if self._term is not None:
+            self._term.reset_live()
+        self._dirty = True
+
+    def _command_history_search(self) -> None:
+        """``app.history.search``: pick a previous prompt back into the draft.
+
+        The composer already keeps the bounded prompt history, so an empty one
+        means there is nothing to search.
+        """
+        history = self._composer.history if self._composer is not None else ()
+        if not history:
+            self._notice("✖ No prompt history to search")
+            return
+        self._overlay = PromptHistoryOverlay(entries=history, theme=self._theme)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._enter_alt_screen()
+        self._dirty = True
+
     def _open_resumed_session(self, session_id: str) -> None:
         assert self._view is not None and self._region is not None
         self._view.reset_for_new_session()
@@ -922,7 +961,7 @@ class TuiApp:
         self._notice("■ Turn cancel requested" if result.interrupted else "■ No active run to cancel")
 
     def _toggle_expand(self) -> None:
-        """``tools_expand``: expand or collapse every block.
+        """``app.tools.expand``: expand or collapse every block.
 
         Only the live tail changes, exactly as in omp 18.3.4 (``setToolsExpanded``
         -> ``requestRender(true)``): a block already in native scrollback keeps the

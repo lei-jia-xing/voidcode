@@ -331,7 +331,7 @@ def test_inline_tui_configured_keybindings_and_session_picker_alt_screen(tmp_pat
     workspace.mkdir()
     (workspace / "source.txt").write_text("hello marker\n", encoding="utf-8")
     (workspace / ".voidcode.json").write_text(
-        json.dumps({"tui": {"keymap": {"ctrl+r": "session_resume"}}}),
+        json.dumps({"tui": {"keymap": {"ctrl+r": "app.session.resume"}}}),
         encoding="utf-8",
     )
     db_path = tmp_path / "sessions.sqlite3"

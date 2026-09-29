@@ -66,7 +66,7 @@ _SECTION_BASELINES: dict[str, object] = {
     "context_window": {"default_tool_result_chars": 6000, "per_tool_result_chars": {"read": 1000}},
     "lsp": {"enabled": True, "servers": {"python": {"command": ["pyright"]}}},
     "mcp": {"enabled": True, "servers": {"s": {"command": ["echo"]}}, "request_timeout_seconds": 30},
-    "tui": {"keymap": {"a": "session_new"}, "preferences": {"theme": {"mode": "dark"}}},
+    "tui": {"keymap": {"a": "app.session.new"}, "preferences": {"theme": {"mode": "dark"}}},
     "providers": {"openai": {"timeout_seconds": 10}},
     "background_task": {"default_concurrency": 2, "provider_concurrency": {"openai": 1}},
     "agent": {"preset": "leader", "model": "opencode-go/x", "tools": {"allowlist": ["read"]}},
@@ -314,7 +314,7 @@ _HAND_WRITTEN_CORPUS: list[tuple[str, dict[str, object]]] = [
     # --- tui ---------------------------------------------------------------
     ("tui.keymap_bad_value", {"tui": {"keymap": {"a": "nope"}}}),
     ("tui.keymap_bad_item", {"tui": {"keymap": {"a": 1}}}),
-    ("tui.keymap_ok", {"tui": {"keymap": {"a": "session_new"}}}),
+    ("tui.keymap_ok", {"tui": {"keymap": {"a": "app.session.new"}}}),
     ("tui.theme_mode_bad", {"tui": {"preferences": {"theme": {"mode": "nope"}}}}),
     ("tui.theme_name_int", {"tui": {"preferences": {"theme": {"name": 5}}}}),
     ("tui.unknown_key", {"tui": {"nope": 1}}),

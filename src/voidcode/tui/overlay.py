@@ -32,6 +32,7 @@ __all__ = [
     "Overlay",
     "OverlayOutcome",
     "OverlayOutcomeKind",
+    "PromptHistoryOverlay",
     "QuestionOverlay",
     "SessionPickerOverlay",
 ]
@@ -619,3 +620,79 @@ class SessionPickerOverlay(_Base):
 
     def wants_fullscreen(self, _width: int, _height: int) -> bool:
         return True
+
+
+class PromptHistoryOverlay(_Base):
+    """Prompt-history search (``app.history.search``).
+
+    The composer already keeps the bounded prompt history; this is the same
+    picker as :class:`SessionPickerOverlay` over those entries, with the chosen
+    prompt handed back on ``enter``. It filters instead of selecting a session,
+    so ``enter`` on an empty filter is a cancel (there is nothing to pick).
+    """
+
+    __slots__ = ("_filter", "_highlight", "_entries")
+
+    def __init__(self, *, entries: Sequence[str], theme: Theme | None = None) -> None:
+        super().__init__(theme)
+        # Newest first: the most recent prompt is what the user usually wants.
+        self._entries = tuple(reversed(entries))
+        self._filter = ""
+        self._highlight = 0
+
+    def _matches(self) -> list[str]:
+        tokens = self._filter.lower().split()
+        if not tokens:
+            return list(self._entries)
+        return [entry for entry in self._entries if all(token in entry.lower() for token in tokens)]
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        matches = self._matches()
+        if key.name == "escape":
+            return _CANCELLED
+        if key.name == "up":
+            self._highlight = max(0, self._highlight - 1)
+            return _PENDING
+        if key.name == "down":
+            self._highlight = min(max(0, len(matches) - 1), self._highlight + 1)
+            return _PENDING
+        if key.name == "backspace":
+            self._filter = self._filter[:-1]
+            self._highlight = 0
+            return _PENDING
+        if key.name == "enter":
+            if matches:
+                return _done(matches[min(self._highlight, len(matches) - 1)])
+            return _CANCELLED
+        text = _typed_text(key)
+        if text:
+            self._filter += text
+            self._highlight = 0
+        return _PENDING
+
+    def render(self, width: int) -> list[str]:
+        avail = _body_width(width)
+        if avail <= 0:
+            return []
+        theme = self._theme
+        matches = self._matches()
+        self._highlight = min(self._highlight, max(0, len(matches) - 1))
+        cursor = theme.symbol("nav.cursor")
+        body: list[str] = [theme.fg("accent", "> ") + theme.fg("text", self._filter) + theme.fg("dim", "▌")]
+        body.append("")
+        if not self._entries:
+            body.append(theme.fg("warning", "No prompt history."))
+        elif not matches:
+            body.append(theme.fg("dim", "No matching prompts."))
+        else:
+            for index, entry in enumerate(matches):
+                pointer = cursor if index == self._highlight else " "
+                label = f"{pointer} {entry}"
+                styled = self._bold("accent", label) if index == self._highlight else theme.fg("text", label)
+                body.extend(self._wrap(styled, avail))
+        body.append("")
+        body.append(_hint("↑/↓ move · Enter insert · type to filter · Esc cancel", theme))
+        return self._panel("Search Prompt History", body, width)
+
+    def wants_fullscreen(self, _width: int, _height: int) -> bool:
+        return len(self.render(_width)) > _height

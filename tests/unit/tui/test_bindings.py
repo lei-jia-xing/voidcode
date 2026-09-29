@@ -86,16 +86,16 @@ def test_non_string_binding_fails_loudly() -> None:
 
 def test_default_keymap_binds_only_the_expand_key() -> None:
     bindings = parse_keymap(None)
-    assert {action: key.name for action, key in bindings.items()} == {"tools_expand": "ctrl+o"}
+    assert {action: key.name for action, key in bindings.items()} == {"app.tools.expand": "ctrl+o"}
 
 
 def test_configured_keymap_maps_key_chords_to_actions() -> None:
     """The config direction is chord -> action (``config.tui.keymap``)."""
-    bindings = parse_keymap({"ctrl+t": "tools_expand", "ctrl+n": "session_new", "ctrl+r": "session_resume"})
+    bindings = parse_keymap({"ctrl+t": "app.tools.expand", "ctrl+n": "app.session.new", "ctrl+r": "app.session.resume"})
     assert {action: key.name for action, key in bindings.items()} == {
-        "tools_expand": "ctrl+t",
-        "session_new": "ctrl+n",
-        "session_resume": "ctrl+r",
+        "app.tools.expand": "ctrl+t",
+        "app.session.new": "ctrl+n",
+        "app.session.resume": "ctrl+r",
     }
 
 
@@ -106,10 +106,10 @@ def test_unknown_action_fails_loudly() -> None:
 
 def test_unknown_key_string_in_the_keymap_fails_loudly() -> None:
     with pytest.raises(KeyBindingError, match="unknown key"):
-        parse_keymap({"ctrl+nosuchkey": "tools_expand"})
+        parse_keymap({"ctrl+nosuchkey": "app.tools.expand"})
 
 
 def test_rebound_expand_key_reaches_the_hint_text() -> None:
     """The hint table is built from the resolved binding, so hints stay truthful."""
-    bindings = parse_keymap({"ctrl+t": "tools_expand"})
-    assert KeyHints(expand=bindings["tools_expand"].name).key_label() == "Ctrl+T"
+    bindings = parse_keymap({"ctrl+t": "app.tools.expand"})
+    assert KeyHints(expand=bindings["app.tools.expand"].name).key_label() == "Ctrl+T"

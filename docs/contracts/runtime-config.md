@@ -270,7 +270,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `agent.fallback_models`：agent-scoped shorthand；必须同时配置 `agent.model`，runtime 会把 `agent.model` 作为内部 `provider_fallback.preferred_model`，并把该数组作为 fallback chain；这是 agent 配置中唯一的 fallback 配置入口
 - `agents.<preset>`：按 preset 配置 delegated child / primary agent defaults；builtin key 与已发现本地 manifest key 可省略 `preset`，alias key 必须显式声明 `preset`。
 - `agents.<preset>.fallback_models`：与 `agent.fallback_models` 相同的 shorthand；delegation path 会把选中 preset 的 fallback chain 持久化到 child session metadata。
-- `tui.keymap`：对象，值当前仅允许 `session_new`、`session_resume`、`tools_expand`
+- `tui.keymap`：对象，值只允许 TUI 暴露的 namespaced action：`app.session.new`、`app.session.resume`、`app.tools.expand`、`app.display.reset`（强制整帧重绘 live 区域）、`app.history.search`（从 composer 的 prompt history 里挑一条回填 draft）。未知 action 在启动前直接报错。
 - `tui.preferences.theme.name`：字符串，可选。runtime 只携带/合并该偏好，不做任何调色板名校验、也不提供内置调色板列表；TUI 用自己的调色板注册表解析，未知或缺失的名字回落到 `theme.mode` 对应的默认调色板。
 - `tui.preferences.theme.mode`：`auto`、`light`、`dark` 之一；缺省为 `auto`
 - `reminders.enabled`：布尔值；默认 `true`。关闭后 runtime 不再通过 per-call reminder 通道注入任何提醒（也不写 reminder 计数器）

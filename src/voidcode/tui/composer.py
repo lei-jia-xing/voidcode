@@ -192,6 +192,11 @@ class Composer:
         """Current draft text."""
         return self._text
 
+    @property
+    def history(self) -> tuple[str, ...]:
+        """The bounded submitted-prompt history, oldest first."""
+        return tuple(self._history)
+
     def set_width(self, width: int) -> None:
         self._width = max(1, width)
 
@@ -201,6 +206,13 @@ class Composer:
         self._cursor = 0
         self._history_index = None
         self._draft = ""
+        self._scroll = 0
+
+    def set_text(self, text: str) -> None:
+        """Replace the draft with ``text`` (history insertion); the caret lands at the end."""
+        self._text = text
+        self._cursor = len(text)
+        self._history_index = None
         self._scroll = 0
 
     def set_enabled(self, enabled: bool) -> None:

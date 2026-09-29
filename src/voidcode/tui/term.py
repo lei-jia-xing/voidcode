@@ -651,6 +651,14 @@ class Terminal:
         if self._is_tty:
             self._emit(PAINT_BEGIN + CARRIAGE_RETURN + ERASE_BELOW + PAINT_END)
 
+    def reset_live(self) -> None:
+        """Drop the terminal's live-paint cache; the next frame is emitted in full.
+
+        ``app.display.reset``: a repaint of a corrupted live region. Doesn't touch
+        scrollback (only committed rows live there).
+        """
+        self._reset_live()
+
     def _emit(self, text: str) -> None:
         data = text.encode("utf-8", "replace")
         with self._lock:

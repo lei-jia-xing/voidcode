@@ -74,8 +74,8 @@ VALID_APPROVAL_MODES: tuple[ApprovalMode, ...] = APPROVAL_MODES
 #: The decision tri-state used by ``permission.rules`` and external-directory
 #: maps; distinct from the mode, and never accepted for ``approval_mode``.
 VALID_PERMISSION_DECISIONS: tuple[PermissionDecision, ...] = ("allow", "deny", "ask")
-VALID_TUI_COMMANDS = ("session_new", "session_resume", "tools_expand")
-type TuiCommand = Literal["session_new", "session_resume", "tools_expand"]
+VALID_TUI_COMMANDS = ("app.session.new", "app.session.resume", "app.tools.expand", "app.display.reset", "app.history.search")
+type TuiCommand = Literal["app.session.new", "app.session.resume", "app.tools.expand", "app.display.reset", "app.history.search"]
 
 type ExecutionEngineName = Literal["deterministic", "provider"]
 VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "provider")

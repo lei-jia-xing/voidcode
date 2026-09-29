@@ -2356,7 +2356,7 @@ def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_field
         {
             "model": "opencode-zen/gpt-5.4",
             "approval_mode": "always-ask",
-            "tui": {"keymap": {"n": "session_new"}},
+            "tui": {"keymap": {"n": "app.session.new"}},
         },
     )
 
@@ -2381,7 +2381,7 @@ def test_save_workspace_tui_preferences_preserves_tui_keymap(tmp_path: Path, mon
         tmp_path,
         {
             "tui": {
-                "keymap": {"n": "session_new"},
+                "keymap": {"n": "app.session.new"},
             }
         },
     )
@@ -2394,7 +2394,7 @@ def test_save_workspace_tui_preferences_preserves_tui_keymap(tmp_path: Path, mon
     )
 
     payload = json.loads(runtime_config_path(tmp_path).read_text(encoding="utf-8"))
-    assert payload["tui"]["keymap"] == {"n": "session_new"}
+    assert payload["tui"]["keymap"] == {"n": "app.session.new"}
     assert payload["tui"]["preferences"] == {
         "theme": {"name": "voidcode-dark", "mode": "dark"},
     }
@@ -2449,7 +2449,7 @@ def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(tm
     monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
     user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
     user_runtime_config_path().write_text(
-        json.dumps({"model": "opencode-zen/gpt-5.4", "tui": {"keymap": {"n": "session_new"}}}),
+        json.dumps({"model": "opencode-zen/gpt-5.4", "tui": {"keymap": {"n": "app.session.new"}}}),
         encoding="utf-8",
     )
 
@@ -2461,7 +2461,7 @@ def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(tm
 
     payload = json.loads(user_runtime_config_path().read_text(encoding="utf-8"))
     assert payload["model"] == "opencode-zen/gpt-5.4"
-    assert payload["tui"]["keymap"] == {"n": "session_new"}
+    assert payload["tui"]["keymap"] == {"n": "app.session.new"}
     assert payload["tui"]["preferences"] == {
         "theme": {"name": "voidcode-light", "mode": "light"},
     }
@@ -2567,16 +2567,16 @@ def test_parse_tui_config_preserves_valid_keymap() -> None:
     assert _parse_tui_config(
         {
             "keymap": {
-                "n": "session_new",
-                "r": "session_resume",
-                "t": "tools_expand",
+                "n": "app.session.new",
+                "r": "app.session.resume",
+                "t": "app.tools.expand",
             },
         }
     ) == RuntimeTuiConfig(
         keymap={
-            "n": "session_new",
-            "r": "session_resume",
-            "t": "tools_expand",
+            "n": "app.session.new",
+            "r": "app.session.resume",
+            "t": "app.tools.expand",
         },
     )
 
@@ -2596,13 +2596,14 @@ def test_parse_tui_config_preserves_valid_keymap() -> None:
             id="keymap-value-type",
         ),
         pytest.param(
-            {"keymap": {1: "session_new"}},
+            {"keymap": {1: "app.session.new"}},
             "runtime config field 'tui.keymap' keys must be strings",
             id="keymap-key-type",
         ),
         pytest.param(
             {"keymap": {"n": "quit"}},
-            "runtime config field 'tui.keymap' values must be one of: session_new, session_resume, tools_expand",
+            "runtime config field 'tui.keymap' values must be one of: app\\.session\\.new, app\\.session\\.resume, "
+            "app\\.tools\\.expand, app\\.display\\.reset, app\\.history\\.search",
             id="keymap-value-enum",
         ),
         pytest.param(

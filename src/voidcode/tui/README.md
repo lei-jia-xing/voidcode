@@ -50,5 +50,6 @@ VoidCode 的终端客户端层：inline 渲染 + 原生 scrollback 的 TUI。
 
 `voidcode tui [--workspace PATH] [--approval-mode MODE]` → `voidcode.tui.run_tui(...)`。
 
-键位来自 `config.tui.keymap`（`session_new` / `session_resume` / `tools_expand`），
-未配置时只有 `tools_expand = ctrl+o`；未知键名或未知动作会在启动前直接报错。
+键位来自 `config.tui.keymap`（`app.session.new` / `app.session.resume` / `app.tools.expand` /
+`app.display.reset` / `app.history.search`），未配置时只有 `app.tools.expand = ctrl+o`；
+未知键名或未知动作会在启动前直接报错。

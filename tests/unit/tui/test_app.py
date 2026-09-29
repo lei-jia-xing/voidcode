@@ -14,10 +14,10 @@ from types import SimpleNamespace
 from voidcode.runtime.contracts import RuntimeStreamChunk
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.session import SessionState
-from voidcode.tui.app import KeyBindingError, TuiApp, _PolledChunks, parse_keymap
+from voidcode.tui.app import KeyBindingError, TuiApp, _PolledChunks, parse_key_binding, parse_keymap
 from voidcode.tui.events import QuestionRequest, SessionView
 from voidcode.tui.region import LiveRegion
-from voidcode.tui.transcript import AssistantBlock
+from voidcode.tui.transcript import AssistantBlock, SessionMarkerBlock, ToolBlock
 
 from .conftest import plain
 from .conftest import theme as resolve_test_theme
@@ -376,10 +376,90 @@ def test_failed_turn_keeps_the_error_row_and_settles_the_tape() -> None:
 def test_a_binding_to_a_key_the_decoder_cannot_emit_fails_loudly() -> None:
     for spec in ("f13", "clear_all", "unknown"):
         try:
-            parse_keymap({spec: "tools_expand"})
+            parse_keymap({spec: "app.tools.expand"})
         except KeyBindingError:
             continue
         raise AssertionError(f"{spec!r} should not be bindable")
+
+
+class _ActionTerminal:
+    """A terminal stub: ``alt_screen`` starts true so entering it is a no-op."""
+
+    def __init__(self) -> None:
+        self.width = 80
+        self.height = 24
+        self.alt_screen = True
+
+    def leave_alt_screen(self) -> None:
+        self.alt_screen = False
+
+
+def _action_app(*, composer=None) -> TuiApp:
+    """The headless app ``_app`` plus the collaborators the action paths need."""
+    app = _app()
+    app._composer = composer
+    app._region = LiveRegion(commit=lambda rows: None)
+    app._theme = resolve_test_theme()
+    app._term = _ActionTerminal()  # type: ignore[assignment]
+    app._config = SimpleNamespace(model="test-model")  # type: ignore[assignment]
+    app._expand_notice = ""
+    return app
+
+
+def test_configured_namespaced_chord_fires_its_action() -> None:
+    """A user-configured chord must reach the action through the real key path."""
+    app = _action_app()
+    assert app._view is not None
+    app._view.transcript().add(ToolBlock(tool="read", title="x", body=["y"]))
+    app._bindings = parse_keymap({"ctrl+t": "app.tools.expand"})
+
+    app._handle_key(parse_key_binding("ctrl+t"))
+
+    assert all(block.expanded for block in app._view.transcript().blocks)
+    assert app._expand_notice == "Tool output expansion enabled"
+
+
+def test_user_configured_session_new_chord_fires_the_new_session_path() -> None:
+    app = _action_app()
+    assert app._view is not None
+    app._view.transcript().add(AssistantBlock(text="old", settled=True))
+    app._bindings = parse_keymap({"ctrl+n": "app.session.new"})
+
+    app._handle_key(parse_key_binding("ctrl+n"))
+
+    assert not any(isinstance(block, AssistantBlock) for block in app._view.transcript().blocks)
+    assert any(isinstance(block, SessionMarkerBlock) for block in app._view.transcript().blocks)
+
+
+def test_display_reset_chord_drops_the_paint_cache_and_repaints() -> None:
+    app = _action_app()
+    reset_calls: list[str] = []
+    app._term.reset_live = lambda: reset_calls.append("reset")  # type: ignore[union-attr]
+    app._bindings = parse_keymap({"ctrl+l": "app.display.reset"})
+
+    app._handle_key(parse_key_binding("ctrl+l"))
+
+    assert reset_calls == ["reset"]
+    assert app._dirty is True
+
+
+def test_history_search_chord_inserts_the_picked_prompt() -> None:
+    from voidcode.tui.composer import Composer
+
+    app = _action_app(composer=Composer(theme=resolve_test_theme(), width=80))
+    assert app._composer is not None
+    app._composer.set_text("a previous prompt")
+    app._composer.handle_key(parse_key_binding("enter"))
+    app._composer.set_text("")
+    app._bindings = parse_keymap({"ctrl+r": "app.history.search"})
+
+    app._handle_key(parse_key_binding("ctrl+r"))
+
+    overlay = app._overlay
+    assert overlay is not None
+    app._handle_overlay_key(parse_key_binding("enter"))
+    assert app._composer.value == "a previous prompt"
+    assert app._overlay is None
 
 
 # ---------------------------------------------------------------------------

@@ -1912,9 +1912,11 @@
         "keymap": {
           "additionalProperties": {
             "enum": [
-              "session_new",
-              "session_resume",
-              "tools_expand"
+              "app.session.new",
+              "app.session.resume",
+              "app.tools.expand",
+              "app.display.reset",
+              "app.history.search"
             ],
             "type": "string"
           },
