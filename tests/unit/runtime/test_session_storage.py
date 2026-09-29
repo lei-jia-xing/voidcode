@@ -75,6 +75,39 @@ def test_runtime_paths_honor_explicit_empty_env_mapping(
     assert sessions_db_path({"XDG_STATE_HOME": str(tmp_path / "mapped-state")}) == (tmp_path / "mapped-state" / "voidcode" / "sessions.sqlite3")
 
 
+def test_store_constructed_without_database_path_pins_its_resolved_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A store resolves its database path once, at construction.
+
+    The autouse isolation fixtures restore ``VOIDCODE_DB_PATH``/``XDG_STATE_HOME``
+    when a test ends, but a background-task worker the test dispatched can still
+    be running its final durable writes at that moment. A store that re-resolved
+    the environment per operation would retarget the developer's real database
+    there; resolving once keeps it bound to the database it was built for.
+    """
+    database_path = tmp_path / "pinned" / "sessions.sqlite3"
+    monkeypatch.setenv("VOIDCODE_DB_PATH", str(database_path))
+    store = SqliteSessionStore()
+    assert store._resolve_database_path() == database_path
+
+    # Simulate the isolation override being undone while the store is still live.
+    monkeypatch.delenv("VOIDCODE_DB_PATH")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "host-state"))
+
+    assert SqliteSessionStore()._resolve_database_path() == (tmp_path / "host-state" / "voidcode" / "sessions.sqlite3")
+    assert store._resolve_database_path() == database_path
+
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="pinned", session_id="pinned-session"),
+        response=_completed_response("pinned-session"),
+    )
+    assert store.load_session(workspace=tmp_path, session_id="pinned-session").session.status == "completed"
+    assert not (tmp_path / "host-state" / "voidcode").exists()
+
+
 def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     request = RuntimeRequest(

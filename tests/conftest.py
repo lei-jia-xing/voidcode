@@ -7,6 +7,9 @@ import socket
 import ssl
 import subprocess
 import tempfile
+import threading
+import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -16,6 +19,38 @@ import pytest
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 os.environ.setdefault("PYTHONUTF8", "1")
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="voidcode-pytest-config-")
+
+# How long a leaked ``voidcode-background-task-*`` worker may take to finish its
+# final durable writes before the test is declared to have left it running.
+_BACKGROUND_WORKER_JOIN_TIMEOUT_SECONDS = 10.0
+
+
+@pytest.fixture(autouse=True)
+def _join_leaked_background_workers(_isolated_xdg_runtime_dirs: None) -> Iterator[None]:
+    """Join any background-task worker a test left running before isolation ends.
+
+    Depends on ``_isolated_xdg_runtime_dirs`` so the join runs *first* on
+    teardown, while the test's own XDG/database override is still in place: a
+    worker still running its final durable writes then finalizes against its own
+    temp database instead of the developer's.
+
+    Many tests construct a runtime, dispatch a delegated task, and assert on its
+    terminal state without closing the runtime (``runtime.__exit__`` is what
+    joins background-task workers). The worker is a daemon and may still be
+    running when the test body returns, so left alone it outlives the test and
+    the environment the test ran under.
+
+    The bounded join keeps this deterministic and fails loudly, naming the
+    offending threads, if a worker cannot be stopped at all — that would be a
+    real shutdown defect rather than test noise.
+    """
+    yield
+    leaked = [thread for thread in threading.enumerate() if thread.name.startswith("voidcode-background-task-")]
+    deadline = time.monotonic() + _BACKGROUND_WORKER_JOIN_TIMEOUT_SECONDS
+    for thread in leaked:
+        thread.join(timeout=max(deadline - time.monotonic(), 0.0))
+    still_alive = sorted(thread.name for thread in leaked if thread.is_alive())
+    assert not still_alive, f"test left background-task workers running after {_BACKGROUND_WORKER_JOIN_TIMEOUT_SECONDS}s: {still_alive}"
 
 
 @pytest.fixture(autouse=True)

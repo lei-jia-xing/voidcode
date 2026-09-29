@@ -371,7 +371,7 @@ class SqliteSessionStore(
     _EffectivenessStorageMixin,
     _DiagnosticsStorageMixin,
 ):
-    _database_path: Path | None
+    _database_path: Path
     _SCHEMA_VERSION = SCHEMA_VERSION
     _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal", "interrupted"})
     _SEQUENCE_SCOPES = ("sessions", "background_tasks", "auxiliary")
@@ -488,12 +488,15 @@ class SqliteSessionStore(
     }
 
     def __init__(self, *, database_path: Path | None = None) -> None:
-        self._database_path = database_path
+        # Resolve the canonical path exactly once, here. A store that outlives
+        # the context that constructed it (a background worker outliving its
+        # test, an embedded reconfiguration) must keep writing the database it
+        # was built for: re-reading ``$VOIDCODE_DB_PATH``/XDG on every operation
+        # would silently retarget it when the environment changes underneath it.
+        self._database_path = database_path if database_path is not None else sessions_db_path()
 
     def _resolve_database_path(self) -> Path:
-        if self._database_path is not None:
-            return self._database_path
-        return sessions_db_path()
+        return self._database_path
 
     @contextmanager
     def _connect(self, workspace: Path) -> Iterator[sqlite3.Connection]:
