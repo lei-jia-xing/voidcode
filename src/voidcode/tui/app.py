@@ -791,9 +791,6 @@ class TuiApp:
         prompt = text.strip()
         if not prompt:
             return
-        if prompt.startswith("/"):
-            self._slash_command(prompt)
-            return
         if self._streaming or self._overlay is not None:
             self._steer(prompt)
             return
@@ -923,16 +920,6 @@ class TuiApp:
             self._notice(f"✖ Cancel failed: {format_runtime_error(error)}")
             return
         self._notice("■ Turn cancel requested" if result.interrupted else "■ No active run to cancel")
-
-    # -- slash commands ----------------------------------------------------
-
-    def _slash_command(self, raw: str) -> None:
-        """No slash commands are registered; any ``/foo`` is reported as unknown.
-
-        This is the only feedback a typo gets, so the path stays even though the
-        composer no longer completes anything.
-        """
-        self._notice(f"✖ Unknown command: {raw.partition(' ')[0]}")
 
     def _toggle_expand(self) -> None:
         """``tools_expand``: expand or collapse every block.

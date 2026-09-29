@@ -65,6 +65,16 @@ def _session_status(db_path: Path) -> str:
     return row[0] if row else ""
 
 
+def _command_resolved_rows(db_path: Path) -> list[dict[str, object]]:
+    """Payloads of the persisted ``command.resolved`` rows, oldest first."""
+    connection = sqlite3.connect(db_path)
+    try:
+        rows = connection.execute("SELECT payload_json FROM session_events WHERE event_type = 'command.resolved' ORDER BY sequence").fetchall()
+    finally:
+        connection.close()
+    return [json.loads(row[0]) for row in rows]
+
+
 def _cli_env(db_path: Path) -> dict[str, str]:
     """Deterministic engine, isolated session DB (never the developer's XDG one)."""
     env = os.environ.copy()
@@ -405,6 +415,38 @@ def test_inline_tui_escape_cancels_the_active_turn(tmp_path: Path) -> None:
         assert tui.raw.endswith("\x1b[?2004l\x1b[<u\x1b[0m\x1b[?25h"), tui.raw[-80:]
     finally:
         tui.close()
+
+
+def test_inline_tui_slash_command_reaches_runtime_resolution(tmp_path: Path) -> None:
+    """A leading-``/`` prompt is submitted, not intercepted, and the runtime resolves it.
+
+    The observable is the persisted ``command.resolved`` row plus its rendered
+    prompt: the TUI no longer answers ``/foo`` itself, and the full line (with
+    arguments) survives to ``$ARGUMENTS``.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    db_path = tmp_path / "sessions.sqlite3"
+    tui = _PtyTui(workspace, db_path)
+    try:
+        assert tui.wait_for("Ask voidcode", _PROMPT_TIMEOUT), tui.raw[-2000:]
+        tui.send(b"/plan add X\r")
+        # The deterministic engine echoes the rendered prompt as the answer, so a
+        # committed row proves the resolved command passed back through the client.
+        assert tui.wait_for_committed("add X", _ANSWER_TIMEOUT), tui.raw[-3000:]
+        assert "Unknown command" not in tui.raw
+    finally:
+        tui.send(b"\x03\x03")
+        tui.wait_for_exit(_EXIT_TIMEOUT)
+        tui.close()
+
+    resolved = _command_resolved_rows(db_path)
+    assert len(resolved) == 1, resolved
+    payload = resolved[0]
+    assert payload["name"] == "plan"
+    assert payload["original_prompt"] == "/plan add X"
+    assert payload["raw_arguments"] == "add X"
+    assert payload["rendered_prompt"].endswith("Target: add X")
 
 
 def test_inline_tui_piped_stdout_keeps_no_alternate_screen_and_no_raw_escapes(tmp_path: Path) -> None:

@@ -4,7 +4,8 @@ Ports the subset of omp's editor the VoidCode TUI needs
 (``.omo/plans/tui-input-spec.md`` §3-§9): editing bindings, multi-line growth
 and word wrapping, the ``band`` composer shape, session history, and the
 Esc / Ctrl+C interrupt semantics. Tab is deliberately unbound: the editor has
-no completion source, so it inserts nothing and the app owns every ``/`` path.
+no completion source, so it inserts nothing; slash input is submitted verbatim
+and resolved by the runtime, not by this module.
 
 The class is deliberately I/O free: it never touches a terminal, ``rich``
 renderables, or the runtime. ``handle_key`` consumes a decoded :class:`Key`
