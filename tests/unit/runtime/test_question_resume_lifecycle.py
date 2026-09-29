@@ -88,8 +88,8 @@ def test_sync_approval_resume_tracks_active_lifecycle(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="deterministic", approval_mode="always-ask"),
-        permission_policy=PermissionPolicy(mode="always-ask"),
+        config=RuntimeConfig(execution_engine="deterministic", approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
     )
     session_id = "sync-approval-lifecycle"
     waiting = runtime.run(RuntimeRequest(prompt="write approved.txt approved", session_id=session_id))

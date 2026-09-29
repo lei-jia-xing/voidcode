@@ -84,7 +84,7 @@ def test_resolve_permission_read_only_denies_write_tool() -> None:
     outcome = resolve_permission(
         _write_tool(),
         _call(),
-        policy=PermissionPolicy(mode="always-ask"),
+        policy=PermissionPolicy(mode="ask"),
         read_only=True,
     )
 
@@ -124,7 +124,7 @@ def test_resolve_permission_read_only_allows_read_only_tool() -> None:
     outcome = resolve_permission(
         _read_only_tool(),
         _call("grep"),
-        policy=PermissionPolicy(mode="always-ask"),
+        policy=PermissionPolicy(mode="ask"),
         read_only=True,
     )
 
@@ -136,7 +136,7 @@ def test_resolve_permission_normal_mode_does_not_short_circuit() -> None:
     outcome = resolve_permission(
         _write_tool(),
         _call(),
-        policy=PermissionPolicy(mode="always-ask"),
+        policy=PermissionPolicy(mode="ask"),
         read_only=False,
     )
 
@@ -152,7 +152,7 @@ def test_resolve_permission_read_only_overrides_explicit_allow_rule() -> None:
     outcome = resolve_permission(
         _write_tool(),
         _call(),
-        policy=PermissionPolicy(mode="always-ask"),
+        policy=PermissionPolicy(mode="ask"),
         rule_decision="allow",
         read_only=True,
     )
@@ -221,14 +221,14 @@ def test_normal_runtime_mode_allows_explicit_read_only() -> None:
     assert runtime_read_only_from_metadata(normalized) is True
 
 
-def test_default_policy_allows_read_only_and_asks_for_write() -> None:
+def test_default_policy_auto_approves_every_tier() -> None:
     read_tool = _read_only_tool()
     write_tool = _write_tool()
     default_policy = PermissionPolicy()
 
     assert default_policy.mode == DEFAULT_APPROVAL_MODE
     assert approval_decision(mode=DEFAULT_APPROVAL_MODE, operation_class="read") == "allow"
-    assert approval_decision(mode=DEFAULT_APPROVAL_MODE, operation_class="write") == "ask"
+    assert approval_decision(mode=DEFAULT_APPROVAL_MODE, operation_class="write") == "allow"
     assert (
         resolve_permission(
             read_tool,
@@ -245,7 +245,7 @@ def test_default_policy_allows_read_only_and_asks_for_write() -> None:
             policy=default_policy,
             operation_class="write",
         ).decision
-        == "ask"
+        == "allow"
     )
 
 

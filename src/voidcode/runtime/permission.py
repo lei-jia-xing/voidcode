@@ -14,11 +14,11 @@ type PermissionResolution = Literal["allow", "deny"]
 type PathScope = Literal["workspace", "external"]
 type OperationClass = Literal["read", "write", "execute"]
 #: The approval-mode vocabulary: one auto-approve threshold, applied per tool
-#: tier. ``always-ask`` auto-approves ``read`` only, ``write`` also approves
+#: tier. ``ask`` auto-approves ``read`` only, ``write`` also approves
 #: ``write``, ``yolo`` approves every tier.
-type ApprovalMode = Literal["always-ask", "write", "yolo"]
-APPROVAL_MODES: tuple[ApprovalMode, ...] = ("always-ask", "write", "yolo")
-DEFAULT_APPROVAL_MODE: ApprovalMode = "always-ask"
+type ApprovalMode = Literal["ask", "write", "yolo"]
+APPROVAL_MODES: tuple[ApprovalMode, ...] = ("ask", "write", "yolo")
+DEFAULT_APPROVAL_MODE: ApprovalMode = "yolo"
 PLAN_MODE_DENIAL_REASON = "read-only mode is active; mutating tools are denied"
 
 

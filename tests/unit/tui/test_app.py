@@ -128,7 +128,7 @@ def _render_app(*, height: int = 8, width: int = 60, committed: list[str] | None
     app._composer = Composer(theme=theme, width=width)
     app._expand_notice = ""
     app._config = SimpleNamespace(reasoning_effort="off")
-    app._approval_mode = "always-ask"
+    app._approval_mode = "ask"
     app._model = "test-model"
     app._lsp_label = ""
     app._context_window = 0

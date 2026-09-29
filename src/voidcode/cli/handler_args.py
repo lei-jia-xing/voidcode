@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..runtime.permission import DEFAULT_APPROVAL_MODE
+
 
 @dataclass(frozen=True, slots=True)
 class RunArgs:
@@ -96,7 +98,7 @@ class ConfigArgs:
     workspace: Path = field(default_factory=Path.cwd)
     session_id: str | None = None
     json: bool = False
-    approval_mode: str = "always-ask"
+    approval_mode: str = DEFAULT_APPROVAL_MODE
     model: str | None = None
     with_examples: bool = False
     print: bool = False

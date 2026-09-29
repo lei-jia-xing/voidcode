@@ -17,7 +17,7 @@ from ...runtime.config_schema import (
     runtime_config_json_schema,
     write_runtime_config_payload,
 )
-from ...runtime.permission import ApprovalMode
+from ...runtime.permission import DEFAULT_APPROVAL_MODE, ApprovalMode
 from ..errors import CliError, require_workspace
 from ..handler_args import ConfigArgs
 from ..options import APPROVAL_MODES, workspace_option
@@ -130,7 +130,7 @@ def config_schema() -> int:
     help="Generate a starter workspace .voidcode.json. Note: yolo/write auto-approve execution without isolation (no OS-level sandbox in v1).",
 )
 @workspace_option("Workspace root where .voidcode.json should be generated.")
-@click.option("--approval-mode", type=click.Choice(APPROVAL_MODES), default="always-ask")
+@click.option("--approval-mode", type=click.Choice(APPROVAL_MODES), default=DEFAULT_APPROVAL_MODE)
 @click.option("--model")
 @click.option("--with-examples", is_flag=True)
 @click.option("--print", "print_config", is_flag=True)

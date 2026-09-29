@@ -139,7 +139,7 @@ def test_config_show_reports_defaults_for_unconfigured_workspace(tmp_path: Path)
     assert result.stderr == ""
     payload = json.loads(result.stdout)
     assert payload["workspace"] == str(tmp_path)
-    assert payload["approval_mode"] == "always-ask"
+    assert payload["approval_mode"] == "yolo"
     assert payload["model"] is None
     assert payload["agent"] is None
     assert payload["provider_readiness"]["provider"] is None
@@ -170,7 +170,7 @@ def test_config_schema_emits_json_schema(tmp_path: Path) -> None:
     # The shipped schema is generated from the payload models: an optional value
     # publishes its enum inside the non-null branch of the null union.
     assert payload["properties"]["approval_mode"]["anyOf"] == [
-        {"type": "string", "enum": ["always-ask", "write", "yolo"]},
+        {"type": "string", "enum": ["ask", "write", "yolo"]},
         {"type": "null"},
     ]
 

@@ -54,7 +54,7 @@ def test_builtin_registry_stays_silent_for_plain_commands() -> None:
     assert outcome.diagnostics == ()
 
 
-@pytest.mark.parametrize("mode", ["always-ask", "write", "yolo"])
+@pytest.mark.parametrize("mode", ["ask", "write", "yolo"])
 @pytest.mark.parametrize("read_only", [False, True])
 def test_command_execution_entrypoints_share_authorization(tmp_path: Path, mode: Any, read_only: bool) -> None:
     engine = PermissionEngine(RuntimePermissionContextResolver(workspace=tmp_path), ExternalDirectoryPermissionConfig())

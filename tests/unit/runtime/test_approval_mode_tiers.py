@@ -1,6 +1,6 @@
 """Approval mode × tool tier: the real resolver's decision matrix.
 
-The mode vocabulary is ``always-ask`` / ``write`` / ``yolo`` and the tier axis is
+The mode vocabulary is ``ask`` / ``write`` / ``yolo`` and the tier axis is
 ``operation_class_for_tool``: a read tier is auto-approved by every mode, a write
 tier needs at least ``write``, and an execute tier needs ``yolo``. The matrix is
 driven through the real :func:`resolve_permission` with real tool instances, so
@@ -38,7 +38,7 @@ from .test_todo_reminder import _ScriptedGraph, _Step
 #: The omp matrix: mode → tier → decision. This is the expected side; the test
 #: drives the real resolver and compares against it.
 _EXPECTED_DECISION: dict[ApprovalMode, dict[OperationClass, str]] = {
-    "always-ask": {"read": "allow", "write": "ask", "execute": "ask"},
+    "ask": {"read": "allow", "write": "ask", "execute": "ask"},
     "write": {"read": "allow", "write": "allow", "execute": "ask"},
     "yolo": {"read": "allow", "write": "allow", "execute": "allow"},
 }
@@ -93,8 +93,8 @@ def test_mode_by_tier_matrix_drives_the_real_resolver(mode: ApprovalMode, tier: 
         assert outcome.pending_approval.policy_mode == outcome.decision
 
 
-def test_default_mode_prompts_for_write_tier_through_the_real_path(tmp_path: Path) -> None:
-    """The unset-config default is observed behaviorally: a write-tier call prompts.
+def test_default_mode_auto_approves_write_tier_through_the_real_path(tmp_path: Path) -> None:
+    """The unset-config default is observed behaviorally: a write-tier call runs without a prompt.
 
     Neither the mode nor the permission policy is passed here, so the runtime's
     own default selection is what resolves the call.
@@ -110,10 +110,10 @@ def test_default_mode_prompts_for_write_tier_through_the_real_path(tmp_path: Pat
 
     events = [chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None]
     approval_requested = [event for event in events if event.event_type == "runtime.approval_requested"]
+    approval_resolved = [event for event in events if event.event_type == "runtime.approval_resolved"]
 
-    assert len(approval_requested) == 1
-    assert approval_requested[0].payload["tool"] == "write"
-    assert approval_requested[0].payload["operation_class"] == "write"
+    assert approval_requested == []
+    assert [event.payload["decision"] for event in approval_resolved] == ["allow"]
 
 
 def test_unknown_tool_defaults_to_execute_tier() -> None:

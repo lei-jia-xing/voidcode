@@ -51,7 +51,7 @@ from voidcode.runtime.config_schema import runtime_config_json_schema
 #: one leaf instead of tripping over a missing sibling.
 _SECTION_BASELINES: dict[str, object] = {
     "config_schema_version": 1,
-    "approval_mode": "always-ask",
+    "approval_mode": "ask",
     "permission": {"external_directory_read": {"*": "allow"}},
     "policy": {"version": "v1", "tool_policy": {"allow": ["read"]}},
     "model": "opencode-go/x",

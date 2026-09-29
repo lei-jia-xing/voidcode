@@ -50,8 +50,8 @@ VOIDCODE_EXECUTION_ENGINE=deterministic uv run voidcode run "read README.md" --w
 OPENAI_API_KEY=... VOIDCODE_MODEL=openai/gpt-4o-mini \
   uv run voidcode run "read README.md" --workspace .
 
-# A write task pauses for approval in a TTY (always-ask prompts for write/exec)
-uv run voidcode run "write hello.txt hello world" --workspace . --approval-mode always-ask
+# A write task pauses for approval in a TTY (the ask mode prompts for write/exec)
+uv run voidcode run "write hello.txt hello world" --workspace . --approval-mode ask
 
 # List main sessions; add --include-children for delegated child sessions
 uv run voidcode sessions list --workspace .
@@ -140,7 +140,7 @@ Workspace-local runtime config lives in `.voidcode.json` at the workspace root (
 {
   "$schema": "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json",
   "execution_engine": "deterministic",
-  "approval_mode": "always-ask"
+  "approval_mode": "yolo"
 }
 ```
 

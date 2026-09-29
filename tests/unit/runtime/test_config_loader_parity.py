@@ -38,9 +38,9 @@ def test_mcp_remote_http_server_without_url_is_rejected(tmp_path: Path) -> None:
 @pytest.mark.parametrize("schema_value", [5, [], {"x": 1}, True])
 def test_non_string_schema_reference_is_ignored_in_the_workspace_config(tmp_path: Path, schema_value: object) -> None:
     """``$schema`` is an editor hint the loader never reads; HEAD ignored any value."""
-    config = _load_workspace(tmp_path, {"$schema": schema_value, "approval_mode": "always-ask"})
+    config = _load_workspace(tmp_path, {"$schema": schema_value, "approval_mode": "ask"})
 
-    assert config.approval_mode == "always-ask"
+    assert config.approval_mode == "ask"
 
 
 def test_non_string_schema_reference_is_ignored_in_the_user_config(tmp_path: Path) -> None:
@@ -156,9 +156,9 @@ def test_user_level_approval_mode_and_model_apply_but_yield_to_the_project_file(
     assert user_only.model == "user/model"
 
     (tmp_path / ".voidcode.json").write_text(
-        json.dumps({"approval_mode": "always-ask", "model": "repo/model"}),
+        json.dumps({"approval_mode": "ask", "model": "repo/model"}),
         encoding="utf-8",
     )
     project_wins = load_runtime_config(tmp_path, env={"XDG_CONFIG_HOME": str(user_config_home)})
-    assert project_wins.approval_mode == "always-ask"
+    assert project_wins.approval_mode == "ask"
     assert project_wins.model == "repo/model"

@@ -8,7 +8,7 @@
 
 ## 状态
 
-当前运行时已经实现完整的受控审批流：`allow` / `deny` / `ask` 三种**决策**都已可用，未决审批会被持久化，并且 approval resume 现在拥有运行时内部的持久化 checkpoint anchor。审批**模式**（`always-ask` / `write` / `yolo`）决定按工具 tier 自动放行哪些调用。
+当前运行时已经实现完整的受控审批流：`allow` / `deny` / `ask` 三种**决策**都已可用，未决审批会被持久化，并且 approval resume 现在拥有运行时内部的持久化 checkpoint anchor。审批**模式**（`ask` / `write` / `yolo`）决定按工具 tier 自动放行哪些调用。
 
 ## 当前代码锚点
 
@@ -41,11 +41,11 @@
 
 | mode | 自动放行 | 需要审批 |
 | --- | --- | --- |
-| `always-ask`（默认） | `read` | `write`、`exec` |
+| `ask` | `read` | `write`、`exec` |
 | `write` | `read`、`write` | `exec` |
-| `yolo` | `read`、`write`、`exec` | 无 |
+| `yolo`（默认） | `read`、`write`、`exec` | 无 |
 
-默认是**保守的 `always-ask`**：`write`/`exec` tier 默认仍进入审批。把默认切成 `yolo` 会默认自动放行写入与执行，属于安全相关的独立决策，不在本契约内单方面变更。
+默认是 `yolo`：`read`/`write`/`exec` 全部自动放行，属安全相关的显式决策。需要 write/exec 进入审批的工作区应显式设置 `approval_mode: "ask"` 或 `"write"`。
 
 ### 决策词表（`PermissionDecision`，与 mode 不同）
 
@@ -79,7 +79,7 @@
 
 ## 命令执行授权
 
-`shell_exec` 与后台进程启动统一通过 runtime 的执行能力授权，属 `execute` tier：在默认 `always-ask` 与 `write` 模式下都要审批，只有 `yolo` 才自动放行；显式 `allow` rule 允许任意命令，显式 `deny` rule 与只读模式禁止执行。运行时不再解析 shell 字符串推断危险操作或外部文件访问。结构化文件工具的路径权限不受此变更影响。
+`shell_exec` 与后台进程启动统一通过 runtime 的执行能力授权，属 `execute` tier：在 `ask` 与 `write` 模式下都要审批，只有 `yolo` 才自动放行；显式 `allow` rule 允许任意命令，显式 `deny` rule 与只读模式禁止执行。运行时不再解析 shell 字符串推断危险操作或外部文件访问。结构化文件工具的路径权限不受此变更影响。
 
 ## 审批请求契约
 
@@ -229,7 +229,7 @@ Payload 字段意图：
 
 ### Non-goal (v1): OS-level sandbox
 
-当前已移除基于命令字符串的危险操作识别与文件路径推断。前台 shell 与后台命令统一按任意执行能力授权（`execute` tier），默认（`always-ask`）进入审批，显式 `allow` rule 不再附加危险命令黑名单；显式 command 匹配规则仍可用于授权，但不是文件隔离保证。Non-goal (v1): OS-level sandbox（syscall 拦截与访问控制等执行隔离手段）在 v1 明确为非目标；当前没有工作区 sandbox。approval `allow` 是用户对任意命令执行的同意，不是隔离（consent, not containment）；`permission.rules` / 路径范围 / 操作分类仅为防误触的 UX 手段，不是安全边界。
+当前已移除基于命令字符串的危险操作识别与文件路径推断。前台 shell 与后台命令统一按任意执行能力授权（`execute` tier），`ask` 模式下进入审批，显式 `allow` rule 不再附加危险命令黑名单；显式 command 匹配规则仍可用于授权，但不是文件隔离保证。Non-goal (v1): OS-level sandbox（syscall 拦截与访问控制等执行隔离手段）在 v1 明确为非目标；当前没有工作区 sandbox。approval `allow` 是用户对任意命令执行的同意，不是隔离（consent, not containment）；`permission.rules` / 路径范围 / 操作分类仅为防误触的 UX 手段，不是安全边界。
 
 - 统一覆盖前台 shell、后台进程及其子进程；不能通过更换执行工具绕过同一权限边界。
 - 区分 syscall 观察与强制执行：仅记录调用（如 `strace`）不足以阻止访问，必须在有副作用的操作发生前实施授权或拒绝。

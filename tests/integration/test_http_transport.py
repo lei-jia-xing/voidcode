@@ -358,7 +358,7 @@ def _assert_runtime_session_metadata(
     metadata: object,
     *,
     workspace: Path | str,
-    approval_mode: str = "always-ask",
+    approval_mode: str = "yolo",
     model: str | None = None,
     execution_engine: str = "deterministic",
 ) -> None:
@@ -888,7 +888,7 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
     permission_module = importlib.import_module("voidcode.runtime.permission")
-    permission_policy = cast(object, permission_module.PermissionPolicy(mode="always-ask"))
+    permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
 
     runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
     waiting = runtime.run(runtime_request(prompt="write danger.txt approved later", session_id="approval-session"))
@@ -1027,7 +1027,7 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
     permission_module = importlib.import_module("voidcode.runtime.permission")
-    permission_policy = cast(object, permission_module.PermissionPolicy(mode="always-ask"))
+    permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
 
     runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
     waiting = runtime.run(runtime_request(prompt="write danger.txt denied later", session_id="deny-session"))
@@ -1086,8 +1086,9 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
 
 def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_path: Path) -> None:
     _ = (tmp_path / "source.txt").write_text("alpha\nbeta alpha\n", encoding="utf-8")
+    config_module = importlib.import_module("voidcode.runtime.config")
     create_runtime_app = _load_transport_app_factory()
-    app = create_runtime_app(workspace=tmp_path)
+    app = create_runtime_app(workspace=tmp_path, config=cast(Any, config_module).RuntimeConfig(approval_mode="ask", execution_engine="deterministic"))
     waiting_response = _run_app(
         app,
         method="POST",
@@ -1147,6 +1148,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     _assert_runtime_session_metadata(
         cast(dict[str, object], waiting_payloads[-1]["session"])["metadata"],
         workspace=tmp_path,
+        approval_mode="ask",
     )
 
     assert approve_response.status == 200
@@ -1156,6 +1158,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     _assert_runtime_session_metadata(
         cast(dict[str, object], approve_payload["session"])["metadata"],
         workspace=tmp_path,
+        approval_mode="ask",
     )
     approve_session_metadata = cast(dict[str, object], cast(dict[str, object], approve_payload["session"])["metadata"])
     approve_runtime_state = cast(dict[str, object], approve_session_metadata["runtime_state"])

@@ -253,7 +253,7 @@ def _handle_run_command(args: RunArgs) -> int:
 @click.option(
     "--approval-mode",
     type=click.Choice(APPROVAL_MODES),
-    help="Override the approval mode: always-ask, write, or yolo (which tool tiers are auto-approved).",
+    help="Override the approval mode: ask, write, or yolo (which tool tiers are auto-approved).",
 )
 @click.option(
     "--agent",

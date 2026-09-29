@@ -566,8 +566,8 @@ def test_steer_landing_after_approval_resolution_is_rejected(tmp_path: Path) -> 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="always-ask", execution_engine="deterministic"),
-        permission_policy=PermissionPolicy(mode="always-ask"),
+        config=RuntimeConfig(approval_mode="ask", execution_engine="deterministic"),
+        permission_policy=PermissionPolicy(mode="ask"),
     )
     waiting = runtime.run(RuntimeRequest(prompt="approval steer", session_id="steer-1"))
     assert waiting.session.status == "waiting"
@@ -596,8 +596,8 @@ def test_steer_queued_while_waiting_is_delivered_on_next_run_without_reactivatin
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="always-ask", execution_engine="deterministic"),
-        permission_policy=PermissionPolicy(mode="always-ask"),
+        config=RuntimeConfig(approval_mode="ask", execution_engine="deterministic"),
+        permission_policy=PermissionPolicy(mode="ask"),
     )
     waiting = runtime.run(RuntimeRequest(prompt="approval steer pre", session_id="steer-2"))
     assert waiting.session.status == "waiting"

@@ -268,7 +268,7 @@ def test_continue_refuses_a_session_waiting_for_approval(tmp_path: Path) -> None
         "--workspace",
         str(workspace),
         "--approval-mode",
-        "always-ask",
+        "ask",
         "--session-id",
         "blocked",
         "--json",

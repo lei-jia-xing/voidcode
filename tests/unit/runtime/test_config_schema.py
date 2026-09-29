@@ -97,7 +97,7 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     # An optional section publishes an explicit ``null`` branch: the loader treats
     # an explicit ``null`` as "unset", so the contract accepts it too.
     assert properties["approval_mode"] == {
-        "anyOf": [{"type": "string", "enum": ["always-ask", "write", "yolo"]}, {"type": "null"}],
+        "anyOf": [{"type": "string", "enum": ["ask", "write", "yolo"]}, {"type": "null"}],
         "description": "Default approval policy mode for tool execution: which tool tiers are auto-approved.",
     }
     assert properties["permission"] == {"anyOf": [{"$ref": "#/$defs/permissionConfig"}, {"type": "null"}]}
@@ -306,7 +306,7 @@ def test_generate_starter_runtime_config_validates_inputs() -> None:
 def test_format_starter_runtime_config_json_preserves_order() -> None:
     payload = generate_starter_runtime_config(include_schema_reference=False)
 
-    assert format_starter_runtime_config_json(payload) == '{\n  "approval_mode": "always-ask"\n}\n'
+    assert format_starter_runtime_config_json(payload) == '{\n  "approval_mode": "yolo"\n}\n'
 
 
 def test_runtime_config_rejects_removed_workflows_field(tmp_path: Path) -> None:
@@ -578,7 +578,7 @@ def test_runtime_config_schema_accepts_null_wherever_the_loader_treats_null_as_u
     # The loader must agree: a config file of explicit nulls resolves to defaults.
     (tmp_path / ".voidcode.json").write_text(json.dumps(null_payload), encoding="utf-8")
     config = load_runtime_config(tmp_path, env={})
-    assert config.approval_mode == "always-ask"
+    assert config.approval_mode == "yolo"
     assert config.execution_engine == "provider"
 
 

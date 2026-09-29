@@ -140,7 +140,7 @@ def test_approval_resume_uses_final_started_id_once_and_does_not_repeat_typed_ha
     tool = _CaptureTool()
     handler_calls: list[str] = []
     registry = ToolInputHandlerRegistry((ToolInputHandlerBinding("canonicalize", _canonicalizer("approved.txt", handler_calls)),))
-    runtime = _runtime(tmp_path, tool, registry, approval_mode="always-ask")
+    runtime = _runtime(tmp_path, tool, registry, approval_mode="ask")
     waiting = runtime.run(RuntimeRequest(prompt="capture", session_id="approval-session"))
     approval = next(event for event in waiting.events if event.event_type == "runtime.approval_requested")
     assert not any(event.event_type == "runtime.tool_started" for event in waiting.events)

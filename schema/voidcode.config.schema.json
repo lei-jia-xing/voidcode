@@ -30,7 +30,7 @@
       "anyOf": [
         {
           "enum": [
-            "always-ask",
+            "ask",
             "write",
             "yolo"
           ],
