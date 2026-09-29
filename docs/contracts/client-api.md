@@ -49,6 +49,10 @@ StoredSessionSummary(
     prompt: str,
     updated_at: int,
     title: str | None = None,
+    # fork 血缘：本会话从其复制的来源会话 id 与复制边界序号；
+    # 非 fork 会话为 None。
+    forked_from_session_id: str | None = None,
+    forked_at_sequence: int | None = None,
 )
 ```
 
@@ -119,6 +123,49 @@ StoredSessionSummary(
 当前实现层面：
 - 运行时：`VoidCodeRuntime.list_sessions()`
 - CLI：`voidcode sessions list [--workspace]`
+
+### 派生持久化会话 (Fork persisted session)
+
+输入：
+- `session_id`：要复制的来源会话
+- `at_sequence`（可选）：复制事件 `1..N`；缺省为来源会话当前的 `last_event_sequence` 水位
+
+输出：
+- 新会话的 `StoredSessionSummary`，其 `forked_from_session_id` 为来源会话 id、`forked_at_sequence` 为复制边界序号
+
+保证（由代码提供，客户端可以依赖）：
+
+- **来源会话永不被修改。** fork 只读来源行与事件日志，新会话是一个全新的会话行；来源的 status、事件、水位、metadata 全部保持不变。
+- **复制的事件保留其原始序号**（`1..N` 连续），因此复制前缀里已有的 revert marker 仍能按序解析。
+- **复制是一个事务**（`BEGIN IMMEDIATE`），事件日志与 provenance 列一起落盘，不会出现半个 fork。
+- **边界不得劈开一次交互。** 若 `at_sequence` 使某个 `runtime.tool_started` 与其 `runtime.tool_completed`（按 `tool_call_id` 配对），或某个 `runtime.approval_requested` / `runtime.question_requested` 与其 resolved/answered 对端（按 `request_id` 配对）分离，则拒绝并抛出 `RuntimeSessionForkBoundaryError`（`src/voidcode/runtime/contracts.py`，`code = "fork_boundary_splits_interaction"`）；错误信息给出可安全 fork 的序号。未知会话抛 `UnknownSessionError`。
+- 新会话状态为 `interrupted`，并写入一个 replay-only 的终端 resume checkpoint，使后续 `sessions resume` 走存储重放而非截断重跑。
+
+当前实现层面：
+- 运行时：`VoidCodeRuntime.fork_session(session_id=..., at_sequence=...)`
+- CLI：`voidcode sessions fork <session_id> [--at-sequence N] [--workspace] [--json]`
+
+### 查询 fork 血缘 (Session lineage / tree)
+
+输入：
+- `session_id`（可选）：从该会话沿 `forked_from_session_id` 向上走到最老祖先；缺省时返回 workspace 内全部会话的 provenance 行，供客户端自行摆放整片森林
+
+输出：
+- `tuple[StoredSessionLineageEntry, ...]`：每项为 `{session_id, forked_from_session_id, forked_at_sequence}`，**从最老祖先到 fork 本身**排列
+
+血缘查询是**只读**的：它不修改任何会话、不触发 resume，也不改变 fork 结构。
+
+当前实现层面：
+- 运行时：`VoidCodeRuntime.session_lineage(session_id=...)`
+- CLI：`voidcode sessions tree [session_id] [--workspace] [--json]`
+
+### fork 语义的诚实边界 (Fork semantics — the honest limits)
+
+VoidCode 的会话是**单条线性事件日志 + 一个水位**（`last_event_sequence`），**没有可变 leaf pointer**。因此：
+
+- 这里的 "branch" 就是**先 fork 再续接**：fork 产出新的会话 id，对该新会话继续运行；一个会话 id **不能**承载两条分叉的续接，无法像参考实现的 entry tree 那样在同一个会话内产生多个后续分支。
+- fork provenance 刻意使用**独立列**（`forked_from_session_id` / `forked_at_sequence`），而不是复用 `parent_session_id`。`parent_session_id` 在**所有**读取点都表示 *delegated background-task child*（列表过滤、委派路由、父会话终结检查、孤儿清理），fork 若写进该列会被误当成 delegated child；用独立列后，**fork 永不进入 delegated-child 行为**。
+- fork 迁移 `runtime_config` / `runtime_policy`（会话级有效配置与策略），但丢弃 `runtime_state`（context 投影与 todos，属于被复制那轮的位置状态）；fork 的下一轮自行重新推导运行位置。
 
 ### 重命名持久化会话 (Rename persisted session)
 
