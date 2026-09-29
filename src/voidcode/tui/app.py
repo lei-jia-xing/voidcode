@@ -889,18 +889,28 @@ class TuiApp:
         # Main-session surface, like ``sessions list``/HTTP: delegated
         # background-task children are reachable only from the child-session
         # view, so they never appear as resume targets here.
-        entries = [
-            (summary.session.id, summary.title if summary.title is not None else summary.prompt)
+        rows_by_id = {
+            summary.session.id: (
+                summary.session.id,
+                summary.title if summary.title is not None else summary.prompt,
+            )
             for summary in sessions
             if summary.session.parent_id is None
-        ]
-        # Display-only fork depth for these rows, projected by the runtime; a
-        # session the forest omits still renders at depth 0.
+        }
+        # Row order and display depth both come from the runtime's forest -- the
+        # one projection every tree surface renders -- so the picker never sorts
+        # by ``updated_at`` itself: doing that put a continued fork above the
+        # root it branched from. A session the forest does not know about (a read
+        # that raced a brand-new row) still renders, flat at depth 0, at the end.
         try:
-            depths = {entry.session_id: entry.depth for entry in self._runtime.session_forest()}
+            forest = self._runtime.session_forest()
         except Exception as error:
             logger.error("Failed to read session forest: %s", error)
-            depths = {}
+            self._notice(f"✖ Failed to read the session tree: {format_runtime_error(error)}")
+            return
+        entries = [rows_by_id.pop(entry.session_id) for entry in forest if entry.session_id in rows_by_id]
+        entries.extend(rows_by_id.values())
+        depths = {entry.session_id: entry.depth for entry in forest}
         self._overlay = SessionPickerOverlay(sessions=entries, depths=depths, theme=self._theme)
         self._overlay_request_id = ""
         if self._composer is not None:

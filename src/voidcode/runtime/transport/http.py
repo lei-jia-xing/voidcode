@@ -1245,13 +1245,22 @@ class RuntimeTransportApp(FastAPI):
             # sessions belong only to the child-session view and are reachable
             # through the task/delegated-context endpoints, so exclude them here.
             top_level = [item for item in runtime.list_sessions() if item.session.parent_id is None]
-            # Display-only fork depth comes from the runtime's forest projection
-            # -- the same one the CLI tree and TUI picker render -- so no client
-            # re-derives depth from provenance. The forest is a superset of this
-            # filtered list: a row it omits serializes a null depth, never raises.
-            depths = {entry.session_id: entry.depth for entry in runtime.session_forest()}
-            payload = [self._serialize_stored_session_summary(item, depth=depths.get(item.session.id)) for item in top_level]
-        return json_response(payload)
+            # Rows are emitted in the runtime's forest order -- the same display
+            # order the CLI tree and TUI picker render (roots by recency, parents
+            # before their children) -- so a client must not re-sort. ``depth``
+            # comes from that same projection; the forest covers every top-level
+            # row, and one it somehow omits is still appended at ``depth: null``
+            # (the client renders null at depth 0) so the list never loses a row.
+            summaries = {item.session.id: item for item in top_level}
+            forest = runtime.session_forest()
+            ordered = [
+                self._serialize_stored_session_summary(summaries[entry.session_id], depth=entry.depth)
+                for entry in forest
+                if entry.session_id in summaries
+            ]
+            placed = {entry.session_id for entry in forest}
+            ordered.extend(self._serialize_stored_session_summary(item, depth=None) for item in top_level if item.session.id not in placed)
+        return json_response(ordered)
 
     async def _handle_start_background_task(self, payload: _RunStreamRequestPayload) -> Response:
         try:

@@ -134,19 +134,22 @@ def _dangling_interaction(events: tuple[EventEnvelope, ...]) -> tuple[str, str] 
 def forest_from_lineage_entries(
     entries: tuple[StoredSessionLineageEntry, ...],
 ) -> tuple[StoredSessionForestEntry, ...]:
-    """Lay out a whole fork forest from flat provenance rows, parents first.
+    """Lay out the whole fork forest: display order, parents before children.
 
-    The rows' own order (``session_lineage`` sorts by ``updated_at``) is
-    deliberately ignored: a forking parent that is continued *after* its fork
-    has the newer ``updated_at`` and would otherwise sort behind its children,
-    collapsing their depth. Instead children are grouped by
-    ``forked_from_session_id`` and the forest is walked depth-first from the
-    roots, so a node's depth is always one more than its parent's.
+    This is the ONE ordering rule every tree surface renders (CLI ``sessions
+    tree``, TUI resume picker, web sidebar); no client re-sorts. Structure and
+    display order are the same projection on purpose — a second, client-side
+    sort is exactly what put children above their parents.
 
-    Ordering is a stable function of the data, not of wall-clock time:
-    ``(forked_at_sequence ASC NULLS FIRST, session_id ASC)`` at every level —
-    provenance order within the tree, session id to break ties between
-    independent roots.
+    * **Roots are recency-ordered**, ``updated_at DESC`` (``session_id ASC``
+      breaking ties): most recently active session first, which is what a user
+      picking a session expects.
+    * **Children follow their parent** and siblings keep the forest's
+      deterministic ``(forked_at_sequence ASC NULLS FIRST, session_id ASC)``
+      order, derived from provenance rather than wall-clock. A forking parent
+      continued *after* its forks has the newer ``updated_at``; ordering by it
+      at every level would put the forks above the parent and collapse their
+      depth. Depth is therefore topological, one more than the parent's.
 
     A row is a root when it has no provenance or when its parent is absent from
     ``entries`` (a fork of a deleted/disabled session stays visible as a root).
@@ -164,13 +167,16 @@ def forest_from_lineage_entries(
         else:
             children.setdefault(parent, []).append(entry)
 
-    def _order(entry: StoredSessionLineageEntry) -> tuple[int, str]:
+    def _sibling_order(entry: StoredSessionLineageEntry) -> tuple[int, str]:
         sequence = entry.forked_at_sequence
         return (-1 if sequence is None else sequence, entry.session_id)
 
-    roots.sort(key=_order)
+    # Display order for roots: ``updated_at`` descending, ``session_id``
+    # ascending to break ties. The LIFO walk below pops in push order, so the
+    # root list is pushed reversed to emit the newest root first.
+    roots.sort(key=lambda entry: (-entry.updated_at, entry.session_id))
     for siblings in children.values():
-        siblings.sort(key=_order)
+        siblings.sort(key=_sibling_order)
 
     forest: list[StoredSessionForestEntry] = []
     placed: set[str] = set()
@@ -350,13 +356,16 @@ class _ForkStorageMixin(_MixinBase):
         set) are excluded there: they are not fork nodes and belong only to the
         child-session view, matching the ``list_sessions`` filter every other
         surface applies. Disabled/deleted ancestors simply stop the walk.
+
+        ``updated_at`` rides along because the forest orders *roots* by recency;
+        the walk's own order here is provenance-only.
         """
         with self._connect(workspace) as connection:
             if session_id is None:
                 rows = fetch_rows(
                     connection,
                     """
-                    SELECT session_id, forked_from_session_id, forked_at_sequence
+                    SELECT session_id, forked_from_session_id, forked_at_sequence, updated_at
                     FROM sessions
                     WHERE workspace_id = ? AND parent_session_id IS NULL
                     ORDER BY updated_at ASC, session_id ASC
@@ -368,6 +377,7 @@ class _ForkStorageMixin(_MixinBase):
                         session_id=row["session_id"],
                         forked_from_session_id=row["forked_from_session_id"],
                         forked_at_sequence=row["forked_at_sequence"],
+                        updated_at=row["updated_at"],
                     )
                     for row in (decode_row(row, SessionLineageRow) for row in rows)
                 )
@@ -379,7 +389,7 @@ class _ForkStorageMixin(_MixinBase):
                 row = fetch_rows(
                     connection,
                     """
-                    SELECT session_id, forked_from_session_id, forked_at_sequence
+                    SELECT session_id, forked_from_session_id, forked_at_sequence, updated_at
                     FROM sessions
                     WHERE workspace_id = ? AND session_id = ?
                     """,
@@ -395,6 +405,7 @@ class _ForkStorageMixin(_MixinBase):
                         session_id=entry_row["session_id"],
                         forked_from_session_id=entry_row["forked_from_session_id"],
                         forked_at_sequence=entry_row["forked_at_sequence"],
+                        updated_at=entry_row["updated_at"],
                     )
                 )
                 cursor = entry_row["forked_from_session_id"]

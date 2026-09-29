@@ -322,8 +322,8 @@ def test_session_forest_keeps_a_fork_of_a_deleted_parent_as_a_root() -> None:
     """A provenance edge to a session outside the returned set must not drop it."""
     forest = forest_from_lineage_entries(
         (
-            StoredSessionLineageEntry(session_id="orphan", forked_from_session_id="deleted", forked_at_sequence=3),
-            StoredSessionLineageEntry(session_id="deleted-child", forked_from_session_id="orphan", forked_at_sequence=4),
+            StoredSessionLineageEntry(session_id="orphan", forked_from_session_id="deleted", forked_at_sequence=3, updated_at=1),
+            StoredSessionLineageEntry(session_id="deleted-child", forked_from_session_id="orphan", forked_at_sequence=4, updated_at=2),
         )
     )
 
@@ -386,16 +386,18 @@ def test_session_forest_keeps_a_fork_of_a_delegated_child_as_a_root(tmp_path: Pa
 
     forest = store.session_forest(workspace=tmp_path)
 
-    assert [(entry.session_id, entry.depth) for entry in forest] == [("root", 0), (fork_of_child.session.id, 0)]
-    assert forest[1].forked_from_session_id == "delegated-child"
+    # Both are roots at depth 0. The fork was created last, so recency puts it
+    # first; the orphan rule still keeps it visible instead of dropping it.
+    assert [(entry.session_id, entry.depth) for entry in forest] == [(fork_of_child.session.id, 0), ("root", 0)]
+    assert forest[0].forked_from_session_id == "delegated-child"
 
 
 def test_session_forest_breaks_root_and_sibling_ties_by_session_id() -> None:
     """Two independent roots (and equally sequenced siblings) order by id, not insertion."""
     forest = forest_from_lineage_entries(
         (
-            StoredSessionLineageEntry(session_id="zeta", forked_from_session_id=None, forked_at_sequence=None),
-            StoredSessionLineageEntry(session_id="alpha", forked_from_session_id=None, forked_at_sequence=None),
+            StoredSessionLineageEntry(session_id="zeta", forked_from_session_id=None, forked_at_sequence=None, updated_at=0),
+            StoredSessionLineageEntry(session_id="alpha", forked_from_session_id=None, forked_at_sequence=None, updated_at=0),
         )
     )
 
@@ -407,7 +409,98 @@ def test_session_forest_rejects_a_provenance_cycle() -> None:
     with pytest.raises(SessionLineageCycleError, match="cycle"):
         forest_from_lineage_entries(
             (
-                StoredSessionLineageEntry(session_id="a", forked_from_session_id="b", forked_at_sequence=1),
-                StoredSessionLineageEntry(session_id="b", forked_from_session_id="a", forked_at_sequence=2),
+                StoredSessionLineageEntry(session_id="a", forked_from_session_id="b", forked_at_sequence=1, updated_at=1),
+                StoredSessionLineageEntry(session_id="b", forked_from_session_id="a", forked_at_sequence=2, updated_at=2),
             )
         )
+
+
+def test_session_forest_orders_roots_by_recency_but_children_by_provenance(tmp_path: Path) -> None:
+    """One display order: roots most-recently-active first, each subtree under its root.
+
+    This is the reproduction of the reported defect. Ordinary flow: run a root,
+    fork it, continue the *fork*. ``list_sessions`` is ``updated_at DESC``, so
+    the fork is the newest row; a surface that renders that order below its
+    parent's indent draws the child above the parent. Both roots here are
+    independent (``first`` older than ``second``), and each has a continued
+    fork, so recency must apply to the roots only.
+    """
+    store = SqliteSessionStore()
+    events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
+    _seed_session(store, workspace=tmp_path, session_id="first", prompt="first", events=events)
+    first_fork = store.fork_session(workspace=tmp_path, session_id="first")
+    _seed_session(store, workspace=tmp_path, session_id="second", prompt="second", events=events)
+    second_fork = store.fork_session(workspace=tmp_path, session_id="second")
+    # Continue both forks, the second one last, so it is the newest row overall.
+    for session_id in (first_fork.session.id, second_fork.session.id):
+        store.save_interrupted_checkpoint(
+            workspace=tmp_path,
+            session_id=session_id,
+            prompt="continued",
+            session_metadata={"workspace": str(tmp_path)},
+            tool_results=(),
+            last_event_sequence=1,
+            create_if_missing=True,
+        )
+
+    forest = store.session_forest(workspace=tmp_path)
+
+    # Roots by recency ("second" is newer), each immediately followed by its fork.
+    assert [(entry.session_id, entry.depth) for entry in forest] == [
+        ("second", 0),
+        (second_fork.session.id, 1),
+        ("first", 0),
+        (first_fork.session.id, 1),
+    ]
+    # No row precedes the parent it forked from, even though both forks are newer.
+    positions = {entry.session_id: index for index, entry in enumerate(forest)}
+    for entry in forest:
+        if entry.forked_from_session_id is not None:
+            assert positions[entry.forked_from_session_id] < positions[entry.session_id]
+
+
+def test_session_forest_keeps_a_grandchild_under_a_continued_fork(tmp_path: Path) -> None:
+    """A grandchild follows the fork it branched from, never the newest-row order."""
+    store = SqliteSessionStore()
+    events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
+    _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
+    fork = store.fork_session(workspace=tmp_path, session_id="root", at_sequence=1)
+    grandchild = store.fork_session(workspace=tmp_path, session_id=fork.session.id, at_sequence=1)
+    # Continue the middle fork after forking it: it is now newer than its child.
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id=fork.session.id,
+        prompt="fork continued",
+        session_metadata={"workspace": str(tmp_path)},
+        tool_results=(),
+        last_event_sequence=1,
+        create_if_missing=True,
+    )
+
+    forest = store.session_forest(workspace=tmp_path)
+
+    assert [(entry.session_id, entry.depth) for entry in forest] == [
+        ("root", 0),
+        (fork.session.id, 1),
+        (grandchild.session.id, 2),
+    ]
+
+
+def test_session_forest_keeps_siblings_under_their_parent_when_one_is_newer(tmp_path: Path) -> None:
+    """Two forks of one root stay siblings below it, ordered by boundary then id."""
+    store = SqliteSessionStore()
+    events = _event_tuple(
+        ("runtime.request_received", "runtime", {"prompt": "root"}),
+        ("graph.response_ready", "graph", {"summary": "root"}),
+    )
+    _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
+    older = store.fork_session(workspace=tmp_path, session_id="root", at_sequence=1)
+    younger = store.fork_session(workspace=tmp_path, session_id="root", at_sequence=2)
+
+    forest = store.session_forest(workspace=tmp_path)
+
+    assert [(entry.session_id, entry.depth, entry.forked_from_session_id) for entry in forest] == [
+        ("root", 0, None),
+        (older.session.id, 1, "root"),
+        (younger.session.id, 1, "root"),
+    ]

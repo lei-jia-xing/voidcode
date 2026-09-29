@@ -296,11 +296,17 @@ class StoredSessionSummary:
 
 @dataclass(frozen=True, slots=True)
 class StoredSessionLineageEntry:
-    """One row of a fork lineage walk (read-only provenance projection)."""
+    """One row of a fork lineage walk (read-only provenance projection).
+
+    ``updated_at`` is carried only so the forest can order its *roots* by
+    recency; provenance ordering never uses it (see
+    :func:`~voidcode.runtime.storage.fork.forest_from_lineage_entries`).
+    """
 
     session_id: str
     forked_from_session_id: str | None
     forked_at_sequence: int | None
+    updated_at: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,7 +316,10 @@ class StoredSessionForestEntry:
     Carries the same provenance as :class:`StoredSessionLineageEntry` plus the
     topological ``depth`` a tree renderer indents by: 0 for a root (no
     provenance, or a ``forked_from_session_id`` that is not part of the
-    returned forest — a fork of a deleted/disabled session is still a root).
+    returned forest — a fork of a deleted/disabled session is still a root) and
+    the display order every surface renders: roots by ``updated_at`` descending
+    (most recently active first), each parent before its children, siblings by
+    ``(forked_at_sequence, session_id)``.
     """
 
     session_id: str

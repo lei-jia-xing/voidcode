@@ -95,6 +95,7 @@ class SessionLineageRow(TypedDict):
     session_id: str
     forked_from_session_id: str | None
     forked_at_sequence: int | None
+    updated_at: int
 
 
 class SessionForkSourceRow(TypedDict):

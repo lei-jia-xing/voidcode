@@ -554,6 +554,32 @@ def test_session_picker_indents_forks_from_the_runtime_forest() -> None:
     assert fork.index("fork") == 6
 
 
+def test_session_picker_renders_rows_in_the_forest_order_not_updated_at_order() -> None:
+    """The picker takes the forest's order: a continued fork stays under its root.
+
+    ``list_sessions`` returns ``updated_at DESC``, so the fork (the newest row)
+    would come first if the picker used that order -- the child would sit above
+    the parent it forked from. The picker renders the forest's own order instead.
+    """
+    app = _resume_app(
+        [
+            ("session-bbbb2222", "fork title", "fork prompt"),
+            ("session-aaaa1111", "root title", "root prompt"),
+        ],
+        depths={"session-aaaa1111": 0, "session-bbbb2222": 1},
+    )
+
+    app._command_session_resume()
+
+    overlay = app._overlay
+    assert overlay is not None
+    rendered = plain(overlay.render(80))
+    assert isinstance(rendered, list)
+    root_row = next(index for index, row in enumerate(rendered) if "root title" in row)
+    fork_row = next(index for index, row in enumerate(rendered) if "fork title" in row)
+    assert root_row < fork_row
+
+
 def test_session_picker_excludes_delegated_children_but_keeps_forks() -> None:
     """The resume picker is a main-session surface like ``sessions list``/HTTP.
 

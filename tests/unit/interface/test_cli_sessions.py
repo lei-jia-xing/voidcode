@@ -220,10 +220,15 @@ def test_sessions_answer_without_pending_question_exits_invalid_resource(tmp_pat
 # ---------------------------------------------------------------------------
 
 
-def _run_session_in(workspace: Path, prompt: str = "read sample.txt") -> str:
-    """Run one real deterministic session in ``workspace`` and return its id."""
+def _run_session_in(workspace: Path, prompt: str = "read sample.txt", *, session_id: str | None = None) -> str:
+    """Run one real deterministic session in ``workspace`` and return its id.
+
+    ``session_id`` pins the id when a test needs two sessions in one workspace;
+    the deterministic engine otherwise reuses ``local-cli-session``.
+    """
     (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
-    result = run_cli("run", prompt, "--workspace", str(workspace), "--json", cwd=workspace)
+    extra = ("--session-id", session_id) if session_id is not None else ()
+    result = run_cli("run", prompt, *extra, "--workspace", str(workspace), "--json", cwd=workspace)
     assert result.returncode == EXIT_SUCCESS, result.stderr
     return str(json.loads(result.stdout)["session"]["session"]["id"])
 
@@ -330,6 +335,31 @@ def test_sessions_tree_indents_a_parent_continued_after_its_forks(tmp_path: Path
     # Keys are additive: the original four survive on every row.
     assert by_id[root_id]["forked_from_session_id"] is None
     assert by_id[first["session"]["id"]]["forked_from_session_id"] == root_id
+
+
+def test_sessions_tree_orders_roots_by_recency_and_children_under_their_parent(tmp_path: Path) -> None:
+    """The CLI tree agrees with the runtime's forest order, roots newest first.
+
+    Two independent roots and a fork continued last: the fork is the newest row
+    in ``list_sessions``, yet it must print under the root it forked from, and
+    that root must print under the other root only if it is older.
+    """
+    root_id = _run_session_in(tmp_path, session_id="tree-root")
+    older_root_id = _run_session_in(tmp_path, session_id="older-root")
+    fork = json.loads(run_cli("sessions", "fork", root_id, "--workspace", str(tmp_path), "--json", cwd=tmp_path).stdout)["session"]
+    # Continue the fork: newest row, must not print above its parent.
+    _ = run_cli("run", "read sample.txt", "-r", fork["session"]["id"], "--workspace", str(tmp_path), cwd=tmp_path)
+
+    plain = run_cli("sessions", "tree", "--workspace", str(tmp_path), cwd=tmp_path)
+
+    assert plain.returncode == EXIT_SUCCESS
+    # "older_root_id" was started before the fork was continued, so recency puts
+    # it first (newest root); root_id and its fork follow, parent before child.
+    assert plain.stdout.splitlines() == [
+        older_root_id,
+        root_id,
+        f"  {fork['session']['id']} <- {root_id}@{fork['forked_at_sequence']}",
+    ]
 
 
 def test_sessions_tree_named_session_is_one_chain_oldest_ancestor_first(tmp_path: Path) -> None:

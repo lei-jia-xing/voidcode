@@ -141,6 +141,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **runtime:** render one tree order on every session surface — the fork forest projection (`forest_from_lineage_entries`) now owns display order as well as structure: roots are recency-ordered (`updated_at` desc, `session_id` asc) and each parent precedes its children (siblings keep the provenance order), so the TUI resume picker and `GET /api/sessions` no longer render a continued fork above the root it branched from. `StoredSessionLineageEntry` / `StoredSessionForestEntry` carry `updated_at` for that root ordering; the CLI tree was already correct. The web sidebar's client-side `updated_at` re-sort is deleted — it reintroduced the bug on top of the server order.
+
 - **runtime:** make the session surfaces agree on delegated background-task children — `session_forest()` (and the whole-workspace `session_lineage()` read it builds from) now excludes rows with `parent_session_id` set, so a delegated child is no longer misclassified as a fork root in `voidcode sessions tree`; the orphan rule keeps a fork *of* a delegated child visible as a root instead of dropping it
 
 - **tui:** exclude delegated background-task children from the resume picker, matching `sessions list` and `GET /api/sessions` (pre-existing inconsistency)

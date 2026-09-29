@@ -79,13 +79,9 @@ export const SessionSidebar = memo(function SessionSidebar({
   const [isResizing, setIsResizing] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(getViewportWidth);
 
-  const sortedSessions = useMemo(
-    () => [...sessions].sort((a, b) => b.updated_at - a.updated_at),
-    [sessions],
-  );
   const rootSessions = useMemo(
-    () => sortedSessions.filter((session) => !session.session.parent_id),
-    [sortedSessions],
+    () => sessions.filter((session) => !session.session.parent_id),
+    [sessions],
   );
 
   const currentWorkspace = workspaces?.current ?? null;

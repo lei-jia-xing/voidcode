@@ -178,6 +178,10 @@ class SessionSummaryBody(ResponseModel):
     the session is not part of that forest (this list is filtered to top-level
     sessions, which the forest superset can omit); the client renders ``null``
     at depth 0.
+
+    The list itself is emitted in that same forest order — roots by recency,
+    each parent before its children — so a client renders the array as sent and
+    never re-sorts it.
     """
 
     session: SessionRefBody

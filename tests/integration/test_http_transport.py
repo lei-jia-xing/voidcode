@@ -2108,3 +2108,51 @@ def test_transport_session_surfaces_carry_the_user_set_title(tmp_path: Path, mon
     result_response = _run_app(app, method="GET", path="/api/sessions/titled-session/result")
     assert result_response.status == 200
     assert cast(dict[str, object], result_response.json())["title"] == "Session label"
+
+
+def test_transport_lists_sessions_in_tree_order_so_a_fork_never_precedes_its_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real wire order puts a child after its parent, roots newest first.
+
+    Reproduction of the reported defect through the real store and the real
+    order path: run a root, fork it, continue the *fork*. ``list_sessions`` is
+    ``updated_at DESC``, so the pre-fix payload listed the fork first while the
+    per-row ``depth`` still said 1 -- a child above the parent it branched from.
+    The endpoint now emits the runtime forest's display order.
+    """
+    (tmp_path / "sample.txt").write_text("sample\n", encoding="utf-8")
+    create_runtime_app = _load_transport_app_factory()
+    runtime_request, runtime_class = _load_runtime_types()
+    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: runtime_class(workspace=tmp_path))
+
+    async def _direct_stream(_self: object, runtime: object, request: object) -> Any:
+        for chunk in cast(Any, runtime).run_stream(request):
+            yield chunk
+
+    monkeypatch.setattr(type(app), "_stream_runtime_chunks", _direct_stream)
+
+    runtime = runtime_class(workspace=tmp_path)
+    _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="tree-root"))
+    # An unrelated, older root: recency must place it after the newer tree.
+    _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="aaa-older-root"))
+    fork = runtime.fork_session(session_id="tree-root")
+    _ = runtime.run(runtime_request(prompt="read sample.txt", session_id=fork.session.id))
+
+    # The flat list really is newest-first: the continued fork precedes the root
+    # it forked from. That is the order that used to reach the wire.
+    flat = [item.session.id for item in runtime.list_sessions()]
+    assert flat.index(fork.session.id) < flat.index("tree-root")
+
+    response = _run_app(app, method="GET", path="/api/sessions")
+    rows = cast(list[dict[str, object]], response.json())
+
+    assert response.status == 200
+    # Roots by recency ("aaa-older-root" was started after "tree-root"; the fork
+    # is newest of all but is a child, so it follows the root it forked from).
+    assert [(cast(dict[str, object], row["session"])["id"], row["depth"]) for row in rows] == [
+        ("aaa-older-root", 0),
+        ("tree-root", 0),
+        (fork.session.id, 1),
+    ]

@@ -71,6 +71,19 @@ describe("session sidebar fork indentation", () => {
     expect(rendered).toEqual(["root", "child", "grandchild"]);
   });
 
+  it("renders the wire order even when it is not updated_at-descending", () => {
+    // The runtime emits the tree order (roots by recency, parents before their
+    // children). Here the parent is the *older* row, so a client-side
+    // `updated_at` sort would flip the pair and put the child above the parent.
+    // The sidebar must render what the server sent.
+    renderSidebar([summary("root", 0, 1), summary("child", 1, 2)]);
+
+    const rendered = screen
+      .getAllByText(/^(root|child)$/)
+      .map((node) => node.textContent);
+    expect(rendered).toEqual(["root", "child"]);
+  });
+
   it("renders a row with an absent depth at depth 0", () => {
     renderSidebar([
       summary("no-depth", undefined, 2),

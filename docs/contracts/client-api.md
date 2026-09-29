@@ -151,7 +151,7 @@ StoredSessionSummary(
 - `session_id`（可选）：从该会话沿 `forked_from_session_id` 向上走到最老祖先；缺省时返回 workspace 内参与 fork provenance 的会话行（delegated background-task child 不参与，已排除），供客户端自行摆放整片森林
 
 输出：
-- `tuple[StoredSessionLineageEntry, ...]`：每项为 `{session_id, forked_from_session_id, forked_at_sequence}`，**从最老祖先到 fork 本身**排列
+- `tuple[StoredSessionLineageEntry, ...]`：每项为 `{session_id, forked_from_session_id, forked_at_sequence, updated_at}`，**从最老祖先到 fork 本身**排列。`updated_at` 仅用于森林对**根**排序，血缘走查本身不按它排序
 
 血缘查询是**只读**的：它不修改任何会话、不触发 resume，也不改变 fork 结构。
 
@@ -160,14 +160,16 @@ StoredSessionSummary(
 输入：无（整片森林）。
 
 输出：
-- `tuple[StoredSessionForestEntry, ...]`：在线性血缘行之上追加拓扑 `depth`（`{session_id, forked_from_session_id, forked_at_sequence, depth}`）
+- `tuple[StoredSessionForestEntry, ...]`：在线性血缘行之上追加拓扑 `depth`（`{session_id, forked_from_session_id, forked_at_sequence, depth}`），并**按展示顺序排列**
+
+森林是**唯一**的展示顺序权威：CLI `sessions tree`、TUI resume picker、web sidebar 都渲染这个投影，任何客户端都**不得**再按 `updated_at` 重排（重排会把子会话排到父会话之上）。
 
 森林的摆放规则（由代码提供，客户端可以依赖）：
 
-- **depth 由拓扑遍历得出，不依赖行的 `updated_at` 顺序。** 一个 fork 了子会话、之后又被续接的父会话拥有更新的 `updated_at`；若按行序推 depth，子会话会塌到 depth 1。这里按 `forked_from_session_id` 分组子节点，从根开始深度优先遍历，父节点必先于子节点输出。
+- **根按最近活跃排序**：`updated_at` 降序（`session_id` 升序破平），最近活跃的会话在最前。
+- **子节点紧跟其父节点**，兄弟保持森林的确定性排序 `(forked_at_sequence 升序、NULL 在前，session_id 升序)`；`depth` 由拓扑遍历得出，恒为父节点 depth + 1。**depth 不依赖行的 `updated_at` 顺序**：一个 fork 了子会话、之后又被续接的父会话拥有更新的 `updated_at`，若每一层都按它排，子会话会跑到父会话之上、depth 也塌掉。
 - **根的定义**：`forked_from_session_id` 为空，**或**其指向的会话不在结果集内（fork 了已删除/停用的会话）——后者仍作为根出现，不会被丢弃或成环。
 - **delegated 子会话不参与**：`parent_session_id` 非空的会话是 delegated background-task child，不是 fork 节点；整片森林（以及缺省 `session_id` 的 `session_lineage()`）排除它们，与 `sessions list` / `GET /api/sessions` 一致。一个 *fork of* delegated child 因父节点被排除而按上面的孤儿规则作为根出现。
-- **确定性排序**：每一层的顺序为 `(forked_at_sequence 升序、NULL 在前，session_id 升序)`，与 `updated_at` 无关。
 - **环检测**：持久化的 provenance 若成环（无根），抛出 `SessionLineageCycleError`（`code = "session_lineage_cycle"`），不吞掉也不死循环。
 
 当前实现层面：
@@ -272,7 +274,7 @@ MVP 生命周期：
 当前已交付的本地 HTTP routes 包括：
 
 - `POST /api/runtime/run/stream` — 运行请求并以 SSE 交付有序事件与最终输出（SSE 帧信封与 `session` 字段交付规则见 `stream-transport.md`）；成功 `200`（SSE 流）；错误 `400`（请求无效）、`500`（内部错误）、`405`（方法不允许）
-- `GET /api/sessions` — 列出持久化主会话摘要；成功 `200`；错误 `405`。每行在 `StoredSessionSummary` 字段之上带一个可空的 `depth`（拓扑 fork 深度），取自运行时的 `session_forest()` 投影；不在森林中的会话为 `null`，客户端按 depth 0 渲染。
+- `GET /api/sessions` — 列出持久化主会话摘要；成功 `200`；错误 `405`。行按运行时森林的展示顺序（根按最近活跃降序，父节点先于子节点）排列，客户端**不得**重排；每行在 `StoredSessionSummary` 字段之上带一个可空的 `depth`（拓扑 fork 深度），取自运行时的 `session_forest()` 投影；不在森林中的会话为 `null`，客户端按 depth 0 渲染。
 - `GET /api/sessions/{id}` — 只读加载/重放持久化会话（不得触发 resume）；成功 `200`；错误 `404`、`405`
 - `GET /api/sessions/{id}/events` — 订阅会话有序事件流，支持 `after_sequence` / `follow` 查询参数（SSE 帧信封、`session` 字段交付规则与 `follow` 增量读取语义见 `stream-transport.md`）；成功 `200`（SSE 流）；错误 `400`（`after_sequence` 非整数或为负）、`404`、`405`
 - `GET /api/sessions/{id}/result` — 读取会话终态结果视图；成功 `200`；错误 `404`、`405`
