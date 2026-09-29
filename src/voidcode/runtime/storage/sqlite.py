@@ -52,7 +52,17 @@ from .rows import (
 )
 from .sessions import SessionEventsAfter, _SessionStorageMixin
 
-SCHEMA_VERSION: Final[int] = 1
+SCHEMA_VERSION: Final[int] = 2
+
+
+def _migrate_v1_sessions_title(connection: sqlite3.Connection) -> None:
+    """v1 -> v2: add the nullable user-settable session title column.
+
+    Existing rows keep ``title IS NULL`` and the list surfaces fall back to the
+    session prompt, so an upgraded install reads exactly as before until the
+    user renames a session.
+    """
+    _ = connection.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
 
 
 @runtime_checkable
@@ -106,6 +116,8 @@ class SessionStore(Protocol):
     def undo_session(self, *, workspace: Path, session_id: str) -> RuntimeSessionRevertMarker: ...
 
     def unrevert_session(self, *, workspace: Path, session_id: str) -> RuntimeSessionRevertMarker | None: ...
+
+    def rename_session(self, *, workspace: Path, session_id: str, title: str) -> None: ...
 
     def save_pending_approval(
         self,
@@ -351,13 +363,13 @@ class SqliteSessionStore(
 ):
     _database_path: Path | None
     _SCHEMA_VERSION = SCHEMA_VERSION
-    _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {}
+    _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _migrate_v1_sessions_title}
     # Forward-only upgrades: _MIGRATIONS[v] migrates user_version v to v + 1,
     # committed per step. No down-migrations, no ALTER inline in _ensure_schema.
-    # Future 1 -> 2 entries go here; old versions without a known step fail
-    # with the needs-upgrade error (upgrade-in-place intent, reset only as a
-    # last resort), newer versions fail with too-new, and shape drift fails
-    # with corrupt (backup-first reset guidance).
+    # Old versions without a known step fail with the needs-upgrade error
+    # (upgrade-in-place intent, reset only as a last resort), newer versions
+    # fail with too-new, and shape drift fails with corrupt (backup-first reset
+    # guidance).
     _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal", "interrupted"})
     _SEQUENCE_SCOPES = ("sessions", "background_tasks", "auxiliary")
     _sqlite_policy = _SQLitePolicy()
@@ -382,6 +394,11 @@ class SqliteSessionStore(
             ("updated_at", "INTEGER", 1, None, 0),
             ("last_event_sequence", "INTEGER", 1, None, 0),
             ("created_at_unix_ms", "INTEGER", 0, None, 0),
+            # Appended, not grouped with the other text columns: the v1 -> v2
+            # step is an ``ALTER TABLE ADD COLUMN``, which can only append, and
+            # ``_assert_canonical_table_shape`` compares column order. A fresh
+            # database must therefore declare ``title`` last too.
+            ("title", "TEXT", 0, None, 0),
         ),
         "session_events": (
             ("workspace_id", "TEXT", 1, None, 1),
@@ -637,6 +654,7 @@ class SqliteSessionStore(
                 updated_at INTEGER NOT NULL,
                 last_event_sequence INTEGER NOT NULL,
                 created_at_unix_ms INTEGER,
+                title TEXT,
                 PRIMARY KEY (workspace_id, session_id)
             )
             """

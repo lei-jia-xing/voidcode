@@ -84,6 +84,7 @@ def serialize_stored_session_summary(session: StoredSessionSummary) -> dict[str,
         "turn": session.turn,
         "updated_at": session.updated_at,
         "prompt": session.prompt,
+        "title": session.title,
     }
 
 

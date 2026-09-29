@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Literal, Protocol, TypedDict, TypeIs, cast, runtime_checkable
+from typing import Final, Literal, Protocol, TypedDict, TypeIs, cast, runtime_checkable
 
 from ..provider.reasoning_effort import normalize_reasoning_effort
 from . import mode as runtime_mode
@@ -597,6 +597,30 @@ def validate_id(value: str, *, field_name: str = "session_id") -> str:
     return value
 
 
+#: The user-settable session title bound. Titles are a short label slot, not a
+#: note field: every client renders this inline (sidebar row, TUI picker line),
+#: so the runtime rejects anything longer instead of silently truncating.
+SESSION_TITLE_MAX_LENGTH: Final[int] = 120
+
+
+def validate_session_title(value: str) -> str:
+    """Normalize and bound a user-settable session title.
+
+    The single enforcement point for the title slot: whitespace runs (including
+    newlines) collapse to one space so a title always renders on one line, the
+    result must be non-empty, and it is capped at
+    ``SESSION_TITLE_MAX_LENGTH`` characters. Absence of a title is ``NULL`` in
+    the row, never an empty string, so the list/CLI/TUI prompt fallback stays
+    the only way to render a title-less session.
+    """
+    title = " ".join(value.split())
+    if not title:
+        raise RuntimeRequestError("title must be a non-empty string")
+    if len(title) > SESSION_TITLE_MAX_LENGTH:
+        raise RuntimeRequestError(f"title must be at most {SESSION_TITLE_MAX_LENGTH} characters")
+    return title
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeResponse:
     session: SessionState
@@ -1005,6 +1029,8 @@ class RuntimeSessionResult:
     transcript: tuple[EventEnvelope, ...] = ()
     last_event_sequence: int = 0
     revert_marker: RuntimeSessionRevertMarker | None = None
+    #: User-settable display label; ``None`` means "derive the label from ``prompt``".
+    title: str | None = None
 
     @property
     def delegated_events(self) -> tuple[DelegatedLifecycleEventPayload, ...]:

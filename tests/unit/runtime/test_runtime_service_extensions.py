@@ -58,7 +58,11 @@ from voidcode.runtime.config import (
 from voidcode.runtime.context.window import (
     RuntimeContextWindow,
 )
-from voidcode.runtime.contracts import RuntimeRequestError, validate_runtime_request_metadata
+from voidcode.runtime.contracts import (
+    SESSION_TITLE_MAX_LENGTH,
+    RuntimeRequestError,
+    validate_runtime_request_metadata,
+)
 from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_SESSION_ENDED,
@@ -5659,3 +5663,52 @@ def test_pre_tool_match_filter_runs_hook_for_matching_tool_on_plan_path(tmp_path
     cancelled = [event for event in response.events if event.payload.get("kind") == "hook_cancelled"]
     assert cancelled
     assert cancelled[0].payload["error"] == "tool 'write' blocked: operator_hold"
+
+
+def test_runtime_rename_session_bounds_rejects_and_returns_updated_summary(tmp_path: Path) -> None:
+    """The runtime boundary is the one title validator: bound, reject, and echo."""
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+
+    def _seed(session_id: str, prompt: str) -> None:
+        runtime._session_store.save_run(
+            workspace=tmp_path,
+            request=RuntimeRequest(prompt=prompt, session_id=session_id),
+            response=RuntimeResponse(
+                session=SessionState(session=SessionRef(id=session_id), status="completed", turn=1),
+                events=(),
+                output=None,
+            ),
+        )
+
+    _seed("rename-ok", "seed prompt")
+
+    renamed = runtime.rename_session(session_id="rename-ok", title="  spaced\n\ttitle  ")
+
+    assert renamed.session.id == "rename-ok"
+    # Whitespace runs collapse, so every client renders it on one line.
+    assert renamed.title == "spaced title"
+    assert runtime.list_sessions()[0].title == "spaced title"
+
+    with pytest.raises(RuntimeRequestError, match="title must be a non-empty string"):
+        runtime.rename_session(session_id="rename-ok", title="   \n  ")
+    with pytest.raises(RuntimeRequestError, match=f"title must be at most {SESSION_TITLE_MAX_LENGTH} characters"):
+        runtime.rename_session(session_id="rename-ok", title="x" * (SESSION_TITLE_MAX_LENGTH + 1))
+    # A rejected rename leaves the stored title untouched.
+    assert runtime.list_sessions()[0].title == "spaced title"
+
+
+def test_runtime_rename_session_accepts_exactly_at_the_bound(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    runtime._session_store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="boundary", session_id="boundary-session"),
+        response=RuntimeResponse(
+            session=SessionState(session=SessionRef(id="boundary-session"), status="completed", turn=1),
+            events=(),
+            output=None,
+        ),
+    )
+
+    at_bound = "y" * SESSION_TITLE_MAX_LENGTH
+
+    assert runtime.rename_session(session_id="boundary-session", title=at_bound).title == at_bound

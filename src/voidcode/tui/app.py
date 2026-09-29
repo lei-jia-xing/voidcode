@@ -876,7 +876,7 @@ class TuiApp:
             logger.error("Failed to list sessions: %s", error)
             self._notice(f"✖ Failed to list sessions: {format_runtime_error(error)}")
             return
-        entries = [(summary.session.id, summary.prompt) for summary in sessions]
+        entries = [(summary.session.id, summary.title if summary.title is not None else summary.prompt) for summary in sessions]
         self._overlay = SessionPickerOverlay(sessions=entries, theme=self._theme)
         self._overlay_request_id = ""
         if self._composer is not None:

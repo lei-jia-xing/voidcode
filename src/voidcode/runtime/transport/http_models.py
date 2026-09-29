@@ -167,13 +167,19 @@ class RuntimeResponseBody(ResponseModel):
 
 @final
 class SessionSummaryBody(ResponseModel):
-    """``_serialize_stored_session_summary``: one entry of ``GET /api/sessions``."""
+    """``_serialize_stored_session_summary``: one entry of ``GET /api/sessions``.
+
+    ``title`` is the user-settable label (``null`` until a rename), not a
+    prompt-derived one: deriving display text stays client-side so the server
+    never ships a second copy of the client's labeling rules.
+    """
 
     session: SessionRefBody
     status: SessionStatus
     turn: int
     prompt: str
     updated_at: int
+    title: str | None = None
 
 
 @final
@@ -189,6 +195,7 @@ class SessionResultBody(ResponseModel):
     last_event_sequence: int
     revert_marker: RevertMarkerBody | None = None
     transcript: list[TranscriptEventBody]
+    title: str | None = None
 
 
 @final

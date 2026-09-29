@@ -2387,6 +2387,14 @@ class VoidCodeRuntime(RuntimeSurface):
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
         return self._inspection_coordinator.list_sessions()
 
+    def rename_session(self, *, session_id: str, title: str) -> StoredSessionSummary:
+        """Set a user-settable session title; returns the updated summary.
+
+        Titles are client-facing labels, not runtime metadata, so they live in
+        their own column/surface rather than in the session metadata blob.
+        """
+        return self._inspection_coordinator.rename_session(session_id=session_id, title=title)
+
     def tool_effectiveness_report(self) -> ToolEffectivenessReport:
         return self._inspection_coordinator.tool_effectiveness_report()
 

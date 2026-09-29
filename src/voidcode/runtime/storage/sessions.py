@@ -36,9 +36,10 @@ from .rows import (
     SessionListRow,
     SessionLoadRow,
     SessionMetadataRow,
-    SessionPromptRow,
+    SessionPromptTitleRow,
     SessionStatusMetadataRow,
     SessionStatusRow,
+    SessionTitleRow,
     decode_row,
     fetch_row,
     fetch_rows,
@@ -124,6 +125,14 @@ class _SessionStorageMixin(_MixinBase):
         )
         if created_at_unix_ms is None:
             created_at_unix_ms = int(time() * 1000)
+        # INSERT OR REPLACE rewrites the whole row, so the user-set title (a row
+        # column the run snapshot does not own) has to be carried forward
+        # explicitly or every subsequent run would clear it.
+        title = self._read_title(
+            connection=connection,
+            workspace=workspace,
+            session_id=session_id,
+        )
         updated_at = self._next_timestamp(connection=connection)
         # The row watermark (maintained by every incremental
         # ``append_session_events``) IS the persisted truth. Clamp the sealed
@@ -148,11 +157,11 @@ class _SessionStorageMixin(_MixinBase):
         _ = connection.execute(
             """
             INSERT OR REPLACE INTO sessions (
-                session_id, parent_session_id, workspace_id, status, turn, prompt, output,
+                session_id, parent_session_id, workspace_id, status, turn, prompt, title, output,
                 metadata_json, pending_approval_json, pending_question_json,
                 resume_checkpoint_json, created_at, updated_at,
                 last_event_sequence, created_at_unix_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -161,6 +170,7 @@ class _SessionStorageMixin(_MixinBase):
                 status,
                 response.session.turn,
                 request.prompt,
+                title,
                 response.output,
                 json.dumps(persisted_metadata, sort_keys=True),
                 pending_approval_json,
@@ -308,7 +318,7 @@ class _SessionStorageMixin(_MixinBase):
             rows = fetch_rows(
                 connection,
                 """
-                SELECT session_id, parent_session_id, status, turn, prompt, updated_at
+                SELECT session_id, parent_session_id, status, turn, prompt, title, updated_at
                 FROM sessions
                 WHERE workspace_id = ?
                 ORDER BY updated_at DESC, session_id ASC
@@ -326,6 +336,7 @@ class _SessionStorageMixin(_MixinBase):
                 turn=row["turn"],
                 prompt=row["prompt"],
                 updated_at=row["updated_at"],
+                title=row["title"],
             )
             for row in decoded_rows
         )
@@ -828,6 +839,23 @@ class _SessionStorageMixin(_MixinBase):
             payload=json.loads(row["payload_json"]),
         )
 
+    def rename_session(self, *, workspace: Path, session_id: str, title: str) -> None:
+        """Set the user-settable title on an existing session row.
+
+        The title is a row column the run snapshot does not own (see
+        ``_write_session_snapshot``), so this is the only writer besides the
+        carry-forward read. ``updated_at`` advances like every sibling session
+        mutation, so a rename re-surfaces the session at the top of the listing.
+        """
+        with self._write_connect(workspace) as connection:
+            updated = connection.execute(
+                "UPDATE sessions SET title = ?, updated_at = ? WHERE workspace_id = ? AND session_id = ?",
+                (title, self._next_timestamp(connection=connection), str(workspace), session_id),
+            ).rowcount
+            if updated != 1:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            connection.commit()
+
     def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None:
         """Persist bounded runtime metadata without fabricating a new response."""
         persisted = session_metadata_for_persistence(metadata)
@@ -911,7 +939,7 @@ class _SessionStorageMixin(_MixinBase):
             row = fetch_row(
                 connection,
                 """
-                    SELECT prompt
+                    SELECT prompt, title
                     FROM sessions
                     WHERE workspace_id = ? AND session_id = ?
                     """,
@@ -919,11 +947,13 @@ class _SessionStorageMixin(_MixinBase):
             )
         if row is None:
             raise UnknownSessionError(f"unknown session: {session_id}")
-        prompt = decode_row(row, SessionPromptRow)["prompt"]
+        result_row = decode_row(row, SessionPromptTitleRow)
+        prompt = result_row["prompt"]
         summary, error = self._result_summary(response=response, prompt=prompt)
         return RuntimeSessionResult(
             session=response.session,
             prompt=prompt,
+            title=result_row["title"],
             status=response.session.status,
             summary=summary,
             output=response.output,
@@ -962,6 +992,23 @@ class _SessionStorageMixin(_MixinBase):
                     return f"Failed: {error[:120]}", error
             return "Failed", None
         return f"{response.session.status.capitalize()} session", None
+
+    @staticmethod
+    def _read_title(*, connection: sqlite3.Connection, workspace: Path, session_id: str) -> str | None:
+        """Read the existing row title so ``INSERT OR REPLACE`` can carry it forward.
+
+        ``_write_session_snapshot`` only knows about the run, not the user-set
+        label, and an upsert rewrites every column: an absent row (first run of
+        a session) reads ``None``, which is exactly the no-title state.
+        """
+        row = fetch_row(
+            connection,
+            "SELECT title FROM sessions WHERE workspace_id = ? AND session_id = ?",
+            (str(workspace), session_id),
+        )
+        if row is None:
+            return None
+        return decode_row(row, SessionTitleRow)["title"]
 
     def _read_created_at(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int:
         row = fetch_row(

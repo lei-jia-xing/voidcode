@@ -311,6 +311,7 @@ const SessionListItem = memo(function SessionListItem({
   const displayTitle = buildSessionDisplayTitle(
     sessionSummary.prompt,
     sessionSummary.session.id,
+    sessionSummary.title,
   );
 
   return (

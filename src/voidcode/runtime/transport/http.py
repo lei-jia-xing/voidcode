@@ -1765,6 +1765,7 @@ class RuntimeTransportApp(FastAPI):
             "turn": summary.turn,
             "prompt": summary.prompt,
             "updated_at": summary.updated_at,
+            "title": summary.title,
         }
 
     @staticmethod
@@ -1859,6 +1860,7 @@ class RuntimeTransportApp(FastAPI):
             "error": result.error,
             "last_event_sequence": result.last_event_sequence,
             "revert_marker": serialize_revert_marker(result.revert_marker),
+            "title": result.title,
             "transcript": [
                 {
                     **RuntimeTransportApp._serialize_event(event, show_thinking=show_thinking),

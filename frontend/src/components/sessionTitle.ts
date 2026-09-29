@@ -4,10 +4,28 @@ const MAX_UNSPACED_TITLE_LENGTH = 24;
 const MAX_CJK_TITLE_LENGTH = 18;
 const CJK_PATTERN = /[\u3400-\u9fff]/u;
 
+//: Mirrors the server's own bound (`SESSION_TITLE_MAX_LENGTH` in
+//: `runtime/contracts.py`), which is the single enforcement point for
+//: user-authored titles. It exists here only as a defensive ceiling against a
+//: non-conforming server: the derived-label ceiling must NOT be applied to an
+//: explicit title, because a user chose those words and truncating them would
+//: silently rewrite the label the server accepted. Layout handles the overflow
+//: (the sidebar row truncates with CSS, the TUI picker wraps).
+const MAX_EXPLICIT_TITLE_LENGTH = 120;
+
 export function buildSessionDisplayTitle(
   prompt: string | null | undefined,
   sessionId: string,
+  title?: string | null,
 ): string {
+  // A user-set title is finished text, not prompt material: it is never
+  // re-summarized, and it is only ever cut at the server's own bound.
+  const explicit = title?.replace(/\s+/g, " ").trim();
+  if (explicit) {
+    return explicit.length > MAX_EXPLICIT_TITLE_LENGTH
+      ? `${explicit.slice(0, MAX_EXPLICIT_TITLE_LENGTH).trim()}…`
+      : explicit;
+  }
   const promptTitle = summarizePrompt(prompt);
   if (promptTitle) return promptTitle;
   return sessionId.slice(0, 8) || sessionId;

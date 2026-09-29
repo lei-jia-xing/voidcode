@@ -286,6 +286,7 @@ class StoredSessionSummary:
     turn: int
     prompt: str
     updated_at: int
+    title: str | None = None
 
 
 def validate_session_workspace(

@@ -1203,6 +1203,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         "status": "completed",
         "turn": 1,
         "prompt": _multi_step_prompt(),
+        "title": None,
     }
     assert replay_response.status == 200
     replay_session = cast(dict[str, object], replay_payload["session"])
@@ -1850,6 +1851,7 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(
         "status": "completed",
         "turn": 1,
         "prompt": "read sample.txt",
+        "title": None,
     }
     assert replay_response.status == 200
     assert cast(dict[str, object], replay_payload["session"])["session"] == {"id": "streamed-session"}
@@ -2058,3 +2060,46 @@ def test_transport_allows_parent_session_while_parent_stream_request_is_active(
 
     assert child_response.status == 200
     assert first_session_ref["parent_id"] == "leader-session"
+
+
+def test_transport_session_surfaces_carry_the_user_set_title(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A renamed session exposes its title on both read surfaces the client uses.
+
+    The run is a real deterministic session; the rename goes through the runtime
+    boundary's own store, so this pins the serializer, not a stub echo.
+    """
+    (tmp_path / "sample.txt").write_text("titled\n", encoding="utf-8")
+    create_runtime_app = _load_transport_app_factory()
+    _runtime_request, runtime_class = _load_runtime_types()
+    app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: runtime_class(workspace=tmp_path))
+
+    async def _direct_stream(_self: object, runtime: object, request: object) -> Any:
+        for chunk in cast(Any, runtime).run_stream(request):
+            yield chunk
+
+    monkeypatch.setattr(type(app), "_stream_runtime_chunks", _direct_stream)
+
+    stream_response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "read sample.txt", "session_id": "titled-session"}).encode("utf-8"),
+    )
+    assert stream_response.status == 200
+
+    runtime_class(workspace=tmp_path).rename_session(session_id="titled-session", title="Session label")
+
+    list_response = _run_app(app, method="GET", path="/api/sessions")
+    listed_row = next(
+        cast(dict[str, object], row)
+        for row in cast(list[object], list_response.json())
+        if cast(dict[str, object], cast(dict[str, object], row)["session"])["id"] == "titled-session"
+    )
+    assert list_response.status == 200
+    assert listed_row["title"] == "Session label"
+    # The prompt remains in the body: clients fall back to it when no title is set.
+    assert listed_row["prompt"] == "read sample.txt"
+
+    result_response = _run_app(app, method="GET", path="/api/sessions/titled-session/result")
+    assert result_response.status == 200
+    assert cast(dict[str, object], result_response.json())["title"] == "Session label"

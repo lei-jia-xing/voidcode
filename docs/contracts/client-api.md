@@ -48,8 +48,26 @@ StoredSessionSummary(
     turn: int,
     prompt: str,
     updated_at: int,
+    title: str | None = None,
 )
 ```
+
+`title` 是用户可设置的显示标签（`voidcode sessions rename <session_id> <title>` / `VoidCodeRuntime.rename_session`），
+`None` 表示尚未命名、客户端按 `prompt` 自行推导标签。运行时只在设置时校验它：
+去除首尾/连续空白后必须非空，且不超过 `SESSION_TITLE_MAX_LENGTH`（120 字符）；
+为 `None` 的行不会落成空字符串，`title` 的推导规则（截断、CJK 处理）始终只在客户端。
+
+**用户设置的 `title` 与客户端推导出的标签是两种东西，有各自的长度上限：**
+
+- **运行时上限 120。** 这是 `title` 的**唯一**校验点；超出即拒绝（不静默截断）。用户写的标签是完成态文本，
+  runtime 只保证它单行、非空、有界。
+- **客户端推导上限（参考实现 56 字符 / 7 词）。** 只作用于从 `prompt` **推导**出来的标签——那是"从一段话里
+  取出一个标签"的启发式，需要压缩。它 MUST NOT 用于用户设置的 `title`：客户端不得把推导规则回灌到用户
+  已定稿的文本上，否则会出现"服务端接受 120、界面静默改成 56"的漂移。
+- **溢出是布局问题，不是模型问题。** 用户设置的 `title` 按原样渲染（仅折叠空白），由界面自行处理超长：
+  侧边栏行用 CSS 截断（`truncate`），TUI 选择器换行并裁到面板宽度。
+- 客户端可以保留一个**防御性**的 120 上限以防服务端不守约（参考实现 `MAX_EXPLICIT_TITLE_LENGTH`），
+  但该值与运行时上限绑定，不是另一个独立的显示契约。
 
 ## MVP 客户端操作
 
@@ -101,6 +119,23 @@ StoredSessionSummary(
 当前实现层面：
 - 运行时：`VoidCodeRuntime.list_sessions()`
 - CLI：`voidcode sessions list [--workspace]`
+
+### 重命名持久化会话 (Rename persisted session)
+
+输入：
+- `session_id`
+- `title`
+
+输出：
+- 更新后的 `StoredSessionSummary`（含新 `title`）
+
+`title` 的规范化与长度上限由运行时唯一的校验点负责（见上文 `StoredSessionSummary`）；
+未知会话或 workspace 之外的会话返回 `UnknownSessionError`。
+重命名只写 `title` 列并推进 `updated_at`，不改动会话元数据、事件或 resume checkpoint。
+
+当前实现层面：
+- 运行时：`VoidCodeRuntime.rename_session(session_id=..., title=...)`
+- CLI：`voidcode sessions rename <session_id> <title> [--workspace] [--json]`
 
 ### 恢复持久化会话 (Resume persisted session)
 

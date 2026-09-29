@@ -16,8 +16,10 @@ from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.session import SessionState
 from voidcode.tui.app import KeyBindingError, TuiApp, _PolledChunks, parse_keymap
 from voidcode.tui.events import QuestionRequest, SessionView
+from voidcode.tui.region import LiveRegion
 from voidcode.tui.transcript import AssistantBlock
 
+from .conftest import plain
 from .conftest import theme as resolve_test_theme
 
 ANSWER = "The answer is 42."
@@ -378,3 +380,63 @@ def test_a_binding_to_a_key_the_decoder_cannot_emit_fails_loudly() -> None:
         except KeyBindingError:
             continue
         raise AssertionError(f"{spec!r} should not be bindable")
+
+
+# ---------------------------------------------------------------------------
+# Session picker label
+# ---------------------------------------------------------------------------
+
+
+def _resume_app(sessions: list[tuple[str, str | None, str]]) -> TuiApp:
+    """A headless app whose picker is opened from a real ``list_sessions`` call.
+
+    ``sessions`` is ``(id, title, prompt)`` per row, mirroring what the runtime
+    returns; the stub only replaces the runtime seam.
+    """
+
+    class _ListRuntime:
+        def list_sessions(self) -> tuple[object, ...]:
+            return tuple(
+                SimpleNamespace(
+                    session=SimpleNamespace(id=session_id, parent_id=None),
+                    title=title,
+                    prompt=prompt,
+                    status="completed",
+                    turn=1,
+                    updated_at=1,
+                )
+                for session_id, title, prompt in sessions
+            )
+
+    app = TuiApp.__new__(TuiApp)
+    app._runtime = _ListRuntime()
+    app._view = SessionView(theme=resolve_test_theme(), width=80)
+    app._region = LiveRegion(commit=lambda rows: None)
+    app._theme = resolve_test_theme()
+    app._overlay = None
+    app._overlay_request_id = ""
+    app._composer = None
+    # ``alt_screen`` already true makes ``_enter_alt_screen`` a no-op, so the
+    # picker opens without touching a real terminal.
+    app._term = SimpleNamespace(width=80, height=24, alt_screen=True)
+    app._dirty = False
+    return app
+
+
+def test_session_picker_prefers_title_and_falls_back_to_prompt() -> None:
+    app = _resume_app(
+        [
+            ("session-aaaa1111", "Named label", "some long prompt body"),
+            ("session-bbbb2222", None, "fallback prompt"),
+        ]
+    )
+
+    app._command_session_resume()
+
+    overlay = app._overlay
+    assert overlay is not None
+    rendered = plain(overlay.render(80))
+    text = rendered if isinstance(rendered, str) else " ".join(rendered)
+    assert "Named label" in text
+    assert "some long prompt body" not in text
+    assert "fallback prompt" in text

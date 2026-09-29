@@ -119,7 +119,10 @@ def _handle_sessions_list_command(args: SessionsArgs) -> int:
 
 
 def _format_session_summary(session: StoredSessionSummary) -> str:
-    return f"SESSION id={session.session.id} status={session.status} turn={session.turn} updated_at={session.updated_at} prompt={session.prompt!r}"
+    # The user-set title is the label when present; a title-less session falls
+    # back to the prompt, so the line is never label-less.
+    label = f"title={session.title!r}" if session.title is not None else f"prompt={session.prompt!r}"
+    return f"SESSION id={session.session.id} status={session.status} turn={session.turn} updated_at={session.updated_at} {label}"
 
 
 def _handle_sessions_resume_command(args: SessionsArgs) -> int:
@@ -304,6 +307,21 @@ def _handle_sessions_unrevert_command(args: SessionsArgs) -> int:
         marker = runtime.unrevert_session(session_id=session_id)
     print_json({"session_id": session_id, "revert_marker": serialize_revert_marker(marker)})
     return 0
+
+
+def _handle_sessions_rename_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    session_id = args.session_id
+    assert session_id is not None
+    title = args.title
+    assert title is not None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        summary = runtime.rename_session(session_id=session_id, title=title)
+    return emit_output(
+        args,
+        {"workspace": str(workspace), "session": serialize_stored_session_summary(summary)},
+        lambda: print(_format_session_summary(summary)),
+    )
 
 
 @click.group(help="Inspect persisted local sessions.")
@@ -502,5 +520,21 @@ def unrevert(session_id: str, workspace: Path) -> int:
         SessionsArgs(
             session_id=session_id,
             workspace=workspace,
+        )
+    )
+
+
+@sessions.command(help="Set a short display title for a persisted session.")
+@click.argument("session_id")
+@click.argument("title")
+@workspace_option("Workspace root used to resolve the local session database.")
+@json_option("Output the renamed session summary as JSON.")
+def rename(session_id: str, title: str, workspace: Path, json_output: bool) -> int:
+    return _handle_sessions_rename_command(
+        SessionsArgs(
+            session_id=session_id,
+            title=title,
+            workspace=workspace,
+            json=json_output,
         )
     )

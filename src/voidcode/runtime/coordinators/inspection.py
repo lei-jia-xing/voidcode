@@ -100,6 +100,7 @@ from ..contracts import (
     UnknownSessionError,
     WorkspaceReviewSnapshot,
     validate_id,
+    validate_session_title,
 )
 from ..effectiveness import ToolEffectivenessReport
 from ..event_envelopes import (
@@ -482,6 +483,26 @@ class InspectionCoordinator:
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
         return self._session_store.list_sessions(workspace=self._workspace)
+
+    def rename_session(self, *, session_id: str, title: str) -> StoredSessionSummary:
+        """Set the user-settable title and return the updated summary.
+
+        Title normalization/bounding lives in ``validate_session_title`` so the
+        CLI, HTTP, and TUI surfaces all reject the same inputs; existence and
+        workspace scoping come from the storage write, whose
+        ``UnknownSessionError`` is the same signal ``revert_session`` uses.
+        """
+        validate_id(session_id)
+        validated_title = validate_session_title(title)
+        self._session_store.rename_session(
+            workspace=self._workspace,
+            session_id=session_id,
+            title=validated_title,
+        )
+        for summary in self._session_store.list_sessions(workspace=self._workspace):
+            if summary.session.id == session_id:
+                return summary
+        raise UnknownSessionError(f"unknown session: {session_id}")
 
     def tool_effectiveness_report(self) -> ToolEffectivenessReport:
         return self._session_store.tool_effectiveness_report(workspace=self._workspace)

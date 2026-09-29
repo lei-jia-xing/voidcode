@@ -569,6 +569,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "updated_at",
         "last_event_sequence",
         "created_at_unix_ms",
+        "title",
     ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at", "event_sequence"]
     assert schema_version == SCHEMA_VERSION
@@ -2063,3 +2064,216 @@ def test_session_storage_list_sessions_shows_interrupted_session(tmp_path: Path)
 
     assert [summary.session.id for summary in listed] == ["interrupt-session"]
     assert listed[0].status == "interrupted"
+
+
+def _v1_sessions_schema(connection: sqlite3.Connection) -> None:
+    """Create the v1 (pre-title) canonical schema and stamp ``user_version = 1``.
+
+    Byte-for-byte the shape ``SqliteSessionStore`` shipped before the title
+    column, so this is a real old install, not a synthetic stub: only the
+    migration step under test can move it forward.
+    """
+    connection.executescript(
+        """
+        CREATE TABLE sessions (
+            session_id TEXT NOT NULL,
+            parent_session_id TEXT,
+            workspace_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            turn INTEGER NOT NULL,
+            prompt TEXT NOT NULL,
+            output TEXT,
+            metadata_json TEXT NOT NULL,
+            pending_approval_json TEXT,
+            pending_question_json TEXT,
+            resume_checkpoint_json TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            last_event_sequence INTEGER NOT NULL,
+            created_at_unix_ms INTEGER,
+            PRIMARY KEY (workspace_id, session_id)
+        );
+        CREATE TABLE session_events (
+            workspace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            source TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, session_id, sequence)
+        );
+        CREATE TABLE background_tasks (
+            task_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            request_session_id TEXT,
+            request_parent_session_id TEXT,
+            request_metadata_json TEXT NOT NULL,
+            requested_child_session_id TEXT,
+            routing_mode TEXT,
+            routing_subagent_type TEXT,
+            routing_description TEXT,
+            routing_command TEXT,
+            approval_request_id TEXT,
+            question_request_id TEXT,
+            cancellation_cause TEXT,
+            result_available INTEGER NOT NULL DEFAULT 0,
+            delegated_reminder_json TEXT,
+            allocate_session_id INTEGER NOT NULL,
+            session_id TEXT,
+            error TEXT,
+            cancel_requested_at INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            started_at INTEGER,
+            finished_at INTEGER,
+            created_at_unix_ms INTEGER,
+            started_at_unix_ms INTEGER,
+            finished_at_unix_ms INTEGER,
+            keep_alive INTEGER NOT NULL DEFAULT 0,
+            steer_prompt TEXT,
+            output_schema_json TEXT,
+            schema_mode TEXT NOT NULL DEFAULT 'permissive',
+            structured_output_json TEXT,
+            schema_validation_json TEXT,
+            PRIMARY KEY (workspace_id, task_id)
+        );
+        CREATE TABLE background_processes (
+            process_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            owner_session_id TEXT,
+            command TEXT NOT NULL,
+            cwd TEXT NOT NULL,
+            pid INTEGER NOT NULL,
+            process_group_id INTEGER,
+            process_identity TEXT,
+            stdout_path TEXT NOT NULL,
+            stderr_path TEXT NOT NULL,
+            status TEXT NOT NULL,
+            exit_code INTEGER,
+            reconciliation_reason TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (workspace_id, process_id)
+        );
+        CREATE TABLE session_event_deliveries (
+            workspace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            dedupe_key TEXT NOT NULL,
+            delivered_at INTEGER NOT NULL,
+            event_sequence INTEGER NOT NULL,
+            PRIMARY KEY (workspace_id, session_id, dedupe_key)
+        );
+        CREATE TABLE storage_sequences (
+            scope TEXT PRIMARY KEY,
+            value INTEGER NOT NULL
+        );
+        INSERT INTO storage_sequences (scope, value) VALUES
+            ('sessions', 10), ('background_tasks', 0), ('auxiliary', 0);
+        PRAGMA user_version = 1;
+        """
+    )
+
+
+def test_session_storage_migrates_v1_database_preserving_rows_and_listing(tmp_path: Path) -> None:
+    """A v1 install upgrades in place: rows survive, titles start NULL, listing works."""
+    database_path = tmp_path / "legacy-v1.sqlite3"
+    workspace = tmp_path
+    with closing(sqlite3.connect(database_path)) as connection:
+        _v1_sessions_schema(connection)
+        _ = connection.execute(
+            """
+            INSERT INTO sessions (
+                session_id, workspace_id, status, turn, prompt, output, metadata_json,
+                created_at, updated_at, last_event_sequence
+            ) VALUES ('legacy-session', ?, 'completed', 1, 'legacy prompt', 'legacy output', '{}', 10, 20, 0)
+            """,
+            (str(workspace),),
+        )
+        connection.commit()
+
+    store = SqliteSessionStore(database_path=database_path)
+    listed = store.list_sessions(workspace=workspace)
+
+    assert [summary.session.id for summary in listed] == ["legacy-session"]
+    assert listed[0].prompt == "legacy prompt"
+    # Upgraded rows have no title yet; the prompt fallback is what renders them.
+    assert listed[0].title is None
+    with closing(sqlite3.connect(database_path)) as connection:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        legacy_title = connection.execute("SELECT title FROM sessions WHERE session_id = 'legacy-session'").fetchone()[0]
+    assert version == SCHEMA_VERSION
+    assert legacy_title is None
+
+
+def test_session_storage_rename_round_trips_across_store_reopen(tmp_path: Path) -> None:
+    """The title is a row column, so it must survive a new store on the same file.
+
+    Also pins that a later run snapshot (``save_run``'s ``INSERT OR REPLACE``)
+    carries the title forward instead of clearing it.
+    """
+    database_path = tmp_path / "rename.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    request = RuntimeRequest(prompt="original prompt", session_id="rename-session")
+    response = RuntimeResponse(
+        session=SessionState(session=SessionRef(id="rename-session"), status="completed", turn=1),
+        events=(
+            EventEnvelope(
+                session_id="rename-session",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+                payload={"response": "done"},
+            ),
+        ),
+        output="done",
+    )
+    _run_session(store, tmp_path, request, response)
+
+    store.rename_session(workspace=tmp_path, session_id="rename-session", title="My label")
+
+    reopened = SqliteSessionStore(database_path=database_path)
+    assert reopened.list_sessions(workspace=tmp_path)[0].title == "My label"
+
+    # A subsequent run on the same session rewrites the row; the title must not
+    # be collateral damage of the snapshot upsert.
+    _run_session(reopened, tmp_path, request, response)
+    assert reopened.list_sessions(workspace=tmp_path)[0].title == "My label"
+
+
+def test_session_storage_rename_rejects_unknown_and_foreign_sessions(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "rename-missing.sqlite3")
+    other_workspace = tmp_path / "other"
+    other_workspace.mkdir()
+    request = RuntimeRequest(prompt="elsewhere", session_id="foreign-session")
+    response = RuntimeResponse(
+        session=SessionState(session=SessionRef(id="foreign-session"), status="completed", turn=1),
+        events=(),
+        output=None,
+    )
+    _run_session(store, other_workspace, request, response)
+
+    with pytest.raises(UnknownSessionError, match="unknown session: missing-session"):
+        store.rename_session(workspace=tmp_path, session_id="missing-session", title="nope")
+    with pytest.raises(UnknownSessionError, match="unknown session: foreign-session"):
+        store.rename_session(workspace=tmp_path, session_id="foreign-session", title="nope")
+    # The foreign row keeps its NULL title: a foreign rename must not write.
+    assert store.list_sessions(workspace=other_workspace)[0].title is None
+
+
+def test_session_storage_rename_advances_updated_at(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "rename-touch.sqlite3")
+    request = RuntimeRequest(prompt="touch me", session_id="touch-session")
+    response = RuntimeResponse(
+        session=SessionState(session=SessionRef(id="touch-session"), status="completed", turn=1),
+        events=(),
+        output=None,
+    )
+    _run_session(store, tmp_path, request, response)
+    before = store.list_sessions(workspace=tmp_path)[0].updated_at
+
+    store.rename_session(workspace=tmp_path, session_id="touch-session", title="touched")
+
+    after = store.list_sessions(workspace=tmp_path)[0].updated_at
+    assert after > before

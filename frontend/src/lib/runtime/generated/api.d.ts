@@ -1853,6 +1853,8 @@ export interface components {
             status: string;
             /** Summary */
             summary: string;
+            /** Title */
+            title?: string | null;
             /** Transcript */
             transcript: components["schemas"]["TranscriptEventBody"][];
         };
@@ -1899,12 +1901,18 @@ export interface components {
         /**
          * SessionSummaryBody
          * @description ``_serialize_stored_session_summary``: one entry of ``GET /api/sessions``.
+         *
+         *     ``title`` is the user-settable label (``null`` until a rename), not a
+         *     prompt-derived one: deriving display text stays client-side so the server
+         *     never ships a second copy of the client's labeling rules.
          */
         SessionSummaryBody: {
             /** Prompt */
             prompt: string;
             session: components["schemas"]["SessionRefBody"];
             status: components["schemas"]["SessionStatus"];
+            /** Title */
+            title?: string | null;
             /** Turn */
             turn: number;
             /** Updated At */

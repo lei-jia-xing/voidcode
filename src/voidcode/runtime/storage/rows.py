@@ -58,6 +58,7 @@ class SessionListRow(TypedDict):
     status: str
     turn: int
     prompt: str
+    title: str | None
     updated_at: int
 
 
@@ -79,8 +80,13 @@ class SessionLoadRow(TypedDict):
     metadata_json: str
 
 
-class SessionPromptRow(TypedDict):
+class SessionTitleRow(TypedDict):
+    title: str | None
+
+
+class SessionPromptTitleRow(TypedDict):
     prompt: str
+    title: str | None
 
 
 class SessionCreatedAtRow(TypedDict):

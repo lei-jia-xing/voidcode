@@ -15,7 +15,7 @@ import pytest
 from voidcode.cli_support import EXIT_INVALID_RESOURCE, EXIT_RUNTIME_ERROR, EXIT_SUCCESS
 from voidcode.runtime.session import StoredSessionSummary
 
-from ._cli_harness import StubRuntime, run_cli
+from ._cli_harness import StubRuntime, run_cli, run_cli_process
 
 
 class _SessionListRuntime(StubRuntime):
@@ -213,3 +213,75 @@ def test_sessions_answer_without_pending_question_exits_invalid_resource(tmp_pat
     assert result.stdout == ""
     assert result.stderr.startswith("error:")
     assert "Traceback" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# sessions rename
+# ---------------------------------------------------------------------------
+
+
+def _run_session_in(workspace: Path, prompt: str = "read sample.txt") -> str:
+    """Run one real deterministic session in ``workspace`` and return its id."""
+    (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
+    result = run_cli("run", prompt, "--workspace", str(workspace), "--json", cwd=workspace)
+    assert result.returncode == EXIT_SUCCESS, result.stderr
+    return str(json.loads(result.stdout)["session"]["session"]["id"])
+
+
+def test_sessions_rename_round_trips_into_listing_and_json(tmp_path: Path) -> None:
+    """Rename writes through a real workspace, and ``list`` then prefers the title."""
+    session_id = _run_session_in(tmp_path)
+
+    rename_result = run_cli("sessions", "rename", session_id, "My CLI title", "--workspace", str(tmp_path), "--json", cwd=tmp_path)
+
+    renamed = json.loads(rename_result.stdout)
+    assert rename_result.returncode == EXIT_SUCCESS
+    assert renamed["session"]["session"]["id"] == session_id
+    assert renamed["session"]["title"] == "My CLI title"
+
+    # Plain (non-JSON) listing is the human surface: the title replaces the prompt.
+    list_result = run_cli("sessions", "list", "--workspace", str(tmp_path), cwd=tmp_path)
+    assert list_result.returncode == EXIT_SUCCESS
+    assert "title='My CLI title'" in list_result.stdout
+    assert "prompt=" not in list_result.stdout
+
+    json_list = json.loads(run_cli("sessions", "list", "--workspace", str(tmp_path), "--json", cwd=tmp_path).stdout)
+    row = next(row for row in json_list["sessions"] if row["session"]["id"] == session_id)
+    assert row["title"] == "My CLI title"
+    # The prompt is still delivered: the client keeps it as the fallback source.
+    assert row["prompt"] == "read sample.txt"
+
+
+def test_sessions_rename_survives_a_fresh_cli_process(tmp_path: Path) -> None:
+    """The title is durable state, not per-invocation: a new process lists it."""
+    session_id = _run_session_in(tmp_path)
+    _ = run_cli("sessions", "rename", session_id, "Persisted title", "--workspace", str(tmp_path), cwd=tmp_path)
+
+    result = run_cli_process("sessions", "list", "--workspace", str(tmp_path), "--json", cwd=tmp_path)
+
+    assert result.returncode == EXIT_SUCCESS
+    row = next(row for row in json.loads(result.stdout)["sessions"] if row["session"]["id"] == session_id)
+    assert row["title"] == "Persisted title"
+
+
+def test_sessions_list_falls_back_to_prompt_when_no_title(tmp_path: Path) -> None:
+    session_id = _run_session_in(tmp_path)
+
+    result = run_cli("sessions", "list", "--workspace", str(tmp_path), cwd=tmp_path)
+
+    assert result.returncode == EXIT_SUCCESS
+    assert f"SESSION id={session_id}" in result.stdout
+    assert "prompt='read sample.txt'" in result.stdout
+
+
+def test_sessions_rename_rejects_empty_title_and_unknown_session(tmp_path: Path) -> None:
+    session_id = _run_session_in(tmp_path)
+
+    empty = run_cli("sessions", "rename", session_id, "   ", "--workspace", str(tmp_path), cwd=tmp_path)
+    assert empty.returncode == EXIT_RUNTIME_ERROR
+    assert "non-empty" in empty.stderr
+
+    missing = run_cli("sessions", "rename", "missing-session", "label", "--workspace", str(tmp_path), cwd=tmp_path)
+    assert missing.returncode == EXIT_RUNTIME_ERROR
+    assert "unknown session" in missing.stderr
+    assert "Traceback" not in missing.stderr
