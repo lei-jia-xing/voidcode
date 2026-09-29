@@ -140,7 +140,7 @@ Workspace-local runtime config lives in `.voidcode.json` at the workspace root (
 {
   "$schema": "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json",
   "execution_engine": "deterministic",
-  "approval_mode": "ask"
+  "approval_mode": "always-ask"
 }
 ```
 

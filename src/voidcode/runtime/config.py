@@ -94,10 +94,11 @@ from .config_models import (
 from .context.transforms import validate_runtime_context_transform_refs
 from .context.window import DEFAULT_KEEP_RECENT_TOOL_TOKENS
 from .permission import (
+    DEFAULT_APPROVAL_MODE,
+    ApprovalMode,
     ExternalDirectoryPermissionConfig,
     ExternalDirectoryPolicy,
     PatternPermissionRule,
-    PermissionDecision,
 )
 from .policy import RuntimePolicyConfig, validate_runtime_policy_config_payload
 from .reminders import DEFAULT_TODO_REMINDER_MAX_PER_CYCLE
@@ -323,7 +324,7 @@ class RuntimeAgentConfig:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
-    approval_mode: PermissionDecision = "ask"
+    approval_mode: ApprovalMode = DEFAULT_APPROVAL_MODE
     permission: ExternalDirectoryPermissionConfig = field(default_factory=ExternalDirectoryPermissionConfig)
     policy: RuntimePolicyConfig | None = None
     model: str | None = None
@@ -349,7 +350,7 @@ class RuntimeConfig:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfigOverrides:
-    approval_mode: PermissionDecision | None = None
+    approval_mode: ApprovalMode | None = None
     permission: ExternalDirectoryPermissionConfig | None = None
     policy: RuntimePolicyConfig | None = None
     model: str | None = None
@@ -413,7 +414,7 @@ def load_global_web_settings(env: Mapping[str, str] | None = None) -> RuntimeWeb
 def load_runtime_config(
     workspace: Path,
     *,
-    approval_mode: PermissionDecision | None = None,
+    approval_mode: ApprovalMode | None = None,
     model: str | None = None,
     execution_engine: ExecutionEngineName | None = None,
     tool_timeout_seconds: int | None = None,
@@ -1825,10 +1826,10 @@ def _temporary_runtime_environment(env: Mapping[str, str] | None):
 
 def _resolve_approval_mode(
     *,
-    explicit: PermissionDecision | None,
-    repo_local: PermissionDecision | None,
+    explicit: ApprovalMode | None,
+    repo_local: ApprovalMode | None,
     environment: str | None,
-) -> PermissionDecision:
+) -> ApprovalMode:
     if explicit is not None:
         return explicit
     if repo_local is not None:
@@ -1840,7 +1841,7 @@ def _resolve_approval_mode(
     )
     if parsed_environment is not None:
         return parsed_environment
-    return "ask"
+    return DEFAULT_APPROVAL_MODE
 
 
 def _resolve_model(*, explicit: str | None, repo_local: str | None, environment: str | None) -> str | None:

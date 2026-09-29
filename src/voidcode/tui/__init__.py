@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from ..runtime.permission import PermissionDecision
+    from ..runtime.permission import ApprovalMode
     from ..runtime.service import VoidCodeRuntime
 
 __all__ = ["run_tui"]
@@ -25,7 +25,7 @@ __all__ = ["run_tui"]
 def run_tui(
     *,
     workspace: Path,
-    approval_mode: PermissionDecision | None = None,
+    approval_mode: ApprovalMode | None = None,
     runtime: VoidCodeRuntime | None = None,
     keymap: Mapping[str, str] | None = None,
 ) -> int:

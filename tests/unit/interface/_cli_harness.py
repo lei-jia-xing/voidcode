@@ -264,7 +264,7 @@ def cli_boundary(
 def deterministic_config(**overrides: Any) -> Any:
     """A ``RuntimeConfig`` shaped like the deterministic offline harness."""
     config_module = importlib.import_module("voidcode.runtime.config")
-    return config_module.RuntimeConfig(approval_mode="deny", execution_engine="deterministic", **overrides)
+    return config_module.RuntimeConfig(approval_mode="yolo", execution_engine="deterministic", **overrides)
 
 
 def session_snapshot(**overrides: object) -> SimpleNamespace:

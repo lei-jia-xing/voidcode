@@ -36,6 +36,7 @@ from .config_models import (
     TOOL_TIMEOUT_ENV_VAR,
     RuntimeConfigPayload,
 )
+from .permission import APPROVAL_MODES, DEFAULT_APPROVAL_MODE, ApprovalMode
 
 RUNTIME_CONFIG_SCHEMA_ID = "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json"
 RUNTIME_CONFIG_SCHEMA_URI = RUNTIME_CONFIG_SCHEMA_ID
@@ -373,13 +374,14 @@ __all__ = [
 
 def generate_starter_runtime_config(
     *,
-    approval_mode: str = "ask",
+    approval_mode: ApprovalMode = DEFAULT_APPROVAL_MODE,
     model: str | None = None,
     include_examples: bool = False,
     include_schema_reference: bool = True,
 ) -> dict[str, object]:
-    if approval_mode not in {"allow", "deny", "ask"}:
-        raise ValueError(f"approval_mode must be one of: allow, deny, ask; received {approval_mode!r}")
+    if approval_mode not in APPROVAL_MODES:
+        allowed = ", ".join(APPROVAL_MODES)
+        raise ValueError(f"approval_mode must be one of: {allowed}; received {approval_mode!r}")
     if model is not None:
         # The starter config stores the canonical provider id, so `config init
         # --model MiniMax/...` and `--model minimax/...` write the same file.

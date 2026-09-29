@@ -71,7 +71,7 @@ def _run(tmp_path: Path, script: list[_Step], *, tools: tuple[Any, ...] = (TodoT
         tool_registry=ToolRegistry.from_tools(list(tools)),
         graph=graph,
         config=_provider_engine_config(reminders=RuntimeRemindersConfig()),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=SESSION_ID)))
     return chunks, graph
@@ -190,7 +190,7 @@ def test_plan_mode_means_no_nudge(tmp_path: Path) -> None:
         tool_registry=ToolRegistry.from_tools([TodoTool(), GlobTool()]),
         graph=graph,
         config=_provider_engine_config(reminders=RuntimeRemindersConfig()),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=SESSION_ID, metadata={"mode": "plan"})))

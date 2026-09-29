@@ -31,7 +31,7 @@ from .events import (
     EventEnvelope,
     EventSource,
 )
-from .permission import PendingApproval, PermissionDecision, PermissionPolicy, PermissionResolution
+from .permission import ApprovalMode, PendingApproval, PermissionDecision, PermissionPolicy, PermissionResolution
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .storage import SessionStore
 
@@ -54,6 +54,7 @@ __all__ = [
     "BackgroundTaskStatus",
     "UnknownBackgroundTaskError",
     "ActiveRunInterruptResult",
+    "ApprovalMode",
     "PendingApproval",
     "PermissionDecision",
     "PermissionPolicy",

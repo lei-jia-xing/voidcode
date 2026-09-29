@@ -91,7 +91,7 @@ def test_plan_state_rejects_malformed_persisted_value() -> None:
 def _accepted_persisted_runtime_config_values() -> dict[str, object]:
     return {
         "config_schema_version": 1,
-        "approval_mode": "deny",
+        "approval_mode": "yolo",
         "permission": {
             "external_directory_read": {"*": "deny"},
             "external_directory_write": {"*": "ask"},
@@ -151,7 +151,7 @@ def test_persisted_runtime_config_accepts_representative_value_for_each_key(fiel
     materialized = parse_persisted_runtime_config(payload)
 
     if field == "approval_mode":
-        assert materialized.approval_mode == "deny"
+        assert materialized.approval_mode == "yolo"
     elif field == "permission":
         assert materialized.permission.read.rules == (("*", "deny"),)
         assert materialized.permission.write.rules == (("*", "ask"),)

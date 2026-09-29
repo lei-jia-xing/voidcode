@@ -106,7 +106,7 @@ def _runtime(tmp_path: Path, graph: _OverflowScript, *, threshold: int = 2_000) 
                 )
             ),
         ),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
 
 
@@ -134,7 +134,7 @@ def _chain_runtime(
                 )
             ),
         ),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
 
 
@@ -348,7 +348,7 @@ def test_repeated_context_limit_recovers_once_then_fails_resumably(tmp_path: Pat
             model="session/model",
             providers=ProviderConfigs(custom={"session": ProviderEndpointConfig()}),
         ),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
     response = resumed.resume(SESSION_ID)
 

@@ -51,7 +51,7 @@ class _QuestionThenWriteGraph:
 @pytest.mark.parametrize("outcome", ["complete", "interrupt", "raise"])
 def test_sync_question_answer_tracks_active_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
     with VoidCodeRuntime(
-        workspace=tmp_path, graph=_QuestionThenWriteGraph(), config=RuntimeConfig(execution_engine="deterministic", approval_mode="allow")
+        workspace=tmp_path, graph=_QuestionThenWriteGraph(), config=RuntimeConfig(execution_engine="deterministic", approval_mode="yolo")
     ) as runtime:
         session_id = "sync-question-lifecycle"
         waiting = runtime.run(RuntimeRequest(prompt="ask", session_id=session_id))
@@ -88,8 +88,8 @@ def test_sync_approval_resume_tracks_active_lifecycle(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="deterministic", approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(execution_engine="deterministic", approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
     session_id = "sync-approval-lifecycle"
     waiting = runtime.run(RuntimeRequest(prompt="write approved.txt approved", session_id=session_id))
@@ -133,7 +133,7 @@ def test_question_answer_is_durable_in_session_events_and_replay(tmp_path: Path)
     only place they survive.
     """
     with VoidCodeRuntime(
-        workspace=tmp_path, graph=_QuestionThenWriteGraph(), config=RuntimeConfig(execution_engine="deterministic", approval_mode="allow")
+        workspace=tmp_path, graph=_QuestionThenWriteGraph(), config=RuntimeConfig(execution_engine="deterministic", approval_mode="yolo")
     ) as runtime:
         session_id = "question-answer-durable-carrier"
         waiting = runtime.run(RuntimeRequest(prompt="ask", session_id=session_id))

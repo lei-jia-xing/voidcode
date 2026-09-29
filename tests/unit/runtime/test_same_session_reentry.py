@@ -83,7 +83,7 @@ def _runtime(workspace: Path, *, tool: object | None, graph: object) -> VoidCode
         tool_registry=ToolRegistry.from_tools(tools),
         graph=graph,
         config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
 
 

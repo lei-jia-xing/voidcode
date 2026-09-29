@@ -1357,7 +1357,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     assert cast(dict[str, object], capability_snapshot["hooks"])["authority"] == ("non_authoritative")
     assert cast(dict[str, object], capability_snapshot["mcp"])["governance"] == ("runtime_config_gated")
     binding_snapshot = cast(dict[str, object], skill_snapshot["binding_snapshot"])
-    assert binding_snapshot["approval_mode"] == "ask"
+    assert binding_snapshot["approval_mode"] == "always-ask"
     assert binding_snapshot["execution_engine"] == "provider"
     assert binding_snapshot["model"] == "opencode-zen/gpt-5.4"
     assert binding_snapshot["agent"] == capability_snapshot["agent"]
@@ -1370,7 +1370,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
 def test_runtime_denies_divergent_approval_replay_without_fresh_permission(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        permission_policy=PermissionPolicy(mode="ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
     runtime_config_metadata = cast(
         Callable[[], dict[str, object]],
@@ -1448,7 +1448,7 @@ def test_runtime_denies_divergent_approval_replay_without_fresh_permission(tmp_p
             graph_request=graph_request,
             tool_results=[],
             approval_resolution=(pending, "deny"),
-            permission_policy=PermissionPolicy(mode="ask"),
+            permission_policy=PermissionPolicy(mode="always-ask"),
         )
     )
     events = [chunk.event for chunk in chunks if chunk.event is not None]
@@ -1474,7 +1474,7 @@ def test_runtime_pattern_permission_rule_asks_for_workspace_write(tmp_path: Path
         config=RuntimeConfig(
             permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="write", path=".github/**", decision="ask"),))
         ),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
 
     response = runtime.run(RuntimeRequest(prompt="write github workflow", session_id="pattern-workspace-ask"))
@@ -1506,7 +1506,7 @@ def test_runtime_pattern_permission_rule_denies_shell_command(tmp_path: Path) ->
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="provider",
             model="opencode-zen/gpt-5.4",
             permission=ExternalDirectoryPermissionConfig(
@@ -1553,7 +1553,7 @@ def test_runtime_pattern_permission_rule_cannot_bypass_external_write_policy(
                 ),
             )
         ),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
 
     response = runtime.run(RuntimeRequest(prompt=f"write {external_path} blocked", session_id="pattern-external-deny"))
@@ -1768,7 +1768,7 @@ def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
         workspace=tmp_path,
         graph=_AbortSignalApprovalGraph(),
         tool_registry=ToolRegistry.from_tools([tool]),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
     stream = runtime.run_stream(RuntimeRequest(prompt="abort after start", session_id="tool-abort"))
     chunks: list[RuntimeStreamChunk] = []
@@ -1825,8 +1825,8 @@ def test_runtime_cancel_session_interrupts_active_approval_resume_run(tmp_path: 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=graph,
-        config=RuntimeConfig(approval_mode="ask", mcp=RuntimeMcpConfig(enabled=False)),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask", mcp=RuntimeMcpConfig(enabled=False)),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
     waiting = runtime.run(RuntimeRequest(prompt="resume cancel", session_id="resume-cancel"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
@@ -1885,8 +1885,8 @@ def test_runtime_cancel_after_approved_tool_started_skips_invoke_and_closes_tool
         workspace=tmp_path,
         graph=_AbortSignalApprovalGraph(),
         tool_registry=ToolRegistry.from_tools([tool]),
-        config=RuntimeConfig(approval_mode="ask", mcp=RuntimeMcpConfig(enabled=False)),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask", mcp=RuntimeMcpConfig(enabled=False)),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
     waiting = runtime.run(RuntimeRequest(prompt="approved abort", session_id="approved-abort"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
@@ -1982,8 +1982,8 @@ def test_runtime_resume_rejects_malformed_persisted_pending_approval_policy_mode
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="malformed-pending-approval"))
@@ -2011,8 +2011,8 @@ def test_runtime_resume_rejects_malformed_persisted_pending_approval_policy_mode
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -2032,8 +2032,8 @@ def test_runtime_resume_rejects_persisted_approval_owned_by_different_session(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="owned-approval-child"))
@@ -2061,8 +2061,8 @@ def test_runtime_resume_rejects_persisted_approval_owned_by_different_session(
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -2082,8 +2082,8 @@ def test_runtime_resume_rejects_tampered_pending_approval_payload_against_record
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="approval-binding-mismatch"))
@@ -2111,8 +2111,8 @@ def test_runtime_resume_rejects_tampered_pending_approval_payload_against_record
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -2132,8 +2132,8 @@ def test_runtime_resume_rejects_stale_duplicate_approval_replay_when_pending_sta
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="stale-approval-replay"))
@@ -2198,8 +2198,8 @@ def test_runtime_resume_rejects_stale_duplicate_approval_replay_when_pending_sta
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -2219,8 +2219,8 @@ def test_runtime_background_task_waiting_approval_resume_with_fresh_runtime_pres
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
     _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
@@ -2237,8 +2237,8 @@ def test_runtime_background_task_waiting_approval_resume_with_fresh_runtime_pres
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
     preserved = resumed_runtime.load_background_task(started.task.id)
     resumed = resumed_runtime.resume(
@@ -2259,8 +2259,8 @@ def test_runtime_resume_rejects_parent_session_for_child_owned_approval(tmp_path
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
@@ -2291,8 +2291,8 @@ def test_runtime_child_question_is_rejected_by_child_tool_policy(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_QuestionThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
@@ -2307,8 +2307,8 @@ def test_runtime_resume_rejects_wrong_workspace_metadata_on_approval_resume(tmp_
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="wrong-workspace-approval"))
@@ -2337,8 +2337,8 @@ def test_runtime_resume_rejects_wrong_workspace_metadata_on_approval_resume(tmp_
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -2356,8 +2356,8 @@ def test_runtime_answer_question_rejects_wrong_workspace_metadata(tmp_path: Path
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_QuestionThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="wrong-workspace-question"))
@@ -2386,8 +2386,8 @@ def test_runtime_answer_question_rejects_wrong_workspace_metadata(tmp_path: Path
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_QuestionThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -2407,8 +2407,8 @@ def test_runtime_answer_question_rejects_tampered_pending_question_payload_again
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_QuestionThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-binding-mismatch"))
@@ -2437,8 +2437,8 @@ def test_runtime_answer_question_rejects_tampered_pending_question_payload_again
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_QuestionThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -2456,8 +2456,8 @@ def test_runtime_cancel_background_task_propagates_to_waiting_child_session(tmp_
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
@@ -3047,7 +3047,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
-            approval_mode="ask",
+            approval_mode="always-ask",
             permission=ExternalDirectoryPermissionConfig(
                 read=ExternalDirectoryPolicy(rules=(("/var/log/**", "allow"), ("*", "ask"))),
                 write=ExternalDirectoryPolicy(rules=(("*", "deny"),)),
@@ -3112,7 +3112,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
         "lsp",
         "mcp",
     } <= set(metadata)
-    assert effective.approval_mode == "ask"
+    assert effective.approval_mode == "always-ask"
     assert effective.permission.read.rules == (("/var/log/**", "allow"), ("*", "ask"))
     assert effective.permission.write.rules == (("*", "deny"),)
     assert effective.permission.rules == (PatternPermissionRule(tool="read", path="docs/**", decision="allow"),)
@@ -3431,8 +3431,8 @@ def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = initial_runtime.run(
@@ -3480,8 +3480,8 @@ def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -3524,8 +3524,8 @@ def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_chang
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="frozen-skill-session"))
@@ -3542,8 +3542,8 @@ def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_chang
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     resumed = resumed_runtime.resume(
@@ -3565,8 +3565,8 @@ def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="empty-skill-session"))
@@ -3586,8 +3586,8 @@ def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     resumed = resumed_runtime.resume(
@@ -3630,7 +3630,7 @@ def test_runtime_effective_runtime_config_prefers_persisted_session_values(tmp_p
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             model="session/model",
         ),
@@ -3641,14 +3641,14 @@ def test_runtime_effective_runtime_config_prefers_persisted_session_values(tmp_p
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            approval_mode="deny",
+            approval_mode="always-ask",
             execution_engine="deterministic",
             model="fresh/model",
         ),
     )
     effective = resumed_runtime.effective_runtime_config(session_id="config-session")
 
-    assert effective.approval_mode == "allow"
+    assert effective.approval_mode == "yolo"
     assert effective.model == "session/model"
     assert effective.execution_engine == "deterministic"
 
@@ -3663,7 +3663,7 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_external_wri
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             model="session/model",
         ),
@@ -3709,7 +3709,7 @@ def test_runtime_effective_runtime_config_recovers_persisted_tool_timeout(tmp_pa
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
             execution_engine="deterministic",
-            approval_mode="allow",
+            approval_mode="yolo",
             model="session/model",
             tool_timeout_seconds=7,
         ),
@@ -3723,14 +3723,14 @@ def test_runtime_effective_runtime_config_recovers_persisted_tool_timeout(tmp_pa
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            approval_mode="deny",
+            approval_mode="always-ask",
             model="fresh/model",
             tool_timeout_seconds=3,
         ),
     )
     effective = resumed_runtime.effective_runtime_config(session_id="tool-timeout-session")
 
-    assert effective.approval_mode == "allow"
+    assert effective.approval_mode == "yolo"
     assert effective.model == "session/model"
     assert effective.tool_timeout_seconds == 7
 
@@ -3743,7 +3743,7 @@ def test_runtime_effective_runtime_config_preserves_explicit_persisted_none_tool
 
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, execution_engine="deterministic", approval_mode="allow", model="session/model"),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, execution_engine="deterministic", approval_mode="yolo", model="session/model"),
     )
     response = initial_runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="tool-timeout-none-session"))
     runtime_config_metadata = cast(dict[str, object], response.session.metadata["runtime_config"])
@@ -3754,14 +3754,14 @@ def test_runtime_effective_runtime_config_preserves_explicit_persisted_none_tool
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            approval_mode="deny",
+            approval_mode="always-ask",
             model="fresh/model",
             tool_timeout_seconds=9,
         ),
     )
     effective = resumed_runtime.effective_runtime_config(session_id="tool-timeout-none-session")
 
-    assert effective.approval_mode == "allow"
+    assert effective.approval_mode == "yolo"
     assert effective.model == "session/model"
     assert effective.tool_timeout_seconds is None
 
@@ -3777,7 +3777,7 @@ def test_runtime_effective_runtime_config_rejects_invalid_persisted_tool_timeout
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
             execution_engine="deterministic",
-            approval_mode="allow",
+            approval_mode="yolo",
             model="session/model",
             tool_timeout_seconds=7,
         ),
@@ -3828,7 +3828,7 @@ def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_invalid(
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
             execution_engine="deterministic",
-            approval_mode="allow",
+            approval_mode="yolo",
             model="session/model",
             reasoning_effort="high",
         ),
@@ -3878,7 +3878,7 @@ def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_cle
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             model="session/model",
         ),
@@ -3898,7 +3898,7 @@ def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_cle
     )
     effective = resumed_runtime.effective_runtime_config(session_id="non-agent-session")
 
-    assert effective.approval_mode == "allow"
+    assert effective.approval_mode == "yolo"
     assert effective.model == "session/model"
     assert effective.execution_engine == "deterministic"
     assert effective.agent is None
@@ -3938,7 +3938,7 @@ def test_runtime_effective_runtime_config_recovers_provider_engine(tmp_path: Pat
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="provider",
             model="opencode-zen/gpt-5.4",
         ),
@@ -3947,11 +3947,11 @@ def test_runtime_effective_runtime_config_recovers_provider_engine(tmp_path: Pat
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, approval_mode="deny", model="fresh/model"),
+        config=RuntimeConfig(providers=_STANDIN_PROVIDERS, approval_mode="always-ask", model="fresh/model"),
     )
     effective = resumed_runtime.effective_runtime_config(session_id="single-agent-config")
 
-    assert effective.approval_mode == "allow"
+    assert effective.approval_mode == "yolo"
     assert effective.execution_engine == "provider"
     assert effective.model == "opencode-zen/gpt-5.4"
 
@@ -4248,9 +4248,9 @@ def test_runtime_resume_uses_persisted_selected_skill_names_when_payloads_missin
                 preset="leader",
                 skills=RuntimeSkillsConfig(enabled=True),
             ),
-            approval_mode="ask",
+            approval_mode="always-ask",
         ),
-        permission_policy=PermissionPolicy(mode="ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="selected-skill-names-resume"))
@@ -4314,9 +4314,9 @@ def test_runtime_resume_uses_persisted_selected_skill_names_when_payloads_missin
                 preset="leader",
                 skills=RuntimeSkillsConfig(enabled=True),
             ),
-            approval_mode="ask",
+            approval_mode="always-ask",
         ),
-        permission_policy=PermissionPolicy(mode="ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     resumed = resumed_runtime.resume(
@@ -4470,7 +4470,7 @@ def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_p
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
@@ -4504,7 +4504,7 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_fallback_mod
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
@@ -4563,7 +4563,7 @@ def test_runtime_persists_resolved_provider_snapshot_in_runtime_metadata(tmp_pat
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
@@ -4607,7 +4607,7 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_provider_f
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
@@ -4660,7 +4660,7 @@ def test_runtime_effective_runtime_config_accepts_non_first_active_target_in_sna
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
@@ -4719,7 +4719,7 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_resolved_p
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=_STANDIN_PROVIDERS,
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             model="opencode-zen/gpt-5.4",
             provider_fallback=RuntimeProviderFallbackConfig(
@@ -4783,10 +4783,10 @@ def test_runtime_persists_resume_checkpoint_for_waiting_session(tmp_path: Path) 
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
-            approval_mode="ask",
+            approval_mode="always-ask",
             skills=RuntimeSkillsConfig(enabled=True),
         ),
-        permission_policy=PermissionPolicy(mode="ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-waiting-session"))
@@ -4822,8 +4822,8 @@ def test_runtime_answer_question_rejects_stale_request_id(tmp_path: Path) -> Non
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_QuestionThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     _ = runtime.run(RuntimeRequest(prompt="go", session_id="stale-question-request"))
@@ -4840,8 +4840,8 @@ def test_answer_question_rejects_duplicate_headers(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_TwoQuestionThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-duplicate-header"))
@@ -4864,8 +4864,8 @@ def test_runtime_resume_approval_rebuilds_from_persisted_checkpoint_after_restar
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-resume-session"))
@@ -4882,8 +4882,8 @@ def test_runtime_resume_approval_rebuilds_from_persisted_checkpoint_after_restar
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     resumed = resumed_runtime.resume(
@@ -4903,10 +4903,10 @@ def test_runtime_resume_emits_skill_binding_mismatch_event_when_checkpoint_bindi
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
-            approval_mode="ask",
+            approval_mode="always-ask",
             skills=RuntimeSkillsConfig(enabled=True),
         ),
-        permission_policy=PermissionPolicy(mode="ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-binding-mismatch"))
@@ -4924,7 +4924,7 @@ def test_runtime_resume_emits_skill_binding_mismatch_event_when_checkpoint_bindi
         assert isinstance(checkpoint, dict)
         checkpoint_dict = cast(dict[str, object], checkpoint)
         checkpoint_dict["skill_binding_snapshot"] = {
-            "approval_mode": "deny",
+            "approval_mode": "yolo",
             "execution_engine": "deterministic",
         }
         _ = connection.execute(
@@ -4939,10 +4939,10 @@ def test_runtime_resume_emits_skill_binding_mismatch_event_when_checkpoint_bindi
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
-            approval_mode="ask",
+            approval_mode="always-ask",
             skills=RuntimeSkillsConfig(enabled=True),
         ),
-        permission_policy=PermissionPolicy(mode="ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     resumed = resumed_runtime.resume(
@@ -4961,8 +4961,8 @@ def test_runtime_resume_emits_skill_binding_mismatch_event_when_checkpoint_bindi
     assert mismatch_payload["approval_request_id"] == approval_request_id
     expected_binding = cast(dict[str, object], mismatch_payload["expected_binding"])
     actual_binding = cast(dict[str, object], mismatch_payload["actual_binding"])
-    assert expected_binding["approval_mode"] == "deny"
-    assert actual_binding["approval_mode"] == "ask"
+    assert expected_binding["approval_mode"] == "yolo"
+    assert actual_binding["approval_mode"] == "always-ask"
 
 
 def test_runtime_resume_rejects_skill_snapshot_hash_mismatch_with_checkpoint(
@@ -4972,10 +4972,10 @@ def test_runtime_resume_rejects_skill_snapshot_hash_mismatch_with_checkpoint(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
-            approval_mode="ask",
+            approval_mode="always-ask",
             skills=RuntimeSkillsConfig(enabled=True),
         ),
-        permission_policy=PermissionPolicy(mode="ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-hash-mismatch"))
@@ -5006,10 +5006,10 @@ def test_runtime_resume_rejects_skill_snapshot_hash_mismatch_with_checkpoint(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
-            approval_mode="ask",
+            approval_mode="always-ask",
             skills=RuntimeSkillsConfig(enabled=True),
         ),
-        permission_policy=PermissionPolicy(mode="ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -5027,8 +5027,8 @@ def test_runtime_resume_rejects_missing_persisted_checkpoint(tmp_path: Path) -> 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-fallback-session"))
@@ -5048,8 +5048,8 @@ def test_runtime_resume_rejects_missing_persisted_checkpoint(tmp_path: Path) -> 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(ValueError, match="persisted resume checkpoint is required"):
@@ -5066,8 +5066,8 @@ def test_runtime_resume_rejects_persisted_checkpoint_json_is_corrupt(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-corrupt-json-session"))
@@ -5087,8 +5087,8 @@ def test_runtime_resume_rejects_persisted_checkpoint_json_is_corrupt(
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(ValueError, match="persisted resume checkpoint JSON is malformed"):
@@ -5105,8 +5105,8 @@ def test_runtime_resume_rejects_persisted_checkpoint_payload_is_not_object(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-non-object-session"))
@@ -5126,8 +5126,8 @@ def test_runtime_resume_rejects_persisted_checkpoint_payload_is_not_object(
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -5147,8 +5147,8 @@ def test_runtime_resume_rejects_malformed_persisted_checkpoint_payload_with_vali
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-malformed-object"))
@@ -5180,8 +5180,8 @@ def test_runtime_resume_rejects_malformed_persisted_checkpoint_payload_with_vali
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -5199,8 +5199,8 @@ def test_runtime_resume_rejects_checkpoint_kind_mismatch(tmp_path: Path) -> None
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-kind-mismatch"))
@@ -5227,8 +5227,8 @@ def test_runtime_resume_rejects_checkpoint_kind_mismatch(tmp_path: Path) -> None
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -5249,8 +5249,8 @@ def test_runtime_resume_rejects_checkpoint_version_mismatch(tmp_path: Path) -> N
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-version-mismatch"))
@@ -5277,8 +5277,8 @@ def test_runtime_resume_rejects_checkpoint_version_mismatch(tmp_path: Path) -> N
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -5298,8 +5298,8 @@ def test_runtime_resume_rejects_malformed_persisted_checkpoint_tool_result_entry
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_MultiStepStubGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-bad-tool-result"))
@@ -5340,8 +5340,8 @@ def test_runtime_resume_rejects_malformed_persisted_checkpoint_tool_result_entry
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_MultiStepStubGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -5359,8 +5359,8 @@ def test_runtime_answer_question_rejects_checkpoint_kind_mismatch(tmp_path: Path
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_QuestionThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-checkpoint-kind-mismatch"))
@@ -5387,8 +5387,8 @@ def test_runtime_answer_question_rejects_checkpoint_kind_mismatch(tmp_path: Path
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_QuestionThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     with pytest.raises(
@@ -5507,13 +5507,13 @@ def test_runtime_session_idle_hook_failure_warn_does_not_fail_waiting_session(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
-            approval_mode="ask",
+            approval_mode="always-ask",
             hooks=RuntimeHooksConfig(
                 enabled=True,
                 on_session_idle=((sys.executable, "-c", "raise SystemExit(9)"),),
             ),
         ),
-        permission_policy=PermissionPolicy(mode="ask"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
 
     response = runtime.run(RuntimeRequest(prompt="needs approval", session_id="idle-warn-session"))
@@ -5566,7 +5566,7 @@ def test_pre_tool_hook_cancel_blocks_tool_with_llm_visible_reason(tmp_path: Path
                 pre_tool=(("echo", stdout),),
             )
         ),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
 
     response = runtime.run(RuntimeRequest(prompt="write it", session_id="pre-tool-block"))
@@ -5591,7 +5591,7 @@ def test_pre_tool_hook_failure_warn_blocks_tool_and_fail_escalates(tmp_path: Pat
                 pre_tool=((sys.executable, "-c", "raise SystemExit(5)"),),
             )
         ),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
 
     response = runtime.run(RuntimeRequest(prompt="write it", session_id="pre-tool-crash"))
@@ -5612,7 +5612,7 @@ def test_pre_tool_hook_failure_warn_blocks_tool_and_fail_escalates(tmp_path: Pat
                 pre_tool=((sys.executable, "-c", "raise SystemExit(5)"),),
             )
         ),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
     with pytest.raises(RuntimeError, match="pre-hook failed"):
         _ = fail_runtime.run(RuntimeRequest(prompt="write it", session_id="pre-tool-fail"))
@@ -5632,7 +5632,7 @@ def test_pre_tool_match_filter_applies_on_plan_path(tmp_path: Path) -> None:
         workspace=tmp_path,
         graph=_WriteOnceGraph(filtered_target),
         config=RuntimeConfig(hooks=RuntimeHooksConfig(enabled=True, pre_tool=(("echo", stdout),), pre_tool_match=("read*",))),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
 
     response = filtered.run(RuntimeRequest(prompt="write it", session_id="pre-tool-unmatched"))
@@ -5650,7 +5650,7 @@ def test_pre_tool_match_filter_runs_hook_for_matching_tool_on_plan_path(tmp_path
         workspace=tmp_path,
         graph=_WriteOnceGraph(matched_target),
         config=RuntimeConfig(hooks=RuntimeHooksConfig(enabled=True, pre_tool=(("echo", stdout),), pre_tool_match=("write*",))),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
 
     response = matched.run(RuntimeRequest(prompt="write it", session_id="pre-tool-matched"))

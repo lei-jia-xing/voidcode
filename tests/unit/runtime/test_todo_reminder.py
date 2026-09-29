@@ -142,7 +142,7 @@ def _runtime(
         tool_registry=ToolRegistry.from_tools([TodoTool(), GlobTool()]),
         graph=graph,
         config=config,
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
 
 

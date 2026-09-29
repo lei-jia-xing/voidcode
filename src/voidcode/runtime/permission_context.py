@@ -5,7 +5,15 @@ from pathlib import Path
 
 from ..tools.contracts import Tool, ToolCall, ToolDefinition
 from ..tools.local_custom import LocalCustomTool
+from ..tools.mcp import McpTool
 from .permission import OperationClass, PathScope
+
+#: Builtin tools that mutate workspace/session state without executing code:
+#: VoidCode's ``write`` tier. Everything else a non-read-only tool can be — a
+#: shell, a spawned agent/process, a local custom command, an MCP call — is
+#: ``execute`` (or, for MCP, ``write``), and an undeclared tool falls to the
+#: safe ``execute`` default.
+_WRITE_TIER_BUILTINS = frozenset({"write", "edit", "multi_edit", "apply_patch", "apply_workspace_edit"})
 
 
 class RuntimePermissionContextResolver:
@@ -118,6 +126,13 @@ def operation_class_for_tool(
     tool_instance: Tool,
     arguments: dict[str, object] | None = None,
 ) -> OperationClass:
+    """The approval tier for one call.
+
+    Unknown tools (no declaration, and not a read-only tool) default to
+    ``execute`` — the safe default shared with ``approval_decision``. A tool
+    that declares itself read-only and whose arguments add no evidence stays
+    ``read``.
+    """
     if tool_name == "task":
         operation = arguments.get("operation") if arguments is not None else None
         if operation in ("output", "ps"):
@@ -130,6 +145,14 @@ def operation_class_for_tool(
         return "read" if operation in ("ps", "logs") else "execute"
     if tool_name in {"shell_exec", "background_process_start"} or isinstance(tool_instance, LocalCustomTool):
         return "execute"
+    if tool_name in _WRITE_TIER_BUILTINS:
+        return "write"
     if tool_name == "ast_grep" and arguments is not None:
         return "write" if arguments.get("mode") == "replace" else "read"
-    return "read" if read_only else "write"
+    # MCP server tools declare ``write`` (omp's contract): they mutate server
+    # state but do not run arbitrary code, so a ``read_only`` MCP tool stays
+    # ``read`` while every other MCP tool is ``write`` rather than the generic
+    # ``execute`` unknown-tool default.
+    if isinstance(tool_instance, McpTool):
+        return "read" if read_only else "write"
+    return "read" if read_only else "execute"

@@ -7,15 +7,15 @@ from typing import cast
 
 import click
 
-from ...runtime.permission import PermissionDecision
+from ...runtime.permission import ApprovalMode
 from ..handler_args import TuiArgs
 from ..options import APPROVAL_MODES, workspace_option
 
 
 def _handle_tui_command(args: TuiArgs) -> int:
     workspace = args.workspace
-    # CLI boundary: click.Choice(APPROVAL_MODES) guarantees a PermissionDecision literal.
-    approval_mode: PermissionDecision | None = cast(PermissionDecision | None, args.approval_mode)
+    # CLI boundary: click.Choice(APPROVAL_MODES) guarantees an ApprovalMode literal.
+    approval_mode: ApprovalMode | None = cast(ApprovalMode | None, args.approval_mode)
 
     from ...tui import run_tui
 

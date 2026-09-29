@@ -83,7 +83,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 {
   "workspace": "/workspace/project",
   "model": "opencode-zen/gpt-5.4",
-  "approval_mode": "ask",
+  "approval_mode": "always-ask",
   "execution_engine": "provider",
   "hooks": {
     "enabled": true,
@@ -133,7 +133,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 
 - `workspace`：引导（bootstrap）字段，用于在发现仓库本地配置之前确定运行时工作区根目录，随后重用于工具执行和持久化
 - `model`：OpenCode `provider/model` 格式的供应商/模型标识符
-- `approval_mode`：由运行时治理的工具所使用的最小执行策略模式
+- `approval_mode`：由运行时治理的工具所使用的最小审批模式（`always-ask` / `write` / `yolo`）：决定按工具 tier 自动放行 `read` / `write` / `execute` 中哪些调用，其余进入审批。默认 `always-ask`（只自动放行 `read`）。tier 语义、未知工具默认 `execute` 与解析优先级见 `docs/contracts/approval-flow.md`。
 - `execution_engine`：当前接受 `deterministic` 或 `provider`。`provider` 是产品默认主路径；`deterministic` 保留为显式 test/dev/no-key harness（参考/debug）。
 - `hooks`：运行时拥有的最小钩子配置对象，覆盖 pre/post tool 与当前已解析的 lifecycle hook phases
 - `tools`：内置工具启用、仓库本地自定义 tool manifest 发现，以及 provider 可见工具收窄的最小配置；所有 tool 都通过 runtime registry / allowlist / permission 路径治理
@@ -161,7 +161,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 
 当前的 `.voidcode.json` 解析器接受以下仓库本地形状：
 
-- `approval_mode`：`allow`、`deny`、`ask` 之一
+- `approval_mode`：`always-ask`、`write`、`yolo` 之一（审批模式，按 tier 决定自动放行阈值；默认 `always-ask`）。此前的 `allow`/`deny`/`ask` 取值**已移除且不再接受**：它们是**决策**词表，不是 mode；per-tool 的 `allow`/`deny` 意图请用 `permission.rules`、`permission.external_directory_*` 表达。契约前向演进，未知或旧值直接 fail-fast，不做兼容映射
 - `permission.external_directory_read`：对象，key 为路径 pattern（支持 absolute / `~` / glob），value 为 `allow|deny|ask`
 - `permission.external_directory_write`：对象，key 为路径 pattern（支持 absolute / `~` / glob），value 为 `allow|deny|ask`
 - `permission.rules`：有序数组，每条规则可包含 `tool`、`path`、`command` 与必填 `decision`，用于 runtime-owned 的工具/路径/命令 pattern 权限匹配
@@ -278,7 +278,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 ### external directory permission 语义
 
 - `permission.external_directory_read` 与 `permission.external_directory_write` 是 runtime-owned 的外部目录权限面。
-- workspace 内路径保持现有治理：只读工具自动 `allow`，非只读工具遵循 `approval_mode`。
+- workspace 内路径保持现有治理：`read` tier 在每个模式下都自动放行；`write`/`execute` tier 由 `approval_mode` 与 tier 的矩阵决定是否进入审批（`yolo` 除外）。
 - workspace 外路径使用 external permission 决策：
   - read-like tool calls 使用 `external_directory_read`
   - write-like tool calls 使用 `external_directory_write`
@@ -582,7 +582,7 @@ workspace 本地覆盖路径保持为：
 {
   "runtime_config": {
     "model": "opencode-zen/gpt-5.4-pro",
-    "approval_mode": "ask",
+    "approval_mode": "yolo",
     "execution_engine": "provider",
     "reasoning_effort": "high"
   }
@@ -642,7 +642,7 @@ voidcode config init --workspace <path> [--force] [--print] [--with-examples]
 https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json
 ```
 
-`config init` 生成不含 secrets 的 starter workspace 配置。默认写入 `<workspace>/.voidcode.json`，并在文件已存在时失败；`--force` 显式覆盖，`--print` 只输出 JSON 而不写入文件，`--with-examples` 会加入最小 `tools` / `skills` 示例块。生成配置默认包含 `$schema` 与 `approval_mode: "ask"`，不会生成 `providers` 或任何 `api_key` / token 字段。
+`config init` 生成不含 secrets 的 starter workspace 配置。默认写入 `<workspace>/.voidcode.json`，并在文件已存在时失败；`--force` 显式覆盖，`--print` 只输出 JSON 而不写入文件，`--with-examples` 会加入最小 `tools` / `skills` 示例块。生成配置默认包含 `$schema` 与 `approval_mode: "always-ask"`，不会生成 `providers` 或任何 `api_key` / token 字段。
 
 失败契约锁定为：
 

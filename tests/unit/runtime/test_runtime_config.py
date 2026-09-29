@@ -83,10 +83,10 @@ DEFAULT_FORMATTER_PRESETS = default_formatter_presets()
 PRETTIER_ROOT_MARKERS = DEFAULT_FORMATTER_PRESETS["typescript"].root_markers
 
 
-def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> None:
+def test_runtime_config_defaults_to_always_ask_without_file_or_env(tmp_path: Path) -> None:
     config = load_runtime_config(tmp_path, env={})
 
-    assert config.approval_mode == "ask"
+    assert config.approval_mode == "always-ask"
     assert config.model is None
     assert config.execution_engine == "provider"
     assert config.background_task == RuntimeBackgroundTaskConfig()
@@ -327,9 +327,9 @@ def test_runtime_persists_context_window_config_for_resume(tmp_path: Path) -> No
 
 
 def test_runtime_config_uses_environment_when_repo_file_missing(tmp_path: Path) -> None:
-    config = load_runtime_config(tmp_path, env={APPROVAL_MODE_ENV_VAR: "deny"})
+    config = load_runtime_config(tmp_path, env={APPROVAL_MODE_ENV_VAR: "always-ask"})
 
-    assert config.approval_mode == "deny"
+    assert config.approval_mode == "always-ask"
 
 
 def test_runtime_config_uses_model_environment_when_repo_file_missing(tmp_path: Path) -> None:
@@ -447,11 +447,11 @@ def test_runtime_config_rejects_non_canonical_explicit_reasoning_effort(
 
 
 def test_runtime_config_prefers_repo_file_over_environment(tmp_path: Path) -> None:
-    _write_runtime_config(tmp_path, {"approval_mode": "allow", "model": "opencode-zen/gpt-5.4", "hooks": {"enabled": True}})
+    _write_runtime_config(tmp_path, {"approval_mode": "yolo", "model": "opencode-zen/gpt-5.4", "hooks": {"enabled": True}})
 
-    config = load_runtime_config(tmp_path, env={APPROVAL_MODE_ENV_VAR: "deny"})
+    config = load_runtime_config(tmp_path, env={APPROVAL_MODE_ENV_VAR: "always-ask"})
 
-    assert config.approval_mode == "allow"
+    assert config.approval_mode == "yolo"
     assert config.model == "opencode-zen/gpt-5.4"
     assert config.hooks == RuntimeHooksConfig(enabled=True)
 
@@ -1694,15 +1694,15 @@ def test_runtime_config_formatter_preserves_hooks_formatter_presets_when_languag
 def test_runtime_config_prefers_explicit_override_over_repo_file_and_environment(
     tmp_path: Path,
 ) -> None:
-    _write_runtime_config(tmp_path, {"approval_mode": "deny"})
+    _write_runtime_config(tmp_path, {"approval_mode": "always-ask"})
 
     config = load_runtime_config(
         tmp_path,
-        approval_mode="allow",
-        env={APPROVAL_MODE_ENV_VAR: "ask"},
+        approval_mode="yolo",
+        env={APPROVAL_MODE_ENV_VAR: "write"},
     )
 
-    assert config.approval_mode == "allow"
+    assert config.approval_mode == "yolo"
 
 
 def test_runtime_config_formatter_enabled_maps_to_format_on_write_only(tmp_path: Path) -> None:
@@ -1771,11 +1771,11 @@ def test_runtime_config_explicit_approval_mode_does_not_affect_environment_execu
 ) -> None:
     config = load_runtime_config(
         tmp_path,
-        approval_mode="allow",
+        approval_mode="yolo",
         env={EXECUTION_ENGINE_ENV_VAR: "provider"},
     )
 
-    assert config.approval_mode == "allow"
+    assert config.approval_mode == "yolo"
     assert config.execution_engine == "provider"
 
 
@@ -2355,7 +2355,7 @@ def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_field
         tmp_path,
         {
             "model": "opencode-zen/gpt-5.4",
-            "approval_mode": "ask",
+            "approval_mode": "always-ask",
             "tui": {"keymap": {"n": "session_new"}},
         },
     )
@@ -2369,7 +2369,7 @@ def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_field
 
     payload = json.loads(runtime_config_path(tmp_path).read_text(encoding="utf-8"))
     assert payload["model"] == "opencode-zen/gpt-5.4"
-    assert payload["approval_mode"] == "ask"
+    assert payload["approval_mode"] == "always-ask"
     assert payload["tui"]["preferences"] == {
         "theme": {"name": "voidcode-dark", "mode": "dark"},
     }
@@ -2689,7 +2689,7 @@ def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defau
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=standin_providers,
-            approval_mode="allow",
+            approval_mode="yolo",
             model="session/model",
             execution_engine="deterministic",
         ),
@@ -2700,14 +2700,14 @@ def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defau
         workspace=tmp_path,
         config=RuntimeConfig(
             providers=standin_providers,
-            approval_mode="deny",
+            approval_mode="always-ask",
             model="fresh/model",
             execution_engine="deterministic",
         ),
     )
     effective = resumed_runtime.effective_runtime_config(session_id="resume-config-precedence")
 
-    assert effective.approval_mode == "allow"
+    assert effective.approval_mode == "yolo"
     assert effective.model == "session/model"
     assert effective.execution_engine == "deterministic"
 

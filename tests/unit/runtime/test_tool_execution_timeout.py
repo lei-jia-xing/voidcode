@@ -391,7 +391,7 @@ def test_timeout_event_payload_contains_tool_name_and_seconds(tmp_path: Path) ->
         ),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             tool_timeout_seconds=timeout,
         ),
@@ -422,7 +422,7 @@ def test_shell_exec_progress_streams_before_tool_completion(tmp_path: Path) -> N
         graph=_ShellExecGraph({"command": command, "timeout": 5}),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
         ),
     )
@@ -472,7 +472,7 @@ def test_shell_exec_runtime_timeout_preserves_partial_progress_and_final_output(
         ),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
@@ -504,7 +504,7 @@ def test_runtime_does_not_hang_after_tool_timeout(tmp_path: Path) -> None:
         ),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
@@ -801,7 +801,7 @@ def test_session_status_is_failed_after_timeout(tmp_path: Path) -> None:
         ),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
@@ -822,7 +822,7 @@ def test_shell_exec_uses_existing_tool_timeout_when_runtime_timeout_is_unset(
         graph=_ShellExecGraph({"command": command}),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             tool_timeout_seconds=None,
         ),
@@ -850,7 +850,7 @@ def test_shell_exec_timeout_wins_when_shorter_than_runtime_timeout(tmp_path: Pat
         graph=_ShellExecGraph({"command": command, "timeout": 1}),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             tool_timeout_seconds=10,
         ),
@@ -876,7 +876,7 @@ def test_runtime_timeout_wins_when_shorter_than_shell_exec_timeout(tmp_path: Pat
         graph=_ShellExecGraph({"command": command, "timeout": 10}),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
@@ -922,7 +922,7 @@ def test_runtime_timeout_prevents_delayed_shell_exec_side_effect(tmp_path: Path)
         graph=_ShellExecGraph({"command": command, "timeout": 10}),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
@@ -972,7 +972,7 @@ def _timeout_runtime(tmp_path: Path, tool: Any) -> VoidCodeRuntime:
         graph=_SingleToolCallGraph(tool.definition.name),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
@@ -1278,7 +1278,7 @@ def test_timeout_exit_emits_terminal_tool_status_with_error(
         ),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
@@ -1401,7 +1401,7 @@ def test_timeout_replay_preserves_terminal_tool_status_with_matching_call_id(
         ),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
         ),
@@ -1482,7 +1482,7 @@ def test_read_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: Path)
         graph=graph,
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
         ),
     )
@@ -1547,7 +1547,7 @@ def test_read_artifact_uri_rejects_foreign_session_artifact(tmp_path: Path) -> N
         graph=owner_graph,
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
         ),
     )
@@ -1560,7 +1560,7 @@ def test_read_artifact_uri_rejects_foreign_session_artifact(tmp_path: Path) -> N
         graph=_ForeignArtifactUriReadGraph(owner_graph.artifact_id),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
         ),
     )

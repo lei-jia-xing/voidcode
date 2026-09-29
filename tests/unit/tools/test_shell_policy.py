@@ -5,7 +5,13 @@ from typing import Any, cast
 import pytest
 
 from voidcode.hook.typed import ToolInputEvent, builtin_tool_input_handler_registry
-from voidcode.runtime.permission import ExternalDirectoryPermissionConfig, PatternPermissionRule, PermissionPolicy, resolve_permission
+from voidcode.runtime.permission import (
+    ExternalDirectoryPermissionConfig,
+    PatternPermissionRule,
+    PermissionPolicy,
+    approval_decision,
+    resolve_permission,
+)
 from voidcode.runtime.permission_context import RuntimePermissionContextResolver
 from voidcode.runtime.permission_engine import PermissionEngine
 from voidcode.security.shell_policy import non_interactive_shell_env
@@ -48,7 +54,7 @@ def test_builtin_registry_stays_silent_for_plain_commands() -> None:
     assert outcome.diagnostics == ()
 
 
-@pytest.mark.parametrize("mode", ["ask", "allow", "deny"])
+@pytest.mark.parametrize("mode", ["always-ask", "write", "yolo"])
 @pytest.mark.parametrize("read_only", [False, True])
 def test_command_execution_entrypoints_share_authorization(tmp_path: Path, mode: Any, read_only: bool) -> None:
     engine = PermissionEngine(RuntimePermissionContextResolver(workspace=tmp_path), ExternalDirectoryPermissionConfig())
@@ -73,7 +79,8 @@ def test_command_execution_entrypoints_share_authorization(tmp_path: Path, mode:
         )
         assert evaluated.operation_class == "execute"
         assert evaluated.canonical_path is None
-        assert result.decision == ("deny" if read_only else mode)
+        expected = "deny" if read_only else approval_decision(mode=mode, operation_class="execute")
+        assert result.decision == expected
 
 
 def test_explicit_command_rule_applies_to_all_execution_entrypoints(tmp_path: Path) -> None:

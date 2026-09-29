@@ -144,8 +144,8 @@ def build_runtime(workspace: Path, gate: Path, *, read_first: bool = True, safe_
         workspace=workspace,
         tool_registry=ToolRegistry.from_tools([CountingReadTool(gate), BlockingTool(gate)]),
         graph=Graph(read_first=read_first, safe_boundary=safe_boundary),
-        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic", approval_mode="allow"),
-        permission_policy=PermissionPolicy(mode="allow"),
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic", approval_mode="yolo"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
 
 

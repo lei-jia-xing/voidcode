@@ -25,7 +25,7 @@ from ..cli_support import (
 from ..runtime.config import RuntimeConfig, load_runtime_config
 from ..runtime.contracts import RuntimeRequest, RuntimeStreamChunk
 from ..runtime.events import EventEnvelope
-from ..runtime.permission import PermissionDecision, PermissionResolution
+from ..runtime.permission import ApprovalMode, PermissionResolution
 from ..runtime.question import QuestionResponse
 from ..runtime.service import VoidCodeRuntime
 from ..runtime.session import SessionState
@@ -36,7 +36,7 @@ from .trace import TracePrinter, discarded_output_notice
 
 
 class RuntimeConfigKwargs(TypedDict, total=False):
-    approval_mode: PermissionDecision | None
+    approval_mode: ApprovalMode | None
     model: str
     reasoning_effort: str | None
 

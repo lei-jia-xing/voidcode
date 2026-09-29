@@ -358,7 +358,7 @@ def _assert_runtime_session_metadata(
     metadata: object,
     *,
     workspace: Path | str,
-    approval_mode: str = "ask",
+    approval_mode: str = "always-ask",
     model: str | None = None,
     execution_engine: str = "deterministic",
 ) -> None:
@@ -888,7 +888,7 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
     permission_module = importlib.import_module("voidcode.runtime.permission")
-    permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
+    permission_policy = cast(object, permission_module.PermissionPolicy(mode="always-ask"))
 
     runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
     waiting = runtime.run(runtime_request(prompt="write danger.txt approved later", session_id="approval-session"))
@@ -1027,7 +1027,7 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
     permission_module = importlib.import_module("voidcode.runtime.permission")
-    permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
+    permission_policy = cast(object, permission_module.PermissionPolicy(mode="always-ask"))
 
     runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
     waiting = runtime.run(runtime_request(prompt="write danger.txt denied later", session_id="deny-session"))

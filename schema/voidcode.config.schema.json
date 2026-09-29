@@ -26,13 +26,13 @@
       ]
     },
     "approval_mode": {
-      "description": "Default approval policy for tool execution.",
+      "description": "Default approval policy mode for tool execution: which tool tiers are auto-approved.",
       "anyOf": [
         {
           "enum": [
-            "allow",
-            "deny",
-            "ask"
+            "always-ask",
+            "write",
+            "yolo"
           ],
           "type": "string"
         },

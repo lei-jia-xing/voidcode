@@ -11,6 +11,8 @@ from .events import (
     EventEnvelope,
 )
 from .permission import (
+    APPROVAL_MODES,
+    ApprovalMode,
     OperationClass,
     PathScope,
     PendingApproval,
@@ -22,6 +24,10 @@ from .question import PendingQuestion
 
 def permission_decision_or_none(value: object) -> PermissionDecision | None:
     return value if isinstance(value, str) and value in ("allow", "deny", "ask") else None
+
+
+def approval_mode_or_none(value: object) -> ApprovalMode | None:
+    return value if isinstance(value, str) and value in APPROVAL_MODES else None
 
 
 def path_scope_or_none(value: object) -> PathScope | None:
@@ -138,12 +144,12 @@ def permission_policy_for_session(
     base_policy: PermissionPolicy,
     metadata: dict[str, object] | None,
 ) -> PermissionPolicy:
-    approval_mode: PermissionDecision = base_policy.mode
+    approval_mode: ApprovalMode = base_policy.mode
     if metadata is not None:
         persisted_runtime_config = metadata.get("runtime_config")
         if isinstance(persisted_runtime_config, dict):
             persisted_approval_mode = persisted_runtime_config.get("approval_mode")
-            parsed_approval_mode = permission_decision_or_none(persisted_approval_mode)
+            parsed_approval_mode = approval_mode_or_none(persisted_approval_mode)
             if parsed_approval_mode is not None:
                 approval_mode = parsed_approval_mode
     return PermissionPolicy(mode=approval_mode)

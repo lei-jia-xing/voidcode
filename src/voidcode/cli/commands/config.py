@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import click
 
@@ -16,6 +17,7 @@ from ...runtime.config_schema import (
     runtime_config_json_schema,
     write_runtime_config_payload,
 )
+from ...runtime.permission import ApprovalMode
 from ..errors import CliError, require_workspace
 from ..handler_args import ConfigArgs
 from ..options import APPROVAL_MODES, workspace_option
@@ -68,9 +70,11 @@ def _handle_config_init_command(args: ConfigArgs) -> int:
     workspace = args.workspace
     require_workspace(workspace)
 
+    # CLI boundary: click.Choice(APPROVAL_MODES) guarantees an ApprovalMode literal.
+    approval_mode: ApprovalMode = cast(ApprovalMode, args.approval_mode)
     with runtime_error_boundary():
         payload = generate_starter_runtime_config(
-            approval_mode=args.approval_mode,
+            approval_mode=approval_mode,
             model=args.model,
             include_examples=args.with_examples,
         )
@@ -123,11 +127,10 @@ def config_schema() -> int:
 
 @config.command(
     name="init",
-    help="Generate a starter workspace .voidcode.json. "
-    "Note: approval allow means consent to arbitrary command execution without isolation (no OS-level sandbox in v1).",
+    help="Generate a starter workspace .voidcode.json. Note: yolo/write auto-approve execution without isolation (no OS-level sandbox in v1).",
 )
 @workspace_option("Workspace root where .voidcode.json should be generated.")
-@click.option("--approval-mode", type=click.Choice(APPROVAL_MODES), default="ask")
+@click.option("--approval-mode", type=click.Choice(APPROVAL_MODES), default="always-ask")
 @click.option("--model")
 @click.option("--with-examples", is_flag=True)
 @click.option("--print", "print_config", is_flag=True)

@@ -994,7 +994,7 @@ def _run_cli_in_tty(
             "--session-id",
             session_id,
             "--approval-mode",
-            "ask",
+            "always-ask",
         ]
     )
     return subprocess.run(
@@ -1058,7 +1058,7 @@ def test_runtime_skips_hooks_for_nested_hook_launched_runtime_invocations(tmp_pa
     (tmp_path / ".voidcode.json").write_text(
         json.dumps(
             {
-                "approval_mode": "allow",
+                "approval_mode": "yolo",
                 "hooks": {
                     "enabled": True,
                     "timeout_seconds": 90,
@@ -1168,9 +1168,9 @@ def test_runtime_background_task_cancel_reconciles_orphaned_task_from_fresh_runt
 
 
 def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_path: Path) -> None:
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="always-ask")
     permission_module = importlib.import_module("voidcode.runtime.permission")
-    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="always-ask")
 
     waiting = runtime.run(runtime_request(prompt="write danger.txt persisted approval", session_id="persisted-approval"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
@@ -1209,7 +1209,7 @@ def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_pa
 def test_runtime_rejects_stale_duplicate_approval_replay_after_resolution_even_if_pending_state_is_restored(  # noqa: E501
     tmp_path: Path,
 ) -> None:
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="always-ask")
 
     waiting = runtime.run(runtime_request(prompt="write danger.txt stale replay", session_id="stale-replay-session"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
@@ -1322,7 +1322,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
     )
     config_path = tmp_path / ".voidcode.json"
     config_path.write_text(
-        json.dumps({"approval_mode": "deny", "model": "repo/model", "providers": {"custom": {"repo": {}, "session": {}, "fresh": {}}}}),
+        json.dumps({"approval_mode": "always-ask", "model": "repo/model", "providers": {"custom": {"repo": {}, "session": {}, "fresh": {}}}}),
         encoding="utf-8",
     )
     runtime_request, runtime_class = _load_runtime_types()
@@ -1337,8 +1337,8 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
             object,
             runtime_class(
                 workspace=tmp_path,
-                config=load_runtime_config(tmp_path, approval_mode="allow", model="session/model"),
-                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow"),
+                config=load_runtime_config(tmp_path, approval_mode="yolo", model="session/model"),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(mode="yolo"),
             ),
         ),
     )
@@ -1352,8 +1352,8 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
             object,
             runtime_class(
                 workspace=tmp_path,
-                config=runtime_config(approval_mode="deny", model="fresh/model", providers=standin_providers),
-                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(mode="deny"),
+                config=runtime_config(approval_mode="always-ask", model="fresh/model", providers=standin_providers),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(mode="always-ask"),
             ),
         ),
     )
@@ -1373,7 +1373,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "resolved_hook_plan",
     }
     assert replay.session.metadata["runtime_config"] == {
-        "approval_mode": "allow",
+        "approval_mode": "yolo",
         "config_schema_version": 1,
         "execution_engine": "deterministic",
         "fallback_models": [],
@@ -1418,9 +1418,9 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
 
 
 def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path: Path) -> None:
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="always-ask")
     permission_module = importlib.import_module("voidcode.runtime.permission")
-    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="always-ask")
 
     waiting = runtime.run(runtime_request(prompt="write danger.txt finalize failure", session_id="approval-session"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
@@ -1480,9 +1480,9 @@ def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path
 
 
 def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: Path) -> None:
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
+    runtime_request, runtime = _approval_runtime(tmp_path, mode="always-ask")
     permission_module = importlib.import_module("voidcode.runtime.permission")
-    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="always-ask")
 
     waiting = runtime.run(runtime_request(prompt="write danger.txt save failure", session_id="approval-session"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
@@ -1787,7 +1787,7 @@ def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_p
     _ = second_file.write_text("second\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
-    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="yolo")
     calls = (
         ("read", {"path": str(first_file)}),
         ("read", {"path": str(second_file)}),
@@ -1839,7 +1839,7 @@ def test_runtime_resume_truncates_orphaned_tail_after_interrupted_checkpoint(tmp
     _ = second_file.write_text("second\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
-    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="yolo")
     calls = (
         ("read", {"path": str(first_file)}),
         ("read", {"path": str(second_file)}),
@@ -1899,7 +1899,7 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
     _ = (tmp_path / "c.txt").write_text("c\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
-    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="yolo")
     provider_graph_module = importlib.import_module("voidcode.graph.provider_graph")
     resolution_module = importlib.import_module("voidcode.provider.resolution")
     registry_module = importlib.import_module("voidcode.provider.registry")

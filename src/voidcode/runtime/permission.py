@@ -13,7 +13,28 @@ type PermissionDecision = Literal["allow", "deny", "ask"]
 type PermissionResolution = Literal["allow", "deny"]
 type PathScope = Literal["workspace", "external"]
 type OperationClass = Literal["read", "write", "execute"]
+#: The approval-mode vocabulary: one auto-approve threshold, applied per tool
+#: tier. ``always-ask`` auto-approves ``read`` only, ``write`` also approves
+#: ``write``, ``yolo`` approves every tier.
+type ApprovalMode = Literal["always-ask", "write", "yolo"]
+APPROVAL_MODES: tuple[ApprovalMode, ...] = ("always-ask", "write", "yolo")
+DEFAULT_APPROVAL_MODE: ApprovalMode = "always-ask"
 PLAN_MODE_DENIAL_REASON = "read-only mode is active; mutating tools are denied"
+
+
+def approval_decision(*, mode: ApprovalMode, operation_class: OperationClass | None) -> PermissionDecision:
+    """The single place that turns ``(approval mode, tool tier)`` into a decision.
+
+    Every other module threads the mode and the per-call tier here; no caller
+    may re-derive the matrix. ``None`` is the unclassified tier and follows the
+    same safe default as ``operation_class_for_tool`` (``execute``).
+    """
+    tier: OperationClass = "execute" if operation_class is None else operation_class
+    if mode == "yolo":
+        return "allow"
+    if mode == "write":
+        return "allow" if tier in ("read", "write") else "ask"
+    return "allow" if tier == "read" else "ask"
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +49,14 @@ class PermissionOutcome:
 
 @dataclass(frozen=True, slots=True)
 class PermissionPolicy:
-    mode: PermissionDecision = "ask"
+    """The active approval policy: one auto-approve threshold for every tier.
+
+    The per-call tier comes from :func:`resolve_permission`'s
+    ``operation_class``; :func:`approval_decision` is the only place the two are
+    combined.
+    """
+
+    mode: ApprovalMode = DEFAULT_APPROVAL_MODE
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,12 +104,6 @@ class PendingApproval:
     policy_surface: str | None = None
 
 
-def default_policy_for_tool(tool: ToolDefinition) -> PermissionPolicy:
-    if tool.read_only:
-        return PermissionPolicy(mode="allow")
-    return PermissionPolicy(mode="ask")
-
-
 def is_read_only_blocked(
     *,
     read_only: bool,
@@ -122,29 +144,31 @@ def resolve_permission(
     rule_decision: PermissionDecision | None = None,
     read_only: bool = False,
 ) -> PermissionOutcome:
-    plan_blocked = is_read_only_blocked(read_only=read_only, tool=tool, operation_class=operation_class)
+    """Resolve one tool call into a decision and its pending-approval payload.
+
+    Precedence, highest first: read-only/plan denial, then an explicit
+    ``rule_decision``, then the path-scope read shortcut, then an
+    external-directory decision, and finally the active mode's tier matrix
+    (:func:`approval_decision`).
+    """
     decision: PermissionDecision
-    effective_policy: PermissionPolicy
     effective_surface = policy_surface
+    plan_blocked = is_read_only_blocked(read_only=read_only, tool=tool, operation_class=operation_class)
     if plan_blocked:
         decision = "deny"
-        effective_policy = PermissionPolicy(mode="deny")
         effective_surface = "mode.plan"
     elif rule_decision is not None:
         decision = rule_decision
-        effective_policy = PermissionPolicy(mode=rule_decision)
     elif path_scope == "workspace" and (operation_class == "read" or (operation_class is None and tool.read_only)):
         return PermissionOutcome(decision="allow")
     elif path_scope == "external" and external_decision is not None:
         decision = external_decision
-        effective_policy = PermissionPolicy(mode=external_decision)
     else:
-        decision = policy.mode
-        effective_policy = policy
+        decision = approval_decision(mode=policy.mode, operation_class=operation_class)
 
     pending_approval = build_pending_approval(
         tool_call,
-        policy=effective_policy,
+        decision=decision,
         owner_session_id=owner_session_id,
         owner_parent_session_id=owner_parent_session_id,
         delegated_task_id=delegated_task_id,
@@ -161,7 +185,7 @@ def resolve_permission(
 def build_pending_approval(
     tool_call: ToolCall,
     *,
-    policy: PermissionPolicy,
+    decision: PermissionDecision,
     owner_session_id: str | None = None,
     owner_parent_session_id: str | None = None,
     delegated_task_id: str | None = None,
@@ -183,7 +207,7 @@ def build_pending_approval(
         arguments=dict(tool_call.arguments),
         target_summary=target_summary,
         reason=reason,
-        policy_mode=policy.mode,
+        policy_mode=decision,
         owner_session_id=owner_session_id,
         owner_parent_session_id=owner_parent_session_id,
         delegated_task_id=delegated_task_id,

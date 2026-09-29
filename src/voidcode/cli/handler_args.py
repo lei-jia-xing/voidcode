@@ -92,7 +92,7 @@ class ConfigArgs:
     workspace: Path = field(default_factory=Path.cwd)
     session_id: str | None = None
     json: bool = False
-    approval_mode: str = "ask"
+    approval_mode: str = "always-ask"
     model: str | None = None
     with_examples: bool = False
     print: bool = False

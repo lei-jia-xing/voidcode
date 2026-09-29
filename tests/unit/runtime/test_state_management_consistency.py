@@ -634,7 +634,7 @@ def test_completed_background_child_session_is_sealed_completed(tmp_path: Path) 
         workspace=tmp_path,
         graph=_YieldChildGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             mcp=RuntimeMcpConfig(enabled=False),
         ),

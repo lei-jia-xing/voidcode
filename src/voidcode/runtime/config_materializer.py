@@ -33,11 +33,12 @@ from .config_models import (
     config_model_keys,
 )
 from .permission import (
+    ApprovalMode,
     ExternalDirectoryPolicy,
     PatternPermissionRule,
     PermissionDecision,
 )
-from .permission_policy import permission_decision_or_none
+from .permission_policy import approval_mode_or_none, permission_decision_or_none
 from .policy import RuntimePolicyConfig, serialize_runtime_policy_config
 
 #: Accepted and required persisted ``runtime_config`` keys, derived from the
@@ -48,7 +49,7 @@ PERSISTED_RUNTIME_CONFIG_REQUIRED_KEYS = config_model_keys(PersistedRuntimeConfi
 
 @dataclass(frozen=True, slots=True)
 class EffectiveRuntimeConfig:
-    approval_mode: PermissionDecision
+    approval_mode: ApprovalMode
     permission: ExternalDirectoryPermissionConfig
     model: str | None
     execution_engine: ExecutionEngineName
@@ -66,7 +67,7 @@ class EffectiveRuntimeConfig:
 
 @dataclass(frozen=True, slots=True)
 class PersistedRuntimeConfigMaterialization:
-    approval_mode: PermissionDecision
+    approval_mode: ApprovalMode
     permission: ExternalDirectoryPermissionConfig
     policy: RuntimePolicyConfig | None
     model: str | None
@@ -150,7 +151,7 @@ def parse_persisted_runtime_config(
     if missing_runtime_config_keys:
         raise ValueError("persisted runtime_config is missing required field(s): " + ", ".join(missing_runtime_config_keys))
 
-    approval_mode = permission_decision_or_none(runtime_config["approval_mode"])
+    approval_mode = approval_mode_or_none(runtime_config["approval_mode"])
     if approval_mode is None:
         raise ValueError("persisted runtime_config approval_mode is invalid")
 

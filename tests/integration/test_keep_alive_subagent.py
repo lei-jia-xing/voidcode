@@ -415,7 +415,7 @@ def _blocking_keep_alive_runtime(
             runtime_class(
                 workspace=tmp_path,
                 graph=_BlockingKeepAliveChildGraph(blocks=blocks),
-                permission_policy=permission_policy(mode="allow"),
+                permission_policy=permission_policy(mode="yolo"),
             ),
         ),
     )
@@ -648,7 +648,7 @@ def _keep_alive_runtime(
             runtime_class(
                 workspace=tmp_path,
                 graph=_KeepAliveChildGraph(child_requests),
-                permission_policy=permission_policy(mode="allow"),
+                permission_policy=permission_policy(mode="yolo"),
             ),
         ),
     )
@@ -822,7 +822,7 @@ def test_keep_alive_shutdown_parks_interrupted_and_fresh_runtime_resumes_same_ta
             fresh(
                 workspace=tmp_path,
                 graph=_KeepAliveChildGraph(child_requests),
-                permission_policy=permission_policy(mode="allow"),
+                permission_policy=permission_policy(mode="yolo"),
             ),
         ),
     )

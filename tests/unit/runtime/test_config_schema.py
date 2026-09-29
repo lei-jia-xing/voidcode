@@ -97,8 +97,8 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     # An optional section publishes an explicit ``null`` branch: the loader treats
     # an explicit ``null`` as "unset", so the contract accepts it too.
     assert properties["approval_mode"] == {
-        "anyOf": [{"type": "string", "enum": ["allow", "deny", "ask"]}, {"type": "null"}],
-        "description": "Default approval policy for tool execution.",
+        "anyOf": [{"type": "string", "enum": ["always-ask", "write", "yolo"]}, {"type": "null"}],
+        "description": "Default approval policy mode for tool execution: which tool tiers are auto-approved.",
     }
     assert properties["permission"] == {"anyOf": [{"$ref": "#/$defs/permissionConfig"}, {"type": "null"}]}
     assert properties["execution_engine"] == {
@@ -272,14 +272,14 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
 
 def test_generate_starter_runtime_config_excludes_secrets() -> None:
     payload = generate_starter_runtime_config(
-        approval_mode="deny",
+        approval_mode="yolo",
         model="opencode-go/glm-5",
         include_examples=True,
     )
 
     assert payload == {
         "$schema": RUNTIME_CONFIG_SCHEMA_ID,
-        "approval_mode": "deny",
+        "approval_mode": "yolo",
         "model": "opencode-go/glm-5",
         "formatter": {"enabled": True},
         "lsp": {"enabled": True},
@@ -293,7 +293,7 @@ def test_generate_starter_runtime_config_excludes_secrets() -> None:
 
 def test_generate_starter_runtime_config_validates_inputs() -> None:
     with pytest.raises(ValueError, match="approval_mode"):
-        generate_starter_runtime_config(approval_mode="always")
+        generate_starter_runtime_config(approval_mode="allow")
 
     with pytest.raises(ValueError, match="provider/model"):
         generate_starter_runtime_config(model="gpt-5")
@@ -306,7 +306,7 @@ def test_generate_starter_runtime_config_validates_inputs() -> None:
 def test_format_starter_runtime_config_json_preserves_order() -> None:
     payload = generate_starter_runtime_config(include_schema_reference=False)
 
-    assert format_starter_runtime_config_json(payload) == '{\n  "approval_mode": "ask"\n}\n'
+    assert format_starter_runtime_config_json(payload) == '{\n  "approval_mode": "always-ask"\n}\n'
 
 
 def test_runtime_config_rejects_removed_workflows_field(tmp_path: Path) -> None:
@@ -578,7 +578,7 @@ def test_runtime_config_schema_accepts_null_wherever_the_loader_treats_null_as_u
     # The loader must agree: a config file of explicit nulls resolves to defaults.
     (tmp_path / ".voidcode.json").write_text(json.dumps(null_payload), encoding="utf-8")
     config = load_runtime_config(tmp_path, env={})
-    assert config.approval_mode == "ask"
+    assert config.approval_mode == "always-ask"
     assert config.execution_engine == "provider"
 
 

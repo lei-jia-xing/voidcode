@@ -8,7 +8,7 @@
 
 ## 状态
 
-当前运行时已经实现完整的受控审批流：`allow` / `deny` / `ask` 三种模式都已可用，未决审批会被持久化，并且 approval resume 现在拥有运行时内部的持久化 checkpoint anchor。
+当前运行时已经实现完整的受控审批流：`allow` / `deny` / `ask` 三种**决策**都已可用，未决审批会被持久化，并且 approval resume 现在拥有运行时内部的持久化 checkpoint anchor。审批**模式**（`always-ask` / `write` / `yolo`）决定按工具 tier 自动放行哪些调用。
 
 ## 当前代码锚点
 
@@ -17,13 +17,54 @@
 - 当前 payload 包含：
   - `tool`
   - `decision`
+- `(mode, tier) → decision` 的**唯一**求值点是 `src/voidcode/runtime/permission.py::approval_decision`；其他模块只传递 mode 与每次调用的 tier，不得重新推导该矩阵。
 
-## MVP 决策词汇表
+## 审批模型：tier × mode
+
+审批有两个正交输入：每次调用解析出的**工具 tier**，以及配置选定的**审批模式**。
+
+### 工具 tier（`OperationClass`）
+
+工具 tier 由 `src/voidcode/runtime/permission_context.py::operation_class_for_tool` 按调用计算，取值与语义：
+
+| tier | 含义 | 当前判定 |
+| --- | --- | --- |
+| `read` | 读取数据，或只更新 UI-only 会话元数据 | `ToolDefinition.read_only` 为真（且无更强证据）的工具；`ast_grep` 的 search/preview；`task` 的 `output`/`ps`；`background_process` 的 `ps`/`logs` |
+| `write` | 变更 workspace/会话状态，但不执行任意代码 | 内置文件变更工具 `write` / `edit` / `multi_edit` / `apply_patch` / `apply_workspace_edit`；`ast_grep` 的 `replace`；`task` 的 `steer`；MCP server 工具 |
+| `execute` | 执行代码、起 shell、驱动浏览器、spawn agent 等宽泛操作 | `shell_exec`、`background_process_start`、`task`/`task_batch` 的 spawn 路径、`LocalCustomTool`，以及**任何未声明 tier 的工具** |
+
+**未声明 tier 的工具，以及任何格式非法的决策，都按 `execute` 处理**，这是未知自定义工具的安全默认；MCP server 工具按契约声明 `write`。
+
+### 审批模式（`ApprovalMode`）
+
+`approval_mode` 配置选定自动放行阈值：
+
+| mode | 自动放行 | 需要审批 |
+| --- | --- | --- |
+| `always-ask`（默认） | `read` | `write`、`exec` |
+| `write` | `read`、`write` | `exec` |
+| `yolo` | `read`、`write`、`exec` | 无 |
+
+默认是**保守的 `always-ask`**：`write`/`exec` tier 默认仍进入审批。把默认切成 `yolo` 会默认自动放行写入与执行，属于安全相关的独立决策，不在本契约内单方面变更。
+
+### 决策词表（`PermissionDecision`，与 mode 不同）
 
 - `allow`：继续执行
 - `deny`：不执行该工具调用，将拒绝作为工具级错误反馈给模型，会话继续处于
   `running` 状态；模型可以重新规划或解释约束
 - `ask`：暂停执行，直到记录显式的客户端或操作员决策
+
+决策是本契约中所有事件、pending approval、pattern rule 决策与 resume 决策的唯一词表；mode 只决定 `(mode, tier)` 解析成 `allow` 还是 `ask`。两者不混用：`approval_mode` 只接受三个 mode 值，`allow`/`deny`/`ask` 出现在 `permission.rules`、`permission.external_directory_*` 与 approval 事件里。
+
+### 解析优先级
+
+`resolve_permission` 的单点求值顺序，从高到低：
+
+1. **plan / read-only 硬拒绝**：任何非只读工具、或任何 write/execute tier 的调用，无条件 `deny`（`policy_surface="mode.plan"`）。`yolo` 也不能覆盖。
+2. **显式 pattern rule**（`permission.rules` / `rule_decision`）：首匹配生效。
+3. **workspace 内 read tier 快捷路径**：直接 `allow`，不建 pending approval。
+4. **external-directory 决策**（`external_directory_read` / `external_directory_write`）：workspace 外路径按其裁决。
+5. **`(mode, tier)` 矩阵**：以上都不适用时，由 `approval_decision(mode, operation_class)` 得出 `allow` 或 `ask`。
 
 ### 拒绝语义
 
@@ -38,7 +79,7 @@
 
 ## 命令执行授权
 
-`shell_exec` 与后台进程启动统一通过 runtime 的执行能力授权，默认 `ask`；显式 `allow` 允许任意命令，显式 `deny` 与只读模式禁止执行。运行时不再解析 shell 字符串推断危险操作或外部文件访问。结构化文件工具的路径权限不受此变更影响。
+`shell_exec` 与后台进程启动统一通过 runtime 的执行能力授权，属 `execute` tier：在默认 `always-ask` 与 `write` 模式下都要审批，只有 `yolo` 才自动放行；显式 `allow` rule 允许任意命令，显式 `deny` rule 与只读模式禁止执行。运行时不再解析 shell 字符串推断危险操作或外部文件访问。结构化文件工具的路径权限不受此变更影响。
 
 ## 审批请求契约
 
@@ -95,7 +136,7 @@ Payload 字段意图：
 - `arguments`：建议的工具参数或脱敏后的等价内容
 - `target_summary`：面向客户端的人类可读目标摘要
 - `reason`：为什么需要审批
-- `policy`：与决策相关的策略上下文
+- `policy`：与决策相关的策略上下文；其中 `mode` 是该次 pending approval 记录的**决策**（本契约的历史字段名沿用至今，取值仍是 `allow`/`deny`/`ask`，不是 `approval_mode` 的 mode 词表）
 
 ## 审批处理（Resolution）契约
 
@@ -174,7 +215,7 @@ Payload 字段意图：
 
 当前已实现行为：
 - 只读工具仍通过 `runtime.permission_resolved` 直接继续执行
-- 写入/高风险工具在 `ask` 时会进入可持久化的等待状态
+- 写/执行 tier 的工具在 `(mode, tier)` 解析为 `ask` 时会进入可持久化的等待状态
 - `allow` / `deny` / `ask` 的恢复路径都由运行时负责
 - approval resume 可以优先使用运行时内部 checkpoint anchor 恢复，而不是只依赖重新扫描历史事件
 - `deny` 决策会将权限拒绝作为工具级错误反馈给模型，并通过
@@ -188,7 +229,7 @@ Payload 字段意图：
 
 ### Non-goal (v1): OS-level sandbox
 
-当前已移除基于命令字符串的危险操作识别与文件路径推断。前台 shell 与后台命令统一按任意执行能力授权，默认 `ask`，显式 `allow` 不再附加危险命令黑名单；显式 command 匹配规则仍可用于授权，但不是文件隔离保证。Non-goal (v1): OS-level sandbox（syscall 拦截与访问控制等执行隔离手段）在 v1 明确为非目标；当前没有工作区 sandbox。approval `allow` 是用户对任意命令执行的同意，不是隔离（consent, not containment）；`permission.rules` / 路径范围 / 操作分类仅为防误触的 UX 手段，不是安全边界。
+当前已移除基于命令字符串的危险操作识别与文件路径推断。前台 shell 与后台命令统一按任意执行能力授权（`execute` tier），默认（`always-ask`）进入审批，显式 `allow` rule 不再附加危险命令黑名单；显式 command 匹配规则仍可用于授权，但不是文件隔离保证。Non-goal (v1): OS-level sandbox（syscall 拦截与访问控制等执行隔离手段）在 v1 明确为非目标；当前没有工作区 sandbox。approval `allow` 是用户对任意命令执行的同意，不是隔离（consent, not containment）；`permission.rules` / 路径范围 / 操作分类仅为防误触的 UX 手段，不是安全边界。
 
 - 统一覆盖前台 shell、后台进程及其子进程；不能通过更换执行工具绕过同一权限边界。
 - 区分 syscall 观察与强制执行：仅记录调用（如 `strace`）不足以阻止访问，必须在有副作用的操作发生前实施授权或拒绝。

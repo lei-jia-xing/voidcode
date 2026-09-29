@@ -394,8 +394,8 @@ def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Pa
         workspace=tmp_path,
         graph=_ToolThenNothingGraph(),
         tool_registry=ToolRegistry.from_tools([tool]),
-        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
-        permission_policy=PermissionPolicy(mode="allow"),
+        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
     store = runtime._session_store
     chunks: list[RuntimeStreamChunk] = []
@@ -497,7 +497,7 @@ def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> No
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=graph,  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     streamed_deltas: list[str] = []
 
@@ -566,8 +566,8 @@ def test_steer_landing_after_approval_resolution_is_rejected(tmp_path: Path) -> 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask", execution_engine="deterministic"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask", execution_engine="deterministic"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
     waiting = runtime.run(RuntimeRequest(prompt="approval steer", session_id="steer-1"))
     assert waiting.session.status == "waiting"
@@ -596,8 +596,8 @@ def test_steer_queued_while_waiting_is_delivered_on_next_run_without_reactivatin
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask", execution_engine="deterministic"),
-        permission_policy=PermissionPolicy(mode="ask"),
+        config=RuntimeConfig(approval_mode="always-ask", execution_engine="deterministic"),
+        permission_policy=PermissionPolicy(mode="always-ask"),
     )
     waiting = runtime.run(RuntimeRequest(prompt="approval steer pre", session_id="steer-2"))
     assert waiting.session.status == "waiting"
@@ -638,7 +638,7 @@ def test_steer_queued_while_run_active_is_accepted(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ImmediateDoneGraph(),  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     stream = runtime.run_stream(RuntimeRequest(prompt="active steer", session_id="steer-active"))
     first_chunk = next(stream)
@@ -682,7 +682,7 @@ def test_follow_up_queued_during_active_run_survives_outer_snapshot_and_is_consu
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=graph,  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     stream = runtime.run_stream(RuntimeRequest(prompt="outer", session_id="follow-up-active"))
     assert next(stream).session.status == "running"
@@ -733,7 +733,7 @@ def test_steer_rejected_on_interrupted_session_without_active_run(tmp_path: Path
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         session_store=store,
-        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
 
     # An ``interrupted`` row with no active run is sealed: the run that left it
@@ -753,7 +753,7 @@ def test_child_background_completion_cannot_mutate_sealed_parent(tmp_path: Path)
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SuccessGraph(),  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     parent = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     assert parent.session.status == "completed"
@@ -839,7 +839,7 @@ def test_finalize_is_idempotent_and_backfill_repairs_missing_parent_event(tmp_pa
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SuccessGraph(),  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     store = runtime._session_store
@@ -877,7 +877,7 @@ def test_cancel_wins_completion_race_without_mutating_child_truth(tmp_path: Path
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SuccessGraph(),  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     store = runtime._session_store
@@ -906,7 +906,7 @@ def test_unknown_parent_drops_delivery_but_preserves_child_and_task_truth(tmp_pa
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SuccessGraph(),  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     store = runtime._session_store
     _seed_child_session_and_task(
@@ -941,7 +941,7 @@ def test_runtime_shutdown_drains_background_worker_results_before_teardown(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SuccessGraph(),  # type: ignore[arg-type]
-        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+        config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
@@ -963,7 +963,7 @@ def _background_lifecycle_runtime(workspace: Path) -> VoidCodeRuntime:
         workspace=workspace,
         graph=_SuccessGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(
-            approval_mode="allow",
+            approval_mode="yolo",
             execution_engine="deterministic",
             background_task=RuntimeBackgroundTaskConfig(delegated_reminders_enabled=False),
         ),

@@ -225,8 +225,8 @@ from .mcp_tool_cache import McpToolCatalogCache
 from .mode import MODE_DEFINITIONS, resolve_mode, runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .paths import mcp_tool_catalog_cache_path, provider_catalog_cache_path
 from .permission import (
+    ApprovalMode,
     PendingApproval,
-    PermissionDecision,
     PermissionPolicy,
     PermissionResolution,
     resolve_permission,
@@ -4625,7 +4625,7 @@ class VoidCodeRuntime(RuntimeSurface):
         return waiting_request_id_from_response(response, request_kind=request_kind)
 
     def effective_runtime_config_from_metadata(self, metadata: dict[str, object] | None) -> EffectiveRuntimeConfig:
-        approval_mode: PermissionDecision = self._config.approval_mode
+        approval_mode: ApprovalMode = self._config.approval_mode
         model = self._config.model
         execution_engine = self._config.execution_engine
         reasoning_effort = self._config.reasoning_effort

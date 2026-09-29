@@ -38,9 +38,9 @@ def test_mcp_remote_http_server_without_url_is_rejected(tmp_path: Path) -> None:
 @pytest.mark.parametrize("schema_value", [5, [], {"x": 1}, True])
 def test_non_string_schema_reference_is_ignored_in_the_workspace_config(tmp_path: Path, schema_value: object) -> None:
     """``$schema`` is an editor hint the loader never reads; HEAD ignored any value."""
-    config = _load_workspace(tmp_path, {"$schema": schema_value, "approval_mode": "deny"})
+    config = _load_workspace(tmp_path, {"$schema": schema_value, "approval_mode": "always-ask"})
 
-    assert config.approval_mode == "deny"
+    assert config.approval_mode == "always-ask"
 
 
 def test_non_string_schema_reference_is_ignored_in_the_user_config(tmp_path: Path) -> None:

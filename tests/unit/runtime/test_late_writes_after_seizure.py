@@ -157,7 +157,7 @@ def _seize_execution(tmp_path: Path, tool: _TruthWritingTool, *, task_id: str) -
             execution_engine="deterministic",
             tool_timeout_seconds=TOOL_TIMEOUT_SECONDS,
         ),
-        permission_policy=PermissionPolicy(mode="allow"),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
     lease = EXECUTION_OWNERSHIP.grant(workspace=tmp_path, task_id=task_id)
     outcome: dict[str, Any] = {"events": []}

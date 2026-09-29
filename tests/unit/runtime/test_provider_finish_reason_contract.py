@@ -303,7 +303,7 @@ def test_transient_failure_after_streamed_text_falls_back_and_announces_the_disc
             workspace=tmp_path,
             session_store=SqliteSessionStore(),
             config=RuntimeConfig(
-                approval_mode="allow",
+                approval_mode="yolo",
                 execution_engine="provider",
                 model="primary/m1",
                 provider_fallback=RuntimeProviderFallbackConfig(

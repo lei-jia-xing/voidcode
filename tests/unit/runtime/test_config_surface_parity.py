@@ -51,7 +51,7 @@ from voidcode.runtime.config_schema import runtime_config_json_schema
 #: one leaf instead of tripping over a missing sibling.
 _SECTION_BASELINES: dict[str, object] = {
     "config_schema_version": 1,
-    "approval_mode": "ask",
+    "approval_mode": "always-ask",
     "permission": {"external_directory_read": {"*": "allow"}},
     "policy": {"version": "v1", "tool_policy": {"allow": ["read"]}},
     "model": "opencode-go/x",
@@ -424,7 +424,7 @@ _HAND_WRITTEN_CORPUS: list[tuple[str, dict[str, object]]] = [
     ("top.model_ok", {"model": "opencode-go/x"}),
     ("top.approval_bad", {"approval_mode": "sometimes"}),
     ("top.approval_null", {"approval_mode": None}),
-    ("top.approval_ok", {"approval_mode": "deny"}),
+    ("top.approval_ok", {"approval_mode": "yolo"}),
     ("top.execution_engine_bad", {"execution_engine": "nope"}),
     ("top.execution_engine_ok", {"execution_engine": "provider"}),
     ("top.tool_timeout_zero", {"tool_timeout_seconds": 0}),

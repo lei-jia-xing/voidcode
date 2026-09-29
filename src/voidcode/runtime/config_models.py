@@ -44,7 +44,7 @@ from ..mcp.builtin import get_builtin_mcp_descriptor
 from ..provider.config import ProviderConfigsPayload, format_runtime_config_field_error
 from ..provider.reasoning_effort import ALL_EFFORTS, normalize_reasoning_effort
 from .context.window import DEFAULT_KEEP_RECENT_TOOL_TOKENS
-from .permission import PermissionDecision
+from .permission import APPROVAL_MODES, ApprovalMode, PermissionDecision
 from .policy import runtime_policy_allowed_hook_scopes
 from .reminders import DEFAULT_TODO_REMINDER_MAX_PER_CYCLE
 
@@ -68,7 +68,12 @@ EXECUTION_ENGINE_ENV_VAR = "VOIDCODE_EXECUTION_ENGINE"
 TOOL_TIMEOUT_ENV_VAR = "VOIDCODE_TOOL_TIMEOUT_SECONDS"
 REASONING_EFFORT_ENV_VAR = "VOIDCODE_REASONING_EFFORT"
 
-VALID_APPROVAL_MODES: tuple[PermissionDecision, ...] = ("allow", "deny", "ask")
+#: The ``.voidcode.json`` ``approval_mode`` vocabulary, shared with
+#: ``runtime/permission.py`` so the config surface and the resolver cannot drift.
+VALID_APPROVAL_MODES: tuple[ApprovalMode, ...] = APPROVAL_MODES
+#: The decision tri-state used by ``permission.rules`` and external-directory
+#: maps; distinct from the mode, and never accepted for ``approval_mode``.
+VALID_PERMISSION_DECISIONS: tuple[PermissionDecision, ...] = ("allow", "deny", "ask")
 VALID_TUI_COMMANDS = ("session_new", "session_resume", "tools_expand")
 type TuiCommand = Literal["session_new", "session_resume", "tools_expand"]
 
@@ -282,9 +287,20 @@ def _parse_formatter_cwd_policy(raw_value: object, *, field_path: str, default: 
 
 
 def _parse_permission_decision(value: object, *, source: str) -> PermissionDecision:
+    if not isinstance(value, str) or value not in VALID_PERMISSION_DECISIONS:
+        allowed = ", ".join(VALID_PERMISSION_DECISIONS)
+        raise ValueError(f"{source} must be one of: {allowed}")
+    return value
+
+
+def _parse_approval_mode_value(value: object, *, source: str) -> ApprovalMode:
     if not isinstance(value, str) or value not in VALID_APPROVAL_MODES:
         allowed = ", ".join(VALID_APPROVAL_MODES)
-        raise ValueError(f"{source} must be one of: {allowed}")
+        raise ValueError(
+            f"{source} must be one of: {allowed} "
+            "(the previous allow/deny/ask approval_mode values were removed; "
+            "use permission.rules for per-tool allow/deny/ask decisions)",
+        )
     return value
 
 
@@ -296,10 +312,20 @@ def _parse_execution_engine_name(value: object, *, source: str) -> ExecutionEngi
 
 
 @overload
-def parse_approval_mode(raw_value: object, *, source: str, allow_none: Literal[False]) -> PermissionDecision: ...
+def parse_approval_mode(raw_value: object, *, source: str, allow_none: Literal[False]) -> ApprovalMode: ...
 @overload
-def parse_approval_mode(raw_value: object, *, source: str, allow_none: Literal[True]) -> PermissionDecision | None: ...
-def parse_approval_mode(raw_value: object, *, source: str, allow_none: bool) -> PermissionDecision | None:
+def parse_approval_mode(raw_value: object, *, source: str, allow_none: Literal[True]) -> ApprovalMode | None: ...
+def parse_approval_mode(raw_value: object, *, source: str, allow_none: bool) -> ApprovalMode | None:
+    if raw_value is None and allow_none:
+        return None
+    return _parse_approval_mode_value(raw_value, source=source)
+
+
+@overload
+def parse_permission_decision(raw_value: object, *, source: str, allow_none: Literal[False]) -> PermissionDecision: ...
+@overload
+def parse_permission_decision(raw_value: object, *, source: str, allow_none: Literal[True]) -> PermissionDecision | None: ...
+def parse_permission_decision(raw_value: object, *, source: str, allow_none: bool) -> PermissionDecision | None:
     if raw_value is None and allow_none:
         return None
     return _parse_permission_decision(raw_value, source=source)
@@ -455,7 +481,7 @@ class EnvironmentRuntimeSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
 
-    approval_mode: PermissionDecision | None = Field(
+    approval_mode: ApprovalMode | None = Field(
         default=None,
         validation_alias=APPROVAL_MODE_ENV_VAR,
     )
@@ -475,7 +501,7 @@ class EnvironmentRuntimeSettings(BaseSettings):
 
     @field_validator("approval_mode", mode="before")
     @classmethod
-    def _validate_approval_mode(cls, value: object) -> PermissionDecision | None:
+    def _validate_approval_mode(cls, value: object) -> ApprovalMode | None:
         return parse_approval_mode(
             value,
             source=f"environment variable {APPROVAL_MODE_ENV_VAR}",
@@ -561,7 +587,7 @@ class PermissionRulePayload(_PayloadModel):
         raw_payload = payload
         if "decision" not in raw_payload:
             raise ValueError(f"runtime config field '{field_path}.decision' is required")
-        parsed_decision = parse_approval_mode(
+        parsed_decision = parse_permission_decision(
             raw_payload["decision"],
             source=f"runtime config field '{field_path}.decision'",
             allow_none=False,
@@ -599,7 +625,7 @@ class PermissionPayload(_PayloadModel):
         for raw_pattern, raw_decision in value.items():
             if not isinstance(raw_pattern, str) or not raw_pattern.strip():
                 raise ValueError(f"runtime config field '{field_path}' keys must be non-empty strings")
-            parsed_decision = parse_approval_mode(
+            parsed_decision = parse_permission_decision(
                 raw_decision,
                 source=f"runtime config field '{field_path}.{raw_pattern}'",
                 allow_none=False,
@@ -1709,9 +1735,9 @@ class RuntimeConfigPayload(_PayloadModel):
         default=CONFIG_SCHEMA_VERSION,
         description="Top-level config schema version. Currently only 1 is supported; omit to default to 1.",
     )
-    approval_mode: PermissionDecision | None = Field(
+    approval_mode: ApprovalMode | None = Field(
         default=None,
-        description="Default approval policy for tool execution.",
+        description="Default approval policy mode for tool execution: which tool tiers are auto-approved.",
     )
     permission: PermissionPayload | None = None
     policy: PolicyPayload | None = None
@@ -1814,7 +1840,7 @@ class RuntimeConfigPayload(_PayloadModel):
 
     @field_validator("approval_mode", mode="before")
     @classmethod
-    def _validate_approval_mode(cls, value: object, info: ValidationInfo) -> PermissionDecision | None:
+    def _validate_approval_mode(cls, value: object, info: ValidationInfo) -> ApprovalMode | None:
         return parse_approval_mode(value, source=_config_field_source(info, "approval_mode"), allow_none=True)
 
     @field_validator("execution_engine", mode="before")
@@ -1857,7 +1883,7 @@ class PersistedRuntimeConfigPayload(_PayloadModel):
     """
 
     config_schema_version: Literal[1] | None = None
-    approval_mode: PermissionDecision
+    approval_mode: ApprovalMode
     permission: PermissionPayload
     policy: PolicyPayload | None = None
     execution_engine: ExecutionEngineName
@@ -1924,6 +1950,7 @@ class UserConfigPayload(_PayloadModel):
 #: declared explicitly instead of following the class names.
 SCHEMA_DEFINITION_NAMES: Mapping[str, str] = {
     # value-type aliases shared by several properties
+    "ApprovalMode": "approvalMode",
     "PermissionDecision": "permissionDecision",
     "ExecutionEngineName": "executionEngine",
     "RuntimeProviderContextDiagnosticMode": "providerContextDiagnosticMode",

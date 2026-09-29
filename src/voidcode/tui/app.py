@@ -50,7 +50,7 @@ from typing import Final
 from ..runtime.config import RuntimeConfig, load_runtime_config
 from ..runtime.contracts import RuntimeRequest, RuntimeStreamChunk
 from ..runtime.events import EventEnvelope
-from ..runtime.permission import PermissionDecision
+from ..runtime.permission import ApprovalMode
 from ..runtime.question import QuestionResponse
 from ..runtime.service import VoidCodeRuntime
 from ..runtime.session_metadata_helpers import session_model_identity
@@ -266,7 +266,7 @@ class TuiApp:
     def __init__(
         self,
         workspace: Path,
-        approval_mode: PermissionDecision | None = None,
+        approval_mode: ApprovalMode | None = None,
         *,
         runtime: VoidCodeRuntime | None = None,
         keymap: Mapping[str, str] | None = None,
@@ -1042,7 +1042,7 @@ class TuiApp:
 def run_tui(
     *,
     workspace: Path,
-    approval_mode: PermissionDecision | None = None,
+    approval_mode: ApprovalMode | None = None,
     runtime: VoidCodeRuntime | None = None,
     keymap: Mapping[str, str] | None = None,
 ) -> int:

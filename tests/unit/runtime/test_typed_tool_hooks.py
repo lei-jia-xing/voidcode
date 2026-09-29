@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import pytest
 
@@ -10,7 +9,7 @@ from voidcode.graph.contracts import GraphEvent, GraphRunRequest
 from voidcode.hook.typed import BlockDecision, RewriteDecision, ToolInputDecision, ToolInputEvent, ToolInputHandlerBinding, ToolInputHandlerRegistry
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permission import ApprovalMode, PermissionPolicy
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.tool_registry import ToolRegistry
 from voidcode.tools.contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
@@ -66,7 +65,7 @@ def _runtime(
     tool: _CaptureTool,
     registry: ToolInputHandlerRegistry,
     *,
-    approval_mode: Literal["allow", "ask"] = "allow",
+    approval_mode: ApprovalMode = "yolo",
     initial_call: ToolCall | None = None,
     include_invoke_tool: bool = False,
 ) -> VoidCodeRuntime:
@@ -141,7 +140,7 @@ def test_approval_resume_uses_final_started_id_once_and_does_not_repeat_typed_ha
     tool = _CaptureTool()
     handler_calls: list[str] = []
     registry = ToolInputHandlerRegistry((ToolInputHandlerBinding("canonicalize", _canonicalizer("approved.txt", handler_calls)),))
-    runtime = _runtime(tmp_path, tool, registry, approval_mode="ask")
+    runtime = _runtime(tmp_path, tool, registry, approval_mode="always-ask")
     waiting = runtime.run(RuntimeRequest(prompt="capture", session_id="approval-session"))
     approval = next(event for event in waiting.events if event.event_type == "runtime.approval_requested")
     assert not any(event.event_type == "runtime.tool_started" for event in waiting.events)

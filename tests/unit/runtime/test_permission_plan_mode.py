@@ -11,13 +11,14 @@ from voidcode.runtime.contracts import (
 )
 from voidcode.runtime.mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
 from voidcode.runtime.permission import (
+    DEFAULT_APPROVAL_MODE,
     PLAN_MODE_DENIAL_REASON,
     ExternalDirectoryPermissionConfig,
     ExternalDirectoryPolicy,
     OperationClass,
     PathScope,
     PermissionPolicy,
-    default_policy_for_tool,
+    approval_decision,
     is_read_only_blocked,
     resolve_permission,
 )
@@ -83,7 +84,7 @@ def test_resolve_permission_read_only_denies_write_tool() -> None:
     outcome = resolve_permission(
         _write_tool(),
         _call(),
-        policy=PermissionPolicy(mode="ask"),
+        policy=PermissionPolicy(mode="always-ask"),
         read_only=True,
     )
 
@@ -107,7 +108,7 @@ def test_resolve_permission_read_only_denies_shell_execute_operation() -> None:
     outcome = resolve_permission(
         shell,
         call,
-        policy=PermissionPolicy(mode="allow"),
+        policy=PermissionPolicy(mode="yolo"),
         operation_class=operation,
         read_only=True,
     )
@@ -123,7 +124,7 @@ def test_resolve_permission_read_only_allows_read_only_tool() -> None:
     outcome = resolve_permission(
         _read_only_tool(),
         _call("grep"),
-        policy=PermissionPolicy(mode="ask"),
+        policy=PermissionPolicy(mode="always-ask"),
         read_only=True,
     )
 
@@ -135,7 +136,7 @@ def test_resolve_permission_normal_mode_does_not_short_circuit() -> None:
     outcome = resolve_permission(
         _write_tool(),
         _call(),
-        policy=PermissionPolicy(mode="ask"),
+        policy=PermissionPolicy(mode="always-ask"),
         read_only=False,
     )
 
@@ -151,7 +152,7 @@ def test_resolve_permission_read_only_overrides_explicit_allow_rule() -> None:
     outcome = resolve_permission(
         _write_tool(),
         _call(),
-        policy=PermissionPolicy(mode="ask"),
+        policy=PermissionPolicy(mode="always-ask"),
         rule_decision="allow",
         read_only=True,
     )
@@ -223,14 +224,17 @@ def test_normal_runtime_mode_allows_explicit_read_only() -> None:
 def test_default_policy_allows_read_only_and_asks_for_write() -> None:
     read_tool = _read_only_tool()
     write_tool = _write_tool()
+    default_policy = PermissionPolicy()
 
-    assert default_policy_for_tool(read_tool).mode == "allow"
-    assert default_policy_for_tool(write_tool).mode == "ask"
+    assert default_policy.mode == DEFAULT_APPROVAL_MODE
+    assert approval_decision(mode=DEFAULT_APPROVAL_MODE, operation_class="read") == "allow"
+    assert approval_decision(mode=DEFAULT_APPROVAL_MODE, operation_class="write") == "ask"
     assert (
         resolve_permission(
             read_tool,
             _call("grep"),
-            policy=default_policy_for_tool(read_tool),
+            policy=default_policy,
+            operation_class="read",
         ).decision
         == "allow"
     )
@@ -238,7 +242,8 @@ def test_default_policy_allows_read_only_and_asks_for_write() -> None:
         resolve_permission(
             write_tool,
             _call(),
-            policy=default_policy_for_tool(write_tool),
+            policy=default_policy,
+            operation_class="write",
         ).decision
         == "ask"
     )
@@ -273,7 +278,7 @@ def test_ast_grep_replace_is_write_operation_and_denied_in_plan_mode(tmp_path: P
     outcome = resolve_permission(
         definition,
         call,
-        policy=default_policy_for_tool(definition),
+        policy=PermissionPolicy(),
         operation_class=operation,
         read_only=True,
     )

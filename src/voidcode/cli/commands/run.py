@@ -10,7 +10,7 @@ import click
 
 from ...cli_support import EXIT_RUNTIME_ERROR, EXIT_SUCCESS, EXIT_USAGE_ERROR, print_json
 from ...runtime.contracts import RuntimeRequest, validate_runtime_request_metadata
-from ...runtime.permission import PermissionDecision
+from ...runtime.permission import ApprovalMode
 from ..errors import CliError
 from ..handler_args import RunArgs
 from ..options import APPROVAL_MODES, json_option, show_thinking_option, workspace_option
@@ -41,8 +41,8 @@ def _handle_run_command(args: RunArgs) -> int:
     show_thinking = args.show_thinking
     cli_reasoning_effort = args.reasoning_effort
     cli_model = args.model
-    # CLI boundary: click.Choice(APPROVAL_MODES) guarantees a PermissionDecision literal.
-    approval_mode: PermissionDecision | None = cast(PermissionDecision | None, args.approval_mode)
+    # CLI boundary: click.Choice(APPROVAL_MODES) guarantees an ApprovalMode literal.
+    approval_mode: ApprovalMode | None = cast(ApprovalMode | None, args.approval_mode)
     config_kwargs: RuntimeConfigKwargs = {
         "approval_mode": approval_mode,
         "reasoning_effort": cli_reasoning_effort,
@@ -154,7 +154,7 @@ def _handle_run_command(args: RunArgs) -> int:
 @click.option(
     "--approval-mode",
     type=click.Choice(APPROVAL_MODES),
-    help="Override the runtime approval mode for this invocation.",
+    help="Override the approval mode: always-ask, write, or yolo (which tool tiers are auto-approved).",
 )
 @click.option(
     "--agent",
