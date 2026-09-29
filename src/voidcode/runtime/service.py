@@ -266,6 +266,7 @@ from .session import (
     SessionRef,
     SessionState,
     SessionStatus,
+    StoredSessionLineageEntry,
     StoredSessionSummary,
     reload_persisted_session,
 )
@@ -2394,6 +2395,29 @@ class VoidCodeRuntime(RuntimeSurface):
         their own column/surface rather than in the session metadata blob.
         """
         return self._inspection_coordinator.rename_session(session_id=session_id, title=title)
+
+    def fork_session(self, *, session_id: str, at_sequence: int | None = None) -> StoredSessionSummary:
+        """Fork a session: copy its event prefix ``1..N`` into a new session.
+
+        The source is never modified. ``at_sequence`` defaults to the source's
+        watermark; a boundary that splits a tool call from its result is
+        refused with ``RuntimeSessionForkBoundaryError``. VoidCode keeps one
+        linear event log per session and has no leaf pointer, so "branch" is
+        exactly this plus continuing the returned session.
+        """
+        return self._inspection_coordinator.fork_session(
+            session_id=session_id,
+            at_sequence=at_sequence,
+        )
+
+    def session_lineage(self, *, session_id: str | None = None) -> tuple[StoredSessionLineageEntry, ...]:
+        """Read-only fork ancestry, oldest ancestor first.
+
+        With ``session_id`` the walk follows ``forked_from_session_id`` upward
+        from that session; without it every workspace session's provenance row
+        is returned so a client can lay out the whole forest.
+        """
+        return self._inspection_coordinator.session_lineage(session_id=session_id)
 
     def tool_effectiveness_report(self) -> ToolEffectivenessReport:
         return self._inspection_coordinator.tool_effectiveness_report()

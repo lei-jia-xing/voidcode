@@ -570,6 +570,8 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "last_event_sequence",
         "created_at_unix_ms",
         "title",
+        "forked_from_session_id",
+        "forked_at_sequence",
     ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at", "event_sequence"]
     assert schema_version == SCHEMA_VERSION
@@ -2205,6 +2207,56 @@ def test_session_storage_migrates_v1_database_preserving_rows_and_listing(tmp_pa
         legacy_title = connection.execute("SELECT title FROM sessions WHERE session_id = 'legacy-session'").fetchone()[0]
     assert version == SCHEMA_VERSION
     assert legacy_title is None
+
+
+def test_session_storage_migrates_v2_database_adding_fork_provenance(tmp_path: Path) -> None:
+    """A v2 install upgrades to v3 in place: rows survive, new columns start NULL.
+
+    Builds the v2 shape by hand (v1 plus the title column, stamped version 2) so
+    only the v2 -> v3 step can move it forward. Also proves the migrated file
+    passes the order-sensitive canonical shape check and can be forked.
+    """
+    database_path = tmp_path / "legacy-v2.sqlite3"
+    workspace = tmp_path
+    with closing(sqlite3.connect(database_path)) as connection:
+        _v1_sessions_schema(connection)
+        _ = connection.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+        _ = connection.execute("PRAGMA user_version = 2")
+        _ = connection.execute(
+            """
+            INSERT INTO sessions (
+                session_id, workspace_id, status, turn, prompt, title, output, metadata_json,
+                created_at, updated_at, last_event_sequence
+            ) VALUES ('legacy-v2-session', ?, 'completed', 1, 'legacy v2 prompt', 'legacy v2 title',
+                      'legacy v2 output', '{}', 10, 20, 2)
+            """,
+            (str(workspace),),
+        )
+        connection.executemany(
+            """
+            INSERT INTO session_events (workspace_id, session_id, sequence, event_type, source, payload_json)
+            VALUES (?, 'legacy-v2-session', ?, ?, 'runtime', '{}')
+            """,
+            [(str(workspace), 1, "graph.request_received"), (str(workspace), 2, "graph.response_ready")],
+        )
+        connection.commit()
+
+    store = SqliteSessionStore(database_path=database_path)
+    listed = store.list_sessions(workspace=workspace)
+
+    assert [summary.session.id for summary in listed] == ["legacy-v2-session"]
+    assert listed[0].title == "legacy v2 title"
+    assert listed[0].forked_from_session_id is None
+    assert listed[0].forked_at_sequence is None
+    # The migrated log is intact and forkable: provenance is written, not inherited.
+    forked = store.fork_session(workspace=workspace, session_id="legacy-v2-session")
+    assert forked.forked_from_session_id == "legacy-v2-session"
+    assert forked.forked_at_sequence == 2
+    with closing(sqlite3.connect(database_path)) as connection:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()]
+    assert version == SCHEMA_VERSION
+    assert columns[-3:] == ["title", "forked_from_session_id", "forked_at_sequence"]
 
 
 def test_session_storage_rename_round_trips_across_store_reopen(tmp_path: Path) -> None:

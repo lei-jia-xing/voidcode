@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, TypedDict, cast
 
 import click
 from pydantic import AfterValidator, BaseModel, Field, TypeAdapter, ValidationError
@@ -28,7 +28,7 @@ from ...runtime.contracts import NoPendingQuestionError
 from ...runtime.permission import PermissionResolution
 from ...runtime.question import QuestionResponse
 from ...runtime.serialization import serialize_revert_marker, serialize_session_debug_snapshot
-from ...runtime.session import StoredSessionSummary
+from ...runtime.session import StoredSessionLineageEntry, StoredSessionSummary
 from ..errors import CliError
 from ..handler_args import SessionsArgs
 from ..options import APPROVAL_DECISIONS, BUNDLE_FORMATS, json_option, show_thinking_option, workspace_option
@@ -324,6 +324,75 @@ def _handle_sessions_rename_command(args: SessionsArgs) -> int:
     )
 
 
+def _handle_sessions_fork_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    session_id = args.session_id
+    assert session_id is not None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        forked = runtime.fork_session(session_id=session_id, at_sequence=args.at_sequence)
+    return emit_output(
+        args,
+        {"workspace": str(workspace), "session": serialize_stored_session_summary(forked)},
+        lambda: print(_format_session_summary(forked)),
+    )
+
+
+class _LineageRow(TypedDict):
+    session_id: str
+    forked_from_session_id: str | None
+    forked_at_sequence: int | None
+    depth: int
+
+
+def _lineage_rows(
+    entries: tuple[StoredSessionLineageEntry, ...],
+) -> list[_LineageRow]:
+    """Project lineage entries, oldest ancestor first, depth-annotated.
+
+    Depth is derived client-side from the ``forked_from_session_id`` edges so
+    the caller can indent; the walk itself is a read-only ancestry chain.
+    """
+    depth_by_id: dict[str, int] = {}
+    rows: list[_LineageRow] = []
+    for entry in entries:
+        parent = entry.forked_from_session_id
+        depth = 0 if parent is None else depth_by_id.get(parent, 0) + 1
+        depth_by_id[entry.session_id] = depth
+        rows.append(
+            {
+                "session_id": entry.session_id,
+                "forked_from_session_id": parent,
+                "forked_at_sequence": entry.forked_at_sequence,
+                "depth": depth,
+            }
+        )
+    return rows
+
+
+def _handle_sessions_tree_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    session_id = args.session_id
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        entries = runtime.session_lineage(session_id=session_id)
+    rows = _lineage_rows(entries)
+
+    def _print_lineage() -> None:
+        for row in rows:
+            indent = "  " * int(row["depth"])
+            origin = f" <- {row['forked_from_session_id']}@{row['forked_at_sequence']}" if row["forked_from_session_id"] is not None else ""
+            print(f"{indent}{row['session_id']}{origin}")
+
+    return emit_output(
+        args,
+        {
+            "workspace": str(workspace),
+            "root": session_id,
+            "lineage": rows,
+        },
+        _print_lineage,
+    )
+
+
 @click.group(help="Inspect persisted local sessions.")
 def sessions() -> None:
     pass
@@ -534,6 +603,42 @@ def rename(session_id: str, title: str, workspace: Path, json_output: bool) -> i
         SessionsArgs(
             session_id=session_id,
             title=title,
+            workspace=workspace,
+            json=json_output,
+        )
+    )
+
+
+@sessions.command(help="Fork a session: copy its event history into a new, independently continuable session.")
+@click.argument("session_id")
+@click.option(
+    "--at-sequence",
+    "at_sequence",
+    type=int,
+    default=None,
+    help="Copy events 1..N. Defaults to the session's latest event.",
+)
+@workspace_option("Workspace root used to resolve the local session database.")
+@json_option("Output the new session summary as JSON.")
+def fork(session_id: str, at_sequence: int | None, workspace: Path, json_output: bool) -> int:
+    return _handle_sessions_fork_command(
+        SessionsArgs(
+            session_id=session_id,
+            at_sequence=at_sequence,
+            workspace=workspace,
+            json=json_output,
+        )
+    )
+
+
+@sessions.command(help="Show fork lineage (oldest ancestor first).")
+@click.argument("session_id", required=False)
+@workspace_option("Workspace root used to resolve the local session database.")
+@json_option("Output the lineage entries as JSON.")
+def tree(session_id: str | None, workspace: Path, json_output: bool) -> int:
+    return _handle_sessions_tree_command(
+        SessionsArgs(
+            session_id=session_id,
             workspace=workspace,
             json=json_output,
         )

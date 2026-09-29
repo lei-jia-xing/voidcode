@@ -42,6 +42,18 @@ class UnknownBackgroundTaskError(ValueError):
     """Raised when a referenced background task does not exist in storage."""
 
 
+class RuntimeSessionForkBoundaryError(ValueError):
+    """Raised when a fork boundary would split an interaction from its result.
+
+    A tool call without its ``runtime.tool_completed``, or an approval/question
+    request without its resolution, cannot be copied into a fork: the child
+    would replay a call the log never closes. ``code`` is the stable
+    machine-readable reason the transport carries on its error envelope.
+    """
+
+    code = "fork_boundary_splits_interaction"
+
+
 class NoPendingQuestionError(ValueError):
     """Raised when a session has no pending question to answer.
 

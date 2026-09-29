@@ -32,12 +32,14 @@ from ..permission import PendingApproval
 from ..question import PendingQuestion
 from ..session import (
     SessionStatus,
+    StoredSessionLineageEntry,
     StoredSessionSummary,
 )
 from .background_processes import _BackgroundProcessStorageMixin
 from .background_tasks import _BackgroundTaskStorageMixin
 from .diagnostics import _DiagnosticsStorageMixin
 from .effectiveness import _EffectivenessStorageMixin
+from .fork import _ForkStorageMixin
 from .resume import _ResumeStorageMixin
 from .revert import _RevertStorageMixin
 from .rows import (
@@ -52,7 +54,7 @@ from .rows import (
 )
 from .sessions import SessionEventsAfter, _SessionStorageMixin
 
-SCHEMA_VERSION: Final[int] = 2
+SCHEMA_VERSION: Final[int] = 3
 
 
 def _migrate_v1_sessions_title(connection: sqlite3.Connection) -> None:
@@ -63,6 +65,20 @@ def _migrate_v1_sessions_title(connection: sqlite3.Connection) -> None:
     user renames a session.
     """
     _ = connection.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+
+
+def _migrate_v2_sessions_fork_provenance(connection: sqlite3.Connection) -> None:
+    """v2 -> v3: add the nullable fork-provenance columns.
+
+    ``forked_from_session_id`` names the session whose event-log prefix a fork
+    copied and ``forked_at_sequence`` the copied boundary. Both stay NULL for a
+    session that was not forked. They are deliberately separate from
+    ``parent_session_id``, which means *delegated background-task child*
+    everywhere it is read (list filtering, delegation routing, parent-terminal
+    checks, orphan pruning) — provenance must not opt a fork into any of that.
+    """
+    _ = connection.execute("ALTER TABLE sessions ADD COLUMN forked_from_session_id TEXT")
+    _ = connection.execute("ALTER TABLE sessions ADD COLUMN forked_at_sequence INTEGER")
 
 
 @runtime_checkable
@@ -118,6 +134,16 @@ class SessionStore(Protocol):
     def unrevert_session(self, *, workspace: Path, session_id: str) -> RuntimeSessionRevertMarker | None: ...
 
     def rename_session(self, *, workspace: Path, session_id: str, title: str) -> None: ...
+
+    def fork_session(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        at_sequence: int | None = None,
+    ) -> StoredSessionSummary: ...
+
+    def session_lineage(self, *, workspace: Path, session_id: str | None = None) -> tuple[StoredSessionLineageEntry, ...]: ...
 
     def save_pending_approval(
         self,
@@ -358,12 +384,13 @@ class SqliteSessionStore(
     _SessionStorageMixin,
     _ResumeStorageMixin,
     _RevertStorageMixin,
+    _ForkStorageMixin,
     _EffectivenessStorageMixin,
     _DiagnosticsStorageMixin,
 ):
     _database_path: Path | None
     _SCHEMA_VERSION = SCHEMA_VERSION
-    _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _migrate_v1_sessions_title}
+    _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _migrate_v1_sessions_title, 2: _migrate_v2_sessions_fork_provenance}
     # Forward-only upgrades: _MIGRATIONS[v] migrates user_version v to v + 1,
     # committed per step. No down-migrations, no ALTER inline in _ensure_schema.
     # Old versions without a known step fail with the needs-upgrade error
@@ -399,6 +426,10 @@ class SqliteSessionStore(
             # ``_assert_canonical_table_shape`` compares column order. A fresh
             # database must therefore declare ``title`` last too.
             ("title", "TEXT", 0, None, 0),
+            # Same reason as ``title``: appended by the v2 -> v3 step, so they
+            # must be declared last (after ``title``) in the fresh CREATE too.
+            ("forked_from_session_id", "TEXT", 0, None, 0),
+            ("forked_at_sequence", "INTEGER", 0, None, 0),
         ),
         "session_events": (
             ("workspace_id", "TEXT", 1, None, 1),
@@ -655,6 +686,8 @@ class SqliteSessionStore(
                 last_event_sequence INTEGER NOT NULL,
                 created_at_unix_ms INTEGER,
                 title TEXT,
+                forked_from_session_id TEXT,
+                forked_at_sequence INTEGER,
                 PRIMARY KEY (workspace_id, session_id)
             )
             """

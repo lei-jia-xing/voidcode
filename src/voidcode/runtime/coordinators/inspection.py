@@ -145,6 +145,7 @@ from ..runtime_debug import (
 from ..session import (
     SessionRef,
     SessionState,
+    StoredSessionLineageEntry,
     StoredSessionSummary,
     normalize_persisted_session_metadata,
     session_metadata_for_replay,
@@ -503,6 +504,38 @@ class InspectionCoordinator:
             if summary.session.id == session_id:
                 return summary
         raise UnknownSessionError(f"unknown session: {session_id}")
+
+    def fork_session(
+        self,
+        *,
+        session_id: str,
+        at_sequence: int | None = None,
+    ) -> StoredSessionSummary:
+        """Copy a session's event-log prefix into a new, independently continuable session.
+
+        ``session_id`` is validated at the same boundary as every sibling
+        session method. Storage owns the copy semantics (contiguous sequences,
+        the fork's own watermark, provenance columns, an untouched source) and
+        raises ``RuntimeSessionForkBoundaryError`` when the requested boundary
+        splits a tool call from its result.
+        """
+        validate_id(session_id)
+        if at_sequence is not None and at_sequence < 1:
+            raise ValueError("fork sequence must be a positive integer")
+        return self._session_store.fork_session(
+            workspace=self._workspace,
+            session_id=session_id,
+            at_sequence=at_sequence,
+        )
+
+    def session_lineage(self, *, session_id: str | None = None) -> tuple[StoredSessionLineageEntry, ...]:
+        """Read-only fork ancestry: oldest ancestor first, the named session last."""
+        if session_id is not None:
+            validate_id(session_id)
+        return self._session_store.session_lineage(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
 
     def tool_effectiveness_report(self) -> ToolEffectivenessReport:
         return self._session_store.tool_effectiveness_report(workspace=self._workspace)

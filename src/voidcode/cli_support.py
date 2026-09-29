@@ -78,7 +78,7 @@ def serialize_stored_session_summary(session: StoredSessionSummary) -> dict[str,
     parent_id = session.session.parent_id
     if parent_id is not None:
         session_payload["parent_id"] = parent_id
-    return {
+    payload: dict[str, object] = {
         "session": session_payload,
         "status": session.status,
         "turn": session.turn,
@@ -86,6 +86,10 @@ def serialize_stored_session_summary(session: StoredSessionSummary) -> dict[str,
         "prompt": session.prompt,
         "title": session.title,
     }
+    if session.forked_from_session_id is not None:
+        payload["forked_from_session_id"] = session.forked_from_session_id
+        payload["forked_at_sequence"] = session.forked_at_sequence
+    return payload
 
 
 def serialize_command_definition(command: CommandDefinition) -> dict[str, object]:

@@ -287,6 +287,20 @@ class StoredSessionSummary:
     prompt: str
     updated_at: int
     title: str | None = None
+    #: Fork provenance: the session this one copied an event-log prefix from,
+    #: and the copied boundary. ``None`` for a non-forked session. Deliberately
+    #: not ``parent_session_id``, which means *delegated child* to every reader.
+    forked_from_session_id: str | None = None
+    forked_at_sequence: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredSessionLineageEntry:
+    """One row of a fork lineage walk (read-only provenance projection)."""
+
+    session_id: str
+    forked_from_session_id: str | None
+    forked_at_sequence: int | None
 
 
 def validate_session_workspace(

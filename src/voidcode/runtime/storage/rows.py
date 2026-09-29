@@ -59,6 +59,8 @@ class SessionListRow(TypedDict):
     turn: int
     prompt: str
     title: str | None
+    forked_from_session_id: str | None
+    forked_at_sequence: int | None
     updated_at: int
 
 
@@ -82,6 +84,28 @@ class SessionLoadRow(TypedDict):
 
 class SessionTitleRow(TypedDict):
     title: str | None
+
+
+class SessionForkProvenanceRow(TypedDict):
+    forked_from_session_id: str | None
+    forked_at_sequence: int | None
+
+
+class SessionLineageRow(TypedDict):
+    session_id: str
+    forked_from_session_id: str | None
+    forked_at_sequence: int | None
+
+
+class SessionForkSourceRow(TypedDict):
+    session_id: str
+    parent_session_id: str | None
+    status: str
+    turn: int
+    prompt: str
+    title: str | None
+    metadata_json: str
+    last_event_sequence: int
 
 
 class SessionPromptTitleRow(TypedDict):

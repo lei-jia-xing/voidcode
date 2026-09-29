@@ -56,6 +56,7 @@ class SessionsArgs:
     bundle_path: Path | None = None
     sequence: int | None = None
     title: str | None = None
+    at_sequence: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

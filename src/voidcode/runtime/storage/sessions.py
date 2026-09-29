@@ -32,6 +32,7 @@ from .rows import (
     SessionCreatedAtRow,
     SessionCreatedAtUnixMsRow,
     SessionEventRow,
+    SessionForkProvenanceRow,
     SessionLastEventSequenceRow,
     SessionListRow,
     SessionLoadRow,
@@ -133,6 +134,14 @@ class _SessionStorageMixin(_MixinBase):
             workspace=workspace,
             session_id=session_id,
         )
+        # Same reason as ``title``: provenance is a row column the run snapshot
+        # does not own, so an upsert rewrite of a forked session must carry it
+        # forward or the fork would lose its lineage on its first run.
+        forked_from_session_id, forked_at_sequence = self._read_fork_provenance(
+            connection=connection,
+            workspace=workspace,
+            session_id=session_id,
+        )
         updated_at = self._next_timestamp(connection=connection)
         # The row watermark (maintained by every incremental
         # ``append_session_events``) IS the persisted truth. Clamp the sealed
@@ -160,8 +169,9 @@ class _SessionStorageMixin(_MixinBase):
                 session_id, parent_session_id, workspace_id, status, turn, prompt, title, output,
                 metadata_json, pending_approval_json, pending_question_json,
                 resume_checkpoint_json, created_at, updated_at,
-                last_event_sequence, created_at_unix_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_event_sequence, created_at_unix_ms,
+                forked_from_session_id, forked_at_sequence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -180,6 +190,8 @@ class _SessionStorageMixin(_MixinBase):
                 updated_at,
                 last_event_sequence,
                 created_at_unix_ms,
+                forked_from_session_id,
+                forked_at_sequence,
             ),
         )
         return updated_at
@@ -318,7 +330,8 @@ class _SessionStorageMixin(_MixinBase):
             rows = fetch_rows(
                 connection,
                 """
-                SELECT session_id, parent_session_id, status, turn, prompt, title, updated_at
+                SELECT session_id, parent_session_id, status, turn, prompt, title, forked_from_session_id,
+                       forked_at_sequence, updated_at
                 FROM sessions
                 WHERE workspace_id = ?
                 ORDER BY updated_at DESC, session_id ASC
@@ -337,6 +350,8 @@ class _SessionStorageMixin(_MixinBase):
                 prompt=row["prompt"],
                 updated_at=row["updated_at"],
                 title=row["title"],
+                forked_from_session_id=row["forked_from_session_id"],
+                forked_at_sequence=row["forked_at_sequence"],
             )
             for row in decoded_rows
         )
@@ -1009,6 +1024,30 @@ class _SessionStorageMixin(_MixinBase):
         if row is None:
             return None
         return decode_row(row, SessionTitleRow)["title"]
+
+    @staticmethod
+    def _read_fork_provenance(
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        session_id: str,
+    ) -> tuple[str | None, int | None]:
+        """Read existing fork provenance so ``INSERT OR REPLACE`` can carry it.
+
+        Same contract as ``_read_title``: the run snapshot does not own these
+        columns, and an upsert rewrites every column. An absent row (first run
+        of a non-forked session) reads ``(None, None)``, the no-provenance
+        state.
+        """
+        row = fetch_row(
+            connection,
+            "SELECT forked_from_session_id, forked_at_sequence FROM sessions WHERE workspace_id = ? AND session_id = ?",
+            (str(workspace), session_id),
+        )
+        if row is None:
+            return (None, None)
+        provenance = decode_row(row, SessionForkProvenanceRow)
+        return (provenance["forked_from_session_id"], provenance["forked_at_sequence"])
 
     def _read_created_at(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int:
         row = fetch_row(
