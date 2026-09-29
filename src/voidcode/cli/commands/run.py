@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import shlex
 import sys
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import click
 
-from ...cli_support import EXIT_RUNTIME_ERROR, EXIT_SUCCESS, EXIT_USAGE_ERROR, print_json
-from ...runtime.contracts import RuntimeRequest, validate_runtime_request_metadata
+from ...cli_support import EXIT_INVALID_RESOURCE, EXIT_RUNTIME_ERROR, EXIT_SUCCESS, EXIT_USAGE_ERROR, print_json
+from ...runtime.contracts import RuntimeRequest, RuntimeSessionDebugSnapshot, validate_runtime_request_metadata
 from ...runtime.permission import ApprovalMode
 from ..errors import CliError
 from ..handler_args import RunArgs
@@ -30,6 +31,84 @@ from ..runtime_gateway import (
 )
 from ..trace import print_trace_blocked, print_trace_final
 
+if TYPE_CHECKING:
+    from ...runtime.service import VoidCodeRuntime
+
+
+def _workspace_arg(workspace: Path) -> str:
+    return f" --workspace {shlex.quote(str(workspace))}"
+
+
+def _continuation_blocked_message(
+    snapshot: RuntimeSessionDebugSnapshot,
+    *,
+    session_id: str,
+    workspace: Path,
+) -> str | None:
+    """Return why ``-c``/``-r`` must not re-enter this session, or ``None``.
+
+    The continuation flags never replicate the resume/answer machinery: a
+    session the runtime itself reports as resumable (pending approval, pending
+    question, or an unfinished turn) is handed to the command that owns that
+    transition.
+    """
+    pending_question = snapshot.pending_question
+    if pending_question is not None:
+        return (
+            f"session {session_id} is waiting for a question response; "
+            f"answer with: voidcode sessions answer {session_id}{_workspace_arg(workspace)} "
+            f"--question-request-id {pending_question.request_id} --response <answer>"
+        )
+    pending_approval = snapshot.pending_approval
+    if pending_approval is not None:
+        # ``target_summary`` is the tool call's human-readable subject; it falls
+        # back to the tool name at the source when the call has no target.
+        return (
+            f"session {session_id} is waiting for approval of {pending_approval.target_summary}; "
+            f"resume with: voidcode sessions resume {session_id}{_workspace_arg(workspace)} "
+            f"--approval-request-id {pending_approval.request_id} --approval-decision allow"
+        )
+    if snapshot.resumable:
+        return f"session {session_id} has an unfinished turn; resume with: voidcode sessions resume {session_id}{_workspace_arg(workspace)}"
+    return None
+
+
+def _resolve_continuation_session_id(runtime: VoidCodeRuntime, args: RunArgs) -> str | None:
+    """Resolve ``-c``/``-r`` to an existing, plainly continuable session id.
+
+    ``--session-id`` is forwarded untouched: it is the low-level persisted-run
+    id, and re-entering a session with a fresh run is a supported lifecycle
+    operation. The shorthand flags are the user-facing continuation surface, so
+    they refuse a target whose pending approval/question or unfinished turn
+    belongs to ``sessions resume``/``sessions answer``.
+    """
+    if not args.continue_session and args.resume_session_id is None:
+        return args.session_id
+    if args.continue_session:
+        # Same ordering authority as ``sessions list``: most recently updated
+        # workspace-scoped main session first.
+        targets = [summary for summary in runtime.list_sessions() if summary.session.parent_id is None]
+        if not targets:
+            raise CliError(
+                code=EXIT_INVALID_RESOURCE,
+                message=(
+                    f"no session to continue in this workspace{_workspace_arg(args.workspace)}; "
+                    f"start one with: voidcode run <request>{_workspace_arg(args.workspace)}"
+                ),
+            )
+        session_id = targets[0].session.id
+    else:
+        session_id = args.resume_session_id
+        assert session_id is not None
+    blocked_message = _continuation_blocked_message(
+        runtime.session_debug_snapshot(session_id=session_id),
+        session_id=session_id,
+        workspace=args.workspace,
+    )
+    if blocked_message is not None:
+        raise CliError(code=EXIT_INVALID_RESOURCE, message=blocked_message)
+    return session_id
+
 
 def _handle_run_command(args: RunArgs) -> int:
     workspace = args.workspace
@@ -38,6 +117,11 @@ def _handle_run_command(args: RunArgs) -> int:
     trace_output = args.trace
     if json_output and trace_output:
         raise CliError(code=EXIT_USAGE_ERROR, message="--json and --trace cannot be used together")
+    if sum((args.continue_session, args.resume_session_id is not None, args.session_id is not None)) > 1:
+        raise CliError(
+            code=EXIT_USAGE_ERROR,
+            message="--continue, --resume, and --session-id each select a session; pass only one",
+        )
     show_thinking = args.show_thinking
     cli_reasoning_effort = args.reasoning_effort
     cli_model = args.model
@@ -90,9 +174,11 @@ def _handle_run_command(args: RunArgs) -> int:
             metadata["provider_stream"] = provider_stream
         elif trace_output:
             metadata["provider_stream"] = True
+        with runtime_error_boundary():
+            session_id = _resolve_continuation_session_id(runtime, args)
         request = RuntimeRequest(
             prompt=request_text,
-            session_id=args.session_id,
+            session_id=session_id,
             metadata=validate_runtime_request_metadata(metadata),
         )
         interactive = sys.stdin.isatty() and sys.stderr.isatty()
@@ -152,6 +238,19 @@ def _handle_run_command(args: RunArgs) -> int:
 @workspace_option("Workspace root used to resolve relative read paths.")
 @click.option("--session-id", help="Optional session identifier used for persisted runs.")
 @click.option(
+    "-c",
+    "--continue",
+    "continue_session",
+    is_flag=True,
+    help="Continue in the most recently updated session in the workspace.",
+)
+@click.option(
+    "-r",
+    "--resume",
+    "resume_session_id",
+    help="Resume the given persisted session id with this request.",
+)
+@click.option(
     "--approval-mode",
     type=click.Choice(APPROVAL_MODES),
     help="Override the approval mode: always-ask, write, or yolo (which tool tiers are auto-approved).",
@@ -193,6 +292,8 @@ def run(
     request: str,
     workspace: Path,
     session_id: str | None,
+    continue_session: bool,
+    resume_session_id: str | None,
     approval_mode: str | None,
     agent: str | None,
     model: str | None,
@@ -210,6 +311,8 @@ def run(
             request=request,
             workspace=workspace,
             session_id=session_id,
+            continue_session=continue_session,
+            resume_session_id=resume_session_id,
             approval_mode=approval_mode,
             agent=agent,
             model=model,

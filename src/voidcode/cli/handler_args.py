@@ -16,6 +16,8 @@ class RunArgs:
     request: str
     workspace: Path = field(default_factory=Path.cwd)
     session_id: str | None = None
+    continue_session: bool = False
+    resume_session_id: str | None = None
     approval_mode: str | None = None
     agent: str | None = None
     model: str | None = None
