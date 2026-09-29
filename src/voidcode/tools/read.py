@@ -6,6 +6,10 @@ import base64
 import hashlib
 import json
 import mimetypes
+import tarfile
+import time
+import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, final
@@ -17,7 +21,6 @@ from ..runtime.context.rules import read_rule_uri
 from ..runtime.contracts import validate_id
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._pydantic_args import parse_tool_args, validate_non_empty
-from ._workspace import suggest_workspace_paths
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .guidance import guidance_for_tool
 from .output import _ARTIFACT_ID_PATTERN
@@ -385,6 +388,396 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
     )
 
 
+#: Directory-listing shape: depth and per-directory entry caps, matching the
+#: reference read tool's tree rendering (sorted by recency, with a truncation
+#: notice when either cap bites).
+DIRECTORY_MAX_DEPTH = 2
+DIRECTORY_PER_DIR_LIMIT = 12
+DIRECTORY_ENTRY_LIMIT = 200
+
+#: Archive families the stdlib can decode in-process. `.tar.gz`/`.tgz` etc. are
+#: part of the tar family; a bare `.gz` is a single compressed stream (not an
+#: archive) and is deliberately unsupported.
+_ZIP_SUFFIXES = (".zip", ".jar", ".whl", ".apk", ".vsix", ".nupkg", ".cbz")
+_TAR_SUFFIXES = (".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".txz", ".tar")
+#: Archive-ish extensions that would need third-party codecs. Reported as an
+#: explicit unsupported notice instead of a confusing "does not exist" error.
+UNSUPPORTED_ARCHIVE_SUFFIXES = (".rar", ".7z", ".iso", ".cab", ".deb", ".rpm", ".lzh", ".arj", ".asar", ".gz", ".bz2", ".xz")
+
+#: Bounded archive surfaces: an immediate-child listing cap and a cap on the
+#: decoded size of a single member (decompression-bomb guard).
+ARCHIVE_LIST_LIMIT = 200
+MAX_ARCHIVE_MEMBER_BYTES = 1024 * 1024
+
+
+type _TreeNode = dict[str, object]
+
+
+def _int_field(node: _TreeNode, key: str) -> int:
+    value = node.get(key, 0)
+    return value if isinstance(value, int) else 0
+
+
+def _float_field(node: _TreeNode, key: str) -> float:
+    value = node.get(key, 0.0)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+#: Directory names pruned from a directory listing: they are almost never the
+#: target of a tree read and would otherwise eat the whole entry budget.
+_TREE_IGNORE_DIRS = frozenset({".git", ".hg", ".svn", "__pycache__", "node_modules", ".venv", ".mypy_cache", ".ruff_cache", ".pytest_cache"})
+
+
+def _human_size(byte_count: int) -> str:
+    if byte_count < 1024:
+        return f"{byte_count} B"
+    if byte_count < 1024 * 1024:
+        return f"{byte_count / 1024:.1f} KB"
+    return f"{byte_count / (1024 * 1024):.1f} MB"
+
+
+def _relative_age(mtime: float) -> str:
+    seconds = max(0.0, time.time() - mtime)
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    if seconds < 86400 * 30:
+        return f"{int(seconds // 86400)}d ago"
+    if seconds < 86400 * 365:
+        return f"{int(seconds // (86400 * 30))}mo ago"
+    return f"{int(seconds // (86400 * 365))}y ago"
+
+
+def _tree_entries(directory: Path) -> list[Path]:
+    try:
+        entries = [entry for entry in directory.iterdir() if entry.name not in _TREE_IGNORE_DIRS]
+    except OSError:
+        return []
+
+    def _mtime(entry: Path) -> float:
+        try:
+            return entry.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    return sorted(entries, key=lambda entry: (-_mtime(entry), entry.name))
+
+
+def _materialize_tree(root: Path, *, max_depth: int, per_dir_limit: int, entry_limit: int) -> tuple[_TreeNode, bool]:
+    """Build a bounded tree node for ``root`` (recency-sorted, depth and entry capped)."""
+    budget = entry_limit
+    truncated = False
+
+    def _walk(directory: Path, depth: int) -> _TreeNode:
+        nonlocal budget, truncated
+        entries = _tree_entries(directory)
+        omitted = max(0, len(entries) - per_dir_limit)
+        node: _TreeNode = {"name": directory.name, "is_dir": True, "expanded": depth < max_depth, "omitted": omitted, "children": []}
+        children: list[_TreeNode] = []
+        expanded = depth < max_depth
+        for entry in entries[:per_dir_limit]:
+            if budget <= 0:
+                truncated = True
+                break
+            budget -= 1
+            try:
+                is_dir = entry.is_dir()
+                size = 0 if is_dir else entry.stat().st_size
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            child: _TreeNode = {"name": entry.name, "is_dir": is_dir, "size": size, "mtime": mtime, "expanded": False, "omitted": 0, "children": []}
+            if is_dir and expanded:
+                child = _walk(entry, depth + 1)
+                child["size"] = 0
+                child["mtime"] = mtime
+            elif not is_dir:
+                child["expanded"] = False
+            children.append(child)
+        node["children"] = children
+        return node
+
+    return _walk(root, 0), truncated
+
+
+def _render_directory(root: Path, *, label: str) -> _ReadOutcome:
+    tree, budget_truncated = _materialize_tree(
+        root,
+        max_depth=DIRECTORY_MAX_DEPTH,
+        per_dir_limit=DIRECTORY_PER_DIR_LIMIT,
+        entry_limit=DIRECTORY_ENTRY_LIMIT,
+    )
+    lines = [f"{label}/"]
+    entry_count = 0
+
+    def _emit(node: _TreeNode, prefix: str) -> None:
+        nonlocal entry_count
+        children = node["children"]
+        assert isinstance(children, list)
+        for index, child in enumerate(children):
+            assert isinstance(child, dict)
+            last = index == len(children) - 1
+            connector = "└── " if last else "├── "
+            is_dir = bool(child["is_dir"])
+            name = str(child["name"])
+            mtime = _float_field(child, "mtime")
+            if is_dir:
+                lines.append(f"{prefix}{connector}{name}/  ({_relative_age(mtime)})")
+            else:
+                lines.append(f"{prefix}{connector}{name} ({_human_size(_int_field(child, 'size'))}, {_relative_age(mtime)})")
+            entry_count += 1
+            if is_dir:
+                nested_prefix = f"{prefix}{'    ' if last else '│   '}"
+                nested = child["children"]
+                assert isinstance(nested, list)
+                if child["expanded"] and not nested:
+                    lines.append(f"{nested_prefix}└── (empty directory)")
+                _emit(child, nested_prefix)
+            omitted = _int_field(child, "omitted")
+            if omitted:
+                lines.append(f"{prefix}{'    ' if last else '│   '}… {omitted} more")
+
+    _emit(tree, "")
+    root_omitted = _int_field(tree, "omitted")
+    if root_omitted:
+        lines.append(f"… {root_omitted} more")
+    truncated = budget_truncated or root_omitted > 0
+    if truncated:
+        lines.append(
+            f"… listing truncated at {DIRECTORY_ENTRY_LIMIT} entries / {DIRECTORY_PER_DIR_LIMIT} per directory; read a subdirectory to see the rest."
+        )
+    rendered = "\n".join(lines)
+    content = f"Listed {entry_count} entr{'y' if entry_count == 1 else 'ies'} in {label}"
+    content += "; listing is truncated." if truncated else "."
+    return _ReadOutcome(
+        content=content,
+        data={
+            "path": label,
+            "type": "directory",
+            "entry_count": entry_count,
+            "truncated": truncated,
+            "partial": truncated,
+            "raw_content": rendered,
+        },
+    )
+
+
+def _normalize_member_path(raw: str) -> str:
+    parts = [part for part in raw.strip().replace("\\", "/").split("/") if part not in ("", ".")]
+    if any(part == ".." for part in parts):
+        raise ValueError(f"archive member path must not contain '..': {raw}")
+    return "/".join(parts)
+
+
+def _split_archive_path(path: str) -> tuple[str, str, str] | None:
+    """Split ``archive.ext[:inner]`` into (archive path, raw inner, family)."""
+    lowered = path.lower()
+    best: tuple[int, str, str] | None = None
+    for family, suffixes in (("zip", _ZIP_SUFFIXES), ("tar", _TAR_SUFFIXES)):
+        for suffix in suffixes:
+            index = lowered.find(suffix)
+            if index < 0:
+                continue
+            end = index + len(suffix)
+            if end < len(lowered) and lowered[end] != ":":
+                continue
+            if best is None or index < best[0] or (index == best[0] and len(suffix) > len(best[1])):
+                best = (index, suffix, family)
+    if best is None:
+        return None
+    index, suffix, family = best
+    inner = path[index + len(suffix) :]
+    return path[: index + len(suffix)], inner[1:] if inner.startswith(":") else inner, family
+
+
+def _zip_members(archive: zipfile.ZipFile) -> list[tuple[str, int, bool]]:
+    return [(_normalize_member_path(info.filename), info.file_size, info.filename.endswith("/")) for info in archive.infolist()]
+
+
+def _tar_members(archive: tarfile.TarFile) -> list[tuple[str, int, bool]]:
+    return [(_normalize_member_path(member.name), member.size, member.isdir()) for member in archive.getmembers()]
+
+
+def _zip_member_bytes(archive: zipfile.ZipFile, normalized: str) -> bytes:
+    for info in archive.infolist():
+        if info.filename.endswith("/") or _normalize_member_path(info.filename) != normalized:
+            continue
+        if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+            raise ValueError(f"archive member exceeds the maximum supported size ({MAX_ARCHIVE_MEMBER_BYTES} bytes): {normalized}")
+        return archive.read(info.filename)
+    raise ValueError(f"archive member not found: {normalized}")
+
+
+def _tar_member_bytes(archive: tarfile.TarFile, normalized: str) -> bytes:
+    for member in archive.getmembers():
+        if not member.isfile() or _normalize_member_path(member.name) != normalized:
+            continue
+        if member.size > MAX_ARCHIVE_MEMBER_BYTES:
+            raise ValueError(f"archive member exceeds the maximum supported size ({MAX_ARCHIVE_MEMBER_BYTES} bytes): {normalized}")
+        handle = archive.extractfile(member)
+        if handle is None:
+            break
+        return handle.read()
+    raise ValueError(f"archive member not found: {normalized}")
+
+
+def _archive_children(members: list[tuple[str, int, bool]], prefix: str) -> list[tuple[str, int, bool]]:
+    children: dict[str, tuple[int, bool]] = {}
+    for name, size, is_dir in members:
+        if not name:
+            continue
+        if prefix:
+            if name == prefix:
+                continue
+            if not name.startswith(f"{prefix}/"):
+                continue
+            rest = name[len(prefix) + 1 :]
+        else:
+            rest = name
+        head, _, tail = rest.partition("/")
+        if not head:
+            continue
+        if tail:
+            children.setdefault(head, (0, True))
+        else:
+            children[head] = (size, is_dir)
+    return sorted((name, size, is_dir) for name, (size, is_dir) in children.items())
+
+
+def _render_archive_lines(text: str, *, label: str, offset: int, limit: int) -> _ReadOutcome:
+    limit = min(limit, DEFAULT_READ_LIMIT)
+    source_lines = text.splitlines()
+    total_lines = len(source_lines)
+    if total_lines < offset and not (total_lines == 0 and offset == 1):
+        raise ValueError(f"Offset {offset} is out of range for this member ({total_lines} lines)")
+    rendered_lines: list[str] = []
+    bytes_used = 0
+    content_truncated = False
+    has_more = False
+    for line_index in range(offset - 1, total_lines):
+        if len(rendered_lines) >= limit:
+            has_more = True
+            break
+        line_text, line_truncated = _truncate_line(source_lines[line_index])
+        encoded_size = len(line_text.encode("utf-8")) + (1 if rendered_lines else 0)
+        if bytes_used + encoded_size > MAX_BYTES:
+            content_truncated = True
+            has_more = True
+            break
+        rendered_lines.append(line_text)
+        bytes_used += encoded_size
+        content_truncated = content_truncated or line_truncated
+    next_offset = offset + len(rendered_lines)
+    content_truncated = content_truncated or has_more
+    return _ReadOutcome(
+        content=f"Read {len(rendered_lines)} line(s) from {label}" + ("; output is truncated." if content_truncated else "."),
+        data={
+            "path": label,
+            "type": "archive",
+            "line_count": total_lines,
+            "offset": offset,
+            "limit": limit,
+            "next_offset": next_offset if has_more else None,
+            "truncated": content_truncated,
+            "partial": content_truncated,
+            "byte_count": bytes_used,
+            "lines": [{"line": offset + index, "text": line} for index, line in enumerate(rendered_lines)],
+            "raw_content": "\n".join(rendered_lines),
+        },
+    )
+
+
+def _render_archive(archive_path: Path, inner: str, *, family: str, label: str, offset: int, limit: int) -> _ReadOutcome:
+    if family == "zip":
+        try:
+            with zipfile.ZipFile(archive_path) as zip_archive:
+                return _render_archive_members(
+                    _zip_members(zip_archive),
+                    reader=lambda normalized: _zip_member_bytes(zip_archive, normalized),
+                    inner=inner,
+                    label=label,
+                    offset=offset,
+                    limit=limit,
+                )
+        except zipfile.BadZipFile as exc:
+            raise ValueError(f"not a valid zip archive: {label}") from exc
+    try:
+        with tarfile.TarFile.open(archive_path) as tar_archive:
+            return _render_archive_members(
+                _tar_members(tar_archive),
+                reader=lambda normalized: _tar_member_bytes(tar_archive, normalized),
+                inner=inner,
+                label=label,
+                offset=offset,
+                limit=limit,
+            )
+    except tarfile.TarError as exc:
+        raise ValueError(f"not a valid tar archive: {label}") from exc
+
+
+def _render_archive_members(
+    members: list[tuple[str, int, bool]],
+    *,
+    reader: Callable[[str], bytes],
+    inner: str,
+    label: str,
+    offset: int,
+    limit: int,
+) -> _ReadOutcome:
+    normalized_inner = _normalize_member_path(inner)
+    names = {name for name, _, _ in members}
+    is_directory = (
+        not normalized_inner
+        or any(name.startswith(f"{normalized_inner}/") for name in names)
+        or any(name == normalized_inner and dir_flag for name, _, dir_flag in members)
+    )
+    if not normalized_inner or is_directory:
+        children = _archive_children(members, normalized_inner)
+        truncated = len(children) > ARCHIVE_LIST_LIMIT
+        shown = children[:ARCHIVE_LIST_LIMIT]
+        header = f"{label}:" if not normalized_inner else f"{label}/"
+        lines = [header]
+        for name, size, dir_flag in shown:
+            lines.append(f"{name}/" if dir_flag else f"{name} ({_human_size(size)})")
+        if truncated:
+            lines.append(f"… {len(children) - ARCHIVE_LIST_LIMIT} more; list a subdirectory to see the rest.")
+        entry_count = len(shown)
+        rendered = "\n".join(lines)
+        return _ReadOutcome(
+            content=f"Listed {entry_count} entr{'y' if entry_count == 1 else 'ies'} in {label}" + ("; listing is truncated." if truncated else "."),
+            data={
+                "path": label,
+                "type": "archive_listing",
+                "entry_count": entry_count,
+                "truncated": truncated,
+                "partial": truncated,
+                "raw_content": rendered,
+            },
+        )
+
+    if normalized_inner not in names:
+        raise ValueError(f"archive member not found: {normalized_inner}")
+    raw = reader(normalized_inner)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return _ReadOutcome(
+            content=f"{label} is not UTF-8 text ({len(raw)} bytes); binary archive members are not decoded.",
+            data={
+                "path": label,
+                "type": "archive_binary",
+                "byte_count": len(raw),
+                "truncated": False,
+                "partial": False,
+                "raw_content": "",
+            },
+        )
+    return _render_archive_lines(text, label=label, offset=offset, limit=limit)
+
+
 @final
 class ReadTool:
     """Read a file or supported attachment from the current workspace."""
@@ -494,15 +887,51 @@ class ReadTool:
         )
         candidate = resolution.candidate
         relative_path = str(candidate.resolve()) if resolution.is_external else resolution.relative_path
-        if not candidate.exists():
-            raise ValueError(f"read target does not exist: {args.path}")
 
         offset = args.offset or 1
         limit = args.limit or DEFAULT_READ_LIMIT
+
+        archive = _split_archive_path(args.path)
+        if archive is not None:
+            archive_path, inner, family = archive
+            resolved_archive = resolve_workspace_path_policy(
+                workspace=workspace,
+                raw_path=archive_path,
+                allow_outside_workspace=True,
+            )
+            if not resolved_archive.candidate.is_file():
+                raise ValueError(f"read target does not exist: {archive_path}")
+            outcome = _render_archive(resolved_archive.candidate, inner, family=family, label=args.path, offset=offset, limit=limit)
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="ok",
+                content=outcome.content,
+                data=outcome.data,
+                truncated=bool(outcome.data["truncated"]),
+                partial=bool(outcome.data["partial"]),
+            )
+
+        if args.path.lower().endswith(UNSUPPORTED_ARCHIVE_SUFFIXES):
+            suffix = Path(args.path).suffix.lower() or args.path
+            raise ValueError(
+                f"read does not support {suffix} archives (third-party codec required); "
+                f"supported archive families are zip ({', '.join(_ZIP_SUFFIXES)}) and tar ({', '.join(_TAR_SUFFIXES)})."
+            )
+
+        if not candidate.exists():
+            raise ValueError(f"read target does not exist: {args.path}")
+
         if candidate.is_dir():
-            suggestions = suggest_workspace_paths(workspace=workspace, raw_path=args.path)
-            suffix = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
-            raise ValueError(f"read does not support directories: {args.path}.{suffix}")
+            outcome = _render_directory(candidate, label=relative_path)
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="ok",
+                content=outcome.content,
+                data=outcome.data,
+                truncated=bool(outcome.data["truncated"]),
+                partial=bool(outcome.data["partial"]),
+            )
+
         if not candidate.is_file():
             raise ValueError(f"read only supports regular files: {args.path}")
 

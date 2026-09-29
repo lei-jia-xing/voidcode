@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -29,18 +31,69 @@ def test_read_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) -> None
     assert "copy_guidance" not in result.data
 
 
-def test_read_tool_rejects_directories_with_suggestions(tmp_path: Path) -> None:
+def test_read_tool_lists_directory_tree_and_marks_empty_directory(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
-    (tmp_path / "b.txt").write_text("b", encoding="utf-8")
     subdir = tmp_path / "subdir"
     subdir.mkdir()
+    (subdir / "nested.txt").write_text("nested", encoding="utf-8")
+    (tmp_path / "empty").mkdir()
 
     tool = ReadTool()
 
-    with pytest.raises(ValueError, match="does not support directories") as exc_info:
-        tool.invoke(ToolCall(tool_name="read", arguments={"path": "."}), workspace=tmp_path)
+    result = tool.invoke(ToolCall(tool_name="read", arguments={"path": "."}), workspace=tmp_path)
 
-    assert "Did you mean:" in str(exc_info.value)
+    assert result.status == "ok"
+    assert result.data["type"] == "directory"
+    rendered = cast(str, result.data["raw_content"])
+    assert "a.txt (1 B," in rendered
+    assert "subdir/" in rendered
+    assert "nested.txt (6 B," in rendered
+    assert "empty/" in rendered
+    assert "(empty directory)" in rendered
+
+
+def test_read_tool_rejects_archive_path_traversal(tmp_path: Path) -> None:
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        _ = handle.writestr("safe.txt", "safe\n")
+
+    tool = ReadTool()
+
+    with pytest.raises(ValueError, match=r"must not contain '\.\.'"):
+        tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip:../outside.txt"}), workspace=tmp_path)
+
+
+def test_read_tool_lists_and_decodes_archive_members(tmp_path: Path) -> None:
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        _ = handle.writestr("src/main.py", "line one\nline two\n")
+        _ = handle.writestr("notes.txt", "note\n")
+
+    tool = ReadTool()
+
+    listing = tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip"}), workspace=tmp_path)
+    rendered = cast(str, listing.data["raw_content"])
+    assert "main.py" not in rendered
+    assert "src/" in rendered
+    assert "notes.txt (5 B)" in rendered
+
+    member = tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip:src/main.py"}), workspace=tmp_path)
+    assert member.data["raw_content"] == "line one\nline two"
+    assert member.data["type"] == "archive"
+
+
+def test_read_tool_reports_non_utf8_archive_member_without_raising(tmp_path: Path) -> None:
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        _ = handle.writestr("blob.bin", b"\xff\xfe\x00\x01")
+
+    tool = ReadTool()
+
+    result = tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip:blob.bin"}), workspace=tmp_path)
+
+    assert result.status == "ok"
+    assert result.data["type"] == "archive_binary"
+    assert "not UTF-8 text" in str(result.content)
 
 
 def test_read_tool_allows_workspace_escape_path_with_absolute_display(tmp_path: Path) -> None:

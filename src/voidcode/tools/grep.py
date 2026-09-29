@@ -9,18 +9,36 @@ from typing import ClassVar, final
 from pydantic import BaseModel, field_validator
 
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
+from ._gitignore import GitIgnoreMatcher
 from ._pydantic_args import parse_tool_args, validate_non_empty
 from ._repair import raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
+
+MAX_MATCHES = 200
+#: Upper bound for an explicit ``limit`` so one call cannot materialize an
+#: unbounded match list.
+MAX_RESULT_LIMIT = 5000
+DEFAULT_IGNORE_PATTERNS = frozenset(
+    (
+        ".git",
+        "node_modules",
+        "__pycache__",
+        "dist",
+        "build",
+    )
+)
 
 
 class GrepArgs(BaseModel):
     pattern: str
     path: str
     regex: bool = False
+    ignore_case: bool = False
     context: int = 0
     include: list[str] | None = None
     exclude: list[str] | None = None
+    respect_gitignore: bool = False
+    limit: int = MAX_MATCHES
 
     _validate_pattern = field_validator("pattern", mode="after")(validate_non_empty)
     _validate_path = field_validator("path", mode="after")(validate_non_empty)
@@ -32,6 +50,13 @@ class GrepArgs(BaseModel):
             raise ValueError("context must be greater than or equal to 0")
         return value
 
+    @field_validator("limit", mode="after")
+    @classmethod
+    def _validate_limit(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("limit must be greater than or equal to 1")
+        return min(value, MAX_RESULT_LIMIT)
+
     @field_validator("include", "exclude", mode="after")
     @classmethod
     def _validate_glob_patterns(cls, value: list[str] | None) -> list[str] | None:
@@ -40,18 +65,6 @@ class GrepArgs(BaseModel):
         if not all(item.strip() for item in value):
             raise ValueError("glob patterns must be non-empty strings")
         return value
-
-
-MAX_MATCHES = 200
-DEFAULT_IGNORE_PATTERNS = frozenset(
-    (
-        ".git",
-        "node_modules",
-        "__pycache__",
-        "dist",
-        "build",
-    )
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +81,10 @@ class _GrepMatch:
 class GrepTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="grep",
-        description=("Search workspace files. Pattern is literal by default; set regex=true to use regular expressions."),
+        description=(
+            "Search workspace files. Pattern is literal by default; set regex=true to use regular expressions, "
+            "and ignore_case=true for case-insensitive matching."
+        ),
         input_schema={
             "pattern": {"type": "string", "description": "Text to search for; treated literally unless regex=true."},
             "path": {"type": "string", "description": "File or directory to search, relative to the workspace; defaults to workspace root."},
@@ -76,9 +92,26 @@ class GrepTool:
                 "type": "boolean",
                 "description": "Treat pattern as a regular expression; defaults to false.",
             },
+            "ignore_case": {
+                "type": "boolean",
+                "description": "Match case-insensitively; defaults to false.",
+            },
             "context": {"type": "integer", "minimum": 0, "description": "Number of surrounding lines to include for each match."},
             "include": {"type": "array", "items": {"type": "string"}, "description": "Optional glob filters for files to include."},
             "exclude": {"type": "array", "items": {"type": "string"}, "description": "Optional glob filters for files to exclude."},
+            "respect_gitignore": {
+                "type": "boolean",
+                "description": (
+                    "Also skip paths matched by the search root's .gitignore; defaults to false. The matcher only "
+                    "reads the root .gitignore (no nested/global excludes)."
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": MAX_RESULT_LIMIT,
+                "description": f"Maximum matching lines to return; defaults to {MAX_MATCHES}.",
+            },
             "required": ["pattern", "path"],
         },
         read_only=True,
@@ -100,6 +133,7 @@ class GrepTool:
         project_root: Path,
         include: list[str] | None,
         exclude: list[str] | None,
+        gitignore: GitIgnoreMatcher | None = None,
     ) -> list[Path]:
         targets: list[Path] = []
         include_patterns = include or []
@@ -112,6 +146,8 @@ class GrepTool:
                 continue
             rel = candidate.relative_to(project_root).as_posix()
             if any(part in DEFAULT_IGNORE_PATTERNS for part in candidate.relative_to(project_root).parts):
+                continue
+            if gitignore is not None and gitignore.is_ignored(rel, is_directory=False):
                 continue
             if include_patterns and not any(GrepTool._matches_glob(rel, pat) for pat in include_patterns):
                 continue
@@ -145,9 +181,12 @@ class GrepTool:
                 "pattern": call.arguments.get("pattern"),
                 "path": call.arguments.get("path"),
                 "regex": call.arguments.get("regex", False),
+                "ignore_case": call.arguments.get("ignore_case", False),
                 "context": call.arguments.get("context", 0),
                 "include": call.arguments.get("include"),
                 "exclude": call.arguments.get("exclude"),
+                "respect_gitignore": call.arguments.get("respect_gitignore", False),
+                "limit": call.arguments.get("limit", MAX_MATCHES),
             },
             tool_name=self.definition.name,
         )
@@ -168,7 +207,10 @@ class GrepTool:
         effective_root = candidate if resolution.is_external and candidate.is_dir() else workspace_root
 
         try:
-            pattern = re.compile(args.pattern if args.regex else re.escape(args.pattern))
+            pattern = re.compile(
+                args.pattern if args.regex else re.escape(args.pattern),
+                re.IGNORECASE if args.ignore_case else 0,
+            )
         except re.error as exc:
             raise_tool_diagnostic(
                 message=(
@@ -181,11 +223,13 @@ class GrepTool:
                 retry_guidance=("Retry with a valid regex pattern, or set regex=false for a literal search."),
                 details={"pattern": args.pattern, "regex_error": exc.msg},
             )
+        gitignore = GitIgnoreMatcher.load(effective_root) if args.respect_gitignore else None
         targets = self._collect_targets(
             candidate,
             project_root=effective_root,
             include=args.include,
             exclude=args.exclude,
+            gitignore=gitignore,
         )
 
         matches: list[_GrepMatch] = []
@@ -213,9 +257,9 @@ class GrepTool:
                         after=after,
                     )
                 )
-                if len(matches) >= MAX_MATCHES:
+                if len(matches) >= args.limit:
                     break
-            if len(matches) >= MAX_MATCHES:
+            if len(matches) >= args.limit:
                 break
 
         total_occurrences = sum(len(match.columns) for match in matches)
@@ -227,11 +271,11 @@ class GrepTool:
         summary = f"Found {total_occurrences} match(es) for {args.pattern!r} in {path_display}"
         if preview_lines:
             summary = summary + "\n" + "\n".join(preview_lines)
-        truncated = len(matches) >= MAX_MATCHES
+        truncated = len(matches) >= args.limit
         if truncated:
             summary += (
                 "\n[TRUNCATED] Results truncated at "
-                f"{MAX_MATCHES} matching lines. Refine the path, include/exclude filters, "
+                f"{args.limit} matching lines. Refine the path, include/exclude filters, "
                 "or pattern before relying on this as complete."
             )
         diagnostics: list[dict[str, object]] = []
@@ -252,7 +296,7 @@ class GrepTool:
                     "source": self.definition.name,
                     "severity": "warning",
                     "reason": "results_truncated",
-                    "message": f"grep stopped after {MAX_MATCHES} matching lines.",
+                    "message": f"grep stopped after {args.limit} matching lines.",
                     "retry_guidance": (
                         "Refine path/include/exclude filters or use a more specific pattern before treating these results as complete."
                     ),
@@ -263,6 +307,7 @@ class GrepTool:
             "path": path_display,
             "pattern": args.pattern,
             "regex": args.regex,
+            "ignore_case": args.ignore_case,
             "context": args.context,
             "match_count": total_occurrences,
             "truncated": truncated,

@@ -89,3 +89,32 @@ def test_glob_tool_ignores_common_directories(tmp_path: Path) -> None:
     content = cast(str, result.content)
 
     assert "dep.js" not in content
+
+
+def test_glob_tool_applies_hidden_gitignore_and_limit_filters(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text("generated.py\n", encoding="utf-8")
+    (tmp_path / "keep.py").write_text("keep", encoding="utf-8")
+    (tmp_path / ".hidden.py").write_text("hidden", encoding="utf-8")
+    (tmp_path / "generated.py").write_text("generated", encoding="utf-8")
+    (tmp_path / "other.py").write_text("other", encoding="utf-8")
+
+    tool = GlobTool()
+
+    filtered = tool.invoke(
+        ToolCall(
+            tool_name="glob",
+            arguments={"pattern": "*.py", "include_hidden": False, "respect_gitignore": True},
+        ),
+        workspace=tmp_path,
+    )
+    visible = cast(list[str], filtered.data["matches"])
+    assert ".hidden.py" not in visible
+    assert "generated.py" not in visible
+    assert "keep.py" in visible
+
+    bounded = tool.invoke(
+        ToolCall(tool_name="glob", arguments={"pattern": "*.py", "include_hidden": False, "limit": 1}),
+        workspace=tmp_path,
+    )
+    assert bounded.data["count"] == 1
+    assert bounded.data["truncated"] is True

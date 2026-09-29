@@ -25,6 +25,7 @@ def test_grep_tool_searches_utf8_file_inside_workspace(tmp_path: Path) -> None:
         "path": "sample.txt",
         "pattern": "alpha",
         "regex": False,
+        "ignore_case": False,
         "context": 0,
         "match_count": 2,
         "truncated": False,
@@ -138,6 +139,7 @@ def test_grep_tool_returns_zero_matches_summary(tmp_path: Path) -> None:
         "path": "sample.txt",
         "pattern": "missing",
         "regex": False,
+        "ignore_case": False,
         "context": 0,
         "match_count": 0,
         "truncated": False,
@@ -209,3 +211,27 @@ def test_grep_tool_rejects_invalid_arguments_and_non_utf8_files(tmp_path: Path) 
     )
     assert result.status == "ok"
     assert result.data["match_count"] == 0
+
+
+def test_grep_tool_supports_case_insensitive_and_gitignore_skip(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text("skipped.py\n", encoding="utf-8")
+    (tmp_path / "sample.py").write_text("ALPHA\n", encoding="utf-8")
+    (tmp_path / "skipped.py").write_text("ALPHA\n", encoding="utf-8")
+    tool = GrepTool()
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="grep",
+            arguments={"pattern": "alpha", "path": ".", "ignore_case": True, "respect_gitignore": True},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert [cast(dict[str, object], match)["file"] for match in cast(list[object], result.data["matches"])] == ["sample.py"]
+
+    case_sensitive = tool.invoke(
+        ToolCall(tool_name="grep", arguments={"pattern": "alpha", "path": "sample.py"}),
+        workspace=tmp_path,
+    )
+    assert case_sensitive.data["match_count"] == 0

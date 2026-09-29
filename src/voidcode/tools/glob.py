@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
+from ._gitignore import GitIgnoreMatcher
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 DEFAULT_IGNORE_PATTERNS = frozenset(
@@ -29,6 +30,9 @@ DEFAULT_IGNORE_PATTERNS = frozenset(
 )
 
 LIMIT = 100
+#: Upper bound for an explicit ``limit`` so one call cannot materialize an
+#: unbounded match list.
+MAX_RESULT_LIMIT = 5000
 
 
 class GlobTool:
@@ -40,6 +44,26 @@ class GlobTool:
             "path": {
                 "type": "string",
                 "description": ("The directory to search in (relative to workspace). Defaults to workspace root."),
+            },
+            "include_hidden": {
+                "type": "boolean",
+                "description": (
+                    "Include hidden files and directories (name starts with '.'); defaults to true to preserve "
+                    "existing behaviour. Set false to skip them."
+                ),
+            },
+            "respect_gitignore": {
+                "type": "boolean",
+                "description": (
+                    "Also skip paths matched by the search root's .gitignore; defaults to false. The matcher only "
+                    "reads the root .gitignore (no nested/global excludes)."
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": MAX_RESULT_LIMIT,
+                "description": f"Maximum number of files to return; defaults to {LIMIT}.",
             },
             "required": ["pattern"],
         },
@@ -53,6 +77,10 @@ class GlobTool:
         pattern: str,
         search_path: Path | None = None,
         project_root: Path | None = None,
+        *,
+        include_hidden: bool = True,
+        gitignore: GitIgnoreMatcher | None = None,
+        limit: int = LIMIT,
     ) -> tuple[list[Path], bool, str | None]:
         search_dir = search_path if search_path else workspace_root
         root = project_root or workspace_root
@@ -70,10 +98,14 @@ class GlobTool:
                     relative_parts = match.relative_to(root).parts
                     if any(ignore in relative_parts for ignore in DEFAULT_IGNORE_PATTERNS):
                         continue
+                    if not include_hidden and any(part.startswith(".") for part in relative_parts):
+                        continue
+                    if gitignore is not None and gitignore.is_ignored(match.relative_to(root).as_posix(), is_directory=False):
+                        continue
 
                     matched.append(match)
 
-                    if len(matched) >= LIMIT:
+                    if len(matched) >= limit:
                         truncated = True
                         break
         except OSError as exc:
@@ -90,6 +122,10 @@ class GlobTool:
 
         if not pattern_value.strip():
             raise ValueError("glob pattern must not be empty")
+
+        include_hidden = _bool_argument(call, "include_hidden", default=True)
+        respect_gitignore = _bool_argument(call, "respect_gitignore", default=False)
+        limit = _int_argument(call, "limit", default=LIMIT, maximum=MAX_RESULT_LIMIT)
 
         path_value = call.arguments.get("path")
         search_path: Path | None = None
@@ -108,11 +144,15 @@ class GlobTool:
 
         workspace_root = workspace.resolve()
         effective_root = resolved.candidate if resolved is not None and resolved.is_external and resolved.candidate.is_dir() else workspace_root
+        gitignore = GitIgnoreMatcher.load(effective_root) if respect_gitignore else None
         matched, truncated, search_error = self._find_files(
             workspace_root,
             pattern_value,
             search_path,
             project_root=effective_root,
+            include_hidden=include_hidden,
+            gitignore=gitignore,
+            limit=limit,
         )
 
         try:
@@ -158,3 +198,19 @@ class GlobTool:
             truncated=truncated,
             partial=truncated,
         )
+
+
+def _bool_argument(call: ToolCall, key: str, *, default: bool) -> bool:
+    value = call.arguments.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"glob requires a boolean {key} argument")
+    return value
+
+
+def _int_argument(call: ToolCall, key: str, *, default: int, maximum: int) -> int:
+    value = call.arguments.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"glob requires an integer {key} argument")
+    if value < 1:
+        raise ValueError(f"glob {key} must be greater than or equal to 1")
+    return min(value, maximum)
