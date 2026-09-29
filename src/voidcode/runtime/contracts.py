@@ -54,6 +54,33 @@ class RuntimeSessionForkBoundaryError(ValueError):
     code = "fork_boundary_splits_interaction"
 
 
+class RuntimeSessionCheckoutBoundaryError(ValueError):
+    """Raised when a checkout target would split an interaction from its result.
+
+    Checking out to a sequence whose root→target path leaves a tool call
+    without its ``runtime.tool_completed``, or an approval/question request
+    without its resolution, would resume the session mid-interaction: the next
+    run would see a call the log never closes. ``code`` is the stable
+    machine-readable reason the transport carries on its error envelope.
+    """
+
+    code = "checkout_boundary_splits_interaction"
+
+
+class SessionTreePathError(ValueError):
+    """Raised when stored event ancestors cannot be walked back to a root.
+
+    Each event's ``parent_sequence`` points at the event it follows, so an
+    event's ancestors are always a finite chain back to the session's first
+    entry. A ``parent_sequence`` naming a row that does not exist, or a cycle,
+    means the persistence layer lost the path; the walk refuses instead of
+    truncating silently or looping forever. ``code`` is the stable
+    machine-readable reason a transport carries on its error envelope.
+    """
+
+    code = "session_tree_path_broken"
+
+
 class SessionLineageCycleError(ValueError):
     """Raised when persisted fork provenance contains a cycle.
 

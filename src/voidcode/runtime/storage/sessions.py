@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
@@ -11,7 +11,9 @@ from typing import TYPE_CHECKING, cast
 from ..contracts import (
     RuntimeRequest,
     RuntimeResponse,
+    RuntimeSessionCheckoutBoundaryError,
     RuntimeSessionResult,
+    SessionTreePathError,
     UnknownSessionError,
 )
 from ..events import (
@@ -28,6 +30,7 @@ from ..session import (
     session_metadata_for_persistence,
 )
 from ..todos import runtime_todo_phases_from_payload, todo_state_payload
+from .fork import _NON_TRANSFERABLE_METADATA_KEYS, _dangling_interaction
 from .rows import (
     SessionCreatedAtRow,
     SessionCreatedAtUnixMsRow,
@@ -42,6 +45,7 @@ from .rows import (
     SessionStatusMetadataRow,
     SessionStatusRow,
     SessionTitleRow,
+    SessionTreeEventRow,
     decode_row,
     fetch_row,
     fetch_rows,
@@ -68,6 +72,56 @@ class SessionEventsAfter:
     status: SessionStatus
     metadata: dict[str, object]
     events: tuple[EventEnvelope, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SessionTreeEvent:
+    """One stored event paired with the sequence it follows (its ancestor edge).
+
+    ``parent_sequence`` is ``None`` for the session's first entry.
+    """
+
+    event: EventEnvelope
+    parent_sequence: int | None
+
+
+def session_event_path(
+    entries: Sequence[SessionTreeEvent],
+    *,
+    target_sequence: int | None = None,
+    leaf_sequence: int | None = None,
+) -> tuple[EventEnvelope, ...]:
+    """Return the root→leaf event chain ending at the target, oldest first.
+
+    Walks ``parent_sequence`` backwards from ``target_sequence`` and reverses.
+    With no ``target_sequence`` the session's current ``leaf_sequence`` is the
+    target; an unset leaf (a session with no events) has no path and refuses.
+
+    A ``parent_sequence`` naming an event that is not in ``entries``, or a
+    cycle among the walked ancestors, means the stored tree lost its path: the
+    walk refuses with :class:`SessionTreePathError` rather than truncating
+    silently or looping forever. Only the path actually walked is checked — a
+    cycle on an unrelated branch is not discovered here.
+    """
+    if target_sequence is None:
+        if leaf_sequence is None:
+            raise SessionTreePathError("session has no leaf: refusing to resolve an empty event path")
+        target_sequence = leaf_sequence
+    by_sequence = {entry.event.sequence: entry for entry in entries}
+    chain: list[EventEnvelope] = []
+    seen: set[int] = set()
+    cursor: int | None = target_sequence
+    while cursor is not None:
+        if cursor in seen:
+            raise SessionTreePathError(f"event ancestry contains a cycle at sequence {cursor}")
+        seen.add(cursor)
+        entry = by_sequence.get(cursor)
+        if entry is None:
+            raise SessionTreePathError(f"event ancestry is broken: sequence {cursor} is missing")
+        chain.append(entry.event)
+        cursor = entry.parent_sequence
+    chain.reverse()
+    return tuple(chain)
 
 
 class _SessionStorageMixin(_MixinBase):
@@ -782,6 +836,100 @@ class _SessionStorageMixin(_MixinBase):
                 tool_result["diagnostics"] = cast(dict[str, object], payload["diagnostics"])
             tool_results.append(tool_result)
         return tool_results
+
+    def _session_tree_entries(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> tuple[SessionTreeEvent, ...]:
+        """Read every stored event with its ancestor edge, ascending sequence."""
+        rows = fetch_rows(
+            connection,
+            """
+                SELECT sequence, parent_sequence, event_type, source, payload_json
+                FROM session_events
+                WHERE workspace_id = ? AND session_id = ?
+                ORDER BY sequence ASC
+                """,
+            (str(workspace), session_id),
+        )
+        return tuple(
+            SessionTreeEvent(
+                event=EventEnvelope(
+                    session_id=session_id,
+                    sequence=row["sequence"],
+                    event_type=row["event_type"],
+                    source=self._parse_event_source(row["source"]),
+                    payload=json.loads(row["payload_json"]),
+                ),
+                parent_sequence=row["parent_sequence"],
+            )
+            for row in (decode_row(row, SessionTreeEventRow) for row in rows)
+        )
+
+    def _leaf_sequence(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int | None:
+        row = fetch_row(
+            connection,
+            "SELECT leaf_sequence FROM sessions WHERE workspace_id = ? AND session_id = ?",
+            (str(workspace), session_id),
+        )
+        if row is None:
+            raise UnknownSessionError(f"unknown session: {session_id}")
+        return decode_row(row, SessionLeafSequenceRow)["leaf_sequence"]
+
+    def checkout_session(self, *, workspace: Path, session_id: str, sequence: int) -> int:
+        """Move the session's leaf to ``sequence`` — a pure position change.
+
+        Nothing is written, moved, or deleted: the events after ``sequence``
+        stay in ``session_events``, off the current path, and a later checkout
+        to one of them restores that branch. Only the row's ``leaf_sequence``
+        and the position-scoped cached state change.
+
+        ``sequence`` must name a stored event. The root→target path must not
+        split a tool call from its completion or an approval/question request
+        from its resolution (the same rule a fork applies): resuming such a
+        path would continue mid-interaction. The cached position — the context
+        projection, todos and compaction marker in ``runtime_state`` plus the
+        ``resume_checkpoint_json`` and the abandoned branch's pending approval/
+        question — is dropped in the same ``BEGIN IMMEDIATE`` transaction as
+        the move, so a later run re-derives it from the events on the new path.
+        """
+        if sequence < 1:
+            raise ValueError("checkout sequence must be a positive integer")
+        with self._write_connect(workspace) as connection:
+            metadata, _events = self._session_metadata_and_events(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+            )
+            entries = self._session_tree_entries(connection=connection, workspace=workspace, session_id=session_id)
+            if not any(entry.event.sequence == sequence for entry in entries):
+                raise ValueError(f"session {session_id} has no event sequence {sequence}")
+            try:
+                path = session_event_path(entries, target_sequence=sequence)
+            except SessionTreePathError as exc:
+                raise ValueError(f"cannot checkout session {session_id}: {exc}") from exc
+            dangling = _dangling_interaction(path)
+            if dangling is not None:
+                kind, label = dangling
+                raise RuntimeSessionCheckoutBoundaryError(f"checkout target {sequence} splits a {kind} call from its result ({label})")
+            next_metadata = {key: value for key, value in metadata.items() if key not in _NON_TRANSFERABLE_METADATA_KEYS}
+            metadata_json = json.dumps(next_metadata, sort_keys=True)
+            updated_at = self._next_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE sessions
+                SET leaf_sequence = ?, metadata_json = ?, pending_approval_json = NULL,
+                    pending_question_json = NULL, resume_checkpoint_json = NULL, updated_at = ?
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+                (sequence, metadata_json, updated_at, str(workspace), session_id),
+            )
+            connection.commit()
+            return sequence
+
+    def session_path(self, *, workspace: Path, session_id: str, sequence: int | None = None) -> tuple[EventEnvelope, ...]:
+        """Read-only root→leaf path for ``session_id`` at ``sequence`` (default: the leaf)."""
+        with self._connect(workspace) as connection:
+            entries = self._session_tree_entries(connection=connection, workspace=workspace, session_id=session_id)
+            leaf = self._leaf_sequence(connection=connection, workspace=workspace, session_id=session_id)
+        return session_event_path(entries, target_sequence=sequence, leaf_sequence=leaf)
 
     def has_session(self, *, workspace: Path, session_id: str) -> bool:
         with self._connect(workspace) as connection:

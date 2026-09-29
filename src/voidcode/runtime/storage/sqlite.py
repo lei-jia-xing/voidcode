@@ -128,6 +128,10 @@ class SessionStore(Protocol):
 
     def session_forest(self, *, workspace: Path) -> tuple[StoredSessionForestEntry, ...]: ...
 
+    def checkout_session(self, *, workspace: Path, session_id: str, sequence: int) -> int: ...
+
+    def session_path(self, *, workspace: Path, session_id: str, sequence: int | None = None) -> tuple[EventEnvelope, ...]: ...
+
     def save_pending_approval(
         self,
         *,

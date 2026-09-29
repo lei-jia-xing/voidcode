@@ -182,6 +182,16 @@ class SessionEventPrefixRow(TypedDict):
     payload_json: str
 
 
+class SessionTreeEventRow(TypedDict):
+    """One full-log row with its ancestor edge, for a path walk."""
+
+    sequence: int
+    parent_sequence: int | None
+    event_type: str
+    source: str
+    payload_json: str
+
+
 class SessionEventWithSessionRow(TypedDict):
     session_id: str
     sequence: int
