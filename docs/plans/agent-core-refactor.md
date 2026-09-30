@@ -1,6 +1,6 @@
 # Agent Core 重构实施计划
 
-状态：计划已制定，架构迁移尚未实施。本轮仅清理已证实的冗余计算、错误版本说明和测试策略；不能把这些清理当作独立 core 已完成。
+状态：P0 治理基线已完成；P1–P6 架构迁移尚未实施。此前清理不等于独立 core 已完成。
 
 依据：[pi × VoidCode 可扩展性审计](../audits/pi-voidcode-extensibility.md)。审计是历史快照，不改写；本计划的当前状态须以源码和实际行为为准。目标覆盖审计 P0-1～P0-6、P1-7～P1-8、§5 的组合问题和 §8 全部十项验收，不把 roadmap 当成增加产品功能的授权。
 
@@ -42,7 +42,7 @@ runtime host：policy / approval / redaction / persistence / recovery /
 | `runtime/context/transforms.py` 已有 typed request/result、ordering、failure trace，但 scope 只有 `provider_context` | 复用已有 seam；P5 统一已有 typed phase，不提前增加所有可能的 transform 功能 |
 | `runtime/context/provider.py` 的 debug projection 接受公开 `ProviderAssembledContext`，metadata 是开放 `dict[str, object]` payload；只读 helper 现接受 Mapping | custom/persisted metadata 仍不可信，parser 校验保留；只去掉已证实的同函数重复计算和不必要复制 |
 
-已有可迁移的行为测试包括：`tests/unit/runtime/test_typed_tool_hooks.py`（rewrite 后真实执行参数、resume 不重复 handler、inner invoke 权限）、`tests/integration/test_process_crash_tool_resume.py`（hard kill/resume 不重放 side effect）、`tests/unit/runtime/test_tool_execution_timeout.py`（timeout/cancel/progress）、`tests/unit/storage/test_session_fork.py`、`test_session_checkout.py` 和 `tests/unit/runtime/test_checkout_provider_context.py`。这些是已有用例定位，不表示本轮已经运行，也不表示当前具有 standalone real-provider core 测试。
+已有行为测试映射见下方 P0 实际基线。重点文件包括 `tests/unit/runtime/test_typed_tool_hooks.py`、`tests/integration/test_process_crash_tool_resume.py`、`tests/unit/runtime/test_tool_execution_timeout.py`、`tests/unit/storage/test_session_fork.py`、`tests/unit/storage/test_session_checkout.py` 和 `tests/unit/runtime/test_checkout_provider_context.py`。
 
 ## 阶段与依赖
 
@@ -59,6 +59,42 @@ runtime host：policy / approval / redaction / persistence / recovery /
 **验证场景：** 允许/拒绝工具；rewrite 后重新验证并对最终参数授权；approval 后只执行一次；cancel 后不出现晚到 completion；persisted replay 不执行 side effect；fork/checkout 不拆 tool pair。
 
 **风险：** 删除过度测试时误删数据/权限行为基线。保留真实输出、副作用、权限结果、durable 状态和可见顺序的断言。
+
+**P0 已完成（2026-10-01；仅冻结现有行为，不代表架构迁移已开始）。**
+
+| 场景 | 可重复后端用例 / 观察 |
+| --- | --- |
+| allow / deny | `test_permission_plan_mode.py`、`test_approval_mode_tiers.py`；runtime 层的 workspace ask、shell deny、external-write deny 用例。 |
+| rewrite 验证与最终参数授权 | `test_typed_tool_hooks.py::test_typed_rewrite_preserves_raw_graph_args_uses_final_execution_args_and_canonical_started_id` 与 `::test_invoke_tool_outer_is_not_rewritten_and_inner_runs_once` 验证最终参数执行且 permission 在 started 前；无单独永久用例覆盖“无效 rewrite + 最终外部路径 policy”同一场景，本轮用 throwaway runtime probe 确认无效 schema rewrite 在执行前 block，重写到 external path 则按最终 canonical path deny，side effect 不发生。 |
+| approval resume 单次执行 | `test_approval_resume_uses_final_started_id_once_and_does_not_repeat_typed_handler`、`test_runtime_persists_pending_approval_until_single_resume_resolution`。 |
+| cancel 后晚到事件 | `test_cancel_lands_while_tool_result_in_flight_drops_late_result`、`test_cancel_mid_provider_stream_drops_remaining_deltas`、`test_late_tool_completion_at_the_boundary_is_not_committed_as_the_tool_result`。 |
+| persisted replay 不重放副作用 | `test_process_crash_during_a_tool_call_resumes_without_replaying_or_claiming_it`；恢复后已完成 read execution count 仍为 1，crashed in-flight call 不被 claim completed。 |
+| fork / checkout pair 边界 | `test_fork_refuses_boundary_that_splits_a_tool_call`、`test_checkout_refuses_path_that_splits_a_tool_pair`、`test_rehydrated_tool_results_follow_the_checked_out_leaf`。 |
+
+本轮可重复命令及观察结果：
+
+```sh
+uv run pytest -q \
+  tests/unit/runtime/test_permission_plan_mode.py \
+  tests/unit/runtime/test_approval_mode_tiers.py \
+  tests/unit/runtime/test_typed_tool_hooks.py \
+  tests/unit/runtime/test_session_lifecycle_seal.py::test_cancel_lands_while_tool_result_in_flight_drops_late_result \
+  tests/unit/runtime/test_session_lifecycle_seal.py::test_cancel_mid_provider_stream_drops_remaining_deltas \
+  tests/unit/runtime/test_tool_execution_timeout.py::test_runtime_timeout_signals_cancellation_and_stops_a_cooperative_tool \
+  tests/unit/runtime/test_tool_execution_timeout.py::test_late_tool_completion_at_the_boundary_is_not_committed_as_the_tool_result \
+  tests/integration/test_process_crash_tool_resume.py::test_process_crash_during_a_tool_call_resumes_without_replaying_or_claiming_it \
+  tests/integration/test_read_only_slice.py::test_runtime_persists_pending_approval_until_single_resume_resolution \
+  tests/integration/test_read_only_slice.py::test_runtime_rejects_stale_duplicate_approval_replay_after_resolution_even_if_pending_state_is_restored \
+  tests/unit/storage/test_session_fork.py::test_fork_copies_prefix_own_watermark_and_leaves_source_unchanged \
+  tests/unit/storage/test_session_fork.py::test_fork_refuses_boundary_that_splits_a_tool_call \
+  tests/unit/storage/test_session_checkout.py::test_checkout_moves_leaf_and_keeps_the_abandoned_events \
+  tests/unit/storage/test_session_checkout.py::test_checkout_refuses_path_that_splits_a_tool_pair \
+  tests/unit/runtime/test_checkout_provider_context.py::test_rehydrated_tool_results_follow_the_checked_out_leaf
+```
+
+Observed: **60 passed**; additional policy execution cases `test_runtime_pattern_permission_rule_asks_for_workspace_write`、`test_runtime_pattern_permission_rule_denies_shell_command`、`test_runtime_pattern_permission_rule_cannot_bypass_external_write_policy` 为 **3 passed**。另一个 throwaway deterministic runtime + temporary SQLite smoke 观察到：pending approval 时目标文件不存在；allow 后 side-effect counter 恰为 1；新 runtime reopen 同一 SQLite 并 replay completed session 后 counter 仍为 1，tool_started/tool_completed 各恰一条。smoke 与 rewrite probe 均已删除，没有新增永久测试。
+
+补充命令：`uv run pytest -q tests/unit/runtime/test_runtime_service_extensions.py::test_runtime_pattern_permission_rule_asks_for_workspace_write tests/unit/runtime/test_runtime_service_extensions.py::test_runtime_pattern_permission_rule_denies_shell_command tests/unit/runtime/test_runtime_service_extensions.py::test_runtime_pattern_permission_rule_cannot_bypass_external_write_policy`（**3 passed**）。
 
 ### P1：解开 lower types 的 runtime 依赖——第一个具体 change set
 
@@ -201,8 +237,8 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 - `runtime/context/provider.py`：`blocking` 已包含所有 error diagnostics，删除再合并其子集 transform failures 的重复计算；仍然保留 transform failure 对 `mode=off` 的硬 block。debug transform projection 直接读取 Mapping，不再为只读 helper 复制 dict。开放 custom/persisted metadata 的 parser 校验保留，不把它误判为过度防御。
 - `runtime/agent_capability.py`：shape 错误说明使用 snapshot owner 的真实版本；不测试错误文案，不删除持久化输入验证。
 - 独立前置修复：首次 smoke import 发现 `runtime/reminders.py` 的重复原始 doc 段落和多余三引号导致 `SyntaxError`；只移除重复段落/引号，保留原 docstring 和所有 runtime 逻辑。
-- 已执行：before/after 九组 context transform failure × policy mode 的实际 projection/policy smoke 输出一致；重复 blocking code 保持去重、无效 persisted snapshot 保持拒绝；`uv run pytest tests/unit/runtime/test_context_window_diagnostics.py -q` 为 **2 passed**。本轮未执行 standalone core/real-provider 验收或全仓检查，没有创建永久文案/source-text 测试。
-- CLI/TUI 专用测试及其他非行为断言的清理由独立工作流按 [`testing.md`](../testing.md) 完成；这一策略调整不等于架构迁移或 UI 行为已经验证。
+- 前置清理验证（历史结果，本次未重跑）：九组 context-transform failure × policy mode 的 before/after projection/policy smoke 输出一致，重复 blocking code 保持去重、无效 persisted snapshot 保持拒绝；`uv run pytest tests/unit/runtime/test_context_window_diagnostics.py -q` 为 **2 passed**。最终 `mise run check` 观察到 **1709 Python / 144 frontend**，完整 pre-commit 通过；CLI/TUI 实际程序 deterministic read smoke 通过。以上是前置清理的历史基线，不是 P0 本次新运行的检查。
+- CLI/TUI 专用测试和其他非行为断言已按 [`testing.md`](../testing.md) 清理；这一策略调整不等于架构迁移，也不单独证明 UI 行为。本次没有运行 CLI/TUI smoke。
 
 ## 明确延期：审计 §9
 
