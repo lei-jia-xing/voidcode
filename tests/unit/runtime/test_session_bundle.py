@@ -28,7 +28,8 @@ from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SessionSealedError, SqliteSessionStore
-from voidcode.tools import ToolResult, cap_tool_result_output
+from voidcode.tools.contracts import ToolResult
+from voidcode.tools.output import cap_tool_result_output
 
 
 def _seed_session(

@@ -3,20 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
-from ...hook.percall import PerCallRewriteOutcome
+from ...core.transcript import ContextSegment, ToolResultView
 from ...provider.model_catalog import static_catalog_metadata
 from ...provider.tokenizer import count_tokens
-from ...tools.contracts import ToolDiagnostics, ToolResult, ToolResultStatus
+from ...tools.contracts import ToolResult
 from ..todos import render_provider_todo_state
-from .percall import (
-    percall_wire_cache_prefix,
-    segments_to_percall_messages,
-)
 from .prompt_assembly import (
     PromptAssemblyPlan,
     PromptAssemblySection,
@@ -285,64 +280,6 @@ class RuntimeContextWindow:
 
 
 @dataclass(frozen=True, slots=True)
-class ToolResultView:
-    """Provider-facing rendering view of a tool result."""
-
-    result: ToolResult
-    content: str | None
-    clipped: bool = False
-    original_content_chars: int | None = None
-    content_char_limit: int | None = None
-    #: True when the budget replaced the content with a pruning placeholder.
-    pruned: bool = False
-    _isolated_data: dict[str, object] = field(init=False, repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        isolated_result = deepcopy(self.result)
-        object.__setattr__(self, "result", isolated_result)
-        object.__setattr__(self, "_isolated_data", deepcopy(isolated_result.data))
-
-    @property
-    def tool_name(self) -> str:
-        return self.result.tool_name
-
-    @property
-    def status(self) -> ToolResultStatus:
-        return self.result.status
-
-    @property
-    def data(self) -> dict[str, object]:
-        return self._isolated_data
-
-    @property
-    def error(self) -> str | None:
-        return self.result.error
-
-    @property
-    def truncated(self) -> bool:
-        return self.pruned or self.clipped or self.result.truncated
-
-    @property
-    def partial(self) -> bool:
-        return True if self.pruned or self.clipped else self.result.partial
-
-    @property
-    def reference(self) -> str | None:
-        return self.result.reference
-
-    @property
-    def source(self) -> str | None:
-        return self.result.source
-
-    @property
-    def diagnostics(self) -> ToolDiagnostics | None:
-        return self.result.diagnostics
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self.result, name)
-
-
-@dataclass(frozen=True, slots=True)
 class ToolResultProjection:
     #: Provider-facing views, in provider order (pairing preserved; content may
     #: already carry char-cap clipping).
@@ -355,7 +292,7 @@ class RuntimeAssembledContext:
     prompt: str
     tool_results: tuple[ToolResult | ToolResultView, ...]
     continuity_state: ContextProjection | None
-    segments: tuple[RuntimeContextSegment, ...]
+    segments: tuple[ContextSegment, ...]
     metadata: dict[str, object]
     loaded_skills: tuple[dict[str, object], ...] = ()
     #: The bounded provider view this assembly was rendered from: the compiled
@@ -363,18 +300,8 @@ class RuntimeAssembledContext:
     context_window: RuntimeContextWindow | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeContextSegment:
-    role: Literal["system", "user", "assistant", "tool"]
-    content: str | None
-    tool_call_id: str | None = None
-    tool_name: str | None = None
-    tool_arguments: dict[str, object] | None = None
-    metadata: dict[str, object] | None = None
-
-
 def _context_tier_metadata(
-    segments: list[RuntimeContextSegment],
+    segments: list[ContextSegment],
 ) -> dict[str, object]:
     order: list[str] = []
     counts: dict[str, int] = {"instruction": 0, "workspace": 0, "task": 0, "recent": 0}
@@ -772,11 +699,11 @@ def _clip_text_to_char_limit(text: str, *, limit: int) -> str:
 
 
 def _bounded_replayed_conversation_segments(
-    segments: tuple[RuntimeContextSegment, ...],
+    segments: tuple[ContextSegment, ...],
     *,
     policy: ContextWindowPolicy,
-) -> tuple[RuntimeContextSegment, ...]:
-    bounded: list[RuntimeContextSegment] = []
+) -> tuple[ContextSegment, ...]:
+    bounded: list[ContextSegment] = []
     for segment in segments:
         if segment.role != "tool" or segment.content is None or segment.tool_name is None:
             bounded.append(segment)
@@ -943,10 +870,10 @@ def continuity_summary_metadata(
 
 def _artifact_reference_segments(
     continuity_state: ContextProjection | None,
-) -> tuple[RuntimeContextSegment, ...]:
+) -> tuple[ContextSegment, ...]:
     if continuity_state is None:
         return ()
-    segments: list[RuntimeContextSegment] = []
+    segments: list[ContextSegment] = []
     for diagnostic in continuity_state.dropped_tool_results:
         if diagnostic.artifact_id is None:
             continue
@@ -983,7 +910,7 @@ def _artifact_reference_segments(
         if diagnostic.reference is not None:
             metadata["reference"] = diagnostic.reference
         segments.append(
-            RuntimeContextSegment(
+            ContextSegment(
                 role="system",
                 content=content,
                 metadata=metadata,
@@ -992,7 +919,7 @@ def _artifact_reference_segments(
     return tuple(segments)
 
 
-def _pending_state_segment(session_metadata: Mapping[str, object]) -> RuntimeContextSegment | None:
+def _pending_state_segment(session_metadata: Mapping[str, object]) -> ContextSegment | None:
     # Resolve through the metadata helper lazily to keep the module graph acyclic.
     from ..session_metadata_helpers import parse_plan_state_metadata
 
@@ -1021,7 +948,7 @@ def _pending_state_segment(session_metadata: Mapping[str, object]) -> RuntimeCon
         metadata["blocked_tool"] = blocked_tool
     if isinstance(approval_request_id, str) and approval_request_id:
         metadata["approval_request_id"] = approval_request_id
-    return RuntimeContextSegment(
+    return ContextSegment(
         role="system",
         content=" ".join(parts),
         metadata=metadata,
@@ -1255,7 +1182,7 @@ def _continuity_provider_sections(
 def _provider_payload_bytes(
     plan: PromptAssemblyPlan,
     *,
-    replayed_conversation_segments: tuple[RuntimeContextSegment, ...],
+    replayed_conversation_segments: tuple[ContextSegment, ...],
 ) -> int:
     """Chars the provider sees outside the current prompt and the tool results.
 
@@ -1513,10 +1440,10 @@ def assemble_provider_context(
     preserved_continuity_state: ContextProjection | None = None,
     workspace: Path | None = None,
     replay_retained_tool_messages: bool = True,
-    replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
+    replayed_conversation_segments: tuple[ContextSegment, ...] = (),
     tool_catalog_context: str = "",
     hook_guidance: Iterable[str] | None = None,
-    reminder_segment: RuntimeContextSegment | None = None,
+    reminder_segment: ContextSegment | None = None,
     compaction_budget: CompactionBudget | None = None,
     before_compact: BeforeCompactInput | None = None,
     continuity_summary_override: str | None = None,
@@ -1660,14 +1587,14 @@ def assemble_provider_context(
     metadata_payload["summary_kind"] = effective_summary_kind
     metadata_payload["prompt_stack"] = assembly_plan.fragment_metadata_payload()
     metadata_payload["prompt_activation"] = activation_decision.metadata
-    segments: list[RuntimeContextSegment] = []
+    segments: list[ContextSegment] = []
     replayed_conversation_inserted = False
     for section in assembly_plan.sections:
         if not replayed_conversation_inserted and section.source == "current_user_prompt":
             segments.extend(replayed_conversation_segments)
             replayed_conversation_inserted = True
         segments.append(
-            RuntimeContextSegment(
+            ContextSegment(
                 role=section.role,
                 content=section.content,
                 metadata={
@@ -1699,7 +1626,7 @@ def assemble_provider_context(
             else:
                 tool_arguments = {}
             segments.append(
-                RuntimeContextSegment(
+                ContextSegment(
                     role="assistant",
                     content=None,
                     tool_call_id=tool_call_id,
@@ -1714,7 +1641,7 @@ def assemble_provider_context(
                 if result.original_content_chars is not None:
                     pruned_metadata["original_content_chars"] = result.original_content_chars
             segments.append(
-                RuntimeContextSegment(
+                ContextSegment(
                     role="tool",
                     content=result.content or "",
                     tool_call_id=tool_call_id,
@@ -1749,8 +1676,8 @@ def assemble_provider_context(
         metadata_payload["usage_tokens_after"] = context_window.usage_tokens_after
         metadata_payload["usage_tokens_estimated"] = context_window.estimate_won
     if reminder_segment is not None:
-        # Tail-appended per-call reminder: reaches the provider for this call
-        # only (see ``segments_to_percall_messages``), never the transcript.
+        # Tail-appended reminder: it exists only in this ephemeral provider-context assembly.
+        # The assembly is not the persisted transcript.
         segments.append(reminder_segment)
     metadata_payload["context_tiers"] = _context_tier_metadata(segments)
     metadata_payload["context_tier_policy"] = {
@@ -1758,8 +1685,6 @@ def assemble_provider_context(
         "protected_tiers": ["instruction", "workspace", "task"],
         "compaction_target": "recent",
     }
-    percall_outcome = PerCallRewriteOutcome(messages=segments_to_percall_messages(tuple(segments)))
-    metadata_payload["percall_cache_prefix"] = percall_wire_cache_prefix(percall_outcome)
     return RuntimeAssembledContext(
         prompt=prompt,
         tool_results=context_window.tool_results,

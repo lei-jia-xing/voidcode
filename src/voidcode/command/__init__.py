@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from .events import COMMAND_RESOLVED
 from .loader import builtin_commands, load_command_registry, load_markdown_commands
 from .models import CommandDefinition, CommandInvocation, CommandResolution
 from .registry import CommandRegistry
 from .resolver import is_prompt_command, resolve_prompt_command, resolve_tool_instruction
 
 __all__ = [
-    "COMMAND_RESOLVED",
     "CommandDefinition",
     "CommandInvocation",
     "CommandRegistry",

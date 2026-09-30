@@ -24,8 +24,10 @@
 
 `voidcode.runtime` 负责选择和调用 graph，并为 graph 提供 resolved config、session state、tool metadata 和执行治理。graph 不应反向成为系统控制面。
 
+provider-facing transcript、segment 和结果 view 由 `voidcode.core.transcript` 定义；graph 直接消费这些中立类型，不导入 runtime context。runtime 的预算、continuity projection、历史 replay 和授权不进入这些 lower contracts。命令交付事件仍由 `runtime.events` 定义，command package 不反向 re-export 它。
+
 未来如果引入 `voidcode.agent`，agent 定义与 agent preset/configuration 也应归属该边界，而不是让 `graph/` 直接承载命名 agent 的 prompt、hook、skill、MCP 或 tool 配置。
 
 ## 当前状态
 
-当前这里仍以确定性执行切片为主，是 runtime 驱动下的编排层，而不是独立产品边界。未来 multi-agent 扩展可以增加 graph complexity，但不会改变 runtime-owned governance 的基本前提。
+P1 已完成 lower contracts 的中立化，现有 deterministic/provider graph 步骤可在无 runtime/SQLite/UI 的进程运行。完整会话循环仍由 runtime 驱动；P3 将切换到实际 turn engine，不把当前单 agent 循环包装成通用 DAG/workflow。

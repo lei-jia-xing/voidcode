@@ -12,6 +12,7 @@ VoidCode 当前更重视代码的清晰性、小规模变更以及可重复的�
 ## Python
 
 - 符合现有的运行时 (runtime)/图 (graph)/工具 (tools) 边界。
+- 中立 transcript 类型从 `voidcode.core.transcript` 导入；provider/tool 类与 helper 从定义模块导入，不使用 package facade。raw history、预算、redaction、policy 和持久化仍由 runtime owner 处理。
 - 在可行的情况下保持函数短小且确定性。
 - Runtime changes must follow the current contracts in `docs/contracts/`; implementation ownership remains in `src/voidcode/runtime/`.
 - 使用 Ruff 进行格式化/代码检查，并保持 ty 类型检查清理。

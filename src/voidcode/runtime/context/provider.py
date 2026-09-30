@@ -5,8 +5,8 @@ from collections import defaultdict
 from collections.abc import Mapping
 from typing import Literal
 
+from ...core.transcript import AssembledContext, ContextSegment, ToolResultView
 from ...provider.model_catalog import ToolFeedbackMode
-from ...provider.protocol import ProviderAssembledContext, ProviderContextSegmentLike
 from ...security.redaction import (
     DEBUG_CONTENT_CHARS as _MAX_DEBUG_CONTENT_CHARS,
 )
@@ -32,7 +32,6 @@ from ..contracts import (
     RuntimeProviderContextSnapshot,
     RuntimeProviderMessageSnapshot,
 )
-from .window import ToolResultView
 
 _PROVIDER_CONTEXT_POLICY_BLOCKING_CODES = frozenset(
     {
@@ -47,7 +46,7 @@ _PROVIDER_CONTEXT_POLICY_BLOCKING_CODES = frozenset(
 
 def inspect_provider_context(
     *,
-    assembled_context: ProviderAssembledContext,
+    assembled_context: AssembledContext,
     provider: str,
     model: str,
     execution_engine: str,
@@ -246,7 +245,7 @@ def _transform_diagnostics(
     return tuple(diagnostics)
 
 
-def _source_from_metadata(segment: ProviderContextSegmentLike) -> str:
+def _source_from_metadata(segment: ContextSegment) -> str:
     metadata = segment.metadata or {}
     source = metadata.get("source")
     return source if isinstance(source, str) and source else "assembled_context"
@@ -290,7 +289,7 @@ def _safe_payload(value: object) -> object:
 
 def _segment_snapshot(
     index: int,
-    segment: ProviderContextSegmentLike,
+    segment: ContextSegment,
 ) -> RuntimeProviderContextSegmentSnapshot:
     content, content_truncated = _clip_content(segment.content)
     metadata = segment.metadata or {}
@@ -313,7 +312,7 @@ def _segment_snapshot(
 
 def _provider_message_snapshots(
     *,
-    segments: tuple[ProviderContextSegmentLike, ...],
+    segments: tuple[ContextSegment, ...],
     tool_results: tuple[ToolResult | ToolResultView, ...],
     tool_feedback_mode: ToolFeedbackMode,
 ) -> list[RuntimeProviderMessageSnapshot]:
@@ -323,7 +322,7 @@ def _provider_message_snapshots(
 
 
 def _standard_tool_message_snapshots(
-    segments: tuple[ProviderContextSegmentLike, ...],
+    segments: tuple[ContextSegment, ...],
 ) -> list[RuntimeProviderMessageSnapshot]:
     messages: list[RuntimeProviderMessageSnapshot] = []
     for segment in segments:
@@ -380,7 +379,7 @@ def _standard_tool_message_snapshots(
 
 
 def _synthetic_tool_feedback_message_snapshots(
-    segments: tuple[ProviderContextSegmentLike, ...],
+    segments: tuple[ContextSegment, ...],
     *,
     tool_results: tuple[ToolResult | ToolResultView, ...],
 ) -> list[RuntimeProviderMessageSnapshot]:
@@ -425,7 +424,7 @@ def _synthetic_tool_feedback_message_snapshots(
     return messages
 
 
-def _tool_payload_json(segment: ProviderContextSegmentLike) -> str:
+def _tool_payload_json(segment: ContextSegment) -> str:
     metadata = segment.metadata or {}
     raw_data = metadata.get("data")
     sanitized_data = _sanitize_debug_data(raw_data) if isinstance(raw_data, dict) else {}
@@ -506,7 +505,7 @@ def _sanitize_debug_data(data: dict[str, object]) -> dict[str, object]:
 
 def _diagnostics(
     *,
-    segments: tuple[ProviderContextSegmentLike, ...],
+    segments: tuple[ContextSegment, ...],
     context_metadata: dict[str, object],
     tool_feedback_mode: ToolFeedbackMode,
     available_tool_count: int,
@@ -541,7 +540,7 @@ def _diagnostics(
 
 
 def _duplicate_system_diagnostics(
-    segments: tuple[ProviderContextSegmentLike, ...],
+    segments: tuple[ContextSegment, ...],
 ) -> list[RuntimeProviderContextDiagnostic]:
     by_fingerprint: dict[str, list[int]] = defaultdict(list)
     for index, segment in enumerate(segments):
@@ -564,7 +563,7 @@ def _duplicate_system_diagnostics(
 
 
 def _compact_projection_role_diagnostics(
-    segments: tuple[ProviderContextSegmentLike, ...],
+    segments: tuple[ContextSegment, ...],
 ) -> list[RuntimeProviderContextDiagnostic]:
     compact_sources = {
         "context_projection",
@@ -596,7 +595,7 @@ def _compact_projection_role_diagnostics(
 
 
 def _tool_pair_diagnostics(
-    segments: tuple[ProviderContextSegmentLike, ...],
+    segments: tuple[ContextSegment, ...],
     *,
     available_tool_count: int,
     oversized_tool_feedback_chars: int,
@@ -735,7 +734,7 @@ def _context_window_diagnostics(
 
 
 def _todo_projection_diagnostics(
-    segments: tuple[ProviderContextSegmentLike, ...],
+    segments: tuple[ContextSegment, ...],
 ) -> list[RuntimeProviderContextDiagnostic]:
     has_runtime_todos = any(segment.role == "system" and _source_from_metadata(segment) == "runtime_todo_state" for segment in segments)
     todo_tool_indices = [index for index, segment in enumerate(segments) if segment.role == "tool" and segment.tool_name == "todo"]

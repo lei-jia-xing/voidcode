@@ -5,9 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.tools import ToolCall, WriteTool
 from voidcode.tools._repair import ToolDiagnosticError
+from voidcode.tools.contracts import ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
+from voidcode.tools.write import WriteTool
 
 
 def _content_hash(path: Path) -> str:

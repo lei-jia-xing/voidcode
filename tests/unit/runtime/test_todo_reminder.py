@@ -18,7 +18,6 @@ from typing import Any
 
 import pytest
 
-from voidcode.hook.percall import percall_messages_sha256
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
 from voidcode.runtime.background.models import BackgroundTaskRef, StoredBackgroundTaskSummary
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig, RuntimeRemindersConfig
@@ -26,7 +25,6 @@ from voidcode.runtime.context.continuity import (
     replayed_conversation_segments_from_segments,
     verified_checkpoint_session_metadata,
 )
-from voidcode.runtime.context.percall import segments_to_percall_messages
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.events import RUNTIME_REMINDER_INJECTED
 from voidcode.runtime.permission import PermissionPolicy
@@ -320,13 +318,8 @@ def test_reminder_text_stays_out_of_the_persisted_transcript(tmp_path: Path) -> 
     persisted = json.dumps({"events": [event.payload for event in stored.events], "metadata": stored.session.metadata}, sort_keys=True)
     assert "<system-reminder>" not in persisted
     assert "You stopped with" not in persisted
-    # Only the counters survive, and the reminder is bound as a per-call message
-    # so it cannot move the cache prefix either.
     reminder = _reminder_segments(graph.seen_segments[2])
     assert len(reminder) == 1
-    bound = segments_to_percall_messages(graph.seen_segments[2])
-    without_reminder = segments_to_percall_messages(tuple(segment for segment in graph.seen_segments[2] if segment.content != reminder[0].content))
-    assert percall_messages_sha256(bound) == percall_messages_sha256(without_reminder)
 
 
 def test_reminder_counters_survive_checkpoint_verification(tmp_path: Path) -> None:

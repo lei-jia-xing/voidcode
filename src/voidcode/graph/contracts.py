@@ -4,8 +4,8 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Final, Literal, Protocol, TypedDict, runtime_checkable
 
-from ..provider.protocol import ProviderAbortSignal, ProviderAssembledContext, ProviderContextWindow, ProviderTokenUsage
-from ..runtime.context.window import ToolResultView
+from ..core.transcript import AssembledContext, ContextWindow, ToolResultView
+from ..provider.protocol import ProviderAbortSignal, ProviderTokenUsage
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 type GraphEventSource = Literal["graph"]
@@ -62,9 +62,9 @@ class GraphLoopState(TypedDict):
 class GraphRunRequest:
     session: GraphSession
     prompt: str
-    assembled_context: ProviderAssembledContext
+    assembled_context: AssembledContext
     available_tools: tuple[ToolDefinition, ...] = ()
-    context_window: ProviderContextWindow | None = None
+    context_window: ContextWindow | None = None
     metadata: dict[str, object] = field(default_factory=dict)
     abort_signal: ProviderAbortSignal | None = None
     stream_event_sink: Callable[[GraphEvent], None] | None = None

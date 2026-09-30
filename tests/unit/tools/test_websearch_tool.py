@@ -7,7 +7,8 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from voidcode.tools import ToolCall, WebSearchTool
+from voidcode.tools.contracts import ToolCall
+from voidcode.tools.web_search import WebSearchTool
 
 
 def _json_response(payload: Mapping[str, object]) -> httpx.Response:

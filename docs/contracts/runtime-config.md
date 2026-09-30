@@ -290,7 +290,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 
 ### reminder 语义（`reminders`）
 
-- reminder 是 runtime-owned 的 **per-call** 注入通道：提醒文本作为 provider context 的尾部 segment 只对本次 provider 调用可见（`hook/percall.py` 的 `PerCallMessage(per_call=True)`），既不写入 SQLite transcript，也不进入 per-call cache hash；可持久化的只有 cycle 计数器（`SessionState.metadata["runtime_state"]["reminders"]`）与一条 `runtime.reminder_injected` 事件（见 `docs/contracts/runtime-events.md`）。
+- reminder 是 runtime-owned 的临时 provider-context 尾部注入：它只存在于本次 provider context assembly，不追加到 SQLite transcript；可持久化的只有 cycle 计数器（`SessionState.metadata["runtime_state"]["reminders"]`）与一条 `runtime.reminder_injected` 事件（见 `docs/contracts/runtime-events.md`）。
 - mid-run nudge 无独立开关：它随 `reminders.enabled` 启用，阈值（累计 12 次变更类工具调用）与每 cycle 上限（2 条）是命名常量（对齐上游），不提供配置键。
 - 第一个 reminder 类型是 todo 完成提醒：terminal assistant 回合结束时若仍有 `pending` / `in_progress` todo，runtime 注入一条 `<system-reminder>` 尾巴并继续同一 run（而不是结束回合）；提醒文本列出未完成的 phase/task 与 `(Reminder k/max)`。
 - 抑制条件：`reminders.enabled = false`、execution engine 不是 `provider`（deterministic graph 没有可注入的 provider 调用）、todo 全部完成、上一条 reminder 之后的回合没有产生新的 tool result（仍在等待 agent 行动）、本 cycle 已达 `reminders.todo.max_per_cycle`、assistant 已停在等待用户回答（`plan_state.status` 为 `waiting_question` / `waiting_approval`）、父会话仍有会重新唤醒 loop 的 background task，或当前是被委派的 child session（必须通过 `yield` 终止）。

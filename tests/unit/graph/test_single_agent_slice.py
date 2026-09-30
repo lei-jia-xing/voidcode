@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from voidcode.core.transcript import ContextSegment
 from voidcode.graph.contracts import GraphRunRequest, GraphSessionSnapshot
 from voidcode.graph.provider_graph import ProviderGraph
 from voidcode.provider.protocol import (
@@ -20,7 +21,6 @@ from voidcode.provider.resolution import resolve_provider_model
 from voidcode.runtime.context.window import (
     ContextProjection,
     RuntimeAssembledContext,
-    RuntimeContextSegment,
     RuntimeContextWindow,
     normalize_read_output,
 )
@@ -66,11 +66,11 @@ def _session_with_run(session_id: str = "s1", run_id: str = "run-one") -> GraphS
 
 
 def _assembled_from_context_window(context_window: RuntimeContextWindow) -> RuntimeAssembledContext:
-    segments: list[RuntimeContextSegment] = [RuntimeContextSegment(role="user", content=context_window.prompt)]
+    segments: list[ContextSegment] = [ContextSegment(role="user", content=context_window.prompt)]
     for index, result in enumerate(context_window.tool_results, start=1):
         tool_call_id = f"test_tool_{index}"
         segments.append(
-            RuntimeContextSegment(
+            ContextSegment(
                 role="assistant",
                 content=None,
                 tool_call_id=tool_call_id,
@@ -79,7 +79,7 @@ def _assembled_from_context_window(context_window: RuntimeContextWindow) -> Runt
             )
         )
         segments.append(
-            RuntimeContextSegment(
+            ContextSegment(
                 role="tool",
                 content=result.content or "",
                 tool_call_id=tool_call_id,
@@ -1204,8 +1204,8 @@ def test_provider_provider_graph_forwards_request_surface_to_provider() -> None:
                 tool_results=(),
                 continuity_state=None,
                 segments=(
-                    RuntimeContextSegment(role="system", content="Runtime-managed skills are active."),
-                    RuntimeContextSegment(role="user", content="read sample.txt"),
+                    ContextSegment(role="system", content="Runtime-managed skills are active."),
+                    ContextSegment(role="user", content="read sample.txt"),
                 ),
                 metadata={},
             ),

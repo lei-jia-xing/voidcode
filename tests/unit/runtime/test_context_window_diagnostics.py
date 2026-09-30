@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from voidcode.provider.protocol import ProviderContextSegment
+from voidcode.core.transcript import ContextSegment
 from voidcode.runtime.context.provider import inspect_provider_context
 from voidcode.tools.contracts import ToolResult
 
 
 @dataclass(frozen=True)
 class _Assembled:
-    segments: tuple[ProviderContextSegment, ...] = ()
+    segments: tuple[ContextSegment, ...] = ()
     tool_results: tuple[ToolResult, ...] = ()
     continuity_state: object | None = None
     metadata: dict[str, object] = field(default_factory=dict)

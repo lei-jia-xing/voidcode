@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TypedDict
 
 from ..command.resolver import resolve_tool_instruction
-from ..runtime.context.window import ToolResultView
+from ..core.transcript import ToolResultView
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .contracts import (
     GRAPH_LOOP_STEP,

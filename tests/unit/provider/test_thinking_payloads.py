@@ -10,19 +10,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, cast
 
+from voidcode.core.transcript import AssembledContext, ContextSegment
 from voidcode.provider.anthropic_native import AnthropicMessagesProvider, AnthropicMessagesTransport
 from voidcode.provider.config import AnthropicProviderConfig, GoogleProviderConfig, OpenAICompatibleProviderConfig
 from voidcode.provider.google_native import GoogleGenAIProvider
 from voidcode.provider.model_catalog import ProviderModelMetadata, static_catalog_metadata
 from voidcode.provider.openai_native import OpenAIChatCompletionsProvider
-from voidcode.provider.protocol import ProviderAssembledContext, ProviderContextSegment, ProviderTurnRequest
+from voidcode.provider.protocol import ProviderTurnRequest
 from voidcode.tools.contracts import ToolDefinition
 
 
 @dataclass(frozen=True, slots=True)
 class _Context:
     prompt: str = "answer"
-    segments: tuple[ProviderContextSegment, ...] = ()
+    segments: tuple[ContextSegment, ...] = ()
     tool_results: tuple[object, ...] = ()
     continuity_state: object | None = None
     metadata: dict[str, object] = None  # type: ignore[assignment]
@@ -31,7 +32,7 @@ class _Context:
 def _request(provider: str, model: str, *, effort: str | None, tools: bool = False) -> ProviderTurnRequest:
     metadata: ProviderModelMetadata | None = static_catalog_metadata(provider, model)
     return ProviderTurnRequest(
-        assembled_context=cast(ProviderAssembledContext, _Context(segments=(ProviderContextSegment(role="user", content="hi"),))),
+        assembled_context=cast(AssembledContext, _Context(segments=(ContextSegment(role="user", content="hi"),))),
         available_tools=(ToolDefinition(name="read", description="read", input_schema={"type": "object"}),) if tools else (),
         provider_name=provider,
         model_name=model,
@@ -178,7 +179,7 @@ def test_anthropic_keeps_a_small_cap_at_the_models_own_maximum() -> None:
         transport=cast(AnthropicMessagesTransport, transport),
     )
     request = ProviderTurnRequest(
-        assembled_context=cast(ProviderAssembledContext, _Context(segments=(ProviderContextSegment(role="user", content="hi"),))),
+        assembled_context=cast(AssembledContext, _Context(segments=(ContextSegment(role="user", content="hi"),))),
         provider_name="anthropic",
         model_name="claude-opus-4-5",
         reasoning_effort="high",
@@ -245,7 +246,7 @@ def test_the_minimum_output_floor_never_exceeds_the_models_maximum() -> None:
         transport=cast(AnthropicMessagesTransport, transport),
     )
     request = ProviderTurnRequest(
-        assembled_context=cast(ProviderAssembledContext, _Context(segments=(ProviderContextSegment(role="user", content="hi"),))),
+        assembled_context=cast(AssembledContext, _Context(segments=(ContextSegment(role="user", content="hi"),))),
         provider_name="anthropic",
         model_name="claude-opus-4-5",
         reasoning_effort="high",

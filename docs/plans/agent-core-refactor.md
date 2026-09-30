@@ -1,6 +1,6 @@
 # Agent Core 重构实施计划
 
-状态：P0 治理基线已完成；P1–P6 架构迁移尚未实施。此前清理不等于独立 core 已完成。
+状态：P0 治理基线与 P1 中立 lower contracts 已完成；P2–P6 架构迁移尚未实施。P1 不代表独立完整 turn engine 已完成。
 
 依据：[pi × VoidCode 可扩展性审计](../audits/pi-voidcode-extensibility.md)。审计是历史快照，不改写；本计划的当前状态须以源码和实际行为为准。目标覆盖审计 P0-1～P0-6、P1-7～P1-8、§5 的组合问题和 §8 全部十项验收，不把 roadmap 当成增加产品功能的授权。
 
@@ -29,7 +29,7 @@ runtime host：policy / approval / redaction / persistence / recovery /
 
 | 当前证据 | 影响与迁移落点 |
 | --- | --- |
-| `provider/protocol.py` 导入 `runtime.context.window.ToolResultView`，`graph/contracts.py` 和两种 graph 也依赖 runtime context | 只移动 graph 不会独立；P1 必须一起迁移 provider/tool/transcript 类型和所有消费者，处理 package import cycles |
+| P1：`core/transcript.py` 统一 `ToolResultView`、`ContextSegment`、`AssembledContext` 与 `ContextWindow`，provider/graph/runtime 全部真实消费者已切换 | provider/tool package init 已移除 eager facade；实际 graph import 不再经 command event re-export 加载 runtime |
 | `graph/provider_graph.py::step` 持有 batch、session/run identity、approval-resume 判断并组装 provider turn；`pending_tool_call_count` 决定 safe boundary | P3 提取真实 turn/batch 算法，不是给旧 graph 加一个 engine facade |
 | `runtime/run_loop.py::execute_graph_loop` 负责 context、steering、typed tool input、permission、intent、hook、execution、result、checkpoint 和 fallback | 抽出执行推进；治理、durable intent、safe checkpoint 和故障策略保留为 runtime host 行为 |
 | `runtime/run_loop.py::_execute_resolved_tool_call` 已汇聚 native、approval-resume、`invoke_tool` 的 executor/progress seam；`runtime/tool_execution.py` 仍 bind hidden context | P2 复用 canonical execution boundary，避免为三条调用路径各造一套 ToolContext/executor |
@@ -40,7 +40,7 @@ runtime host：policy / approval / redaction / persistence / recovery /
 | `runtime/agent_capability.py` 本轮修改前 snapshot version 为 3，但部分 shape 错误说明硬编码 v2；现已使用动态版本 | 只修复错误说明；持久化 shape/version 校验保留，其余契约版本漂移仍按 P4/P5 处理 |
 | `provider/registry.py::with_defaults` 仍有 builtin adapter/table 组合，custom entry 主要是 endpoint-shaped，未知 id 会拒绝 | P5 支持真实 provider package entry；不能退化成未知 provider 静默 fallback，也不能重写已成立 wire adapters |
 | `runtime/context/transforms.py` 已有 typed request/result、ordering、failure trace，但 scope 只有 `provider_context` | 复用已有 seam；P5 统一已有 typed phase，不提前增加所有可能的 transform 功能 |
-| `runtime/context/provider.py` 的 debug projection 接受公开 `ProviderAssembledContext`，metadata 是开放 `dict[str, object]` payload；只读 helper 现接受 Mapping | custom/persisted metadata 仍不可信，parser 校验保留；只去掉已证实的同函数重复计算和不必要复制 |
+| `runtime/context/provider.py` 的 debug projection 消费中立 `AssembledContext`，metadata 是开放 `dict[str, object]` payload；只读 helper 现接受 Mapping | custom/persisted metadata 仍不可信，parser 校验保留；中立 view 不接管 debug projection、redaction 或 policy |
 
 已有行为测试映射见下方 P0 实际基线。重点文件包括 `tests/unit/runtime/test_typed_tool_hooks.py`、`tests/integration/test_process_crash_tool_resume.py`、`tests/unit/runtime/test_tool_execution_timeout.py`、`tests/unit/storage/test_session_fork.py`、`tests/unit/storage/test_session_checkout.py` 和 `tests/unit/runtime/test_checkout_provider_context.py`。
 
@@ -111,6 +111,22 @@ Observed: **60 passed**; additional policy execution cases `test_runtime_pattern
 **验证：** 干净 Python 进程 import + request/response smoke，实际调用现有 deterministic/provider adapter 的一轮（本地确定性 wire fixture），检查 tool-call/result identity 和 reasoning 不丢；运行受影响 backend 行为用例。导入隔离检查只是架构 smoke 的补充，不建立 source-text 永久测试。
 
 **风险：** provider → runtime 的隐含依赖和 package init cycle；neutral 类型只做形状，不夹带 workspace policy 或存储算法。
+
+**P1 已完成（2026-10-01）。** 现有 provider request/result、deterministic/provider graph、runtime context assembly/projection 和全部调用者已经直接消费 `core/transcript.py`。重复 segment 定义和 segment-like facade 已删除；`RuntimeContextWindow`、`ContextProjection` 与预算/continuity/replay 留在 runtime。`ToolResultView` 保留对原始结果及 provider data 的嵌套隔离。provider/tools 的 eager package facade 和隐藏 command event re-export 已切除；Python 导入须使用定义 owner，无旧别名。
+
+实际行为证据：
+
+- 干净进程构造 normalized request/result、修改 view 的嵌套 data：原始结果与 raw view result 未变，runtime/SQLite/CLI/TUI/MCP/LSP 模块加载数为 **0**。
+- 真实 OpenAI SDK Chat Completions adapter + 本地 `MockTransport`：DeepSeek 返回的真实 reasoning 与 `native-call-1` 原始参数保留；下一轮 wire 的 assistant call/tool result ID 配对，真实 reasoning 重放，最终返回 `paired native answer`。同进程实际 deterministic graph 两步完成，仍无 runtime/SQLite/UI/capability manager 导入。
+- 实际 runtime 读取临时文件，temporary SQLite 关闭/reopen/replay 保持一条 completed tool result；neutral provider projection 无 missing/orphan tool pair。另一个实际 runtime + native SDK wire 场景读取真实文件，第二轮消费配对结果，完成并持久化原始 reasoning。
+- 独立验收 worker 的干净进程/native wire smoke 也验证了两条 call 的 ID/参数/结果顺序、raw history 隔离及最终输出；使用本地 transport，未声称在线 provider 验证。
+
+受影响 backend 检查：`uv run pytest -q tests/unit/provider tests/unit/graph tests/unit/runtime/test_context_window_diagnostics.py tests/unit/runtime/test_context_compaction_wiring.py tests/unit/runtime/test_context_budget_from_catalog.py tests/unit/runtime/test_typed_tool_hooks.py tests/unit/runtime/test_checkout_provider_context.py tests/integration/test_process_crash_tool_resume.py tests/unit/tools/test_contract_matrix.py tests/unit/runtime/test_tool_execution_timeout.py` → **412 passed**。使用 throwaway scripts，未新增永久 import/source-text/CLI/TUI 测试；schema/catalog/wire event vocabulary 未更改。
+
+facade 调用者检查：`uv run pytest -q tests/unit/tools tests/unit/runtime/test_permission_plan_mode.py tests/unit/runtime/test_session_bundle.py` → **238 passed**（与上批存在交集，不合并计数）。本阶段 touched source modules 的 scoped `uv run ty check <paths>` 通过；仅 touched Python files 执行 import sorting/formatting。全仓 gate 与 milestone commit hooks 由集成 owner 执行，不把 scoped 结果当全仓结果。
+
+原有 percall abstraction 删除及 reminder 文档/行为用例变更与此阶段的中立 segment cutover 原子集成；不复活旧 alias。`uv run pytest -q tests/unit/runtime/test_todo_mid_run_nudge.py tests/unit/runtime/test_todo_reminder.py` → **27 passed**，保留 reminder 不进入 persisted transcript 的行为断言，不重新 pin 已删除的 cache-hash 实现断言。
+
 
 ### P2：显式 ToolContext，清除隐式执行依赖
 

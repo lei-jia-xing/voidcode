@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Any, cast
 
 import voidcode.tools.output as output_module
-from voidcode.tools import (
-    ToolResult,
+from voidcode.tools.contracts import ToolResult
+from voidcode.tools.output import (
     cap_tool_result_output,
     read_tool_output_artifact,
     resolve_tool_output_artifact,

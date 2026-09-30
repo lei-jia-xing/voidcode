@@ -5,7 +5,8 @@ from typing import cast
 
 import pytest
 
-from voidcode.tools import GlobTool, ToolCall
+from voidcode.tools.contracts import ToolCall
+from voidcode.tools.glob import GlobTool
 
 
 def test_glob_tool_finds_matching_files(tmp_path: Path) -> None:

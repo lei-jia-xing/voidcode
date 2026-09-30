@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.tools import MultiEditTool, ToolCall
 from voidcode.tools._repair import ToolDiagnosticError
+from voidcode.tools.contracts import ToolCall
+from voidcode.tools.multi_edit import MultiEditTool
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 

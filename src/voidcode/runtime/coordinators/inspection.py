@@ -24,12 +24,12 @@ from typing import TYPE_CHECKING
 from ...agent import AgentManifestRegistry
 from ...command import load_command_registry
 from ...command.models import CommandDefinition
+from ...core.transcript import AssembledContext
 from ...mcp.redaction import redact_mcp_command
 from ...provider.auth import ProviderAuthResolver
 from ...provider.model_catalog import ToolFeedbackMode
 from ...provider.models import ResolvedProviderConfig, ResolvedProviderModel
 from ...provider.naming import provider_label
-from ...provider.protocol import ProviderAssembledContext
 from ...provider.registry import ModelProviderRegistry
 from ...provider.resolution import resolve_provider_config
 from ...provider.snapshot import resolved_provider_snapshot
@@ -1074,7 +1074,7 @@ class InspectionCoordinator:
     def _provider_context_snapshot_for_assembled_context(
         self,
         *,
-        assembled_context: ProviderAssembledContext,
+        assembled_context: AssembledContext,
         effective_config: EffectiveRuntimeConfig,
     ) -> RuntimeProviderContextSnapshot:
         active_target = effective_config.resolved_provider.active_target

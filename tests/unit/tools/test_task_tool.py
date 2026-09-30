@@ -16,7 +16,8 @@ from voidcode.runtime.background.routing import (
 )
 from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeRequest, RuntimeResponse
 from voidcode.runtime.session import SessionRef, SessionState
-from voidcode.tools import TaskTool, ToolCall
+from voidcode.tools.contracts import ToolCall
+from voidcode.tools.delegation.task import TaskTool
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 

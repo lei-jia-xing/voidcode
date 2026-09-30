@@ -7,7 +7,8 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from voidcode.tools import ToolCall, WebFetchTool
+from voidcode.tools.contracts import ToolCall
+from voidcode.tools.web_fetch import WebFetchTool
 
 
 def _response(

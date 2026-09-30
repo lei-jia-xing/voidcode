@@ -17,6 +17,20 @@
 - Session Metadata 持久化（由 `voidcode.runtime.storage` 负责）
 - Runtime 事件路由与客户端交付
 
+## Python 导入边界
+
+`voidcode.provider` 和 `voidcode.tools` 的 package init 不加载实现、不再 re-export 类或 helper；从定义 owner 导入：
+
+```python
+from voidcode.core.transcript import AssembledContext, ContextSegment, ContextWindow, ToolResultView
+from voidcode.provider.protocol import ProviderTurnRequest, ProviderTurnResult
+from voidcode.provider.openai_native import OpenAIChatCompletionsProvider
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
+from voidcode.tools.read import ReadTool
+```
+
+中立 transcript 是本轮 model-facing view，不是 session history。`ToolResultView` 隔离原始结果及其嵌套 data；runtime 仍拥有 history/replay、redaction、context budget 和 policy。导入 provider/tool contracts 或运行现有 graph 步骤不需要 runtime、SQLite 或 UI；独立完整 turn engine 的 cutover 属于 P3。
+
 ## Provider 配置与优先级
 
 VoidCode 遵循严格的优先级阶梯来确定最终生效的模型和供应商配置。
@@ -468,7 +482,7 @@ OpenCode Zen 与 OpenCode Go 是不同 provider：Zen 使用 `opencode-zen/<mode
   窗口；调用方显式传入的 `context_window` / `threshold_*` / `reserve_tokens` 仍然优先，catalog 未描述的
   model 则让 compaction 保持 unsized（与之前一致）。runtime 拥有预算，catalog 只提供数字。
 - **图片**：今天没有任何图片进入 provider 请求——read 工具把附件作为 tool-result **data** 返回
-  （`tools/read.py:301-316`），`ProviderContextSegment.content` 只有 `str | None`，adapter 只发文本，
+  （`tools/read.py:301-316`），`ContextSegment.content` 只有 `str | None`，adapter 只发文本，
   因此没有可丢弃的 image part，也无需 vision gate。
 
 - 定价读取的是**随包 catalog**（`static_catalog_metadata`），不是 discovery 合并后的 metadata：与

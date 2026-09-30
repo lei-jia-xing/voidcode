@@ -10,6 +10,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
+from ...core.transcript import ToolResultView
 from ...tools.contracts import (
     ToolCall,
     ToolDiagnostics,
@@ -17,7 +18,6 @@ from ...tools.contracts import (
     ToolResult,
 )
 from ...tools.output import cap_tool_result_output, sanitize_tool_result_data
-from ..context.window import ToolResultView
 from ..session import SessionState
 from ..session_metadata_helpers import session_model_identity
 from ..tool_display import build_tool_display, build_tool_status

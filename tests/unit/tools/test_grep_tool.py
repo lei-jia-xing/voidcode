@@ -5,7 +5,8 @@ from typing import cast
 
 import pytest
 
-from voidcode.tools import GrepTool, ToolCall
+from voidcode.tools.contracts import ToolCall
+from voidcode.tools.grep import GrepTool
 
 
 def test_grep_tool_searches_utf8_file_inside_workspace(tmp_path: Path) -> None:

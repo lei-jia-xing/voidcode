@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.tools import ApplyPatchTool, ToolCall
+from voidcode.tools.apply_patch import ApplyPatchTool
+from voidcode.tools.contracts import ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 

@@ -1,18 +1,17 @@
-"""Runtime-owned per-call reminder channel.
+"""Runtime-owned temporary provider-context reminder channel.
 
-A reminder is a tail-appended provider segment for one call: it reaches the
-model through the normal assembly path but is bound as a per-call message
-(``hook/percall.py``), so it is never persisted into the transcript and never
-enters the per-call cache hash. Only the cycle counters (session metadata) and
-one ``runtime.reminder_injected`` event survive the call.
+A reminder is a tail-appended provider segment for one context assembly. The
+assembly is transient and is not the persisted transcript; only the cycle
+counters (session metadata) and one ``runtime.reminder_injected`` event survive
+the call.
 
 The first reminder kind is the todo completion reminder: when a terminal
 assistant turn ends while ``pending``/``in_progress`` todos remain, the runtime
 nudges the agent to continue (or to mark the list complete) and lets the loop
 run one more turn. Semantics mirror the upstream pi-coding-agent todo tracker:
 per-cycle attempt budget (default 3), no repeat while the previous reminder is
-still awaiting agent progress, and silence while the session is parked on a user
-answer or a background task that will re-wake the loop.
+still awaiting agent progress, and silence while the session is parked on a
+user answer or a background task that will re-wake the loop.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Final, Literal
 
-from .context.window import RuntimeContextSegment
+from ..core.transcript import ContextSegment
 from .todos import RuntimeTodoPhase
 
 #: ``session.metadata["runtime_state"]["reminders"]`` section key.
@@ -308,7 +307,7 @@ def todo_mid_run_nudge_text(*, mutation_count: int, incomplete_count: int, attem
     )
 
 
-def todo_mid_run_segment(decision: ReminderDecision[TodoMidRunState]) -> RuntimeContextSegment:
+def todo_mid_run_segment(decision: ReminderDecision[TodoMidRunState]) -> ContextSegment:
     """Bind an injecting mid-run decision to its per-call tail segment."""
     return _decision_segment(decision, reminder_type=TODO_MID_RUN_KIND)
 
@@ -412,16 +411,14 @@ def _decision_segment[S](
     decision: ReminderDecision[S],
     *,
     reminder_type: str,
-) -> RuntimeContextSegment:
-    """Bind an injecting decision to the per-call tail segment."""
+) -> ContextSegment:
+    """Build the ephemeral tail segment for this provider-context assembly."""
     text = decision.text
     if text is None:
         raise ValueError(f"{reminder_type} segment requires an injecting decision")
     metadata: dict[str, object] = {
         "source": TODO_REMINDER_SOURCE,
         "tier": "recent",
-        # Per-call marker: the binder keeps this segment out of the cache hash.
-        "per_call": True,
         "reminder_type": reminder_type,
         "attempt": decision.attempt,
         "max_attempts": decision.max_attempts,
@@ -429,10 +426,10 @@ def _decision_segment[S](
     }
     if reminder_type == TODO_MID_RUN_KIND:
         metadata["mutation_count"] = decision.mutation_count
-    return RuntimeContextSegment(role=TODO_REMINDER_ROLE, content=text, metadata=metadata)
+    return ContextSegment(role=TODO_REMINDER_ROLE, content=text, metadata=metadata)
 
 
-def todo_reminder_segment(decision: ReminderDecision[TodoReminderState]) -> RuntimeContextSegment:
+def todo_reminder_segment(decision: ReminderDecision[TodoReminderState]) -> ContextSegment:
     """Bind an injecting completion decision to its per-call tail segment."""
     return _decision_segment(decision, reminder_type=TODO_REMINDER_KIND)
 

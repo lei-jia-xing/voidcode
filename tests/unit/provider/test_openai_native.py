@@ -7,14 +7,12 @@ from typing import cast
 import httpx2
 import pytest
 
+from voidcode.core.transcript import AssembledContext, ContextSegment, ContextWindow
 from voidcode.provider.config import OpenAIProviderConfig
 from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.openai_native import OpenAIChatCompletionsProvider, OpenAIChatCompletionsTransport
 from voidcode.provider.protocol import (
     ProviderAbortSignal,
-    ProviderAssembledContext,
-    ProviderContextSegment,
-    ProviderContextWindow,
     ProviderExecutionError,
     ProviderTurnRequest,
 )
@@ -33,17 +31,17 @@ class _ContextWindow:
 @dataclass(frozen=True, slots=True)
 class _Context:
     prompt: str
-    segments: tuple[ProviderContextSegment, ...]
+    segments: tuple[ContextSegment, ...]
     metadata: dict[str, object]
     tool_results: tuple[object, ...] = ()
     continuity_state: object | None = None
 
 
 def _request(*, transport: object | None, abort_signal: ProviderAbortSignal | None = None, session_id: str | None = None) -> ProviderTurnRequest:
-    context = _Context(prompt="hello", segments=(ProviderContextSegment(role="user", content="hello"),), metadata={})
+    context = _Context(prompt="hello", segments=(ContextSegment(role="user", content="hello"),), metadata={})
     return ProviderTurnRequest(
-        assembled_context=cast(ProviderAssembledContext, context),
-        bounded_context_window=cast(ProviderContextWindow, _ContextWindow(prompt="hello")),
+        assembled_context=cast(AssembledContext, context),
+        bounded_context_window=cast(ContextWindow, _ContextWindow(prompt="hello")),
         available_tools=(
             ToolDefinition(
                 name="read",

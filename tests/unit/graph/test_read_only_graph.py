@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from voidcode.graph import GraphRunRequest
-from voidcode.graph.contracts import GraphSessionSnapshot
+from voidcode.core.transcript import ContextSegment
+from voidcode.graph.contracts import GraphRunRequest, GraphSessionSnapshot
 from voidcode.graph.deterministic_graph import DeterministicGraph
-from voidcode.runtime.context.window import RuntimeAssembledContext, RuntimeContextSegment
+from voidcode.runtime.context.window import RuntimeAssembledContext
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 
 
@@ -14,7 +14,7 @@ def _request(prompt: str) -> GraphRunRequest:
         prompt=prompt,
         tool_results=(),
         continuity_state=None,
-        segments=(RuntimeContextSegment(role="user", content=prompt),),
+        segments=(ContextSegment(role="user", content=prompt),),
         metadata={},
     )
     return GraphRunRequest(

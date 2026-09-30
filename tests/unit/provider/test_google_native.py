@@ -3,12 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from voidcode.core.transcript import AssembledContext, ContextSegment
 from voidcode.provider.config import GoogleProviderConfig
 from voidcode.provider.google_native import GoogleGenAIProvider
 from voidcode.provider.model_catalog import ProviderModelMetadata
 from voidcode.provider.protocol import (
-    ProviderAssembledContext,
-    ProviderContextSegment,
     ProviderTurnRequest,
 )
 
@@ -16,7 +15,7 @@ from voidcode.provider.protocol import (
 @dataclass(frozen=True)
 class _Context:
     prompt: str
-    segments: tuple[ProviderContextSegment, ...]
+    segments: tuple[ContextSegment, ...]
     metadata: dict[str, object] = field(default_factory=dict)
 
 
@@ -81,9 +80,9 @@ def _request(
     model_metadata: ProviderModelMetadata | None = None,
     session_id: str | None = None,
 ) -> ProviderTurnRequest:
-    context = _Context(prompt="hello", segments=(ProviderContextSegment(role="user", content="hello"),))
+    context = _Context(prompt="hello", segments=(ContextSegment(role="user", content="hello"),))
     return ProviderTurnRequest(
-        assembled_context=cast(ProviderAssembledContext, context),
+        assembled_context=cast(AssembledContext, context),
         available_tools=cast(Any, tools),
         provider_name="google",
         model_name=model_name,

@@ -6,7 +6,8 @@ from typing import cast
 
 import pytest
 
-from voidcode.tools import ReadTool, ToolCall
+from voidcode.tools.contracts import ToolCall
+from voidcode.tools.read import ReadTool
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 

@@ -6,8 +6,9 @@ from typing import cast
 
 import pytest
 
-from voidcode.tools import EditTool, ToolCall
 from voidcode.tools._repair import ToolDiagnosticError
+from voidcode.tools.contracts import ToolCall
+from voidcode.tools.edit import EditTool
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 

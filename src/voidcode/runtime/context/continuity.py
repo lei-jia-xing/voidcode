@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
-from ...provider.protocol import ProviderContextSegmentLike
+from ...core.transcript import ContextSegment
 from ..events import EventEnvelope
 from ..session_metadata_helpers import parse_runtime_state_metadata
-from .window import RuntimeContextSegment
 
 # Recoverable runtime context keys are a subset of the persisted runtime_state
 # key-set (RUNTIME_STATE_METADATA_KEYS, contracts.py): context projection
@@ -37,7 +36,7 @@ def replayed_conversation_segments_from_events(
     *,
     output: object | None,
     provider_visible_tool_result_data: Callable[[dict[str, object]], dict[str, object]],
-) -> tuple[RuntimeContextSegment, ...]:
+) -> tuple[ContextSegment, ...]:
     """Build replayable provider-context segments from bounded runtime events.
 
     This is deliberately a pure projection of the supplied event log and
@@ -46,7 +45,7 @@ def replayed_conversation_segments_from_events(
     supplied as a callback so this leaf module does not depend on
     ``runtime_debug``.
     """
-    segments: list[RuntimeContextSegment] = []
+    segments: list[ContextSegment] = []
     tool_index = 0
     for event in events:
         if event.event_type == "runtime.request_received":
@@ -54,7 +53,7 @@ def replayed_conversation_segments_from_events(
             if not isinstance(prompt, str) or not prompt.strip():
                 continue
             segments.append(
-                RuntimeContextSegment(
+                ContextSegment(
                     role="user",
                     content=prompt,
                     metadata={
@@ -91,7 +90,7 @@ def replayed_conversation_segments_from_events(
         raw_content = payload.get("content")
         content = str(raw_content) if raw_content is not None and not is_error else ""
         segments.append(
-            RuntimeContextSegment(
+            ContextSegment(
                 role="assistant",
                 content=None,
                 tool_call_id=tool_call_id,
@@ -105,7 +104,7 @@ def replayed_conversation_segments_from_events(
             )
         )
         segments.append(
-            RuntimeContextSegment(
+            ContextSegment(
                 role="tool",
                 content=content,
                 tool_call_id=tool_call_id,
@@ -125,7 +124,7 @@ def replayed_conversation_segments_from_events(
         )
     if isinstance(output, str) and output.strip():
         segments.append(
-            RuntimeContextSegment(
+            ContextSegment(
                 role="assistant",
                 content=output,
                 metadata={
@@ -139,14 +138,14 @@ def replayed_conversation_segments_from_events(
 
 
 def replayed_conversation_segments_from_segments(
-    segments: Iterable[ProviderContextSegmentLike],
-) -> tuple[RuntimeContextSegment, ...]:
+    segments: Iterable[ContextSegment],
+) -> tuple[ContextSegment, ...]:
     """Retain provider-context segments belonging to replayed conversation history.
 
     This is a pure projection of supplied context segments. Runtime request
     boundaries and orchestration remain outside this context module.
     """
-    replayed: list[RuntimeContextSegment] = []
+    replayed: list[ContextSegment] = []
     for segment in segments:
         metadata = segment.metadata
         if not isinstance(metadata, dict):
@@ -160,7 +159,7 @@ def replayed_conversation_segments_from_segments(
         if role not in {"system", "user", "assistant", "tool"}:
             continue
         replayed.append(
-            RuntimeContextSegment(
+            ContextSegment(
                 role=role,
                 content=content,
                 tool_call_id=segment.tool_call_id,

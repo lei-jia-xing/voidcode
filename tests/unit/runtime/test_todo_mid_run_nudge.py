@@ -1,10 +1,9 @@
 """Mid-run todo nudge: stale todo list between provider calls.
 
 Upstream ``takeMidRunNudge`` semantics: while a turn is still running, at least 12
-mutation-tool results since the last todo touch earn one per-call nudge, at most
-2 per cycle, suppressed for plan mode / no todo tool / parked loops. The nudge
-rides the existing reminder channel (``per_call=True`` tail segment): never
-persisted, never in the cache prefix.
+mutation-tool results since the last todo touch earn one temporary provider-context
+nudge, at most 2 per cycle, suppressed for plan mode / no todo tool / parked loops.
+The nudge is never persisted in the transcript.
 """
 
 from __future__ import annotations

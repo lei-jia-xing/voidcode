@@ -6,8 +6,9 @@ from typing import cast
 
 import pytest
 
-from voidcode.tools import ShellExecTool, ToolCall
+from voidcode.tools.contracts import ToolCall
 from voidcode.tools.output import MAX_TOOL_OUTPUT_BYTES, cap_tool_result_output
+from voidcode.tools.shell_exec import ShellExecTool
 
 
 def _cwd_command() -> str:

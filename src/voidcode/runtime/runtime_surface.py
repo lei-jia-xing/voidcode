@@ -16,6 +16,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from ..core.transcript import ContextSegment, ToolResultView
 from ..graph.contracts import GraphRunRequest, RuntimeGraph
 from ..provider.protocol import ProviderAbortSignal
 from ..skills.registry import SkillRegistry
@@ -28,9 +29,7 @@ from .context.window import (
     ContextWindowPolicy,
     ContinuitySummaryKind,
     RuntimeAssembledContext,
-    RuntimeContextSegment,
     RuntimeContextWindow,
-    ToolResultView,
 )
 from .contracts import (
     RuntimeProviderContextPolicyDecision,
@@ -122,10 +121,10 @@ class RuntimeSurface(Protocol):
         tool_results: tuple[ToolResult | ToolResultView, ...],
         session_metadata: dict[str, object],
         skill_prompt_context: str = "",
-        replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
+        replayed_conversation_segments: tuple[ContextSegment, ...] = (),
         tool_registry: ToolRegistry | None = None,
         hook_guidance: Iterable[str] | None = None,
-        reminder_segment: RuntimeContextSegment | None = None,
+        reminder_segment: ContextSegment | None = None,
         compaction_budget: CompactionBudget | None = None,
         before_compact: BeforeCompactInput | None = None,
         continuity_summary_override: str | None = None,
@@ -145,7 +144,7 @@ class RuntimeSurface(Protocol):
         prompt: str,
         tool_results: tuple[ToolResult | ToolResultView, ...],
         session_metadata: dict[str, object],
-        replayed_conversation_segments: tuple[RuntimeContextSegment, ...],
+        replayed_conversation_segments: tuple[ContextSegment, ...],
     ) -> RuntimeAssembledContext: ...
 
     def replayed_conversation_segments_for_existing_session(
@@ -155,7 +154,7 @@ class RuntimeSurface(Protocol):
         session_id: str | None = None,
         parent_session_id: str | None,
         current_prompt: str | None = None,
-    ) -> tuple[RuntimeContextSegment, ...]: ...
+    ) -> tuple[ContextSegment, ...]: ...
 
     # --- tool / skill registry composition (resume-oriented) ---
     def tool_registry_for_effective_config(

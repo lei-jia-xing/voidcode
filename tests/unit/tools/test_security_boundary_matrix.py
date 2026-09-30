@@ -4,11 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.tools import (
-    ApplyPatchTool,
-    ToolCall,
-    WebFetchTool,
-)
+from voidcode.tools.apply_patch import ApplyPatchTool
+from voidcode.tools.contracts import ToolCall
+from voidcode.tools.web_fetch import WebFetchTool
 
 
 def test_apply_patch_symlink_escape_is_rejected_by_tool(tmp_path: Path) -> None:

@@ -4,11 +4,10 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
-from ..runtime.context.window import ToolResultView
+from ..core.transcript import AssembledContext, ContextWindow, ToolResultView
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .model_catalog import ProviderModelMetadata
 
-type ProviderMessageRole = Literal["system", "user", "assistant", "tool"]
 type ProviderStreamEventKind = Literal["delta", "content", "tool_call_start", "tool_call_delta", "tool_call_end", "error", "done"]
 type ProviderStreamChannel = Literal["text", "tool", "reasoning", "error"]
 type ProviderCacheRetention = Literal["none", "short", "long"]
@@ -29,28 +28,10 @@ type ProviderErrorKind = Literal[
 ]
 
 
-@runtime_checkable
-class ProviderContextWindow(Protocol):
-    @property
-    def prompt(self) -> str: ...
-
-    @property
-    def tool_results(self) -> tuple[ToolResult | ToolResultView, ...]: ...
-
-    @property
-    def compacted(self) -> bool: ...
-
-    @property
-    def retained_tool_result_count(self) -> int: ...
-
-    @property
-    def continuity_state(self) -> object | None: ...
-
-
 @dataclass(frozen=True, slots=True)
 class ProviderTurnRequest:
-    assembled_context: ProviderAssembledContext
-    bounded_context_window: ProviderContextWindow | None = None
+    assembled_context: AssembledContext
+    bounded_context_window: ContextWindow | None = None
     available_tools: tuple[ToolDefinition, ...] = ()
     raw_model: str | None = None
     provider_name: str | None = None
@@ -72,7 +53,7 @@ class ProviderTurnRequest:
         return self.assembled_context.tool_results
 
     @property
-    def context_window(self) -> ProviderContextWindow:
+    def context_window(self) -> ContextWindow:
         if self.bounded_context_window is not None:
             return self.bounded_context_window
         payload = self.assembled_context.metadata
@@ -110,55 +91,6 @@ class _DerivedContextWindow:
     def __post_init__(self) -> None:
         if self.retained_tool_result_count == 0:
             object.__setattr__(self, "retained_tool_result_count", len(self.tool_results))
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderContextSegment:
-    role: ProviderMessageRole
-    content: str | None
-    tool_call_id: str | None = None
-    tool_name: str | None = None
-    tool_arguments: dict[str, object] | None = None
-    metadata: dict[str, object] | None = None
-
-
-@runtime_checkable
-class ProviderContextSegmentLike(Protocol):
-    @property
-    def role(self) -> ProviderMessageRole: ...
-
-    @property
-    def content(self) -> str | None: ...
-
-    @property
-    def tool_call_id(self) -> str | None: ...
-
-    @property
-    def tool_name(self) -> str | None: ...
-
-    @property
-    def tool_arguments(self) -> dict[str, object] | None: ...
-
-    @property
-    def metadata(self) -> dict[str, object] | None: ...
-
-
-@runtime_checkable
-class ProviderAssembledContext(Protocol):
-    @property
-    def prompt(self) -> str: ...
-
-    @property
-    def tool_results(self) -> tuple[ToolResult | ToolResultView, ...]: ...
-
-    @property
-    def continuity_state(self) -> object | None: ...
-
-    @property
-    def segments(self) -> tuple[ProviderContextSegmentLike, ...]: ...
-
-    @property
-    def metadata(self) -> dict[str, object]: ...
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,8 +5,9 @@ from typing import cast
 
 import pytest
 
-from voidcode.tools import TodoTool, ToolCall
+from voidcode.tools.contracts import ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
+from voidcode.tools.todo import TodoTool
 
 
 def _invoke(

@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from typing import Final, Literal, TypedDict, cast
 
+from ..core.transcript import ToolResultView
 from ..provider.errors import parse_provider_stream_error
 from ..provider.model_catalog import static_catalog_metadata
 from ..provider.models import ResolvedProviderModel
@@ -21,7 +22,6 @@ from ..provider.protocol import (
     StreamableTurnProvider,
     TurnProvider,
 )
-from ..runtime.context.window import ToolResultView
 from ..tools.contracts import ToolCall, ToolResult
 from .contracts import (
     GRAPH_LOOP_STEP,

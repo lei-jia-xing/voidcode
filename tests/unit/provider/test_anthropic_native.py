@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from voidcode.core.transcript import ContextSegment
 from voidcode.provider.anthropic_native import AnthropicMessagesProvider, AnthropicMessagesTransport
 from voidcode.provider.config import AnthropicProviderConfig
 from voidcode.provider.protocol import (
     ProviderAbortSignal,
     ProviderCacheRetention,
-    ProviderContextSegment,
     ProviderTokenUsage,
     ProviderTurnRequest,
 )
@@ -17,7 +17,7 @@ from voidcode.tools.contracts import ToolDefinition, ToolResult
 @dataclass(frozen=True)
 class _Context:
     prompt: str
-    segments: tuple[ProviderContextSegment, ...]
+    segments: tuple[ContextSegment, ...]
     tool_results: tuple[ToolResult, ...] = ()
     continuity_state: object | None = None
     metadata: dict[str, object] | None = None
@@ -55,7 +55,7 @@ class _FakeTransport:
 
 def _request(
     *,
-    segments: tuple[ProviderContextSegment, ...],
+    segments: tuple[ContextSegment, ...],
     tools: tuple[ToolDefinition, ...] = (),
     effort: str | None = None,
     abort_signal: ProviderAbortSignal | None = None,
@@ -93,7 +93,7 @@ def test_nonstream_text_thinking_tool_usage_and_stop_reason() -> None:
     )
     definition = ToolDefinition(name="read", description="Read", input_schema={"type": "object"})
     result = AnthropicMessagesProvider(transport=fake).propose_turn(
-        _request(segments=(ProviderContextSegment(role="user", content="read"),), tools=(definition,), effort="high")
+        _request(segments=(ContextSegment(role="user", content="read"),), tools=(definition,), effort="high")
     )
     assert result.output == "visible"
     assert result.reasoning == "private"
@@ -131,9 +131,9 @@ def test_configured_vendor_sends_only_its_own_credential() -> None:
 
 
 _STABLE_SEGMENTS = (
-    ProviderContextSegment(role="system", content="stable-alpha"),
-    ProviderContextSegment(role="system", content="stable-beta"),
-    ProviderContextSegment(role="system", content="<!-- voidcode:dynamic-boundary -->"),
+    ContextSegment(role="system", content="stable-alpha"),
+    ContextSegment(role="system", content="stable-beta"),
+    ContextSegment(role="system", content="<!-- voidcode:dynamic-boundary -->"),
 )
 
 
@@ -142,7 +142,7 @@ def test_short_retention_with_tools_caches_tools_not_system_text() -> None:
     definition = ToolDefinition(name="read", description="Read", input_schema={"type": "object"})
     AnthropicMessagesProvider(transport=fake).propose_turn(
         _request(
-            segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
+            segments=(*_STABLE_SEGMENTS, ContextSegment(role="user", content="hi")),
             tools=(definition,),
             cache_retention="short",
         )
@@ -156,7 +156,7 @@ def test_short_retention_without_tools_caches_system_text() -> None:
     fake = _FakeTransport()
     AnthropicMessagesProvider(transport=fake).propose_turn(
         _request(
-            segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
+            segments=(*_STABLE_SEGMENTS, ContextSegment(role="user", content="hi")),
             cache_retention="short",
         )
     )
@@ -172,7 +172,7 @@ def test_short_retention_with_tools_keeps_existing_wire() -> None:
     definition = ToolDefinition(name="read", description="Read", input_schema={"type": "object"})
     AnthropicMessagesProvider(transport=fake).propose_turn(
         _request(
-            segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
+            segments=(*_STABLE_SEGMENTS, ContextSegment(role="user", content="hi")),
             tools=(definition,),
             cache_retention="short",
         )
@@ -187,7 +187,7 @@ def test_default_retention_emits_short_cache_control() -> None:
     fake = _FakeTransport()
     AnthropicMessagesProvider(transport=fake).propose_turn(
         _request(
-            segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
+            segments=(*_STABLE_SEGMENTS, ContextSegment(role="user", content="hi")),
         )
     )
     payload = fake.payloads[0]
@@ -200,7 +200,7 @@ def test_retention_disabled_emits_no_cache_control() -> None:
     fake = _FakeTransport()
     AnthropicMessagesProvider(transport=fake).propose_turn(
         _request(
-            segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
+            segments=(*_STABLE_SEGMENTS, ContextSegment(role="user", content="hi")),
             cache_retention="none",
         )
     )
@@ -213,7 +213,7 @@ def test_explicit_long_retention_emits_one_hour_ttl() -> None:
     fake = _FakeTransport()
     AnthropicMessagesProvider(transport=fake).propose_turn(
         _request(
-            segments=(*_STABLE_SEGMENTS, ProviderContextSegment(role="user", content="hi")),
+            segments=(*_STABLE_SEGMENTS, ContextSegment(role="user", content="hi")),
             cache_retention="long",
         )
     )
@@ -229,9 +229,9 @@ def test_mixed_roles_with_tools_caches_tools_not_system_text() -> None:
     AnthropicMessagesProvider(transport=fake).propose_turn(
         _request(
             segments=(
-                ProviderContextSegment(role="system", content="stable"),
-                ProviderContextSegment(role="user", content="early-user"),
-                ProviderContextSegment(role="system", content="dynamic"),
+                ContextSegment(role="system", content="stable"),
+                ContextSegment(role="user", content="early-user"),
+                ContextSegment(role="system", content="dynamic"),
             ),
             tools=(definition,),
             cache_retention="short",

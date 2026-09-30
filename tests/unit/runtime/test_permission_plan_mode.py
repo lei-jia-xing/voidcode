@@ -24,8 +24,9 @@ from voidcode.runtime.permission import (
 )
 from voidcode.runtime.permission_context import RuntimePermissionContextResolver, operation_class_for_tool
 from voidcode.runtime.permission_engine import PermissionEngine
-from voidcode.tools import AstGrepTool, ShellExecTool
+from voidcode.tools.ast_grep import AstGrepTool
 from voidcode.tools.contracts import ToolCall, ToolDefinition
+from voidcode.tools.shell_exec import ShellExecTool
 
 
 def _read_only_tool() -> ToolDefinition:

@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from ..core.transcript import AssembledContext, ContextSegment, ToolResultView
 from ..graph.contracts import GraphEvent, GraphRunRequest, GraphStep, RuntimeGraph, SafeBoundaryGraph, StreamableGraph
 from ..hook.config import RuntimeHookSurface
 from ..hook.typed import (
@@ -27,7 +28,6 @@ from ..provider.errors import (
 )
 from ..provider.protocol import (
     ProviderAbortSignal,
-    ProviderAssembledContext,
 )
 from ..tools._pydantic_args import format_validation_error
 from ..tools._repair import ToolDiagnosticError
@@ -57,9 +57,7 @@ from .context.window import (
     BeforeCompactInput,
     ContextProjection,
     ContinuitySummaryKind,
-    RuntimeContextSegment,
     RuntimeContextWindow,
-    ToolResultView,
     continuity_summary_metadata,
 )
 from .contracts import RuntimeProviderContextPolicyDecision, RuntimeStreamChunk
@@ -346,7 +344,7 @@ def _runtime_waits_for_user(session: SessionState) -> bool:
 
 def _replayed_conversation_segments(
     request: GraphRunRequest,
-) -> tuple[RuntimeContextSegment, ...]:
+) -> tuple[ContextSegment, ...]:
     assembled_context = request.assembled_context
     return replayed_conversation_segments_from_segments(assembled_context.segments)
 
@@ -1325,7 +1323,7 @@ class RuntimeRunLoopCoordinator:
         stuck_detected_emitted = False
         # Reminder to append at the tail of the next turn's provider segments;
         # cleared once assembled. Never persisted, never in the cache prefix.
-        pending_reminder_segment: RuntimeContextSegment | None = None
+        pending_reminder_segment: ContextSegment | None = None
         # One bounded-pruning recovery per turn; see ``_ContextLimitRecoveryState``.
         context_limit_recovery = _ContextLimitRecoveryState()
         self._pending_hook_guidance = []
@@ -2097,11 +2095,11 @@ class RuntimeRunLoopCoordinator:
         context_window: RuntimeContextWindow,
         session: SessionState,
         hook_guidance: Iterable[str] | None = None,
-        reminder_segment: RuntimeContextSegment | None = None,
+        reminder_segment: ContextSegment | None = None,
         before_compact: BeforeCompactInput | None = None,
         continuity_summary_override: str | None = None,
         continuity_summary_kind: ContinuitySummaryKind | None = None,
-    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, ProviderAssembledContext, RuntimeContextWindow]]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, AssembledContext, RuntimeContextWindow]]:
         runtime = self._surface
         current_graph_request = active_graph_request
         current_prompt = current_graph_request.prompt
@@ -2326,7 +2324,7 @@ class RuntimeRunLoopCoordinator:
         active_graph_request: GraphRunRequest,
         tool_registry: ToolRegistry,
         effective_runtime_config: EffectiveRuntimeConfig,
-    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, RuntimeContextSegment | None]]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, ContextSegment | None]]:
         """Insert one mid-run todo nudge before the next provider call.
 
         Upstream ``takeMidRunNudge``: while a turn is still running, a stale todo
@@ -2376,7 +2374,7 @@ class RuntimeRunLoopCoordinator:
         tool_results: list[ToolResult],
         available_tools: tuple[ToolDefinition, ...],
         effective_runtime_config: EffectiveRuntimeConfig,
-    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, RuntimeContextSegment | None]]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, ContextSegment | None]]:
         """Decide, persist and announce the terminal-turn todo reminder.
 
         Returns the per-call tail segment the continuation turn must append, or
@@ -2910,7 +2908,7 @@ class RuntimeRunLoopCoordinator:
                 fallback_prompt: str = current_prompt
                 fallback_available_tools: tuple[ToolDefinition, ...] = current_available_tools
                 fallback_context_window = context_window
-                fallback_assembled_context: ProviderAssembledContext = active_graph_request.assembled_context
+                fallback_assembled_context: AssembledContext = active_graph_request.assembled_context
                 fallback_metadata: dict[str, object] = {
                     **current_metadata,
                     "provider_attempt": provider_attempt,

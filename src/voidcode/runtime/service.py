@@ -14,12 +14,12 @@ from typing import TYPE_CHECKING, Literal, cast, final
 from ..agent import AgentManifestRegistry, get_builtin_agent_manifest, load_agent_manifest_registry
 from ..agent.prompts import render_agent_prompt
 from ..command import (
-    COMMAND_RESOLVED,
     is_prompt_command,
     load_command_registry,
     resolve_prompt_command,
 )
 from ..command.models import CommandDefinition
+from ..core.transcript import ContextSegment, ToolResultView
 from ..graph.contracts import GraphRunRequest, RuntimeGraph
 from ..hook.plan import ResolvedHookPlan, hook_plan_from_session_metadata, materialize_hook_plan
 from ..hook.presets import (
@@ -44,7 +44,6 @@ from ..provider.models import (
 from ..provider.naming import split_provider_model_reference
 from ..provider.protocol import (
     ProviderAbortSignal,
-    ProviderContextSegment,
     ProviderTurnRequest,
     ProviderTurnResult,
 )
@@ -137,9 +136,7 @@ from .context.window import (
     ContextWindowPolicy,
     ContinuitySummaryKind,
     RuntimeAssembledContext,
-    RuntimeContextSegment,
     RuntimeContextWindow,
-    ToolResultView,
     assemble_provider_context,
     provider_usage_anchor_tokens,
     result_payload_text,
@@ -190,6 +187,7 @@ from .event_envelopes import (
     envelopes_for_mcp_events,
 )
 from .events import (
+    COMMAND_RESOLVED,
     RUNTIME_HOOK_PRESETS_LOADED,
     RUNTIME_REASONING_DIAGNOSTIC,
     RUNTIME_SKILLS_APPLIED,
@@ -351,7 +349,7 @@ _CONTINUITY_SUMMARY_OUTPUT_CHARS = 8_000
 
 @dataclass(frozen=True, slots=True)
 class _PlainTextProviderContext:
-    """Minimal ``ProviderAssembledContext`` for the one-shot summary call.
+    """Minimal ``AssembledContext`` for the one-shot summary call.
 
     The call sends one system instruction plus the discarded text; every other
     protocol field is empty, so the wire adapters' tool/replay paths stay inert.
@@ -368,10 +366,10 @@ class _PlainTextProviderContext:
         return None
 
     @property
-    def segments(self) -> tuple[ProviderContextSegment, ...]:
+    def segments(self) -> tuple[ContextSegment, ...]:
         return (
-            ProviderContextSegment(role="system", content=_CONTINUITY_SUMMARY_SYSTEM_PROMPT),
-            ProviderContextSegment(role="user", content=self.prompt),
+            ContextSegment(role="system", content=_CONTINUITY_SUMMARY_SYSTEM_PROMPT),
+            ContextSegment(role="user", content=self.prompt),
         )
 
     @property
@@ -3951,7 +3949,7 @@ class VoidCodeRuntime(RuntimeSurface):
         session_id: str | None = None,
         parent_session_id: str | None,
         current_prompt: str | None = None,
-    ) -> tuple[RuntimeContextSegment, ...]:
+    ) -> tuple[ContextSegment, ...]:
         if stored is None and session_id is not None:
             return ()
         if stored is None:
@@ -4009,10 +4007,10 @@ class VoidCodeRuntime(RuntimeSurface):
         tool_results: tuple[ToolResult | ToolResultView, ...],
         session_metadata: dict[str, object],
         skill_prompt_context: str = "",
-        replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
+        replayed_conversation_segments: tuple[ContextSegment, ...] = (),
         tool_registry: ToolRegistry | None = None,
         hook_guidance: Iterable[str] | None = None,
-        reminder_segment: RuntimeContextSegment | None = None,
+        reminder_segment: ContextSegment | None = None,
         compaction_budget: CompactionBudget | None = None,
         before_compact: BeforeCompactInput | None = None,
         continuity_summary_override: str | None = None,
@@ -4220,7 +4218,7 @@ class VoidCodeRuntime(RuntimeSurface):
         prompt: str,
         tool_results: tuple[ToolResult | ToolResultView, ...],
         session_metadata: dict[str, object],
-        replayed_conversation_segments: tuple[RuntimeContextSegment, ...],
+        replayed_conversation_segments: tuple[ContextSegment, ...],
     ) -> RuntimeAssembledContext:
         """Rebuild the provider view for a context-limit retry with a recovery budget.
 
@@ -5104,7 +5102,7 @@ class _PreparedStreamSession:
     effective_config: EffectiveRuntimeConfig
     request_metadata: dict[str, object]
     existing_session: RuntimeResponse | None
-    rehydrated_conversation_segments: tuple[RuntimeContextSegment, ...]
+    rehydrated_conversation_segments: tuple[ContextSegment, ...]
     rehydrated_tool_results: tuple[ToolResult, ...]
     resolved_hook_presets: ResolvedHookPresetSnapshot
     resolved_hook_plan: ResolvedHookPlan

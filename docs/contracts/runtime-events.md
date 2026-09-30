@@ -293,7 +293,7 @@ Runtime hook surface 与其事件名称的内部对应关系由
   - `max_attempts: int`，本 cycle 的提醒上限
   - `incomplete_todo_count: int`，本次被提醒的未完成 todo 条目数
   - `mutation_count: int`，仅 `reminder_type = "todo_mid_run"` 出现：本次 nudge 依据的变更类工具调用计数
-- 该事件表示运行时在一个 terminal assistant 回合（无待执行 tool call）通过 **per-call reminder 通道**注入了一条提醒：reminder 作为 provider context 的尾部 segment 只对本次 provider 调用可见，不写入 SQLite transcript，也不进入 per-call cache hash（`hook/percall.py` 的 `PerCallMessage(per_call=True)` 语义）。reminder 文本本身不是持久化 truth，客户端不得把它当作会话历史或用户输入回显。
+- 该事件表示运行时在一个 terminal assistant 回合（无待执行 tool call）通过临时 provider-context 尾部注入了一条提醒：提醒只存在于本次 provider context assembly，不写入 SQLite transcript。提醒文本本身不是持久化 truth，客户端不得把它当作会话历史或用户输入回显。
 - 触发点、触发阈值、每 cycle 预算、抑制条件与计数器持久化（含 `reminder_type = "todo_mid_run"` 的 mid-run nudge，对齐 upstream pi-coding-agent 的 todo tracker）由 `docs/contracts/runtime-config.md` 的 `reminders` 节定义，该节是这些语义的唯一 owner；本条只描述本事件的 payload 与「运行时注入了一条提醒」这一事实。
 
 ### `graph.loop_step`

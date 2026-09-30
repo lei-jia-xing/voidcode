@@ -16,7 +16,7 @@ from .rules import (
 )
 
 if TYPE_CHECKING:
-    from .window import ToolResultView
+    from ...core.transcript import ToolResultView
 
 type RuntimeContextTransformProviderId = str
 type RuntimeContextTransformFailurePolicy = Literal["ignore", "warn", "block"]

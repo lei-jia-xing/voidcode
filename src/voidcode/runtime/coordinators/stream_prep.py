@@ -18,6 +18,7 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ...core.transcript import ToolResultView
 from ...mcp import McpCachedToolSurface, McpToolDescriptor
 from ...provider.model_catalog import static_catalog_metadata
 from ...provider.protocol import ProviderAbortSignal
@@ -34,7 +35,6 @@ from ..context.window import (
     BeforeCompactInput,
     ContextWindowPolicy,
     RuntimeContextWindow,
-    ToolResultView,
     prepare_provider_context,
 )
 from ..context.window_policy import (

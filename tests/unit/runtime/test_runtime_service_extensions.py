@@ -21,13 +21,13 @@ from voidcode.agent import (
     LEADER_AGENT_MANIFEST,
     get_builtin_agent_manifest,
 )
+from voidcode.core.transcript import AssembledContext
 from voidcode.graph.contracts import GraphSession
 from voidcode.provider.config import (
     ProviderEndpointConfig,
     ProviderTransientRetryConfig,
 )
 from voidcode.provider.protocol import (
-    ProviderAssembledContext,
     ProviderExecutionError,
     ProviderStreamEvent,
     ProviderTurnRequest,
@@ -103,8 +103,7 @@ from voidcode.runtime.session_metadata_helpers import (
     continuity_state_from_session_metadata,
 )
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools import ToolCall
-from voidcode.tools.contracts import ToolDefinition, ToolResult
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 
 def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session") -> RuntimeRequest:
@@ -1375,7 +1374,7 @@ def test_runtime_denies_divergent_approval_replay_without_fresh_permission(tmp_p
         _private_attr(runtime, "prepare_provider_context_window"),
     )
     assemble_provider_context = cast(
-        Callable[..., ProviderAssembledContext],
+        Callable[..., AssembledContext],
         _private_attr(runtime, "assemble_provider_context"),
     )
     execute_graph_loop = cast(

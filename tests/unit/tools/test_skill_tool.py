@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 from voidcode.skills.models import SkillMetadata
-from voidcode.tools import SkillTool, ToolCall
+from voidcode.tools.contracts import ToolCall
+from voidcode.tools.skill import SkillTool
 
 
 def test_skill_tool_returns_skill_body_and_metadata(tmp_path: Path) -> None:

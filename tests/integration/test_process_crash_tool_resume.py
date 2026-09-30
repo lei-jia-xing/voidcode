@@ -53,7 +53,7 @@ from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
-from voidcode.tools import ReadTool
+from voidcode.tools.read import ReadTool
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 SESSION_ID = "crash-tool-session"

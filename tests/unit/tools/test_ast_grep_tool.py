@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from voidcode.tools import AstGrepTool, ToolCall
+from voidcode.tools.ast_grep import AstGrepTool
+from voidcode.tools.contracts import ToolCall
 
 _TOOL_NAME = "ast_grep"
 
