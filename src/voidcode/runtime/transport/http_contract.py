@@ -586,3 +586,24 @@ class _SteerSessionRequestPayload(_HttpBoundaryModel):
         if not isinstance(value, str) or not value.strip():
             raise ValueError("must be a non-empty string")
         return value
+
+
+class _CheckoutSessionRequestPayload(_HttpBoundaryModel):
+    """``POST /api/sessions/{id}/checkout`` body: the entry to continue from.
+
+    ``sequence`` is a positive integer here (the transport's own 400 on a bad
+    body) and is validated again at the runtime boundary, like every other
+    session method. ``bool`` is refused explicitly because it is an ``int``
+    subclass in Python and ``true`` is not a sequence.
+    """
+
+    sequence: int = Field(default=None, validate_default=True)
+
+    @field_validator("sequence", mode="before")
+    @classmethod
+    def _validate_sequence(cls, value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("must be a positive integer")
+        if value < 1:
+            raise ValueError("must be a positive integer")
+        return value

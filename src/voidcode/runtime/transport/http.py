@@ -57,6 +57,7 @@ from ..contracts import (
     RuntimeRequest,
     RuntimeRequestError,
     RuntimeResponse,
+    RuntimeSessionCheckoutBoundaryError,
     RuntimeSessionDebugSnapshot,
     RuntimeSessionResult,
     RuntimeStatusSnapshot,
@@ -81,9 +82,10 @@ from ..serialization import (
     _serialize_session_ref,
     _serialize_session_state,
     serialize_session_debug_snapshot,
+    serialize_session_entry_summary,
 )
 from ..service import VoidCodeRuntime
-from ..session import SessionState, StoredSessionForestEntry, StoredSessionSummary
+from ..session import SessionEntrySummary, SessionState, StoredSessionForestEntry, StoredSessionSummary
 from ..storage.shared import SessionSealedError
 from ..workspace import WorkspaceOpenError, WorkspaceRuntimeCoordinator
 from .http_contract import (
@@ -96,6 +98,7 @@ from .http_contract import (
     ShowThinkingQuery,
     StreamCompletion,
     _ApprovalResolutionRequestPayload,
+    _CheckoutSessionRequestPayload,
     _QuestionAnswerRequestPayload,
     _RunStreamRequestPayload,
     _SessionCancelRequestPayload,
@@ -129,7 +132,9 @@ from .http_models import (
     RuntimeResponseBody,
     RuntimeStatusBody,
     SessionCancelBody,
+    SessionCheckoutBody,
     SessionDebugBody,
+    SessionEntriesBody,
     SessionEventFrameBody,
     SessionResultBody,
     SessionSteerBody,
@@ -358,6 +363,10 @@ class RuntimeTransport(Protocol):
     def session_events_after(self, *, session_id: str, after_sequence: int) -> SessionEventBatch: ...
 
     def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot: ...
+
+    def session_entries(self, *, session_id: str) -> tuple[SessionEntrySummary, ...]: ...
+
+    def checkout_session(self, *, session_id: str, sequence: int) -> int: ...
 
     def resume(
         self,
@@ -855,6 +864,24 @@ class RuntimeTransportApp(FastAPI):
             summary="Read a session's debug snapshot",
             response_model=SessionDebugBody,
             error_statuses=(404,),
+        )
+        route(
+            "/api/sessions/{session_id}/entries",
+            self._handle_session_entries,
+            methods=["GET"],
+            tag="sessions",
+            summary="List a session's stored entries (checkout targets included)",
+            response_model=SessionEntriesBody,
+            error_statuses=(404,),
+        )
+        route(
+            "/api/sessions/{session_id}/checkout",
+            self._handle_checkout_session,
+            methods=["POST"],
+            tag="sessions",
+            summary="Move a session's leaf to an entry and continue from there",
+            response_model=SessionCheckoutBody,
+            error_statuses=(400, 404),
         )
         route(
             "/api/sessions/{session_id}/cancel",
@@ -1547,6 +1574,35 @@ class RuntimeTransportApp(FastAPI):
                 show_thinking=show_thinking,
             )
         )
+
+    async def _handle_session_entries(self, session_id: str) -> Response:
+        session_id = self._validated_session_id(session_id)
+        with self._runtime_lease() as runtime:
+            try:
+                entries = runtime.session_entries(session_id=session_id)
+            except ValueError as exc:
+                raise HttpError(404, str(exc)) from None
+        return json_response(
+            {
+                "session_id": session_id,
+                "entries": [serialize_session_entry_summary(entry) for entry in entries],
+            }
+        )
+
+    async def _handle_checkout_session(self, session_id: str, payload: _CheckoutSessionRequestPayload) -> Response:
+        session_id = self._validated_session_id(session_id)
+        sequence = payload.sequence
+        with self._runtime_lease() as runtime:
+            try:
+                leaf_sequence = runtime.checkout_session(session_id=session_id, sequence=sequence)
+            except UnknownSessionError as exc:
+                raise HttpError(404, str(exc), code=error_code(exc)) from None
+            except (RuntimeSessionCheckoutBoundaryError, ValueError) as exc:
+                # A target that names no stored entry and one whose root→target
+                # path splits an interaction are both the client's mistake: the
+                # checkout is refused and the position is unchanged.
+                raise HttpError(400, str(exc), code=error_code(exc)) from None
+        return json_response({"session_id": session_id, "leaf_sequence": leaf_sequence})
 
     async def _handle_steer_session(self, session_id: str, payload: _SteerSessionRequestPayload) -> Response:
         session_id = self._validated_session_id(session_id)

@@ -313,6 +313,8 @@ MVP 生命周期：
 - `GET /api/sessions/{id}/events` — 订阅会话有序事件流，支持 `after_sequence` / `follow` 查询参数（SSE 帧信封、`session` 字段交付规则与 `follow` 增量读取语义见 `stream-transport.md`）；成功 `200`（SSE 流）；错误 `400`（`after_sequence` 非整数或为负）、`404`、`405`
 - `GET /api/sessions/{id}/result` — 读取会话终态结果视图；成功 `200`；错误 `404`、`405`
 - `GET /api/sessions/{id}/debug` — 读取会话调试快照；成功 `200`；错误 `404`、`405`
+- `GET /api/sessions/{id}/entries` — 读取会话的存储 entry 清单（`{session_id, entries}`，每行为 `SessionEntrySummary` 的冻结字段集，`on_current_path=false` 即被放弃分支，可再选中）；成功 `200`；错误 `404`、`405`
+- `POST /api/sessions/{id}/checkout` — 把会话 leaf 移到目标 entry 并从该处续接（body `{"sequence": <positive int>}`），返回 `{session_id, leaf_sequence}`；不写、不删任何 event，被放弃分支留在日志里可再次 checkout 回来；成功 `200`；错误 `400`（`sequence` 缺失/非正整数，或 root→target 路径拆开 tool/approval/question 调用与结果——`code=checkout_boundary_splits_interaction`）、`404`（未知会话）、`405`。这是 HTTP 上**唯一**的位置变更入口：移除的 undo/revert/unrevert 路由不再提供等价命令，客户端自行计算目标 `sequence` 后调用本路由
 - `GET /api/sessions/{id}/delegated-context` — 读取 delegated 子会话上下文；成功 `200`；错误 `404`（`code=delegated_context_missing`）、`405`
 - `POST /api/sessions/{id}/approval` — 提交审批决策并继续执行，返回下一次暂停或执行结束时的会话快照；成功 `200`；错误 `400`、`409`（`code=no_pending_approval`）、`405`
 - `POST /api/sessions/{id}/question` — 回答等待中的问题，返回恢复后的 `RuntimeResponse`；成功 `200`；错误 `400`、`404`、`409`（`code=no_pending_question`）、`405`

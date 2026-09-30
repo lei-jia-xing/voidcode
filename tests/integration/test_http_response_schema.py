@@ -84,7 +84,7 @@ from voidcode.runtime.contracts import (
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.permission import PermissionResolution
 from voidcode.runtime.question import QuestionResponse
-from voidcode.runtime.session import SessionRef, SessionState, StoredSessionForestEntry, StoredSessionSummary
+from voidcode.runtime.session import SessionEntrySummary, SessionRef, SessionState, StoredSessionForestEntry, StoredSessionSummary
 from voidcode.runtime.transport import http_models
 from voidcode.runtime.transport.http_models import ResponseModel
 from voidcode.runtime.workspace import WorkspaceRuntimeCoordinator
@@ -597,6 +597,21 @@ class _FixtureRuntime:
         _ = session_id
         return _debug_snapshot(self.rich)
 
+    def session_entries(self, *, session_id: str) -> tuple[SessionEntrySummary, ...]:
+        _ = session_id
+        # ``rich`` includes an abandoned branch row (``on_current_path=False``)
+        # and a first entry with no parent, so both wire shapes are pinned.
+        if not self.rich:
+            return ()
+        return (
+            SessionEntrySummary(sequence=1, event_type="runtime.request_received", parent_sequence=None, on_current_path=True, preview="hello"),
+            SessionEntrySummary(sequence=2, event_type="graph.response_ready", parent_sequence=1, on_current_path=False, preview="answer"),
+        )
+
+    def checkout_session(self, *, session_id: str, sequence: int) -> int:
+        _ = session_id
+        return sequence
+
     def cancel_session(self, session_id: str, *, run_id: str | None = None, reason: str | None = None) -> ActiveRunInterruptResult:
         return ActiveRunInterruptResult(
             session_id=session_id,
@@ -892,6 +907,7 @@ _BODIES: dict[tuple[str, str], dict[str, object]] = {
     ("POST", "/api/sessions/{session_id}/approval"): {"request_id": "req-1", "decision": "allow"},
     ("POST", "/api/sessions/{session_id}/question"): {"request_id": "req-1", "responses": [{"header": "Pick one", "answers": ["a"]}]},
     ("POST", "/api/sessions/{session_id}/steer"): {"content": "focus"},
+    ("POST", "/api/sessions/{session_id}/checkout"): {"sequence": 2},
     ("POST", "/api/sessions/{session_id}/cancel"): {},
     ("POST", "/api/sessions/{session_id}/resume"): {},
     ("POST", "/api/status/mcp/retry"): {},

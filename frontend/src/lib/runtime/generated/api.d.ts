@@ -242,6 +242,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/checkout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Move a session's leaf to an entry and continue from there */
+        post: operations["_handle_checkout_session_api_sessions__session_id__checkout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/debug": {
         parameters: {
             query?: never;
@@ -268,6 +285,23 @@ export interface paths {
         };
         /** Read a delegated child session's context */
         get: operations["_handle_child_session_context_api_sessions__session_id__delegated_context_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List a session's stored entries (checkout targets included) */
+        get: operations["_handle_session_entries_api_sessions__session_id__entries_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1615,6 +1649,19 @@ export interface components {
             status: "interrupted" | "not_active" | "stale";
         };
         /**
+         * SessionCheckoutBody
+         * @description ``POST /api/sessions/{id}/checkout``: the session's new leaf position.
+         *
+         *     A checkout is a position change, so the body is the moved-to ``sequence``
+         *     itself; the abandoned continuation stays stored off the path.
+         */
+        SessionCheckoutBody: {
+            /** Leaf Sequence */
+            leaf_sequence: number;
+            /** Session Id */
+            session_id: string;
+        };
+        /**
          * SessionDebugBody
          * @description ``serialize_session_debug_snapshot``: the operator's session debug view.
          *
@@ -1742,6 +1789,38 @@ export interface components {
             summary: string;
             /** Tool Name */
             tool_name: string;
+        };
+        /**
+         * SessionEntriesBody
+         * @description ``GET /api/sessions/{id}/entries``: the session's stored entry listing.
+         */
+        SessionEntriesBody: {
+            /** Entries */
+            entries: components["schemas"]["SessionEntryBody"][];
+            /** Session Id */
+            session_id: string;
+        };
+        /**
+         * SessionEntryBody
+         * @description ``serialize_session_entry_summary``: one entry of ``GET /api/sessions/{id}/entries``.
+         *
+         *     The frozen ``SessionEntrySummary`` field set verbatim. ``parent_sequence``
+         *     is the ancestor edge (``null`` for the session's first entry), so a client
+         *     renders the in-session tree without a second read; ``on_current_path`` is
+         *     false exactly for the branches a checkout left behind, which is how the
+         *     listing shows an abandoned continuation as still stored and re-selectable.
+         */
+        SessionEntryBody: {
+            /** Event Type */
+            event_type: string;
+            /** On Current Path */
+            on_current_path: boolean;
+            /** Parent Sequence */
+            parent_sequence?: number | null;
+            /** Preview */
+            preview: string;
+            /** Sequence */
+            sequence: number;
         };
         /**
          * SessionEventFrameBody
@@ -2001,6 +2080,19 @@ export interface components {
             decision?: components["schemas"]["PermissionResolution"];
             /** Request Id */
             request_id?: string;
+        };
+        /**
+         * _CheckoutSessionRequestPayload
+         * @description ``POST /api/sessions/{id}/checkout`` body: the entry to continue from.
+         *
+         *     ``sequence`` is a positive integer here (the transport's own 400 on a bad
+         *     body) and is validated again at the runtime boundary, like every other
+         *     session method. ``bool`` is refused explicitly because it is an ``int``
+         *     subclass in Python and ``true`` is not a sequence.
+         */
+        _CheckoutSessionRequestPayload: {
+            /** Sequence */
+            sequence?: number;
         };
         /** _QuestionAnswerRequestPayload */
         _QuestionAnswerRequestPayload: {
@@ -2622,6 +2714,59 @@ export interface operations {
             };
         };
     };
+    _handle_checkout_session_api_sessions__session_id__checkout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["_CheckoutSessionRequestPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionCheckoutBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     _handle_session_debug_api_sessions__session_id__debug_get: {
         parameters: {
             query?: {
@@ -2686,6 +2831,46 @@ export interface operations {
                 };
                 content: {
                     "application/json; charset=utf-8": components["schemas"]["BackgroundTaskOutputBody"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    _handle_session_entries_api_sessions__session_id__entries_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json; charset=utf-8": components["schemas"]["SessionEntriesBody"];
                 };
             };
             /** @description Not Found */

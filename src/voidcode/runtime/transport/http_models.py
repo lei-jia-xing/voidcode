@@ -183,6 +183,44 @@ class SessionResultBody(ResponseModel):
 
 
 @final
+class SessionEntryBody(ResponseModel):
+    """``serialize_session_entry_summary``: one entry of ``GET /api/sessions/{id}/entries``.
+
+    The frozen ``SessionEntrySummary`` field set verbatim. ``parent_sequence``
+    is the ancestor edge (``null`` for the session's first entry), so a client
+    renders the in-session tree without a second read; ``on_current_path`` is
+    false exactly for the branches a checkout left behind, which is how the
+    listing shows an abandoned continuation as still stored and re-selectable.
+    """
+
+    sequence: int
+    event_type: str
+    parent_sequence: int | None = None
+    on_current_path: bool
+    preview: str
+
+
+@final
+class SessionEntriesBody(ResponseModel):
+    """``GET /api/sessions/{id}/entries``: the session's stored entry listing."""
+
+    session_id: str
+    entries: list[SessionEntryBody]
+
+
+@final
+class SessionCheckoutBody(ResponseModel):
+    """``POST /api/sessions/{id}/checkout``: the session's new leaf position.
+
+    A checkout is a position change, so the body is the moved-to ``sequence``
+    itself; the abandoned continuation stays stored off the path.
+    """
+
+    session_id: str
+    leaf_sequence: int
+
+
+@final
 class SessionCancelBody(ResponseModel):
     """``ActiveRunInterruptResult.as_payload``: the outcome of a run cancellation.
 
