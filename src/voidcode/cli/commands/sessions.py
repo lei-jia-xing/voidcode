@@ -27,7 +27,7 @@ from ...runtime.bundle import (
 from ...runtime.contracts import NoPendingQuestionError
 from ...runtime.permission import PermissionResolution
 from ...runtime.question import QuestionResponse
-from ...runtime.serialization import serialize_revert_marker, serialize_session_debug_snapshot
+from ...runtime.serialization import serialize_revert_marker, serialize_session_debug_snapshot, serialize_session_entry_summary
 from ...runtime.session import StoredSessionForestEntry, StoredSessionLineageEntry, StoredSessionSummary
 from ..errors import CliError
 from ..handler_args import SessionsArgs
@@ -407,6 +407,48 @@ def _handle_sessions_tree_command(args: SessionsArgs) -> int:
     )
 
 
+def _handle_sessions_entry_rows_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    session_id = args.session_id
+    assert session_id is not None
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        entries = runtime.session_entries(session_id)
+
+    def _print_entries() -> None:
+        for entry in entries:
+            branch = "on-path" if entry.on_current_path else "abandoned"
+            parent = "-" if entry.parent_sequence is None else str(entry.parent_sequence)
+            print(f"{entry.sequence:>4}  {entry.event_type}  parent={parent}  {branch}  {entry.preview}")
+
+    return emit_output(
+        args,
+        {
+            "workspace": str(workspace),
+            "session_id": session_id,
+            "entries": [serialize_session_entry_summary(entry) for entry in entries],
+        },
+        _print_entries,
+    )
+
+
+def _handle_sessions_checkout_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    session_id = args.session_id
+    assert session_id is not None
+    sequence = args.sequence
+    assert sequence is not None
+    # A missing sequence and a split tool/approval pair both reach the caller as
+    # the store's ``ValueError``; ``runtime_error_boundary`` turns either into an
+    # operator-facing runtime error instead of a traceback.
+    with open_runtime(workspace) as runtime, runtime_error_boundary():
+        leaf = runtime.checkout_session(session_id, sequence)
+    return emit_output(
+        args,
+        {"workspace": str(workspace), "session_id": session_id, "leaf_sequence": leaf},
+        lambda: print(f"CHECKED OUT session={session_id} leaf_sequence={leaf}"),
+    )
+
+
 @click.group(help="Inspect persisted local sessions.")
 def sessions() -> None:
     pass
@@ -591,6 +633,36 @@ def revert(session_id: str, sequence: int, workspace: Path) -> int:
             session_id=session_id,
             sequence=sequence,
             workspace=workspace,
+        )
+    )
+
+
+@sessions.command(help="List a session's stored entries so a checkout target can be chosen.")
+@click.argument("session_id")
+@workspace_option("Workspace root used to resolve the local session database.")
+@json_option("Output the entry rows as JSON.")
+def entries(session_id: str, workspace: Path, json_output: bool) -> int:
+    return _handle_sessions_entry_rows_command(
+        SessionsArgs(
+            session_id=session_id,
+            workspace=workspace,
+            json=json_output,
+        )
+    )
+
+
+@sessions.command(help="Continue from an earlier entry: move the session's leaf to <sequence>.")
+@click.argument("session_id")
+@click.argument("sequence", type=int)
+@workspace_option("Workspace root used to resolve the local session database.")
+@json_option("Output the new leaf sequence as JSON.")
+def checkout(session_id: str, sequence: int, workspace: Path, json_output: bool) -> int:
+    return _handle_sessions_checkout_command(
+        SessionsArgs(
+            session_id=session_id,
+            sequence=sequence,
+            workspace=workspace,
+            json=json_output,
         )
     )
 

@@ -328,6 +328,56 @@ class StoredSessionForestEntry:
     depth: int
 
 
+@dataclass(frozen=True, slots=True)
+class SessionEntrySummary:
+    """One stored event of a session, as a listing row a user picks a sequence from.
+
+    ``parent_sequence`` is the sequence this entry follows (``None`` for the
+    session's first entry), so a renderer can show the tree without a second
+    read. ``on_current_path`` is whether the entry lies on the session's
+    current root→leaf path: entries off that path are the branches a checkout
+    left behind, still stored and still reachable by checking out again.
+    """
+
+    sequence: int
+    event_type: str
+    parent_sequence: int | None
+    on_current_path: bool
+    preview: str
+
+
+#: Payload keys a row preview reads, most descriptive first.
+_SESSION_ENTRY_PREVIEW_KEYS: tuple[str, ...] = (
+    "prompt",
+    "question",
+    "summary",
+    "target_summary",
+    "tool",
+    "content",
+    "error",
+    "reason",
+)
+#: Longest preview text an entry row carries. The listing is navigation, not a
+#: transcript: the full payload stays in the event log.
+SESSION_ENTRY_PREVIEW_CHARS = 80
+
+
+def session_entry_preview(event_type: str, payload: Mapping[str, object]) -> str:
+    """Return one single-line label for an event row, or ``""`` when it has none.
+
+    ``event_type`` is deliberately unused for the text: the caller renders the
+    type in its own column, so repeating it here would spend the preview on
+    nothing.
+    """
+    del event_type
+    for key in _SESSION_ENTRY_PREVIEW_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            text = " ".join(value.split())
+            return text if len(text) <= SESSION_ENTRY_PREVIEW_CHARS else text[: SESSION_ENTRY_PREVIEW_CHARS - 1] + "…"
+    return ""
+
+
 def validate_session_workspace(
     session: SessionState,
     *,

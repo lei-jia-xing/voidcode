@@ -382,3 +382,131 @@ def test_sessions_tree_named_session_is_one_chain_oldest_ancestor_first(tmp_path
         (grandchild["session"]["id"], 2),
     ]
     assert payload["lineage"][0]["title"] == "Ancestor"
+
+
+# ---------------------------------------------------------------------------
+# sessions entries / sessions checkout
+# ---------------------------------------------------------------------------
+
+
+def _run_and_session_id(workspace: Path, prompt: str) -> str:
+    result = run_cli("run", prompt, "--workspace", str(workspace), "--json", cwd=workspace)
+    assert result.returncode == EXIT_SUCCESS, result.stderr
+    return json.loads(result.stdout)["session"]["session"]["id"]
+
+
+def _entries(workspace: Path, session_id: str) -> list[dict[str, Any]]:
+    result = run_cli("sessions", "entries", session_id, "--workspace", str(workspace), "--json", cwd=workspace)
+    assert result.returncode == EXIT_SUCCESS, result.stderr
+    return json.loads(result.stdout)["entries"]
+
+
+def test_sessions_entries_plain_and_json_describe_every_stored_row(tmp_path: Path) -> None:
+    workspace = tmp_path
+    (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
+    session_id = _run_and_session_id(workspace, "read sample.txt")
+
+    json_result = run_cli("sessions", "entries", session_id, "--workspace", str(workspace), "--json", cwd=workspace)
+    assert json_result.returncode == EXIT_SUCCESS, json_result.stderr
+    payload = json.loads(json_result.stdout)
+    assert payload["session_id"] == session_id
+    rows = payload["entries"]
+    assert {key for key in rows[0]} == {"sequence", "event_type", "parent_sequence", "on_current_path", "preview"}
+    # Ascending sequence, first row is the root of the path, and the prompt row
+    # previews the user's text.
+    assert [row["sequence"] for row in rows] == sorted(row["sequence"] for row in rows)
+    assert rows[0]["parent_sequence"] is None
+    assert all(row["on_current_path"] for row in rows)
+    prompts = [row["preview"] for row in rows if row["event_type"] == "runtime.request_received"]
+    assert prompts == ["read sample.txt"]
+
+    plain_result = run_cli("sessions", "entries", session_id, "--workspace", str(workspace), cwd=workspace)
+    assert plain_result.returncode == EXIT_SUCCESS, plain_result.stderr
+    first_line = plain_result.stdout.splitlines()[0]
+    assert f"{rows[0]['sequence']:>4}  {rows[0]['event_type']}  parent=-  on-path" in first_line
+    assert len(plain_result.stdout.splitlines()) == len(rows)
+
+
+def test_sessions_checkout_reports_leaf_and_marks_the_abandoned_branch(tmp_path: Path) -> None:
+    workspace = tmp_path
+    (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
+    session_id = _run_and_session_id(workspace, "read sample.txt")
+    second = run_cli("run", "show sample.txt", "--session-id", session_id, "--workspace", str(workspace), "--json", cwd=workspace)
+    assert second.returncode == EXIT_SUCCESS, second.stderr
+
+    before = _entries(workspace, session_id)
+    second_prompt = next(row for row in before if row["preview"] == "show sample.txt")
+    target = second_prompt["sequence"] - 1
+
+    checkout = run_cli("sessions", "checkout", session_id, str(target), "--workspace", str(workspace), "--json", cwd=workspace)
+    assert checkout.returncode == EXIT_SUCCESS, checkout.stderr
+    assert json.loads(checkout.stdout)["leaf_sequence"] == target
+
+    plain = run_cli("sessions", "checkout", session_id, str(target), "--workspace", str(workspace), cwd=workspace)
+    assert plain.returncode == EXIT_SUCCESS, plain.stderr
+    assert plain.stdout.strip() == f"CHECKED OUT session={session_id} leaf_sequence={target}"
+
+    after = _entries(workspace, session_id)
+    # Nothing was deleted: the listing is the same rows, now split into the
+    # path and the branch the checkout abandoned.
+    assert [row["sequence"] for row in after] == [row["sequence"] for row in before]
+    assert [row["on_current_path"] for row in after] == [row["sequence"] <= target for row in after]
+    assert next(row for row in after if row["preview"] == "show sample.txt")["on_current_path"] is False
+
+
+def test_sessions_checkout_refuses_unknown_sequence_and_split_pair_without_traceback(tmp_path: Path) -> None:
+    workspace = tmp_path
+    (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
+    session_id = _run_and_session_id(workspace, "read sample.txt")
+
+    missing = run_cli("sessions", "checkout", session_id, "999", "--workspace", str(workspace), cwd=workspace)
+    assert missing.returncode == EXIT_RUNTIME_ERROR
+    assert "has no event sequence 999" in missing.stderr
+    assert "Traceback" not in missing.stderr
+
+    rows = _entries(workspace, session_id)
+    started = next(row["sequence"] for row in rows if row["event_type"] == "runtime.tool_started")
+    mid_pair = run_cli("sessions", "checkout", session_id, str(started), "--workspace", str(workspace), cwd=workspace)
+    assert mid_pair.returncode == EXIT_RUNTIME_ERROR
+    assert "splits a tool call from its result" in mid_pair.stderr
+    assert "Traceback" not in mid_pair.stderr
+
+    # Both refusals left the leaf where it was.
+    checked = run_cli("sessions", "checkout", session_id, str(rows[-1]["sequence"]), "--workspace", str(workspace), "--json", cwd=workspace)
+    assert json.loads(checked.stdout)["leaf_sequence"] == rows[-1]["sequence"]
+
+
+def test_sessions_resume_after_checkout_continues_instead_of_replaying(tmp_path: Path) -> None:
+    """A checkout of a completed session leaves it continuable, so resume re-runs.
+
+    A replay appends no events; a continuation appends the re-run's steps on
+    the checked-out path. The abandoned turn must survive it untouched: the
+    checkout points the resume's tail-truncation at the row watermark, not at
+    the checkout target.
+    """
+    workspace = tmp_path
+    (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
+    session_id = _run_and_session_id(workspace, "read sample.txt")
+    second = run_cli("run", "show sample.txt", "--session-id", session_id, "--workspace", str(workspace), "--json", cwd=workspace)
+    assert second.returncode == EXIT_SUCCESS
+
+    rows = _entries(workspace, session_id)
+    abandoned_prompt = next(row for row in rows if row["preview"] == "show sample.txt")
+    target = abandoned_prompt["sequence"] - 1
+    assert run_cli("sessions", "checkout", session_id, str(target), "--workspace", str(workspace), cwd=workspace).returncode == EXIT_SUCCESS
+
+    resumed = run_cli("sessions", "resume", session_id, "--workspace", str(workspace), cwd=workspace)
+    assert resumed.returncode == EXIT_SUCCESS, resumed.stderr
+
+    after = _entries(workspace, session_id)
+    high_water = max(row["sequence"] for row in rows)
+    new_rows = [row for row in after if row["sequence"] > high_water]
+    assert new_rows, "resume must re-run and append events; a replay appends none"
+    # The re-run continued from the checked-out leaf: every appended row is on
+    # that path, and the abandoned turn's rows are still stored, still off-path.
+    assert all(row["on_current_path"] for row in new_rows)
+    preserved = {row["sequence"]: row for row in after}
+    for previous in rows:
+        assert previous["sequence"] in preserved
+    assert preserved[abandoned_prompt["sequence"]]["on_current_path"] is False
+    assert preserved[target]["on_current_path"] is True

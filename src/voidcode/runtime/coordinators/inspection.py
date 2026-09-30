@@ -143,6 +143,7 @@ from ..runtime_debug import (
     prompt_and_tool_results_from_debug_events,
 )
 from ..session import (
+    SessionEntrySummary,
     SessionRef,
     SessionState,
     StoredSessionForestEntry,
@@ -546,6 +547,35 @@ class InspectionCoordinator:
     def session_forest(self) -> tuple[StoredSessionForestEntry, ...]:
         """Read-only workspace fork forest, parents before children."""
         return self._session_store.session_forest(workspace=self._workspace)
+
+    def session_entries(self, *, session_id: str) -> tuple[SessionEntrySummary, ...]:
+        """Read-only entry listing for one session, ascending ``sequence``.
+
+        ``session_id`` is validated at the same boundary as every sibling
+        session method; the store owns the path walk and the on-path marking.
+        """
+        validate_id(session_id)
+        return self._session_store.session_entries(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
+
+    def checkout_session(self, *, session_id: str, sequence: int) -> int:
+        """Move a session's leaf to ``sequence``; returns the new leaf.
+
+        Storage owns the position change (validate the target, refuse a path
+        that splits an interaction, drop the position-scoped cached state, and
+        leave the row continuable). This boundary validates identity and the
+        sequence the way ``fork_session`` validates its boundary.
+        """
+        validate_id(session_id)
+        if sequence < 1:
+            raise ValueError("checkout sequence must be a positive integer")
+        return self._session_store.checkout_session(
+            workspace=self._workspace,
+            session_id=session_id,
+            sequence=sequence,
+        )
 
     def tool_effectiveness_report(self) -> ToolEffectivenessReport:
         return self._session_store.tool_effectiveness_report(workspace=self._workspace)

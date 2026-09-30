@@ -8,7 +8,18 @@ from .contracts import (
     RuntimeSessionRevertMarker,
 )
 from .events import redact_reasoning_payload, runtime_policy_observability_payload
-from .session import SessionRef, SessionState
+from .session import SessionEntrySummary, SessionRef, SessionState
+
+
+def serialize_session_entry_summary(entry: SessionEntrySummary) -> dict[str, object]:
+    """One entry row's JSON shape: the frozen field set, verbatim."""
+    return {
+        "sequence": entry.sequence,
+        "event_type": entry.event_type,
+        "parent_sequence": entry.parent_sequence,
+        "on_current_path": entry.on_current_path,
+        "preview": entry.preview,
+    }
 
 
 def serialize_session_debug_snapshot(

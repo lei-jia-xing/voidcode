@@ -176,11 +176,37 @@ StoredSessionSummary(
 - 运行时：`VoidCodeRuntime.session_lineage(session_id=...)`（单链）、`VoidCodeRuntime.session_forest()`（整片森林）
 - CLI：`voidcode sessions tree [session_id] [--workspace] [--json]`；缺省 `session_id` 时渲染森林（每行 `depth` 空格缩进、可选 `title`、以及 `<- parent@sequence` 溯源标注）；给出 `session_id` 时渲染该会话的单条祖先链。`--json` 的 `lineage` 行在本节原有四个键（`session_id` / `forked_from_session_id` / `forked_at_sequence` / `depth`）之上**新增** `title`。
 
+### 从某个 entry 续接 (Continue from an entry / checkout)
+
+输入：
+- `session_id`
+- `sequence`：目标 event 的 `sequence`
+
+输出：新的 leaf `sequence`（`int`）。
+
+checkout 是一个**位置变更**：把会话的 `leaf_sequence` 指向 `sequence`，之后该会话可继续续接的起点就是这里。它**不写、不移动、不删除任何 event**——`sequence` 之后的事件仍留在 `session_events`，成为当前路径之外的**被放弃分支**，之后可以再 checkout 回去。
+
+- 下一次 run / resume 的 provider context 是 `sequence` 处的 **root→leaf 路径**投影，被放弃分支不再进入模型上下文。
+- 被放弃分支的位置状态（`runtime_state`、`resume_checkpoint_json`、pending approval/question）在同一次事务里丢弃或替换，下一次 run 重新推导。
+- **checkout 永不把会话留在终态**：即使行原本是 `completed`，checkout 后其状态变为 `interrupted`（可续接的断点状态）。这是刻意的——checkout 是「从这里继续」的显式意图，若仍为 `completed`，`sessions resume` 会**重放**刚被 checkout 作废的那次响应，而不是从新 leaf 续接。
+- 目标若不存在，或 root→target 路径**拆开**了某个 tool call / approval / question 的调用与结果，运行时以 `ValueError` 拒绝（`RuntimeSessionCheckoutBoundaryError`，`code = "checkout_boundary_splits_interaction"`），位置不变。
+
+选择目标的只读清单：`session_entries(session_id)` 返回**升序**的全部 entry `SessionEntrySummary`：
+- `{sequence, event_type, parent_sequence, on_current_path, preview}`；`parent_sequence` 为祖先边（首条为 `None`），`on_current_path` 表示该 entry 是否在当前 root→leaf 路径上（`False` 即被放弃分支），`preview` 是该事件的单行短文本。
+- CLI 行形如 `<seq>  <event_type>  parent=<seq|->  <on-path|abandoned>  <preview>`。
+
+当前实现层面：
+- 运行时：`VoidCodeRuntime.checkout_session(session_id, sequence)`、`VoidCodeRuntime.session_entries(session_id)`
+- CLI：`voidcode sessions checkout <session_id> <sequence> [--workspace] [--json]`、`voidcode sessions entries <session_id> [--workspace] [--json]`
+- 与 `sessions tree` **不同**：`tree` 渲染跨会话的 fork 森林（provenance），`entries` 渲染**单个会话内部**的事件树；两者不可互相替代。
+
 ### fork 语义的诚实边界 (Fork semantics — the honest limits)
 
-VoidCode 的会话是**单条线性事件日志 + 一个水位**（`last_event_sequence`），**没有可变 leaf pointer**。因此：
+VoidCode 的会话事件日志承载**一个可变 leaf pointer**（`sessions.leaf_sequence`）与 entry 之间的祖先边（`session_events.parent_sequence`），所以会话内部的「树」是可表达、可选择的：`sessions checkout` 在一个会话 id 内把续接点移到任意 entry，被放弃分支留在日志里可再次 checkout 回来，下一次运行的 provider context 只走 root→leaf 路径。
 
-- 这里的 "branch" 就是**先 fork 再续接**：fork 产出新的会话 id，对该新会话继续运行；一个会话 id **不能**承载两条分叉的续接，无法像参考实现的 entry tree 那样在同一个会话内产生多个后续分支。
+fork 与 checkout 仍是两件事：fork 产出**新的会话 id**（复制前缀 + provenance 列），用于建立一条独立血缘；checkout 不改变会话身份，只改变同一会话内的续接位置。因此：
+
+- 同一会话内可以有**多条分叉的续接**（entry tree）：它们共享一个会话 id 与一段日志，靠 `leaf_sequence` 选择当前路径；`fork` 仍是跨会话血缘的唯一工具。
 - fork provenance 刻意使用**独立列**（`forked_from_session_id` / `forked_at_sequence`），而不是复用 `parent_session_id`。`parent_session_id` 在**所有**读取点都表示 *delegated background-task child*（列表过滤、委派路由、父会话终结检查、孤儿清理），fork 若写进该列会被误当成 delegated child；用独立列后，**fork 永不进入 delegated-child 行为**。
 - fork 迁移 `runtime_config` / `runtime_policy`（会话级有效配置与策略），但丢弃 `runtime_state`（context 投影与 todos，属于被复制那轮的位置状态）；fork 的下一轮自行重新推导运行位置。
 
@@ -212,6 +238,8 @@ VoidCode 的会话是**单条线性事件日志 + 一个水位**（`last_event_s
   - **重跑（truncate-and-rerun）**：checkpoint 为 `interrupted` 时，运行时先把持久化事件尾部截断到 checkpoint 记录的 `last_event_sequence`（丢弃 checkpoint 之后、那批未完成调用留下的孤儿事件），再重新进入 graph loop、重新执行 provider（`runtime/resume.py:1282-1286` 截断；`:1381` 起 `execute_graph_loop`）。checkpoint 为 `provider_failure_retryable` 时同样重新进入 graph loop 并重新执行 provider（`runtime/resume.py:1149-1167`、`:1350`），但**不截断**已有事件，而是把本轮新事件追加在其后。两种重跑模式下响应都是「保留的存储事件 + 本次重跑产生的新事件」，`output` 是本次重跑的输出（重跑未产生输出时回退为存储输出）；持久化的会话日志也随之改写。
 
 因此客户端 MUST NOT 假设 resume 总是返回逐字节等于既有持久化内容的响应；需要纯只读重放时使用只读的会话加载 surface（见下文 `GET /api/sessions/{id}`）。
+
+checkout 之后该会话的 checkpoint 一定是可续接的 `interrupted`（见上文 checkout 一节），所以此处的 `resume` 走**重跑**分支、从 checkout 后的 leaf 继续，而不是重放刚被 checkout 作废的响应。
 
 当前实现层面：
 - 运行时：`VoidCodeRuntime.resume(session_id)`

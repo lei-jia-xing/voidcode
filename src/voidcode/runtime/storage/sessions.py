@@ -22,11 +22,13 @@ from ..events import (
     EventSource,
 )
 from ..session import (
+    SessionEntrySummary,
     SessionRef,
     SessionState,
     SessionStatus,
     StoredSessionSummary,
     normalize_persisted_session_metadata,
+    session_entry_preview,
     session_metadata_for_persistence,
 )
 from ..todos import runtime_todo_phases_from_payload, todo_state_payload
@@ -122,6 +124,23 @@ def session_event_path(
         cursor = entry.parent_sequence
     chain.reverse()
     return tuple(chain)
+
+
+def _checked_out_prompt(path: tuple[EventEnvelope, ...]) -> str:
+    """The prompt belonging to a checked-out position, for its resume checkpoint.
+
+    The checkpoint records the prompt the resume re-runs, and after a checkout
+    that is the last user request on the new path — the entry the user just
+    resumed from. A position before any request (an event from a run that
+    recorded none) has no prompt to name; the entry list renders as empty, and
+    the row can still be continued with an explicit new-turn run.
+    """
+    for event in reversed(path):
+        if event.event_type == "runtime.request_received":
+            prompt = event.payload.get("prompt")
+            if isinstance(prompt, str):
+                return prompt
+    return ""
 
 
 class _SessionStorageMixin(_MixinBase):
@@ -909,9 +928,24 @@ class _SessionStorageMixin(_MixinBase):
         from its resolution (the same rule a fork applies): resuming such a
         path would continue mid-interaction. The cached position — the context
         projection, todos and compaction marker in ``runtime_state`` plus the
-        ``resume_checkpoint_json`` and the abandoned branch's pending approval/
-        question — is dropped in the same ``BEGIN IMMEDIATE`` transaction as
-        the move, so a later run re-derives it from the events on the new path.
+        abandoned branch's pending approval/question — is dropped in the same
+        ``BEGIN IMMEDIATE`` transaction as the move, so a later run re-derives
+        it from the events on the new path.
+
+        A checkout is an explicit "continue from here", so the session is never
+        left terminal at the chosen position: the row becomes ``interrupted``,
+        the resumable breakpoint status, and the stale resume checkpoint is
+        replaced by one naming this position. Without this a checkout of a
+        ``completed`` row would leave it sealed, and ``sessions resume`` would
+        replay the stored response instead of continuing from the leaf the
+        checkout just chose.
+
+        The checkpoint's ``last_event_sequence`` is the row's current watermark,
+        not the checkout target: the resume uses it to delete the tail an
+        interrupted run left behind, and after a checkout that tail is the
+        *abandoned branch*, not a dead run's output — so the rewrite must delete
+        nothing. The resume still re-runs from the leaf, because the replayed
+        context and the new events' parent both follow ``leaf_sequence``.
         """
         if sequence < 1:
             raise ValueError("checkout sequence must be a positive integer")
@@ -934,15 +968,23 @@ class _SessionStorageMixin(_MixinBase):
                 raise RuntimeSessionCheckoutBoundaryError(f"checkout target {sequence} splits a {kind} call from its result ({label})")
             next_metadata = {key: value for key, value in metadata.items() if key not in _NON_TRANSFERABLE_METADATA_KEYS}
             metadata_json = json.dumps(next_metadata, sort_keys=True)
+            checkpoint = self._interrupted_resume_checkpoint(
+                prompt=_checked_out_prompt(path),
+                session_metadata=next_metadata,
+                tool_results=(),
+                last_event_sequence=max(entry.event.sequence for entry in entries),
+                output=None,
+            )
             updated_at = self._next_timestamp(connection=connection)
             _ = connection.execute(
                 """
                 UPDATE sessions
-                SET leaf_sequence = ?, metadata_json = ?, pending_approval_json = NULL,
-                    pending_question_json = NULL, resume_checkpoint_json = NULL, updated_at = ?
+                SET leaf_sequence = ?, metadata_json = ?, status = 'interrupted',
+                    pending_approval_json = NULL, pending_question_json = NULL,
+                    resume_checkpoint_json = ?, updated_at = ?
                 WHERE workspace_id = ? AND session_id = ?
                 """,
-                (sequence, metadata_json, updated_at, str(workspace), session_id),
+                (sequence, metadata_json, json.dumps(checkpoint, sort_keys=True), updated_at, str(workspace), session_id),
             )
             connection.commit()
             return sequence
@@ -960,6 +1002,37 @@ class _SessionStorageMixin(_MixinBase):
         if not entries:
             return ()
         return session_event_path(entries, target_sequence=sequence, leaf_sequence=leaf)
+
+    def session_entries(self, *, workspace: Path, session_id: str) -> tuple[SessionEntrySummary, ...]:
+        """Read-only listing of every stored entry, ascending ``sequence``.
+
+        Each row carries its ancestor edge and whether it is on the session's
+        current root→leaf path, which is what a user needs to pick a checkout
+        target: rows off the path are the branches a checkout left behind.
+
+        A session with events but no leaf (an unset position over a non-empty
+        log) is the same corruption ``session_path`` refuses, so the path walk
+        raises here too rather than marking every row abandoned. A closed leaf
+        that cannot be walked back to a root likewise raises: a listing that
+        silently claims "everything is off-path" would hide the corruption the
+        walk exists to catch. A session with no events lists nothing.
+        """
+        with self._connect(workspace) as connection:
+            entries = self._session_tree_entries(connection=connection, workspace=workspace, session_id=session_id)
+            leaf = self._leaf_sequence(connection=connection, workspace=workspace, session_id=session_id)
+        if not entries:
+            return ()
+        path_sequences = {event.sequence for event in session_event_path(entries, target_sequence=None, leaf_sequence=leaf)}
+        return tuple(
+            SessionEntrySummary(
+                sequence=entry.event.sequence,
+                event_type=entry.event.event_type,
+                parent_sequence=entry.parent_sequence,
+                on_current_path=entry.event.sequence in path_sequences,
+                preview=session_entry_preview(entry.event.event_type, entry.event.payload),
+            )
+            for entry in entries
+        )
 
     def has_session(self, *, workspace: Path, session_id: str) -> bool:
         with self._connect(workspace) as connection:

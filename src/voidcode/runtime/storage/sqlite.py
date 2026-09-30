@@ -31,6 +31,7 @@ from ..paths import sessions_db_path
 from ..permission import PendingApproval
 from ..question import PendingQuestion
 from ..session import (
+    SessionEntrySummary,
     SessionStatus,
     StoredSessionForestEntry,
     StoredSessionLineageEntry,
@@ -131,6 +132,8 @@ class SessionStore(Protocol):
     def checkout_session(self, *, workspace: Path, session_id: str, sequence: int) -> int: ...
 
     def session_path(self, *, workspace: Path, session_id: str, sequence: int | None = None) -> tuple[EventEnvelope, ...]: ...
+
+    def session_entries(self, *, workspace: Path, session_id: str) -> tuple[SessionEntrySummary, ...]: ...
 
     def save_pending_approval(
         self,

@@ -269,6 +269,7 @@ from .runtime_debug import (
 )
 from .runtime_surface import PermissionOutcome, RuntimeSurface
 from .session import (
+    SessionEntrySummary,
     SessionRef,
     SessionState,
     SessionStatus,
@@ -2507,6 +2508,31 @@ class VoidCodeRuntime(RuntimeSurface):
         refused with ``SessionLineageCycleError``.
         """
         return self._inspection_coordinator.session_forest()
+
+    def session_entries(self, session_id: str) -> tuple[SessionEntrySummary, ...]:
+        """Every stored entry of one session, ascending ``sequence``.
+
+        The read-only listing a user picks a checkout target from: each row
+        carries its ancestor edge and whether it is on the current leaf path,
+        so the abandoned branches a checkout left behind are visible.
+        """
+        return self._inspection_coordinator.session_entries(session_id=session_id)
+
+    def checkout_session(self, session_id: str, sequence: int) -> int:
+        """Move the session's leaf to ``sequence`` and return the new leaf.
+
+        An explicit "continue from here": the events after ``sequence`` stay
+        stored as an off-path branch that a later checkout can restore, and the
+        next run or resume replays the root→leaf path to this position. The row
+        is left continuable (never terminal at the chosen position), so
+        ``sessions resume`` continues instead of replaying a stored response.
+        A target that splits a tool/approval pair is refused with
+        ``RuntimeSessionCheckoutBoundaryError``.
+        """
+        return self._inspection_coordinator.checkout_session(
+            session_id=session_id,
+            sequence=sequence,
+        )
 
     def tool_effectiveness_report(self) -> ToolEffectivenessReport:
         return self._inspection_coordinator.tool_effectiveness_report()
