@@ -10,12 +10,33 @@ in the table and checking back out to B succeeds.
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
-from voidcode.runtime.service import VoidCodeRuntime
+from voidcode.graph.contracts import GraphEvent, GraphRunRequest, GraphSession
+from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
+from voidcode.tools.contracts import ToolCall
 
 _SESSION_ID = "checkout-context"
+
+
+@dataclass(slots=True)
+class _Step:
+    tool_call: ToolCall | None = None
+    output: str | None = None
+    events: tuple[GraphEvent, ...] = ()
+    is_finished: bool = False
+    reasoning: str | None = None
+    provider_usage: object | None = None
+
+
+class _FinishingGraph:
+    """A graph that finishes on the first step, only used to persist a real metadata snapshot."""
+
+    def step(self, request: GraphRunRequest, tool_results: tuple[object, ...], *, session: GraphSession) -> _Step:
+        _ = request, tool_results, session
+        return _Step(output="done", is_finished=True)
 
 
 def _seed_session(store: SqliteSessionStore, *, workspace: Path) -> None:
@@ -136,3 +157,57 @@ def test_rehydrated_tool_results_follow_the_checked_out_leaf(tmp_path: Path) -> 
     assert store.checkout_session(workspace=tmp_path, session_id=_SESSION_ID, sequence=2) == 2
     after = _rehydrated_tool_contents(runtime, store=store, workspace=tmp_path)
     assert after == ["A result"]
+
+
+def _debug_provider_tool_contents(runtime: VoidCodeRuntime, *, workspace: Path) -> list[str]:
+    snapshot = runtime.session_debug_snapshot(session_id=_SESSION_ID)
+    assert snapshot.provider_context is not None
+    return [str(segment.content) for segment in snapshot.provider_context.segments if segment.role == "tool" and segment.content]
+
+
+def test_debug_provider_context_follows_the_checked_out_leaf(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "checkout-debug-context.sqlite3")
+    runtime = VoidCodeRuntime(workspace=tmp_path, session_store=store, graph=_FinishingGraph())
+
+    # Harvest the full metadata snapshot a real run persists (runtime_config +
+    # agent_capability_snapshot) so the debug read passes its boundary checks.
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="meta-seed",
+        prompt="seed",
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+    seed = runtime.run(RuntimeRequest(prompt="seed", session_id="meta-seed"))
+
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id=_SESSION_ID,
+        prompt="seed",
+        session_metadata=dict(seed.session.metadata),
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+
+    _append_tool_turn(store, workspace=tmp_path, prompt="prompt A", tool_content="A result", sequence=1)
+    _append_tool_turn(store, workspace=tmp_path, prompt="prompt B", tool_content="B result", sequence=3)
+    before = _debug_provider_tool_contents(runtime, workspace=tmp_path)
+    assert "A result" in before
+    assert "B result" in before
+
+    # Check out to A's tool completion — B's turn is abandoned off the path, so
+    # the debug snapshot must stop reporting B's tool result to the operator.
+    assert store.checkout_session(workspace=tmp_path, session_id=_SESSION_ID, sequence=2) == 2
+    after = _debug_provider_tool_contents(runtime, workspace=tmp_path)
+    assert "A result" in after
+    assert "B result" not in after
+
+    # B's branch was abandoned, not deleted: checking back out restores it.
+    assert [event.sequence for event in store.session_path(workspace=tmp_path, session_id=_SESSION_ID)] == [1, 2]
+    assert store.checkout_session(workspace=tmp_path, session_id=_SESSION_ID, sequence=4) == 4
+    restored = _debug_provider_tool_contents(runtime, workspace=tmp_path)
+    assert "A result" in restored
+    assert "B result" in restored

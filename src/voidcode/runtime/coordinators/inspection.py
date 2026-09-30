@@ -33,7 +33,6 @@ from ...provider.protocol import ProviderAssembledContext
 from ...provider.registry import ModelProviderRegistry
 from ...provider.resolution import resolve_provider_config
 from ...provider.snapshot import resolved_provider_snapshot
-from ...tools.contracts import ToolResult
 from ...tools.output import (
     read_tool_output_artifact,
     search_tool_output_artifact,
@@ -250,12 +249,6 @@ def _debug_failure(
 
 def _last_tool_summary(result: RuntimeSessionResult) -> RuntimeSessionDebugToolSummary | None:
     return last_tool_summary(result)
-
-
-def _prompt_and_tool_results_from_debug_events(
-    events: tuple[EventEnvelope, ...],
-) -> tuple[str, list[ToolResult]]:
-    return prompt_and_tool_results_from_debug_events(events)
 
 
 def _operator_guidance(
@@ -1036,7 +1029,19 @@ class InspectionCoordinator:
         self,
         result: RuntimeSessionResult,
     ) -> RuntimeProviderContextSnapshot:
-        prompt, tool_results = _prompt_and_tool_results_from_debug_events(result.transcript)
+        # The debug snapshot mirrors what the model would receive, so the tool
+        # results come from the session's root→leaf *path*, never the flat
+        # event log: under a tree the flat log also holds the branches a
+        # checkout abandoned, which would make this section report history the
+        # model never sees. ``result.transcript`` cannot supply the walk
+        # (``load_session`` returns every row without the ``parent_sequence``
+        # edges), so the one authoritative storage walk is called here — the
+        # same seam ``_rehydrated_tool_results_for_existing_session`` uses.
+        path_events = self._session_store.session_path(
+            workspace=self._workspace,
+            session_id=result.session.session.id,
+        )
+        prompt, tool_results = prompt_and_tool_results_from_debug_events(path_events)
         if not prompt:
             prompt = result.prompt
         assembled_context = self._surface.assemble_provider_context(
