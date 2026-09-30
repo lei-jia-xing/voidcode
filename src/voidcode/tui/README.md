@@ -50,6 +50,7 @@ VoidCode 的终端客户端层：inline 渲染 + 原生 scrollback 的 TUI。
 
 `voidcode tui [--workspace PATH] [--approval-mode MODE]` → `voidcode.tui.run_tui(...)`。
 
-键位来自 `config.tui.keymap`（`app.session.new` / `app.session.resume` / `app.tools.expand` /
+键位来自 `config.tui.keymap`（`app.session.new` / `app.session.resume` / `app.session.tree` / `app.tools.expand` /
 `app.display.reset` / `app.history.search`），未配置时只有 `app.tools.expand = ctrl+o`；
-未知键名或未知动作会在启动前直接报错。
+`app.session.tree` 打开会话条目选择器（checkout：把 leaf 移回某个条目，之后的 turn 保留但不再进入模型上下文），
+建议自行配置为 `ctrl+t`；未知键名或未知动作会在启动前直接报错。

@@ -70,6 +70,7 @@ from .overlay import (
     PromptHistoryOverlay,
     QuestionOverlay,
     SessionPickerOverlay,
+    TreeSelectorOverlay,
 )
 from .region import LiveRegion
 from .statusline import StatusLine, StatusSegmentData
@@ -131,11 +132,22 @@ _BACKGROUND_TERMINAL_EVENTS: Final[frozenset[str]] = frozenset(
 
 #: Actions ``config.tui.keymap`` may bind. Anything else fails loudly: the old
 #: Textual ``self.bind()`` silently accepted unknown action names.
-_ACTIONS: Final[frozenset[str]] = frozenset({"app.session.new", "app.session.resume", "app.tools.expand", "app.display.reset", "app.history.search"})
+_ACTIONS: Final[frozenset[str]] = frozenset(
+    {
+        "app.session.new",
+        "app.session.resume",
+        "app.session.tree",
+        "app.tools.expand",
+        "app.display.reset",
+        "app.history.search",
+    }
+)
 
 #: The only default binding (omp ``app.tools.expand = ctrl+o``). ``app.session.*``
 #: and the two added actions stay unbound unless the user configures them, exactly
-#: as in the old app.
+#: as in the old app. A checkout moves the session's leaf and drops the turns
+#: after it from the model's context, so it deliberately ships no chord:
+#: ``app.session.tree = ctrl+t`` is the suggested one to configure.
 _DEFAULT_KEYMAP: Final[Mapping[str, str]] = MappingProxyType({"app.tools.expand": "ctrl+o"})
 
 #: Canonical modifier order, mirroring ``keys._format_with_mods``.
@@ -759,6 +771,8 @@ class TuiApp:
             self._command_session_new()
         elif action == "app.session.resume":
             self._command_session_resume()
+        elif action == "app.session.tree":
+            self._command_session_tree()
         elif action == "app.display.reset":
             self._command_display_reset()
         else:
@@ -789,6 +803,11 @@ class TuiApp:
             self._close_overlay()
             if isinstance(session_id, str) and session_id:
                 self._open_resumed_session(session_id)
+        elif isinstance(overlay, TreeSelectorOverlay):
+            sequence = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            self._close_overlay()
+            if isinstance(sequence, int):
+                self._checkout_session(sequence)
         else:
             prompt = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
             self._close_overlay()
@@ -916,6 +935,55 @@ class TuiApp:
         if self._composer is not None:
             self._composer.set_enabled(False)
         self._enter_alt_screen()
+        self._dirty = True
+
+    def _command_session_tree(self) -> None:
+        """``app.session.tree``: pick an entry of the current session to continue from.
+
+        The runtime owns the tree; this only gathers its entries (ascending
+        sequence -- the selector renders them in exactly that order, so a row
+        can never appear above its parent) and hands the chosen sequence to
+        :meth:`_checkout_session`.
+        """
+        if self._session_id is None:
+            self._notice("✖ No active session to check out")
+            return
+        try:
+            entries = self._runtime.session_entries(self._session_id)
+        except Exception as error:
+            logger.error("Failed to read session entries: %s", error)
+            self._notice(f"✖ Failed to read the session tree: {format_runtime_error(error)}")
+            return
+        self._overlay = TreeSelectorOverlay(entries=entries, theme=self._theme)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._enter_alt_screen()
+        self._dirty = True
+
+    def _checkout_session(self, sequence: int) -> None:
+        """Move the session's leaf; the abandoned turns stay in the tape, marked.
+
+        A refused checkout (a mid-tool sequence, a session that moved under us)
+        is a notice, not a crash: nothing was written, so the tape is unchanged.
+        """
+        if self._session_id is None:
+            return
+        assert self._view is not None
+        try:
+            leaf = self._runtime.checkout_session(self._session_id, sequence)
+            entries = self._runtime.session_entries(self._session_id)
+        except Exception as error:
+            logger.error("Checkout failed: %s", error)
+            self._notice(f"✖ Checkout failed: {format_runtime_error(error)}")
+            return
+        # Everything after the new leaf is off the current path; those turns are
+        # retained in the session but no longer reach the model. Counting by
+        # sequence (not `not on_current_path`) keeps an earlier-abandoned branch
+        # out of the number -- the path ends at the leaf, so any later entry is
+        # exactly one of the turns this checkout parked.
+        abandoned = sum(1 for entry in entries if entry.sequence > leaf)
+        self._view.transcript().add(SessionMarkerBlock(label=f"Checked out at #{leaf}", hint=f"{abandoned} later turns retained, off-path"))
         self._dirty = True
 
     def _command_display_reset(self) -> None:

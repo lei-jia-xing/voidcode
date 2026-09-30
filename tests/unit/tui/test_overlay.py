@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from types import SimpleNamespace
+
 from voidcode.runtime.question import PendingQuestionOption, PendingQuestionPrompt, QuestionResponse
 from voidcode.tools.question import QuestionTool
 from voidcode.tui.keys import Key
@@ -9,6 +12,7 @@ from voidcode.tui.overlay import (
     OverlayOutcomeKind,
     QuestionOverlay,
     SessionPickerOverlay,
+    TreeSelectorOverlay,
 )
 from voidcode.tui.term import visible_width
 
@@ -308,6 +312,81 @@ def test_picker_filtering_matches_a_title_at_non_zero_depth() -> None:
     assert "Grandchild of refactor" in rendered
     assert "Fix CJK width bug" not in rendered
     assert overlay.handle_key(Key("enter")) == OverlayOutcome(OverlayOutcomeKind.DONE, "session-cccc3333")
+
+
+# ---------------------------------------------------------------------------
+# Checkout tree selector
+# ---------------------------------------------------------------------------
+
+
+def entry(sequence: int, event_type: str, preview: str, *, on_path: bool = True) -> SimpleNamespace:
+    """One ``SessionEntrySummary`` row (the runtime owns the real type)."""
+    return SimpleNamespace(sequence=sequence, event_type=event_type, parent_sequence=sequence - 1, on_current_path=on_path, preview=preview)
+
+
+# A checked-out session: 1-2 are the path the leaf sits on; 3-4 are appended
+# after 2 and are the abandoned continuation.
+CHECKED_OUT = [
+    entry(1, "runtime.request_received", "fix the parser bug"),
+    entry(2, "graph.response_ready", "Looking at parser.py…"),
+    entry(3, "runtime.tool_started", "bash: pytest -q", on_path=False),
+    entry(4, "graph.response_ready", "Reverted the wrong guard", on_path=False),
+]
+
+
+def tree(entries=CHECKED_OUT) -> TreeSelectorOverlay:
+    return TreeSelectorOverlay(entries=entries, theme=theme())
+
+
+def test_tree_rows_keep_ascending_sequence_order_with_path_and_abandoned_markers() -> None:
+    overlay = tree()
+    rows = plain(overlay.render(WIDTH))
+    assert isinstance(rows, list)
+    listed = [row for row in rows if re.search(r"\d", row)]
+    sequences = [int(re.search(r"(\d+)", row).group(1)) for row in listed]  # type: ignore[union-attr]
+    assert sequences == [1, 2, 3, 4]  # the listing order, never re-sorted
+    assert "* abandoned" not in listed[0]
+    assert "* abandoned" not in listed[1]
+    assert "* abandoned" in listed[2]
+    assert "* abandoned" in listed[3]
+
+
+def test_tree_row_shows_sequence_type_and_preview() -> None:
+    row = next(row for row in plain(tree().render(WIDTH)) if "fix the parser bug" in row)
+    assert re.search(r"1\s+user\s+fix the parser bug", row)  # type: ignore[union-attr]
+
+
+def test_tree_marks_the_current_leaf_on_the_path() -> None:
+    rows = plain(tree().render(WIDTH))
+    assert isinstance(rows, list)
+    cursor = theme().symbol("nav.cursor")
+    leaf_row = next(row for row in rows if "Looking at parser.py" in row)
+    assert cursor in leaf_row
+    # Exactly one row carries the leaf marker.
+    assert sum(cursor in row for row in rows) == 1
+
+
+def test_tree_filter_is_token_and_and_enter_returns_the_sequence() -> None:
+    overlay = tree()
+    type_text(overlay, "guard")
+    rendered = text(overlay.render(WIDTH))
+    assert "Reverted the wrong guard" in rendered
+    assert "fix the parser bug" not in rendered
+    assert overlay.handle_key(Key("enter")) == OverlayOutcome(OverlayOutcomeKind.DONE, 4)
+
+
+def test_tree_backspace_restores_rows_and_escape_cancels() -> None:
+    overlay = tree()
+    type_text(overlay, "guard")
+    for _ in "guard":
+        overlay.handle_key(Key("backspace"))
+    assert "fix the parser bug" in text(overlay.render(WIDTH))
+    assert overlay.handle_key(Key("escape")) == OverlayOutcome(OverlayOutcomeKind.CANCELLED, None)
+    assert tree(entries=[]).handle_key(Key("enter")) == OverlayOutcome(OverlayOutcomeKind.CANCELLED, None)
+
+
+def test_tree_is_always_fullscreen() -> None:
+    assert tree().wants_fullscreen(WIDTH, 1000) is True
 
 
 # ---------------------------------------------------------------------------

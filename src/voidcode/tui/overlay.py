@@ -35,6 +35,7 @@ __all__ = [
     "PromptHistoryOverlay",
     "QuestionOverlay",
     "SessionPickerOverlay",
+    "TreeSelectorOverlay",
 ]
 
 
@@ -627,6 +628,140 @@ class SessionPickerOverlay(_Base):
         body.append("")
         body.append(_hint("↑/↓ move · Enter resume · type to filter · Esc cancel", theme))
         return self._panel("Select Session", body, width)
+
+    def wants_fullscreen(self, _width: int, _height: int) -> bool:
+        return True
+
+
+#: Short, selector-width labels for the raw runtime event types (the full names
+#: overrun the row). Anything unlisted renders its own name.
+_ENTRY_LABELS: Mapping[str, str] = {
+    "runtime.request_received": "user",
+    "graph.response_ready": "assistant",
+    "graph.provider_stream": "stream",
+    "graph.tool_request_created": "tool",
+    "runtime.tool_started": "tool",
+    "runtime.tool_progress": "tool",
+    "runtime.tool_completed": "tool",
+}
+
+
+def _entry_label(event_type: str) -> str:
+    return _ENTRY_LABELS.get(event_type, event_type)
+
+
+class SessionEntryLike(Protocol):
+    """Structural view of the runtime's ``SessionEntrySummary``.
+
+    The runtime owns the real dataclass; the overlay only reads these four
+    attributes, so it takes any object that has them (a test stub included).
+    Read-only properties, not attributes: the runtime's type is frozen, so a
+    writable protocol member would not accept it.
+    """
+
+    @property
+    def sequence(self) -> int: ...
+    @property
+    def event_type(self) -> str: ...
+    @property
+    def on_current_path(self) -> bool: ...
+    @property
+    def preview(self) -> str: ...
+
+
+class TreeSelectorOverlay(_Base):
+    """Session-entry (checkout) selector -- ``app.session.tree``.
+
+    Rows are the session's entries in the order the runtime projects them:
+    ascending sequence, never re-sorted, so a row can never appear above its
+    parent (the listing arrives root-first and a parent always has the lower
+    sequence). ``*`` marks the current leaf; an entry outside the root->leaf
+    chain is dimmed and suffixed ``abandoned`` -- the two things a checkout has
+    to distinguish. Indentation is *not* depth: a flat two-space indent is
+    layout only, because an entry's parent is not always the row above it.
+
+    Typing filters (token-AND substring, :meth:`SessionPickerOverlay._matches`),
+    ``enter`` picks, ``escape``/backspace as in the picker. The leaf row carries
+    the nav cursor; an off-path row is dimmed and suffixed ``abandoned``.
+
+    DONE payload: the chosen ``sequence`` (``int``). ``wants_fullscreen`` is
+    always ``True``: like the session picker, this list outgrows the inline
+    viewport.
+    """
+
+    __slots__ = ("_entries", "_filter", "_highlight", "_leaf")
+
+    def __init__(self, *, entries: Sequence[SessionEntryLike], theme: Theme | None = None) -> None:
+        super().__init__(theme)
+        # Duck-typed: the runtime's ``SessionEntrySummary`` is not imported here
+        # (the runtime owns it); only ``sequence``/``event_type``/``preview``/
+        # ``on_current_path`` are read through these accessors. The leaf is the
+        # last on-path entry, so no extra runtime call is needed for the marker.
+        self._entries = tuple(entries)
+        self._leaf = max((entry.sequence for entry in self._entries if entry.on_current_path), default=None)
+        self._filter = ""
+        self._highlight = 0
+
+    def _matches(self) -> list[SessionEntryLike]:
+        tokens = self._filter.lower().split()
+        if not tokens:
+            return list(self._entries)
+        matched: list[SessionEntryLike] = []
+        for entry in self._entries:
+            haystack = f"{entry.sequence} {entry.event_type} {entry.preview}".lower()
+            if all(token in haystack for token in tokens):
+                matched.append(entry)
+        return matched
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        matches = self._matches()
+        if key.name == "escape":
+            return _CANCELLED
+        if key.name == "up":
+            self._highlight = max(0, self._highlight - 1)
+            return _PENDING
+        if key.name == "down":
+            self._highlight = min(max(0, len(matches) - 1), self._highlight + 1)
+            return _PENDING
+        if key.name == "backspace":
+            self._filter = self._filter[:-1]
+            self._highlight = 0
+            return _PENDING
+        if key.name == "enter":
+            if matches:
+                return _done(matches[min(self._highlight, len(matches) - 1)].sequence)
+            return _CANCELLED
+        text = _typed_text(key)
+        if text:
+            self._filter += text
+            self._highlight = 0
+        return _PENDING
+
+    def render(self, width: int) -> list[str]:
+        avail = _body_width(width)
+        if avail <= 0:
+            return []
+        theme = self._theme
+        matches = self._matches()
+        self._highlight = min(self._highlight, max(0, len(matches) - 1))
+        cursor = theme.symbol("nav.cursor")
+        body: list[str] = [theme.fg("accent", "> ") + theme.fg("text", self._filter) + theme.fg("dim", "▌")]
+        body.append("")
+        if not self._entries:
+            body.append(theme.fg("warning", "No entries in this session."))
+        elif not matches:
+            body.append(theme.fg("dim", "No matching entries."))
+        else:
+            for index, entry in enumerate(matches):
+                pointer = cursor if entry.sequence == self._leaf else " "
+                on_path = bool(entry.on_current_path)
+                text = f"{entry.sequence} {_entry_label(entry.event_type)} {entry.preview}".rstrip()
+                label = f"{pointer}  {text}" if on_path else f"{pointer}  {text}  * abandoned"
+                styled = self._bold("accent", label) if index == self._highlight else theme.fg("text" if on_path else "dim", label)
+                body.extend(self._wrap(styled, avail))
+        body.append("")
+        body.append(_hint("↑/↓ move · Enter checkout · type to filter · Esc cancel", theme))
+        return self._panel("Session Entries", body, width)
 
     def wants_fullscreen(self, _width: int, _height: int) -> bool:
         return True

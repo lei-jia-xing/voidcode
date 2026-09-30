@@ -17,7 +17,7 @@ from voidcode.runtime.session import SessionState
 from voidcode.tui.app import KeyBindingError, TuiApp, _PolledChunks, parse_key_binding, parse_keymap
 from voidcode.tui.events import QuestionRequest, SessionView
 from voidcode.tui.region import LiveRegion
-from voidcode.tui.transcript import AssistantBlock, SessionMarkerBlock, ToolBlock
+from voidcode.tui.transcript import AssistantBlock, NoticeBlock, SessionMarkerBlock, ToolBlock
 
 from .conftest import plain
 from .conftest import theme as resolve_test_theme
@@ -431,6 +431,20 @@ def test_user_configured_session_new_chord_fires_the_new_session_path() -> None:
     assert any(isinstance(block, SessionMarkerBlock) for block in app._view.transcript().blocks)
 
 
+def test_user_configured_session_tree_chord_opens_the_checkout_selector() -> None:
+    """``app.session.tree`` is bindable and reaches the selector through the key path."""
+    app = _action_app()
+    app._runtime = SimpleNamespace(session_entries=lambda session_id: ENTRIES)  # type: ignore[assignment]
+    app._session_id = SESSION
+    app._bindings = parse_keymap({"ctrl+t": "app.session.tree"})
+
+    app._handle_key(parse_key_binding("ctrl+t"))
+
+    overlay = app._overlay
+    assert overlay is not None
+    assert "fix the parser bug" in " ".join(plain(overlay.render(80)))
+
+
 def test_display_reset_chord_drops_the_paint_cache_and_repaints() -> None:
     app = _action_app()
     reset_calls: list[str] = []
@@ -604,3 +618,95 @@ def test_session_picker_excludes_delegated_children_but_keeps_forks() -> None:
     text = rendered if isinstance(rendered, str) else " ".join(rendered)
     assert "fork" in text
     assert "child" not in text
+
+
+# ---------------------------------------------------------------------------
+# Session tree / checkout
+# ---------------------------------------------------------------------------
+
+
+def _tree_app(entries: list[SimpleNamespace], *, refuse: bool = False) -> TuiApp:
+    """A headless app whose checkout selector is opened from a real runtime seam."""
+
+    class _TreeRuntime:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+
+        def session_entries(self, session_id: str) -> tuple[SimpleNamespace, ...]:
+            return tuple(entries)
+
+        def checkout_session(self, session_id: str, sequence: int) -> int:
+            self.calls.append((session_id, sequence))
+            if refuse:
+                raise RuntimeError("cannot check out to a mid-tool sequence")
+            return sequence
+
+    app = TuiApp.__new__(TuiApp)
+    app._runtime = _TreeRuntime()
+    app._view = SessionView(theme=resolve_test_theme(), width=80)
+    app._region = LiveRegion(commit=lambda rows: None)
+    app._theme = resolve_test_theme()
+    app._session_id = SESSION
+    app._overlay = None
+    app._overlay_request_id = ""
+    app._composer = None
+    app._term = _ActionTerminal()
+    app._dirty = False
+    return app
+
+
+ENTRIES = [
+    SimpleNamespace(sequence=1, event_type="runtime.request_received", parent_sequence=None, on_current_path=True, preview="fix the parser bug"),
+    SimpleNamespace(sequence=2, event_type="graph.response_ready", parent_sequence=1, on_current_path=True, preview="Looking at parser.py"),
+    SimpleNamespace(sequence=3, event_type="graph.response_ready", parent_sequence=2, on_current_path=False, preview="Abandoned wrong guard"),
+]
+
+
+def test_tree_action_opens_the_selector_and_enter_checks_out_the_chosen_sequence() -> None:
+    app = _tree_app(ENTRIES)
+
+    app._command_session_tree()
+
+    overlay = app._overlay
+    assert overlay is not None
+    assert "fix the parser bug" in " ".join(plain(overlay.render(80)))
+    app._handle_overlay_key(parse_key_binding("down"))  # highlight entry 2
+    app._handle_overlay_key(parse_key_binding("enter"))
+
+    assert app._runtime.calls == [(SESSION, 2)]  # type: ignore[attr-defined]
+    assert app._overlay is None
+
+
+def test_tree_action_without_a_session_is_a_notice_not_a_crash() -> None:
+    app = _tree_app(ENTRIES)
+    app._session_id = None
+
+    app._command_session_tree()
+
+    assert app._overlay is None
+    assert any(isinstance(block, NoticeBlock) for block in app._view.transcript().blocks)  # type: ignore[union-attr]
+
+
+def test_a_refused_checkout_is_a_notice_and_leaves_the_tape_intact() -> None:
+    app = _tree_app(ENTRIES, refuse=True)
+    app._checkout_session(2)
+
+    assert app._overlay is None
+    blocks = app._view.transcript().blocks  # type: ignore[union-attr]
+    assert any(isinstance(block, NoticeBlock) for block in blocks)
+    assert not any(isinstance(block, SessionMarkerBlock) for block in blocks)
+
+
+def test_a_successful_checkout_appends_exactly_one_marker_and_keeps_the_abandoned_blocks() -> None:
+    app = _tree_app(ENTRIES)
+    assert app._view is not None
+    app._view.transcript().add(AssistantBlock(text="Looking at parser.py", settled=True))
+
+    app._checkout_session(2)
+
+    blocks = app._view.transcript().blocks
+    markers = [block for block in blocks if isinstance(block, SessionMarkerBlock)]
+    assert len(markers) == 1
+    assert markers[0].label == "Checked out at #2"
+    assert markers[0].hint == "1 later turns retained, off-path"
+    assert any(isinstance(block, AssistantBlock) for block in blocks)  # the abandoned turn is still there
