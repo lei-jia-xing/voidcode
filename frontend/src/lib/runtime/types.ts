@@ -56,6 +56,8 @@ export type SessionState = Schemas["SessionStateBody"];
 export type StoredSessionSummary = Schemas["SessionSummaryBody"];
 export type WorkspaceSummary = Schemas["WorkspaceSummaryBody"];
 export type WorkspaceRegistrySnapshot = Schemas["WorkspaceRegistryBody"];
+export type RuntimeSessionEntries = Schemas["SessionEntriesBody"];
+export type RuntimeSessionCheckout = Schemas["SessionCheckoutBody"];
 export type ProviderSummary = Schemas["ProviderSummaryBody"];
 export type ProviderModelsResult = Schemas["ProviderModelsBody"];
 /** One model's capability record inside `ProviderModelsResult.model_metadata`. */

@@ -34,6 +34,8 @@ export const queryKeys = {
     [...queryKeys.workspaceScope(scope), "sessions"] as const,
   sessionDebug: (scope: WorkspaceScope, sessionId: string) =>
     [...queryKeys.workspaceScope(scope), "session-debug", sessionId] as const,
+  sessionEntries: (scope: WorkspaceScope, sessionId: string) =>
+    [...queryKeys.workspaceScope(scope), "session-entries", sessionId] as const,
 
   /** Providers plus their model catalogs, fetched as one runtime answer. */
   providerCatalog: (scope: WorkspaceScope) =>

@@ -503,4 +503,46 @@ describe("RuntimeClient integration contract", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).not.toHaveBeenCalledWith("/api/sessions/session-1");
   });
+  it("loads entries and checks out the selected entry parent", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/entries"))
+          return {
+            ok: true,
+            json: async () => ({
+              session_id: "s",
+              entries: [{ sequence: 4, parent_sequence: 3 }],
+            }),
+          } as Response;
+        expect(url).toBe("/api/sessions/s/checkout");
+        expect(init?.body).toBe(JSON.stringify({ sequence: 3 }));
+        return {
+          ok: true,
+          json: async () => ({ session_id: "s", leaf_sequence: 3 }),
+        } as Response;
+      });
+    const entries = await RuntimeClient.getSessionEntries("s");
+    const parent = entries.entries.find(
+      (entry) => entry.sequence === 4,
+    )?.parent_sequence;
+    await expect(
+      RuntimeClient.checkoutSession("s", parent as number),
+    ).resolves.toEqual({ session_id: "s", leaf_sequence: 3 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("surfaces checkout failures as RuntimeClientError", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      clone: () => ({ json: async () => ({ error: "refused" }) }),
+    } as Response);
+    await expect(RuntimeClient.checkoutSession("s", 2)).rejects.toMatchObject({
+      name: "RuntimeClientError",
+      status: 400,
+    });
+  });
 });

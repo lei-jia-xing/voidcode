@@ -63,6 +63,8 @@ interface ChatThreadProps {
   approvalError: string | null;
   onResolveApproval: (decision: "allow" | "deny") => void;
   onSelectSession?: (sessionId: string) => void;
+  onContinueFromHere?: (sequence: number) => void;
+  continueTargets?: Readonly<Record<number, number>>;
   isWaitingQuestion?: boolean;
   isQuestionSubmitting?: boolean;
   questionError?: string | null;
@@ -2288,6 +2290,8 @@ export const ChatThread = memo(function ChatThread({
   approvalError,
   onResolveApproval,
   onSelectSession,
+  onContinueFromHere,
+  continueTargets,
   isWaitingQuestion = false,
   isQuestionSubmitting = false,
   questionError = null,
@@ -2318,6 +2322,20 @@ export const ChatThread = memo(function ChatThread({
                 key={message.id}
                 className="flex items-start gap-3 justify-end"
               >
+                {onContinueFromHere &&
+                  continueTargets?.[message.sequence] !== undefined && (
+                    <ControlButton
+                      compact
+                      variant="ghost"
+                      aria-label={t("session.continueFromHere")}
+                      title={t("session.continueFromHere")}
+                      onClick={() =>
+                        onContinueFromHere(continueTargets[message.sequence])
+                      }
+                    >
+                      {t("session.continueFromHere")}
+                    </ControlButton>
+                  )}
                 <div className="flex-1 flex justify-end">
                   <div className="max-w-[85%]">
                     <div className="rounded-2xl rounded-tr-sm border border-[color:var(--vc-border-strong)] bg-[var(--vc-surface-2)] px-4 py-3 text-[var(--vc-text-primary)]">

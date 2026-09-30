@@ -40,7 +40,11 @@ export {
   useReviewDiffQuery,
   useReviewQuery,
 } from "./review";
-export { useSessionDebugQuery, useSessionsQuery } from "./sessions";
+export {
+  useSessionDebugQuery,
+  useSessionEntriesQuery,
+  useSessionsQuery,
+} from "./sessions";
 export {
   backgroundTaskIdFromControlResponse,
   useBackgroundTaskAction,

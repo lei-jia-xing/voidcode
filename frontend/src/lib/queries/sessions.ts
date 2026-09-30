@@ -32,3 +32,16 @@ export function useSessionDebugQuery(
     enabled: scope !== null && sessionId !== null,
   });
 }
+
+export function useSessionEntriesQuery(
+  scope: WorkspaceScope,
+  sessionId: string | null,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: queryKeys.sessionEntries(scope, sessionId ?? ""),
+    queryFn: ({ signal }) =>
+      RuntimeClient.getSessionEntries(sessionId as string, signal),
+    enabled: enabled && scope !== null && sessionId !== null,
+  });
+}

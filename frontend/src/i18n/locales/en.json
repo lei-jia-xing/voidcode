@@ -34,6 +34,7 @@
   "session.resuming": "Resuming...",
   "session.resumePrompt": "This session can continue from its runtime checkpoint.",
   "session.resumeError": "Failed to resume session: {{message}}",
+  "session.continueFromHere": "Continue from here",
   "session.eventsLoadedNote": "runtime events loaded from the active session",
   "task.newTask": "New Task",
   "task.submitHeading": "Submit Task",

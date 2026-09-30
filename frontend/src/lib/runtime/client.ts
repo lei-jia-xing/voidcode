@@ -16,7 +16,9 @@ import {
   RuntimeInterruptResult,
   RuntimeRequest,
   RuntimeResponse,
+  RuntimeSessionCheckout,
   RuntimeSessionDebugSnapshot,
+  RuntimeSessionEntries,
   RuntimeSettings,
   RuntimeSettingsUpdate,
   RuntimeStatusSnapshot,
@@ -44,6 +46,8 @@ const ROUTES = {
   runStream: "/api/runtime/run/stream",
   sessions: "/api/sessions",
   sessionReplay: "/api/sessions/{session_id}",
+  sessionEntries: "/api/sessions/{session_id}/entries",
+  sessionCheckout: "/api/sessions/{session_id}/checkout",
   sessionEvents: "/api/sessions/{session_id}/events",
   sessionDebug: "/api/sessions/{session_id}/debug",
   sessionResume: "/api/sessions/{session_id}/resume",
@@ -365,6 +369,37 @@ export class RuntimeClient {
       signal,
     );
     await expectOk(res, "Failed to replay session");
+    return res.json();
+  }
+  static async getSessionEntries(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<RuntimeSessionEntries> {
+    const res = await fetchQuery(
+      apiPath(ROUTES.sessionEntries, {
+        session_id: encodeURIComponent(sessionId),
+      }),
+      signal,
+    );
+    await expectOk(res, "Failed to load session entries");
+    return res.json();
+  }
+
+  static async checkoutSession(
+    sessionId: string,
+    sequence: number,
+  ): Promise<RuntimeSessionCheckout> {
+    const res = await fetch(
+      apiPath(ROUTES.sessionCheckout, {
+        session_id: encodeURIComponent(sessionId),
+      }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sequence }),
+      },
+    );
+    await expectOk(res, "Failed to checkout session");
     return res.json();
   }
 

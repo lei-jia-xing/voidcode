@@ -20,6 +20,7 @@ import {
   useReviewQuery,
   useRuntimeStatusQuery,
   useSessionDebugQuery,
+  useSessionEntriesQuery,
   useSessionsQuery,
   useSettingsQuery,
   useSwitchWorkspace,
@@ -476,6 +477,20 @@ function App() {
   }, [backgroundTaskOutput, selectedBackgroundTaskOutputId]);
   const displayedMessages = childSessionMessages ?? chatMessages;
   const displayedIsChildSession = childSessionMessages !== null;
+  const sessionEntriesQuery = useSessionEntriesQuery(
+    scope,
+    currentSessionId,
+    replayStatus === "success" && !isRunning && !displayedIsChildSession,
+  );
+  const continueTargets = useMemo(() => {
+    const targets: Record<number, number> = {};
+    for (const entry of sessionEntriesQuery.data?.entries ?? []) {
+      if (entry.on_current_path && typeof entry.parent_sequence === "number") {
+        targets[entry.sequence] = entry.parent_sequence;
+      }
+    }
+    return targets;
+  }, [sessionEntriesQuery.data]);
   const activeTodoSnapshot = useMemo(
     () => deriveLatestTodoSnapshot(displayedMessages),
     [displayedMessages],
@@ -958,6 +973,21 @@ function App() {
     },
     [scope, selectSession],
   );
+  const handleContinueFromHere = useCallback(
+    (sequence: number) => {
+      if (!currentSessionId || isRunning || displayedIsChildSession) return;
+      void RuntimeClient.checkoutSession(currentSessionId, sequence).then(() =>
+        selectSession(currentSessionId, scope),
+      );
+    },
+    [
+      currentSessionId,
+      displayedIsChildSession,
+      isRunning,
+      scope,
+      selectSession,
+    ],
+  );
   const handleFileTreePathSelect = useCallback(
     (path: string) => {
       setReviewSelectedPath(path);
@@ -1267,6 +1297,14 @@ function App() {
                     selectedBackgroundTaskOutputForChat
                   }
                   onSelectSession={handleSelectSession}
+                  onContinueFromHere={
+                    !displayedIsChildSession &&
+                    !isRunning &&
+                    replayStatus === "success"
+                      ? handleContinueFromHere
+                      : undefined
+                  }
+                  continueTargets={continueTargets}
                 />
               </div>
               <ChildSessionSidebar
