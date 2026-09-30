@@ -344,23 +344,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/sessions/{session_id}/revert": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Write a session revert marker */
-        post: operations["_handle_session_revert_api_sessions__session_id__revert_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/sessions/{session_id}/steer": {
         parameters: {
             query?: never;
@@ -389,40 +372,6 @@ export interface paths {
         get: operations["_handle_list_background_tasks_by_parent_session_api_sessions__session_id__tasks_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/sessions/{session_id}/undo": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Undo the session revert */
-        post: operations["_handle_session_undo_api_sessions__session_id__undo_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/sessions/{session_id}/unrevert": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Clear the session revert marker */
-        post: operations["_handle_session_unrevert_api_sessions__session_id__unrevert_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1366,16 +1315,6 @@ export interface components {
             status: string;
         };
         /**
-         * RevertMarkerBody
-         * @description ``serialize_revert_marker``: where the session was reverted to, if anywhere.
-         */
-        RevertMarkerBody: {
-            /** Active */
-            active: boolean;
-            /** Sequence */
-            sequence: number;
-        };
-        /**
          * ReviewChangedFileBody
          * @description ``_serialize_review_changed_file``: one changed path.
          */
@@ -1709,7 +1648,6 @@ export interface components {
             resumable: boolean;
             /** Resume Checkpoint Kind */
             resume_checkpoint_kind?: string | null;
-            revert_marker?: components["schemas"]["RevertMarkerBody"] | null;
             runtime_policy?: components["schemas"]["RuntimePolicyBody"] | null;
             session: components["schemas"]["SessionStateBody"];
             /** Suggested Operator Action */
@@ -1847,7 +1785,6 @@ export interface components {
             output?: string | null;
             /** Prompt */
             prompt: string;
-            revert_marker?: components["schemas"]["RevertMarkerBody"] | null;
             session: components["schemas"]["SessionStateBody"];
             /** Status */
             status: string;
@@ -1856,17 +1793,7 @@ export interface components {
             /** Title */
             title?: string | null;
             /** Transcript */
-            transcript: components["schemas"]["TranscriptEventBody"][];
-        };
-        /**
-         * SessionRevertBody
-         * @description ``POST /api/sessions/{id}/undo|revert|unrevert``: the resulting revert marker.
-         *
-         *     ``null`` means the session currently has no active revert marker, which is
-         *     what ``unrevert`` leaves behind.
-         */
-        SessionRevertBody: {
-            revert_marker?: components["schemas"]["RevertMarkerBody"] | null;
+            transcript: components["schemas"]["EventBody"][];
         };
         /**
          * SessionStateBody
@@ -2016,26 +1943,6 @@ export interface components {
             retry_count: number;
         };
         /**
-         * TranscriptEventBody
-         * @description A session-result transcript entry: an event plus its revert-marker state.
-         */
-        TranscriptEventBody: {
-            delegated_lifecycle?: components["schemas"]["DelegationEventBody"] | null;
-            /** Event Type */
-            event_type: string;
-            /** Payload */
-            payload: {
-                [key: string]: unknown;
-            };
-            /** Reverted */
-            reverted: boolean;
-            /** Sequence */
-            sequence: number;
-            /** Session Id */
-            session_id: string;
-            source: components["schemas"]["EventSource"];
-        };
-        /**
          * WebSettingsBody
          * @description ``VoidCodeRuntime.web_settings``: the web client's effective provider/model.
          *
@@ -2128,11 +2035,6 @@ export interface components {
             reason?: string | null;
             /** Run Id */
             run_id?: string | null;
-        };
-        /** _SessionRevertRequestPayload */
-        _SessionRevertRequestPayload: {
-            /** Sequence */
-            sequence?: number;
         };
         /** _SettingsRequestPayload */
         _SettingsRequestPayload: {
@@ -3013,59 +2915,6 @@ export interface operations {
             };
         };
     };
-    _handle_session_revert_api_sessions__session_id__revert_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                session_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["_SessionRevertRequestPayload"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["SessionRevertBody"];
-                };
-            };
-            /** @description Bad Request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
     _handle_steer_session_api_sessions__session_id__steer_post: {
         parameters: {
             query?: never;
@@ -3146,86 +2995,6 @@ export interface operations {
                 };
                 content: {
                     "application/json; charset=utf-8": components["schemas"]["BackgroundTaskSummaryBody"][];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    _handle_session_undo_api_sessions__session_id__undo_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                session_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["SessionRevertBody"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            /** @description Any failing response answers this envelope: 400 for a validation failure, 404 for an unknown path, session or task, 405 for a wrong method, 409 for a conflict, and 500 for an unhandled failure. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    _handle_session_unrevert_api_sessions__session_id__unrevert_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                session_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json; charset=utf-8": components["schemas"]["SessionRevertBody"];
                 };
             };
             /** @description Not Found */

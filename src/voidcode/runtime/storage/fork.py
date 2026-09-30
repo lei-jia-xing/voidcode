@@ -14,8 +14,7 @@ The source session is never written to. Provenance uses its own columns because
 
 Transferable state: the prompt, the session-scoped effective config and policy
 (``runtime_config``/``runtime_policy`` — ``run -r``/inspection reject a session
-without them), the revert marker (only when its sequence is inside the copied
-prefix), and a replay-only terminal resume checkpoint. ``runtime_state``
+without them), and a replay-only terminal resume checkpoint. ``runtime_state``
 (context projection, todos) is dropped: it describes the position of the copied
 run, and stale todo state would describe events the fork does not own. The
 fork's next run re-derives its own run position.
@@ -280,7 +279,6 @@ class _ForkStorageMixin(_MixinBase):
             created_at_unix_ms = self._current_unix_ms()
             forked_metadata = _fork_metadata(
                 raw_metadata_json=source_row["metadata_json"],
-                boundary=boundary,
                 workspace=str(workspace),
             )
             try:
@@ -434,20 +432,17 @@ class _ForkStorageMixin(_MixinBase):
 def _fork_metadata(
     *,
     raw_metadata_json: str,
-    boundary: int,
     workspace: str,
 ) -> dict[str, object]:
-    """Metadata for the fork: identity carried over, run position dropped."""
+    """Metadata for the fork: identity carried over, run position dropped.
+
+    No ``conversation_revert`` key is carried: that marker is gone with the
+    linear revert mechanism (position now lives in ``leaf_sequence``), so a
+    fork inherits a position by copying the prefix, not a marker.
+    """
     source_metadata = normalize_persisted_session_metadata(cast(dict[str, object], json.loads(raw_metadata_json)))
     forked = {key: value for key, value in source_metadata.items() if key not in _NON_TRANSFERABLE_METADATA_KEYS}
     forked["workspace"] = workspace
-    marker = _RevertStorageMarker.from_metadata(source_metadata)
-    if marker is not None and marker.sequence <= boundary:
-        forked["conversation_revert"] = {"sequence": marker.sequence, "active": marker.active}
-    else:
-        # Either the source had no marker or it points past the copied prefix;
-        # the fork does not own those events, so it inherits no marker.
-        forked.pop("conversation_revert", None)
     return forked
 
 
@@ -465,28 +460,6 @@ def _fork_resume_checkpoint(boundary: int) -> dict[str, object]:
         "output": None,
         "tool_results": [],
     }
-
-
-class _RevertStorageMarker:
-    """Minimal revert-marker reader, kept local to avoid importing the mixin."""
-
-    @staticmethod
-    def from_metadata(metadata: dict[str, object]) -> _RevertStorageMarker | None:
-        raw = metadata.get("conversation_revert")
-        if not isinstance(raw, dict):
-            return None
-        raw_sequence = raw.get("sequence")
-        if not isinstance(raw_sequence, int) or isinstance(raw_sequence, bool) or raw_sequence < 1:
-            return None
-        raw_active = raw.get("active", True)
-        return _RevertStorageMarker(
-            sequence=raw_sequence,
-            active=raw_active if isinstance(raw_active, bool) else True,
-        )
-
-    def __init__(self, *, sequence: int, active: bool) -> None:
-        self.sequence = sequence
-        self.active = active
 
 
 __all__ = [

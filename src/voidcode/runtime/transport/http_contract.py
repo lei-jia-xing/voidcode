@@ -577,17 +577,6 @@ class _QuestionAnswerRequestPayload(_HttpBoundaryModel):
         return value
 
 
-class _SessionRevertRequestPayload(_HttpBoundaryModel):
-    sequence: int = Field(default=None, validate_default=True)
-
-    @field_validator("sequence", mode="before")
-    @classmethod
-    def _validate_sequence(cls, value: object) -> int:
-        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-            raise ValueError("must be a positive integer")
-        return value
-
-
 class _SteerSessionRequestPayload(_HttpBoundaryModel):
     content: str = Field(default=None, validate_default=True)
 

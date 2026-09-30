@@ -5412,7 +5412,7 @@ def test_runtime_answer_question_rejects_checkpoint_kind_mismatch(tmp_path: Path
         )
 
 
-def test_runtime_interrupted_resume_truncates_orphaned_tail_and_completes(
+def test_runtime_interrupted_resume_restores_leaf_and_keeps_orphaned_tail(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
@@ -5478,12 +5478,22 @@ def test_runtime_interrupted_resume_truncates_orphaned_tail_and_completes(
 
     assert resumed.session.status == "completed"
     assert resumed.output == "interrupted probe"
+    # The resume replays the restored path, so neither the orphaned tail nor an
+    # off-path row reaches the caller's event list...
+    assert "runtime.tool_started" not in [event.event_type for event in resumed.events]
+    assert all(event.payload.get("step") != "orphan" for event in resumed.events)
 
+    # ...but nothing was deleted: the tail rows are still in the table, and the
+    # session's path is what starts after the checkpoint instead of the tail.
     stored = session_store.load_session(workspace=tmp_path, session_id=session_id)
-    event_types = [event.event_type for event in stored.events]
-    assert "runtime.tool_started" not in event_types
-    assert all(event.payload.get("step") != "orphan" for event in stored.events)
-    assert [event.sequence for event in stored.events] == [1, 2]
+    assert [event.event_type for event in stored.events] == [
+        "runtime.request_received",
+        "graph.loop_step",
+        "graph.loop_step",
+        "runtime.tool_started",
+    ]
+    path = session_store.session_path(workspace=tmp_path, session_id=session_id)
+    assert [event.sequence for event in path] == [1, 2]
 
 
 def test_runtime_session_end_hook_failure_does_not_override_terminal_truth(tmp_path: Path) -> None:

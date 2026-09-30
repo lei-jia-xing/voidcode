@@ -131,32 +131,6 @@ class EventBody(ResponseModel):
 
 
 @final
-class TranscriptEventBody(EventBody):
-    """A session-result transcript entry: an event plus its revert-marker state."""
-
-    reverted: bool
-
-
-@final
-class RevertMarkerBody(ResponseModel):
-    """``serialize_revert_marker``: where the session was reverted to, if anywhere."""
-
-    sequence: int
-    active: bool
-
-
-@final
-class SessionRevertBody(ResponseModel):
-    """``POST /api/sessions/{id}/undo|revert|unrevert``: the resulting revert marker.
-
-    ``null`` means the session currently has no active revert marker, which is
-    what ``unrevert`` leaves behind.
-    """
-
-    revert_marker: RevertMarkerBody | None = None
-
-
-@final
 class RuntimeResponseBody(ResponseModel):
     """``_serialize_runtime_response``: the run/resume/replay/answer surface."""
 
@@ -204,8 +178,7 @@ class SessionResultBody(ResponseModel):
     output: str | None = None
     error: str | None = None
     last_event_sequence: int
-    revert_marker: RevertMarkerBody | None = None
-    transcript: list[TranscriptEventBody]
+    transcript: list[EventBody]
     title: str | None = None
 
 
@@ -492,7 +465,6 @@ class SessionDebugBody(ResponseModel):
     resume_checkpoint_kind: str | None = None
     pending_approval: SessionDebugPendingApprovalBody | None = None
     pending_question: SessionDebugPendingQuestionBody | None = None
-    revert_marker: RevertMarkerBody | None = None
     last_event_sequence: int
     last_relevant_event: SessionDebugEventBody | None = None
     last_failure_event: SessionDebugEventBody | None = None

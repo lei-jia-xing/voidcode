@@ -172,7 +172,6 @@ from .contracts import (
     RuntimeSessionDebugSnapshot,
     RuntimeSessionDebugToolSummary,
     RuntimeSessionResult,
-    RuntimeSessionRevertMarker,
     RuntimeStatusSnapshot,
     RuntimeStreamChunk,
     SessionEventBatch,
@@ -2534,6 +2533,17 @@ class VoidCodeRuntime(RuntimeSurface):
             sequence=sequence,
         )
 
+    def revert_session(self, *, session_id: str, sequence: int) -> int:
+        """Continue from the entry just before ``sequence``; returns the new leaf."""
+        return self._inspection_coordinator.revert_session(
+            session_id=session_id,
+            sequence=sequence,
+        )
+
+    def undo_session(self, *, session_id: str) -> int:
+        """Continue from just before the latest user turn; returns the new leaf."""
+        return self._inspection_coordinator.undo_session(session_id=session_id)
+
     def tool_effectiveness_report(self) -> ToolEffectivenessReport:
         return self._inspection_coordinator.tool_effectiveness_report()
 
@@ -2775,15 +2785,6 @@ class VoidCodeRuntime(RuntimeSurface):
             session_id=session_id,
             after_sequence=after_sequence,
         )
-
-    def revert_session(self, *, session_id: str, sequence: int) -> RuntimeSessionRevertMarker:
-        return self._inspection_coordinator.revert_session(session_id=session_id, sequence=sequence)
-
-    def undo_session(self, *, session_id: str) -> RuntimeSessionRevertMarker:
-        return self._inspection_coordinator.undo_session(session_id=session_id)
-
-    def unrevert_session(self, *, session_id: str) -> RuntimeSessionRevertMarker | None:
-        return self._inspection_coordinator.unrevert_session(session_id=session_id)
 
     def _load_session_result(self, *, session_id: str) -> RuntimeSessionResult:
         return self._inspection_coordinator._load_session_result(session_id=session_id)
@@ -3179,12 +3180,6 @@ class VoidCodeRuntime(RuntimeSurface):
             graph_request=graph_request,
             effective_config=effective_config,
         )
-
-    @staticmethod
-    def _prompt_and_tool_results_from_debug_events(
-        events: tuple[EventEnvelope, ...],
-    ) -> tuple[str, list[ToolResult]]:
-        return prompt_and_tool_results_from_debug_events(events)
 
     def _debug_skill_prompt_context(self, metadata: dict[str, object]) -> str:
         snapshot = self._skill_snapshot_from_metadata(metadata)
@@ -3929,7 +3924,19 @@ class VoidCodeRuntime(RuntimeSurface):
         stored_parent_session_id = stored.session.session.parent_id
         if parent_session_id is not None and stored_parent_session_id != parent_session_id:
             return ()
-        _prompt, tool_results = self._prompt_and_tool_results_from_debug_events(stored.events)
+        # The replay source is the session's root→leaf *path*, never the flat
+        # event log: under a tree the flat log also holds the abandoned
+        # branches, so rehydrating from it would leak a checked-out-away tool
+        # result into the provider context. ``stored.events`` cannot be reused
+        # for the walk (``load_session`` returns every row without the
+        # ``parent_sequence`` edges), so the one authoritative path walk in
+        # storage is called again — one extra read per rehydration,
+        # deliberately, rather than a second implementation of the walk here.
+        path_events = self._session_store.session_path(
+            workspace=self._workspace,
+            session_id=stored.session.session.id,
+        )
+        _prompt, tool_results = prompt_and_tool_results_from_debug_events(path_events)
         # Tag prior-run results so context assembly can place them into the
         # replayed history (before the current prompt) instead of appending
         # them after the current prompt as if they were this run's own tool

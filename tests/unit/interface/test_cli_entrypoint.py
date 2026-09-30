@@ -35,7 +35,7 @@ ROOT_COMMANDS = {
 }
 
 GROUP_SUBCOMMANDS = {
-    "sessions": {"list", "resume", "answer", "export", "import", "debug", "undo", "revert", "unrevert"},
+    "sessions": {"list", "resume", "answer", "export", "import", "debug", "undo", "revert", "entries", "checkout"},
     "tasks": {"status", "output", "cancel", "retry", "steer", "list"},
     "storage": {"diagnostics", "prune", "reset"},
     "stats": {"tools"},

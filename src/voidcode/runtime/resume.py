@@ -1088,6 +1088,33 @@ class RuntimeResumeCoordinator:
             session_id=session_id,
         )
 
+    def _stored_response_on_path(self, *, session_id: str) -> RuntimeResponse:
+        """The session's response with its events narrowed to the root→leaf path.
+
+        ``load_session`` returns the FLAT log, whose retained rows include the
+        abandoned branch a checkout left and any tail a dead run wrote. A resume
+        replays the restored *path*, so handing the flat log back would present
+        those off-path rows as this turn's own history. The rows stay in the
+        table — a later checkout restores them — and only the response is
+        narrowed.
+        """
+        stored = self._session_store.load_session(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
+        path_sequences = {
+            event.sequence
+            for event in self._session_store.session_path(
+                workspace=self._workspace,
+                session_id=session_id,
+            )
+        }
+        return RuntimeResponse(
+            session=stored.session,
+            events=tuple(event for event in stored.events if event.sequence in path_sequences),
+            output=stored.output,
+        )
+
     def resume_provider_failure_response(
         self,
         *,
@@ -1104,10 +1131,7 @@ class RuntimeResumeCoordinator:
             final_session = chunk.session
             if chunk.kind == "output":
                 output = chunk.output
-        stored = self._session_store.load_session(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
+        stored = self._stored_response_on_path(session_id=session_id)
         response = RuntimeResponse(
             session=final_session or stored.session,
             events=stored.events,
@@ -1133,10 +1157,7 @@ class RuntimeResumeCoordinator:
             final_session = chunk.session
             if chunk.kind == "output":
                 output = chunk.output
-        stored = self._session_store.load_session(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
+        stored = self._stored_response_on_path(session_id=session_id)
         response = RuntimeResponse(
             session=final_session or stored.session,
             events=stored.events,
@@ -1181,7 +1202,7 @@ class RuntimeResumeCoordinator:
             expected_kind="interrupted",
             resume_kind="interrupted",
             provider_failure_resume=False,
-            truncate_tail=True,
+            restore_leaf=True,
             run_id=run_id,
             abort_signal=abort_signal,
             finalize_background_task=finalize_background_task,
@@ -1195,7 +1216,7 @@ class RuntimeResumeCoordinator:
         expected_kind: str,
         resume_kind: str | None,
         provider_failure_resume: bool,
-        truncate_tail: bool = False,
+        restore_leaf: bool = False,
         run_id: str | None = None,
         abort_signal: ProviderAbortSignal | None = None,
         finalize_background_task: bool = False,
@@ -1235,17 +1256,17 @@ class RuntimeResumeCoordinator:
         # the caller can act on. See docs/contracts/execution-lifecycle.md → (b).
         _require_recorded_capability_snapshot(session_metadata)
         checkpoint_last_sequence: int | None = None
-        if truncate_tail:
+        if restore_leaf:
             raw_last_sequence = payload.get("last_event_sequence")
             if not isinstance(raw_last_sequence, int):
                 raise ValueError("persisted interrupted resume checkpoint last_event_sequence must be an integer")
             checkpoint_last_sequence = raw_last_sequence
 
-        # Read-only resume preparation runs BEFORE the tail rewrite below. A
+        # Read-only resume preparation runs BEFORE the leaf move below. A
         # resume that cannot be honored — for example a checkpoint that records
-        # no capability snapshot to replay — must fail without having truncated
-        # the session's persisted events, and the session row is read here only
-        # for its identity and turn.
+        # no capability snapshot to replay — must fail without having moved the
+        # session's position, and the session row is read here only for its
+        # identity and turn.
         stored_row = self._session_store.load_session(
             workspace=self._workspace,
             session_id=session_id,
@@ -1280,18 +1301,17 @@ class RuntimeResumeCoordinator:
         )
 
         if checkpoint_last_sequence is not None:
-            self._session_store.truncate_session_events_after(
+            self._session_store.restore_leaf_after_interrupted_resume(
                 workspace=self._workspace,
                 session_id=session_id,
                 sequence=checkpoint_last_sequence,
             )
-        # Reload after the rewrite: the replayed segments and the response's
-        # event list must come from the truncated log, never from the orphaned
-        # tail this resume just dropped.
-        stored = self._session_store.load_session(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
+        # Reload after the leaf move, narrowed to the restored root→leaf path:
+        # the replayed segments and the response's event list must come from the
+        # restored position, and the retained rows past it are off-path (an
+        # abandoned branch or a dead run's tail), where a later checkout can
+        # still restore them.
+        stored = self._stored_response_on_path(session_id=session_id)
         tool_results = list(self.tool_results_from_checkpoint(raw_tool_results))
         replayed_conversation_segments = runtime.replayed_conversation_segments_for_existing_session(
             stored=stored,

@@ -810,49 +810,86 @@ class _SessionStorageMixin(_MixinBase):
                 )
             connection.commit()
 
-    def truncate_session_events_after(self, *, workspace: Path, session_id: str, sequence: int) -> None:
-        """Delete an orphaned event tail and its owned delivery claims.
+    def restore_leaf_after_interrupted_resume(self, *, workspace: Path, session_id: str, sequence: int) -> None:
+        """Restore the session's leaf to the interrupted run's safe position.
 
-        The row watermark and the tree leaf are reconciled in the same
-        transaction. The leaf clamp is the ``MIN`` of its current value and the
-        highest surviving sequence: a leaf that named a deleted row would
-        otherwise point past the end of the table and make the session's path
-        unresolvable, while a leaf on an older branch must not be moved
-        forward.
+        An interrupted run leaves rows past its checkpoint that the resume
+        re-runs, but under a tree those rows are not necessarily a dead run's
+        output: after a checkout they are the *abandoned branch*, which must
+        stay. Nothing is written, moved or deleted — the rows above the
+        checkpoint stay in ``session_events``, off the current path, and a
+        later checkout to one of them restores that branch.
+
+        The watermark is deliberately NOT regressed to ``sequence``: it stays
+        the append counter (``MAX(sequence)``), so recycled numbers can never
+        make a ``parent_sequence``/``leaf_sequence`` pointing at a retained row
+        resolve to a different row. Only the replay position moves.
+
+        The call is unconditional on the resume path (including the ordinary
+        no-checkout case): the leaf is set to the checkpoint's recorded
+        position, which is the last durable event the run had reached.
         """
         with self._write_connect(workspace) as connection:
             _ = connection.execute(
-                "DELETE FROM session_events WHERE workspace_id = ? AND session_id = ? AND sequence > ?",
-                (str(workspace), session_id, sequence),
-            )
-            _ = connection.execute(
-                """
-                DELETE FROM session_event_deliveries
-                WHERE workspace_id = ? AND session_id = ? AND event_sequence > ?
-                """,
-                (str(workspace), session_id, sequence),
-            )
-            _ = connection.execute(
                 """
                 UPDATE sessions
-                SET last_event_sequence = (
-                    SELECT COALESCE(MAX(sequence), 0)
-                    FROM session_events
-                    WHERE workspace_id = ? AND session_id = ?
-                ),
-                leaf_sequence = MIN(
-                    leaf_sequence,
-                    (
-                        SELECT MAX(sequence)
-                        FROM session_events
-                        WHERE workspace_id = ? AND session_id = ?
-                    )
-                )
+                SET leaf_sequence = ?
                 WHERE workspace_id = ? AND session_id = ?
                 """,
-                (str(workspace), session_id, str(workspace), session_id, str(workspace), session_id),
+                (sequence, str(workspace), session_id),
             )
             connection.commit()
+
+    def _session_metadata_and_events(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        session_id: str,
+    ) -> tuple[dict[str, object], tuple[EventEnvelope, ...]]:
+        """Row metadata plus every stored event for one session, ascending sequence."""
+        session_row = fetch_row(
+            connection,
+            """
+                SELECT metadata_json
+                FROM sessions
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+            (str(workspace), session_id),
+        )
+        if session_row is None:
+            raise UnknownSessionError(f"unknown session: {session_id}")
+        event_rows = fetch_rows(
+            connection,
+            """
+                SELECT sequence, event_type, source, payload_json
+                FROM session_events
+                WHERE workspace_id = ? AND session_id = ?
+                ORDER BY sequence ASC
+                """,
+            (str(workspace), session_id),
+        )
+        events = tuple(self._event_envelope_from_row(session_id=session_id, row=decode_row(row, SessionEventRow)) for row in event_rows)
+        return (
+            normalize_persisted_session_metadata(json.loads(decode_row(session_row, SessionMetadataRow)["metadata_json"])),
+            events,
+        )
+
+    def newest_sequence_before(self, *, workspace: Path, session_id: str, sequence: int) -> int | None:
+        """The newest stored entry on the current path with ``sequence < sequence``.
+
+        This is the target of the position move a *revert to S* performs: the
+        entry just before ``S``, which is where the session continues from.
+        ``None`` when nothing precedes ``sequence`` on the path.
+        """
+        with self._connect(workspace) as connection:
+            entries = self._session_tree_entries(connection=connection, workspace=workspace, session_id=session_id)
+            leaf = self._leaf_sequence(connection=connection, workspace=workspace, session_id=session_id)
+        if not entries:
+            return None
+        path = session_event_path(entries, target_sequence=None, leaf_sequence=leaf)
+        below = [event.sequence for event in path if event.sequence < sequence]
+        return max(below) if below else None
 
     @staticmethod
     def _tool_results_from_events(events: tuple[EventEnvelope, ...]) -> list[dict[str, object]]:
@@ -940,12 +977,10 @@ class _SessionStorageMixin(_MixinBase):
         replay the stored response instead of continuing from the leaf the
         checkout just chose.
 
-        The checkpoint's ``last_event_sequence`` is the row's current watermark,
-        not the checkout target: the resume uses it to delete the tail an
-        interrupted run left behind, and after a checkout that tail is the
-        *abandoned branch*, not a dead run's output — so the rewrite must delete
-        nothing. The resume still re-runs from the leaf, because the replayed
-        context and the new events' parent both follow ``leaf_sequence``.
+        The checkpoint's ``last_event_sequence`` is the checked-out position
+        itself, NOT the row watermark: a resume restores the leaf to it, so the
+        field means one thing — the position the interrupted resume continues
+        from. The tail beyond it is the abandoned branch and is never deleted.
         """
         if sequence < 1:
             raise ValueError("checkout sequence must be a positive integer")
@@ -972,7 +1007,7 @@ class _SessionStorageMixin(_MixinBase):
                 prompt=_checked_out_prompt(path),
                 session_metadata=next_metadata,
                 tool_results=(),
-                last_event_sequence=max(entry.event.sequence for entry in entries),
+                last_event_sequence=sequence,
                 output=None,
             )
             updated_at = self._next_timestamp(connection=connection)
@@ -1048,16 +1083,16 @@ class _SessionStorageMixin(_MixinBase):
         return row is not None
 
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse:
-        """Return ALL persisted events for a session, unfiltered except for revert markers.
+        """Return ALL persisted events for a session, unfiltered.
 
         Boundary: storage returns every event — no compaction, no truncation, no
           context-window projection. The caller (or ``context/window.py``) decides what
-        subset to present to the model.
+        subset to present to the model, and replay walks the leaf path
+          (``session_path``) rather than this flat log.
         """
         return self._load_session_response(
             workspace=workspace,
             session_id=session_id,
-            filter_reverted=True,
         )
 
     def load_session_status(self, *, workspace: Path, session_id: str) -> SessionStatus:
@@ -1090,9 +1125,7 @@ class _SessionStorageMixin(_MixinBase):
         session: one connection reads the row state (status + raw metadata) and
         one range scan on the ``(workspace_id, session_id, sequence)`` primary
         key returns the events after ``after_sequence``, so an idle poll never
-        materializes the transcript again. The active-revert cutoff that
-        ``load_session`` applies is honored too, so an incremental follow never
-        observes events a replay hides. Events come back undecorated; the
+        materializes the transcript again. Events come back undecorated; the
         runtime applies its policy projection afterwards.
         """
         with self._connect(workspace) as connection:
@@ -1109,18 +1142,15 @@ class _SessionStorageMixin(_MixinBase):
                 raise UnknownSessionError(f"unknown session: {session_id}")
             session_state = decode_row(session_row, SessionStatusMetadataRow)
             metadata = cast(dict[str, object], json.loads(session_state["metadata_json"]))
-            marker = self._revert_marker_from_metadata(metadata)
-            revert_cutoff = marker.sequence if marker is not None and marker.active else None
             event_rows = fetch_rows(
                 connection,
                 """
                     SELECT sequence, event_type, source, payload_json
                     FROM session_events
                     WHERE workspace_id = ? AND session_id = ? AND sequence > ?
-                      AND (? IS NULL OR sequence < ?)
                     ORDER BY sequence ASC
                     """,
-                (str(workspace), session_id, after_sequence, revert_cutoff, revert_cutoff),
+                (str(workspace), session_id, after_sequence),
             )
         return SessionEventsAfter(
             status=self._parse_session_status(session_state["status"]),
@@ -1171,14 +1201,14 @@ class _SessionStorageMixin(_MixinBase):
         *,
         workspace: Path,
         session_id: str,
-        filter_reverted: bool,
     ) -> RuntimeResponse:
         """Load a session with ALL events from durable storage.
 
         Boundary: returns every stored event row unfiltered — no compaction,
-        no truncation, no context-driven dropping. The only filter applied is
-        the revert marker (when ``filter_reverted=True``), which is a user
-        intent, not a storage-level compaction.
+        no truncation, no context-driven dropping. Under a tree the flat log
+        holds the abandoned branches too, so replay is not built here: the
+        path walk (``session_path``) decides what is replayable and which
+        rows are on it. Both callers of this method want the whole log.
         """
         with self._connect(workspace) as connection:
             session_row = fetch_row(
@@ -1214,30 +1244,13 @@ class _SessionStorageMixin(_MixinBase):
             metadata=metadata,
         )
         events = tuple(self._event_envelope_from_row(session_id=session_id, row=decode_row(row, SessionEventRow)) for row in event_rows)
-        marker = self._revert_marker_from_metadata(session.metadata)
         output = session_data["output"]
-        if filter_reverted and marker is not None and marker.active:
-            events = tuple(event for event in events if event.sequence < marker.sequence)
-            # The revert marker cuts by sequence across the flat log, but a
-            # checkout can move the leaf to an older branch: without this
-            # intersection the cutoff would let the abandoned branch leak back
-            # into the replayed context and the rebuilt todo state.
-            path_sequences = {event.sequence for event in self.session_path(workspace=workspace, session_id=session_id)}
-            events = tuple(event for event in events if event.sequence in path_sequences)
-            session = SessionState(
-                session=session.session,
-                status=session.status,
-                turn=session.turn,
-                metadata=self._active_revert_metadata(session.metadata, events=events),
-            )
-            output = None
         return RuntimeResponse(session=session, events=events, output=output)
 
     def load_session_result(self, *, workspace: Path, session_id: str) -> RuntimeSessionResult:
         response = self._load_session_response(
             workspace=workspace,
             session_id=session_id,
-            filter_reverted=False,
         )
         with self._connect(workspace) as connection:
             row = fetch_row(
@@ -1264,7 +1277,6 @@ class _SessionStorageMixin(_MixinBase):
             error=error,
             transcript=response.events,
             last_event_sequence=response.events[-1].sequence if response.events else 0,
-            revert_marker=self._revert_marker_from_metadata(response.session.metadata),
         )
 
     @staticmethod

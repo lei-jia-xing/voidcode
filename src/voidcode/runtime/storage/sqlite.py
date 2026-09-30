@@ -19,7 +19,6 @@ from ..contracts import (
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSessionResult,
-    RuntimeSessionRevertMarker,
 )
 from ..effectiveness import ToolEffectivenessReport
 from ..events import (
@@ -43,7 +42,6 @@ from .diagnostics import _DiagnosticsStorageMixin
 from .effectiveness import _EffectivenessStorageMixin
 from .fork import _ForkStorageMixin
 from .resume import _ResumeStorageMixin
-from .revert import _RevertStorageMixin
 from .rows import (
     IndexInfoRow,
     IndexListRow,
@@ -109,12 +107,6 @@ class SessionStore(Protocol):
 
     def load_session_result(self, *, workspace: Path, session_id: str) -> RuntimeSessionResult: ...
 
-    def revert_session(self, *, workspace: Path, session_id: str, sequence: int) -> RuntimeSessionRevertMarker: ...
-
-    def undo_session(self, *, workspace: Path, session_id: str) -> RuntimeSessionRevertMarker: ...
-
-    def unrevert_session(self, *, workspace: Path, session_id: str) -> RuntimeSessionRevertMarker | None: ...
-
     def rename_session(self, *, workspace: Path, session_id: str, title: str) -> None: ...
 
     def fork_session(
@@ -134,6 +126,8 @@ class SessionStore(Protocol):
     def session_path(self, *, workspace: Path, session_id: str, sequence: int | None = None) -> tuple[EventEnvelope, ...]: ...
 
     def session_entries(self, *, workspace: Path, session_id: str) -> tuple[SessionEntrySummary, ...]: ...
+
+    def newest_sequence_before(self, *, workspace: Path, session_id: str, sequence: int) -> int | None: ...
 
     def save_pending_approval(
         self,
@@ -317,7 +311,7 @@ class SessionStore(Protocol):
 
     def reset_runtime_storage(self, *, workspace: Path) -> dict[str, object]: ...
 
-    def truncate_session_events_after(self, *, workspace: Path, session_id: str, sequence: int) -> None: ...
+    def restore_leaf_after_interrupted_resume(self, *, workspace: Path, session_id: str, sequence: int) -> None: ...
 
     def load_session_status(self, *, workspace: Path, session_id: str) -> SessionStatus: ...
 
@@ -373,7 +367,6 @@ class SqliteSessionStore(
     _BackgroundTaskStorageMixin,
     _SessionStorageMixin,
     _ResumeStorageMixin,
-    _RevertStorageMixin,
     _ForkStorageMixin,
     _EffectivenessStorageMixin,
     _DiagnosticsStorageMixin,

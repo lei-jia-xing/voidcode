@@ -93,7 +93,6 @@ from ..contracts import (
     RuntimeSessionDebugSnapshot,
     RuntimeSessionDebugToolSummary,
     RuntimeSessionResult,
-    RuntimeSessionRevertMarker,
     RuntimeStatusSnapshot,
     SessionEventBatch,
     SkillSummary,
@@ -686,54 +685,36 @@ class InspectionCoordinator:
             )
         return SessionEventBatch(status=stored.status, events=events)
 
-    def revert_session(self, *, session_id: str, sequence: int) -> RuntimeSessionRevertMarker:
+    def revert_session(self, *, session_id: str, sequence: int) -> int:
+        """Continue from just before ``sequence``; returns the new leaf.
+
+        A revert to position ``S`` under a tree is a checkout of the newest
+        entry on the current path with ``sequence < S`` — the linear marker is
+        gone, so this is a position move and nothing is hidden or deleted.
+        """
         validate_id(session_id)
-        marker = self._session_store.revert_session(
+        target = self._session_store.newest_sequence_before(
             workspace=self._workspace,
             session_id=session_id,
             sequence=sequence,
         )
-        validate_session_workspace(
-            self._session_store.load_session_result(
-                workspace=self._workspace,
-                session_id=session_id,
-            ).session,
-            session_id=session_id,
-            workspace=self._workspace,
-        )
-        return marker
+        if target is None:
+            raise ValueError(f"session {session_id} has no entry before sequence {sequence}")
+        return self.checkout_session(session_id=session_id, sequence=target)
 
-    def undo_session(self, *, session_id: str) -> RuntimeSessionRevertMarker:
-        validate_id(session_id)
-        marker = self._session_store.undo_session(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
-        validate_session_workspace(
-            self._session_store.load_session_result(
-                workspace=self._workspace,
-                session_id=session_id,
-            ).session,
-            session_id=session_id,
-            workspace=self._workspace,
-        )
-        return marker
+    def undo_session(self, *, session_id: str) -> int:
+        """Undo the latest user turn: continue from the entry before that prompt.
 
-    def unrevert_session(self, *, session_id: str) -> RuntimeSessionRevertMarker | None:
+        The checkout target is the newest entry strictly before the last
+        ``runtime.request_received`` on the current path, which is where the
+        aborted turn began. Returns the new leaf.
+        """
         validate_id(session_id)
-        marker = self._session_store.unrevert_session(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
-        validate_session_workspace(
-            self._session_store.load_session_result(
-                workspace=self._workspace,
-                session_id=session_id,
-            ).session,
-            session_id=session_id,
-            workspace=self._workspace,
-        )
-        return marker
+        path = self._session_store.session_path(workspace=self._workspace, session_id=session_id)
+        latest_request = next((event.sequence for event in reversed(path) if event.event_type == "runtime.request_received"), None)
+        if latest_request is None:
+            raise ValueError(f"session {session_id} has no user turn to undo")
+        return self.revert_session(session_id=session_id, sequence=latest_request)
 
     def resolve_tool_output_artifact(
         self,
@@ -1028,7 +1009,6 @@ class InspectionCoordinator:
                 if pending_question is not None
                 else None
             ),
-            revert_marker=result.revert_marker,
             last_event_sequence=result.last_event_sequence,
             last_relevant_event=last_relevant_event,
             last_failure_event=last_failure_event,

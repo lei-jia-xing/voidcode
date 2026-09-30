@@ -291,7 +291,7 @@ class SessionStoreLike(Protocol):
         parent_session_id: str | None = None,
     ) -> None: ...
 
-    def truncate_session_events_after(self, *, workspace: Path, session_id: str, sequence: int) -> None: ...
+    def restore_leaf_after_interrupted_resume(self, *, workspace: Path, session_id: str, sequence: int) -> None: ...
 
     def has_session(self, *, workspace: Path, session_id: str) -> bool: ...
 
@@ -1599,8 +1599,8 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
         def has_session(self, *, workspace: Path, session_id: str) -> bool:
             return base_store.has_session(workspace=workspace, session_id=session_id)
 
-        def truncate_session_events_after(self, *, workspace: Path, session_id: str, sequence: int) -> None:
-            base_store.truncate_session_events_after(workspace=workspace, session_id=session_id, sequence=sequence)
+        def restore_leaf_after_interrupted_resume(self, *, workspace: Path, session_id: str, sequence: int) -> None:
+            base_store.restore_leaf_after_interrupted_resume(workspace=workspace, session_id=session_id, sequence=sequence)
 
     resumed_runtime_class = _load_runtime_types()[1]
     resumed_runtime = cast(
@@ -1832,7 +1832,16 @@ def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_p
     ]
 
 
-def test_runtime_resume_truncates_orphaned_tail_after_interrupted_checkpoint(tmp_path: Path) -> None:
+def test_runtime_resume_restores_leaf_and_keeps_orphaned_tail_rows(tmp_path: Path) -> None:
+    """An interrupted resume restores the leaf; it never deletes the tail.
+
+    The repair is a position move: the rows a dead run left past its checkpoint
+    stay in ``session_events`` (a checkout's abandoned branch lives there too,
+    and deleting it would destroy the branch), and only the replay position
+    moves back to the checkpoint. The response must then replay the *path*, not
+    the flat log, or the retained tail would be handed to the provider as this
+    turn's own history.
+    """
     first_file = tmp_path / "first.txt"
     second_file = tmp_path / "second.txt"
     _ = first_file.write_text("first\n", encoding="utf-8")
@@ -1864,8 +1873,9 @@ def test_runtime_resume_truncates_orphaned_tail_after_interrupted_checkpoint(tmp
     assert checkpoint is not None and checkpoint.get("kind") == "interrupted"
     last_event_sequence = cast(int, checkpoint["last_event_sequence"])
 
-    # Simulate events persisted after the checkpoint but before the crash: they
-    # are orphaned tail rows that a resume must truncate before re-appending.
+    # Events persisted after the checkpoint but before the crash. Under the tree
+    # they are a retained off-path branch, not garbage: the resume restores the
+    # leaf behind them and leaves every row in place.
     second_store = cast(SessionStoreLike, storage_module.SqliteSessionStore())
     second_store.append_session_events(
         workspace=tmp_path,
@@ -1889,8 +1899,17 @@ def test_runtime_resume_truncates_orphaned_tail_after_interrupted_checkpoint(tmp
     resumed = resumed_runtime.resume("orphan-session")
 
     assert resumed.session.status == "completed"
+    # The response replays the restored path, so the orphaned tail is absent from
+    # the events handed to the caller...
+    assert not any(event.payload.get("orphan") is True for event in resumed.events)
+    # ...but every row is still in the table, and the run's path simply starts at
+    # the checkpoint position instead of the tail.
     final_stored = store.load_session(workspace=tmp_path, session_id="orphan-session")
-    assert not any(event.payload.get("orphan") is True for event in final_stored.events)
+    surviving_markers = [event for event in final_stored.events if event.payload.get("orphan") is True]
+    assert len(surviving_markers) == 3
+    path = second_store.session_path(workspace=tmp_path, session_id="orphan-session")
+    assert any(event.sequence == last_event_sequence for event in path)
+    assert not any(event.payload.get("orphan") is True for event in path)
 
 
 def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_results(tmp_path: Path) -> None:
@@ -1945,6 +1964,9 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
 
     assert resumed.session.status == "completed"
     assert resumed.output == "done"
+    # The _SingleThenBatchTurnProvider yields a read batch per turn, so the
+    # response holds three completions: the one the crash checkpointed plus the
+    # two the resume re-ran.
     assert [cast(str, event.payload.get("tool")) for event in resumed.events if event.event_type == "runtime.tool_completed"] == [
         "read",
         "read",

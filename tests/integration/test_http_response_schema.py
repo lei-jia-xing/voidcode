@@ -76,7 +76,6 @@ from voidcode.runtime.contracts import (
     RuntimeSessionDebugSnapshot,
     RuntimeSessionDebugToolSummary,
     RuntimeSessionResult,
-    RuntimeSessionRevertMarker,
     RuntimeStatusSnapshot,
     RuntimeStreamChunk,
     SessionEventBatch,
@@ -330,7 +329,6 @@ def _session_result(rich: bool) -> RuntimeSessionResult:
         error=None,
         transcript=_events(rich),
         last_event_sequence=2,
-        revert_marker=RuntimeSessionRevertMarker(sequence=1) if rich else None,
     )
 
 
@@ -424,7 +422,6 @@ def _debug_snapshot(rich: bool) -> RuntimeSessionDebugSnapshot:
             if rich
             else None
         ),
-        revert_marker=RuntimeSessionRevertMarker(sequence=1) if rich else None,
         last_event_sequence=2,
         last_relevant_event=(
             RuntimeSessionDebugEvent(sequence=2, event_type="graph.response_ready", source="graph", payload={"content": "hi"}) if rich else None
@@ -599,18 +596,6 @@ class _FixtureRuntime:
     def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot:
         _ = session_id
         return _debug_snapshot(self.rich)
-
-    def undo_session(self, *, session_id: str) -> RuntimeSessionRevertMarker:
-        _ = session_id
-        return RuntimeSessionRevertMarker(sequence=1)
-
-    def revert_session(self, *, session_id: str, sequence: int) -> RuntimeSessionRevertMarker:
-        _ = session_id
-        return RuntimeSessionRevertMarker(sequence=sequence)
-
-    def unrevert_session(self, *, session_id: str) -> RuntimeSessionRevertMarker | None:
-        _ = session_id
-        return RuntimeSessionRevertMarker(sequence=1) if self.rich else None
 
     def cancel_session(self, session_id: str, *, run_id: str | None = None, reason: str | None = None) -> ActiveRunInterruptResult:
         return ActiveRunInterruptResult(
@@ -906,11 +891,8 @@ _BODIES: dict[tuple[str, str], dict[str, object]] = {
     ("POST", "/api/tasks/{task_id}/cancel"): {},
     ("POST", "/api/sessions/{session_id}/approval"): {"request_id": "req-1", "decision": "allow"},
     ("POST", "/api/sessions/{session_id}/question"): {"request_id": "req-1", "responses": [{"header": "Pick one", "answers": ["a"]}]},
-    ("POST", "/api/sessions/{session_id}/revert"): {"sequence": 1},
     ("POST", "/api/sessions/{session_id}/steer"): {"content": "focus"},
     ("POST", "/api/sessions/{session_id}/cancel"): {},
-    ("POST", "/api/sessions/{session_id}/undo"): {},
-    ("POST", "/api/sessions/{session_id}/unrevert"): {},
     ("POST", "/api/sessions/{session_id}/resume"): {},
     ("POST", "/api/status/mcp/retry"): {},
     ("POST", "/api/providers/{provider_name}/validate"): {},

@@ -19,7 +19,6 @@ import type {
   RuntimeSettings,
   SessionState,
   StoredSessionSummary,
-  TranscriptEvent,
   WorkspaceReviewSnapshot,
 } from "./lib/runtime/types";
 
@@ -99,20 +98,6 @@ function makeStoredSessionSummary(
     turn: 1,
     prompt,
     updated_at: 1,
-  };
-}
-
-/** A transcript entry: the ordered event plus its revert-marker state. */
-function makeTranscriptEvent(
-  sequence: number,
-  eventType: string,
-  payload: Record<string, unknown>,
-  source: EventEnvelope["source"] = "runtime",
-  sessionId = "session-1",
-): TranscriptEvent {
-  return {
-    ...makeEvent(sequence, eventType, payload, source, sessionId),
-    reverted: false,
   };
 }
 
@@ -1263,7 +1248,7 @@ describe("useAppStore integration flow", () => {
         error: null,
         last_event_sequence: 2,
         transcript: [
-          makeTranscriptEvent(
+          makeEvent(
             1,
             "runtime.request_received",
             { prompt: "child prompt" },

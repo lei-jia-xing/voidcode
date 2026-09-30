@@ -125,26 +125,6 @@ def test_fork_copies_prefix_own_watermark_and_leaves_source_unchanged(tmp_path: 
     assert [(event.sequence, event.event_type) for event in after.events] == [(event.sequence, event.event_type) for event in before.events]
 
 
-def test_fork_drops_revert_marker_pointing_past_the_boundary(tmp_path: Path) -> None:
-    store = SqliteSessionStore()
-    events = _event_tuple(
-        ("runtime.request_received", "runtime", {"prompt": "one"}),
-        ("graph.response_ready", "graph", {"summary": "one"}),
-        ("runtime.request_received", "runtime", {"prompt": "two"}),
-        ("graph.response_ready", "graph", {"summary": "two"}),
-    )
-    _seed_session(store, workspace=tmp_path, session_id="source-2", prompt="one", events=events)
-    store.revert_session(workspace=tmp_path, session_id="source-2", sequence=3)
-
-    early = store.fork_session(workspace=tmp_path, session_id="source-2", at_sequence=2)
-    early_metadata = store.load_session(workspace=tmp_path, session_id=early.session.id).session.metadata
-    assert "conversation_revert" not in early_metadata
-
-    late = store.fork_session(workspace=tmp_path, session_id="source-2", at_sequence=4)
-    late_metadata = store.load_session(workspace=tmp_path, session_id=late.session.id).session.metadata
-    assert late_metadata["conversation_revert"]["sequence"] == 3
-
-
 def test_fork_refuses_boundary_that_splits_a_tool_call(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     events = _event_tuple(
@@ -211,7 +191,6 @@ def test_fork_carries_session_config_but_drops_run_position_state(tmp_path: Path
         metadata["runtime_config"] = {"model": "deepseek/deepseek-chat"}
         metadata["runtime_policy"] = {"mode": "normal"}
         metadata["runtime_state"] = {"run_id": "stale-run"}
-        metadata["conversation_revert"] = {"sequence": 99, "active": True}
         connection.execute(
             "UPDATE sessions SET metadata_json = ? WHERE session_id = 'source-cfg'",
             (json.dumps(metadata),),
@@ -224,8 +203,6 @@ def test_fork_carries_session_config_but_drops_run_position_state(tmp_path: Path
     assert forked_metadata["runtime_config"] == {"model": "deepseek/deepseek-chat"}
     assert forked_metadata["runtime_policy"] == {"mode": "normal"}
     assert "runtime_state" not in forked_metadata
-    # Marker points past the copied prefix (1 event), so it is dropped too.
-    assert "conversation_revert" not in forked_metadata
 
 
 def test_fork_provenance_survives_a_later_run_seal(tmp_path: Path) -> None:

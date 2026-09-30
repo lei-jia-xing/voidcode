@@ -136,7 +136,7 @@ StoredSessionSummary(
 保证（由代码提供，客户端可以依赖）：
 
 - **来源会话永不被修改。** fork 只读来源行与事件日志，新会话是一个全新的会话行；来源的 status、事件、水位、metadata 全部保持不变。
-- **复制的事件保留其原始序号**（`1..N` 连续），因此复制前缀里已有的 revert marker 仍能按序解析。
+- **复制的事件保留其原始序号**（`1..N` 连续），新会话的水位是自己的 `N`，不是来源的水位。
 - **复制是一个事务**（`BEGIN IMMEDIATE`），事件日志与 provenance 列一起落盘，不会出现半个 fork。
 - **边界不得劈开一次交互。** 若 `at_sequence` 使某个 `runtime.tool_started` 与其 `runtime.tool_completed`（按 `tool_call_id` 配对），或某个 `runtime.approval_requested` / `runtime.question_requested` 与其 resolved/answered 对端（按 `request_id` 配对）分离，则拒绝并抛出 `RuntimeSessionForkBoundaryError`（`src/voidcode/runtime/contracts.py`，`code = "fork_boundary_splits_interaction"`）；错误信息给出可安全 fork 的序号。未知会话抛 `UnknownSessionError`。
 - 新会话状态为 `interrupted`，并写入一个 replay-only 的终端 resume checkpoint，使后续 `sessions resume` 走存储重放而非截断重跑。
@@ -194,6 +194,12 @@ checkout 是一个**位置变更**：把会话的 `leaf_sequence` 指向 `sequen
 选择目标的只读清单：`session_entries(session_id)` 返回**升序**的全部 entry `SessionEntrySummary`：
 - `{sequence, event_type, parent_sequence, on_current_path, preview}`；`parent_sequence` 为祖先边（首条为 `None`），`on_current_path` 表示该 entry 是否在当前 root→leaf 路径上（`False` 即被放弃分支），`preview` 是该事件的单行短文本。
 - CLI 行形如 `<seq>  <event_type>  parent=<seq|->  <on-path|abandoned>  <preview>`。
+
+`undo` / `revert` 是 checkout 之上的便捷入口，**没有**独立的 marker 机制（线性 revert marker 已删除：被放弃分支现在可见、可再次选中，"撤销我的撤销" 不再有意义，`sessions unrevert` 与 `POST /api/sessions/{id}/unrevert` 一并移除）：
+- `sessions undo <session_id>`：定位当前路径上最后一个 `runtime.request_received`，checkout 到它**之前**的最新 entry（即那一轮开始的位置）。
+- `sessions revert <session_id> --to <sequence>`：checkout 到当前路径上 `sequence < S` 的最新 entry。
+- 两者都只是 `checkout_session` 的目标计算，不写、不删、不隐藏任何 event。
+- HTTP 不再提供 undo/revert/unrevert 路由；位置变更统一走 checkout（`checkout_session`）。
 
 当前实现层面：
 - 运行时：`VoidCodeRuntime.checkout_session(session_id, sequence)`、`VoidCodeRuntime.session_entries(session_id)`
@@ -313,9 +319,6 @@ MVP 生命周期：
 - `POST /api/sessions/{id}/cancel` — 按 run identity 取消/中断会话；成功 `200`；错误 `400`、`405`
 - `POST /api/sessions/{id}/steer` — 向会话排队一条 steer 消息；成功 `200`；错误 `400`、`404`、`409`（`code=session_sealed`）、`405`
 - `POST /api/sessions/{id}/resume` — 显式恢复 interrupted / failed-retryable 会话（会重新进入 graph loop 并重新执行 provider）；成功 `200`；错误 `404`、`405`
-- `POST /api/sessions/{id}/undo` — 撤销（回退）会话；成功 `200`；错误 `404`、`405`
-- `POST /api/sessions/{id}/revert` — 写入 revert marker；成功 `200`；错误 `400`、`404`、`405`
-- `POST /api/sessions/{id}/unrevert` — 清除 revert marker；成功 `200`；错误 `404`、`405`
 - `GET /api/sessions/{parent}/tasks` — 按 parent session 列出 background tasks；成功 `200`；错误 `404`、`405`
 - `GET /api/tasks` — 列出 background tasks（workspace 全局视图）；成功 `200`；错误 `405`
 - `POST /api/tasks` — 创建 background task；成功 `201`；错误 `400`、`405`

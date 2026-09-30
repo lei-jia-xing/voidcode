@@ -1,4 +1,4 @@
-"""``voidcode sessions``: list, replay, answer, bundle, and revert persisted sessions."""
+"""``voidcode sessions``: list, replay, answer, bundle, and navigate persisted sessions."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from ...runtime.bundle import (
 from ...runtime.contracts import NoPendingQuestionError
 from ...runtime.permission import PermissionResolution
 from ...runtime.question import QuestionResponse
-from ...runtime.serialization import serialize_revert_marker, serialize_session_debug_snapshot, serialize_session_entry_summary
+from ...runtime.serialization import serialize_session_debug_snapshot, serialize_session_entry_summary
 from ...runtime.session import StoredSessionForestEntry, StoredSessionLineageEntry, StoredSessionSummary
 from ..errors import CliError
 from ..handler_args import SessionsArgs
@@ -278,37 +278,29 @@ def _handle_sessions_debug_command(args: SessionsArgs) -> int:
 
 
 def _handle_sessions_undo_command(args: SessionsArgs) -> int:
+    """``sessions undo``: continue from just before the latest user turn."""
     workspace = args.workspace
     session_id = args.session_id
     assert session_id is not None
     with open_runtime(workspace) as runtime, runtime_error_boundary():
-        marker = runtime.undo_session(session_id=session_id)
-    print_json({"session_id": session_id, "revert_marker": serialize_revert_marker(marker)})
+        leaf = runtime.undo_session(session_id=session_id)
+    print_json({"session_id": session_id, "leaf_sequence": leaf})
     return 0
 
 
 def _handle_sessions_revert_command(args: SessionsArgs) -> int:
+    """``sessions revert``: continue from the entry just before ``--to``."""
     workspace = args.workspace
     session_id = args.session_id
     assert session_id is not None
     sequence = args.sequence
     assert sequence is not None
     with open_runtime(workspace) as runtime, runtime_error_boundary():
-        marker = runtime.revert_session(
+        leaf = runtime.revert_session(
             session_id=session_id,
             sequence=sequence,
         )
-    print_json({"session_id": session_id, "revert_marker": serialize_revert_marker(marker)})
-    return 0
-
-
-def _handle_sessions_unrevert_command(args: SessionsArgs) -> int:
-    workspace = args.workspace
-    session_id = args.session_id
-    assert session_id is not None
-    with open_runtime(workspace) as runtime, runtime_error_boundary():
-        marker = runtime.unrevert_session(session_id=session_id)
-    print_json({"session_id": session_id, "revert_marker": serialize_revert_marker(marker)})
+    print_json({"session_id": session_id, "leaf_sequence": leaf})
     return 0
 
 
@@ -611,7 +603,7 @@ def debug(session_id: str, workspace: Path, show_thinking: bool) -> int:
     )
 
 
-@sessions.command(help="Revert the latest user turn out of provider-facing context.")
+@sessions.command(help="Continue from just before the latest user turn (checkout of the entry before that prompt).")
 @click.argument("session_id")
 @workspace_option("Workspace root used to resolve the local session database.")
 def undo(session_id: str, workspace: Path) -> int:
@@ -623,7 +615,7 @@ def undo(session_id: str, workspace: Path) -> int:
     )
 
 
-@sessions.command(help="Revert provider-facing context to an event sequence.")
+@sessions.command(help="Continue from the entry just before an event sequence.")
 @click.argument("session_id")
 @click.option("--to", "sequence", type=int, required=True)
 @workspace_option("Workspace root used to resolve the local session database.")
@@ -663,18 +655,6 @@ def checkout(session_id: str, sequence: int, workspace: Path, json_output: bool)
             sequence=sequence,
             workspace=workspace,
             json=json_output,
-        )
-    )
-
-
-@sessions.command(help="Clear an active conversation revert marker.")
-@click.argument("session_id")
-@workspace_option("Workspace root used to resolve the local session database.")
-def unrevert(session_id: str, workspace: Path) -> int:
-    return _handle_sessions_unrevert_command(
-        SessionsArgs(
-            session_id=session_id,
-            workspace=workspace,
         )
     )
 

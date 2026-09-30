@@ -8,8 +8,9 @@ persisted truth of the crashed run and what the resume does with it:
 * the completed tool call is durable exactly once and is never re-executed;
 * the in-flight tool call is recorded as a started call with a pending intent and
   no completion, and the resume never claims it completed;
-* the orphaned tail (the crashed call's own events) is truncated by the resume,
-  and the call the resumed run makes is a fresh invocation with a new id;
+* the crashed call's own events are retained in the table but sit off the
+  session's current path (the repair restores the leaf, it does not delete), and
+  the call the resumed run makes is a fresh invocation with a new id;
 * a crash *before* any checkpoint exists leaves a session whose resume cannot be
   honoured (no recorded capability snapshot to replay) — then the resume must
   refuse without having rewritten the persisted truth.
@@ -211,9 +212,19 @@ def _entries(workspace: Path, session_id: str) -> list[str]:
 
 
 def _tool_call_ids(workspace: Path, session_id: str, event_type: str, tool_name: str) -> list[object]:
+    """Tool-call ids over the FLAT stored log (retained rows included)."""
     return [
         event.payload.get("tool_call_id")
         for event in _session(workspace, session_id).events
+        if event.event_type == event_type and event.payload.get("tool") == tool_name
+    ]
+
+
+def _tool_call_ids_on_path(workspace: Path, session_id: str, event_type: str, tool_name: str) -> list[object]:
+    """Tool-call ids on the session's CURRENT path only (off-path rows excluded)."""
+    return [
+        event.payload.get("tool_call_id")
+        for event in SqliteSessionStore().session_path(workspace=workspace, session_id=session_id)
         if event.event_type == event_type and event.payload.get("tool") == tool_name
     ]
 
@@ -276,9 +287,12 @@ def test_process_crash_during_a_tool_call_resumes_without_replaying_or_claiming_
     assert _tool_call_ids(workspace, child.SESSION_ID, "runtime.tool_completed", child.COUNTING_READ_TOOL) == read_call_id
     resumed_call_id = cast(str, final_completed[1][1])
     assert resumed_call_id != crashed_call_id
-    # The crashed call left no trace in the resumed truth: its orphaned tail was
-    # truncated and no event ever claims its id.
-    assert _tool_call_ids(workspace, child.SESSION_ID, "runtime.tool_started", child.BLOCKING_TOOL) == [resumed_call_id]
+    # The crashed call's started row is RETAINED in the table but sits off the
+    # session's current path (the repair restores the leaf, it does not delete),
+    # and no event ever claims that id completed — while the resumed call is
+    # reported exactly once as the call that did complete.
+    assert _tool_call_ids(workspace, child.SESSION_ID, "runtime.tool_started", child.BLOCKING_TOOL) == [crashed_call_id, resumed_call_id]
+    assert _tool_call_ids_on_path(workspace, child.SESSION_ID, "runtime.tool_started", child.BLOCKING_TOOL) == [resumed_call_id]
     assert crashed_call_id not in _tool_call_ids(workspace, child.SESSION_ID, "runtime.tool_completed", child.BLOCKING_TOOL)
 
     # Execution evidence across both processes: the read ran once, the blocking
@@ -387,9 +401,10 @@ def test_crash_before_the_first_safe_boundary_resumes_without_claiming_the_crash
     No tool result existed at the crash, so no safe-boundary checkpoint was ever
     captured: the checkpoint a resume uses is the one the run wrote once its
     capability binding was materialized. The crashed invocation is neither
-    completed nor replayed as such — its orphaned tail is dropped and the resumed
-    run issues a fresh call with a new id, while the pending intent that forbids
-    automatic replay is recorded for the window in which it existed.
+    completed nor replayed as such — its started row is retained in the table but
+    kept off the current path while the resumed run issues a fresh call with a new
+    id, and the pending intent that forbids automatic replay is recorded for the
+    window in which it existed.
     """
     workspace = tmp_path / "ws"
     gate = tmp_path / "gate"
@@ -430,10 +445,12 @@ def test_crash_before_the_first_safe_boundary_resumes_without_claiming_the_crash
     assert [tool for tool, _ in final_completed] == [child.BLOCKING_TOOL]
     resumed_call_id = cast(str, final_completed[0][1])
     assert resumed_call_id != crashed_call_id
-    # The crashed invocation left no trace in the resumed truth: its orphaned tail
-    # was dropped and no event claims its id, while the resumed call is reported
-    # exactly once as the call that did complete.
-    assert _tool_call_ids(workspace, child.SESSION_ID, "runtime.tool_started", child.BLOCKING_TOOL) == [resumed_call_id]
+    # The crashed invocation's started row is RETAINED in the table but sits off
+    # the session's current path — the repair restores the leaf, it does not
+    # delete — while the resumed call is reported exactly once as the call that
+    # did complete and no event claims the crashed id.
+    assert _tool_call_ids(workspace, child.SESSION_ID, "runtime.tool_started", child.BLOCKING_TOOL) == [crashed_call_id, resumed_call_id]
+    assert _tool_call_ids_on_path(workspace, child.SESSION_ID, "runtime.tool_started", child.BLOCKING_TOOL) == [resumed_call_id]
     assert _tool_call_ids(workspace, child.SESSION_ID, "runtime.tool_completed", child.BLOCKING_TOOL) == [resumed_call_id]
     blocking_calls = (gate / "blocking_tool.calls").read_text(encoding="utf-8").splitlines()
     assert len(blocking_calls) == 2
@@ -473,4 +490,9 @@ def test_streaming_resume_on_a_settled_crash_completes_the_turn(tmp_path: Path) 
     ]
     assert [tool for tool, _ in final_completed] == [child.COUNTING_READ_TOOL, child.BLOCKING_TOOL]
     assert cast(str, final_completed[-1][1]) != crashed_call_id
-    assert all(event.payload.get("tool_call_id") != crashed_call_id for event in _session(workspace, child.SESSION_ID).events)
+    # The crashed call's started row survives in the table — retention is the
+    # contract — but sits off the resumed run's current path and never claims a
+    # completion, so the streaming resume replays and claims nothing.
+    assert crashed_call_id in _tool_call_ids(workspace, child.SESSION_ID, "runtime.tool_started", child.BLOCKING_TOOL)
+    assert _tool_call_ids_on_path(workspace, child.SESSION_ID, "runtime.tool_started", child.BLOCKING_TOOL) == [final_completed[-1][1]]
+    assert crashed_call_id not in _tool_call_ids(workspace, child.SESSION_ID, "runtime.tool_completed", child.BLOCKING_TOOL)

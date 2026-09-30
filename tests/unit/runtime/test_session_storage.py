@@ -230,69 +230,12 @@ def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path)
     assert "runtime_policy" not in checkpoint_metadata
 
 
-def test_session_storage_revert_marker_filters_active_view_only(tmp_path: Path) -> None:
-    store = SqliteSessionStore()
-    request = RuntimeRequest(prompt="mistaken request", session_id="undo-session")
-    response = RuntimeResponse(
-        session=SessionState(
-            session=SessionRef(id="undo-session"),
-            status="completed",
-            turn=1,
-            metadata={"runtime_state": {"context_projection": {"facts": ["bad context"]}, "run_id": "r1"}},
-        ),
-        events=(
-            EventEnvelope(
-                session_id="undo-session",
-                sequence=1,
-                event_type="runtime.request_received",
-                source="runtime",
-                payload={"prompt": "mistaken request"},
-            ),
-            EventEnvelope(
-                session_id="undo-session",
-                sequence=2,
-                event_type="runtime.tool_completed",
-                source="runtime",
-                payload={"tool": "read", "status": "ok", "content": "context"},
-            ),
-            EventEnvelope(
-                session_id="undo-session",
-                sequence=3,
-                event_type="graph.response_ready",
-                source="graph",
-                payload={"response": "bad branch"},
-            ),
-        ),
-        output="bad branch",
-    )
-    _run_session(store, tmp_path, request, response)
-
-    marker = store.revert_session(workspace=tmp_path, session_id="undo-session", sequence=2)
-    active = store.load_session(workspace=tmp_path, session_id="undo-session")
-    result = store.load_session_result(workspace=tmp_path, session_id="undo-session")
-
-    assert marker.sequence == 2
-    assert [event.sequence for event in active.events] == [1]
-    assert active.output is None
-    assert active.session.metadata["runtime_state"] == {"run_id": "r1"}
-    assert [event.sequence for event in result.transcript] == [1, 2, 3]
-    assert result.output == "bad branch"
-    assert result.revert_marker is not None
-    assert result.revert_marker.sequence == 2
-
-    restored = store.unrevert_session(workspace=tmp_path, session_id="undo-session")
-
-    assert restored is not None
-    assert restored.sequence == 2
-    assert [event.sequence for event in store.load_session(workspace=tmp_path, session_id="undo-session").events] == [1, 2, 3]
-
-
 def test_session_storage_reads_events_after_cursor_once_and_honors_active_revert(tmp_path: Path) -> None:
     """The incremental read is the replay-visible transcript after a cursor.
 
     A follow client already replayed the session, so later reads return each
     event after the cursor exactly once, in order, together with the row status
-    — and the active-revert cutoff keeps them identical to ``load_session``.
+    — undecorated and unfiltered, because replay is path-scoped, not a marker.
     """
     store = SqliteSessionStore()
     request = RuntimeRequest(prompt="follow me", session_id="events-after-session")
@@ -323,22 +266,6 @@ def test_session_storage_reads_events_after_cursor_once_and_honors_active_revert
     assert store.read_session_events_after(workspace=tmp_path, session_id="events-after-session", after_sequence=3).events == ()
     assert store.read_session_events_after(workspace=tmp_path, session_id="events-after-session", after_sequence=0).events == response.events
 
-    store.revert_session(workspace=tmp_path, session_id="events-after-session", sequence=2)
-    reverted_replay = store.load_session(workspace=tmp_path, session_id="events-after-session")
-    reverted_tail = store.read_session_events_after(workspace=tmp_path, session_id="events-after-session", after_sequence=0)
-    assert [event.sequence for event in reverted_replay.events] == [1]
-    assert [event.sequence for event in reverted_tail.events] == [1]
-
-    store.unrevert_session(workspace=tmp_path, session_id="events-after-session")
-    assert [
-        event.sequence
-        for event in store.read_session_events_after(
-            workspace=tmp_path,
-            session_id="events-after-session",
-            after_sequence=0,
-        ).events
-    ] == [1, 2, 3]
-
 
 def test_session_storage_reads_events_after_unknown_session(tmp_path: Path) -> None:
     store = SqliteSessionStore()
@@ -347,7 +274,7 @@ def test_session_storage_reads_events_after_unknown_session(tmp_path: Path) -> N
         store.read_session_events_after(workspace=tmp_path, session_id="missing-session", after_sequence=0)
 
 
-def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
+def test_session_storage_persists_runtime_todos(
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
@@ -419,15 +346,14 @@ def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
     tasks = cast(dict[str, object], cast(dict[str, object], phases[0])["tasks"])
     assert tasks[0]["content"] == "persist me"
 
-    store.revert_session(workspace=tmp_path, session_id="todo-session", sequence=2)
-    reverted = store.load_session(workspace=tmp_path, session_id="todo-session")
 
-    raw_reverted_runtime_state = reverted.session.metadata["runtime_state"]
-    assert isinstance(raw_reverted_runtime_state, dict)
-    assert "todos" not in raw_reverted_runtime_state
+def test_session_storage_newest_sequence_before_is_the_revert_target(tmp_path: Path) -> None:
+    """``newest_sequence_before`` is the position a revert-to-S continues from.
 
-
-def test_session_storage_undo_uses_latest_visible_user_turn(tmp_path: Path) -> None:
+    A revert to ``S`` under a tree is a checkout of the newest entry on the
+    current path with ``sequence < S`` — the newest predecessor, not ``S``
+    itself, and never an entry on an abandoned branch.
+    """
     store = SqliteSessionStore()
     request = RuntimeRequest(prompt="second", session_id="multi-turn-session")
     response = RuntimeResponse(
@@ -464,10 +390,8 @@ def test_session_storage_undo_uses_latest_visible_user_turn(tmp_path: Path) -> N
     )
     _run_session(store, tmp_path, request, response)
 
-    marker = store.undo_session(workspace=tmp_path, session_id="multi-turn-session")
-
-    assert marker.sequence == 3
-    assert [event.sequence for event in store.load_session(workspace=tmp_path, session_id="multi-turn-session").events] == [1, 2]
+    assert store.newest_sequence_before(workspace=tmp_path, session_id="multi-turn-session", sequence=3) == 2
+    assert store.newest_sequence_before(workspace=tmp_path, session_id="multi-turn-session", sequence=1) is None
 
 
 def test_session_storage_preserves_prior_events_when_same_session_continues(
@@ -2159,32 +2083,54 @@ def test_session_storage_save_interrupted_checkpoint_updates_without_events_or_o
     assert checkpoint["output"] is None
 
 
-def test_session_storage_truncate_resets_last_event_sequence_watermark(tmp_path: Path) -> None:
+def test_session_storage_restore_leaf_keeps_tail_rows_and_watermark(tmp_path: Path) -> None:
+    """Restoring the leaf moves the position and deletes nothing.
+
+    The interrupted resume repair is a position move: rows past the checkpoint
+    stay in the table (a checkout may have put an abandoned branch there), and
+    the watermark stays the append counter so the next append continues
+    contiguously rather than recycling a retained row's sequence number.
+    """
     store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
-    _seed_running_session(store, tmp_path, "truncate-watermark-session")
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="restore", session_id="restore-leaf-session"),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=SessionRef(id="restore-leaf-session"),
+                status="running",
+                turn=1,
+                metadata={},
+            ),
+            events=(),
+            output=None,
+        ),
+    )
     _ = store.append_session_events(
         workspace=tmp_path,
-        session_id="truncate-watermark-session",
+        session_id="restore-leaf-session",
         events=(
-            ("runtime.mcp_server_acquired", "runtime", {"server": "a"}, "watermark-1"),
-            ("runtime.mcp_server_stopped", "runtime", {"server": "b"}, "watermark-2"),
-            ("runtime.acp_connected", "runtime", {}, "watermark-3"),
+            ("runtime.mcp_server_acquired", "runtime", {"server": "a"}, "restore-1"),
+            ("runtime.mcp_server_stopped", "runtime", {"server": "b"}, "restore-2"),
+            ("runtime.acp_connected", "runtime", {}, "restore-3"),
         ),
     )
 
-    store.truncate_session_events_after(workspace=tmp_path, session_id="truncate-watermark-session", sequence=2)
+    store.restore_leaf_after_interrupted_resume(workspace=tmp_path, session_id="restore-leaf-session", sequence=2)
 
-    loaded = store.load_session(workspace=tmp_path, session_id="truncate-watermark-session")
-    assert [event.sequence for event in loaded.events] == [1, 2]
+    loaded = store.load_session(workspace=tmp_path, session_id="restore-leaf-session")
+    assert [event.sequence for event in loaded.events] == [1, 2, 3]
+    assert [event.sequence for event in store.session_path(workspace=tmp_path, session_id="restore-leaf-session")] == [1, 2]
 
-    # The next append must continue contiguously from the truncation point (3),
-    # not from the stale pre-truncation watermark (5).
     resumed = store.append_session_events(
         workspace=tmp_path,
-        session_id="truncate-watermark-session",
+        session_id="restore-leaf-session",
         events=(("runtime.tool_completed", "runtime", {"tool": "read"}, None),),
     )
-    assert [envelope.sequence for envelope in resumed] == [3]
+    assert [envelope.sequence for envelope in resumed] == [4]
+    # The new row is a child of the restored leaf (2), not the retained tail (3).
+    entries = {entry.sequence: entry for entry in store.session_entries(workspace=tmp_path, session_id="restore-leaf-session")}
+    assert entries[4].parent_sequence == 2
 
 
 def test_session_storage_list_sessions_shows_interrupted_session(tmp_path: Path) -> None:

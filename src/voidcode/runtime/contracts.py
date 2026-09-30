@@ -924,12 +924,6 @@ class RuntimeSessionDebugEvent:
 
 
 @dataclass(frozen=True, slots=True)
-class RuntimeSessionRevertMarker:
-    sequence: int
-    active: bool = True
-
-
-@dataclass(frozen=True, slots=True)
 class RuntimeSessionDebugPendingApproval:
     request_id: str
     tool_name: str
@@ -1058,7 +1052,6 @@ class RuntimeSessionDebugSnapshot:
     resume_checkpoint_kind: str | None = None
     pending_approval: RuntimeSessionDebugPendingApproval | None = None
     pending_question: RuntimeSessionDebugPendingQuestion | None = None
-    revert_marker: RuntimeSessionRevertMarker | None = None
     last_event_sequence: int = 0
     last_relevant_event: RuntimeSessionDebugEvent | None = None
     last_failure_event: RuntimeSessionDebugEvent | None = None
@@ -1080,7 +1073,6 @@ class RuntimeSessionResult:
     error: str | None = None
     transcript: tuple[EventEnvelope, ...] = ()
     last_event_sequence: int = 0
-    revert_marker: RuntimeSessionRevertMarker | None = None
     #: User-settable display label; ``None`` means "derive the label from ``prompt``".
     title: str | None = None
 

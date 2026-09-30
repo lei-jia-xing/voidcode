@@ -85,8 +85,6 @@ export type BackgroundTaskOutput = Schemas["BackgroundTaskOutputBody"];
 export type BackgroundTaskRetryResponse = Schemas["BackgroundTaskRetryBody"];
 export type BackgroundTaskSteerResponse = Schemas["BackgroundTaskSteerBody"];
 export type RuntimeSessionResult = Schemas["SessionResultBody"];
-/** One entry of a session result's transcript: an event plus its revert-marker state. */
-export type TranscriptEvent = Schemas["TranscriptEventBody"];
 export type RuntimeSessionDebugEvent = Schemas["SessionDebugEventBody"];
 export type RuntimeSessionDebugSnapshot = Schemas["SessionDebugBody"];
 export type ProviderContextSegmentSnapshot =

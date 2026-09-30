@@ -59,7 +59,6 @@ from ..contracts import (
     RuntimeResponse,
     RuntimeSessionDebugSnapshot,
     RuntimeSessionResult,
-    RuntimeSessionRevertMarker,
     RuntimeStatusSnapshot,
     RuntimeStreamChunk,
     SessionEventBatch,
@@ -81,7 +80,6 @@ from ..question import QuestionResponse
 from ..serialization import (
     _serialize_session_ref,
     _serialize_session_state,
-    serialize_revert_marker,
     serialize_session_debug_snapshot,
 )
 from ..service import VoidCodeRuntime
@@ -101,7 +99,6 @@ from .http_contract import (
     _QuestionAnswerRequestPayload,
     _RunStreamRequestPayload,
     _SessionCancelRequestPayload,
-    _SessionRevertRequestPayload,
     _SettingsRequestPayload,
     _SteerSessionRequestPayload,
     _TaskSteerRequestPayload,
@@ -135,7 +132,6 @@ from .http_models import (
     SessionDebugBody,
     SessionEventFrameBody,
     SessionResultBody,
-    SessionRevertBody,
     SessionSteerBody,
     SessionSummaryBody,
     SkillSummaryBody,
@@ -362,12 +358,6 @@ class RuntimeTransport(Protocol):
     def session_events_after(self, *, session_id: str, after_sequence: int) -> SessionEventBatch: ...
 
     def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot: ...
-
-    def revert_session(self, *, session_id: str, sequence: int) -> RuntimeSessionRevertMarker: ...
-
-    def undo_session(self, *, session_id: str) -> RuntimeSessionRevertMarker: ...
-
-    def unrevert_session(self, *, session_id: str) -> RuntimeSessionRevertMarker | None: ...
 
     def resume(
         self,
@@ -864,33 +854,6 @@ class RuntimeTransportApp(FastAPI):
             tag="sessions",
             summary="Read a session's debug snapshot",
             response_model=SessionDebugBody,
-            error_statuses=(404,),
-        )
-        route(
-            "/api/sessions/{session_id}/undo",
-            self._handle_session_undo,
-            methods=["POST"],
-            tag="sessions",
-            summary="Undo the session revert",
-            response_model=SessionRevertBody,
-            error_statuses=(404,),
-        )
-        route(
-            "/api/sessions/{session_id}/revert",
-            self._handle_session_revert,
-            methods=["POST"],
-            tag="sessions",
-            summary="Write a session revert marker",
-            response_model=SessionRevertBody,
-            error_statuses=(400, 404),
-        )
-        route(
-            "/api/sessions/{session_id}/unrevert",
-            self._handle_session_unrevert,
-            methods=["POST"],
-            tag="sessions",
-            summary="Clear the session revert marker",
-            response_model=SessionRevertBody,
             error_statuses=(404,),
         )
         route(
@@ -1585,27 +1548,6 @@ class RuntimeTransportApp(FastAPI):
             )
         )
 
-    async def _handle_session_undo(self, session_id: str) -> Response:
-        session_id = self._validated_session_id(session_id)
-        with self._runtime_lease() as runtime:
-            try:
-                marker = runtime.undo_session(session_id=session_id)
-            except ValueError as exc:
-                raise HttpError(404, str(exc)) from None
-        return json_response({"revert_marker": serialize_revert_marker(marker)})
-
-    async def _handle_session_revert(self, session_id: str, payload: _SessionRevertRequestPayload) -> Response:
-        session_id = self._validated_session_id(session_id)
-        with self._runtime_lease() as runtime:
-            try:
-                marker = runtime.revert_session(
-                    session_id=session_id,
-                    sequence=payload.sequence,
-                )
-            except ValueError as exc:
-                raise HttpError(404, str(exc)) from None
-        return json_response({"revert_marker": serialize_revert_marker(marker)})
-
     async def _handle_steer_session(self, session_id: str, payload: _SteerSessionRequestPayload) -> Response:
         session_id = self._validated_session_id(session_id)
         content = payload.content
@@ -1620,15 +1562,6 @@ class RuntimeTransportApp(FastAPI):
             except ValueError as exc:
                 raise HttpError(404, str(exc)) from None
         return json_response({"session_id": session_id, "queued": len(queued)})
-
-    async def _handle_session_unrevert(self, session_id: str) -> Response:
-        session_id = self._validated_session_id(session_id)
-        with self._runtime_lease() as runtime:
-            try:
-                marker = runtime.unrevert_session(session_id=session_id)
-            except ValueError as exc:
-                raise HttpError(404, str(exc)) from None
-        return json_response({"revert_marker": serialize_revert_marker(marker)})
 
     async def _handle_approval_resolution(
         self,
@@ -1877,15 +1810,8 @@ class RuntimeTransportApp(FastAPI):
             "output": result.output,
             "error": result.error,
             "last_event_sequence": result.last_event_sequence,
-            "revert_marker": serialize_revert_marker(result.revert_marker),
             "title": result.title,
-            "transcript": [
-                {
-                    **RuntimeTransportApp._serialize_event(event, show_thinking=show_thinking),
-                    "reverted": result.revert_marker is not None and result.revert_marker.active and event.sequence >= result.revert_marker.sequence,
-                }
-                for event in result.transcript
-            ],
+            "transcript": [RuntimeTransportApp._serialize_event(event, show_thinking=show_thinking) for event in result.transcript],
         }
 
     @staticmethod

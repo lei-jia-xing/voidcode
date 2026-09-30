@@ -5,7 +5,6 @@ from .contracts import (
     RuntimeProviderContextSnapshot,
     RuntimeSessionDebugEvent,
     RuntimeSessionDebugSnapshot,
-    RuntimeSessionRevertMarker,
 )
 from .events import redact_reasoning_payload, runtime_policy_observability_payload
 from .session import SessionEntrySummary, SessionRef, SessionState
@@ -64,7 +63,6 @@ def serialize_session_debug_snapshot(
             if snapshot.pending_question is not None
             else None
         ),
-        "revert_marker": serialize_revert_marker(snapshot.revert_marker),
         "last_event_sequence": snapshot.last_event_sequence,
         "last_relevant_event": serialize_session_debug_event(
             snapshot.last_relevant_event,
@@ -207,14 +205,6 @@ def serialize_session_debug_event(
             show_thinking=show_thinking,
         ),
     }
-
-
-def serialize_revert_marker(
-    marker: RuntimeSessionRevertMarker | None,
-) -> dict[str, object] | None:
-    if marker is None:
-        return None
-    return {"sequence": marker.sequence, "active": marker.active}
 
 
 def _serialize_session_ref(session_ref: SessionRef) -> dict[str, object]:
