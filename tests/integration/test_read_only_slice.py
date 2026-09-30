@@ -4,11 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
-import os
-import shlex
-import shutil
 import sqlite3
-import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterable, Iterator
@@ -18,7 +14,6 @@ from typing import Any, Protocol, cast
 
 import pytest
 
-from tests.unit.interface._cli_harness import run_cli
 from voidcode.graph.contracts import GraphSession
 from voidcode.runtime.paths import sessions_db_path
 
@@ -947,66 +942,6 @@ def test_runtime_background_restart_reconcile_reloads_terminal_delegated_result(
     assert task_result.result_available is True
 
 
-def _multi_step_prompt() -> str:
-    return "read source.txt\nwrite copied.txt copied marker\ngrep copied copied.txt"
-
-
-def _cli_test_env() -> dict[str, str]:
-    env = os.environ.copy()
-    src_path = str(Path(__file__).resolve().parents[2] / "src")
-    existing_pythonpath = env.get("PYTHONPATH")
-    env["PYTHONPATH"] = src_path if not existing_pythonpath else f"{src_path}{os.pathsep}{existing_pythonpath}"
-    return env
-
-
-def _normalize_terminal_text(text: str) -> str:
-    return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _run_cli_in_tty(
-    *,
-    workspace: Path,
-    request: str,
-    session_id: str,
-    approval_input: str,
-) -> subprocess.CompletedProcess[str]:
-    script = shutil.which("script")
-    if script is None:
-        pytest.skip("requires script for TTY-backed CLI integration")
-    probe = subprocess.run(
-        [script, "-qefc", "printf ''", "/dev/null"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if probe.returncode != 0:
-        pytest.skip("requires script with -qefc support for TTY-backed CLI integration")
-
-    command = shlex.join(
-        [
-            sys.executable,
-            "-m",
-            "voidcode",
-            "run",
-            request,
-            "--workspace",
-            str(workspace),
-            "--session-id",
-            session_id,
-            "--approval-mode",
-            "ask",
-        ]
-    )
-    return subprocess.run(
-        ["script", "-qefc", command, "/dev/null"],
-        input=f"{approval_input}\n",
-        capture_output=True,
-        text=True,
-        check=False,
-        env=_cli_test_env(),
-    )
-
-
 def test_runtime_skips_hooks_for_nested_hook_launched_runtime_invocations(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     src_path = str(Path(__file__).resolve().parents[2] / "src")
@@ -1642,99 +1577,6 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
     assert replay.events.count(next(event for event in replay.events if event.event_type == "runtime.approval_resolved")) == 1
 
 
-def test_cli_run_command_approval_allow_writes_file_under_tty_and_replays_session(
-    tmp_path: Path,
-) -> None:
-    session_id = "tty-approval-allow-session"
-    result = _run_cli_in_tty(
-        workspace=tmp_path,
-        request="write approved.txt approved via tty",
-        session_id=session_id,
-        approval_input="y",
-    )
-
-    transcript = _normalize_terminal_text(result.stdout + result.stderr)
-    written_file = tmp_path / "approved.txt"
-    resume_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "voidcode",
-            "sessions",
-            "resume",
-            session_id,
-            "--workspace",
-            str(tmp_path),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=_cli_test_env(),
-    )
-
-    assert result.returncode == 0
-    assert "Approve write for write approved.txt? [y/N]:" in transcript
-    assert "EVENT runtime.approval_requested" in transcript
-    assert "EVENT runtime.approval_resolved" in transcript
-    assert "decision=allow" in transcript
-    assert "EVENT runtime.tool_completed" in transcript
-    assert "RESULT" in transcript
-    assert "approved via tty" in transcript
-    assert written_file.read_text(encoding="utf-8") == "approved via tty"
-
-    assert resume_result.returncode == 0
-    assert "EVENT runtime.approval_requested" in resume_result.stdout
-    assert "EVENT runtime.approval_resolved" in resume_result.stdout
-    assert "approved via tty" in resume_result.stdout
-
-
-def test_cli_run_command_approval_deny_blocks_write_under_tty_and_replays_failure(
-    tmp_path: Path,
-) -> None:
-    session_id = "tty-approval-deny-session"
-    result = _run_cli_in_tty(
-        workspace=tmp_path,
-        request="write denied.txt denied via tty",
-        session_id=session_id,
-        approval_input="n",
-    )
-
-    transcript = _normalize_terminal_text(result.stdout + result.stderr)
-    denied_file = tmp_path / "denied.txt"
-    resume_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "voidcode",
-            "sessions",
-            "resume",
-            session_id,
-            "--workspace",
-            str(tmp_path),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=_cli_test_env(),
-    )
-
-    assert result.returncode == 0
-    assert "Approve write for write denied.txt? [y/N]:" in transcript
-    assert "EVENT runtime.approval_requested" in transcript
-    assert "EVENT runtime.approval_resolved" in transcript
-    assert "decision=deny" in transcript
-    assert "EVENT runtime.tool_completed" in transcript
-    assert "permission denied for tool: write" in transcript
-    assert "RESULT" in transcript
-    assert denied_file.exists() is False
-
-    assert resume_result.returncode == 13
-    assert "EVENT runtime.approval_requested" in resume_result.stdout
-    assert "EVENT runtime.approval_resolved" in resume_result.stdout
-    assert "EVENT runtime.tool_completed" in resume_result.stdout
-    assert "permission denied for tool: write" in resume_result.stdout
-
-
 def test_runtime_persists_and_resumes_session_across_instances(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("persisted slice\n", encoding="utf-8")
@@ -1977,27 +1819,3 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
     # than the graph's lost in-memory pending queue.
     assert resumed_provider.propose_turn_tool_result_counts == [1, 3]
     assert resumed_graph.pending_tool_call_count == 0
-
-
-def test_cli_lists_and_resumes_persisted_session(tmp_path: Path) -> None:
-    sample_file = tmp_path / "sample.txt"
-    _ = sample_file.write_text("resume proof\n", encoding="utf-8")
-
-    first_result = run_cli(
-        "run",
-        "read sample.txt",
-        "--workspace",
-        str(tmp_path),
-        "--session-id",
-        "demo-session",
-        cwd=tmp_path,
-    )
-    list_result = run_cli("sessions", "list", "--workspace", str(tmp_path), cwd=tmp_path)
-    resume_result = run_cli("sessions", "resume", "demo-session", "--workspace", str(tmp_path), cwd=tmp_path)
-
-    assert first_result.returncode == 0
-    assert list_result.returncode == 0
-    assert resume_result.returncode == 0
-    assert "SESSION id=demo-session status=completed" in list_result.stdout
-    assert "RESULT" in resume_result.stdout
-    assert "resume proof" in resume_result.stdout

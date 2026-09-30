@@ -1,9 +1,9 @@
 # Testing policy
 
-The Python suite is intentionally core-only. `mise run test` runs the entire
-suite (unit + integration in parallel, well under a
-minute). There are no marker lanes: no `slow`/`fuzz`/`integration` selection and
-no fast/slow split to keep in sync.
+The Python suite focuses on runtime behavior contracts; `mise run test` runs
+the complete unit + integration suite. CLI command handling and TUI rendering
+are deliberately not automated-test targets. There are no marker lanes:
+no `slow`/`fuzz`/`integration` selection and no fast/slow split to keep in sync.
 
 ## What "core" means
 
@@ -19,35 +19,28 @@ local-first runtime:
 
 ## Adding a test
 
-A test must defend an observable contract, boundary, invariant, transition,
-precedence rule, or real error path. Write what a consumer observes — exit
-status, stdout/stderr shape, persisted state, emitted events, wire payloads.
+A test must defend an observable runtime or transport contract, boundary,
+invariant, transition, precedence rule, or real error path. Assert what a
+consumer observes: persisted state, emitted events, or wire payloads.
 
 Do not add: wiring assertions, mock echoes (`assert_called_once_with` on a
 collaborator), tautologies, padding rows over the same path, bare
 `not throws`/`is not None` checks, or restated constants. A test that would not
 fail under a real bug is worse than no test: it costs time and hides the gap.
 
-## Effectively unguarded today
+## Deliberately untested surfaces
 
-The following areas have no dedicated suite and get tests only when they
-change; their measured coverage is incidental (10-46%+ reached through
-integration/config suites exercising them in passing, e.g.
-`tools/delegation/task.py` 76.2%, `command/models.py` 80.6%,
-`doctor/checker.py` 69.1%, `runtime/mcp.py` 39.9%):
+CLI behavior and the TUI have no automated tests. Verify them manually when
+changing their behavior:
 
-- the TUI: `src/voidcode/tui/**` (app, term, region, theme, transcript,
-  statusline, composer, overlay, events, keys) and the TUI CLI wiring — the pure
-  layers carry unit suites; the `app` loop is covered by the pty integration test
-- truly near zero: `runtime/review.py`, `cli/trace.py`, `tools/local_custom.py`
-- `runtime/{lsp,mcp,acp,context/rules,tool_call_preview}.py`,
-  `tools/{delegation/*,process/*}.py`, `provider/{auth,trace}.py`,
-  `doctor/**`, `command/**`, `formatter/executor.py`, `server.py`,
-  `cli/tasks_view.py`, `tools/lsp.py`, `acp/stdio.py`,
-  `runtime/background/process.py`, `command/loader.py`, `lsp/roots.py`, and the
-  trivial `permission_path_helpers.py`
-- the frontend component layer: only the store, runtime client, SSE parser,
-  wire contracts and pure helpers are tested
+- CLI: `uv run voidcode --help`, `uv run voidcode run --help`, then a real
+  configured run such as `uv run voidcode run 'read README.md' --workspace .`.
+- TUI: `uv run voidcode tui --workspace .`, enter a prompt, inspect the streamed
+  response and scrollback, then exit.
+
+Manual smoke checks are not substitutes for runtime contract tests. Keep
+approval, persistence, resume, event, provider, storage, and HTTP behavior
+covered at their owning runtime/transport boundaries.
 
 Three offline guards in `tests/conftest.py` keep the suite offline on purpose
 (`_deny_live_sockets`, `_deny_live_model_discovery`,

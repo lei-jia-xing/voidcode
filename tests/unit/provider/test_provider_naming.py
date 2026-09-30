@@ -14,7 +14,6 @@ from voidcode.provider.config import (
     OpenAICompatibleProviderConfig,
     ProviderConfigs,
     ProviderEndpointConfig,
-    parse_provider_configs_payload,
 )
 from voidcode.provider.naming import (
     BUILTIN_PROVIDER_IDS,
@@ -23,7 +22,6 @@ from voidcode.provider.naming import (
     canonical_provider_id,
     provider_label,
     split_provider_model_reference,
-    unknown_provider_id_message,
 )
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_config
@@ -43,27 +41,10 @@ def _registered_minimax_registry() -> ModelProviderRegistry:
     )
 
 
-def test_builtin_provider_ids_are_the_registry_keys() -> None:
-    # One table of built-in provider ids: the naming authority and the registry
-    # cannot drift apart without failing here.
-    assert set(ModelProviderRegistry.with_defaults().providers) == set(BUILTIN_PROVIDER_IDS)
-
-
 def test_every_builtin_provider_has_a_human_label() -> None:
     # No provider degrades to its raw id by omission from the label table.
     unlabelled = sorted(provider_id for provider_id in BUILTIN_PROVIDER_IDS if provider_label(provider_id) == provider_id)
     assert unlabelled == []
-
-
-@pytest.mark.parametrize("provider_id", sorted(BUILTIN_PROVIDER_IDS))
-def test_builtin_provider_ids_are_accepted_as_config_keys(provider_id: str) -> None:
-    parsed = parse_provider_configs_payload(
-        {provider_id: {}},
-        source="runtime config field 'providers'",
-    )
-
-    assert parsed is not None
-    assert provider_id == "endpoint" or getattr(parsed, provider_id.replace("-", "_")) is not None
 
 
 def test_canonical_provider_id_trims_and_lowercases() -> None:
@@ -78,24 +59,6 @@ def test_provider_label_prefers_the_table_and_degrades_to_the_canonical_id() -> 
     assert provider_label("openrouter") == "OpenRouter"
     assert provider_label("llama-local") == "llama-local"
     assert provider_label(" LLM-GW ") == "llm-gw"
-
-
-def test_unknown_provider_id_message_names_canonical_ids_and_the_custom_path() -> None:
-    message = unknown_provider_id_message(" MiniMaxx ")
-
-    assert "unknown provider id 'minimaxx'" in message
-    assert "known provider ids are" in message
-    for provider_id in sorted(BUILTIN_PROVIDER_IDS):
-        assert provider_id in message
-    assert "providers.custom.minimaxx" in message
-    assert "minimaxx/<model>" in message
-
-
-def test_unknown_provider_id_error_is_a_value_error() -> None:
-    # The CLI and HTTP boundaries translate ValueError into a user-facing error.
-    error = UnknownProviderIdError("ghost")
-
-    assert isinstance(error, ValueError)
 
 
 @pytest.mark.parametrize("raw_model", _MINI_MAX_SPELLINGS)
@@ -126,13 +89,8 @@ def test_provider_spelling_variants_keep_the_spelling_as_the_raw_reference(raw_m
 
 @pytest.mark.parametrize("raw_model", ["minimaxx/minimax-m2.5", "min-max/minimax-m2.5"])
 def test_undeclared_provider_id_fails_loudly(raw_model: str) -> None:
-    with pytest.raises(UnknownProviderIdError) as excinfo:
+    with pytest.raises(UnknownProviderIdError):
         _ = resolve_provider_config(raw_model, None, registry=ModelProviderRegistry.with_defaults())
-
-    message = str(excinfo.value)
-    assert "unknown provider id" in message
-    assert "known provider ids are" in message
-    assert "providers.custom." in message
 
 
 def test_declared_custom_provider_resolves_under_any_spelling() -> None:

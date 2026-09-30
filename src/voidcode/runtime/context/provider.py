@@ -73,7 +73,7 @@ def inspect_provider_context(
             oversized_tool_feedback_chars=oversized_tool_feedback_chars,
         )
     )
-    transform_diagnostics = _transform_diagnostics(dict(assembled_context.metadata))
+    transform_diagnostics = _transform_diagnostics(assembled_context.metadata)
     diagnostics = (*diagnostics, *transform_diagnostics)
     policy_decision = evaluate_provider_context_policy(diagnostics, mode=diagnostic_policy_mode) if diagnostic_policy_mode is not None else None
     if policy_decision is not None:
@@ -107,9 +107,7 @@ def evaluate_provider_context_policy(
         diagnostic for diagnostic in diagnostics if diagnostic.severity == "error" or diagnostic.code in _PROVIDER_CONTEXT_POLICY_BLOCKING_CODES
     )
     diagnostic_codes = tuple(diagnostic.code for diagnostic in actionable)
-    blocking_codes_base = tuple(diagnostic.code for diagnostic in blocking)
-    transform_blocking_codes = tuple(diagnostic.code for diagnostic in transform_failures)
-    blocking_codes = tuple(dict.fromkeys((*blocking_codes_base, *transform_blocking_codes)))
+    blocking_codes = tuple(dict.fromkeys(diagnostic.code for diagnostic in blocking))
     if transform_failures:
         return RuntimeProviderContextPolicyDecision(
             mode=mode,
@@ -190,7 +188,7 @@ def _diagnostic_with_policy_metadata(
 
 
 def _transform_diagnostics(
-    context_metadata: dict[str, object],
+    context_metadata: Mapping[str, object],
 ) -> tuple[RuntimeProviderContextDiagnostic, ...]:
     raw_transforms = context_metadata.get("context_transforms")
     if not isinstance(raw_transforms, dict):

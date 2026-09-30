@@ -40,7 +40,7 @@ def validate_agent_capability_snapshot(
     for field in object_fields:
         value = snapshot.get(field)
         if not isinstance(value, dict):
-            raise AgentCapabilitySnapshotVersionError(f"agent_capability_snapshot v2 requires a {field} object")
+            raise AgentCapabilitySnapshotVersionError(f"agent_capability_snapshot v{AGENT_CAPABILITY_SNAPSHOT_VERSION} requires a {field} object")
         sections[field] = value
     tools = sections["tools"]
     required_tool_fields = {
@@ -54,10 +54,12 @@ def validate_agent_capability_snapshot(
     }
     missing_tool_fields = sorted(required_tool_fields - tools.keys())
     if missing_tool_fields:
-        raise AgentCapabilitySnapshotVersionError(f"agent_capability_snapshot v2 tools is missing required fields: {missing_tool_fields!r}")
+        raise AgentCapabilitySnapshotVersionError(
+            f"agent_capability_snapshot v{AGENT_CAPABILITY_SNAPSHOT_VERSION} tools is missing required fields: {missing_tool_fields!r}"
+        )
     generation = tools["generation"]
     if not isinstance(generation, str) or not generation:
-        raise AgentCapabilitySnapshotVersionError("agent_capability_snapshot v2 requires tools.generation")
+        raise AgentCapabilitySnapshotVersionError(f"agent_capability_snapshot v{AGENT_CAPABILITY_SNAPSHOT_VERSION} requires tools.generation")
     return snapshot
 
 

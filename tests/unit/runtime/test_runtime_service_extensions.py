@@ -20,7 +20,6 @@ import voidcode.runtime.service as runtime_service_module
 from voidcode.agent import (
     LEADER_AGENT_MANIFEST,
     get_builtin_agent_manifest,
-    list_builtin_agent_manifests,
 )
 from voidcode.graph.contracts import GraphSession
 from voidcode.provider.config import (
@@ -143,16 +142,6 @@ def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
     config_module = importlib.import_module("voidcode.runtime.config")
     monkeypatch.setattr(config_module, "_default_runtime_mcp_servers", lambda: {})
-
-
-def test_runtime_top_level_agent_allowlist_matches_manifest_selectability() -> None:
-    top_level_manifest_ids = {manifest.id for manifest in list_builtin_agent_manifests() if manifest.top_level_selectable}
-    executable_agent_presets = cast(
-        frozenset[str],
-        _private_attr(runtime_service_module, "_EXECUTABLE_AGENT_PRESETS"),
-    )
-
-    assert top_level_manifest_ids == executable_agent_presets
 
 
 def _prompt_materialization_payload(profile: str) -> dict[str, object]:

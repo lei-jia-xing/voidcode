@@ -10,4 +10,8 @@ VoidCode 的行为以源码和测试为准。仓库只保留以下需要稳定�
 
 ## 审计记录
 
-- [`audits/omp-alignment.md`](./audits/omp-alignment.md) — 与 omp 对齐审计（工具面 / runtime / CLI / TUI），记录已对齐项、未对齐缺口与文档-代码不一致。**该审计是写定时刻的历史快照，不随代码演进维护：禁止把它与当前代码同步、也禁止依据它更新它；当前行为只以 `src/` 与 `tests/` 为准，审计中任何过期的行都不构成 bug 证据。**
+- [`audits/pi-voidcode-extensibility.md`](./audits/pi-voidcode-extensibility.md) — pi × VoidCode 可扩展性架构审计，记录 lower-core、组合边界与迁移缺口。**审计是写定时刻的历史快照，不随代码演进维护；当前行为只以 `src/` 与实际验证为准，禁止把历史审计与当前实现同步改写。**
+
+## 实施计划
+
+- [`plans/agent-core-refactor.md`](./plans/agent-core-refactor.md) — 根据上述审计制定的 P0–P6 重构计划，含完整审计映射、十项硬验收、阶段入口/出口与行为验证；计划中的迁移尚未实施。

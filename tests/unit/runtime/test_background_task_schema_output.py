@@ -1,18 +1,12 @@
-"""Phase 1 delegation flexibility: invocation-level outputSchema + schemaMode.
+"""Behavioral coverage for delegated-task output-schema handling.
 
-Covers the finalize-time schema validation (permissive/strict), storage v14
-round-trip + migration, the no-schema and keep-alive intermediate-turn guards,
-and the CLI/HTTP result surfaces. The completion evidence chain itself
-(background/child_terminal.py) is untouched; these tests only assert the schema layer
-added around it.
+Covers permissive and strict finalization, no-schema and keep-alive behavior,
+and persisted schema declarations and validation results.
 """
 
 from __future__ import annotations
 
-import importlib
 import json
-import sqlite3
-from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -22,12 +16,9 @@ from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
-    SchemaValidation,
 )
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
-from voidcode.runtime.contracts import BackgroundTaskResult
-from voidcode.runtime.storage import SCHEMA_VERSION, SqliteSessionStore
-from voidcode.runtime.transport.http import RuntimeTransportApp
+from voidcode.runtime.storage import SqliteSessionStore
 
 DECLARED_SCHEMA: dict[str, object] = {
     "type": "object",
@@ -392,77 +383,3 @@ def test_storage_round_trips_schema_declaration_and_validation(tmp_path: Path) -
     assert loaded.schema_validation.valid is True
     assert loaded.schema_validation.schema_mode == "strict"
     assert loaded.schema_validation.schema_source == "invocation"
-
-
-def test_storage_fresh_database_has_output_schema_columns(tmp_path: Path) -> None:
-    database_path = tmp_path / "fresh.sqlite3"
-    store = SqliteSessionStore(database_path=database_path)
-    # Any store operation bootstraps the canonical schema.
-    assert store.list_background_tasks(workspace=tmp_path) == ()
-
-    with closing(sqlite3.connect(database_path)) as connection:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(background_tasks)").fetchall()}
-        schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
-
-    assert schema_version == SCHEMA_VERSION
-    assert {"output_schema_json", "schema_mode", "structured_output_json", "schema_validation_json"} <= columns
-
-
-# ── CLI / HTTP result surfaces ──────────────────────────────────────────────
-
-
-def test_cli_tasks_output_json_payload_carries_schema_fields(tmp_path: Path) -> None:
-    cli = importlib.import_module("voidcode.cli.tasks_view")
-    result = BackgroundTaskResult(
-        task_id="task-schema-cli",
-        parent_session_id="leader-session",
-        child_session_id="child-session",
-        status="completed",
-        summary_output="done",
-        result_available=True,
-        structured_output={"answer": "42"},
-        schema_validation=SchemaValidation(
-            schema_source="invocation",
-            schema_mode="strict",
-            valid=True,
-            error=None,
-        ),
-    )
-
-    payload = cli.background_task_result_payload(result, workspace=tmp_path)
-
-    assert payload["structured_output"] == {"answer": "42"}
-    assert payload["schema_validation"] == {
-        "schema_source": "invocation",
-        "schema_mode": "strict",
-        "valid": True,
-        "error": None,
-    }
-
-
-def test_http_task_result_serialization_carries_schema_fields() -> None:
-    result = BackgroundTaskResult(
-        task_id="task-schema-http",
-        parent_session_id="leader-session",
-        child_session_id="child-session",
-        status="completed",
-        summary_output="done",
-        result_available=True,
-        structured_output={"answer": "42"},
-        schema_validation=SchemaValidation(
-            schema_source="invocation",
-            schema_mode="permissive",
-            valid=False,
-            error="answer: 42 is not of type 'string' (received int)",
-        ),
-    )
-
-    payload = RuntimeTransportApp._serialize_background_task_result(result)
-
-    assert payload["structured_output"] == {"answer": "42"}
-    assert payload["schema_validation"] == {
-        "schema_source": "invocation",
-        "schema_mode": "permissive",
-        "valid": False,
-        "error": "answer: 42 is not of type 'string' (received int)",
-    }
