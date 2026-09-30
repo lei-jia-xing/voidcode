@@ -2156,3 +2156,61 @@ def test_transport_lists_sessions_in_tree_order_so_a_fork_never_precedes_its_par
         ("tree-root", 0),
         (fork.session.id, 1),
     ]
+
+
+def test_transport_lists_entries_with_abandoned_branch_after_checkout(tmp_path: Path) -> None:
+    (tmp_path / "sample.txt").write_text("checkout coverage\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+    runtime = runtime_class(workspace=tmp_path)
+    stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="checkout-session"))
+    assert len(stored.events) > 8
+
+    app = create_runtime_app(workspace=tmp_path)
+    checkout = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/checkout-session/checkout",
+        body=json.dumps({"sequence": 1}).encode("utf-8"),
+    )
+    assert checkout.status == 200
+    assert checkout.json() == {"session_id": "checkout-session", "leaf_sequence": 1}
+
+    entries_response = _run_app(app, method="GET", path="/api/sessions/checkout-session/entries")
+    payload = cast(dict[str, object], entries_response.json())
+    entries = cast(list[dict[str, object]], payload["entries"])
+    assert entries_response.status == 200
+    assert payload["session_id"] == "checkout-session"
+    assert entries[0]["sequence"] == 1
+    assert entries[0]["on_current_path"] is True
+    assert all(entry["on_current_path"] is False for entry in entries[1:])
+
+
+def test_transport_checkout_rejects_unknown_session(tmp_path: Path) -> None:
+    app = _load_transport_app_factory()(workspace=tmp_path)
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/missing-session/checkout",
+        body=json.dumps({"sequence": 1}).encode("utf-8"),
+    )
+
+    assert response.status == 404
+
+
+@pytest.mark.parametrize("sequence", [999, 8])
+def test_transport_checkout_rejects_invalid_targets(tmp_path: Path, sequence: int) -> None:
+    (tmp_path / "sample.txt").write_text("checkout validation\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+    runtime = runtime_class(workspace=tmp_path)
+    runtime.run(runtime_request(prompt="read sample.txt", session_id="checkout-validation"))
+    app = _load_transport_app_factory()(workspace=tmp_path)
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/checkout-validation/checkout",
+        body=json.dumps({"sequence": sequence}).encode("utf-8"),
+    )
+
+    assert response.status == 400
