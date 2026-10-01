@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel, field_validator
 
-from ...runtime.background.models import BackgroundTaskState, is_background_task_terminal
-from .._pydantic_args import NonEmptyPrompt, parse_tool_args, validate_non_empty_stripped
-from ..contracts import ToolCall, ToolResult
-from ..runtime_context import require_runtime_tool_context
+from ....core.tool_context import ToolContext
+from ....tools._pydantic_args import NonEmptyPrompt, parse_tool_args, validate_non_empty_stripped
+from ....tools.contracts import ToolCall, ToolResult
+from ...background.models import BackgroundTaskState, is_background_task_terminal
 
 
 class TaskSteerRuntime(Protocol):
@@ -32,17 +31,16 @@ class TaskSteerTool:
     def __init__(self, *, runtime: TaskSteerRuntime) -> None:
         self._runtime = runtime
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        caller_session_id = context.require_session_id()
         args = parse_tool_args(_TaskSteerArgs, call.arguments, tool_name=self.name)
 
-        context = require_runtime_tool_context(self.name)
         self._runtime.authorize_background_task_owner(
             args.task_id,
-            parent_session_id=context.session_id,
+            parent_session_id=caller_session_id,
         )
         current_task = self._runtime.load_background_task(args.task_id)
-        if current_task.parent_session_id != context.session_id:
+        if current_task.parent_session_id != caller_session_id:
             raise ValueError(
                 f"steer_task cannot steer background task {args.task_id}: only its parent "
                 f"session ({current_task.parent_session_id or 'unknown'}) may steer it "

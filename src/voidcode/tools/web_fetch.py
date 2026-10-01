@@ -3,15 +3,15 @@ from __future__ import annotations
 import base64
 import logging
 import re
-from pathlib import Path
 from typing import ClassVar
 
 import httpx
 from bs4 import BeautifulSoup, Tag
 from markdownify import MarkdownConverter
 
+from ..core.tool_context import ToolContext
 from ..security.url_policy import validate_redirect_target, validate_url
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024
 DEFAULT_TIMEOUT = 30
@@ -123,23 +123,23 @@ class WebFetchTool:
             "timeout": {"type": "integer", "description": "Timeout in seconds (max 120)"},
             "required": ["url"],
         },
-        read_only=True,
+        effects=frozenset({ToolEffect.READ, ToolEffect.NETWORK}),
     )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=None)
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = context
+        return self._invoke(call, runtime_timeout_seconds=None)
 
-    def invoke_with_runtime_timeout(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
-        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=timeout_seconds)
+    def invoke_with_runtime_timeout(self, call: ToolCall, *, context: ToolContext, timeout_seconds: int) -> ToolResult:
+        _ = context
+        return self._invoke(call, runtime_timeout_seconds=timeout_seconds)
 
     def _invoke(
         self,
         call: ToolCall,
         *,
-        workspace: Path,
         runtime_timeout_seconds: int | None,
     ) -> ToolResult:
-        _ = workspace
         url_value = call.arguments.get("url")
         if not isinstance(url_value, str):
             raise ValueError("web_fetch requires a string url argument")

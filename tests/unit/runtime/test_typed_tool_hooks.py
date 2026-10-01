@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.graph.contracts import GraphEvent, GraphRunRequest
 from voidcode.hook.typed import BlockDecision, RewriteDecision, ToolInputDecision, ToolInputEvent, ToolInputHandlerBinding, ToolInputHandlerRegistry
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
@@ -12,7 +13,7 @@ from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.permission import ApprovalMode, PermissionPolicy
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.tool_registry import ToolRegistry
-from voidcode.tools.contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
+from voidcode.tools.contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolEffect, ToolResult
 from voidcode.tools.invoke_tool import InvokeTool
 
 
@@ -45,15 +46,15 @@ class _CaptureTool:
             "required": ["path"],
             "additionalProperties": False,
         },
-        read_only=False,
+        effects=frozenset({ToolEffect.EXECUTE}),
     )
 
     def __init__(self, failure: Exception | None = None) -> None:
         self.calls: list[ToolCall] = []
         self.failure = failure
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = context
         self.calls.append(call)
         if self.failure is not None:
             raise self.failure

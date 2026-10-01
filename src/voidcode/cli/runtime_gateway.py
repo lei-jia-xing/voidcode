@@ -22,11 +22,11 @@ from ..cli_support import (
     RuntimeStreamResult,
     format_event,
 )
+from ..core.questions import QuestionResponse
 from ..runtime.config import RuntimeConfig, load_runtime_config
 from ..runtime.contracts import RuntimeRequest, RuntimeStreamChunk
 from ..runtime.events import EventEnvelope
 from ..runtime.permission import ApprovalMode, PermissionResolution
-from ..runtime.question import QuestionResponse
 from ..runtime.service import VoidCodeRuntime
 from ..runtime.session import SessionState
 from ..runtime.session_metadata_helpers import runtime_state_run_id

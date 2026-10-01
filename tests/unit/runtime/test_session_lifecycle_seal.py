@@ -24,6 +24,8 @@ from typing import cast
 
 import pytest
 
+from voidcode.core.questions import PendingQuestionOption, PendingQuestionPrompt
+from voidcode.core.tool_context import ToolContext
 from voidcode.graph.contracts import GraphEvent, GraphRunRequest, GraphSession
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
@@ -40,7 +42,7 @@ from voidcode.runtime.events import (
     EventEnvelope,
 )
 from voidcode.runtime.permission import PendingApproval, PermissionPolicy
-from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
+from voidcode.runtime.question import PendingQuestion
 from voidcode.runtime.service import (
     RuntimeStreamChunk,
     SessionState,
@@ -49,7 +51,7 @@ from voidcode.runtime.service import (
 )
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SessionSealedError, SqliteSessionStore
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
@@ -354,7 +356,7 @@ class _BlockingThenResultTool:
         name="write",
         description="Probe that blocks until released and then returns a real result",
         input_schema={"type": "object"},
-        read_only=False,
+        effects=frozenset({ToolEffect.WRITE}),
     )
 
     def __init__(self) -> None:
@@ -362,8 +364,8 @@ class _BlockingThenResultTool:
         self.release = threading.Event()
         self.invoke_count = 0
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = call, workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = call, context
         self.invoke_count += 1
         self.started.set()
         if not self.release.wait(timeout=5.0):

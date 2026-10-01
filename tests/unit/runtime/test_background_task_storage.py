@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from voidcode.core.questions import PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -21,7 +22,7 @@ from voidcode.runtime.events import (
 )
 from voidcode.runtime.paths import sessions_db_path
 from voidcode.runtime.permission import PendingApproval
-from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
+from voidcode.runtime.question import PendingQuestion
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
 

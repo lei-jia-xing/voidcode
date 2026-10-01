@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel, field_validator
 
+from ..core.tool_context import ToolContext
 from ..formatter import (
     FormatterExecutionResult,
     FormatterExecutor,
@@ -17,7 +17,7 @@ from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._pydantic_args import parse_tool_args, validate_non_empty
 from ._repair import ToolDiagnosticError, raise_tool_diagnostic
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 from .edit import EditTool, read_utf8_text, summarize_diff
 from .guards import enforce_read_before_write
 
@@ -71,7 +71,7 @@ class MultiEditTool:
             },
             "required": ["path", "edits", "expectedHash"],
         },
-        read_only=False,
+        effects=frozenset({ToolEffect.WRITE}),
         path_argument_keys=("path",),
     )
 
@@ -84,7 +84,8 @@ class MultiEditTool:
         self._hooks_config = hooks_config
         self._edit_tool = edit_tool or EditTool()
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        workspace = context.require_workspace()
         raw_path_value = call.arguments.get("path")
 
         args = parse_tool_args(
@@ -111,6 +112,7 @@ class MultiEditTool:
         display_path = str(target.resolve()) if resolution.is_external else relative_target
 
         enforce_read_before_write(
+            context=context,
             tool_name=self.definition.name,
             workspace=workspace_root,
             raw_path=args.path,
@@ -157,7 +159,7 @@ class MultiEditTool:
                             "expectedHash": current_hash,
                         },
                     ),
-                    workspace=workspace,
+                    context=context,
                 )
             except ValueError as exc:
                 if isinstance(exc, ToolDiagnosticError) and exc.error_details.get("reason") == "unseen_range":
@@ -223,6 +225,7 @@ class MultiEditTool:
         if diagnostics:
             data["diagnostics"] = diagnostics
         lsp_diagnostics = post_edit_lsp_diagnostics(
+            context=context,
             workspace=workspace_root,
             paths=[display_path],
         )

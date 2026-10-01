@@ -7,21 +7,24 @@ import time
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
 
+from ..core.tool_context import EditSchema, LspDiagnostics, LspRequester, McpRequester, RuleReader, ToolCatalog, ToolCommandHandler
 from ..provider.protocol import ProviderAbortSignal
+from ..skills.models import SkillMetadata
 from ..tools.contracts import (
     RuntimeTimeoutAwareTool,
     RuntimeToolTimeoutError,
+    Tool,
     ToolInvocation,
     ToolResult,
 )
-from ..tools.runtime_context import (
-    RuntimeArtifactReadFacade,
-    RuntimeLspToolFacade,
-    RuntimeToolCatalogFacade,
-    RuntimeTranscriptFacade,
-    bind_runtime_tool_context,
+from .execution.tool_resources import (
+    SessionArtifactReader,
+    SessionTranscriptReader,
+    bind_lsp_request,
+    bind_mcp_request,
+    bind_rule_reader,
+    bind_tool_command,
 )
 from .execution_ownership import EXECUTION_OWNERSHIP
 
@@ -213,16 +216,24 @@ def _observe_abandoned_execution(
 @dataclass(frozen=True, slots=True)
 class RuntimeToolExecutor:
     workspace: Path
-    lsp: RuntimeLspToolFacade
+    lsp: LspDiagnostics | None = None
     lsp_diagnostics_on_write: bool = False
-    tool_catalog: RuntimeToolCatalogFacade | None = None
-    artifact: RuntimeArtifactReadFacade | None = None
-    transcript: RuntimeTranscriptFacade | None = None
+    tool_catalog: ToolCatalog | None = None
+    read_artifact: Callable[..., dict[str, object]] | None = None
+    read_transcript: Callable[..., dict[str, object] | None] | None = None
+    read_rule: RuleReader | None = None
+    resolve_skill: Callable[[str], SkillMetadata] | None = None
+    resolve_edit_schema: Callable[[str | None], EditSchema] | None = None
+    lsp_request: LspRequester | None = None
+    mcp_request: McpRequester | None = None
+    task_command: ToolCommandHandler | None = None
+    task_batch_command: ToolCommandHandler | None = None
+    process_command: ToolCommandHandler | None = None
 
     def invoke(
         self,
         *,
-        tool: Any,
+        tool: Tool,
         invocation: ToolInvocation,
     ) -> Generator[ToolExecutionProgress, None, ToolResult | Exception]:
         """Execute one runtime-owned invocation."""
@@ -244,35 +255,66 @@ class RuntimeToolExecutor:
     def _invoke_tool(
         self,
         *,
-        tool: Any,
+        tool: Tool,
         invocation: ToolInvocation,
         tool_timeout: int | None,
         emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None,
         cancel_signal: _InvocationCancelSignal | None = None,
     ) -> ToolResult:
+        tool_name = invocation.tool_call.tool_name
+        diagnostics_enabled = self.lsp_diagnostics_on_write and tool_name in {"write", "edit", "multi_edit", "apply_patch", "apply_workspace_edit"}
         context = replace(
             invocation.context,
+            workspace=self.workspace,
             emit_tool_progress=emit_tool_progress,
             abort_signal=cancel_signal if cancel_signal is not None else invocation.context.abort_signal,
-            lsp=self.lsp,
-            lsp_diagnostics_on_write=self.lsp_diagnostics_on_write,
-            tool_catalog=self.tool_catalog,
-            artifact=self.artifact,
-            transcript=self.transcript,
+            edit_schema=(
+                self.resolve_edit_schema(invocation.context.model)
+                if self.resolve_edit_schema is not None and tool_name in {"edit", "multi_edit"}
+                else invocation.context.edit_schema
+            ),
+            lsp=self.lsp if diagnostics_enabled else None,
+            lsp_diagnostics_on_write=diagnostics_enabled,
+            tool_catalog=None,
+            artifact=None,
+            transcript=None,
+            read_rule=None,
+            resolve_skill=None,
+            lsp_request=None,
+            mcp_request=None,
+            task_runtime=None,
+            task_batch_runtime=None,
+            process_runtime=None,
         )
-        with bind_runtime_tool_context(context):
-            if tool_timeout is not None and isinstance(tool, RuntimeTimeoutAwareTool):
-                return tool.invoke_with_runtime_timeout(
-                    invocation.tool_call,
-                    workspace=self.workspace,
-                    timeout_seconds=tool_timeout,
-                )
-            return tool.invoke(invocation.tool_call, workspace=self.workspace)
+        if tool_name == "read":
+            caller_session_id = context.require_session_id()
+            context = replace(
+                context,
+                tool_catalog=self.tool_catalog,
+                artifact=SessionArtifactReader(caller_session_id, self.read_artifact) if self.read_artifact is not None else None,
+                transcript=SessionTranscriptReader(caller_session_id, self.read_transcript) if self.read_transcript is not None else None,
+                read_rule=bind_rule_reader(self.read_rule, workspace=self.workspace) if self.read_rule is not None else None,
+            )
+        elif tool_name == "skill":
+            context = replace(context, resolve_skill=self.resolve_skill)
+        elif tool_name == "lsp" and self.lsp_request is not None:
+            context = replace(context, lsp_request=bind_lsp_request(self.lsp_request, workspace=self.workspace))
+        elif tool_name.startswith("mcp/") and self.mcp_request is not None:
+            context = replace(context, mcp_request=bind_mcp_request(self.mcp_request, call=invocation.tool_call, workspace=self.workspace))
+        elif tool_name == "task" and self.task_command is not None:
+            context = replace(context, task_runtime=bind_tool_command(self.task_command, call=invocation.tool_call, context=context))
+        elif tool_name == "task_batch" and self.task_batch_command is not None:
+            context = replace(context, task_batch_runtime=bind_tool_command(self.task_batch_command, call=invocation.tool_call, context=context))
+        elif tool_name == "background_process" and self.process_command is not None:
+            context = replace(context, process_runtime=bind_tool_command(self.process_command, call=invocation.tool_call, context=context))
+        if tool_timeout is not None and isinstance(tool, RuntimeTimeoutAwareTool):
+            return tool.invoke_with_runtime_timeout(invocation.tool_call, context=context, timeout_seconds=tool_timeout)
+        return tool.invoke(invocation.tool_call, context=context)
 
     def _invoke_with_progress(
         self,
         *,
-        tool: Any,
+        tool: Tool,
         invocation: ToolInvocation,
         tool_timeout: int | None,
     ) -> Generator[ToolExecutionProgress, None, ToolResult | Exception]:

@@ -54,7 +54,8 @@ from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.tools.read import ReadTool
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from voidcode.core.tool_context import ToolContext
 
 SESSION_ID = "crash-tool-session"
 COUNTING_READ_TOOL = "counting_read"
@@ -76,24 +77,24 @@ class CountingReadTool:
         self.definition = ToolDefinition(
             name=COUNTING_READ_TOOL,
             description="Read a file inside the workspace and record the execution.",
-            read_only=True,
+            effects=frozenset({ToolEffect.READ}),
         )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         _record(self._gate / "counting_read.executions", str(os.getpid()))
-        return replace(self._inner.invoke(call, workspace=workspace), tool_name=self.definition.name)
+        return replace(self._inner.invoke(call, context=context), tool_name=self.definition.name)
 
 
 class BlockingTool:
     """Records its call id, then blocks until the release marker exists."""
 
-    definition = ToolDefinition(name=BLOCKING_TOOL, description="Blocks until released.", read_only=False)
+    definition = ToolDefinition(name=BLOCKING_TOOL, description="Blocks until released.", effects=frozenset({ToolEffect.WRITE}))
 
     def __init__(self, gate: Path) -> None:
         self._gate = gate
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = context
         _record(self._gate / "blocking_tool.calls", f"{os.getpid()}:{call.tool_call_id}")
         (self._gate / "entered.txt").write_text("entered", encoding="utf-8")
         while not (self._gate / "release.txt").exists():

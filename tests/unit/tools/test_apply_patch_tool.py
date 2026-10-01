@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.tools.apply_patch import ApplyPatchTool
 from voidcode.tools.contracts import ToolCall
-from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
 def _content_hash(path: Path) -> str:
@@ -51,7 +51,7 @@ def test_apply_patch_updates_file_with_valid_patch(tmp_path: Path) -> None:
             tool_name="apply_patch",
             arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
         ),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
 
     assert target.read_text(encoding="utf-8").startswith("patched-1")
@@ -72,12 +72,11 @@ def test_apply_patch_rejects_unified_diff_update_without_prior_read_side_effects
     new = ["patched-1\n", "line-2\n"]
     patch_text = "".join(difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt"))
 
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
-        with pytest.raises(ValueError, match="requires reading the current file before modifying it"):
-            ApplyPatchTool().invoke(
-                ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
-                workspace=tmp_path,
-            )
+    with pytest.raises(ValueError, match="requires reading the current file before modifying it"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            context=ToolContext(workspace=tmp_path, session_id="test"),
+        )
 
     assert target.read_text(encoding="utf-8") == "line-1\nline-2\n"
 
@@ -96,7 +95,7 @@ def test_apply_patch_accepts_structured_add_file_patch(tmp_path: Path) -> None:
 
     result = ApplyPatchTool().invoke(
         ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
 
     assert result.status == "ok"
@@ -146,7 +145,7 @@ def test_apply_patch_accepts_structured_update_delete_and_move(tmp_path: Path) -
                 },
             },
         ),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
 
     assert result.status == "ok"
@@ -169,5 +168,5 @@ def test_apply_patch_raises_on_invalid_patch(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="malformed patch text"):
         tool.invoke(
             ToolCall(tool_name="apply_patch", arguments={"patch": "not a patch"}),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )

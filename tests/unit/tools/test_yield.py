@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.hook.typed import validate_tool_input_schema
 from voidcode.tools.contracts import ToolCall
-from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 from voidcode.tools.yield_tool import YieldTool
 
 
@@ -52,59 +52,43 @@ def test_yield_input_schema_matrix(arguments: dict[str, object], valid: bool) ->
     with pytest.raises(ValueError, match="input schema validation failed"):
         validate_tool_input_schema(YieldTool.definition, arguments)
 
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="child", parent_session_id="parent")):
-        with pytest.raises(ValueError, match="yield Validation error"):
-            YieldTool().invoke(ToolCall(tool_name="yield", arguments=arguments), workspace=Path("."))
+    with pytest.raises(ValueError, match="yield Validation error"):
+        YieldTool().invoke(
+            ToolCall(tool_name="yield", arguments=arguments),
+            context=ToolContext(workspace=Path("."), session_id="child", parent_session_id="parent"),
+        )
 
 
 def test_yield_invokes_error_only_terminal_payload() -> None:
     arguments = {"error": "child failed"}
     validate_tool_input_schema(YieldTool.definition, arguments)
 
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="child", parent_session_id="parent")):
-        result = YieldTool().invoke(ToolCall(tool_name="yield", arguments=arguments), workspace=Path("."))
+    result = YieldTool().invoke(
+        ToolCall(tool_name="yield", arguments=arguments),
+        context=ToolContext(workspace=Path("."), session_id="child", parent_session_id="parent"),
+    )
 
     assert result.status == "error"
     assert result.error == "child failed"
     assert result.data["yield_kind"] == "terminal_error"
 
 
-def test_yield_returns_summary_and_arbitrary_data_handoff() -> None:
-    tool = YieldTool()
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="child", parent_session_id="parent")):
-        result = tool.invoke(
-            ToolCall(
-                tool_name="yield",
-                arguments={
-                    "summary": "Inspected the runtime.",
-                    "data": {"completed_work": ["Read service.py"], "verification": ["pytest passed"]},
-                },
-            ),
-            workspace=Path("."),
-        )
-
-    assert result.status == "ok"
-    assert result.data["handoff"] == {
-        "summary": "Inspected the runtime.",
-        "data": {"completed_work": ["Read service.py"], "verification": ["pytest passed"]},
-    }
-
-
 def test_yield_is_rejected_for_top_level_session() -> None:
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader")):
-        with pytest.raises(ValueError, match="delegated child"):
-            YieldTool().invoke(ToolCall(tool_name="yield", arguments={"summary": "nope"}), workspace=Path("."))
+    with pytest.raises(ValueError, match="delegated child"):
+        YieldTool().invoke(
+            ToolCall(tool_name="yield", arguments={"summary": "nope"}),
+            context=ToolContext(workspace=Path("."), session_id="leader"),
+        )
 
 
 def test_yield_progress_is_nonterminal_and_supports_bounded_type_list() -> None:
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="child", parent_session_id="parent")):
-        result = YieldTool().invoke(
-            ToolCall(
-                tool_name="yield",
-                arguments={"type": ["progress", "checkpoint"], "result": "Read the storage boundary."},
-            ),
-            workspace=Path("."),
-        )
+    result = YieldTool().invoke(
+        ToolCall(
+            tool_name="yield",
+            arguments={"type": ["progress", "checkpoint"], "result": "Read the storage boundary."},
+        ),
+        context=ToolContext(workspace=Path("."), session_id="child", parent_session_id="parent"),
+    )
 
     assert result.status == "ok"
     assert result.data["yield_kind"] == "progress"

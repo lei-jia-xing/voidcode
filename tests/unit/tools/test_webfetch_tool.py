@@ -7,6 +7,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.web_fetch import WebFetchTool
 
@@ -38,7 +39,7 @@ def test_webfetch_markdown_uses_markdown_conversion_for_html() -> None:
                 tool_name="web_fetch",
                 arguments={"url": "https://example.com", "format": "markdown"},
             ),
-            workspace=Path("/tmp"),
+            context=ToolContext(workspace=Path("/tmp")),
         )
 
     assert result.status == "ok"
@@ -58,7 +59,7 @@ def test_webfetch_returns_attachment_for_image() -> None:
                 tool_name="web_fetch",
                 arguments={"url": "https://example.com/image.png", "format": "markdown"},
             ),
-            workspace=Path("/tmp"),
+            context=ToolContext(workspace=Path("/tmp")),
         )
 
     assert result.status == "ok"
@@ -80,7 +81,7 @@ def test_webfetch_rejects_localhost_targets() -> None:
                 tool_name="web_fetch",
                 arguments={"url": "http://127.0.0.1:8080", "format": "text"},
             ),
-            workspace=Path("/tmp"),
+            context=ToolContext(workspace=Path("/tmp")),
         )
 
 
@@ -97,7 +98,7 @@ def test_webfetch_rejects_redirect_to_localhost() -> None:
                     tool_name="web_fetch",
                     arguments={"url": "https://example.com", "format": "text"},
                 ),
-                workspace=Path("/tmp"),
+                context=ToolContext(workspace=Path("/tmp")),
             )
 
 
@@ -110,5 +111,5 @@ def test_webfetch_rejects_ipv4_mapped_ipv6_host() -> None:
                 tool_name="web_fetch",
                 arguments={"url": "http://[::ffff:127.0.0.1]/", "format": "text"},
             ),
-            workspace=Path("/tmp"),
+            context=ToolContext(workspace=Path("/tmp")),
         )

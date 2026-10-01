@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..core.tool_context import ToolContext
 from ._pydantic_args import parse_tool_args
-from .contracts import ToolCall, ToolDefinition, ToolResult
-from .runtime_context import require_runtime_tool_context
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 YIELD_PROGRESS_MAX_SECTIONS = 100
 YIELD_PROGRESS_MAX_SECTION_CHARS = 4_096
@@ -253,13 +252,13 @@ class YieldTool:
                 },
             ],
         },
-        read_only=True,
+        effects=frozenset({ToolEffect.SESSION}),
         replay_policy="never",
     )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:  # noqa: ARG002 — protocol-required workspace parameter.
-        context = require_runtime_tool_context(self.definition.name)
-        if context.parent_session_id is None:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        context.require_session_id()
+        if not context.parent_session_id:
             raise ValueError("yield is only available to delegated child sessions")
         args = parse_tool_args(YieldArgs, call.arguments, tool_name=self.definition.name)
         if not args.is_terminal():

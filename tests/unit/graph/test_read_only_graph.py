@@ -6,7 +6,7 @@ from voidcode.core.transcript import ContextSegment
 from voidcode.graph.contracts import GraphRunRequest, GraphSessionSnapshot
 from voidcode.graph.deterministic_graph import DeterministicGraph
 from voidcode.runtime.context.window import RuntimeAssembledContext
-from voidcode.tools.contracts import ToolDefinition, ToolResult
+from voidcode.tools.contracts import ToolDefinition, ToolEffect, ToolResult
 
 
 def _request(prompt: str) -> GraphRunRequest:
@@ -22,10 +22,10 @@ def _request(prompt: str) -> GraphRunRequest:
         prompt=prompt,
         assembled_context=assembled,
         available_tools=(
-            ToolDefinition(name="read", description="Read file", read_only=True),
-            ToolDefinition(name="grep", description="Grep files", read_only=True),
-            ToolDefinition(name="write", description="Write file", read_only=False),
-            ToolDefinition(name="shell_exec", description="Run shell command", read_only=False),
+            ToolDefinition(name="read", description="Read file", effects=frozenset({ToolEffect.READ})),
+            ToolDefinition(name="grep", description="Grep files", effects=frozenset({ToolEffect.READ})),
+            ToolDefinition(name="write", description="Write file", effects=frozenset({ToolEffect.WRITE})),
+            ToolDefinition(name="shell_exec", description="Run shell command", effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN})),
         ),
     )
 

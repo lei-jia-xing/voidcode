@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.tools.apply_patch import ApplyPatchTool
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.web_fetch import WebFetchTool
@@ -29,7 +30,7 @@ def test_apply_patch_symlink_escape_is_rejected_by_tool(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="inside the workspace"):
         ApplyPatchTool().invoke(
             ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
     assert (outside_dir / "escaped.txt").exists() is False
 
@@ -47,5 +48,5 @@ def test_web_fetch_security_boundary_blocks_dangerous_targets(url: str) -> None:
     with pytest.raises(ValueError):
         WebFetchTool().invoke(
             ToolCall(tool_name="web_fetch", arguments={"url": url, "format": "text"}),
-            workspace=Path("/tmp"),
+            context=ToolContext(workspace=Path("/tmp")),
         )

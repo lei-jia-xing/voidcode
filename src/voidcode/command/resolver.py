@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from ..tools.contracts import ToolCall, ToolDefinition
+from ..tools.contracts import ToolCall, ToolDefinition, is_read_tier
 from .models import CommandInvocation, CommandResolution
 from .registry import CommandRegistry
 from .templating import render_command_template, split_command_arguments
@@ -118,6 +118,6 @@ def _ensure_tool(
     read_only: bool,
     suffix: str,
 ) -> None:
-    if any(tool.name == tool_name and tool.read_only is read_only for tool in tools):
+    if any(tool.name == tool_name and is_read_tier(tool.effects) is read_only for tool in tools):
         return
     raise ValueError(f"{tool_name} tool is not registered for {suffix}")

@@ -7,9 +7,10 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, field_validator
 
+from ..core.tool_context import ToolContext
 from ..security.path_policy import resolve_workspace_path
 from ._pydantic_args import parse_tool_args, validate_non_empty
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 # ── Unified args model for merged AstGrepTool ───────────────────────────────
 
@@ -150,15 +151,16 @@ class AstGrepTool:
             "apply": {"type": "boolean"},
             "required": ["mode", "pattern", "path"],
         },
-        read_only=False,
+        effects=frozenset({ToolEffect.WRITE}),
         replay_policy="never",
     )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        workspace = context.require_workspace()
         return self._invoke(call, workspace=workspace, timeout_seconds=30)
 
-    def invoke_with_runtime_timeout(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
-        return self._invoke(call, workspace=workspace, timeout_seconds=timeout_seconds)
+    def invoke_with_runtime_timeout(self, call: ToolCall, *, context: ToolContext, timeout_seconds: int) -> ToolResult:
+        return self._invoke(call, workspace=context.require_workspace(), timeout_seconds=timeout_seconds)
 
     def _invoke(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
         args = self._validate_call(call)

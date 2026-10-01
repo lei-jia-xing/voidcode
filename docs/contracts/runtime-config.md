@@ -368,7 +368,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 
 字段语义：
 
-- `read_only` 直接进入 `ToolDefinition`，影响 runtime 的默认 permission policy（只读工具默认 allow，非只读工具默认 ask）；但 local custom tool 仍按 command execution 治理，不会仅凭声明绕过 approval、read-only mode 或 replay 约束。
+- `read_only` 是 local manifest 的声明输入，不是 `ToolDefinition` 的 boolean 字段。`true` 翻译成 `read/execute/spawn` effects，`false` 翻译成 `execute/spawn`；共享 read-tier 分类保留静态 scope 行为。所有 local argv 调用的实际 operation class 仍是 `execute`，不能凭声明绕过 approval、read-only ceiling 或 replay 约束。
 - `path_argument_keys` 是可选的字符串数组，列出 `ToolCall.arguments` 中应作为路径候选的字段名。runtime 将这些值传入统一的 permission context，用于 external-directory policy；它不会改变 local custom tool 的 `execute` operation class。
 
 执行语义：

@@ -2,18 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .runtime_context import RuntimeLspToolFacade, current_runtime_tool_context
+from ..core.tool_context import ToolContext
 
 
-def post_edit_lsp_diagnostics(*, workspace: Path, paths: list[str]) -> list[dict[str, object]]:
-    context = current_runtime_tool_context()
-    if context is None:
-        return []
+def post_edit_lsp_diagnostics(*, context: ToolContext, workspace: Path, paths: list[str]) -> list[dict[str, object]]:
     if context.lsp_diagnostics_on_write is False:
         return []
-    lsp: RuntimeLspToolFacade | None = context.lsp
+    lsp = context.lsp
     if lsp is None:
-        return []
+        raise RuntimeError("automatic post-edit diagnostics require an explicit LSP capability")
 
     diagnostics: list[dict[str, object]] = []
     seen: set[str] = set()

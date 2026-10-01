@@ -29,11 +29,11 @@
 
 | tier | 含义 | 当前判定 |
 | --- | --- | --- |
-| `read` | 读取数据，或只更新 UI-only 会话元数据 | `ToolDefinition.read_only` 为真（且无更强证据）的工具；`ast_grep` 的 search/preview；`task` 的 `output`/`ps`；`background_process` 的 `ps`/`logs` |
-| `write` | 变更 workspace/会话状态，但不执行任意代码 | 内置文件变更工具 `write` / `edit` / `multi_edit` / `apply_patch` / `apply_workspace_edit`；`ast_grep` 的 `replace`；`task` 的 `steer`；MCP server 工具 |
-| `execute` | 执行代码、起 shell、驱动浏览器、spawn agent 等宽泛操作 | `shell_exec`、`background_process_start`、`task`/`task_batch` 的 spawn 路径、`LocalCustomTool`，以及**任何未声明 tier 的工具** |
+| `read` | 读取数据，或提交 runtime-owned 会话状态 proposal | effects 经共享 `is_read_tier` 分类且无更强调用证据的工具；`ast_grep` 的 search/preview；`task` 的 `output`/`ps`；`background_process` 的 `ps`/`logs` |
+| `write` | 变更 workspace/会话状态，但不执行任意代码 | 内置文件变更工具 `write` / `edit` / `multi_edit` / `apply_patch` / `apply_workspace_edit`；`ast_grep` 的 `replace`；`task` 的 `steer`；未声明 read-only hint 的 MCP server 工具 |
+| `execute` | 执行代码、起 shell、spawn agent 等宽泛操作 | `shell_exec`、`background_process` 的进程控制、`task` 的 spawn 路径、`LocalCustomTool`，以及无 read-tier 声明的未知工具；`task_batch` 是 session submission，子调用仍独立受 runtime 治理 |
 
-**未声明 tier 的工具，以及任何格式非法的决策，都按 `execute` 处理**，这是未知自定义工具的安全默认；MCP server 工具按契约声明 `write`。
+**未声明 tier 的工具，以及任何格式非法的决策，都按 `execute` 处理**，这是未知自定义工具的安全默认；MCP read-only hint 翻译为 `read/network` effects，其他 MCP 工具为 `write/network`，实际调用分别归为 `read` / `write`。
 
 ### 审批模式（`ApprovalMode`）
 

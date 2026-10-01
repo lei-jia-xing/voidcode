@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from ..tools.contracts import Tool, ToolCall, ToolDefinition
+from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolEffect, is_read_tier
 from ..tools.local_custom import LocalCustomTool
 from ..tools.mcp import McpTool
 from .permission import OperationClass, PathScope
@@ -30,7 +30,7 @@ class RuntimePermissionContextResolver:
     ) -> tuple[PathScope, str | None, OperationClass, tuple[str, ...]]:
         operation_class = operation_class_for_tool(
             tool_call.tool_name,
-            tool.read_only,
+            tool.effects,
             tool_instance=tool_instance,
             arguments=tool_call.arguments,
         )
@@ -121,7 +121,7 @@ class RuntimePermissionContextResolver:
 
 def operation_class_for_tool(
     tool_name: str,
-    read_only: bool,
+    effects: frozenset[ToolEffect],
     *,
     tool_instance: Tool,
     arguments: dict[str, object] | None = None,
@@ -154,5 +154,5 @@ def operation_class_for_tool(
     # ``read`` while every other MCP tool is ``write`` rather than the generic
     # ``execute`` unknown-tool default.
     if isinstance(tool_instance, McpTool):
-        return "read" if read_only else "write"
-    return "read" if read_only else "execute"
+        return "read" if is_read_tier(effects) else "write"
+    return "read" if is_read_tier(effects) else "execute"

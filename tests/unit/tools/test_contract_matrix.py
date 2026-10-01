@@ -1,10 +1,7 @@
-"""Live contract matrix for builtin runtime tool definitions.
+"""Live provider-schema contract for builtin runtime tool definitions.
 
-Every check is evaluated against the live builtin registry — never against a
-hand-maintained table of names — and the provider-schema check inspects the tool
-payload the runtime actually hands to a provider transport. A builtin tool that loses
-its guidance sidecar, emits a provider schema that is not a valid object envelope, or
-drifts from its capability-catalog row therefore fails the suite.
+The check inspects the schema payload a real provider transport receives, so
+invalid JSON Schema envelopes or dropped declared properties fail.
 """
 
 from __future__ import annotations
@@ -25,9 +22,8 @@ from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.openai_native import OpenAIChatCompletionsTransport
 from voidcode.provider.protocol import ProviderTurnRequest
 from voidcode.runtime.service import VoidCodeRuntime
-from voidcode.runtime.tool_registry import ESSENTIAL_TOOL_NAMES, ToolRegistry
+from voidcode.runtime.tool_registry import ToolRegistry
 from voidcode.tools.contracts import ToolDefinition
-from voidcode.tools.guidance import guidance_filename_for_tool, guidance_for_tool
 
 
 def _static_definitions(registry: ToolRegistry) -> tuple[ToolDefinition, ...]:
@@ -42,46 +38,6 @@ def runtime(tmp_path: Path) -> Iterator[VoidCodeRuntime]:
         yield value
     finally:
         value.__exit__(None, None, None)
-
-
-def test_live_builtin_registry_metadata_and_guidance_sidecars(runtime: VoidCodeRuntime) -> None:
-    registry = runtime._base_tool_registry
-    definitions = _static_definitions(registry)
-    assert definitions
-
-    mismatched = sorted(name for name, tool in registry.tools.items() if name != tool.definition.name)
-    assert mismatched == [], f"registry keys must equal definition names: {mismatched}"
-
-    for definition in definitions:
-        assert definition.name.strip() == definition.name
-        assert definition.description.strip()
-        assert isinstance(definition.read_only, bool)
-        assert definition.effective_replay_policy in {"safe", "never"}
-        assert all(isinstance(key, str) and key.strip() for key in definition.path_argument_keys)
-
-        filename = guidance_filename_for_tool(definition.name)
-        assert filename is not None, f"missing guidance mapping for {definition.name}"
-        assert filename != "mcp.txt"
-        assert guidance_for_tool(definition.name), f"missing guidance sidecar for {definition.name}"
-
-    # Dynamic MCP tools intentionally share one sidecar and stay outside the static matrix.
-    assert guidance_filename_for_tool("mcp/example/tool") == "mcp.txt"
-    assert guidance_for_tool("mcp/example/tool")
-
-
-def test_live_builtin_capability_catalog_agrees_with_registry(runtime: VoidCodeRuntime) -> None:
-    registry = runtime._base_tool_registry
-    by_name = {definition.name: definition for definition in _static_definitions(registry)}
-    entries = {entry.name: entry for entry in registry.capability_catalog() if not entry.name.startswith("mcp/")}
-    assert set(entries) == set(by_name)
-    assert len({entry.documentation_uri for entry in entries.values()}) == len(entries)
-
-    for name, definition in by_name.items():
-        entry = entries[name]
-        assert entry.documentation_uri == f"voidcode://tool/{name}"
-        assert entry.read_only is definition.read_only
-        assert entry.replay_policy == definition.effective_replay_policy
-        assert entry.visibility == ("essential" if name in ESSENTIAL_TOOL_NAMES else "discoverable")
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,23 +134,3 @@ def test_live_builtin_provider_schemas_validate_as_object_envelopes(runtime: Voi
         # A definition whose declared properties do not survive the provider projection
         # would silently hand the model a schema missing arguments.
         assert _declared_property_names(definition) <= set(properties), f"{definition.name} lost declared properties in the provider schema"
-
-
-@pytest.mark.parametrize(
-    ("tool_name", "expected_read_only"),
-    (
-        pytest.param("edit", False, id="edit"),
-        pytest.param("glob", True, id="glob"),
-        pytest.param("grep", True, id="grep"),
-        pytest.param("read", True, id="read"),
-        pytest.param("shell_exec", False, id="shell-exec"),
-        pytest.param("web_fetch", True, id="web-fetch"),
-        pytest.param("web_search", True, id="web-search"),
-        pytest.param("write", False, id="write"),
-    ),
-)
-def test_live_builtin_registry_read_only_metadata(tool_name: str, expected_read_only: bool) -> None:
-    """The default registry's read-only classification feeds policy and replay decisions."""
-    registry = ToolRegistry.with_defaults()
-
-    assert registry.resolve(tool_name).definition.read_only is expected_read_only

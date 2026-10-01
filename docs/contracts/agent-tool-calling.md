@@ -54,7 +54,7 @@ Runtime 暴露给 agent 的工具元数据遵循以下 shape：
     "offset": {"type": "integer"},
     "limit": {"type": "integer"}
   },
-  "read_only": true
+  "effects": ["read"]
 }
 ```
 
@@ -63,14 +63,14 @@ Runtime 暴露给 agent 的工具元数据遵循以下 shape：
 - `name`：传给 `ToolCall.tool_name` 的稳定工具名；
 - `description`：面向 agent 的简短用途说明；
 - `input_schema`：参数对象的最小 schema；
-- `read_only`：runtime permission 默认策略的主要输入。
+- `effects`：`read/write/execute/network/spawn/session` 行为事实，不是权限授予；runtime 按实际调用、路径、规则和当前模式决定是否执行。
 
 ### Provider-visible metadata与按需 guidance
 
-provider 侧的 `ToolDefinition` 只发送 Python tool definition 提供的短、准确
-`description` 与 canonical `input_schema`，以及 runtime 治理所需的
-`read_only` 等元数据。provider-visible description 不包含 `src/voidcode/tools/*.txt`
-中的长篇操作 guidance；不要把 sidecar guidance 复制进 description 或 schema。
+provider 消费的 typed `ToolDefinition` 包含短、准确的 `description`、
+canonical `input_schema` 和 effect facts；具体 provider wire 由 adapter 编码。
+provider-visible description 不包含 `src/voidcode/tools/*.txt` 中的长篇操作
+guidance；不要把 sidecar guidance 复制进 description 或 schema。
 
 工具的完整操作说明只通过现有的内部 URL 按需读取：
 
@@ -79,7 +79,7 @@ read(path="voidcode://tool/<name>")
 ```
 
 该 URI 从当前 live registry 解析工具，返回完整 sidecar `guidance`、当前
-`input_schema` 和 `read_only`。因此它也适用于 essential/discoverable split
+`input_schema`、`effects` 和派生的 `read_only` 观察元数据。因此它也适用于 essential/discoverable split
 下未列在 provider 顶层的工具。读取文档不会授权或执行工具；需要调用时仍
 使用顶层工具或 `invoke_tool`，并由 runtime 重新执行 allowlist、permission、
 approval 和 replay policy 检查。动态 MCP/local tool 的事实以当前 registry、
@@ -119,10 +119,10 @@ Agent 发起工具调用时只提交工具名与参数对象：
 运行时负责：
 
 1. 从 registry 解析 `tool_name`；
-2. 根据 `ToolDefinition.read_only` 和当前 approval mode 做 permission 决策；
+2. 由 runtime 根据 effect facts、实际 operation class、路径、规则和当前模式做 permission 决策；
 3. 在允许执行时运行 pre-tool hooks；
 4. 在真正跨入工具执行边界时发出 `runtime.tool_started`；
-5. 调用工具实现；
+5. 通过 `invoke(call, context=ToolContext(...))` 传入真实 workspace、身份、read ledger、abort/progress 与该工具实际需要的 resource handles；
 6. 发出 tool result 事件并运行 post-tool hooks；
 7. 将 session、events、approval state 和 checkpoint 持久化。
 
@@ -195,21 +195,21 @@ Runtime 拥有工具执行生命周期：工具不得自行判定"这次调用�
 
 ## Permission 与 approval 规则
 
-`read_only` 是 agent-facing 合约中判断审批预期的核心字段。
+`ToolDefinition.effects` 描述行为；审批 authority 仍只属于 runtime。共享
+`is_read_tier(effects)` 保留静态 plan/tool-scope 分类；它不是执行许可。例如
+local manifest 的 `read_only=true` 翻译成 `read/execute/spawn`，可以通过静态
+read-tier 筛选，但每次 argv 调用仍是 `execute`，在 effective read-only 模式下被拒绝。
 
-| `read_only` | 默认 runtime 行为 | Agent 预期 |
-| --- | --- | --- |
-| `true` | 自动 `allow`，发出 `runtime.permission_resolved` | 可作为低风险上下文收集工具使用 |
-| `false` | 默认 `ask`，发出 `runtime.approval_requested` 并让 session 进入 `waiting` | 需要预期暂停、恢复或被拒绝 |
+| 实际 operation class | `ask` | `write` | `yolo`（默认） |
+| --- | --- | --- | --- |
+| `read` | 自动允许 | 自动允许 | 自动允许 |
+| `write` | 等待审批 | 自动允许 | 自动允许 |
+| `execute` | 等待审批 | 等待审批 | 自动允许 |
 
-CLI / server 可以通过 `--approval-mode allow|deny|ask` 或等价 runtime config 改变非只读工具的策略：
-
-- `allow`：非只读工具仍记录 permission / approval resolution，但可以继续执行；
-- `deny`：非只读工具会被拒绝，但拒绝会作为 `ToolResult(status="error")` 返回给
-  agent；agent 应选择只读替代方案、调整计划、请求其他路径或解释无法继续的约束；
-- `ask`：非只读工具暂停等待客户端 / 操作员决策。
-
-只读工具不应触发 approval。非只读工具包括写文件、编辑、patch、shell、格式化，以及动态 MCP 工具。
+此表不覆盖更高优先级的 agent/tool allowlist、plan/read-only ceiling、
+外部目录规则或显式 permission rules。`allow/deny/ask` 是单次 decision，
+不是 approval-mode 词表；拒绝以 `ToolResult(status="error")` 与
+`permission_denied` 诊断返回给模型。详见 [审批契约](approval-flow.md)。
 
 ### Approval request shape
 
@@ -270,7 +270,7 @@ are stable facts about the tools in that current scope and contain:
 - `name`: the runtime tool name;
 - `visibility`: `essential` or `discoverable`, using the existing
   `ESSENTIAL_TOOL_NAMES` split;
-- `read_only`: the tool definition's read-only fact;
+- `read_only`: observational static read-tier metadata derived from the definition's effects; not an authorization grant;
 - `replay_policy`: the effective replay policy (`safe` or `never`);
 - `documentation_uri`: `voidcode://tool/<name>` for on-demand tool
   documentation.
@@ -578,7 +578,7 @@ describes a non-essential tool; it is not an authorization decision.
 #### `todo`
 
 - 分组：agent work state
-- 只读：是（`ToolDefinition.read_only=true`；todo 状态视为 runtime work state，不进入 approval）
+- effects：`session`；返回当前 session 的 todo work-state proposal，runtime 负责持久化，工具不执行 workspace 写入。
 - 用途：对当前 session 的 runtime-owned todo phases 执行一个操作；工具不写 `.voidcode/todos.json` 或其他 workspace 文件。
 - 参数是单操作对象（没有 `todos` 数组包装）：
 
@@ -674,7 +674,7 @@ runtime 在成功的 mutation 后更新 session metadata 中的 runtime todo sta
 #### `ast_grep`
 
 - 分组：structural code search & rewrite
-- 只读：是（`ToolDefinition.read_only=true`，见 `src/voidcode/tools/ast_grep.py`；注意 `replace` 模式在 `apply=true` 时会实际改写文件，但 permission 策略仍按只读自动 allow，不会触发 approval）
+- effects：`write`（保守的静态 scope，plan 会隐藏/拒绝该工具）；实际调用中 search/preview 按 `read`、replace 按 `write` 治理，不能把 replace 当作只读自动放行。
 - 用途：用 ast-grep 做结构化代码匹配与改写；`search` / `preview` / `replace` 三种模式统一由一个工具表达。
 - 参数：
 
@@ -918,7 +918,7 @@ metadata/events 为准。
 
 1. **优先只读上下文收集。** 在没有足够上下文前，使用 `glob` / `read` / `grep` / `ast_grep` / `lsp` 收敛事实。
 2. **选择最窄工具。** 能用 `read` 就不要用 `shell_exec cat`；能用 `edit` 就不要完整 `write`。
-3. **预期 approval pause。** 所有 `read_only=false` 的调用都可能让 session 进入 `waiting`，agent 不应假设调用立即执行。
+3. **预期 approval pause。** 按实际 operation class、模式与规则决定审批，不从目录中的派生 `read_only` 推断执行许可。
 4. **把外部资料与本地事实分开。** `web_search` / `web_fetch` 给的是外部证据；本仓库状态仍以 workspace 工具和 runtime events 为准。
 5. **不要绕过 runtime。** UI、agent preset、graph / provider engine 都不应直接执行工具或自行处理审批。
 6. **读取 `ToolResult.data`，不要只读 `content`。** `content` 用于人类/agent 摘要，`data` 才是稳定结构化 metadata。
@@ -932,7 +932,7 @@ metadata/events 为准。
 {"tool_name": "read", "arguments": {"path": "docs/example.md"}}
 ```
 
-2. Runtime 自动 allow，因为 `read.read_only=true`。
+2. Runtime 在 workspace read 路径按 `read` operation class 和当前规则决定是否允许。
 
 3. Agent 生成最小 edit：
 
@@ -947,10 +947,10 @@ metadata/events 为准。
 }
 ```
 
-4. Runtime 发现 `edit.read_only=false`：
+4. Runtime 将 `edit` 的实际操作归为 `write`：
    - `approval-mode=ask`：发出 `runtime.approval_requested` 并暂停；
-   - `approval-mode=allow`：记录 allow 后执行；
-   - `approval-mode=deny`：拒绝执行。
+   - `approval-mode=write|yolo`：规则与其他 hard boundary 允许时执行；
+   - plan/read-only 或显式 deny rule：拒绝执行。
 
 5. 当 approval / permission 与 pre-tool hook 都已通过后，runtime 先发出 `runtime.tool_started`，表示真实工具执行开始。
 
@@ -962,5 +962,5 @@ metadata/events 为准。
   - `ToolDefinition` / 参数校验代码；
   - 相关单元或集成测试；
   - 本文档的工具目录、参数 shape、返回 shape 与选择指南。
-- 如果工具的 `read_only` 发生变化，必须同步检查 `docs/contracts/approval-flow.md` 中的审批预期。
+- 如果工具的 effects、实际 operation class 或 replay policy 变化，必须同步检查 `docs/contracts/approval-flow.md` 中的审批预期与冻结恢复语义。
 - 如果 agent preset 只改变“希望携带哪些工具”，更新 `src/voidcode/agent/` 文档；如果改变实际执行/审批/恢复语义，必须更新 runtime contracts。

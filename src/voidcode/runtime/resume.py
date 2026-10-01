@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..core.questions import QuestionResponse
 from ..graph.contracts import GraphRunRequest
 from ..provider.protocol import ProviderAbortSignal
 from ..tools.contracts import ToolCall, ToolResult
@@ -58,7 +59,7 @@ from .hook_runtime import (
 from .permission import PendingApproval, PermissionResolution
 from .permission_policy import permission_policy_for_session
 from .provider_metadata import validate_reasoning_effort_capability
-from .question import PendingQuestion, QuestionResponse
+from .question import PendingQuestion
 from .session import (
     SessionState,
     reload_persisted_session,

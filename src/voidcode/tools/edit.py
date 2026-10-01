@@ -8,6 +8,7 @@ from typing import ClassVar
 
 from rapidfuzz.distance import Levenshtein
 
+from ..core.tool_context import EditSchema, ToolContext
 from ..formatter import (
     FormatterExecutionResult,
     FormatterExecutor,
@@ -15,7 +16,6 @@ from ..formatter import (
     formatter_payload,
 )
 from ..hook.config import RuntimeHooksConfig
-from ..runtime.edit_schema_policy import EditSchema, EditSchemaResolver, select_edit_schema
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._repair import (
@@ -25,9 +25,8 @@ from ._repair import (
     looks_line_number_prefixed,
     raise_tool_diagnostic,
 )
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 from .guards import enforce_read_before_write, enforce_seen_lines
-from .runtime_context import current_runtime_tool_context
 
 
 def _normalize_line_endings(text: str) -> str:
@@ -633,7 +632,7 @@ class EditTool:
             },
             "required": ["path", "oldString", "newString", "expectedHash"],
         },
-        read_only=False,
+        effects=frozenset({ToolEffect.WRITE}),
         path_argument_keys=("path",),
     )
 
@@ -641,26 +640,11 @@ class EditTool:
         self,
         *,
         hooks_config: RuntimeHooksConfig | None = None,
-        edit_schema_resolver: EditSchemaResolver | None = None,
     ) -> None:
         self._hooks_config = hooks_config
-        self._edit_schema_resolver = edit_schema_resolver
 
-    def _edit_schema_for_current_model(self) -> EditSchema:
-        """Resolve the edit matching schema for the invoking model.
-
-        The model comes from the active runtime tool invocation context. With a
-        configured resolver the profile is model-specific; otherwise the pure
-        policy is applied without effectiveness data, which defaults to
-        ``EditSchema.FLEXIBLE`` (current behavior).
-        """
-        context = current_runtime_tool_context()
-        model = context.model if context is not None else None
-        if self._edit_schema_resolver is not None:
-            return self._edit_schema_resolver(model)
-        return select_edit_schema(model, None)
-
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        workspace = context.require_workspace()
         path_value = call.arguments.get("path")
         if not isinstance(path_value, str):
             raise ValueError("edit requires a string path argument")
@@ -694,6 +678,7 @@ class EditTool:
 
         display_path = str(candidate.resolve()) if resolution.is_external else candidate.relative_to(workspace_root).as_posix()
         enforce_read_before_write(
+            context=context,
             tool_name=self.definition.name,
             workspace=workspace_root,
             raw_path=path_value,
@@ -733,11 +718,12 @@ class EditTool:
             normalized_old,
             normalized_new,
             replace_all=replace_all,
-            edit_schema=self._edit_schema_for_current_model(),
+            edit_schema=context.edit_schema,
         )
 
         for start_line, end_line in match_ranges:
             enforce_seen_lines(
+                context=context,
                 tool_name=self.definition.name,
                 workspace=workspace_root,
                 raw_path=path_value,
@@ -780,6 +766,7 @@ class EditTool:
         if diagnostics:
             data["diagnostics"] = diagnostics
         lsp_diagnostics = post_edit_lsp_diagnostics(
+            context=context,
             workspace=workspace_root,
             paths=[display_path],
         )

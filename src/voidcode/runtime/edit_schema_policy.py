@@ -11,8 +11,9 @@ therefore selectable per model from observed edit effectiveness.
 from __future__ import annotations
 
 from collections.abc import Callable
-from enum import StrEnum
 from typing import TYPE_CHECKING
+
+from ..core.tool_context import EditSchema
 
 if TYPE_CHECKING:
     from .effectiveness import ToolEffectivenessReport
@@ -20,16 +21,6 @@ if TYPE_CHECKING:
 #: Fraction of a model's edit calls ending in ``ambiguous_match`` at or above
 #: which the model is considered to have low tolerance for fuzzy matching.
 AMBIGUOUS_MATCH_STRICT_THRESHOLD = 0.5
-
-
-class EditSchema(StrEnum):
-    """Matching strategy profile for the edit tool, selectable per model."""
-
-    FLEXIBLE = "flexible"
-    """The current 9-replacer fuzzy pipeline; the default for unknown models."""
-
-    STRICT = "strict"
-    """Exact-match only; any non-exact input fails with ``ambiguous_match``."""
 
 
 EditSchemaResolver = Callable[[str | None], EditSchema]

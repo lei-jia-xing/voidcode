@@ -10,9 +10,9 @@ a constant compared to itself.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -27,7 +27,7 @@ from voidcode.runtime.permission import (
 )
 from voidcode.runtime.permission_context import operation_class_for_tool
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
-from voidcode.tools.contracts import ToolCall, ToolDefinition
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect
 from voidcode.tools.glob import GlobTool
 from voidcode.tools.mcp import McpTool
 from voidcode.tools.shell_exec import ShellExecTool
@@ -51,11 +51,6 @@ _TIER_TOOLS: dict[OperationClass, tuple[ToolDefinition, ToolCall]] = {
 }
 
 
-@dataclass(slots=True)
-class _TierTool:
-    """A tool instance whose classification is the generic (non-MCP) path."""
-
-
 def _instance_for(tier: OperationClass) -> Any:
     if tier == "read":
         return GlobTool()
@@ -70,11 +65,10 @@ def test_mode_by_tier_matrix_drives_the_real_resolver(mode: ApprovalMode, tier: 
     definition, call = _TIER_TOOLS[tier]
     operation_class = operation_class_for_tool(
         call.tool_name,
-        definition.read_only,
+        definition.effects,
         tool_instance=_instance_for(tier),
         arguments=call.arguments,
     )
-    assert operation_class == tier
 
     outcome = resolve_permission(
         definition,
@@ -116,16 +110,18 @@ def test_default_mode_auto_approves_write_tier_through_the_real_path(tmp_path: P
     assert [event.payload["decision"] for event in approval_resolved] == ["allow"]
 
 
-def test_unknown_tool_defaults_to_execute_tier() -> None:
-    """A tool with no declaration and no read-only flag is the safe ``execute`` default."""
-    undeclared = _TierTool()
+def test_missing_effects_require_approval_but_explicit_read_does_not() -> None:
+    tool = GlobTool()
+    call = ToolCall(tool_name="custom_manifest_tool", arguments={})
+    for effects, expected_decision in ((frozenset(), "ask"), (frozenset({ToolEffect.READ}), "allow")):
+        definition = replace(tool.definition, name=call.tool_name, effects=effects)
+        operation = operation_class_for_tool(call.tool_name, definition.effects, tool_instance=tool, arguments=call.arguments)
+        outcome = resolve_permission(definition, call, policy=PermissionPolicy(mode="write"), operation_class=operation)
+        assert outcome.decision == expected_decision
+        assert (outcome.pending_approval is not None) == (expected_decision == "ask")
 
-    assert operation_class_for_tool("custom_manifest_tool", False, tool_instance=undeclared) == "execute"
-    assert operation_class_for_tool("custom_manifest_tool", True, tool_instance=undeclared) == "read"
 
-
-def test_mcp_tools_declare_write_tier() -> None:
-    """MCP server tools are ``write``: they mutate server state without running code."""
+def test_mcp_hints_preserve_real_write_and_ask_mode_admission() -> None:
     from voidcode.mcp.types import McpToolSafety
 
     def _mcp(server: str, tool: str, *, read_only: bool) -> McpTool:
@@ -135,14 +131,23 @@ def test_mcp_tools_declare_write_tier() -> None:
             description="MCP tool",
             input_schema={"type": "object"},
             safety=McpToolSafety(read_only=read_only),
-            requester=cast(Any, object()),
         )
 
     mutating = _mcp("demo", "mutate", read_only=False)
     inspecting = _mcp("demo", "inspect", read_only=True)
 
-    assert operation_class_for_tool("mcp/demo/mutate", mutating.definition.read_only, tool_instance=mutating) == "write"
-    assert operation_class_for_tool("mcp/demo/inspect", inspecting.definition.read_only, tool_instance=inspecting) == "read"
+    for tool, mode, expected_decision in (
+        (mutating, "write", "allow"),
+        (inspecting, "write", "allow"),
+        (mutating, "ask", "ask"),
+        (inspecting, "ask", "allow"),
+    ):
+        call = ToolCall(tool_name=tool.definition.name, arguments={})
+        operation = operation_class_for_tool(call.tool_name, tool.definition.effects, tool_instance=tool, arguments=call.arguments)
+        outcome = resolve_permission(tool.definition, call, policy=PermissionPolicy(mode=mode), operation_class=operation)
+        assert outcome.decision == expected_decision
+        if expected_decision == "ask":
+            assert outcome.pending_approval is not None
 
 
 def test_read_only_denial_still_wins_over_yolo_resolution() -> None:

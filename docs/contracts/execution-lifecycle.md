@@ -29,10 +29,15 @@
 | run 入口注册 / 注销 | `src/voidcode/runtime/service.py:1436`（注册）、`:1564`（注销） |
 | 用户中断取消 run 信号 | `src/voidcode/runtime/active_session.py:184` → `:220`（`set_cancelled`） |
 | request 级 abort flag | `src/voidcode/graph/provider_graph.py:264` → `:277` |
-| invocation 取消视图 | `src/voidcode/runtime/tool_execution.py:99`（`_InvocationCancelSignal`），每次调用创建于 `:286`，经 `_invoke_tool` 绑入工具上下文 |
-| 超时置位（停止等待之前） | `src/voidcode/runtime/tool_execution.py:367`、`:378` |
-| 工具侧读取该槽位 | `src/voidcode/tools/runtime_context.py:88` |
+| invocation 取消视图 | `runtime/tool_execution.py::_InvocationCancelSignal`；`_invoke_tool` 通过显式 `ToolContext` 传入，未使用 tool-identity ContextVar |
+| 超时置位（停止等待之前） | `runtime/tool_execution.py::_invoke_with_progress` |
+| 工具侧读取该槽位 | `core/tool_context.py::ToolContext.abort_signal` |
 | 超时不得把 run 变成 interrupted | run 信号的写点只有 `active_session.py:220` 与 `graph/provider_graph.py:277`；工具超时只写 invocation 信号 |
+
+runtime command 的绑定捕获真实 caller/session/run/invocation、approved call 和
+abort signal；`runtime/execution/tool_resources.py::bind_tool_command` 在实际
+dispatch 前拒绝已取消的调用，调用者换一个 context 或清掉 abort 不能扩大 authority。
+这不删除 runtime 的 execution-ownership ContextVar，也不承诺回滚已经发生的副作用。
 
 ## (b) 何时允许把结果提交为真相
 

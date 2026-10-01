@@ -8,19 +8,18 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, BinaryIO, ClassVar, cast, final
 
 from pydantic import BaseModel
 
+from ..core.tool_context import ToolContext
 from ..security.shell_policy import (
     DEFAULT_TIMEOUT_SECONDS,
     non_interactive_shell_env,
     resolve_shell_execution_policy,
 )
 from ._pydantic_args import NonEmptyCommand, OptionalDescription, parse_tool_args
-from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
-from .runtime_context import current_runtime_tool_context
+from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 
 class ShellExecArgs(BaseModel):
@@ -91,14 +90,11 @@ def _safe_emit_shell_progress(
         "byte_count": len(chunk),
         "truncated": truncated,
     }
-    context = current_runtime_tool_context()
-    effective_run_id = run_id if run_id is not None else context.run_id if context is not None else None
-    effective_invocation_id = invocation_id if invocation_id is not None else context.invocation_id if context is not None else None
-    if effective_run_id is not None:
-        payload["run_id"] = effective_run_id
-    if effective_invocation_id is not None:
-        payload["invocation_id"] = effective_invocation_id
-        payload["tool_call_id"] = effective_invocation_id
+    if run_id is not None:
+        payload["run_id"] = run_id
+    if invocation_id is not None:
+        payload["invocation_id"] = invocation_id
+        payload["tool_call_id"] = invocation_id
     try:
         progress_state.emit(
             stream_name=stream_name,
@@ -245,28 +241,29 @@ class ShellExecTool:
             },
             "required": ["command"],
         },
-        read_only=False,
+        effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN}),
     )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=None)
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        return self._invoke(call, context=context, runtime_timeout_seconds=None)
 
     def invoke_with_runtime_timeout(
         self,
         call: ToolCall,
         *,
-        workspace: Path,
+        context: ToolContext,
         timeout_seconds: int,
     ) -> ToolResult:
-        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=timeout_seconds)
+        return self._invoke(call, context=context, runtime_timeout_seconds=timeout_seconds)
 
     def _invoke(
         self,
         call: ToolCall,
         *,
-        workspace: Path,
+        context: ToolContext,
         runtime_timeout_seconds: int | None,
     ) -> ToolResult:
+        workspace = context.require_workspace()
         args = parse_tool_args(
             ShellExecArgs,
             {
@@ -304,11 +301,10 @@ class ShellExecTool:
         except OSError as exc:
             raise ValueError(f"shell_exec failed to execute command: {exc}") from exc
 
-        runtime_context = current_runtime_tool_context()
-        abort_signal = runtime_context.abort_signal if runtime_context is not None else None
-        emit_progress = runtime_context.emit_tool_progress if runtime_context is not None else None
-        progress_run_id = runtime_context.run_id if runtime_context is not None else None
-        progress_invocation_id = runtime_context.invocation_id if runtime_context is not None else call.tool_call_id
+        abort_signal = context.abort_signal
+        emit_progress = context.emit_tool_progress
+        progress_run_id = context.run_id
+        progress_invocation_id = context.invocation_id or call.tool_call_id
         deadline = time.monotonic() + timeout_seconds
         stdout_chunks: list[bytes] = []
         stderr_chunks: list[bytes] = []

@@ -3,25 +3,14 @@
 from __future__ import annotations
 
 import enum
-from importlib import import_module
 from pathlib import Path
-from typing import Any, ClassVar, Protocol
+from typing import ClassVar
 
 from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
 
-from .contracts import ToolCall, ToolDefinition, ToolResult
-
-
-class LspRequester(Protocol):
-    def __call__(
-        self,
-        *,
-        server_name: str | None,
-        method: str,
-        params: dict[str, object],
-        workspace: Path,
-    ) -> Any: ...
+from ..core.tool_context import LspRequester, LspRequestError, LspResponse, ToolContext
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 
 @enum.unique
@@ -95,11 +84,10 @@ class LspTool:
             "diagnostics": {"type": "array", "items": {"type": "object"}, "description": "Optional LSP diagnostics used as codeAction context."},
             "required": ["operation", "path"],
         },
-        read_only=True,
+        effects=frozenset({ToolEffect.READ}),
     )
 
-    def __init__(self, *, requester: LspRequester) -> None:
-        self._requester = requester
+    def __init__(self) -> None:
         self._converter = lsp_converters.get_converter()
 
     @staticmethod
@@ -119,7 +107,7 @@ class LspTool:
         method: str,
         params: dict[str, object],
         workspace: Path,
-    ) -> Any:
+    ) -> LspResponse:
         try:
             return requester(
                 server_name=server_name,
@@ -127,14 +115,14 @@ class LspTool:
                 params=params,
                 workspace=workspace,
             )
-        except ValueError as exc:
-            runtime_lsp = import_module("voidcode.runtime.lsp")
-            runtime_error = getattr(runtime_lsp, "LspRuntimeError", None)
-            if runtime_error is not None and isinstance(exc, runtime_error):
-                raise ValueError(f"LSP protocol error: {exc}") from exc
-            raise
+        except LspRequestError as exc:
+            raise ValueError(f"LSP protocol error: {exc}") from exc
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        workspace = context.require_workspace()
+        requester = context.lsp_request
+        if requester is None:
+            raise RuntimeError("lsp requires an explicit runtime-owned requester")
         op_value = call.arguments.get("operation")
         file_path = call.arguments.get("path")
         line = call.arguments.get("line")
@@ -258,7 +246,7 @@ class LspTool:
         if operation in (LspOperation.INCOMING_CALLS, LspOperation.OUTGOING_CALLS):
             assert position is not None
             prepare_result = self._invoke_requester(
-                self._requester,
+                requester,
                 server_name=server,
                 method=LspOperation.PREPARE_CALL_HIERARCHY.value,
                 params=self._converter.unstructure(
@@ -288,7 +276,7 @@ class LspTool:
             params = {"item": item}
 
             response = self._invoke_requester(
-                self._requester,
+                requester,
                 server_name=server,
                 method=operation.value,
                 params=params,
@@ -304,7 +292,7 @@ class LspTool:
             )
 
         response = self._invoke_requester(
-            self._requester,
+            requester,
             server_name=server,
             method=operation.value,
             params=params,

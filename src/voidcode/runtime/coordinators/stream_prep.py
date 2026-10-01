@@ -24,7 +24,6 @@ from ...provider.model_catalog import static_catalog_metadata
 from ...provider.protocol import ProviderAbortSignal
 from ...skills import SkillRegistry, skill_registry_with_builtins
 from ...tools.contracts import Tool, ToolResult
-from ...tools.mcp import McpRequester
 from ..config import RuntimeSkillsConfig
 from ..config_materializer import (
     EffectiveRuntimeConfig,
@@ -44,7 +43,7 @@ from ..contracts import (
     RuntimeRequest,
     RuntimeRequestError,
 )
-from ..lsp import LspManager, LspRequestResult
+from ..lsp import LspManager
 from ..mcp import McpManager
 from ..provider_metadata import validate_reasoning_effort_capability
 
@@ -72,7 +71,6 @@ class StreamPrepCoordinator:
         mcp_manager: McpManager | None = None,
         mcp_manager_is_injected: bool = False,
         graph_override_present: Callable[[], bool] | None = None,
-        request_mcp_tool: McpRequester | None = None,
     ) -> None:
         self._surface = surface
         self._default_context_window_policy = default_context_window_policy
@@ -85,7 +83,6 @@ class StreamPrepCoordinator:
         self._mcp_manager = mcp_manager
         self._mcp_manager_is_injected = mcp_manager_is_injected
         self._graph_override_present_fn = graph_override_present
-        self._request_mcp_tool_fn = request_mcp_tool
 
     def runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
         resolved = self._surface.effective_runtime_config_from_metadata(None)
@@ -190,14 +187,12 @@ class StreamPrepCoordinator:
     @staticmethod
     def build_lsp_tool_for_manager(
         lsp_manager: LspManager | None,
-        *,
-        request_lsp: Callable[..., LspRequestResult],
     ) -> Tool | None:
         if lsp_manager is None or lsp_manager.current_state().mode != "managed":
             return None
         from ...tools.lsp import LspTool
 
-        return LspTool(requester=request_lsp)
+        return LspTool()
 
     def skills_config_for_effective_config(
         self,
@@ -219,8 +214,6 @@ class StreamPrepCoordinator:
     @staticmethod
     def mcp_tools_from_descriptors(
         descriptors: Iterable[McpToolDescriptor],
-        *,
-        request_mcp_tool: McpRequester,
     ) -> tuple[Tool, ...]:
         from ...tools.mcp import McpTool
 
@@ -231,7 +224,6 @@ class StreamPrepCoordinator:
                 description=tool.description,
                 input_schema=tool.input_schema,
                 safety=tool.safety,
-                requester=request_mcp_tool,
             )
             for tool in descriptors
             if tool.enabled
@@ -240,11 +232,7 @@ class StreamPrepCoordinator:
     def build_mcp_tools(self) -> tuple[Tool, ...]:
         if self._mcp_manager is None or self._mcp_manager.current_state().mode != "managed":
             return ()
-        assert self._request_mcp_tool_fn is not None
-        return self.mcp_tools_from_descriptors(
-            self._mcp_manager.list_tools(workspace=self._workspace),
-            request_mcp_tool=self._request_mcp_tool_fn,
-        )
+        return self.mcp_tools_from_descriptors(self._mcp_manager.list_tools(workspace=self._workspace))
 
     def mcp_cached_surface(self) -> McpCachedToolSurface:
         """Passively remembered MCP surface for the configured servers."""

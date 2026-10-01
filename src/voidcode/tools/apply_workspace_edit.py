@@ -6,11 +6,12 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from ..core.tool_context import ToolContext
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._pydantic_args import parse_tool_args
 from ._repair import raise_tool_diagnostic
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 from .guards import enforce_seen_lines
 
 
@@ -48,11 +49,12 @@ class ApplyWorkspaceEditTool:
             },
             "required": ["edits"],
         },
-        read_only=False,
+        effects=frozenset({ToolEffect.WRITE}),
         path_argument_keys=("edits[].path",),
     )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        workspace = context.require_workspace()
         raw_edits = call.arguments.get("edits")
         if isinstance(raw_edits, list):
             for index, item in enumerate(raw_edits):
@@ -102,6 +104,7 @@ class ApplyWorkspaceEditTool:
             if start < 0 or end < start or end > len(current):
                 raise ValueError(f"apply_workspace_edit range is out of bounds: {edit.path}")
             enforce_seen_lines(
+                context=context,
                 tool_name=self.definition.name,
                 workspace=workspace,
                 raw_path=edit.path,
@@ -137,7 +140,7 @@ class ApplyWorkspaceEditTool:
                     pass
             raise
         display_paths = list(display_by_path.values())
-        diagnostics = post_edit_lsp_diagnostics(workspace=workspace, paths=display_paths)
+        diagnostics = post_edit_lsp_diagnostics(context=context, workspace=workspace, paths=display_paths)
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",

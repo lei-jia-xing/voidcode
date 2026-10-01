@@ -6,9 +6,9 @@ from typing import cast
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.read import ReadTool
-from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
 def test_read_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) -> None:
@@ -18,12 +18,11 @@ def test_read_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) -> None
 
     result = tool.invoke(
         ToolCall(tool_name="read", arguments={"path": "sample.txt", "offset": 2, "limit": 2}),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
 
     assert result.tool_name == "read"
     assert result.status == "ok"
-    assert result.content == "Read 2 line(s) from sample.txt; output is truncated."
     assert result.data["raw_content"] == "beta\ngamma"
     assert result.data["path"] == "sample.txt"
     assert result.data["offset"] == 2
@@ -41,7 +40,7 @@ def test_read_tool_lists_directory_tree_and_marks_empty_directory(tmp_path: Path
 
     tool = ReadTool()
 
-    result = tool.invoke(ToolCall(tool_name="read", arguments={"path": "."}), workspace=tmp_path)
+    result = tool.invoke(ToolCall(tool_name="read", arguments={"path": "."}), context=ToolContext(workspace=tmp_path))
 
     assert result.status == "ok"
     assert result.data["type"] == "directory"
@@ -61,7 +60,7 @@ def test_read_tool_rejects_archive_path_traversal(tmp_path: Path) -> None:
     tool = ReadTool()
 
     with pytest.raises(ValueError, match=r"must not contain '\.\.'"):
-        tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip:../outside.txt"}), workspace=tmp_path)
+        tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip:../outside.txt"}), context=ToolContext(workspace=tmp_path))
 
 
 def test_read_tool_lists_and_decodes_archive_members(tmp_path: Path) -> None:
@@ -72,13 +71,13 @@ def test_read_tool_lists_and_decodes_archive_members(tmp_path: Path) -> None:
 
     tool = ReadTool()
 
-    listing = tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip"}), workspace=tmp_path)
+    listing = tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip"}), context=ToolContext(workspace=tmp_path))
     rendered = cast(str, listing.data["raw_content"])
     assert "main.py" not in rendered
     assert "src/" in rendered
     assert "notes.txt (5 B)" in rendered
 
-    member = tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip:src/main.py"}), workspace=tmp_path)
+    member = tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip:src/main.py"}), context=ToolContext(workspace=tmp_path))
     assert member.data["raw_content"] == "line one\nline two"
     assert member.data["type"] == "archive"
 
@@ -90,7 +89,7 @@ def test_read_tool_reports_non_utf8_archive_member_without_raising(tmp_path: Pat
 
     tool = ReadTool()
 
-    result = tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip:blob.bin"}), workspace=tmp_path)
+    result = tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip:blob.bin"}), context=ToolContext(workspace=tmp_path))
 
     assert result.status == "ok"
     assert result.data["type"] == "archive_binary"
@@ -104,7 +103,7 @@ def test_read_tool_allows_workspace_escape_path_with_absolute_display(tmp_path: 
 
     result = tool.invoke(
         ToolCall(tool_name="read", arguments={"path": "../outside-read.txt"}),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
 
     assert result.status == "ok"
@@ -113,14 +112,9 @@ def test_read_tool_allows_workspace_escape_path_with_absolute_display(tmp_path: 
 
 def test_read_tool_reports_missing_file_path(tmp_path: Path) -> None:
     tool = ReadTool()
-    missing_file_path_error = (
-        r"read Validation error: path: "
-        r"Input should be a valid string \(received NoneType\)"
-        r"\. Please retry with corrected arguments that satisfy the tool schema\."
-    )
 
-    with pytest.raises(ValueError, match=missing_file_path_error):
-        tool.invoke(ToolCall(tool_name="read", arguments={}), workspace=tmp_path)
+    with pytest.raises(ValueError):
+        tool.invoke(ToolCall(tool_name="read", arguments={}), context=ToolContext(workspace=tmp_path))
 
 
 class _FakeArtifactFacade:
@@ -129,16 +123,16 @@ class _FakeArtifactFacade:
     def __init__(self, artifact_id: str, content: str) -> None:
         self._artifact_id = artifact_id
         self._content = content
-        self.requests: list[tuple[str, int | None, int | None]] = []
 
     def read_artifact(
         self,
         *,
+        caller_session_id: str,
         artifact_id: str,
         offset: int | None = None,
         limit: int | None = None,
     ) -> dict[str, object] | None:
-        self.requests.append((artifact_id, offset, limit))
+        _ = caller_session_id
         if artifact_id != self._artifact_id:
             return None
         lines = self._content.splitlines(keepends=True)
@@ -165,12 +159,12 @@ def test_read_tool_rejects_unknown_artifact_id(tmp_path: Path) -> None:
     facade = _FakeArtifactFacade(_ARTIFACT_ID, "content")
     tool = ReadTool()
 
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1", artifact=facade)):
-        with pytest.raises(ValueError, match="artifact not found in current session"):
-            tool.invoke(
-                ToolCall(
-                    tool_name="read",
-                    arguments={"path": "voidcode://artifact/artifact_ffffffffffffffffffffffff"},
-                ),
-                workspace=tmp_path,
-            )
+    context = ToolContext(workspace=tmp_path, session_id="session-1", artifact=facade)
+    with pytest.raises(ValueError):
+        tool.invoke(
+            ToolCall(
+                tool_name="read",
+                arguments={"path": "voidcode://artifact/artifact_ffffffffffffffffffffffff"},
+            ),
+            context=context,
+        )

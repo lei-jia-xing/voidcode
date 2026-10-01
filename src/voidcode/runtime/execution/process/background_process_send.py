@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, field_validator
 
-from .._pydantic_args import NonEmptyProcessId, parse_tool_args
-from ..contracts import ToolCall, ToolResult
-from ..runtime_context import current_runtime_tool_context
+from ....core.tool_context import ToolContext
+from ....tools._pydantic_args import NonEmptyProcessId, parse_tool_args
+from ....tools.contracts import ToolCall, ToolResult
 
 if TYPE_CHECKING:
     from .background_process import BackgroundProcessRuntime
@@ -32,17 +31,18 @@ class BackgroundProcessSendTool:
     def __init__(self, *, runtime: BackgroundProcessRuntime) -> None:
         self._runtime = runtime
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        workspace = context.require_workspace()
+        caller_session_id = context.require_session_id()
         args = parse_tool_args(_BackgroundProcessSendArgs, call.arguments, tool_name=self.name)
 
         text = args.input if not args.newline else f"{args.input}\n"
-        context = current_runtime_tool_context()
         manager = self._runtime.background_process_manager
         state = manager.load(
             args.process_id,
             workspace=workspace,
-            owner_session_id=context.session_id if context is not None else None,
-            enforce_owner=context is not None,
+            owner_session_id=caller_session_id,
+            enforce_owner=True,
         )
         if state is None:
             raise ValueError(f"unknown background process: {args.process_id}")
@@ -68,8 +68,8 @@ class BackgroundProcessSendTool:
             args.process_id,
             text,
             workspace=workspace,
-            owner_session_id=context.session_id if context is not None else None,
-            enforce_owner=context is not None,
+            owner_session_id=caller_session_id,
+            enforce_owner=True,
         )
         return ToolResult(
             tool_name=self.name,

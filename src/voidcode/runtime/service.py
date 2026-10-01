@@ -19,6 +19,8 @@ from ..command import (
     resolve_prompt_command,
 )
 from ..command.models import CommandDefinition
+from ..core.questions import QuestionResponse
+from ..core.tool_context import EditSchema
 from ..core.transcript import ContextSegment, ToolResultView
 from ..graph.contracts import GraphRunRequest, RuntimeGraph
 from ..hook.plan import ResolvedHookPlan, hook_plan_from_session_metadata, materialize_hook_plan
@@ -124,7 +126,7 @@ from .config_materializer import (
 )
 from .context.continuity import replayed_conversation_segments_from_events
 from .context.provider import inspect_provider_context
-from .context.rules import build_rule_catalog, rulebook_snapshot_from_payload, rulebook_snapshot_payload
+from .context.rules import build_rule_catalog, read_rule_uri, rulebook_snapshot_from_payload, rulebook_snapshot_payload
 from .context.transforms import (
     RuntimeContextTransformRegistry,
     build_provider_context_transform_result,
@@ -181,7 +183,7 @@ from .contracts import (
 from .coordinators.finalize import FinalizeCoordinator
 from .coordinators.inspection import InspectionCoordinator
 from .coordinators.stream_prep import StreamPrepCoordinator
-from .edit_schema_policy import EditSchema, EditSchemaResolver, select_edit_schema
+from .edit_schema_policy import EditSchemaResolver, select_edit_schema
 from .effectiveness import ToolEffectivenessReport
 from .event_envelopes import (
     envelopes_for_mcp_events,
@@ -197,7 +199,10 @@ from .events import (
     runtime_policy_observability_payload,
 )
 from .execution import chunk_builders
+from .execution.delegation.task import TaskCommand
+from .execution.delegation.task_batch import TaskBatchCommand
 from .execution.graph_adapter import graph_request_for_session, graph_session_snapshot
+from .execution.process.background_process import BackgroundProcessCommand
 from .execution.provider_execution_metadata import (
     run_id_from_session_metadata,
 )
@@ -206,11 +211,7 @@ from .execution.seams import (
     resolve_runtime_session_routing,
     select_graph_for_effective_config,
 )
-from .execution.tool_facades import (
-    _RuntimeArtifactReadFacade,
-    _RuntimeToolCatalogFacade,
-    _RuntimeTranscriptReadFacade,
-)
+from .execution.tool_resources import ToolCatalogReader, WorkspaceDiagnostics
 from .hook_preset_metadata import (
     hook_preset_event_payload_from_session_metadata,
     hook_preset_refs_for_agent,
@@ -252,7 +253,7 @@ from .provider_inspection import (
 from .provider_metadata import (
     ReasoningEffortCapability,
 )
-from .question import PendingQuestion, QuestionResponse
+from .question import PendingQuestion
 from .resume import RuntimeResumeCoordinator
 from .run_loop import RuntimeRunLoopCoordinator
 from .runtime_debug import (
@@ -643,11 +644,19 @@ class VoidCodeRuntime(RuntimeSurface):
             tool_input_handler_registry=self._tool_input_handler_registry,
             tool_executor=RuntimeToolExecutor(
                 workspace=self._workspace,
-                lsp=self,
+                lsp=WorkspaceDiagnostics(self._workspace, self.request_diagnostics),
                 lsp_diagnostics_on_write=bool(self._config.lsp is not None and self._config.lsp.diagnostics_on_write),
-                tool_catalog=_RuntimeToolCatalogFacade(self),
-                artifact=_RuntimeArtifactReadFacade(self),
-                transcript=_RuntimeTranscriptReadFacade(self),
+                tool_catalog=ToolCatalogReader(self.tool_catalog_lookup),
+                read_artifact=self.read_tool_output_artifact,
+                read_transcript=self.read_tool_transcript,
+                read_rule=read_rule_uri,
+                resolve_skill=self._skill_registry.resolve,
+                resolve_edit_schema=self._edit_schema_resolver(),
+                lsp_request=self.request_lsp,
+                mcp_request=self.request_mcp_tool,
+                task_command=TaskCommand(runtime=self).invoke,
+                task_batch_command=TaskBatchCommand(runtime=self).invoke,
+                process_command=BackgroundProcessCommand(runtime=self).invoke,
             ),
         )
         self._resume_coordinator = RuntimeResumeCoordinator(
@@ -697,7 +706,6 @@ class VoidCodeRuntime(RuntimeSurface):
             mcp_manager=self._mcp_manager,
             mcp_manager_is_injected=self._mcp_manager_is_injected,
             graph_override_present=lambda: self._graph_override is not None,
-            request_mcp_tool=self.request_mcp_tool,
         )
         self._finalize_coordinator = FinalizeCoordinator(
             self,
@@ -787,7 +795,7 @@ class VoidCodeRuntime(RuntimeSurface):
         """
         self._background_task_supervisor.shutdown(timeout_seconds=timeout_seconds)
 
-    def _tool_catalog_lookup(self, tool_name: str) -> ToolDefinition | None:
+    def tool_catalog_lookup(self, tool_name: str) -> ToolDefinition | None:
         """Read-only registry lookup for on-demand tool documentation.
 
         Resolves against the current materialization (base + MCP + local tools)
@@ -800,18 +808,15 @@ class VoidCodeRuntime(RuntimeSurface):
     def _build_base_tool_registry(self) -> ToolRegistry:
         # __init__-time path: the stream-prep coordinator does not exist yet,
         # so build the LSP tool through the static constructor directly.
-        lsp_tool = StreamPrepCoordinator.build_lsp_tool_for_manager(self._lsp_manager, request_lsp=self.request_lsp)
+        lsp_tool = StreamPrepCoordinator.build_lsp_tool_for_manager(self._lsp_manager)
         return ToolRegistry.with_defaults(
             lsp_tool=lsp_tool,
             hooks_config=self._config.hooks or RuntimeHooksConfig(),
-            edit_schema_resolver=self._edit_schema_resolver(),
-            skill_tool=SkillTool(
-                resolve_skill=self._skill_registry.resolve,
-            ),
-            task_batch_tool=TaskBatchTool(runtime=self),
-            task_tool=TaskTool(runtime=self),
+            skill_tool=SkillTool(),
+            task_batch_tool=TaskBatchTool(),
+            task_tool=TaskTool(),
             question_tool=QuestionTool(),
-            background_process_tool=BackgroundProcessTool(runtime=self),
+            background_process_tool=BackgroundProcessTool(),
         )
 
     def _edit_schema_resolver(self) -> EditSchemaResolver:
@@ -926,7 +931,7 @@ class VoidCodeRuntime(RuntimeSurface):
         return self._stream_prep_coordinator.skill_registry_for_effective_config(effective_config)
 
     def _mcp_tools_from_descriptors(self, descriptors: Iterable[McpToolDescriptor]) -> tuple[Tool, ...]:
-        return StreamPrepCoordinator.mcp_tools_from_descriptors(descriptors, request_mcp_tool=self.request_mcp_tool)
+        return StreamPrepCoordinator.mcp_tools_from_descriptors(descriptors)
 
     def _build_mcp_tools(self) -> tuple[Tool, ...]:
         return self._stream_prep_coordinator.build_mcp_tools()
@@ -2786,6 +2791,15 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def _load_session_result(self, *, session_id: str) -> RuntimeSessionResult:
         return self._inspection_coordinator._load_session_result(session_id=session_id)
+
+    def read_tool_transcript(
+        self,
+        *,
+        caller_session_id: str,
+        session_id: str,
+        limit: int | None = None,
+    ) -> dict[str, object] | None:
+        return self._inspection_coordinator.read_tool_transcript(caller_session_id=caller_session_id, session_id=session_id, limit=limit)
 
     def resolve_tool_output_artifact(
         self,

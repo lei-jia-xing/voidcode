@@ -47,11 +47,11 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
+from ..core.questions import QuestionResponse
 from ..runtime.config import RuntimeConfig, load_runtime_config
 from ..runtime.contracts import RuntimeRequest, RuntimeStreamChunk
 from ..runtime.events import EventEnvelope
 from ..runtime.permission import ApprovalMode
-from ..runtime.question import QuestionResponse
 from ..runtime.service import VoidCodeRuntime
 from ..runtime.session_metadata_helpers import session_model_identity
 from .composer import Composer, ComposerAction

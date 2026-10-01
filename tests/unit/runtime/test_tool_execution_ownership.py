@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.runtime.execution_ownership import EXECUTION_OWNERSHIP, ExecutionOwnershipRevokedError
 from voidcode.runtime.storage.sqlite import SqliteSessionStore
 from voidcode.runtime.tool_execution import RuntimeToolExecutor
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolInvocation, ToolResult
-from voidcode.tools.runtime_context import RuntimeLspToolFacade, RuntimeToolInvocationContext
 
 TASK_ID = "task-tool-thread-ownership"
 #: Distinct task id for the control case: the refusal registry is process-global
@@ -31,11 +31,6 @@ TASK_ID = "task-tool-thread-ownership"
 OWNED_TASK_ID = "task-tool-thread-ownership-live"
 SESSION_ID = "session-tool-thread"
 MARKER_EVENT = "runtime.tool_thread_marker"
-
-
-class _ToolFacade:
-    def __getattr__(self, _name: str) -> Any:
-        raise AssertionError("facade method should not be called")
 
 
 class _GatedRuntimeWriteTool:
@@ -54,8 +49,8 @@ class _GatedRuntimeWriteTool:
         self.release = threading.Event()
         self.error: BaseException | None = None
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = context
         self.entered.set()
         assert self.release.wait(timeout=15.0), "the tool was never released"
         try:
@@ -104,11 +99,11 @@ def _drive_tool_thread(
     store = _store(tmp_path, monkeypatch)
     lease = EXECUTION_OWNERSHIP.grant(workspace=tmp_path, task_id=task_id)
     tool = _GatedRuntimeWriteTool(store=store, workspace=tmp_path)
-    executor = RuntimeToolExecutor(workspace=tmp_path, lsp=cast(RuntimeLspToolFacade, _ToolFacade()))
+    executor = RuntimeToolExecutor(workspace=tmp_path)
     invocation = ToolInvocation(
         tool_call=ToolCall(tool_name="shell_exec", arguments={}, tool_call_id="call-1"),
         tool_definition=tool.definition,
-        context=RuntimeToolInvocationContext(session_id=SESSION_ID, run_id="run-1", invocation_id="call-1"),
+        context=ToolContext(session_id=SESSION_ID, run_id="run-1", invocation_id="call-1"),
     )
     outcomes: list[Any] = []
 

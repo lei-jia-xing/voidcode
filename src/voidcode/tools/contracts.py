@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
+from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, runtime_checkable
 
 from ..security.redaction import (
@@ -23,11 +23,37 @@ from ..security.redaction import (
 )
 
 if TYPE_CHECKING:
-    from .runtime_context import RuntimeToolInvocationContext
+    from ..core.tool_context import ToolContext
 
 type ToolResultStatus = Literal["ok", "error"]
 type ToolDiagnosticsDetails = dict[str, object]
 type ToolReplayPolicy = Literal["safe", "never"]
+
+
+class ToolEffect(StrEnum):
+    READ = "read"
+    WRITE = "write"
+    EXECUTE = "execute"
+    NETWORK = "network"
+    SPAWN = "spawn"
+    SESSION = "session"
+
+
+EXTERNAL_MUTATION_EFFECTS = frozenset({ToolEffect.WRITE, ToolEffect.EXECUTE, ToolEffect.SPAWN})
+_SESSION_COMMAND_EFFECTS = frozenset({ToolEffect.SESSION, ToolEffect.SPAWN})
+
+
+def has_external_mutations(effects: frozenset[ToolEffect]) -> bool:
+    return not effects.isdisjoint(EXTERNAL_MUTATION_EFFECTS)
+
+
+def is_read_tier(effects: frozenset[ToolEffect]) -> bool:
+    """Declared external read scope, independent of execution/resource effects."""
+    if not effects or ToolEffect.WRITE in effects:
+        return False
+    return ToolEffect.READ in effects or not has_external_mutations(effects) or ToolEffect.SESSION in effects and effects <= _SESSION_COMMAND_EFFECTS
+
+
 #: Side-effect state the runtime may claim for a timed-out execution. ``settled``
 #: means the runtime confirmed the execution stopped; it never means the side
 #: effects already performed were rolled back. ``unknown`` means the execution
@@ -172,7 +198,7 @@ class ToolDefinition:
     name: str
     description: str
     input_schema: dict[str, object] = field(default_factory=dict)
-    read_only: bool = True
+    effects: frozenset[ToolEffect] = frozenset({ToolEffect.READ})
     path_argument_keys: tuple[str, ...] = ()
     # Safe read/query tools may be replayed after a process crash. Mutating
     # tools default to never replay unless they explicitly opt in.
@@ -181,7 +207,7 @@ class ToolDefinition:
     def effective_replay_policy_for(self, arguments: Mapping[str, object] | None = None) -> ToolReplayPolicy:
         if self.name == "ast_grep" and arguments is not None and arguments.get("mode") in {"search", "preview"}:
             return "safe"
-        return self.replay_policy or ("safe" if self.read_only else "never")
+        return self.replay_policy or ("safe" if is_read_tier(self.effects) else "never")
 
     @property
     def effective_replay_policy(self) -> ToolReplayPolicy:
@@ -206,7 +232,7 @@ class ToolInvocation:
 
     tool_call: ToolCall
     tool_definition: ToolDefinition
-    context: RuntimeToolInvocationContext
+    context: ToolContext
 
     def __post_init__(self) -> None:
         if self.tool_call.tool_name != self.tool_definition.name:
@@ -255,7 +281,7 @@ class ToolResult:
 class StaticTool(Protocol):
     definition: ClassVar[ToolDefinition]
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult: ...
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult: ...
 
 
 @runtime_checkable
@@ -263,7 +289,7 @@ class DynamicTool(Protocol):
     @property
     def definition(self) -> ToolDefinition: ...
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult: ...
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult: ...
 
 
 @runtime_checkable
@@ -272,7 +298,7 @@ class RuntimeTimeoutAwareTool(Protocol):
         self,
         call: ToolCall,
         *,
-        workspace: Path,
+        context: ToolContext,
         timeout_seconds: int,
     ) -> ToolResult: ...
 

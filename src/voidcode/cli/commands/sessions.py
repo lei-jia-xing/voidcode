@@ -19,6 +19,7 @@ from ...cli_support import (
     serialize_session_state,
     serialize_stored_session_summary,
 )
+from ...core.questions import QuestionResponse
 from ...runtime.bundle import (
     SessionBundleFormat,
     SessionBundleOptions,
@@ -26,7 +27,6 @@ from ...runtime.bundle import (
 )
 from ...runtime.contracts import NoPendingQuestionError
 from ...runtime.permission import PermissionResolution
-from ...runtime.question import QuestionResponse
 from ...runtime.serialization import serialize_session_debug_snapshot, serialize_session_entry_summary
 from ...runtime.session import StoredSessionForestEntry, StoredSessionLineageEntry, StoredSessionSummary
 from ..errors import CliError

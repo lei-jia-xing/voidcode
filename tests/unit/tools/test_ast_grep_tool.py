@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.tools.ast_grep import AstGrepTool
 from voidcode.tools.contracts import ToolCall
 
@@ -57,7 +58,7 @@ def test_ast_grep_search_parses_json_stream_results(tmp_path: Path) -> None:
     with patch("subprocess.run", return_value=completed) as run_mock:
         result = tool.invoke(
             _search_call(pattern="print($X)", lang="python"),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
 
     assert result.status == "ok"
@@ -76,16 +77,16 @@ def test_ast_grep_search_rejects_invalid_arguments_and_workspace_escape(tmp_path
     tool = AstGrepTool()
 
     with pytest.raises(ValueError, match="Validation error"):
-        tool.invoke(_search_call(pattern=123), workspace=tmp_path)
+        tool.invoke(_search_call(pattern=123), context=ToolContext(workspace=tmp_path))
 
     with pytest.raises(ValueError, match="Validation error"):
-        tool.invoke(_search_call(pattern=""), workspace=tmp_path)
+        tool.invoke(_search_call(pattern=""), context=ToolContext(workspace=tmp_path))
 
     with pytest.raises(ValueError, match="Validation error"):
-        tool.invoke(_search_call(path=123), workspace=tmp_path)
+        tool.invoke(_search_call(path=123), context=ToolContext(workspace=tmp_path))
 
     with pytest.raises(ValueError, match="inside the workspace"):
-        tool.invoke(_search_call(path="../escape.py"), workspace=tmp_path)
+        tool.invoke(_search_call(path="../escape.py"), context=ToolContext(workspace=tmp_path))
 
 
 def test_ast_grep_preview_defaults_to_read_only_preview_mode(tmp_path: Path) -> None:
@@ -102,7 +103,7 @@ def test_ast_grep_preview_defaults_to_read_only_preview_mode(tmp_path: Path) -> 
     with patch("subprocess.run", return_value=completed) as run_mock:
         result = tool.invoke(
             _preview_call(pattern="print($X)", rewrite="logger.info($X)", lang="python"),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
 
     assert result.status == "ok"
@@ -129,7 +130,7 @@ def test_ast_grep_replace_can_apply_changes(tmp_path: Path) -> None:
     with patch("subprocess.run", side_effect=[preview_completed, apply_completed]) as run_mock:
         result = tool.invoke(
             _replace_call(pattern="print($X)", rewrite="logger.info($X)", apply=True),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
 
     assert result.status == "ok"
@@ -152,5 +153,5 @@ def test_ast_grep_replace_requires_apply_true(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="requires apply=True"):
         tool.invoke(
             _replace_call(apply=False),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )

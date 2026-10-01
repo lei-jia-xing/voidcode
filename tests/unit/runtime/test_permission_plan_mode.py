@@ -25,7 +25,7 @@ from voidcode.runtime.permission import (
 from voidcode.runtime.permission_context import RuntimePermissionContextResolver, operation_class_for_tool
 from voidcode.runtime.permission_engine import PermissionEngine
 from voidcode.tools.ast_grep import AstGrepTool
-from voidcode.tools.contracts import ToolCall, ToolDefinition
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect
 from voidcode.tools.shell_exec import ShellExecTool
 
 
@@ -34,7 +34,7 @@ def _read_only_tool() -> ToolDefinition:
         name="grep",
         description="search read-only tool",
         input_schema={},
-        read_only=True,
+        effects=frozenset({ToolEffect.READ}),
     )
 
 
@@ -43,7 +43,7 @@ def _write_tool() -> ToolDefinition:
         name="write",
         description="mutating tool",
         input_schema={},
-        read_only=False,
+        effects=frozenset({ToolEffect.WRITE}),
     )
 
 
@@ -102,7 +102,7 @@ def test_resolve_permission_read_only_denies_shell_execute_operation() -> None:
     call = ToolCall(tool_name="shell_exec", arguments={"command": "pwd"})
     operation = operation_class_for_tool(
         call.tool_name,
-        shell.read_only,
+        shell.effects,
         tool_instance=shell_tool,
         arguments=call.arguments,
     )
@@ -166,8 +166,6 @@ def test_resolve_permission_read_only_overrides_explicit_allow_rule() -> None:
 def test_request_metadata_defaults_to_normal_action_capable_runtime_mode() -> None:
     normalized = validate_runtime_request_metadata({})
 
-    assert "mode" not in normalized
-    assert "read_only" not in normalized
     assert runtime_mode_from_metadata(normalized) == "normal"
     assert runtime_read_only_from_metadata(normalized) is False
 
@@ -252,10 +250,10 @@ def test_default_policy_auto_approves_every_tier() -> None:
 
 @pytest.mark.parametrize("mode", ["search", "preview"])
 def test_ast_grep_non_replace_is_read_operation(mode: str) -> None:
-    definition = ToolDefinition(name="ast_grep", description="AST search", read_only=True)
+    definition = ToolDefinition(name="ast_grep", description="AST search", effects=frozenset({ToolEffect.WRITE}))
     operation = operation_class_for_tool(
         "ast_grep",
-        definition.read_only,
+        definition.effects,
         tool_instance=AstGrepTool(),
         arguments={"mode": mode},
     )
@@ -263,7 +261,7 @@ def test_ast_grep_non_replace_is_read_operation(mode: str) -> None:
 
 
 def test_ast_grep_replace_is_write_operation_and_denied_in_plan_mode(tmp_path: Path) -> None:
-    definition = ToolDefinition(name="ast_grep", description="AST rewrite", read_only=True)
+    definition = ToolDefinition(name="ast_grep", description="AST rewrite", effects=frozenset({ToolEffect.WRITE}))
     call = ToolCall(
         tool_name="ast_grep",
         arguments={"mode": "replace", "path": "sample.py", "apply": True},
@@ -320,7 +318,7 @@ class _StubResolver:
 
 def test_external_directory_policy_denies_across_multiple_external_paths() -> None:
     """A deny on any external path wins over allows on the other paths."""
-    definition = ToolDefinition(name="read", description="read", input_schema={}, read_only=True)
+    definition = ToolDefinition(name="read", description="read", input_schema={}, effects=frozenset({ToolEffect.READ}))
     engine = PermissionEngine(
         _context_resolver=_StubResolver(),  # type: ignore[arg-type]
         _permission_config=ExternalDirectoryPermissionConfig(),

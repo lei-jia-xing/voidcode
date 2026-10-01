@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel, field_validator
 
-from ..runtime.question import PendingQuestionOption, PendingQuestionPrompt, QuestionResponse
+from ..core.questions import PendingQuestionOption, PendingQuestionPrompt, QuestionResponse
+from ..core.tool_context import ToolContext
 from ._pydantic_args import parse_tool_args
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 
 class _QuestionOptionModel(BaseModel):
@@ -67,7 +67,7 @@ class QuestionTool:
             },
             "required": ["questions"],
         },
-        read_only=True,
+        effects=frozenset({ToolEffect.SESSION}),
     )
 
     @staticmethod
@@ -128,8 +128,8 @@ class QuestionTool:
             data={"responses": payload},
         )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = context
         prompts = self.parse_prompts(call.arguments)
         return ToolResult(
             tool_name=self.definition.name,

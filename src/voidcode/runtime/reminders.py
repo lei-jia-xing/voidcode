@@ -20,8 +20,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Final, Literal
 
+from ..core.todos import TodoPhase
 from ..core.transcript import ContextSegment
-from .todos import RuntimeTodoPhase
 
 #: ``session.metadata["runtime_state"]["reminders"]`` section key.
 REMINDERS_RUNTIME_STATE_KEY: Final[str] = "reminders"
@@ -319,8 +319,8 @@ def todo_mutation_count(
 ) -> int:
     """Successful mutation-tool results since the last successful todo call.
 
-    Mutability has one source: ``ToolDefinition.read_only`` (the same flag the
-    permission policy uses to auto-allow reads). ``todo`` results are the reset
+    Mutation classification uses effect-derived read-tier names supplied by
+    the runtime. ``todo`` results are the reset
     signal (upstream clears ``mutationsSinceLastTouch`` on a todo result), and a
     failed call does not count (upstream counts only successful results).
     """
@@ -335,7 +335,7 @@ def todo_mutation_count(
     )
 
 
-def incomplete_todo_phases(phases: Iterable[RuntimeTodoPhase]) -> tuple[tuple[str, tuple[str, ...]], ...]:
+def incomplete_todo_phases(phases: Iterable[TodoPhase]) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Project todo phases down to the incomplete tasks a reminder lists."""
     incomplete: list[tuple[str, tuple[str, ...]]] = []
     for phase in phases:

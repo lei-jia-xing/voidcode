@@ -1,6 +1,6 @@
 # Agent Core 重构实施计划
 
-状态：P0 治理基线与 P1 中立 lower contracts 已完成；P2–P6 架构迁移尚未实施。P1 不代表独立完整 turn engine 已完成。
+状态：P0 治理基线与 P1–P2 中立 contracts / 显式 tool invocation cutover 已完成实现和 scoped 行为验证；P2 待独占 milestone review/commit，P3–P6 尚未实施。P1–P2 不代表独立完整 turn engine 已完成。
 
 依据：[pi × VoidCode 可扩展性审计](../audits/pi-voidcode-extensibility.md)。审计是历史快照，不改写；本计划的当前状态须以源码和实际行为为准。目标覆盖审计 P0-1～P0-6、P1-7～P1-8、§5 的组合问题和 §8 全部十项验收，不把 roadmap 当成增加产品功能的授权。
 
@@ -32,8 +32,8 @@ runtime host：policy / approval / redaction / persistence / recovery /
 | P1：`core/transcript.py` 统一 `ToolResultView`、`ContextSegment`、`AssembledContext` 与 `ContextWindow`，provider/graph/runtime 全部真实消费者已切换 | provider/tool package init 已移除 eager facade；实际 graph import 不再经 command event re-export 加载 runtime |
 | `graph/provider_graph.py::step` 持有 batch、session/run identity、approval-resume 判断并组装 provider turn；`pending_tool_call_count` 决定 safe boundary | P3 提取真实 turn/batch 算法，不是给旧 graph 加一个 engine facade |
 | `runtime/run_loop.py::execute_graph_loop` 负责 context、steering、typed tool input、permission、intent、hook、execution、result、checkpoint 和 fallback | 抽出执行推进；治理、durable intent、safe checkpoint 和故障策略保留为 runtime host 行为 |
-| `runtime/run_loop.py::_execute_resolved_tool_call` 已汇聚 native、approval-resume、`invoke_tool` 的 executor/progress seam；`runtime/tool_execution.py` 仍 bind hidden context | P2 复用 canonical execution boundary，避免为三条调用路径各造一套 ToolContext/executor |
-| `tools/runtime_context.py` 使用 `ContextVar`，实际工具 context 隐藏；`ToolDefinition.read_only` 承担默认权限输入 | 显式 context + effect facts 全量迁移；default approval 语义不能因改字段而放宽 |
+| P2：`runtime/run_loop.py::_execute_resolved_tool_call` 汇聚 native、approval-resume、`invoke_tool`；`runtime/tool_execution.py` 显式传入 `core/tool_context.py::ToolContext` | canonical execution boundary 与 progress/timeout/lease 保持 runtime ownership，只绑定本次工具实际需要的窄 resource/command |
+| P2：旧 tool-identity ContextVar binder 与 runtime-shaped facade 已删除，`ToolDefinition.effects` 提供行为事实 | 共享 read-tier 分类与 per-call operation class 保留审批/plan 语义；public catalog 的派生 `read_only` 不是 grant，runtime execution-ownership ContextVar 仍保留 |
 | `runtime/storage/sqlite.py` 的 `SessionStore` 同时覆盖 events、sessions、approvals、tasks 和维护；已有 SQLite owners/mixins | P4 按实际消费者拆窄 ports，复用存储算法和事务，不先造远程/JSONL backend |
 | `runtime/tool_materializer.py` 已组合 base/MCP/local provenance，`RuntimeToolMaterialization` 可 scope registry | 复用 materialization seam；generation 有恢复消费者，不能因它是 hash 就删除 |
 | `runtime/service.py::_agent_capability_snapshot` 组装 agent/prompt/tools/skills/hooks/MCP/delegation/runtime/execution；`config_materializer.py` 管 persisted config | P5 收敛 intent、authority、frozen execution plan，保持 env/user/repo/request/persisted/parent precedence |
@@ -141,6 +141,18 @@ facade 调用者检查：`uv run pytest -q tests/unit/tools tests/unit/runtime/t
 **验证：** 临时 workspace 读写真实文件；write 等待 approval 时文件不存在，allow 后出现且只执行一次；deny 不执行且返回可供模型调整的 tool feedback；timeout/cancel 之后晚到 progress/result 不被持久化。MCP/LSP 用可控本地进程验证生命周期，不需要在线服务。
 
 **风险：** effect 翻译放宽默认权限、嵌套 invoke bypass、线程/progress 生命周期遗漏；不用 `session_id=""` 等伪默认值掩盖缺少真实依赖。
+
+**已完成（P2）：**
+
+- builtin、MCP、LSP、local custom、runtime executor 和实际直接消费者统一使用显式 `ToolContext`；workspace/session 不伪造。中立 question/todo/edit-schema values 移入 core，解析与持久化仍由 runtime 负责。
+- task/process 实现移到 `runtime/execution/delegation`、`runtime/execution/process`；工具只接收 approved call 与真实 caller/workspace/cancel 绑定的 command。session artifact/transcript reader 绑定真实 caller，不能换 caller 读取无关 session。取消前置 guard 有真实 SQLite child-registration regression。
+- standalone fresh-process smoke：真实 read/write、hash 校验、stale hash 不写入、空 identity 拒绝、缺失 session resource 报错；runtime modules loaded = 0。实际 native runtime smoke：approval 前无文件，restart/allow 后只写一次，completed reopen/replay 不重写，deny 反馈返回模型；local readonly 声明通过静态筛选但实际 plan argv 被 `execute` ceiling 拒绝。
+- 实际 native shell smoke：完成前可见增量 progress；timeout 确认子进程停止并标为 settled；用户取消后无 late marker 或 terminal 后 durable tool rows。实际取消事件仍是 `runtime.failed` + `cancelled:true`，没有修改 wire vocabulary。
+- 本地 stdio MCP/LSP 实际进程 smoke（独立验证）：真实响应、initialize/shutdown/stopped markers、runtime exit 后 PID 消失；无在线服务依赖。实际 CLI `VOIDCODE_EXECUTION_ENGINE=deterministic uv run voidcode run 'read probe.txt' --workspace <tmp> --json` 完成真实两行 read；`sessions list/entries` 观察到一次 tool completion。P2 未声称 TUI 验证。
+- 最新独立 checks：`uv run pytest -q tests/unit/tools` → **169 passed**；`uv run pytest tests/unit/runtime/test_permission_plan_mode.py tests/unit/runtime/test_tool_execution_ownership.py tests/unit/runtime/test_tool_execution_timeout.py tests/unit/runtime/test_typed_tool_hooks.py -q` → **69 passed**（与工具目录 disjoint，不与历史 78 汇总）。backend contract 残留 package-export fixture 切到真实 defining module 后，`uv run pytest -q tests/unit/runtime/test_backend_contracts.py` → **7 passed**。P2 owned source scoped `ruff check` / `ty check` 均通过；全仓门禁由 integration owner 在 milestone review 后运行。
+- 后续 consumer checks 暴露并修复遗漏的 ReadTool patched wrapper 与 empty-effects 默认误分类；未知 facts 在共享 classifier fail closed（scope/catalog/replay/permission 一致）。真实 resolver regression 不 pin tier 标签：`write` mode 下无 facts 要求 approval、显式 read 自动允许；MCP hint 经实际 `write/ask` admission 验证。`uv run pytest -q tests/unit/runtime/test_approval_mode_tiers.py` → **15 passed**。真实 scope/permission smoke 同时观察到 plan exclusion、replay `never`、`ask` pending 与 plan ceiling 对 `yolo` 的 deny。
+- 历史 SQLite 实测：由 P1 commit `d33e51d` 的真实源码生成 waiting approval 与 snapshot v3，当前 P2 批准后真实 write completion 一次；fresh reopen/replay 仍只有一次且文件 content/mtime 不变。这不是全量旧数据迁移证明；effects 与 declared replay policy 已纳入当前 generation fingerprint，P4/P5 仍负责后续冻结 shape/version 的显式迁移。
+
 
 ### P3：真实 turn engine 与 runtime host 单路径切换
 

@@ -18,6 +18,7 @@ from urllib.request import url2pathname
 from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
 
+from ..core.tool_context import LspRequestError
 from ..lsp import (
     ResolvedLspServerConfig,
     discover_workspace_root,
@@ -32,7 +33,7 @@ MAX_LSP_HEADER_BYTES = 8192
 MAX_LSP_MESSAGE_BYTES = 1024 * 1024
 
 
-class LspRuntimeError(ValueError):
+class LspRuntimeError(LspRequestError):
     """Base class for runtime-managed LSP failures."""
 
 

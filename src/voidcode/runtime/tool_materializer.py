@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Literal
 
-from ..tools.contracts import Tool
+from ..tools.contracts import Tool, is_read_tier
 from ..tools.local_custom import LocalCustomTool
 from .tool_registry import ToolRegistry
 
@@ -93,10 +93,12 @@ def _provenance(tool: Tool, *, source_kind: RuntimeToolSourceKind) -> RuntimeToo
     definition = tool.definition
     capability_payload: dict[str, object] = {
         "description": definition.description,
+        "effects": sorted(effect.value for effect in definition.effects),
         "input_schema": definition.input_schema,
         "name": definition.name,
         "path_argument_keys": list(definition.path_argument_keys),
-        "read_only": definition.read_only,
+        "read_only": is_read_tier(definition.effects),
+        "replay_policy": definition.replay_policy,
     }
     if source_kind == "local" and isinstance(tool, LocalCustomTool):
         capability_payload["source_fingerprint"] = tool.source_fingerprint

@@ -4,11 +4,11 @@ import threading
 import time
 from pathlib import Path
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.tool_execution import RuntimeToolExecutor
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolInvocation, ToolResult
-from voidcode.tools.runtime_context import RuntimeToolInvocationContext
 
 
 class _AbortSignal:
@@ -31,8 +31,8 @@ class _ProgressHangingTool:
     def __init__(self) -> None:
         self.started = False
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = call, workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = call, context
         self.started = True
         time.sleep(9999)
         return ToolResult(tool_name=self.definition.name, status="ok", content="unreachable")
@@ -54,7 +54,8 @@ def test_progress_capable_running_tool_interrupts_on_abort_signal(tmp_path: Path
         invocation=ToolInvocation(
             tool_call=ToolCall(tool_name=tool.definition.name, arguments={}),
             tool_definition=tool.definition,
-            context=RuntimeToolInvocationContext(
+            context=ToolContext(
+                workspace=tmp_path,
                 session_id="tool-abort",
                 abort_signal=abort_signal,
             ),

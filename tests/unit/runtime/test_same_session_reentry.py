@@ -21,12 +21,13 @@ from typing import Any, cast
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeRequestError
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 SESSION_ID = "reentry-session"
 _GATED_TOOL = "gated_tool"
@@ -35,14 +36,14 @@ _GATED_TOOL = "gated_tool"
 class _GatedTool:
     """Mutating tool that blocks until the test releases it."""
 
-    definition = ToolDefinition(name=_GATED_TOOL, description="Blocks until released.", read_only=False)
+    definition = ToolDefinition(name=_GATED_TOOL, description="Blocks until released.", effects=frozenset({ToolEffect.WRITE}))
 
     def __init__(self) -> None:
         self.started = threading.Event()
         self.release = threading.Event()
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = call, workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = call, context
         self.started.set()
         assert self.release.wait(timeout=20.0), "the gated tool was never released"
         return ToolResult(tool_name=self.definition.name, status="ok", content="gated done")

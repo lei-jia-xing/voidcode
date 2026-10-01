@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel, field_validator
 
-from ..skills.models import SkillMetadata
+from ..core.tool_context import ToolContext
 from ._pydantic_args import parse_tool_args, validate_non_empty_stripped
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 
 class _SkillArgs(BaseModel):
@@ -46,21 +44,15 @@ class SkillTool:
                 "description": "Optional command arguments or extra context for the skill.",
             },
         },
-        read_only=True,
+        effects=frozenset({ToolEffect.READ}),
     )
 
-    def __init__(
-        self,
-        *,
-        resolve_skill: Callable[[str], SkillMetadata],
-    ) -> None:
-        self._resolve_skill = resolve_skill
-
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         args = parse_tool_args(_SkillArgs, call.arguments, tool_name="skill")
 
-        skill = self._resolve_skill(args.name)
+        if context.resolve_skill is None:
+            raise RuntimeError("skill requires an explicit discovered skill reader")
+        skill = context.resolve_skill(args.name)
         content_lines = [
             f"## Skill: {skill.name}",
             f"**Description**: {skill.description}",

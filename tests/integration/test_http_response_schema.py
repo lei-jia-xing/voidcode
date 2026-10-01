@@ -34,6 +34,7 @@ from typing import Any, cast
 import pytest
 from pydantic import TypeAdapter
 
+from voidcode.core.questions import QuestionResponse
 from voidcode.runtime.active_session import ActiveRunInterruptResult
 from voidcode.runtime.background.models import (
     BackgroundTaskConcurrencyObservability,
@@ -83,7 +84,6 @@ from voidcode.runtime.contracts import (
 )
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.permission import PermissionResolution
-from voidcode.runtime.question import QuestionResponse
 from voidcode.runtime.session import SessionEntrySummary, SessionRef, SessionState, StoredSessionForestEntry, StoredSessionSummary
 from voidcode.runtime.transport import http_models
 from voidcode.runtime.transport.http_models import ResponseModel

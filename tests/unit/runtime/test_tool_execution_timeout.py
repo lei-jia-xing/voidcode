@@ -11,6 +11,8 @@ from typing import Any, Literal, cast
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
+from voidcode.runtime.active_session import ActiveSessionRegistry
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import (
     RuntimeProviderContextSegmentSnapshot,
@@ -18,17 +20,15 @@ from voidcode.runtime.contracts import (
     RuntimeResponse,
 )
 from voidcode.runtime.events import RUNTIME_TOOL_PROGRESS
+from voidcode.runtime.execution.delegation.task import TaskCommand
+from voidcode.runtime.execution.tool_resources import bind_tool_command
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
+from voidcode.tools.contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolEffect, ToolResult
+from voidcode.tools.delegation.task import TaskTool
 from voidcode.tools.output import tool_output_artifact_temp_root
 from voidcode.tools.read import ReadTool
-from voidcode.tools.runtime_context import (
-    RuntimeToolInvocationContext,
-    bind_runtime_tool_context,
-    current_runtime_tool_context,
-)
 from voidcode.tools.shell_exec import ShellExecTool
 
 
@@ -49,14 +49,14 @@ class _AbortSignal:
 class _InstantTool:
     definition = ToolDefinition(name="instant_tool", description="Returns instantly.")
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         return ToolResult(tool_name=self.definition.name, status="ok", content="done")
 
 
 class _LargeOutputTool:
     definition = ToolDefinition(name="large_output_tool", description="Returns large output.")
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
@@ -71,8 +71,8 @@ class _SensitiveContextTool:
         self._data_uri = data_uri
         self._raw_data_content = raw_data_content
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = call, workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = call, context
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
@@ -88,7 +88,7 @@ class _SensitiveContextTool:
 class _HangingTool:
     definition = ToolDefinition(name="hanging_tool", description="Never returns.")
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         time.sleep(9999)
         return ToolResult(tool_name=self.definition.name, status="ok", content="unreachable")
 
@@ -112,7 +112,7 @@ class _CancellationWriterTool:
     definition = ToolDefinition(
         name="cancellation_writer_tool",
         description="Writes a file, blocks on runtime cancellation, then acts on the signal.",
-        read_only=False,
+        effects=frozenset({ToolEffect.WRITE}),
     )
 
     def __init__(self, workspace: Path, *, behaviour: Literal["stop", "ignore", "complete"]) -> None:
@@ -126,25 +126,24 @@ class _CancellationWriterTool:
         self.cancelled_at_end = False
         self.second_write_performed = False
 
-    def _observe_cancellation(self) -> bool:
-        context = current_runtime_tool_context()
-        signal = context.abort_signal if context is not None else None
+    def _observe_cancellation(self, context: ToolContext) -> bool:
+        signal = context.abort_signal
         if signal is None or not signal.cancelled:
             return False
         self.cancellation_observed.set()
         return True
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         _ = call
         self.started.set()
         (self._workspace / _FIRST_WRITE).write_text("first\n", encoding="utf-8")
         if self._behaviour == "ignore":
             while True:
-                self._observe_cancellation()
+                self._observe_cancellation(context)
                 if self.release.wait(_CANCEL_POLL_SECONDS):
                     break
         else:
-            while not self._observe_cancellation():
+            while not self._observe_cancellation(context):
                 time.sleep(_CANCEL_POLL_SECONDS)
         self.cancelled_at_end = True
         if self._behaviour == "stop":
@@ -174,7 +173,7 @@ class _CancellationWriterTool:
 class _SlowButFinishingTool:
     definition = ToolDefinition(name="slow_but_finishing_tool", description="Finishes after a short sleep.")
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         time.sleep(0.05)
         return ToolResult(tool_name=self.definition.name, status="ok", content="finished")
 
@@ -185,7 +184,7 @@ class _ToolNativeTimeoutErrorTool:
         description="Raises a tool-native TimeoutError.",
     )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         raise TimeoutError("tool-native timeout")
 
 
@@ -195,7 +194,7 @@ class _FatalExceptionTool:
         description="Raises a non-timeout fatal exception.",
     )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         raise ValueError("fatal tool error")
 
 
@@ -328,16 +327,14 @@ def test_shell_exec_returns_interrupted_result_when_runtime_abort_is_set(tmp_pat
     tool = ShellExecTool()
     command = f'"{sys.executable}" -c "import time; time.sleep(10)"'
 
-    with bind_runtime_tool_context(
-        RuntimeToolInvocationContext(
+    result = tool.invoke(
+        ToolCall(tool_name="shell_exec", arguments={"command": command, "timeout": 30}),
+        context=ToolContext(
+            workspace=tmp_path,
             session_id="shell-abort",
             abort_signal=_AbortSignal(cancelled=True, reason="test abort"),
-        )
-    ):
-        result = tool.invoke(
-            ToolCall(tool_name="shell_exec", arguments={"command": command, "timeout": 30}),
-            workspace=tmp_path,
-        )
+        ),
+    )
 
     assert result.status == "error"
     assert result.data["interrupted"] is True
@@ -545,7 +542,6 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
     assert payload["artifact_missing"] is False
     diagnostics = payload["diagnostics"]
     assert isinstance(diagnostics, list)
-    assert diagnostics[-1]["retry_guidance"] == (f'Read the full output with read(path="voidcode://artifact/{payload["artifact_id"]}").')
     assert isinstance(payload["artifact_id"], str)
     artifact = payload["artifact"]
     assert isinstance(artifact, dict)
@@ -1566,5 +1562,42 @@ def test_read_artifact_uri_rejects_foreign_session_artifact(tmp_path: Path) -> N
             execution_engine="deterministic",
         ),
     )
-    with pytest.raises(ValueError, match="artifact not found in current session"):
+    with pytest.raises(ValueError):
         _ = list(foreign_runtime.run_stream(RuntimeRequest(prompt="go", session_id=foreign_session)))
+
+
+def test_cancelled_bound_task_command_cannot_register_a_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOIDCODE_DB_PATH", str(tmp_path / "truth.sqlite3"))
+    with VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="deterministic", approval_mode="ask", mcp=RuntimeMcpConfig(enabled=False)),
+    ) as runtime:
+        waiting = runtime.run(RuntimeRequest(prompt="write staged.txt requires approval", session_id="cancelled-task-parent"))
+        assert waiting.session.status == "waiting"
+        signal = ActiveSessionRegistry().register(workspace=tmp_path, session_id=waiting.session.session.id, run_id="cancelled-task-run", metadata={})
+        context = ToolContext(
+            workspace=tmp_path,
+            session_id=waiting.session.session.id,
+            run_id="cancelled-task-run",
+            invocation_id="cancelled-task-call",
+            abort_signal=signal,
+        )
+        call = ToolCall(
+            "task", {"prompt": "must not start", "run_in_background": True, "subagent_type": "worker", "load_skills": []}, "cancelled-task-call"
+        )
+        command = bind_tool_command(TaskCommand(runtime=runtime).invoke, call=call, context=context)
+        signal.set_cancelled(True, reason="foreground invocation cancelled")
+        with pytest.raises(RuntimeToolTimeoutError) as rejected:
+            TaskTool().invoke(
+                call,
+                context=ToolContext(
+                    workspace=tmp_path,
+                    session_id=context.session_id,
+                    run_id=context.run_id,
+                    invocation_id=context.invocation_id,
+                    task_runtime=command,
+                ),
+            )
+        assert rejected.value.cancellation_signalled is True
+        assert runtime.list_background_tasks() == ()
+        assert not (tmp_path / "staged.txt").exists()

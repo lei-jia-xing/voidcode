@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
 from typing import ClassVar
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -10,8 +9,9 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 from pydantic import BaseModel, field_validator
 
+from ..core.tool_context import ToolContext
 from ._pydantic_args import parse_tool_args, validate_non_empty
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 
 class WebSearchArgs(BaseModel):
@@ -317,23 +317,23 @@ class WebSearchTool:
             },
             "required": ["query"],
         },
-        read_only=True,
+        effects=frozenset({ToolEffect.READ, ToolEffect.NETWORK}),
     )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=None)
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = context
+        return self._invoke(call, runtime_timeout_seconds=None)
 
-    def invoke_with_runtime_timeout(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
-        return self._invoke(call, workspace=workspace, runtime_timeout_seconds=timeout_seconds)
+    def invoke_with_runtime_timeout(self, call: ToolCall, *, context: ToolContext, timeout_seconds: int) -> ToolResult:
+        _ = context
+        return self._invoke(call, runtime_timeout_seconds=timeout_seconds)
 
     def _invoke(
         self,
         call: ToolCall,
         *,
-        workspace: Path,
         runtime_timeout_seconds: int | None,
     ) -> ToolResult:
-        _ = workspace
         args = parse_tool_args(
             WebSearchArgs,
             {

@@ -600,6 +600,56 @@ class InspectionCoordinator:
         validate_agent_capability_snapshot(raw_snapshot)
         return result
 
+    def read_tool_transcript(
+        self,
+        *,
+        caller_session_id: str,
+        session_id: str,
+        limit: int | None = None,
+    ) -> dict[str, object] | None:
+        """Read bounded event identities for the caller or its delegated child."""
+        validate_id(caller_session_id)
+        self._load_stored_response(session_id=caller_session_id)
+        bounded_limit = min(max(limit if limit is not None else 20, 1), 100)
+        try:
+            target = self._load_session_result(session_id=session_id)
+        except UnknownSessionError, ValueError:
+            # An active run can precede its final capability snapshot.
+            try:
+                stored = self._load_stored_response(session_id=session_id)
+            except UnknownSessionError, ValueError:
+                return None
+            session_state = stored.session
+            events = stored.events
+            status = stored.session.status
+            summary = None
+        else:
+            session_state = target.session
+            events = target.transcript
+            status = target.status
+            summary = target.summary
+        if session_id != caller_session_id:
+            lineage_ok = session_state.session.parent_id == caller_session_id
+            if not lineage_ok:
+                task = self._session_store.load_background_task_by_child_session(
+                    workspace=self._workspace,
+                    child_session_id=session_id,
+                )
+                lineage_ok = task is not None and task.parent_session_id == caller_session_id
+            if not lineage_ok:
+                return None
+        selected = events[:bounded_limit]
+        return {
+            "session_id": session_id,
+            "status": status,
+            "summary": summary,
+            "last_event_sequence": events[-1].sequence if events else 0,
+            "message_limit": bounded_limit,
+            "transcript_count": len(selected),
+            "transcript_truncated": len(events) > len(selected),
+            "transcript": [{"sequence": event.sequence, "event_type": event.event_type, "source": event.source} for event in selected],
+        }
+
     def _events_with_runtime_policy_projection(
         self,
         events: tuple[EventEnvelope, ...],

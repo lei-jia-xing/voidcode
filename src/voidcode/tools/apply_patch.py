@@ -12,12 +12,13 @@ from typing import ClassVar, cast
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
+from ..core.tool_context import ToolContext
 from ..formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._repair import format_text_repair_hints, raise_tool_diagnostic
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 from .guards import enforce_read_before_write, enforce_seen_lines, enforce_seen_whole_file
 
 
@@ -392,6 +393,7 @@ def _verify_patch_expected_hashes(
 def _apply_marker_patch(
     patch_text: str,
     *,
+    context: ToolContext,
     workspace: Path,
     expected_hashes: dict[str, str] | None = None,
 ) -> ToolResult:
@@ -465,6 +467,7 @@ def _apply_marker_patch(
         guard_path = change.old_path or change.path
         target = workspace / guard_path
         enforce_read_before_write(
+            context=context,
             tool_name="apply_patch",
             workspace=workspace,
             raw_path=guard_path,
@@ -493,6 +496,7 @@ def _apply_marker_patch(
         target = workspace / guard_path
         if change.status == "D":
             enforce_seen_whole_file(
+                context=context,
                 tool_name="apply_patch",
                 workspace=workspace,
                 raw_path=guard_path,
@@ -503,6 +507,7 @@ def _apply_marker_patch(
             continue
         for start_line, end_line in ranges_by_source.get(guard_path, ()):
             enforce_seen_lines(
+                context=context,
                 tool_name="apply_patch",
                 workspace=workspace,
                 raw_path=guard_path,
@@ -901,6 +906,7 @@ def _formatter_feedback_for_changes(
 def _with_formatter_feedback(
     result: ToolResult,
     *,
+    context: ToolContext,
     workspace: Path,
     hooks_config: RuntimeHooksConfig | None,
 ) -> ToolResult:
@@ -921,6 +927,7 @@ def _with_formatter_feedback(
     # Independent write-path feedback: LSP post-edit diagnostics are collected
     # regardless of formatter feedback.
     lsp_diagnostics = post_edit_lsp_diagnostics(
+        context=context,
         workspace=workspace,
         paths=changed_paths,
     )
@@ -947,6 +954,7 @@ def _with_formatter_feedback(
 def _guard_changes_before_write(
     changes: list[dict[str, object]],
     *,
+    context: ToolContext,
     workspace: Path,
     tool_name: str,
 ) -> None:
@@ -959,6 +967,7 @@ def _guard_changes_before_write(
         if status == "A":
             continue
         enforce_read_before_write(
+            context=context,
             tool_name=tool_name,
             workspace=workspace.resolve(),
             raw_path=guard_path,
@@ -970,6 +979,7 @@ def _guard_changes_before_write(
 
 def _enforce_patch_seen_ranges(
     *,
+    context: ToolContext,
     patch_text: str,
     workspace: Path,
     tool_name: str,
@@ -999,6 +1009,7 @@ def _enforce_patch_seen_ranges(
             if length <= 0:
                 continue
             enforce_seen_lines(
+                context=context,
                 tool_name=tool_name,
                 workspace=workspace,
                 raw_path=guard_path,
@@ -1248,13 +1259,14 @@ class ApplyPatchTool:
             },
             "required": ["patch"],
         },
-        read_only=False,
+        effects=frozenset({ToolEffect.WRITE}),
     )
 
     def __init__(self, *, hooks_config: RuntimeHooksConfig | None = None) -> None:
         self._hooks_config = hooks_config
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        workspace = context.require_workspace()
         patch_text = call.arguments.get("patch")
         if not isinstance(patch_text, str):
             raise ValueError("apply_patch requires a string 'patch' argument")
@@ -1283,16 +1295,8 @@ class ApplyPatchTool:
             )
 
         if _looks_like_marker_patch(patch_text):
-            result = _apply_marker_patch(
-                patch_text,
-                workspace=workspace,
-                expected_hashes=expected_hashes,
-            )
-            return _with_formatter_feedback(
-                result,
-                workspace=workspace.resolve(),
-                hooks_config=self._hooks_config,
-            )
+            result = _apply_marker_patch(patch_text, workspace=workspace, expected_hashes=expected_hashes, context=context)
+            return _with_formatter_feedback(result, workspace=workspace.resolve(), hooks_config=self._hooks_config, context=context)
 
         normalized_patch = _normalize_patch_text(patch_text)
         _validate_unified_patch_paths(patch_text, workspace=workspace)
@@ -1308,11 +1312,7 @@ class ApplyPatchTool:
                 ),
                 details={"affected_paths": [], "patch_invalid": True},
             )
-        _guard_changes_before_write(
-            changes,
-            workspace=workspace,
-            tool_name=self.definition.name,
-        )
+        _guard_changes_before_write(changes, workspace=workspace, tool_name=self.definition.name, context=context)
         patch_path = workspace / ".voidcode_apply_patch.patch"
         patch_path.write_text(normalized_patch, encoding="utf-8", newline="\n")
         try:
@@ -1342,11 +1342,7 @@ class ApplyPatchTool:
             )
 
             # Require every source line the hunks touch to have been revealed by read.
-            _enforce_patch_seen_ranges(
-                patch_text=normalized_patch,
-                workspace=workspace,
-                tool_name=self.definition.name,
-            )
+            _enforce_patch_seen_ranges(patch_text=normalized_patch, workspace=workspace, tool_name=self.definition.name, context=context)
 
             mode_only = _looks_like_mode_only_patch(patch_text)
             mode_only_before = _capture_mode_only_state(changes=changes, workspace=workspace) if mode_only else {}
@@ -1401,11 +1397,7 @@ class ApplyPatchTool:
                 content=content,
                 data={"changes": changes, "count": len(changes)},
             )
-            return _with_formatter_feedback(
-                result,
-                workspace=workspace.resolve(),
-                hooks_config=self._hooks_config,
-            )
+            return _with_formatter_feedback(result, workspace=workspace.resolve(), hooks_config=self._hooks_config, context=context)
         finally:
             try:
                 patch_path.unlink(missing_ok=True)

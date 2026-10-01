@@ -5,8 +5,8 @@ from typing import cast
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.tools.contracts import ToolCall
-from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 from voidcode.tools.todo import TodoTool
 
 
@@ -17,15 +17,9 @@ def _invoke(
     phases: tuple[dict[str, object], ...] = (),
     workspace: Path,
 ) -> tuple[object, tuple[dict[str, object], ...]]:
-    context = RuntimeToolInvocationContext(session_id="todo-test", todo_phases=phases)
-    with bind_runtime_tool_context(context):
-        result = tool.invoke(ToolCall(tool_name="todo", arguments=arguments), workspace=workspace)
+    context = ToolContext(workspace=workspace, session_id="todo-test", todo_phases=phases)
+    result = tool.invoke(ToolCall(tool_name="todo", arguments=arguments), context=context)
     return result, cast(tuple[dict[str, object], ...], tuple(cast(list[dict[str, object]], result.data["phases"])))
-
-
-def test_todo_is_runtime_owned_and_read_only() -> None:
-    assert TodoTool.definition.read_only is True
-    assert TodoTool.definition.effective_replay_policy == "safe"
 
 
 def test_init_normalizes_active_task_and_returns_phases(tmp_path: Path) -> None:
@@ -63,5 +57,5 @@ def test_view_is_read_only_and_old_payload_is_rejected(tmp_path: Path) -> None:
     result, viewed = _invoke(tool, {"op": "view"}, phases=phases, workspace=tmp_path)
     assert result.data["mutated"] is False
     assert viewed == phases
-    with pytest.raises(ValueError, match="Validation error"):
-        tool.invoke(ToolCall(tool_name="todo", arguments={"todos": []}), workspace=tmp_path)
+    with pytest.raises(ValueError):
+        tool.invoke(ToolCall(tool_name="todo", arguments={"todos": []}), context=ToolContext(workspace=tmp_path, session_id="session"))

@@ -1,20 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
+from copy import deepcopy
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..runtime.todos import (
-    TODO_STATUSES,
-    RuntimeTodoPhase,
-    RuntimeTodoSummary,
-    RuntimeTodoTask,
-    is_todo_status,
-)
+from ..core.todos import TodoPhase, TodoTask, todo_summary
+from ..core.tool_context import ToolContext
 from ._pydantic_args import parse_tool_args
-from .contracts import ToolCall, ToolDefinition, ToolResult
-from .runtime_context import require_runtime_tool_context
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 
 class _TodoArgsModel(BaseModel):
@@ -34,47 +28,8 @@ class _TodoArgsModel(BaseModel):
         return value
 
 
-def _copy_phases(raw: object) -> list[RuntimeTodoPhase]:
-    if not isinstance(raw, (tuple, list)):
-        raise ValueError("runtime todo state must contain phases")
-    phases: list[RuntimeTodoPhase] = []
-    for raw_phase in raw:
-        if set(raw_phase) - {"name", "tasks"}:
-            raise ValueError("runtime todo phase has unsupported fields")
-        name = raw_phase.get("name")
-        raw_tasks = raw_phase.get("tasks")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("runtime todo phase name must be non-empty")
-        if not isinstance(raw_tasks, (tuple, list)):
-            raise ValueError("runtime todo phase tasks must be an array")
-        tasks: list[RuntimeTodoTask] = []
-        for raw_task in raw_tasks:
-            if set(raw_task) - {"content", "status", "blocker"}:
-                raise ValueError("runtime todo task has unsupported fields")
-            content = raw_task.get("content")
-            status = raw_task.get("status")
-            if not isinstance(content, str) or not content.strip():
-                raise ValueError("runtime todo task content must be non-empty")
-            if not is_todo_status(status):
-                raise ValueError(f"runtime todo task has invalid status: {status}")
-            task: RuntimeTodoTask = {"content": content.strip(), "status": status}
-            blocker = raw_task.get("blocker")
-            if status == "blocked":
-                if blocker is not None and not isinstance(blocker, str):
-                    raise ValueError("blocked todo reason must be a string")
-                if isinstance(blocker, str) and blocker:
-                    task["blocker"] = blocker
-            tasks.append(task)
-        phases.append({"name": name.strip(), "tasks": tasks})
-    return phases
-
-
-def _state_from_runtime() -> list[RuntimeTodoPhase]:
-    return _copy_phases(require_runtime_tool_context("todo").todo_phases)
-
-
-def _normalize_in_progress(phases: list[RuntimeTodoPhase]) -> None:
-    active: RuntimeTodoTask | None = None
+def _normalize_in_progress(phases: list[TodoPhase]) -> None:
+    active: TodoTask | None = None
     for phase in phases:
         for task in phase["tasks"]:
             if task["status"] != "in_progress":
@@ -92,37 +47,21 @@ def _normalize_in_progress(phases: list[RuntimeTodoPhase]) -> None:
                 return
 
 
-def _summary(phases: list[RuntimeTodoPhase]) -> RuntimeTodoSummary:
-    counts = {status: 0 for status in TODO_STATUSES}
-    for phase in phases:
-        for task in phase["tasks"]:
-            counts[task["status"]] += 1
-    return {
-        "total": sum(counts.values()),
-        "pending": counts["pending"],
-        "in_progress": counts["in_progress"],
-        "completed": counts["completed"],
-        "abandoned": counts["abandoned"],
-        "blocked": counts["blocked"],
-        "active": counts["pending"] + counts["in_progress"],
-    }
-
-
-def _task_locations(phases: list[RuntimeTodoPhase], content: str) -> list[RuntimeTodoTask]:
+def _task_locations(phases: list[TodoPhase], content: str) -> list[TodoTask]:
     return [task for phase in phases for task in phase["tasks"] if task["content"] == content]
 
 
-def _phase_by_name(phases: list[RuntimeTodoPhase], name: str) -> RuntimeTodoPhase | None:
+def _phase_by_name(phases: list[TodoPhase], name: str) -> TodoPhase | None:
     return next((phase for phase in phases if phase["name"] == name), None)
 
 
 def _target_tasks(
-    phases: list[RuntimeTodoPhase],
+    phases: list[TodoPhase],
     *,
     task: str | None,
     phase: str | None,
     required: bool = False,
-) -> list[RuntimeTodoTask]:
+) -> list[TodoTask]:
     if task is not None and phase is not None:
         raise ValueError("todo operation accepts either task or phase, not both")
     if task is not None:
@@ -142,13 +81,13 @@ def _target_tasks(
     return [item for current in phases for item in current["tasks"]]
 
 
-def _init_phases(args: _TodoArgsModel) -> list[RuntimeTodoPhase]:
+def _init_phases(args: _TodoArgsModel) -> list[TodoPhase]:
     if args.list_ is not None and args.items is not None:
         raise ValueError("init accepts list or items, not both")
     if args.list_ is None and (args.items is None or not args.items):
         raise ValueError("init requires a non-empty list or items")
     if args.list_ is not None:
-        phases: list[RuntimeTodoPhase] = []
+        phases: list[TodoPhase] = []
         seen_phases: set[str] = set()
         seen_tasks: set[str] = set()
         for raw_phase in args.list_:
@@ -161,7 +100,7 @@ def _init_phases(args: _TodoArgsModel) -> list[RuntimeTodoPhase]:
             if not isinstance(raw_items, list) or not raw_items:
                 raise ValueError(f'init phase "{name.strip()}" requires items')
             seen_phases.add(name.strip())
-            tasks: list[RuntimeTodoTask] = []
+            tasks: list[TodoTask] = []
             for item in raw_items:
                 if not isinstance(item, str) or not item.strip():
                     raise ValueError("todo item must be a non-empty string")
@@ -176,7 +115,7 @@ def _init_phases(args: _TodoArgsModel) -> list[RuntimeTodoPhase]:
     phase_name = (args.phase or "Tasks").strip()
     if not phase_name:
         raise ValueError("init phase name must be non-empty")
-    tasks: list[RuntimeTodoTask] = []
+    tasks: list[TodoTask] = []
     seen_tasks: set[str] = set()
     for item in args.items:
         if not isinstance(item, str) or not item.strip():
@@ -189,7 +128,7 @@ def _init_phases(args: _TodoArgsModel) -> list[RuntimeTodoPhase]:
     return [{"name": phase_name, "tasks": tasks}]
 
 
-def _apply(args: _TodoArgsModel, phases: list[RuntimeTodoPhase]) -> None:
+def _apply(args: _TodoArgsModel, phases: list[TodoPhase]) -> None:
     if args.op == "init":
         phases[:] = _init_phases(args)
         _normalize_in_progress(phases)
@@ -263,7 +202,7 @@ def _apply(args: _TodoArgsModel, phases: list[RuntimeTodoPhase]) -> None:
             normalized_items.append(content)
         target = _phase_by_name(phases, args.phase.strip())
         if target is None:
-            new_phase: RuntimeTodoPhase = {"name": args.phase.strip(), "tasks": []}
+            new_phase: TodoPhase = {"name": args.phase.strip(), "tasks": []}
             phases.append(new_phase)
             target = new_phase
         target["tasks"].extend({"content": content, "status": "pending"} for content in normalized_items)
@@ -272,7 +211,7 @@ def _apply(args: _TodoArgsModel, phases: list[RuntimeTodoPhase]) -> None:
     _normalize_in_progress(phases)
 
 
-def _render(phases: list[RuntimeTodoPhase], op: str) -> str:
+def _render(phases: list[TodoPhase], op: str) -> str:
     if not any(phase["tasks"] for phase in phases):
         return "Todo list is empty." if op == "view" else "Todo list cleared."
     lines = [f"Todo {op} applied."]
@@ -308,13 +247,13 @@ class TodoTool:
             "reason": {"type": "string", "description": "Optional reason for block"},
             "required": ["op"],
         },
-        read_only=True,
+        effects=frozenset({ToolEffect.SESSION}),
     )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        context.require_session_id()
         args = parse_tool_args(_TodoArgsModel, call.arguments, tool_name=self.definition.name)
-        phases = _state_from_runtime()
+        phases: list[TodoPhase] = [deepcopy(phase) for phase in context.todo_phases]
         _apply(args, phases)
         return ToolResult(
             tool_name=self.definition.name,
@@ -322,7 +261,7 @@ class TodoTool:
             content=_render(phases, args.op),
             data={
                 "phases": phases,
-                "summary": _summary(phases),
+                "summary": todo_summary(phases),
                 "op": args.op,
                 "mutated": args.op != "view",
             },

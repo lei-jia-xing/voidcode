@@ -12,8 +12,8 @@ from pathlib import Path
 from string import Template
 from typing import BinaryIO, final
 
-from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolDiagnostics, ToolResult
-from .runtime_context import current_runtime_tool_context
+from ..core.tool_context import ToolContext
+from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolDiagnostics, ToolEffect, ToolResult
 
 LOCAL_CUSTOM_TOOL_SOURCE = "local_custom_tool"
 LOCAL_CUSTOM_TOOL_DEFAULT_PATH = ".voidcode/tools"
@@ -227,15 +227,15 @@ def _validate_rendered_manifest_dir_command_parts(
 class LocalCustomTool:
     def __init__(self, manifest: LocalCustomToolManifest) -> None:
         self._manifest = manifest
-
-    @property
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
-            name=self._manifest.name,
-            description=self._manifest.description,
-            input_schema=self._manifest.input_schema,
-            read_only=self._manifest.read_only,
-            path_argument_keys=self._manifest.path_argument_keys,
+        self.definition = ToolDefinition(
+            name=manifest.name,
+            description=manifest.description,
+            input_schema=manifest.input_schema,
+            effects=frozenset({ToolEffect.READ, ToolEffect.EXECUTE, ToolEffect.SPAWN})
+            if manifest.read_only
+            else frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN}),
+            replay_policy="safe" if manifest.read_only else "never",
+            path_argument_keys=manifest.path_argument_keys,
         )
 
     @property
@@ -251,13 +251,14 @@ class LocalCustomTool:
         encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("utf-8")
         return sha256(encoded).hexdigest()
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        return self._invoke(call, workspace=workspace, timeout_seconds=None)
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        return self._invoke(call, context=context, timeout_seconds=None)
 
-    def invoke_with_runtime_timeout(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
-        return self._invoke(call, workspace=workspace, timeout_seconds=timeout_seconds)
+    def invoke_with_runtime_timeout(self, call: ToolCall, *, context: ToolContext, timeout_seconds: int) -> ToolResult:
+        return self._invoke(call, context=context, timeout_seconds=timeout_seconds)
 
-    def _invoke(self, call: ToolCall, *, workspace: Path, timeout_seconds: int | None) -> ToolResult:
+    def _invoke(self, call: ToolCall, *, context: ToolContext, timeout_seconds: int | None) -> ToolResult:
+        workspace = context.require_workspace()
         resolved_workspace = workspace.resolve()
         command = self._render_command(workspace=resolved_workspace)
         _validate_rendered_manifest_dir_command_parts(
@@ -266,10 +267,11 @@ class LocalCustomTool:
             manifest_path=self._manifest.manifest_path,
             workspace=resolved_workspace,
         )
-        env = self._build_environment(call=call, workspace=resolved_workspace)
+        env = self._build_environment(call=call, context=context, workspace=resolved_workspace)
         start = time.monotonic()
         completed, stdout, stderr = self._run_command(
             command=command,
+            context=context,
             workspace=resolved_workspace,
             env=env,
             input_text=json.dumps(call.arguments),
@@ -314,6 +316,7 @@ class LocalCustomTool:
     def _run_command(
         self,
         *,
+        context: ToolContext,
         command: tuple[str, ...],
         workspace: Path,
         env: dict[str, str],
@@ -348,8 +351,7 @@ class LocalCustomTool:
                     process.stdin.close()
                 except OSError:
                     pass
-            context = current_runtime_tool_context()
-            abort_signal = context.abort_signal if context is not None else None
+            abort_signal = context.abort_signal
             deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
             while process.poll() is None:
                 if abort_signal is not None and abort_signal.cancelled:
@@ -383,15 +385,14 @@ class LocalCustomTool:
             for part in self._manifest.command
         )
 
-    def _build_environment(self, *, call: ToolCall, workspace: Path) -> dict[str, str]:
+    def _build_environment(self, *, call: ToolCall, context: ToolContext, workspace: Path) -> dict[str, str]:
         env = dict(os.environ)
-        context = current_runtime_tool_context()
         env["VOIDCODE_WORKSPACE"] = str(workspace)
         env["VOIDCODE_TOOL_NAME"] = self._manifest.name
         if call.tool_call_id is not None:
             env["VOIDCODE_TOOL_CALL_ID"] = call.tool_call_id
-        if context is not None:
-            env["VOIDCODE_SESSION_ID"] = context.session_id
+        if context.session_id is not None:
+            env["VOIDCODE_SESSION_ID"] = context.require_session_id()
             if context.parent_session_id is not None:
                 env["VOIDCODE_PARENT_SESSION_ID"] = context.parent_session_id
             env["VOIDCODE_DELEGATION_DEPTH"] = str(context.delegation_depth)

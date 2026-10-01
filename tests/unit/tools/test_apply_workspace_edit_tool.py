@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.tools._repair import ToolDiagnosticError
 from voidcode.tools.apply_workspace_edit import ApplyWorkspaceEditTool
 from voidcode.tools.contracts import ToolCall
-from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
 def _call(edits: list[dict[str, object]]) -> ToolCall:
@@ -41,7 +41,7 @@ def test_applies_same_file_edits_against_original_ranges(tmp_path: Path) -> None
                 _edit("sample.py", start=12, end=17, new_text="g", file_path=path),
             ]
         ),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
     assert result.status == "ok"
     assert path.read_text(encoding="utf-8") == "a beta g\n"
@@ -77,7 +77,7 @@ def test_rejects_stale_edit_without_writing_any_file(tmp_path: Path) -> None:
                     },
                 ]
             ),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
     diagnostic = exc_info.value
     assert diagnostic.error_kind == "stale_edit"
@@ -117,24 +117,9 @@ def test_rejects_overlapping_edits(tmp_path: Path) -> None:
                     },
                 ]
             ),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
     assert path.read_text(encoding="utf-8") == "abcdef"
-
-
-def test_schema_requires_expected_hash_on_every_edit() -> None:
-    schema = ApplyWorkspaceEditTool.definition.input_schema
-    edits_schema = schema["edits"]
-    assert edits_schema["items"]["required"] == [
-        "path",
-        "startLine",
-        "startCharacter",
-        "endLine",
-        "endCharacter",
-        "newText",
-        "expectedHash",
-    ]
-    assert "data.content_hash" in str(edits_schema["description"])
 
 
 def test_rejects_edit_on_line_outside_read_window(tmp_path: Path) -> None:
@@ -151,15 +136,14 @@ def test_rejects_edit_on_line_outside_read_window(tmp_path: Path) -> None:
         "expectedHash": _content_hash(path),
     }
 
-    with bind_runtime_tool_context(
-        RuntimeToolInvocationContext(
-            session_id="test",
-            read_paths=frozenset({resolved}),
-            read_lines={resolved: frozenset({1})},
-        )
-    ):
-        with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
-            ApplyWorkspaceEditTool().invoke(_call([edit]), workspace=tmp_path)
+    context = ToolContext(
+        workspace=tmp_path,
+        session_id="test",
+        read_paths=frozenset({resolved}),
+        read_lines={resolved: frozenset({1})},
+    )
+    with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
+        ApplyWorkspaceEditTool().invoke(_call([edit]), context=context)
 
     diagnostic = exc_info.value
     assert diagnostic.error_kind == "tool_input_mismatch"

@@ -54,6 +54,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **core/tools:** require explicit `ToolContext` for every tool invocation and replace `ToolDefinition.read_only` with behavior effects (breaking: no hidden invocation binder or compatibility facade); move task/process execution to runtime-owned commands, bind scoped resources to the approved caller/call/workspace, and reject cancelled commands before dispatch while preserving runtime approval, progress, replay and execution-lease ownership.
+
 
 - **runtime:** rename the approval mode `always-ask` to `ask` and default to `yolo` — the vocabulary is now `ask` / `write` / `yolo` (`runtime/permission.py::APPROVAL_MODES`) and an unset `approval_mode` auto-approves every tool tier instead of only `read` (breaking: `always-ask` is rejected with the new vocabulary, no aliasing; a workspace that relied on prompting for `write`/`execute` must set `approval_mode: "ask"` or `"write"` explicitly)
 

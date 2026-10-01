@@ -6,11 +6,11 @@ from typing import Any
 
 import pytest
 
+from voidcode.core.questions import QuestionResponse
 from voidcode.graph.contracts import GraphEvent, GraphRunRequest, GraphSession
 from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.paths import sessions_db_path
 from voidcode.runtime.permission import PermissionPolicy
-from voidcode.runtime.question import QuestionResponse
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
 from voidcode.tools.contracts import ToolCall
 

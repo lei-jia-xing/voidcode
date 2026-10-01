@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.tools._repair import ToolDiagnosticError
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.multi_edit import MultiEditTool
-from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
 def _content_hash(path: Path) -> str:
@@ -32,7 +32,7 @@ def test_multi_edit_applies_multiple_edits_in_order(tmp_path: Path) -> None:
                 ],
             },
         ),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
 
     content = target.read_text(encoding="utf-8")
@@ -53,7 +53,7 @@ def test_multi_edit_rejects_empty_edits(tmp_path: Path) -> None:
                 tool_name="multi_edit",
                 arguments={"path": "sample.txt", "edits": []},
             ),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
 
 
@@ -77,7 +77,7 @@ def test_multi_edit_reports_failing_edit_index_with_underlying_diagnostic(
                     ],
                 },
             ),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
 
     message = str(exc_info.value)
@@ -102,7 +102,7 @@ def test_multi_edit_rejects_stale_expected_hash_before_any_edit(tmp_path: Path) 
                     "edits": [{"oldString": "alpha", "newString": "ALPHA"}],
                 },
             ),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
 
     diagnostic = exc_info.value
@@ -121,28 +121,27 @@ def test_multi_edit_rejects_edit_of_line_outside_read_window(tmp_path: Path) -> 
     tool = MultiEditTool()
     resolved = target.resolve().as_posix()
 
-    with bind_runtime_tool_context(
-        RuntimeToolInvocationContext(
-            session_id="test",
-            read_paths=frozenset({resolved}),
-            read_lines={resolved: frozenset({1})},
+    context = ToolContext(
+        workspace=tmp_path,
+        session_id="test",
+        read_paths=frozenset({resolved}),
+        read_lines={resolved: frozenset({1})},
+    )
+    with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="multi_edit",
+                arguments={
+                    "path": "sample.txt",
+                    "expectedHash": _content_hash(target),
+                    "edits": [
+                        {"oldString": "alpha", "newString": "ALPHA"},
+                        {"oldString": "gamma", "newString": "GAMMA"},
+                    ],
+                },
+            ),
+            context=context,
         )
-    ):
-        with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
-            tool.invoke(
-                ToolCall(
-                    tool_name="multi_edit",
-                    arguments={
-                        "path": "sample.txt",
-                        "expectedHash": _content_hash(target),
-                        "edits": [
-                            {"oldString": "alpha", "newString": "ALPHA"},
-                            {"oldString": "gamma", "newString": "GAMMA"},
-                        ],
-                    },
-                ),
-                workspace=tmp_path,
-            )
 
     diagnostic = exc_info.value
     assert diagnostic.error_kind == "tool_input_mismatch"

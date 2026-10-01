@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import difflib
 import hashlib
-from pathlib import Path
 from typing import ClassVar, final
 
 from pydantic import BaseModel
 
+from ..core.tool_context import ToolContext
 from ..formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._pydantic_args import parse_tool_args
 from ._repair import raise_tool_diagnostic
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 from .guards import enforce_read_before_write, enforce_seen_whole_file
 
 
@@ -46,14 +46,15 @@ class WriteTool:
             },
             "required": ["path", "content"],
         },
-        read_only=False,
+        effects=frozenset({ToolEffect.WRITE}),
         path_argument_keys=("path",),
     )
 
     def __init__(self, *, hooks_config: RuntimeHooksConfig | None = None) -> None:
         self._hooks_config = hooks_config
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        workspace = context.require_workspace()
         args = parse_tool_args(
             WriteArgs,
             {
@@ -74,6 +75,7 @@ class WriteTool:
         display_path = str(candidate.resolve()) if resolution.is_external else resolution.relative_path
 
         enforce_read_before_write(
+            context=context,
             tool_name=self.definition.name,
             workspace=workspace_root,
             raw_path=args.path,
@@ -102,6 +104,7 @@ class WriteTool:
                     details={"expected_hash": expected_hash, "actual_hash": actual_hash, "path": display_path},
                 )
             enforce_seen_whole_file(
+                context=context,
                 tool_name=self.definition.name,
                 workspace=workspace_root,
                 raw_path=args.path,
@@ -145,6 +148,7 @@ class WriteTool:
         if diagnostics:
             data["diagnostics"] = diagnostics
         lsp_diagnostics = post_edit_lsp_diagnostics(
+            context=context,
             workspace=workspace_root,
             paths=[display_path],
         )

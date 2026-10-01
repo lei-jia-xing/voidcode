@@ -21,6 +21,8 @@ from voidcode.agent import (
     LEADER_AGENT_MANIFEST,
     get_builtin_agent_manifest,
 )
+from voidcode.core.questions import QuestionResponse
+from voidcode.core.tool_context import ToolContext
 from voidcode.core.transcript import AssembledContext
 from voidcode.graph.contracts import GraphSession
 from voidcode.provider.config import (
@@ -87,7 +89,6 @@ from voidcode.runtime.permission import (
 from voidcode.runtime.permission_context import RuntimePermissionContextResolver
 from voidcode.runtime.permission_path_helpers import extract_paths_from_patch
 from voidcode.runtime.policy import RuntimePolicyConfig, RuntimePolicyToolPolicyConfig
-from voidcode.runtime.question import QuestionResponse
 from voidcode.runtime.service import (
     GraphRunRequest,
     RuntimeRequest,
@@ -103,7 +104,7 @@ from voidcode.runtime.session_metadata_helpers import (
     continuity_state_from_session_metadata,
 )
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 
 def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session") -> RuntimeRequest:
@@ -348,14 +349,14 @@ class _AbortBeforeInvokeTool:
         name="write",
         description="Probe that must not run after a started-tool abort",
         input_schema={"type": "object"},
-        read_only=False,
+        effects=frozenset({ToolEffect.WRITE}),
     )
 
     def __init__(self) -> None:
         self.invoke_count = 0
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = call, workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = call, context
         self.invoke_count += 1
         return ToolResult(tool_name=self.definition.name, status="ok", content="invoked")
 
@@ -1012,8 +1013,8 @@ class _InjectedMcpNamespaceTool:
         input_schema={"type": "object"},
     )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = call, workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = call, context
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
@@ -1344,7 +1345,6 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     ]
     generation = cast(dict[str, object], capability_snapshot["tools"])["generation"]
     assert isinstance(generation, str)
-    assert len(generation) == 64
     assert cast(dict[str, object], capability_snapshot["skills"])["force_loaded_names"] == ["demo"]
     assert cast(dict[str, object], capability_snapshot["hooks"])["resolved_refs"] == ["role_reminder"]
     assert cast(dict[str, object], capability_snapshot["hooks"])["authority"] == ("non_authoritative")

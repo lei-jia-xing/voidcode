@@ -10,6 +10,8 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from ..core.todos import TodoPhase
+from ..core.tool_context import ToolContext
 from ..core.transcript import AssembledContext, ContextSegment, ToolResultView
 from ..graph.contracts import GraphEvent, GraphRunRequest, GraphStep, RuntimeGraph, SafeBoundaryGraph, StreamableGraph
 from ..hook.config import RuntimeHookSurface
@@ -39,6 +41,7 @@ from ..tools.contracts import (
     ToolDiagnostics,
     ToolInvocation,
     ToolResult,
+    is_read_tier,
 )
 from ..tools.guards import read_tracking_for_tool_results
 from ..tools.invoke_tool import InvokeToolArgs
@@ -48,7 +51,6 @@ from ..tools.output import (
     sanitize_tool_result_data,
 )
 from ..tools.question import QuestionTool
-from ..tools.runtime_context import RuntimeToolInvocationContext
 from .config import RuntimeConfig
 from .config_materializer import EffectiveRuntimeConfig
 from .context.continuity import replayed_conversation_segments_from_segments
@@ -772,18 +774,11 @@ class RuntimeRunLoopCoordinator:
         """
         sequence = start_sequence - 1
         todo_state = todo_state_from_session_metadata(session.metadata)
-        todo_phases: tuple[dict[str, object], ...] = (
-            tuple(
-                {"name": phase["name"], "tasks": [dict(task) for task in phase["tasks"]]}
-                for phase in runtime_todo_phases_from_payload(todo_state["phases"])
-            )
-            if todo_state is not None
-            else ()
-        )
+        todo_phases: tuple[TodoPhase, ...] = runtime_todo_phases_from_payload(todo_state["phases"]) if todo_state is not None else ()
         invocation = ToolInvocation(
             tool_call=resolved_call.tool_call,
             tool_definition=resolved_call.tool.definition,
-            context=RuntimeToolInvocationContext(
+            context=ToolContext(
                 session_id=session.session.id,
                 run_id=run_id_from_session_metadata(session.metadata),
                 invocation_id=resolved_call.tool_call_id,
@@ -2338,7 +2333,7 @@ class RuntimeRunLoopCoordinator:
             return session, sequence, None
         todo_state = todo_state_from_session_metadata(session.metadata)
         phases = runtime_todo_phases_from_payload(todo_state["phases"]) if todo_state is not None else ()
-        read_only_tool_names = frozenset(definition.name for definition in tool_registry.definitions() if definition.read_only)
+        read_only_tool_names = frozenset(definition.name for definition in tool_registry.definitions() if is_read_tier(definition.effects))
         stored_state = todo_mid_run_state_from_metadata(session.metadata)
         decision = decide_todo_mid_run_nudge(
             state=stored_state,

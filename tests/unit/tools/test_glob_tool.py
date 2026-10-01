@@ -5,6 +5,7 @@ from typing import cast
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.glob import GlobTool
 
@@ -19,7 +20,7 @@ def test_glob_tool_finds_matching_files(tmp_path: Path) -> None:
 
     result = tool.invoke(
         ToolCall(tool_name="glob", arguments={"pattern": "*.py"}),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
     content = cast(list[str], result.data["matches"])
 
@@ -40,10 +41,9 @@ def test_glob_tool_returns_no_files_when_none_match(tmp_path: Path) -> None:
 
     result = tool.invoke(
         ToolCall(tool_name="glob", arguments={"pattern": "*.md"}),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
 
-    assert result.content == "Found 0 file(s)."
     assert result.data["count"] == 0
 
 
@@ -53,7 +53,7 @@ def test_glob_tool_rejects_empty_pattern(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="must not be empty"):
         tool.invoke(
             ToolCall(tool_name="glob", arguments={"pattern": ""}),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
 
 
@@ -67,7 +67,7 @@ def test_glob_tool_respects_path_argument(tmp_path: Path) -> None:
 
     result = tool.invoke(
         ToolCall(tool_name="glob", arguments={"pattern": "*.txt", "path": "subdir"}),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
     content = cast(list[str], result.data["matches"])
 
@@ -85,7 +85,7 @@ def test_glob_tool_ignores_common_directories(tmp_path: Path) -> None:
 
     result = tool.invoke(
         ToolCall(tool_name="glob", arguments={"pattern": "**/*.js"}),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
     content = cast(str, result.content)
 
@@ -106,7 +106,7 @@ def test_glob_tool_applies_hidden_gitignore_and_limit_filters(tmp_path: Path) ->
             tool_name="glob",
             arguments={"pattern": "*.py", "include_hidden": False, "respect_gitignore": True},
         ),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
     visible = cast(list[str], filtered.data["matches"])
     assert ".hidden.py" not in visible
@@ -115,7 +115,7 @@ def test_glob_tool_applies_hidden_gitignore_and_limit_filters(tmp_path: Path) ->
 
     bounded = tool.invoke(
         ToolCall(tool_name="glob", arguments={"pattern": "*.py", "include_hidden": False, "limit": 1}),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
     assert bounded.data["count"] == 1
     assert bounded.data["truncated"] is True

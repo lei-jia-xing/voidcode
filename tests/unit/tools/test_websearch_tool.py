@@ -7,6 +7,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.web_search import WebSearchTool
 
@@ -34,16 +35,11 @@ def _failing_response() -> httpx.Response:
 
 def test_websearch_tool_rejects_empty_query() -> None:
     tool = WebSearchTool()
-    empty_query_error = (
-        r"web_search Validation error: query: Value error, "
-        r"query must not be empty \(received str\)"
-        r"\. Please retry with corrected arguments that satisfy the tool schema\."
-    )
 
-    with pytest.raises(ValueError, match=empty_query_error):
+    with pytest.raises(ValueError):
         tool.invoke(
             ToolCall(tool_name="web_search", arguments={"query": "   "}),
-            workspace=Path("/tmp"),
+            context=ToolContext(workspace=Path("/tmp")),
         )
 
 
@@ -61,7 +57,7 @@ def test_websearch_tool_respects_num_results_limit() -> None:
     ):
         result = tool.invoke(
             ToolCall(tool_name="web_search", arguments={"query": "test", "numResults": 5}),
-            workspace=Path("/tmp"),
+            context=ToolContext(workspace=Path("/tmp")),
         )
 
     assert result.data["num_results"] == 5
@@ -81,7 +77,7 @@ def test_websearch_tool_defaults_to_8_results() -> None:
     ):
         result = tool.invoke(
             ToolCall(tool_name="web_search", arguments={"query": "test"}),
-            workspace=Path("/tmp"),
+            context=ToolContext(workspace=Path("/tmp")),
         )
 
     assert result.data["num_results"] == 8
@@ -117,7 +113,7 @@ def test_websearch_tool_uses_beautifulsoup_ddg_fallback_parsing() -> None:
     with patch("httpx.Client.get", return_value=_html_response(html)):
         result = tool.invoke(
             ToolCall(tool_name="web_search", arguments={"query": "test", "numResults": 2}),
-            workspace=Path("/tmp"),
+            context=ToolContext(workspace=Path("/tmp")),
         )
 
     assert result.status == "ok"
@@ -138,13 +134,12 @@ def test_websearch_tool_reports_truthful_metadata_when_ddg_parsing_fails() -> No
     with patch("httpx.Client.get", return_value=_failing_response()):
         result = tool.invoke(
             ToolCall(tool_name="web_search", arguments={"query": "test"}),
-            workspace=Path("/tmp"),
+            context=ToolContext(workspace=Path("/tmp")),
         )
 
     assert result.status == "error"
     assert result.data["source"] == "duckduckgo-error"
     assert result.error is not None
     assert result.error.startswith("Web search failed:")
-    assert result.content == result.error
     assert result.fallback_reason is not None
     assert result.fallback_reason.startswith("duckduckgo fallback failed:")

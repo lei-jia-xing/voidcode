@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar
 
+from ..core.tool_context import ToolContext
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._gitignore import GitIgnoreMatcher
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 DEFAULT_IGNORE_PATTERNS = frozenset(
     [
@@ -67,7 +68,7 @@ class GlobTool:
             },
             "required": ["pattern"],
         },
-        read_only=True,
+        effects=frozenset({ToolEffect.READ}),
         path_argument_keys=("path",),
     )
 
@@ -115,7 +116,8 @@ class GlobTool:
 
         return matched, truncated, error_message
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        workspace = context.require_workspace()
         pattern_value = call.arguments.get("pattern")
         if not isinstance(pattern_value, str):
             raise ValueError("glob requires a string pattern argument")

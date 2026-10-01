@@ -1,21 +1,20 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel, field_validator, model_validator
 
-from ...runtime.background.models import BackgroundTaskState, is_background_task_terminal
-from ...runtime.contracts import (
+from ....core.tool_context import ToolContext
+from ....tools._pydantic_args import MessageLimit, TimeoutMs, parse_tool_args
+from ....tools.contracts import ToolCall, ToolResult
+from ...background.models import BackgroundTaskState, is_background_task_terminal
+from ...contracts import (
     BackgroundTaskGroupResult,
     BackgroundTaskResult,
     RuntimeSessionResult,
     UnknownSessionError,
 )
-from .._pydantic_args import MessageLimit, TimeoutMs, parse_tool_args
-from ..contracts import ToolCall, ToolResult
-from ..runtime_context import current_runtime_tool_context
 
 
 class TaskOutputRuntime(Protocol):
@@ -116,16 +115,13 @@ class TaskOutputTool:
     def __init__(self, *, runtime: TaskOutputRuntime) -> None:
         self._runtime = runtime
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        caller_session_id = context.require_session_id()
         args = parse_tool_args(_TaskOutputArgs, call.arguments, tool_name=self.name)
         # Group reads are deliberately runtime-context owned. The runtime
         # validates every selected task against this parent before loading any
         # result, so a model cannot inspect another session's children.
         if args.task_id is None:
-            context = current_runtime_tool_context()
-            if context is None:
-                raise RuntimeError("task output group reads require an active runtime tool invocation context")
             selected_ids = tuple(args.task_ids or ())
             group_id = args.parallel_group_id
             timeout_seconds = max(args.timeout, 0) / 1000
@@ -133,14 +129,14 @@ class TaskOutputTool:
             group = self._runtime.load_background_task_group_result(
                 task_ids=selected_ids,
                 parallel_group_id=group_id,
-                parent_session_id=context.session_id,
+                parent_session_id=caller_session_id,
                 emit_result_read_hook=not args.block,
             )
             if args.block and not group.complete:
                 group = self._runtime.wait_for_background_task_group(
                     task_ids=selected_ids,
                     parallel_group_id=group_id,
-                    parent_session_id=context.session_id,
+                    parent_session_id=caller_session_id,
                     timeout_seconds=timeout_seconds,
                     emit_result_read_hook=False,
                 )
@@ -148,7 +144,7 @@ class TaskOutputTool:
             group = self._runtime.load_background_task_group_result(
                 task_ids=selected_ids,
                 parallel_group_id=group_id,
-                parent_session_id=context.session_id,
+                parent_session_id=caller_session_id,
                 emit_result_read_hook=True,
             )
             if group_timed_out:
@@ -161,12 +157,10 @@ class TaskOutputTool:
             return _background_group_tool_result(group)
 
         timeout_seconds = max(args.timeout, 0) / 1000
-        context = current_runtime_tool_context()
-        if context is not None:
-            self._runtime.authorize_background_task_owner(
-                args.task_id,
-                parent_session_id=context.session_id,
-            )
+        self._runtime.authorize_background_task_owner(
+            args.task_id,
+            parent_session_id=caller_session_id,
+        )
         result = self._runtime.load_background_task_result(
             args.task_id,
             emit_result_read_hook=not args.block,

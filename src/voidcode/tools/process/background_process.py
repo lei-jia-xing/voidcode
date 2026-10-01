@@ -1,77 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import replace
-from pathlib import Path
-from typing import Annotated, Literal, Protocol
-
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
-
-from ...runtime.background.process import BackgroundProcessManager
-from .._pydantic_args import NonEmptyCommand, NonEmptyProcessId, OptionalDescription, format_validation_error
-from ..contracts import ToolCall, ToolDefinition, ToolResult
-from ..runtime_context import current_runtime_tool_context
-from .background_process_logs import BackgroundProcessLogsTool
-from .background_process_send import BackgroundProcessSendTool
-from .background_process_start import BackgroundProcessStartTool
-from .background_process_stop import BackgroundProcessStopTool
-
-_MAX_BACKGROUND_PROCESS_ROWS = 64
-
-
-class _StrictArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class _StartArgs(_StrictArgs):
-    op: Literal["start"]
-    command: NonEmptyCommand
-    description: OptionalDescription = None
-
-
-class _PsArgs(_StrictArgs):
-    op: Literal["ps"]
-
-
-class _ProcessIdArgs(_StrictArgs):
-    process_id: NonEmptyProcessId
-
-
-class _LogsArgs(_ProcessIdArgs):
-    op: Literal["logs"]
-
-
-class _StopArgs(_ProcessIdArgs):
-    op: Literal["stop"]
-
-
-class _SendArgs(_ProcessIdArgs):
-    op: Literal["send"]
-    input: str
-    newline: bool = True
-
-    @field_validator("input", mode="after")
-    @classmethod
-    def _validate_input(cls, value: str) -> str:
-        if not value:
-            raise ValueError("input must be a non-empty string")
-        return value
-
-
-_BackgroundProcessArgs = Annotated[
-    _StartArgs | _PsArgs | _LogsArgs | _SendArgs | _StopArgs,
-    Field(discriminator="op"),
-]
-_ARGS_ADAPTER = TypeAdapter(_BackgroundProcessArgs)
-
-
-class BackgroundProcessRuntime(Protocol):
-    @property
-    def background_process_manager(self) -> BackgroundProcessManager: ...
+from ...core.tool_context import ToolContext
+from ..contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 
 class BackgroundProcessTool:
-    """Unified model-facing facade for runtime-owned background processes."""
-
     definition = ToolDefinition(
         name="background_process",
         description=(
@@ -131,75 +64,13 @@ class BackgroundProcessTool:
                 },
             ],
         },
-        # This is intentionally false: operation_class_for_tool classifies ps/logs as reads
-        # and start/send/stop as executes before the facade is invoked.
-        read_only=False,
+        effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN}),
     )
 
-    def __init__(self, *, runtime: BackgroundProcessRuntime) -> None:
-        self._runtime = runtime
-        self._start = BackgroundProcessStartTool(runtime=runtime)
-        self._logs = BackgroundProcessLogsTool(runtime=runtime)
-        self._send = BackgroundProcessSendTool(runtime=runtime)
-        self._stop = BackgroundProcessStopTool(runtime=runtime)
-
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        try:
-            args = _ARGS_ADAPTER.validate_python(call.arguments)
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
-
-        if isinstance(args, _StartArgs):
-            return self._rename(self._start.invoke(self._delegated_call(call, args.model_dump(exclude={"op"})), workspace=workspace))
-        if isinstance(args, _LogsArgs):
-            return self._rename(self._logs.invoke(self._delegated_call(call, args.model_dump(exclude={"op"})), workspace=workspace))
-        if isinstance(args, _SendArgs):
-            return self._rename(self._send.invoke(self._delegated_call(call, args.model_dump(exclude={"op"})), workspace=workspace))
-        if isinstance(args, _StopArgs):
-            return self._rename(self._stop.invoke(self._delegated_call(call, args.model_dump(exclude={"op"})), workspace=workspace))
-        return self._ps(workspace=workspace)
-
-    @staticmethod
-    def _delegated_call(call: ToolCall, arguments: dict[str, object]) -> ToolCall:
-        return ToolCall(tool_name=call.tool_name, arguments=arguments, tool_call_id=call.tool_call_id)
-
-    def _ps(self, *, workspace: Path) -> ToolResult:
-        context = current_runtime_tool_context()
-        states = self._runtime.background_process_manager.list_processes(
-            workspace=workspace,
-            owner_session_id=context.session_id if context is not None else None,
-            enforce_owner=context is not None,
-            limit=_MAX_BACKGROUND_PROCESS_ROWS,
-        )
-        rows: list[dict[str, object]] = []
-        for state in states:
-            stale = state.prior_runtime or state.status == "stale"
-            running = None if stale else state.process.poll() is None
-            rows.append(
-                {
-                    "process_id": state.process_id,
-                    "pid": state.process.pid,
-                    "command": state.command,
-                    "cwd": state.cwd,
-                    "status": "stale" if stale else state.status,
-                    "running": running,
-                    "exit_code": None if stale else state.process.poll(),
-                    "prior_runtime": state.prior_runtime,
-                    "observed_running": state.observed_running,
-                    "identity_match": state.identity_match,
-                    "controllable": not stale,
-                }
-            )
-        return ToolResult(
-            tool_name=self.definition.name,
-            status="ok",
-            content=f"Background process list: {len(rows)} process(es).",
-            data={"processes": rows, "count": len(rows), "limit": _MAX_BACKGROUND_PROCESS_ROWS},
-        )
-
-    @staticmethod
-    def _rename(result: ToolResult) -> ToolResult:
-        return replace(result, tool_name="background_process")
-
-
-__all__ = ["BackgroundProcessRuntime", "BackgroundProcessTool", "_MAX_BACKGROUND_PROCESS_ROWS"]
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        context.require_workspace()
+        context.require_session_id()
+        command = context.process_runtime
+        if command is None:
+            raise RuntimeError("background_process requires a runtime-owned process command")
+        return command(call, context=context)

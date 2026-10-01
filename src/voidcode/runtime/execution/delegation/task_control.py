@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from .._pydantic_args import MessageLimit, TimeoutMs, parse_tool_args
-from ..contracts import ToolCall, ToolResult
+from ....core.tool_context import ToolContext
+from ....tools._pydantic_args import MessageLimit, TimeoutMs, parse_tool_args
+from ....tools.contracts import ToolCall, ToolResult
 from .task_cancel import TaskCancelRuntime, TaskCancelTool
 from .task_output import TaskOutputRuntime, TaskOutputTool
 from .task_ps import TaskPsRuntime, TaskPsTool
@@ -106,7 +106,7 @@ class TaskControlTool:
         self._ps = TaskPsTool(runtime=runtime)
         self._steer = TaskSteerTool(runtime=runtime)
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         args = parse_tool_args(_TaskControlArgs, call.arguments, tool_name=self.name)
 
         if args.operation == "output":
@@ -115,7 +115,7 @@ class TaskControlTool:
                 arguments=args.model_dump(exclude_none=True),
                 tool_call_id=call.tool_call_id,
             )
-            result = self._output.invoke(delegate_call, workspace=workspace)
+            result = self._output.invoke(delegate_call, context=context)
         elif args.operation == "cancel":
             assert args.task_id is not None
             result = self._cancel.invoke(
@@ -123,13 +123,10 @@ class TaskControlTool:
                     tool_name="task_cancel",
                     arguments={"taskId": args.task_id},
                 ),
-                workspace=workspace,
+                context=context,
             )
         elif args.operation == "ps":
-            result = self._ps.invoke(
-                ToolCall(tool_name="task_ps", arguments={}, tool_call_id=call.tool_call_id),
-                workspace=workspace,
-            )
+            result = self._ps.invoke(ToolCall(tool_name="task_ps", arguments={}, tool_call_id=call.tool_call_id), context=context)
         else:
             assert args.task_id is not None and args.prompt is not None
             result = self._steer.invoke(
@@ -138,7 +135,7 @@ class TaskControlTool:
                     arguments={"task_id": args.task_id, "prompt": args.prompt},
                     tool_call_id=call.tool_call_id,
                 ),
-                workspace=workspace,
+                context=context,
             )
         return replace(result, tool_name=self.name)
 

@@ -15,14 +15,15 @@ from unittest.mock import patch
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
+from voidcode.runtime.execution.delegation.task import TaskCommand
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.delegation.task import TaskTool
-from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
@@ -161,10 +162,10 @@ def test_steer_background_task_rejects_running_turn_in_flight(tmp_path: Path) ->
     started = threading.Event()
     release = threading.Event()
 
-    def _blocking_read(self: object, call: object, *, workspace: Path) -> object:
+    def _blocking_read(self: object, call: object, *, context: ToolContext) -> object:
         started.set()
         _ = release.wait(timeout=2)
-        return original_invoke(self, call, workspace=workspace)
+        return original_invoke(self, call, context=context)
 
     with patch.object(read_tool, "invoke", autospec=True, side_effect=_blocking_read):
         task = runtime.start_background_task(runtime_request(prompt="read sample.txt", metadata={"keep_alive": True}))
@@ -322,17 +323,21 @@ def _steerable_task(*, parent_session_id: str) -> BackgroundTaskState:
 def test_background_task_steer_rejects_non_parent_session() -> None:
     """Only the task's parent session may steer it via the background_task facade."""
     runtime = _StubSteerRuntime(task=_steerable_task(parent_session_id="parent-1"))
-    tool = TaskTool(runtime=runtime)
+    tool = TaskTool()
 
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="other-session")):
-        with pytest.raises(ValueError, match="only its parent"):
-            tool.invoke(
-                ToolCall(
-                    tool_name="task",
-                    arguments={"operation": "steer", "task_id": "task-keep-alive-1", "prompt": "continue"},
-                ),
-                workspace=Path("."),
-            )
+    context = ToolContext(
+        workspace=Path("."),
+        session_id="other-session",
+        task_runtime=TaskCommand(runtime=runtime).invoke,
+    )
+    with pytest.raises(ValueError, match="only its parent"):
+        tool.invoke(
+            ToolCall(
+                tool_name="task",
+                arguments={"operation": "steer", "task_id": "task-keep-alive-1", "prompt": "continue"},
+            ),
+            context=context,
+        )
 
     assert runtime.steered == []
     assert runtime.calls == [("authorize", "task-keep-alive-1")]
@@ -341,16 +346,20 @@ def test_background_task_steer_rejects_non_parent_session() -> None:
 def test_background_task_steer_parent_dispatches_steer() -> None:
     """The task's parent session can steer it; the facade surfaces the dispatch."""
     runtime = _StubSteerRuntime(task=_steerable_task(parent_session_id="parent-1"))
-    tool = TaskTool(runtime=runtime)
+    tool = TaskTool()
 
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="parent-1")):
-        result = tool.invoke(
-            ToolCall(
-                tool_name="task",
-                arguments={"operation": "steer", "task_id": "task-keep-alive-1", "prompt": "continue"},
-            ),
-            workspace=Path("."),
-        )
+    context = ToolContext(
+        workspace=Path("."),
+        session_id="parent-1",
+        task_runtime=TaskCommand(runtime=runtime).invoke,
+    )
+    result = tool.invoke(
+        ToolCall(
+            tool_name="task",
+            arguments={"operation": "steer", "task_id": "task-keep-alive-1", "prompt": "continue"},
+        ),
+        context=context,
+    )
 
     assert runtime.calls == [
         ("authorize", "task-keep-alive-1"),

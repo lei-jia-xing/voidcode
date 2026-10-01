@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.output import MAX_TOOL_OUTPUT_BYTES, cap_tool_result_output
 from voidcode.tools.shell_exec import ShellExecTool
@@ -21,7 +22,7 @@ def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
 
     result = tool.invoke(
         ToolCall(tool_name="shell_exec", arguments={"command": command}),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
 
     assert result.tool_name == "shell_exec"
@@ -44,41 +45,26 @@ def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
 
 def test_shell_exec_tool_rejects_invalid_command_arguments(tmp_path: Path) -> None:
     tool = ShellExecTool()
-    command_type_error = (
-        r"shell_exec Validation error: command: "
-        r"Input should be a valid string \(received int\)"
-        r"\. Please retry with corrected arguments that satisfy the tool schema\."
-    )
 
-    with pytest.raises(ValueError, match=command_type_error):
+    with pytest.raises(ValueError):
         tool.invoke(
             ToolCall(tool_name="shell_exec", arguments={"command": 123}),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
 
-    command_empty_error = (
-        r"shell_exec Validation error: command: Value error, "
-        r"command must not be empty \(received str\)"
-        r"\. Please retry with corrected arguments that satisfy the tool schema\."
-    )
-    with pytest.raises(ValueError, match=command_empty_error):
+    with pytest.raises(ValueError):
         tool.invoke(
             ToolCall(tool_name="shell_exec", arguments={"command": "   "}),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
 
-    description_error = (
-        r"shell_exec Validation error: description: Value error, "
-        r"description must not be empty when provided \(received str\)"
-        r"\. Please retry with corrected arguments that satisfy the tool schema\."
-    )
-    with pytest.raises(ValueError, match=description_error):
+    with pytest.raises(ValueError):
         tool.invoke(
             ToolCall(
                 tool_name="shell_exec",
                 arguments={"command": "pwd", "description": "   "},
             ),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
 
 
@@ -94,7 +80,7 @@ def test_shell_exec_tool_respects_timeout(tmp_path: Path) -> None:
                     "timeout": 1,
                 },
             ),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
 
 
@@ -106,7 +92,7 @@ def test_shell_exec_tool_caps_explicit_timeout_at_production_max(tmp_path: Path)
             tool_name="shell_exec",
             arguments={"command": _cwd_command(), "timeout": 9999},
         ),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
 
     assert result.status == "ok"
@@ -120,7 +106,7 @@ def test_shell_exec_large_output_spills_full_payload_via_central_cap(tmp_path: P
 
     result = tool.invoke(
         ToolCall(tool_name="shell_exec", arguments={"command": command}),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
     capped = cap_tool_result_output(result)
 

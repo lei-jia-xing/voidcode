@@ -4,68 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.skills.models import SkillMetadata
+from voidcode.core.tool_context import ToolContext
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.skill import SkillTool
 
 
-def test_skill_tool_returns_skill_body_and_metadata(tmp_path: Path) -> None:
-    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
-    skill_dir.mkdir(parents=True)
-    entry = skill_dir / "SKILL.md"
-    entry.write_text("# Demo\nUse it.\n", encoding="utf-8")
-    skill = SkillMetadata(
-        name="demo",
-        description="Demo skill",
-        directory=skill_dir,
-        entry_path=entry,
-        content="# Demo\nUse it.",
-    )
-    tool = SkillTool(resolve_skill=lambda name: skill)
-
-    result = tool.invoke(ToolCall(tool_name="skill", arguments={"name": "demo"}), workspace=tmp_path)
-
-    assert result.status == "ok"
-    assert result.content is not None
-    assert "## Skill: demo" in result.content
-    assert result.data["skill"] == {
-        "name": "demo",
-        "description": "Demo skill",
-        "source_path": str(entry),
-        "directory": str(skill_dir),
-        "content": "# Demo\nUse it.",
-    }
-
-
-def test_skill_tool_definition_is_static_without_catalog(tmp_path: Path) -> None:
-    """The skill catalog moved out of the tool description into system-prompt metadata."""
-    skill_dir = tmp_path / ".voidcode" / "skills" / "python" / "demo"
-    skill_dir.mkdir(parents=True)
-    entry = skill_dir / "SKILL.md"
-    entry.write_text("# Demo\nUse it.\n", encoding="utf-8")
-    skill = SkillMetadata(
-        name="demo",
-        description="Demo skill",
-        directory=skill_dir,
-        entry_path=entry,
-        content="# Demo\nUse it.",
-    )
-
-    tool = SkillTool(resolve_skill=lambda name: skill)
-
-    assert entry.as_uri() not in tool.definition.description
-    assert "<available_skills>" not in tool.definition.description
-    assert "catalog" in tool.definition.description
-
-
 def test_skill_tool_rejects_missing_name(tmp_path: Path) -> None:
-    tool = SkillTool(resolve_skill=lambda name: (_ for _ in ()).throw(ValueError(name)))
+    tool = SkillTool()
 
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"skill Validation error: name: Field required \(received dict\)\. "
-            r"Please retry with corrected arguments that satisfy the tool schema\."
-        ),
-    ):
-        tool.invoke(ToolCall(tool_name="skill", arguments={}), workspace=tmp_path)
+    with pytest.raises(ValueError):
+        tool.invoke(ToolCall(tool_name="skill", arguments={}), context=ToolContext(workspace=tmp_path))

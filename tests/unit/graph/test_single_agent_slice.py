@@ -24,7 +24,7 @@ from voidcode.runtime.context.window import (
     RuntimeContextWindow,
     normalize_read_output,
 )
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 
 class _StubTurnProvider:
@@ -52,8 +52,8 @@ class _StubTurnProvider:
 
 def _tool_definitions() -> tuple[ToolDefinition, ...]:
     return (
-        ToolDefinition(name="read", description="read", input_schema={}, read_only=True),
-        ToolDefinition(name="write", description="write", input_schema={}, read_only=False),
+        ToolDefinition(name="read", description="read", input_schema={}, effects=frozenset({ToolEffect.READ})),
+        ToolDefinition(name="write", description="write", input_schema={}, effects=frozenset({ToolEffect.WRITE})),
     )
 
 

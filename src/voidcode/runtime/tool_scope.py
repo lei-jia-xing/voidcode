@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fnmatch import fnmatchcase
 
+from ..tools.contracts import is_read_tier
 from .config import RuntimeAgentConfig
 from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .permission import PLAN_MODE_DENIAL_REASON
@@ -37,7 +38,7 @@ class RuntimeToolScopeResolver:
         read_only = runtime_read_only_from_metadata(metadata)
 
         tool = registry.tools.get(tool_name)
-        if read_only and tool is not None and not tool.definition.read_only:
+        if read_only and tool is not None and not is_read_tier(tool.definition.effects):
             return ToolPolicyDecision(
                 tool_name=tool_name,
                 allowed=False,

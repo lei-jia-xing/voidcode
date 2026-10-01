@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from ..tools.contracts import ToolCall, ToolDefinition
+from ..tools.contracts import ToolCall, ToolDefinition, is_read_tier
 
 type PermissionDecision = Literal["allow", "deny", "ask"]
 type PermissionResolution = Literal["allow", "deny"]
@@ -122,7 +122,7 @@ def is_read_only_blocked(
         return False
     if operation_class == "read":
         return False
-    if not tool.read_only:
+    if not is_read_tier(tool.effects):
         return True
     return operation_class in ("write", "execute")
 
@@ -159,7 +159,7 @@ def resolve_permission(
         effective_surface = "mode.plan"
     elif rule_decision is not None:
         decision = rule_decision
-    elif path_scope == "workspace" and (operation_class == "read" or (operation_class is None and tool.read_only)):
+    elif path_scope == "workspace" and (operation_class == "read" or (operation_class is None and is_read_tier(tool.effects))):
         return PermissionOutcome(decision="allow")
     elif path_scope == "external" and external_decision is not None:
         decision = external_decision

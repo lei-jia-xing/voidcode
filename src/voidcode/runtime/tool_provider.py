@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from ..hook.config import RuntimeHooksConfig
-from ..skills.models import SkillMetadata
 from ..tools.apply_workspace_edit import ApplyWorkspaceEditTool
 from ..tools.contracts import Tool
 from ..tools.edit import EditTool
@@ -20,7 +18,6 @@ from ..tools.web_search import WebSearchTool
 from ..tools.write import WriteTool
 from ..tools.yield_tool import YieldTool
 from .config import RuntimeAgentConfig, RuntimeToolsLocalConfig
-from .edit_schema_policy import EditSchemaResolver
 
 if TYPE_CHECKING:
     from .tool_registry import ToolRegistry
@@ -89,14 +86,6 @@ class _HookedToolFactory(Protocol):
     def __call__(self, *, hooks_config: RuntimeHooksConfig | None = None) -> Tool: ...
 
 
-class _SkillToolFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        resolve_skill: Callable[[str], SkillMetadata],
-    ) -> Tool: ...
-
-
 # Import optional tools independently so one failure doesn't hide others.
 try:
     from ..tools.apply_patch import ApplyPatchTool
@@ -129,9 +118,9 @@ else:
 try:
     from ..tools.skill import SkillTool
 except ImportError:
-    _SkillTool: _SkillToolFactory | None = None
+    _SkillTool: _NoArgToolFactory | None = None
 else:
-    _SkillTool: _SkillToolFactory | None = SkillTool
+    _SkillTool: _NoArgToolFactory | None = SkillTool
 
 try:
     from ..tools.todo import TodoTool
@@ -167,7 +156,6 @@ class BuiltinToolProvider:
     _lsp_tool: Tool | None
     _mcp_tools: tuple[Tool, ...]
     _hooks_config: RuntimeHooksConfig | None
-    _edit_schema_resolver: EditSchemaResolver | None
     _skill_tool: Tool | None
     _task_tool: Tool | None
     _task_batch_tool: Tool | None
@@ -180,7 +168,6 @@ class BuiltinToolProvider:
         lsp_tool: Tool | None = None,
         mcp_tools: tuple[Tool, ...] = (),
         hooks_config: RuntimeHooksConfig | None = None,
-        edit_schema_resolver: EditSchemaResolver | None = None,
         skill_tool: Tool | None = None,
         task_tool: Tool | None = None,
         task_batch_tool: Tool | None = None,
@@ -190,7 +177,6 @@ class BuiltinToolProvider:
         self._lsp_tool = lsp_tool
         self._mcp_tools = mcp_tools
         self._hooks_config = hooks_config
-        self._edit_schema_resolver = edit_schema_resolver
         self._skill_tool = skill_tool
         self._task_batch_tool = task_batch_tool
         self._task_tool = task_tool
@@ -198,7 +184,7 @@ class BuiltinToolProvider:
         self._background_process_tool = background_process_tool
 
     def provide_tools(self) -> tuple[Tool, ...]:
-        edit_tool = EditTool(hooks_config=self._hooks_config, edit_schema_resolver=self._edit_schema_resolver)
+        edit_tool = EditTool(hooks_config=self._hooks_config)
         tools: list[Tool] = [
             ApplyWorkspaceEditTool(),
             edit_tool,
@@ -219,7 +205,7 @@ class BuiltinToolProvider:
         if self._skill_tool is not None:
             tools.append(self._skill_tool)
         elif _SkillTool is not None:
-            tools.append(_SkillTool(resolve_skill=self._unknown_skill))
+            tools.append(_SkillTool())
 
         if self._task_tool is not None:
             tools.append(self._task_tool)
@@ -245,7 +231,3 @@ class BuiltinToolProvider:
             tools.append(_TodoTool())
 
         return tuple(tools)
-
-    @staticmethod
-    def _unknown_skill(name: str) -> SkillMetadata:
-        raise ValueError(f"unknown skill: {name}")

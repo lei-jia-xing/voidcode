@@ -28,6 +28,7 @@ from starlette.middleware import Middleware
 from starlette.responses import Response
 from starlette.types import Receive, Scope, Send
 
+from ...core.questions import QuestionResponse
 from ..active_session import ActiveRunInterruptResult
 from ..background.models import (
     BackgroundTaskRequestSnapshot,
@@ -77,7 +78,6 @@ from ..events import (
     redact_reasoning_payload,
 )
 from ..permission import PermissionResolution
-from ..question import QuestionResponse
 from ..serialization import (
     _serialize_session_ref,
     _serialize_session_state,

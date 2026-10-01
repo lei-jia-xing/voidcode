@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from .._pydantic_args import NonEmptyCommand, OptionalDescription, parse_tool_args
-from ..contracts import RuntimeToolTimeoutError, ToolCall, ToolResult
-from ..runtime_context import current_runtime_tool_context
+from ....core.tool_context import ToolContext
+from ....tools._pydantic_args import NonEmptyCommand, OptionalDescription, parse_tool_args
+from ....tools.contracts import RuntimeToolTimeoutError, ToolCall, ToolResult
 
 if TYPE_CHECKING:
     from .background_process import BackgroundProcessRuntime
@@ -42,13 +41,13 @@ class BackgroundProcessStartTool:
     def __init__(self, *, runtime: BackgroundProcessRuntime) -> None:
         self._runtime = runtime
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        workspace = context.require_workspace()
         args = parse_tool_args(_BackgroundProcessStartArgs, call.arguments, tool_name=self.name)
-        runtime_context = current_runtime_tool_context()
-        if runtime_context is not None and runtime_context.abort_signal is not None and runtime_context.abort_signal.cancelled:
+        if context.abort_signal is not None and context.abort_signal.cancelled:
             raise RuntimeToolTimeoutError("background_process_start aborted before launching process")
-        owner_session_id = runtime_context.session_id if runtime_context is not None else None
-        enforce_owner = runtime_context is not None
+        owner_session_id = context.require_session_id()
+        enforce_owner = True
         manager = self._runtime.background_process_manager
         existing = manager.load_running(
             command=args.command,

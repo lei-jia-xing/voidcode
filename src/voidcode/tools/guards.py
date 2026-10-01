@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
 
+from ..core.tool_context import ToolContext
 from ..security.path_policy import resolve_workspace_path
 from ._repair import raise_tool_diagnostic
 from .contracts import ToolResult
-from .runtime_context import current_runtime_tool_context
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +67,7 @@ def _read_result_lines(result: ToolResult) -> frozenset[int] | None:
 
 def enforce_read_before_write(
     *,
+    context: ToolContext,
     tool_name: str,
     workspace: Path,
     raw_path: str,
@@ -75,10 +76,10 @@ def enforce_read_before_write(
     is_external: bool,
 ) -> None:
     _ = workspace
-    if is_external or not candidate.exists() or not candidate.is_file():
+    if context.session_id is None:
         return
-    context = current_runtime_tool_context()
-    if context is None:
+    context.require_session_id()
+    if is_external or not candidate.exists() or not candidate.is_file():
         return
     if candidate.resolve().as_posix() in context.read_paths:
         return
@@ -93,6 +94,7 @@ def enforce_read_before_write(
 
 def enforce_seen_lines(
     *,
+    context: ToolContext,
     tool_name: str,
     workspace: Path,
     raw_path: str,
@@ -108,10 +110,10 @@ def enforce_seen_lines(
     Fails closed: a file with no recorded line data rejects every change.
     """
     _ = workspace
-    if is_external or not candidate.exists() or not candidate.is_file():
+    if context.session_id is None:
         return
-    context = current_runtime_tool_context()
-    if context is None:
+    context.require_session_id()
+    if is_external or not candidate.exists() or not candidate.is_file():
         return
     resolved = candidate.resolve().as_posix()
     if resolved not in context.read_paths:
@@ -144,6 +146,7 @@ def enforce_seen_lines(
 
 def enforce_seen_whole_file(
     *,
+    context: ToolContext,
     tool_name: str,
     workspace: Path,
     raw_path: str,
@@ -157,6 +160,7 @@ def enforce_seen_whole_file(
     content = candidate.read_text(encoding="utf-8")
     total_lines = len(content.splitlines())
     enforce_seen_lines(
+        context=context,
         tool_name=tool_name,
         workspace=workspace,
         raw_path=raw_path,

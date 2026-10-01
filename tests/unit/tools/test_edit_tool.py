@@ -6,10 +6,10 @@ from typing import cast
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.tools._repair import ToolDiagnosticError
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.edit import EditTool
-from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
 def _content_hash(path: Path) -> str:
@@ -32,7 +32,7 @@ def test_edit_tool_replaces_exact_text(tmp_path: Path) -> None:
                 "expectedHash": _content_hash(file_path),
             },
         ),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
 
     assert result.tool_name == "edit"
@@ -60,7 +60,7 @@ def test_edit_tool_replaces_all_occurrences(tmp_path: Path) -> None:
                 "expectedHash": _content_hash(file_path),
             },
         ),
-        workspace=tmp_path,
+        context=ToolContext(workspace=tmp_path),
     )
 
     assert file_path.read_text(encoding="utf-8") == "qux bar qux baz qux"
@@ -85,7 +85,7 @@ def test_edit_tool_rejects_multiple_exact_matches_without_replace_all(tmp_path: 
                     "expectedHash": _content_hash(file_path),
                 },
             ),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
 
     diagnostic = exc_info.value
@@ -117,7 +117,7 @@ def test_edit_tool_rejects_when_old_string_not_found(tmp_path: Path) -> None:
                     "expectedHash": _content_hash(file_path),
                 },
             ),
-            workspace=tmp_path,
+            context=ToolContext(workspace=tmp_path),
         )
 
     diagnostic = exc_info.value
@@ -134,9 +134,10 @@ def test_edit_tool_rejects_when_old_string_not_found(tmp_path: Path) -> None:
     assert diagnostic.retry_guidance
 
 
-def _read_lines_context(path: Path, lines: set[int]) -> RuntimeToolInvocationContext:
+def _read_lines_context(path: Path, lines: set[int], *, workspace: Path) -> ToolContext:
     resolved = path.resolve().as_posix()
-    return RuntimeToolInvocationContext(
+    return ToolContext(
+        workspace=workspace,
         session_id="test",
         read_paths=frozenset({resolved}),
         read_lines={resolved: frozenset(lines)},
@@ -148,15 +149,15 @@ def test_edit_tool_rejects_edit_of_line_outside_read_window(tmp_path: Path) -> N
     file_path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     tool = EditTool()
 
-    with bind_runtime_tool_context(_read_lines_context(file_path, {1})):
-        with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
-            tool.invoke(
-                ToolCall(
-                    tool_name="edit",
-                    arguments={"path": "sample.txt", "oldString": "gamma", "newString": "GAMMA", "expectedHash": _content_hash(file_path)},
-                ),
-                workspace=tmp_path,
-            )
+    context = _read_lines_context(file_path, {1}, workspace=tmp_path)
+    with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={"path": "sample.txt", "oldString": "gamma", "newString": "GAMMA", "expectedHash": _content_hash(file_path)},
+            ),
+            context=context,
+        )
 
     diagnostic = exc_info.value
     assert diagnostic.error_kind == "tool_input_mismatch"

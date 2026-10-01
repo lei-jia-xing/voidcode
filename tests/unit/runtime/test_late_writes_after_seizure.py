@@ -28,13 +28,14 @@ from typing import Any
 
 import pytest
 
+from voidcode.core.tool_context import ToolContext
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.execution_ownership import EXECUTION_OWNERSHIP, ExecutionOwnershipRevokedError
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 TOOL_TASK_ID = "task-tool-late-write"
 BOUNDARY_TASK_ID = "task-boundary-late-write"
@@ -98,7 +99,7 @@ class _TruthWritingTool:
     definition = ToolDefinition(
         name=WRITER_TOOL,
         description="Commits runtime truth from inside the tool.",
-        read_only=False,
+        effects=frozenset({ToolEffect.WRITE}),
     )
 
     def __init__(self, *, workspace: Path, store: SqliteSessionStore) -> None:
@@ -114,8 +115,8 @@ class _TruthWritingTool:
             return f"refused:{exc.code}"
         return "landed"
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = call, workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = call, context
         self.outcomes["thread"] = threading.current_thread().name
         self.gate.wait_for_entry()
         self.outcomes["tool_commit"] = self._write("tool_commit")
@@ -125,8 +126,8 @@ class _TruthWritingTool:
 class _BoundaryTool(_TruthWritingTool):
     """Same as the truth writer, plus a writer thread the tool spawns itself."""
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = call, workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = call, context
         self.outcomes["thread"] = threading.current_thread().name
         self.gate.wait_for_entry()
         self.outcomes["tool_commit"] = self._write("tool_commit")

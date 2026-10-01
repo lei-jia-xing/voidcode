@@ -40,9 +40,8 @@ from .test_todo_reminder import (
     _Step,
 )
 
-#: ``write`` is the allowlisted mutating builtin (``read_only=False``), so the
-#: mutation counter is exercised through real permission-semantics metadata
-#: rather than a test-only tool outside the manifest allowlist.
+#: ``write`` is the allowlisted mutating builtin with ``ToolEffect.WRITE``, so
+#: the mutation counter uses real permission metadata rather than a test-only tool.
 MUTATING_TOOL = "write"
 
 

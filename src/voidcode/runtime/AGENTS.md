@@ -45,7 +45,7 @@ runtime/
 - Preserve the control-plane split: runtime owns governance, graph owns step progression, tools own tool logic.
 - Keep `runtime/__init__.py` lazy-import behavior for `VoidCodeRuntime`, `ToolRegistry`, and HTTP exports to avoid import cycles.
 - Treat `load_runtime_config()` precedence as load-bearing: environment, user config, repo-local config, request metadata, and persisted session metadata each have distinct roles.
-- `ToolDefinition.read_only` drives default permission policy through `permission.py`; changing tool mutability changes approval behavior.
+- `ToolDefinition.effects` supplies behavior facts; shared static read-tier classification and actual per-call operation class feed runtime permission policy. Effects never grant execution authority.
 - Background task IDs and session IDs are validated as runtime boundary inputs; do not bypass validators in `contracts.py` / `task.py`.
 - Delegated child execution must enter through runtime-owned routing and background task/session contracts. CLI, HTTP, and ACP are adapters, not alternate subagent execution paths.
 - Manifest `skill_refs` are catalog/default selection metadata. `force_load_skills` and delegated `load_skills` force full skill-body injection for that request or child session without leaking parent-only skill bodies.

@@ -16,15 +16,12 @@ from typing import ClassVar, final
 
 from pydantic import BaseModel, field_validator
 
-from ..runtime.context.rules import RULE_URI_PREFIX as _RULE_URI_PREFIX
-from ..runtime.context.rules import read_rule_uri
-from ..runtime.contracts import validate_id
+from ..core.tool_context import RULE_URI_PREFIX, ToolContext
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._pydantic_args import parse_tool_args, validate_non_empty
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult, is_read_tier
 from .guidance import guidance_for_tool
 from .output import _ARTIFACT_ID_PATTERN
-from .runtime_context import require_runtime_tool_context
 
 #: Internal URL scheme for on-demand tool documentation (essential/discoverable
 #: split): read(path="voidcode://tool/<name>") returns the tool's guidance
@@ -32,8 +29,6 @@ from .runtime_context import require_runtime_tool_context
 #: live tool registry used for execution.
 VOIDCODE_TOOL_DOC_PREFIX = "voidcode://tool/"
 
-#: Internal URL scheme for bounded workspace rulebook reads.
-RULE_URI_PREFIX = _RULE_URI_PREFIX
 
 #: Internal URL scheme for session-scoped artifact reads:
 #: read(path="voidcode://artifact/<id>") returns a bounded slice of a
@@ -50,11 +45,11 @@ VOIDCODE_ARTIFACT_PREFIX = "voidcode://artifact/"
 VOIDCODE_TRANSCRIPT_PREFIX = "voidcode://transcript/"
 
 
-def _render_tool_documentation(path: str) -> _ReadOutcome:
+def _render_tool_documentation(path: str, *, context: ToolContext) -> _ReadOutcome:
     tool_name = path[len(VOIDCODE_TOOL_DOC_PREFIX) :].strip()
     if not tool_name:
         raise ValueError("voidcode://tool/<name> requires a tool name")
-    context = require_runtime_tool_context("read")
+    context.require_session_id()
     catalog = context.tool_catalog
     if catalog is None:
         raise ValueError("read cannot resolve voidcode://tool URLs without a runtime tool catalog")
@@ -81,7 +76,10 @@ def _render_tool_documentation(path: str) -> _ReadOutcome:
     schema_text = json.dumps(definition.input_schema, indent=2)
     sections.append(schema_text)
     sections.append("")
-    sections.append(f"read_only: {str(definition.read_only).lower()}")
+    effects = sorted(effect.value for effect in definition.effects)
+    sections.append("effects: " + ", ".join(effects))
+    read_only = is_read_tier(definition.effects)
+    sections.append(f"read_only: {str(read_only).lower()}")
     content = "\n".join(sections).strip()
     return _ReadOutcome(
         content=f"Read documentation for tool {tool_name}.",
@@ -89,7 +87,8 @@ def _render_tool_documentation(path: str) -> _ReadOutcome:
             "path": path,
             "type": "tool_documentation",
             "tool_name": definition.name,
-            "read_only": definition.read_only,
+            "effects": effects,
+            "read_only": read_only,
             "guidance": guidance,
             "input_schema": definition.input_schema,
             "raw_content": content,
@@ -97,11 +96,11 @@ def _render_tool_documentation(path: str) -> _ReadOutcome:
     )
 
 
-def _render_artifact(path: str, *, offset: int, limit: int) -> _ReadOutcome:
+def _render_artifact(path: str, *, context: ToolContext, offset: int, limit: int) -> _ReadOutcome:
     """Render a bounded slice of a spilled tool-output artifact by URI.
 
     The artifact is resolved through the runtime's session-validated reader
-    (``RuntimeToolInvocationContext.artifact``), which applies the session and
+    (``ToolContext.artifact``), which applies the session and
     artifact-path guards; the URI never falls through to workspace path
     resolution.
     """
@@ -111,11 +110,12 @@ def _render_artifact(path: str, *, offset: int, limit: int) -> _ReadOutcome:
         raise ValueError("voidcode://artifact/<id> requires an artifact id")
     if _ARTIFACT_ID_PATTERN.fullmatch(artifact_id) is None:
         raise ValueError(f"invalid artifact id: {artifact_id}")
-    context = require_runtime_tool_context("read")
+    caller_session_id = context.require_session_id()
     facade = context.artifact
     if facade is None:
         raise ValueError("read cannot resolve voidcode://artifact URLs without a runtime artifact reader")
     result = facade.read_artifact(
+        caller_session_id=caller_session_id,
         artifact_id=artifact_id,
         offset=max(0, offset - 1),
         limit=limit,
@@ -156,11 +156,11 @@ def _render_artifact(path: str, *, offset: int, limit: int) -> _ReadOutcome:
     )
 
 
-def _render_transcript(path: str, *, limit: int) -> _ReadOutcome:
+def _render_transcript(path: str, *, context: ToolContext, limit: int) -> _ReadOutcome:
     """Render a bounded, payload-stripped transcript of a session by URI.
 
     The transcript is resolved through the runtime's lineage-guarded reader
-    (``RuntimeToolInvocationContext.transcript``): the caller may read its own
+    (``ToolContext.transcript``): the caller may read its own
     session or a direct child session, never an unrelated session. Per event
     only ``sequence``, ``event_type``, and ``source`` are returned; raw tool
     output payloads are not included.
@@ -169,12 +169,13 @@ def _render_transcript(path: str, *, limit: int) -> _ReadOutcome:
     session_id = path[len(VOIDCODE_TRANSCRIPT_PREFIX) :].strip()
     if not session_id:
         raise ValueError("voidcode://transcript/<session_id> requires a session id")
-    validate_id(session_id)
-    context = require_runtime_tool_context("read")
+    if "/" in session_id:
+        raise ValueError("session_id must not contain '/'")
+    caller_session_id = context.require_session_id()
     facade = context.transcript
     if facade is None:
         raise ValueError("read cannot resolve voidcode://transcript URLs without a runtime transcript reader")
-    result = facade.read_transcript(session_id=session_id, limit=limit)
+    result = facade.read_transcript(caller_session_id=caller_session_id, session_id=session_id, limit=limit)
     if result is None:
         raise ValueError(f"transcript not accessible for session: {session_id}")
     transcript = result.get("transcript")
@@ -809,11 +810,11 @@ class ReadTool:
             },
             "required": ["path"],
         },
-        read_only=True,
+        effects=frozenset({ToolEffect.READ}),
         path_argument_keys=("path",),
     )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         args = parse_tool_args(
             ReadArgs,
             {
@@ -825,9 +826,12 @@ class ReadTool:
         )
 
         if args.path.startswith(RULE_URI_PREFIX):
-            data = read_rule_uri(
+            reader = context.read_rule
+            if reader is None:
+                raise RuntimeError("read requires an explicit rule reader for voidcode://rule URLs")
+            data = reader(
                 args.path,
-                workspace=workspace,
+                workspace=context.require_workspace(),
                 offset=args.offset or 1,
                 limit=args.limit or DEFAULT_READ_LIMIT,
             )
@@ -841,7 +845,7 @@ class ReadTool:
                 partial=bool(data["partial"]),
             )
         if args.path.startswith(VOIDCODE_TOOL_DOC_PREFIX):
-            outcome = _render_tool_documentation(args.path)
+            outcome = _render_tool_documentation(args.path, context=context)
             return ToolResult(
                 tool_name=self.definition.name,
                 status="ok",
@@ -854,6 +858,7 @@ class ReadTool:
         if args.path.startswith(VOIDCODE_ARTIFACT_PREFIX):
             outcome = _render_artifact(
                 args.path,
+                context=context,
                 offset=args.offset or 1,
                 limit=args.limit or DEFAULT_READ_LIMIT,
             )
@@ -869,6 +874,7 @@ class ReadTool:
         if args.path.startswith(VOIDCODE_TRANSCRIPT_PREFIX):
             outcome = _render_transcript(
                 args.path,
+                context=context,
                 limit=args.limit or DEFAULT_TRANSCRIPT_LIMIT,
             )
             return ToolResult(
@@ -880,6 +886,7 @@ class ReadTool:
                 partial=bool(outcome.data["transcript_truncated"]),
             )
 
+        workspace = context.require_workspace()
         resolution = resolve_workspace_path_policy(
             workspace=workspace,
             raw_path=args.path,

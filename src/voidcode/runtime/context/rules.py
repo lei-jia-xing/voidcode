@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Literal, Protocol
 from urllib.parse import unquote
 
+from ...core.tool_context import RULE_URI_PREFIX
+
 RULE_FILE_NAME = "AGENTS.md"
 MAX_RULE_FILES = 8
 MAX_RULE_FILE_CHARS = 12_000
@@ -21,7 +23,6 @@ MAX_RULEBOOK_PROMPT_CHARS = 12_000
 MAX_RULE_URI_LINES = 2_000
 MAX_RULE_URI_BYTES = 50 * 1024
 RULEBOOK_SNAPSHOT_VERSION = 2
-RULE_URI_PREFIX = "voidcode://rule/"
 _RULE_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
 RuleApplication = Literal["always_apply", "discoverable"]

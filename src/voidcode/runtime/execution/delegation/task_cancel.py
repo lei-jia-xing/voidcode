@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel, field_validator
 
-from ...runtime.background.models import BackgroundTaskState, is_background_task_terminal
-from ...runtime.contracts import UnknownBackgroundTaskError
-from .._pydantic_args import parse_tool_args, validate_non_empty_stripped
-from ..contracts import ToolCall, ToolResult
-from ..runtime_context import current_runtime_tool_context
+from ....core.tool_context import ToolContext
+from ....tools._pydantic_args import parse_tool_args, validate_non_empty_stripped
+from ....tools.contracts import ToolCall, ToolResult
+from ...background.models import BackgroundTaskState, is_background_task_terminal
+from ...contracts import UnknownBackgroundTaskError
 
 
 class TaskCancelRuntime(Protocol):
@@ -48,18 +47,16 @@ class TaskCancelTool:
     def __init__(self, *, runtime: TaskCancelRuntime) -> None:
         self._runtime = runtime
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        caller_session_id = context.require_session_id()
         args = parse_tool_args(_TaskCancelArgs, call.arguments, tool_name=self.name)
-        context = current_runtime_tool_context()
-        if context is not None:
-            try:
-                self._runtime.authorize_background_task_owner(
-                    args.taskId,
-                    parent_session_id=context.session_id,
-                )
-            except UnknownBackgroundTaskError as exc:
-                return _unknown_task_result(args.taskId, str(exc))
+        try:
+            self._runtime.authorize_background_task_owner(
+                args.taskId,
+                parent_session_id=caller_session_id,
+            )
+        except UnknownBackgroundTaskError as exc:
+            return _unknown_task_result(args.taskId, str(exc))
         try:
             task = self._runtime.cancel_background_task(args.taskId)
         except UnknownBackgroundTaskError as exc:

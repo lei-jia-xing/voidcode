@@ -5,9 +5,8 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from typing import Literal
 
-from ..tools.contracts import Tool, ToolDefinition
+from ..tools.contracts import Tool, ToolDefinition, is_read_tier
 from .config import RuntimeAgentConfig, RuntimeHooksConfig
-from .edit_schema_policy import EditSchemaResolver
 from .tool_provider import BuiltinToolProvider
 
 #: Consulted only when a lookup misses: the runtime-owned source for tools that
@@ -137,7 +136,6 @@ class ToolRegistry:
         lsp_tool: Tool | None = None,
         mcp_tools: tuple[Tool, ...] = (),
         hooks_config: RuntimeHooksConfig | None = None,
-        edit_schema_resolver: EditSchemaResolver | None = None,
         skill_tool: Tool | None = None,
         task_tool: Tool | None = None,
         task_batch_tool: Tool | None = None,
@@ -149,7 +147,6 @@ class ToolRegistry:
                 lsp_tool=lsp_tool,
                 mcp_tools=mcp_tools,
                 hooks_config=hooks_config,
-                edit_schema_resolver=edit_schema_resolver,
                 skill_tool=skill_tool,
                 task_tool=task_tool,
                 task_batch_tool=task_batch_tool,
@@ -207,7 +204,7 @@ class ToolRegistry:
             ToolCatalogEntry(
                 name=tool.definition.name,
                 visibility=("essential" if tool.definition.name in ESSENTIAL_TOOL_NAMES else "discoverable"),
-                read_only=tool.definition.read_only,
+                read_only=is_read_tier(tool.definition.effects),
                 documentation_uri=f"voidcode://tool/{tool.definition.name}",
                 replay_policy=tool.definition.effective_replay_policy,
             )

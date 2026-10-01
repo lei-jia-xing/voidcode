@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from voidcode.runtime.question import PendingQuestionOption, PendingQuestionPrompt, QuestionResponse
+from voidcode.core.questions import PendingQuestionOption, PendingQuestionPrompt, QuestionResponse
 from voidcode.tools.question import QuestionTool
 
 

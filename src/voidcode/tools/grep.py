@@ -8,11 +8,12 @@ from typing import ClassVar, final
 
 from pydantic import BaseModel, field_validator
 
+from ..core.tool_context import ToolContext
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._gitignore import GitIgnoreMatcher
 from ._pydantic_args import parse_tool_args, validate_non_empty
 from ._repair import raise_tool_diagnostic
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 MAX_MATCHES = 200
 #: Upper bound for an explicit ``limit`` so one call cannot materialize an
@@ -114,7 +115,7 @@ class GrepTool:
             },
             "required": ["pattern", "path"],
         },
-        read_only=True,
+        effects=frozenset({ToolEffect.READ}),
         path_argument_keys=("path",),
     )
 
@@ -174,7 +175,8 @@ class GrepTool:
         ]
         return before, after
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        workspace = context.require_workspace()
         args = parse_tool_args(
             GrepArgs,
             {

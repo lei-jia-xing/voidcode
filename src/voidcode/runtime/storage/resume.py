@@ -6,6 +6,7 @@ from dataclasses import asdict, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from ...core.questions import PendingQuestionOption, PendingQuestionPrompt
 from ..contracts import (
     RuntimeRequest,
     RuntimeResponse,
@@ -13,11 +14,7 @@ from ..contracts import (
 )
 from ..events import EventEnvelope
 from ..permission import PendingApproval
-from ..question import (
-    PendingQuestion,
-    PendingQuestionOption,
-    PendingQuestionPrompt,
-)
+from ..question import PendingQuestion
 from ..session import session_metadata_for_persistence
 from .rows import (
     SessionApprovalRecoveryRow,

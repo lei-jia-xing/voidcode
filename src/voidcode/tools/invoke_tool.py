@@ -15,13 +15,13 @@ this tool outside that boundary is a governance error.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import ClassVar, final
 
 from pydantic import BaseModel, field_validator
 
+from ..core.tool_context import ToolContext
 from ._pydantic_args import parse_tool_args, validate_non_empty_stripped
-from .contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 
 class InvokeToolArgs(BaseModel):
@@ -62,11 +62,11 @@ class InvokeTool:
             },
             "required": ["name"],
         },
-        read_only=True,
+        effects=frozenset({ToolEffect.READ}),
     )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = workspace
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = context
         parse_tool_args(InvokeToolArgs, call.arguments, tool_name=self.definition.name)
         raise ValueError(
             "invoke_tool must be dispatched by the runtime run loop; direct invocation is not supported outside the tool-execution boundary"

@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal
 
-from ..runtime.events import RUNTIME_TOOL_HOOK_POST, RUNTIME_TOOL_HOOK_PRE
 from ..security.shell_policy import non_interactive_shell_env
 from .config import RuntimeHooksConfig, RuntimeHookSurface, hook_tool_matches
 from .plan import ResolvedHookPlan
@@ -328,7 +327,7 @@ def _run_hook_commands(
 
 
 def _event_type_for_phase(phase: Literal["pre", "post"]) -> str:
-    return RUNTIME_TOOL_HOOK_PRE if phase == "pre" else RUNTIME_TOOL_HOOK_POST
+    return _event_type_for_surface("pre_tool" if phase == "pre" else "post_tool")
 
 
 def _event_type_for_surface(surface: RuntimeHookSurface) -> str:

@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import pytest
 
+from voidcode.core.questions import PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -19,7 +20,7 @@ from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse, UnknownS
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.paths import sessions_db_path, state_home
 from voidcode.runtime.permission import PLAN_MODE_DENIAL_REASON, PendingApproval
-from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
+from voidcode.runtime.question import PendingQuestion
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SCHEMA_VERSION, SessionSealedError, SqliteSessionStore
 
