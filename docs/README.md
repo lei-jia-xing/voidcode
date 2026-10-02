@@ -14,4 +14,4 @@ VoidCode 的行为以源码和测试为准。仓库只保留以下需要稳定�
 
 ## 实施计划
 
-- [`plans/agent-core-refactor.md`](./plans/agent-core-refactor.md) — 根据上述审计制定的 P0–P6 重构计划，含完整审计映射、十项硬验收、阶段入口/出口与行为验证；P0 治理基线与 P1 中立 lower contracts 已完成，P2–P6 尚待实施。
+- [`plans/agent-core-refactor.md`](./plans/agent-core-refactor.md) — 根据上述审计制定的 P0–P6 重构计划，含完整审计映射、十项硬验收、阶段入口/出口与行为验证；P0 治理基线与 P1 中立 lower contracts、P2 显式工具上下文和 P3 共用 core turn engine 均已完成；P4–P6 仍待实施。

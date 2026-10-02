@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..core.engine import CallSeed
 from ..core.questions import QuestionResponse
-from ..graph.contracts import GraphRunRequest
+from ..core.turns import TurnRequest
 from ..provider.protocol import ProviderAbortSignal
 from ..tools.contracts import ToolCall, ToolResult
 from ..tools.question import QuestionTool
@@ -30,7 +32,6 @@ from .contracts import (
 from .event_envelopes import resequence_event
 from .events import RUNTIME_QUESTION_ANSWERED, RUNTIME_SKILLS_BINDING_MISMATCH, EventEnvelope
 from .execution import chunk_builders
-from .execution.graph_adapter import graph_request_for_session, graph_session_snapshot
 from .execution.provider_execution_metadata import provider_attempt_from_metadata
 from .execution.resume_checkpoint import (
     ApprovalResumeCheckpointState,
@@ -50,7 +51,9 @@ from .execution.resume_checkpoint import (
 from .execution.resume_checkpoint import (
     validated_resume_checkpoint_envelope as _validated_resume_checkpoint_envelope,
 )
-from .execution.seams import select_graph_for_effective_config
+from .execution.seams import select_turn_producer_for_effective_config
+from .execution.turn_adapter import turn_request_for_session, turn_session_snapshot
+from .execution.turn_recovery import AnsweredQuestion, ApprovedInvocation, InterruptedTurn, restored_turn_batch
 from .hook_runtime import (
     HOOK_RECURSION_ENV_VAR,
     hook_execution_policy_from_metadata,
@@ -60,6 +63,7 @@ from .permission import PendingApproval, PermissionResolution
 from .permission_policy import permission_policy_for_session
 from .provider_metadata import validate_reasoning_effort_capability
 from .question import PendingQuestion
+from .runtime_debug import prompt_and_tool_results_from_debug_events
 from .session import (
     SessionState,
     reload_persisted_session,
@@ -68,6 +72,8 @@ from .session import (
 from .session_metadata_helpers import (
     continuity_state_from_session_metadata,
     resume_waiting_reason,
+    runtime_state_value,
+    session_metadata_with_runtime_state_updates,
     session_model_identity,
     session_with_context_window_payload_metadata,
     session_with_current_acp_metadata,
@@ -320,7 +326,20 @@ class RuntimeResumeCoordinator:
         tool_results: list[ToolResult] = list(checkpoint_state.tool_results)
         session = session_with_run_id(session, run_id=run_id)
         validate_session_workspace(session, session_id=stored.session.session.id, workspace=self._workspace)
-        tool_results.append(question_answer_result)
+        batch, batch_sequence = self._restored_batch(session=session, tool_results=tool_results)
+        question_call_id = self._recorded_pending_tool_call_id(stored_events=stored.events, pending=pending, batch=batch)
+        if len(batch.completed_results) >= len(batch.calls) or batch.calls[len(batch.completed_results)].tool_call_id != question_call_id:
+            raise ValueError("pending question does not match the next original batch call identity")
+        question_call = ToolCall(tool_name=pending.tool_name, arguments=dict(pending.arguments), tool_call_id=question_call_id)
+        question_answer_result = replace(
+            question_answer_result,
+            data={
+                **question_answer_result.data,
+                "tool_call_id": question_call_id,
+                "arguments": dict(pending.arguments),
+            },
+        )
+        continuation = AnsweredQuestion(pending, question_call, question_answer_result, batch, batch_sequence)
 
         effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
         try:
@@ -353,9 +372,9 @@ class RuntimeResumeCoordinator:
             session,
             dict(assembled_context.metadata),
         )
-        graph_request = graph_request_for_session(
-            GraphRunRequest(
-                session=graph_session_snapshot(session),
+        turn_request = turn_request_for_session(
+            TurnRequest(
+                session=turn_session_snapshot(session),
                 prompt=prompt,
                 available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
                 # The assembled context compiled the provider view with the
@@ -385,7 +404,7 @@ class RuntimeResumeCoordinator:
             ),
             session,
         )
-        graph = runtime.graph_for_session_metadata(session.metadata)
+        producer = runtime.turn_producer_for_session_metadata(session.metadata)
         model, provider = session_model_identity(session.metadata)
         identity_payload: dict[str, str] = {}
         if model is not None:
@@ -417,19 +436,6 @@ class RuntimeResumeCoordinator:
                     },
                     None,
                 ),
-                (
-                    "runtime.tool_completed",
-                    "tool",
-                    {
-                        **identity_payload,
-                        "tool": question_answer_result.tool_name,
-                        "status": question_answer_result.status,
-                        "content": question_answer_result.content,
-                        "error": question_answer_result.error,
-                        **question_answer_result.data,
-                    },
-                    None,
-                ),
             ),
         )
         loop_events: list[EventEnvelope] = list(persisted_answer_events)
@@ -440,15 +446,16 @@ class RuntimeResumeCoordinator:
         final_session = session
         last_sequence = sequence
         try:
-            for chunk in self._run_loop_coordinator.execute_graph_loop(
-                graph=graph,
+            for chunk in self._run_loop_coordinator.execute_turn_engine(
+                producer=producer,
                 tool_registry=tool_registry,
                 session=session,
                 sequence=sequence,
-                graph_request=graph_request,
+                turn_request=turn_request,
                 tool_results=tool_results,
                 permission_policy=permission_policy_for_session(base_policy=self._permission_policy, metadata=session.metadata),
                 preserved_continuity_state=continuity_state_from_session_metadata(session.metadata),
+                continuation=continuation,
             ):
                 final_session = chunk.session
                 if chunk.event is not None:
@@ -695,9 +702,9 @@ class RuntimeResumeCoordinator:
             session,
             dict(assembled_context.metadata),
         )
-        graph_request = graph_request_for_session(
-            GraphRunRequest(
-                session=graph_session_snapshot(session),
+        turn_request = turn_request_for_session(
+            TurnRequest(
+                session=turn_session_snapshot(session),
                 prompt=prompt,
                 available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
                 # The assembled context compiled the provider view with the
@@ -725,13 +732,13 @@ class RuntimeResumeCoordinator:
             ),
             session,
         )
-        provider_attempt = provider_attempt_from_metadata(graph_request.metadata)
-        graph = runtime.graph_for_session_metadata(session.metadata)
+        provider_attempt = provider_attempt_from_metadata(turn_request.metadata)
+        producer = runtime.turn_producer_for_session_metadata(session.metadata)
         if provider_attempt > 0:
-            graph = select_graph_for_effective_config(
+            producer = select_turn_producer_for_effective_config(
                 config=runtime.effective_runtime_config_from_metadata(session.metadata),
                 provider_attempt=provider_attempt,
-            ).graph
+            ).producer
 
         emitted_sequence = max_stored_sequence
         if binding_mismatch_payload is not None:
@@ -826,81 +833,24 @@ class RuntimeResumeCoordinator:
             )
             return
 
-        approved_tool_call = ToolCall(
-            tool_name=pending.tool_name,
-            arguments=dict(pending.arguments),
-            tool_call_id=self._recorded_pending_tool_call_id(
-                stored_events=stored.events,
-                pending=pending,
-            ),
-        )
-        sequence = emitted_sequence
+        batch, batch_sequence = self._restored_batch(session=session, tool_results=tool_results)
+        approved_call_id = self._recorded_pending_tool_call_id(stored_events=stored.events, pending=pending, batch=batch)
+        if len(batch.completed_results) >= len(batch.calls) or batch.calls[len(batch.completed_results)].tool_call_id != approved_call_id:
+            raise ValueError("pending approval does not match the next original batch call identity")
+        approved_tool_call = ToolCall(tool_name=pending.tool_name, arguments=dict(pending.arguments), tool_call_id=approved_call_id)
+        continuation = ApprovedInvocation(pending, approval_decision, approved_tool_call, batch, batch_sequence)
         try:
-            for chunk in self._run_loop_coordinator.execute_approved_tool_call(
+            for chunk in self._run_loop_coordinator.execute_turn_engine(
+                producer=producer,
                 tool_registry=tool_registry,
                 session=session,
-                sequence=sequence,
-                tool_call=approved_tool_call,
-                pending=pending,
-                decision=approval_decision,
+                sequence=emitted_sequence,
+                turn_request=turn_request,
                 tool_results=tool_results,
-                abort_signal=graph_request.abort_signal,
+                permission_policy=permission_policy_for_session(base_policy=self._permission_policy, metadata=session.metadata),
+                preserved_continuity_state=None,
+                continuation=continuation,
             ):
-                session = chunk.session
-                if deferred_startup_acp_events and (
-                    (chunk.event is not None and chunk.event.event_type in {"runtime.approval_resolved", "runtime.failed"}) or chunk.kind == "output"
-                ):
-                    startup_chunks, updated_session, _ = emit_acp_events(
-                        self._acp_adapter,
-                        session=chunk.session,
-                        start_sequence=emitted_sequence + 1,
-                        acp_events=deferred_startup_acp_events,
-                    )
-                    deferred_startup_acp_events = ()
-                    for startup_chunk in startup_chunks:
-                        startup_event = startup_chunk.require_event()
-                        emitted_sequence = startup_event.sequence
-                        loop_events.append(startup_event)
-                        yield startup_chunk
-                    if chunk.event is not None:
-                        chunk = RuntimeStreamChunk(
-                            kind="event",
-                            session=updated_session,
-                            event=chunk.event,
-                        )
-                    elif chunk.kind == "output":
-                        chunk = RuntimeStreamChunk(
-                            kind="output",
-                            session=updated_session,
-                            output=chunk.output,
-                        )
-                    session = chunk.session
-                if chunk.event is not None:
-                    emitted_sequence += 1
-                    resequenced_event = resequence_event(chunk.event, sequence=emitted_sequence)
-                    loop_events.append(resequenced_event)
-                    yield RuntimeStreamChunk(kind="event", session=chunk.session, event=resequenced_event)
-                if chunk.kind == "output":
-                    output = chunk.output
-                    yield chunk
-
-            graph_loop_chunks: Iterator[RuntimeStreamChunk]
-            resumed_engine = runtime.effective_runtime_config_from_metadata(session.metadata).execution_engine
-            if session.status == "failed" or (approval_decision == "deny" and resumed_engine != "provider"):
-                graph_loop_chunks = iter(())
-            else:
-                graph_loop_chunks = self._run_loop_coordinator.execute_graph_loop(
-                    graph=graph,
-                    tool_registry=tool_registry,
-                    session=session,
-                    sequence=emitted_sequence,
-                    graph_request=graph_request,
-                    tool_results=tool_results,
-                    permission_policy=permission_policy_for_session(base_policy=self._permission_policy, metadata=session.metadata),
-                    preserved_continuity_state=None,
-                )
-
-            for chunk in graph_loop_chunks:
                 session = chunk.session
                 if deferred_startup_acp_events and (
                     (chunk.event is not None and chunk.event.event_type in {"runtime.approval_resolved", "runtime.failed"}) or chunk.kind == "output"
@@ -1273,6 +1223,19 @@ class RuntimeResumeCoordinator:
             session_id=session_id,
         )
         validate_session_workspace(stored_row.session, session_id=session_id, workspace=self._workspace)
+        intent = runtime_state_value(stored_row.session.metadata, "pending_tool_intent")
+        if intent is not None and (
+            not isinstance(intent, dict)
+            or intent.get("replay_policy") not in {"safe", "never"}
+            or intent.get("status") not in {"pending", "completed", "interrupted"}
+        ):
+            raise ValueError("persisted tool intent has an invalid replay policy or status")
+        never_replay = isinstance(intent, dict) and intent.get("status") == "pending" and intent.get("replay_policy") == "never"
+        latest_batch = runtime_state_value(session_metadata if never_replay else stored_row.session.metadata, "turn_batch")
+        if latest_batch is not None:
+            session_metadata = session_metadata_with_runtime_state_updates(session_metadata, updates={"turn_batch": latest_batch})
+        if never_replay:
+            session_metadata = session_metadata_with_runtime_state_updates(session_metadata, removed=frozenset({"pending_tool_intent"}))
         session = session_with_run_id(
             SessionState(
                 session=stored_row.session.session,
@@ -1301,6 +1264,31 @@ class RuntimeResumeCoordinator:
             source="resume",
         )
 
+        continuation: InterruptedTurn | None = None
+        tool_results = list(self.tool_results_from_checkpoint(raw_tool_results))
+        if latest_batch is not None:
+            if (
+                not never_replay
+                and checkpoint_last_sequence is not None
+                and isinstance(latest_batch, dict)
+                and isinstance(batch_started := latest_batch.get("started_sequence"), int)
+                and batch_started > checkpoint_last_sequence
+            ):
+                # A newer authentic batch may contain durable results not yet
+                # covered by the previous checkpoint; preserve its active path.
+                checkpoint_last_sequence = None
+            batch, batch_sequence = self._restored_batch(
+                session=session,
+                tool_results=tool_results,
+                sequence=checkpoint_last_sequence,
+            )
+            if never_replay and len(batch.completed_results) != len(batch.calls):
+                session_metadata = session_metadata_with_runtime_state_updates(session.metadata, removed=frozenset({"turn_batch"}))
+                session = replace(session, metadata=session_metadata)
+            else:
+                continuation = InterruptedTurn(batch, batch_sequence)
+        elif intent is not None and not never_replay:
+            raise ValueError("legacy v3 interrupted native call has no authentic durable batch; migrate it before resuming")
         if checkpoint_last_sequence is not None:
             self._session_store.restore_leaf_after_interrupted_resume(
                 workspace=self._workspace,
@@ -1313,7 +1301,6 @@ class RuntimeResumeCoordinator:
         # abandoned branch or a dead run's tail), where a later checkout can
         # still restore them.
         stored = self._stored_response_on_path(session_id=session_id)
-        tool_results = list(self.tool_results_from_checkpoint(raw_tool_results))
         replayed_conversation_segments = runtime.replayed_conversation_segments_for_existing_session(
             stored=stored,
             parent_session_id=stored.session.session.parent_id,
@@ -1335,9 +1322,9 @@ class RuntimeResumeCoordinator:
             session,
             dict(assembled_context.metadata),
         )
-        graph_request = graph_request_for_session(
-            GraphRunRequest(
-                session=graph_session_snapshot(session),
+        turn_request = turn_request_for_session(
+            TurnRequest(
+                session=turn_session_snapshot(session),
                 prompt=prompt,
                 available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
                 # The assembled context compiled the provider view with the
@@ -1367,14 +1354,14 @@ class RuntimeResumeCoordinator:
             ),
             session,
         )
-        graph = runtime.graph_for_session_metadata(session.metadata)
+        producer = runtime.turn_producer_for_session_metadata(session.metadata)
         if provider_failure_resume:
-            provider_attempt = provider_attempt_from_metadata(graph_request.metadata)
+            provider_attempt = provider_attempt_from_metadata(turn_request.metadata)
             if provider_attempt > 0:
-                graph = select_graph_for_effective_config(
+                producer = select_turn_producer_for_effective_config(
                     config=effective_config,
                     provider_attempt=provider_attempt,
-                ).graph
+                ).producer
         max_stored_sequence = (
             checkpoint_last_sequence if checkpoint_last_sequence is not None else (stored.events[-1].sequence if stored.events else 0)
         )
@@ -1399,15 +1386,16 @@ class RuntimeResumeCoordinator:
             parent_session_id=session.session.parent_id,
         )
         try:
-            for chunk in self._run_loop_coordinator.execute_graph_loop(
-                graph=graph,
+            for chunk in self._run_loop_coordinator.execute_turn_engine(
+                producer=producer,
                 tool_registry=tool_registry,
                 session=session,
                 sequence=max_stored_sequence,
-                graph_request=graph_request,
+                turn_request=turn_request,
                 tool_results=tool_results,
                 permission_policy=permission_policy_for_session(base_policy=self._permission_policy, metadata=session.metadata),
                 preserved_continuity_state=continuity_state_from_session_metadata(session.metadata),
+                continuation=continuation,
             ):
                 final_session = chunk.session
                 if chunk.event is not None:
@@ -1525,6 +1513,25 @@ class RuntimeResumeCoordinator:
     def tool_results_from_checkpoint(raw_tool_results: list[object]) -> tuple[ToolResult, ...]:
         return _tool_results_from_checkpoint(raw_tool_results)
 
+    def _restored_batch(self, *, session: SessionState, tool_results: list[ToolResult], sequence: int | None = None) -> tuple[CallSeed, int]:
+        raw = runtime_state_value(session.metadata, "turn_batch")
+        if not isinstance(raw, dict):
+            raise ValueError("legacy v3 pending turn has no authentic durable batch; migrate it before resuming")
+        started = raw.get("started_sequence")
+        if not isinstance(started, int) or isinstance(started, bool):
+            raise ValueError("persisted native batch has no valid start sequence")
+        path = self._session_store.session_path(workspace=self._workspace, session_id=session.session.id, sequence=sequence)
+        _, durable_results = prompt_and_tool_results_from_debug_events(tuple(event for event in path if event.sequence > started))
+        if not path:
+            raw_calls = raw.get("calls")
+            ids = {call.get("tool_call_id") for call in raw_calls if isinstance(call, dict)} if isinstance(raw_calls, list) else set()
+            durable_results = [result for result in tool_results if result.data.get("tool_call_id") in ids]
+        batch, sequence = restored_turn_batch(session.metadata, session_id=session.session.id, tool_results=durable_results)
+        ids = {call.tool_call_id for call in batch.calls}
+        tool_results[:] = [result for result in tool_results if result.data.get("tool_call_id") not in ids]
+        tool_results.extend(batch.completed_results)
+        return batch, sequence
+
     def _load_pending_approval_context(
         self,
         *,
@@ -1604,27 +1611,20 @@ class RuntimeResumeCoordinator:
     def _recorded_pending_tool_call_id(
         *,
         stored_events: tuple[EventEnvelope, ...],
-        pending: PendingApproval,
-    ) -> str | None:
-        approval_index: int | None = None
-        for index, event in enumerate(stored_events):
-            if (
-                event.event_type == "runtime.approval_requested"
-                and event.payload.get("request_id") == pending.request_id
-                and event.payload.get("hook_status") is None
-            ):
-                approval_index = index
+        pending: PendingApproval | PendingQuestion,
+        batch: CallSeed,
+    ) -> str:
+        event_type = "runtime.approval_requested" if isinstance(pending, PendingApproval) else "runtime.question_requested"
+        prefix = len(batch.completed_results)
+        if prefix >= len(batch.calls):
+            raise ValueError("pending request has no unfinished original native call")
+        original_id = batch.calls[prefix].tool_call_id
+        if not isinstance(original_id, str) or not original_id:
+            raise ValueError("persisted native batch has no authentic pending call identity")
+        for event in reversed(stored_events):
+            if event.event_type == event_type and event.payload.get("request_id") == pending.request_id and event.payload.get("hook_status") is None:
+                if event.payload.get("tool_call_id") != original_id:
+                    raise ValueError("recorded pending request does not match the original native call identity")
                 break
-        if approval_index is None:
-            return None
-
-        for event in reversed(stored_events[:approval_index]):
-            if event.event_type != "graph.tool_request_created":
-                continue
-            if event.payload.get("tool") != pending.tool_name:
-                continue
-            if event.payload.get("arguments") != pending.arguments:
-                continue
-            tool_call_id = event.payload.get("tool_call_id")
-            return tool_call_id if isinstance(tool_call_id, str) else None
-        return None
+        # Admission already matched the request against the recorded checkpoint.
+        return original_id

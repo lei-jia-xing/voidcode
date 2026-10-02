@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
-from ...graph.contracts import RuntimeGraph
-from ...graph.deterministic_graph import DeterministicGraph
-from ...graph.provider_graph import ProviderGraph
+from ...core.deterministic_turns import DeterministicTurnProducer
+from ...core.provider_turns import ProviderTurnProducer
+from ...core.turns import TurnProducer
 from ...provider.errors import ProviderExecutionError
 from ...provider.models import ResolvedProviderChain, ResolvedProviderModel
 from ..config import (
@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class RuntimeGraphSelection:
-    graph: RuntimeGraph
+class RuntimeTurnProducerSelection:
+    producer: TurnProducer
     provider_attempt: int
     provider_target: ResolvedProviderModel
 
@@ -52,16 +52,16 @@ def resolve_runtime_session_routing(request: RuntimeRequest) -> RuntimeSessionRo
     return RuntimeSessionRouting(session_id="local-cli-session")
 
 
-def build_runtime_graph(
+def build_runtime_turn_producer(
     *,
     engine_name: ExecutionEngineName,
     provider_model: ResolvedProviderModel,
-) -> RuntimeGraph:
+) -> TurnProducer:
     if engine_name == "deterministic":
-        return DeterministicGraph()
+        return DeterministicTurnProducer()
     if provider_model.provider is None:
         raise ValueError(provider_model_required_message())
-    return ProviderGraph(
+    return ProviderTurnProducer(
         provider=provider_model.provider.turn_provider(),
         provider_model=provider_model,
     )
@@ -74,10 +74,10 @@ def cache_key_for_effective_config(
 ) -> tuple[ExecutionEngineName, str]:
     # Key must cover every config field that selection/build reads: engine,
     # model identity, fallback chain, resolved chain selections, and agent.
-    # Deliberately excluded: providers endpoint configs (they reach the graph
-    # only through the resolved chain selections below), approval/permission
-    # policy, tools, and context window (never read by graph construction, so
-    # sharing across them is correct, not a collision).
+    # Deliberately excluded: provider endpoint configs (they reach producer selection
+    # only through the resolved chain selections below), approval/permission policy,
+    # tools, and context window (never read by producer selection, so sharing across
+    # them is correct, not a collision).
     agent_payload = serialize_runtime_agent_config(config.agent, include_runtime_internal=True)
     agent_key = "" if agent_payload is None else str(sorted(agent_payload.items()))
     provider_fallback_key = (
@@ -99,13 +99,13 @@ def cache_key_for_effective_config(
     return (config.execution_engine, f"{provider_attempt}::{model_key}::{reasoning_key}::{provider_fallback_key}::{chain_key}::{agent_key}")
 
 
-def select_graph_for_effective_config(
+def select_turn_producer_for_effective_config(
     *,
     config: EffectiveRuntimeConfig,
     provider_attempt: int = 0,
-    cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph] | None = None,
+    cache: dict[tuple[ExecutionEngineName, str], TurnProducer] | None = None,
     force_rebuild: bool = False,
-) -> RuntimeGraphSelection:
+) -> RuntimeTurnProducerSelection:
     provider_target = config.resolved_provider.target_chain.target_at(provider_attempt)
     if provider_target is None:
         provider_target = config.resolved_provider.active_target
@@ -115,9 +115,9 @@ def select_graph_for_effective_config(
     cache_key = cache_key_for_effective_config(config, provider_attempt=provider_attempt)
     if cache is not None and not force_rebuild and cache_key in cache:
         cached = cache[cache_key]
-        return RuntimeGraphSelection(graph=cached, provider_attempt=provider_attempt, provider_target=provider_target)
-    selection = RuntimeGraphSelection(
-        graph=build_runtime_graph(
+        return RuntimeTurnProducerSelection(producer=cached, provider_attempt=provider_attempt, provider_target=provider_target)
+    selection = RuntimeTurnProducerSelection(
+        producer=build_runtime_turn_producer(
             engine_name=config.execution_engine,
             provider_model=provider_target,
         ),
@@ -125,7 +125,7 @@ def select_graph_for_effective_config(
         provider_target=provider_target,
     )
     if cache is not None and not force_rebuild:
-        cache[cache_key] = selection.graph
+        cache[cache_key] = selection.producer
     return selection
 
 
@@ -147,7 +147,7 @@ def provider_target_window_tokens(target: ResolvedProviderModel | None) -> int |
 class ContextLimitPromotion:
     """Window-aware promotion choice for one ``context_limit`` turn."""
 
-    selection: RuntimeGraphSelection | None
+    selection: RuntimeTurnProducerSelection | None
     window_tokens_before: int | None
     window_tokens_after: int | None
     candidate_count: int
@@ -190,8 +190,8 @@ def context_limit_promotion_for_provider_error(
         target = provider_chain.target_at(chosen_attempt)
         assert target is not None
         return ContextLimitPromotion(
-            selection=RuntimeGraphSelection(
-                graph=build_runtime_graph(engine_name=config.execution_engine, provider_model=target),
+            selection=RuntimeTurnProducerSelection(
+                producer=build_runtime_turn_producer(engine_name=config.execution_engine, provider_model=target),
                 provider_attempt=chosen_attempt,
                 provider_target=target,
             ),
@@ -200,7 +200,7 @@ def context_limit_promotion_for_provider_error(
             candidate_count=candidate_count,
             promotion_reason="larger_window",
         )
-    selection = fallback_graph_for_provider_error(
+    selection = fallback_turn_producer_for_provider_error(
         error=error,
         provider_chain=provider_chain,
         config=config,
@@ -215,21 +215,21 @@ def context_limit_promotion_for_provider_error(
     )
 
 
-def fallback_graph_for_provider_error(
+def fallback_turn_producer_for_provider_error(
     *,
     error: ProviderExecutionError,
     provider_chain: ResolvedProviderChain,
     config: EffectiveRuntimeConfig,
     provider_attempt: int,
-) -> RuntimeGraphSelection | None:
+) -> RuntimeTurnProducerSelection | None:
     next_attempt = provider_attempt + 1
     next_target = provider_chain.target_at(next_attempt)
     if not fallback_allowed(error):
         return None
     if next_target is None:
         return None
-    return RuntimeGraphSelection(
-        graph=build_runtime_graph(
+    return RuntimeTurnProducerSelection(
+        producer=build_runtime_turn_producer(
             engine_name=config.execution_engine,
             provider_model=next_target,
         ),

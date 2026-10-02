@@ -4,7 +4,7 @@
 
 ## 范围
 
-这些文档定义了由运行时、CLI、当前 Web 客户端以及后续 TUI 实现共享的 MVP 契约层。
+这些文档定义了由运行时、CLI、当前 Web 客户端和 TUI 实现共享的 MVP 契约层。
 
 它们对以下内容具有规范性：
 
@@ -62,7 +62,9 @@
 - `src/voidcode/runtime/session.py`
 - `src/voidcode/runtime/service.py`
 - `src/voidcode/hook/presets.py`
-- `src/voidcode/graph/contracts.py`
+- `src/voidcode/core/engine.py`
+- `src/voidcode/core/turns.py`
+- `src/voidcode/runtime/run_loop.py::RuntimeHost`
 - `src/voidcode/tools/contracts.py`
 - `src/voidcode/cli/`
 

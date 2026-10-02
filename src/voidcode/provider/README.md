@@ -12,7 +12,7 @@
 
 ## 不负责什么
 
-- Graph 执行编排（由 `voidcode.graph` 负责）
+- Core turn/batch progression（由 `voidcode.core.engine.TurnEngine` 负责）
 - Runtime 重试循环和持久化 Attempt 状态
 - Session Metadata 持久化（由 `voidcode.runtime.storage` 负责）
 - Runtime 事件路由与客户端交付
@@ -29,7 +29,7 @@ from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 from voidcode.tools.read import ReadTool
 ```
 
-中立 transcript 是本轮 model-facing view，不是 session history。`ToolResultView` 隔离原始结果及其嵌套 data；runtime 仍拥有 history/replay、redaction、context budget 和 policy。导入 provider/tool contracts 或运行现有 graph 步骤不需要 runtime、SQLite 或 UI；独立完整 turn engine 的 cutover 属于 P3。
+中立 transcript 是本轮 model-facing view，不是 session history。`ToolResultView` 隔离原始结果及其嵌套 data；runtime 仍拥有 history/replay、redaction、context budget 和 policy。导入 provider/tool contracts，或用 memory host 执行 core turn engine，不需要 runtime、SQLite 或 UI；产品 run/resume 则由 runtime 的 `RuntimeHost` 接入同一个 engine。
 
 ## Provider 配置与优先级
 
@@ -473,7 +473,7 @@ OpenCode Zen 与 OpenCode Go 是不同 provider：Zen 使用 `opencode-zen/<mode
 - `pricing_rules.json` 只收录 OMP 亲证的 `long-context-cost` 行；mirror 的 `context_over_200k` /
   `tiers[]` **永不读取**（OMP 的 models.dev row 类型没有 tier 字段），因此没有对应行的 model 不会被
   顺手套上 tier。
-- 成本落在既有的 `provider_usage` 记录上：graph 在该 turn 用它自己的 usage 计算一次，写入
+- 成本落在既有的 `provider_usage` 记录上：`core.provider_turns.ProviderTurnProducer` 在该 turn 用它自己的 usage 计算一次，写入
   `latest.cost_usd` 并累加到 `cumulative.cost_usd`；token 桶保持整数，金额是 float，持久化的 usage
   不会被重新计价。
 - **compaction 预算**：随包 catalog 的 `max_input_tokens`（无上游 `limit.input` 时由
@@ -486,7 +486,7 @@ OpenCode Zen 与 OpenCode Go 是不同 provider：Zen 使用 `opencode-zen/<mode
   因此没有可丢弃的 image part，也无需 vision gate。
 
 - 定价读取的是**随包 catalog**（`static_catalog_metadata`），不是 discovery 合并后的 metadata：与
-  compaction 预算同一个理由——价格不该随一次网关列表刷新而变动。因此 `provider_graph._priced_usage`
+  compaction 预算同一个理由——价格不该随一次网关列表刷新而变动。因此 `core.provider_turns.ProviderTurnProducer._priced_usage`
   明确传入 shipped 行；一个 discovery 刷新后缺少定价的条目不会把成本静默变成 0。
 - 「未定价」与「免费」是两种结果：`usage_cost_usd` 在 shipped catalog 没有该 model 时返回 `None`
   （而不是 `0.0`），只有 catalog 真的把四个费率都写成 0 的 model 才是免费（返回 `0.0`）。surface

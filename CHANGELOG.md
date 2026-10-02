@@ -54,6 +54,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **core/runtime:** converge provider-backed and deterministic turns on `core.engine.TurnEngine`, with `runtime.run_loop.RuntimeHost` as the governed host; remove the legacy `voidcode.graph`, `GraphRunRequest`, and `RuntimeGraph` surfaces without aliases (breaking for direct importers). Authenticated completed seed results remain available to later turns exactly once, without replaying completed tool calls.
+
 - **core/tools:** require explicit `ToolContext` for every tool invocation and replace `ToolDefinition.read_only` with behavior effects (breaking: no hidden invocation binder or compatibility facade); move task/process execution to runtime-owned commands, bind scoped resources to the approved caller/call/workspace, and reject cancelled commands before dispatch while preserving runtime approval, progress, replay and execution-lease ownership.
 
 
@@ -142,6 +144,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 - **release:** add git-cliff changelog generation
 
 ### Fixed
+
+- **core/runtime:** consume bounded `read.data.raw_content` for deterministic final output and continuity previews instead of parsing display markup; preserve blank lines and indentation, respect clipped/pruned projections, and keep binary archive members' non-text feedback distinct from valid empty text.
 
 - **cli:** add `voidcode sessions checkout <session_id> <sequence>` and `voidcode sessions entries <session_id>` (both `--json`/`--workspace`) — checkout moves a session's leaf to an earlier entry so the next run replays the root→leaf path to there; entries is the read-only listing a user picks that sequence from, marking each row `on-path` or `abandoned`. Backed by `VoidCodeRuntime.checkout_session` / `session_entries` and `SessionEntrySummary`.
 

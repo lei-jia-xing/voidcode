@@ -112,6 +112,7 @@ def parse_runtime_state_metadata(raw: object) -> RuntimeStateMetadata:
         "context_projection_summary",
         "todos",
         "pending_tool_intent",
+        "turn_batch",
         "context_compacted",
         "context_transform_applied",
         "reminders",

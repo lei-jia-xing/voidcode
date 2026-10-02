@@ -920,7 +920,7 @@ metadata/events 为准。
 2. **选择最窄工具。** 能用 `read` 就不要用 `shell_exec cat`；能用 `edit` 就不要完整 `write`。
 3. **预期 approval pause。** 按实际 operation class、模式与规则决定审批，不从目录中的派生 `read_only` 推断执行许可。
 4. **把外部资料与本地事实分开。** `web_search` / `web_fetch` 给的是外部证据；本仓库状态仍以 workspace 工具和 runtime events 为准。
-5. **不要绕过 runtime。** UI、agent preset、graph / provider engine 都不应直接执行工具或自行处理审批。
+5. **不要绕过 runtime。** UI、agent preset、core turn engine 都不应直接执行工具或自行处理审批。
 6. **读取 `ToolResult.data`，不要只读 `content`。** `content` 用于人类/agent 摘要，`data` 才是稳定结构化 metadata。
 7. **错误是可恢复信号。** 参数错误、路径越界、approval denial、tool error 都应让 agent 收缩下一步，而不是重复同一调用。
 

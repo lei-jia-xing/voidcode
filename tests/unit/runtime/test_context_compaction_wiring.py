@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 
+from voidcode.core.turns import TurnPlan
 from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
 from voidcode.provider.protocol import ProviderTurnRequest, ProviderTurnResult
@@ -439,16 +439,6 @@ class _SummaryModelProvider:
         return self.turn
 
 
-@dataclass(slots=True)
-class _ReadStep:
-    tool_call: ToolCall | None = None
-    output: str | None = None
-    is_finished: bool = False
-    events: tuple[object, ...] = ()
-    reasoning: str | None = None
-    provider_usage: object | None = None
-
-
 class _ReadThenDoneGraph:
     """Scripted graph: one read per step, then done; records the provider view."""
 
@@ -456,14 +446,14 @@ class _ReadThenDoneGraph:
         self._reads = reads
         self.summary_segments: list[str | None] = []
 
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> _ReadStep:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> TurnPlan:
         _ = session
         assembled = request.assembled_context  # type: ignore[attr-defined]
         projection = [segment.content for segment in assembled.segments if (segment.metadata or {}).get("source") == "context_projection"]
         self.summary_segments.append(projection[0] if projection else None)
         if len(tool_results) < self._reads:
-            return _ReadStep(tool_call=ToolCall(tool_name="read", arguments={"path": f"big-{len(tool_results)}.txt"}))
-        return _ReadStep(output="done", is_finished=True)
+            return TurnPlan(tool_calls=(ToolCall(tool_name="read", arguments={"path": f"big-{len(tool_results)}.txt"}),))
+        return TurnPlan(output="done", is_finished=True)
 
 
 def _summary_runtime(
@@ -478,7 +468,7 @@ def _summary_runtime(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ReadTool()]),
-        graph=graph,  # type: ignore[arg-type]
+        turn_producer=graph,  # type: ignore[arg-type]
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             execution_engine="provider",

@@ -773,7 +773,6 @@ def _render_archive_members(
                 "byte_count": len(raw),
                 "truncated": False,
                 "partial": False,
-                "raw_content": "",
             },
         )
     return _render_archive_lines(text, label=label, offset=offset, limit=limit)

@@ -70,7 +70,7 @@ class StreamPrepCoordinator:
         skill_registry_is_injected: bool = False,
         mcp_manager: McpManager | None = None,
         mcp_manager_is_injected: bool = False,
-        graph_override_present: Callable[[], bool] | None = None,
+        turn_producer_override_present: Callable[[], bool] | None = None,
     ) -> None:
         self._surface = surface
         self._default_context_window_policy = default_context_window_policy
@@ -82,7 +82,7 @@ class StreamPrepCoordinator:
         self._skill_registry_is_injected = skill_registry_is_injected
         self._mcp_manager = mcp_manager
         self._mcp_manager_is_injected = mcp_manager_is_injected
-        self._graph_override_present_fn = graph_override_present
+        self._turn_producer_override_present_fn = turn_producer_override_present
 
     def runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
         resolved = self._surface.effective_runtime_config_from_metadata(None)
@@ -270,5 +270,5 @@ class StreamPrepCoordinator:
         builtin_servers = {"context7", "websearch", "grep_app"}
         if not configured_servers <= builtin_servers:
             return False
-        assert self._graph_override_present_fn is not None
-        return effective_config.execution_engine == "deterministic" or self._graph_override_present_fn()
+        assert self._turn_producer_override_present_fn is not None
+        return effective_config.execution_engine == "deterministic" or self._turn_producer_override_present_fn()

@@ -39,7 +39,7 @@ from typing import Any, Protocol, cast
 
 import pytest
 
-from voidcode.graph.contracts import GraphSession
+from voidcode.core.turns import TurnPlan, TurnSession
 from voidcode.runtime.execution_ownership import EXECUTION_OWNERSHIP
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
@@ -184,16 +184,6 @@ def _load_runtime_types() -> tuple[RuntimeRequestFactory, RuntimeFactory]:
     return runtime_request, runtime_class
 
 
-@dataclass(frozen=True, slots=True)
-class _GraphStep:
-    events: tuple[object, ...] = ()
-    tool_call: object | None = None
-    output: str | None = None
-    is_finished: bool = False
-    reasoning: str | None = None
-    provider_usage: object | None = None
-
-
 def _tool_call(*, tool_name: str, arguments: dict[str, object]) -> object:
     return cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
         tool_name=tool_name,
@@ -217,60 +207,68 @@ class _KeepAliveChildGraph:
     def __init__(self, child_requests: list[object]) -> None:
         self._child_requests = child_requests
 
-    def step(
+    def produce(
         self,
         request: object,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _GraphStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         prompt = _assembled_context(request).prompt
         if session.metadata.get("parent_session_id") is None:
             if not tool_results:
-                return _GraphStep(
-                    tool_call=_tool_call(
-                        tool_name="task",
-                        arguments={
-                            "prompt": "read sample.txt",
-                            "run_in_background": True,
-                            "load_skills": [],
-                            "subagent_type": "worker",
-                            "description": "Keep-alive child",
-                            "keep_alive": True,
-                        },
+                return TurnPlan(
+                    tool_calls=(
+                        _tool_call(
+                            tool_name="task",
+                            arguments={
+                                "prompt": "read sample.txt",
+                                "run_in_background": True,
+                                "load_skills": [],
+                                "subagent_type": "worker",
+                                "description": "Keep-alive child",
+                                "keep_alive": True,
+                            },
+                        ),
                     ),
                 )
-            return _GraphStep(
+            return TurnPlan(
                 output=cast(ToolResultLike, tool_results[-1]).content,
                 is_finished=True,
             )
         self._child_requests.append(request)
         tool_names = [cast(ToolResultLike, result).tool_name for result in tool_results]
         if "yield" in prompt and "yield" not in tool_names:
-            return _GraphStep(
-                tool_call=_tool_call(
-                    tool_name="yield",
-                    arguments={
-                        "summary": "final keep-alive handoff",
-                        "data": {"completed_work": ["wrote second.txt"]},
-                    },
+            return TurnPlan(
+                tool_calls=(
+                    _tool_call(
+                        tool_name="yield",
+                        arguments={
+                            "summary": "final keep-alive handoff",
+                            "data": {"completed_work": ["wrote second.txt"]},
+                        },
+                    ),
                 ),
             )
         if "write second.txt" in prompt and "write" not in tool_names:
-            return _GraphStep(
-                tool_call=_tool_call(
-                    tool_name="write",
-                    arguments={"path": "second.txt", "content": "second marker"},
+            return TurnPlan(
+                tool_calls=(
+                    _tool_call(
+                        tool_name="write",
+                        arguments={"path": "second.txt", "content": "second marker"},
+                    ),
                 ),
             )
         if "read sample.txt" in prompt and "read" not in tool_names:
-            return _GraphStep(
-                tool_call=_tool_call(
-                    tool_name="read",
-                    arguments={"path": "sample.txt"},
+            return TurnPlan(
+                tool_calls=(
+                    _tool_call(
+                        tool_name="read",
+                        arguments={"path": "sample.txt"},
+                    ),
                 ),
             )
-        return _GraphStep(
+        return TurnPlan(
             output=cast(ToolResultLike, tool_results[-1]).content,
             is_finished=True,
         )
@@ -279,17 +277,17 @@ class _KeepAliveChildGraph:
 class _ImmediateFinishGraph:
     """Graph that finishes every turn immediately (no tool calls)."""
 
-    def step(
+    def produce(
         self,
         request: object,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _GraphStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = request, tool_results
         if session.metadata.get("parent_session_id") is not None:
-            return _GraphStep(output="child done without handoff", is_finished=True)
-        return _GraphStep(output="leader done", is_finished=True)
+            return TurnPlan(output="child done without handoff", is_finished=True)
+        return TurnPlan(output="leader done", is_finished=True)
 
 
 class _BlockingKeepAliveChildGraph:
@@ -306,43 +304,47 @@ class _BlockingKeepAliveChildGraph:
         self.blocks = blocks
         self._turn_index = 0
 
-    def step(
+    def produce(
         self,
         request: object,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _GraphStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         if session.metadata.get("parent_session_id") is None:
             if not tool_results:
-                return _GraphStep(
-                    tool_call=_tool_call(
-                        tool_name="task",
-                        arguments={
-                            "prompt": "blocking keep-alive child",
-                            "run_in_background": True,
-                            "load_skills": [],
-                            "subagent_type": "worker",
-                            "description": "Blocking keep-alive child",
-                            "keep_alive": True,
-                        },
+                return TurnPlan(
+                    tool_calls=(
+                        _tool_call(
+                            tool_name="task",
+                            arguments={
+                                "prompt": "blocking keep-alive child",
+                                "run_in_background": True,
+                                "load_skills": [],
+                                "subagent_type": "worker",
+                                "description": "Blocking keep-alive child",
+                                "keep_alive": True,
+                            },
+                        ),
                     ),
                 )
-            return _GraphStep(
+            return TurnPlan(
                 output=cast(ToolResultLike, tool_results[-1]).content,
                 is_finished=True,
             )
         if any(cast(ToolResultLike, result).tool_name == "yield" for result in tool_results):
-            return _GraphStep(output="child finished", is_finished=True)
+            return TurnPlan(output="child finished", is_finished=True)
         self._turn_index += 1
         if self._turn_index <= len(self.blocks):
             entered, gate = self.blocks[self._turn_index - 1]
             entered.set()
             gate.wait(timeout=15.0)
-        return _GraphStep(
-            tool_call=_tool_call(
-                tool_name="yield",
-                arguments={"summary": "keep-alive handoff", "data": {"completed_work": ["child turn"]}},
+        return TurnPlan(
+            tool_calls=(
+                _tool_call(
+                    tool_name="yield",
+                    arguments={"summary": "keep-alive handoff", "data": {"completed_work": ["child turn"]}},
+                ),
             ),
         )
 
@@ -414,7 +416,7 @@ def _blocking_keep_alive_runtime(
             object,
             runtime_class(
                 workspace=tmp_path,
-                graph=_BlockingKeepAliveChildGraph(blocks=blocks),
+                turn_producer=_BlockingKeepAliveChildGraph(blocks=blocks),
                 permission_policy=permission_policy(mode="yolo"),
             ),
         ),
@@ -647,7 +649,7 @@ def _keep_alive_runtime(
             object,
             runtime_class(
                 workspace=tmp_path,
-                graph=_KeepAliveChildGraph(child_requests),
+                turn_producer=_KeepAliveChildGraph(child_requests),
                 permission_policy=permission_policy(mode="yolo"),
             ),
         ),
@@ -821,7 +823,7 @@ def test_keep_alive_shutdown_parks_interrupted_and_fresh_runtime_resumes_same_ta
             object,
             fresh(
                 workspace=tmp_path,
-                graph=_KeepAliveChildGraph(child_requests),
+                turn_producer=_KeepAliveChildGraph(child_requests),
                 permission_policy=permission_policy(mode="yolo"),
             ),
         ),
@@ -848,7 +850,7 @@ def test_keep_alive_one_shot_child_yield_contract(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, graph=_ImmediateFinishGraph())),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_ImmediateFinishGraph())),
     )
     leader = runtime.run(runtime_request(prompt="leader", session_id="leader-session"))
     assert leader.session.status == "completed"

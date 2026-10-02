@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 import httpx2
@@ -55,6 +55,44 @@ def _request(*, transport: object | None, abort_signal: ProviderAbortSignal | No
         session_id=session_id,
         abort_signal=abort_signal,
     )
+
+
+def test_native_deepseek_rejects_replay_without_original_reasoning_before_http() -> None:
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        raise AssertionError("invalid replay reached HTTP")
+
+    context = _Context(
+        prompt="read sample.txt",
+        metadata={},
+        segments=(
+            ContextSegment("user", "read sample.txt"),
+            ContextSegment("assistant", None, tool_name="read", tool_call_id="call-read-original", tool_arguments={"path": "sample.txt"}),
+            ContextSegment("tool", "sample", tool_name="read", tool_call_id="call-read-original", metadata={"data": {}}),
+        ),
+    )
+    request = replace(
+        _request(transport=None),
+        provider_name="deepseek",
+        model_name="deepseek-v4-pro",
+        raw_model="deepseek/deepseek-v4-pro",
+        reasoning_effort="high",
+        assembled_context=cast(AssembledContext, context),
+    )
+    with httpx2.Client(transport=httpx2.MockTransport(handler)) as client:
+        provider = OpenAIModelProvider(
+            name="deepseek",
+            config=OpenAIProviderConfig(api_key="sk-test"),
+            transport=OpenAIChatCompletionsTransport(api_key="sk-test", http_client=client),
+        ).turn_provider()
+        with pytest.raises(ProviderExecutionError) as captured:
+            provider.propose_turn(request)
+        assert captured.value.kind == "stream_tool_feedback_shape"
+        assert captured.value.retryable is False
+        assert captured.value.fallback_allowed is False
+        assert requests == []
 
 
 def test_native_non_stream_uses_chat_completions_wire_and_auth_headers() -> None:

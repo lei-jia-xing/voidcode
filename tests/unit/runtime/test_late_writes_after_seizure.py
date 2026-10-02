@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 
 from voidcode.core.tool_context import ToolContext
+from voidcode.core.turns import TurnPlan
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.execution_ownership import EXECUTION_OWNERSHIP, ExecutionOwnershipRevokedError
@@ -60,25 +61,15 @@ def _markers(workspace: Path, session_id: str = SESSION_ID) -> list[object]:
     return [event.payload.get("marker") for event in stored.events if event.event_type == MARKER_EVENT]
 
 
-class _GraphStep:
-    def __init__(self, *, tool_call: ToolCall | None = None, output: str | None = None, is_finished: bool = False) -> None:
-        self.events: tuple[object, ...] = ()
-        self.tool_call = tool_call
-        self.output = output
-        self.is_finished = is_finished
-        self.reasoning: str | None = None
-        self.provider_usage: object | None = None
-
-
 class _SingleToolGraph:
     def __init__(self, tool_name: str) -> None:
         self._tool_name = tool_name
 
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> _GraphStep:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> TurnPlan:
         _ = request, session
         if not tool_results:
-            return _GraphStep(tool_call=ToolCall(tool_name=self._tool_name, arguments={}))
-        return _GraphStep(output="done", is_finished=True)
+            return TurnPlan(tool_calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
+        return TurnPlan(output="done", is_finished=True)
 
 
 class _Gate:
@@ -152,7 +143,7 @@ def _seize_execution(tmp_path: Path, tool: _TruthWritingTool, *, task_id: str) -
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([tool]),
-        graph=_SingleToolGraph(WRITER_TOOL),
+        turn_producer=_SingleToolGraph(WRITER_TOOL),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             execution_engine="deterministic",

@@ -5,13 +5,13 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
 import pytest
 
 from voidcode.core.tool_context import ToolContext
+from voidcode.core.turns import TurnPlan
 from voidcode.runtime.active_session import ActiveSessionRegistry
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import (
@@ -198,23 +198,13 @@ class _FatalExceptionTool:
         raise ValueError("fatal tool error")
 
 
-@dataclass(frozen=True, slots=True)
-class _StaticGraphStep:
-    tool_call: ToolCall | None
-    output: str | None
-    events: tuple[Any, ...] = ()
-    is_finished: bool = False
-    reasoning: str | None = None
-    provider_usage: object | None = None
-
-
 class _SingleToolCallWithArgumentsGraph:
     def __init__(self, tool_name: str, arguments: dict[str, object]) -> None:
         self._tool_name = tool_name
         self._arguments = arguments
         self.seen_tool_results: tuple[ToolResult, ...] = ()
 
-    def step(
+    def produce(
         self,
         request: Any,
         tool_results: tuple[ToolResult, ...],
@@ -224,15 +214,16 @@ class _SingleToolCallWithArgumentsGraph:
         _ = request, session
         self.seen_tool_results = tool_results
         if not tool_results:
-            return _StaticGraphStep(
-                tool_call=ToolCall(
-                    tool_name=self._tool_name,
-                    arguments=self._arguments,
-                    tool_call_id="sensitive-context-call",
+            return TurnPlan(
+                tool_calls=(
+                    ToolCall(
+                        tool_name=self._tool_name,
+                        arguments=self._arguments,
+                        tool_call_id="sensitive-context-call",
+                    ),
                 ),
-                output=None,
             )
-        return _StaticGraphStep(tool_call=None, output="completed", is_finished=True)
+        return TurnPlan(tool_calls=(), output="completed", is_finished=True)
 
 
 class _SingleToolCallGraph:
@@ -240,53 +231,23 @@ class _SingleToolCallGraph:
         self._tool_name = tool_name
         self._done = False
 
-    def step(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> Any:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> TurnPlan:
+        _ = request, session
         if tool_results:
             self._done = True
-
-        class _Step:
-            reasoning: str | None = None
-            provider_usage: object | None = None
-
-        step = _Step()
-
-        if not tool_results:
-            step.tool_call = ToolCall(tool_name=self._tool_name, arguments={})  # type: ignore[attr-defined]
-            step.output = None  # type: ignore[attr-defined]
-            step.events = ()  # type: ignore[attr-defined]
-            step.is_finished = False  # type: ignore[attr-defined]
-        else:
-            step.tool_call = None  # type: ignore[attr-defined]
-            step.output = "completed"  # type: ignore[attr-defined]
-            step.events = ()  # type: ignore[attr-defined]
-            step.is_finished = True  # type: ignore[attr-defined]
-
-        return step
+            return TurnPlan(output="completed", is_finished=True)
+        return TurnPlan(tool_calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
 
 
 class _ShellExecGraph:
     def __init__(self, arguments: dict[str, object]) -> None:
         self._arguments = arguments
 
-    def step(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> Any:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> TurnPlan:
         _ = request, session
-
-        class _Step:
-            reasoning: str | None = None
-            provider_usage: object | None = None
-
-        step = _Step()
-        if not tool_results:
-            step.tool_call = ToolCall(tool_name="shell_exec", arguments=self._arguments)  # type: ignore[attr-defined]
-            step.output = None  # type: ignore[attr-defined]
-            step.events = ()  # type: ignore[attr-defined]
-            step.is_finished = False  # type: ignore[attr-defined]
-        else:
-            step.tool_call = None  # type: ignore[attr-defined]
-            step.output = "completed"  # type: ignore[attr-defined]
-            step.events = ()  # type: ignore[attr-defined]
-            step.is_finished = True  # type: ignore[attr-defined]
-        return step
+        if tool_results:
+            return TurnPlan(output="completed", is_finished=True)
+        return TurnPlan(tool_calls=(ToolCall(tool_name="shell_exec", arguments=self._arguments),))
 
 
 def _collect_events(runtime: VoidCodeRuntime, prompt: str = "go") -> list[str]:
@@ -309,7 +270,7 @@ def _make_runtime(
     return VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=registry,
-        graph=_SingleToolCallGraph(tool.definition.name),
+        turn_producer=_SingleToolCallGraph(tool.definition.name),
         config=config,
     )
 
@@ -382,7 +343,7 @@ def test_timeout_event_payload_contains_tool_name_and_seconds(tmp_path: Path) ->
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        graph=_ShellExecGraph(
+        turn_producer=_ShellExecGraph(
             {
                 "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
                 "timeout": 10,
@@ -418,7 +379,7 @@ def test_shell_exec_progress_streams_before_tool_completion(tmp_path: Path) -> N
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        graph=_ShellExecGraph({"command": command, "timeout": 5}),
+        turn_producer=_ShellExecGraph({"command": command, "timeout": 5}),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
@@ -463,7 +424,7 @@ def test_shell_exec_runtime_timeout_preserves_partial_progress_and_final_output(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        graph=_ShellExecGraph(
+        turn_producer=_ShellExecGraph(
             {
                 "command": (f'"{sys.executable}" -c "import sys, time; sys.stdout.write(\'partial\\n\'); sys.stdout.flush(); time.sleep(2)"'),
                 "timeout": 10,
@@ -495,7 +456,7 @@ def test_runtime_does_not_hang_after_tool_timeout(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        graph=_ShellExecGraph(
+        turn_producer=_ShellExecGraph(
             {
                 "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
                 "timeout": 10,
@@ -730,7 +691,7 @@ def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([tool]),
-        graph=graph,
+        turn_producer=graph,
         config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
     )
 
@@ -791,7 +752,7 @@ def test_session_status_is_failed_after_timeout(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        graph=_ShellExecGraph(
+        turn_producer=_ShellExecGraph(
             {
                 "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
                 "timeout": 10,
@@ -817,7 +778,7 @@ def test_shell_exec_uses_existing_tool_timeout_when_runtime_timeout_is_unset(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        graph=_ShellExecGraph({"command": command}),
+        turn_producer=_ShellExecGraph({"command": command}),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
@@ -845,7 +806,7 @@ def test_shell_exec_timeout_wins_when_shorter_than_runtime_timeout(tmp_path: Pat
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        graph=_ShellExecGraph({"command": command, "timeout": 1}),
+        turn_producer=_ShellExecGraph({"command": command, "timeout": 1}),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
@@ -871,7 +832,7 @@ def test_runtime_timeout_wins_when_shorter_than_shell_exec_timeout(tmp_path: Pat
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        graph=_ShellExecGraph({"command": command, "timeout": 10}),
+        turn_producer=_ShellExecGraph({"command": command, "timeout": 10}),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
@@ -917,7 +878,7 @@ def test_runtime_timeout_prevents_delayed_shell_exec_side_effect(tmp_path: Path)
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        graph=_ShellExecGraph({"command": command, "timeout": 10}),
+        turn_producer=_ShellExecGraph({"command": command, "timeout": 10}),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
@@ -967,7 +928,7 @@ def _timeout_runtime(tmp_path: Path, tool: Any) -> VoidCodeRuntime:
     return VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([tool]),
-        graph=_SingleToolCallGraph(tool.definition.name),
+        turn_producer=_SingleToolCallGraph(tool.definition.name),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
@@ -1221,7 +1182,7 @@ def test_tool_completed_payload_carries_active_model_and_provider(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([_InstantTool()]),
-        graph=_SingleToolCallGraph("instant_tool"),
+        turn_producer=_SingleToolCallGraph("instant_tool"),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             execution_engine="deterministic",
@@ -1268,7 +1229,7 @@ def test_timeout_exit_emits_terminal_tool_status_with_error(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        graph=_ShellExecGraph(
+        turn_producer=_ShellExecGraph(
             {
                 "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
                 "timeout": 10,
@@ -1391,7 +1352,7 @@ def test_timeout_replay_preserves_terminal_tool_status_with_matching_call_id(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        graph=_ShellExecGraph(
+        turn_producer=_ShellExecGraph(
             {
                 "command": f'"{sys.executable}" -c "import time; time.sleep(2)"',
                 "timeout": 10,
@@ -1436,37 +1397,23 @@ class _ArtifactThenUriReadGraph:
     def __init__(self) -> None:
         self.artifact_id: str | None = None
 
-    def step(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> Any:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> TurnPlan:
         _ = request, session
-
-        class _Step:
-            reasoning: str | None = None
-            provider_usage: object | None = None
-
-        step = _Step()
         if not tool_results:
-            step.tool_call = ToolCall(tool_name="large_output_tool", arguments={})  # type: ignore[attr-defined]
-            step.output = None  # type: ignore[attr-defined]
-            step.events = ()  # type: ignore[attr-defined]
-            step.is_finished = False  # type: ignore[attr-defined]
-            return step
+            return TurnPlan(tool_calls=(ToolCall(tool_name="large_output_tool", arguments={}),))
         if self.artifact_id is None:
             first_result = tool_results[0]
             self.artifact_id = str(first_result.data.get("artifact_id") or "")
             assert self.artifact_id, "large output tool result must carry an artifact_id"
-            step.tool_call = ToolCall(  # type: ignore[attr-defined]
-                tool_name="read",
-                arguments={"path": f"voidcode://artifact/{self.artifact_id}", "limit": 100},
+            return TurnPlan(
+                tool_calls=(
+                    ToolCall(
+                        tool_name="read",
+                        arguments={"path": f"voidcode://artifact/{self.artifact_id}", "limit": 100},
+                    ),
+                )
             )
-            step.output = None  # type: ignore[attr-defined]
-            step.events = ()  # type: ignore[attr-defined]
-            step.is_finished = False  # type: ignore[attr-defined]
-            return step
-        step.tool_call = None  # type: ignore[attr-defined]
-        step.output = "completed"  # type: ignore[attr-defined]
-        step.events = ()  # type: ignore[attr-defined]
-        step.is_finished = True  # type: ignore[attr-defined]
-        return step
+        return TurnPlan(output="completed", is_finished=True)
 
 
 def test_read_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: Path) -> None:
@@ -1477,7 +1424,7 @@ def test_read_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: Path)
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=registry,
-        graph=graph,
+        turn_producer=graph,
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
@@ -1509,29 +1456,19 @@ class _ForeignArtifactUriReadGraph:
         self._artifact_id = artifact_id
         self._done = False
 
-    def step(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> Any:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> TurnPlan:
         _ = request, tool_results, session
-
-        class _Step:
-            reasoning: str | None = None
-            provider_usage: object | None = None
-
-        step = _Step()
         if not self._done:
-            step.tool_call = ToolCall(  # type: ignore[attr-defined]
-                tool_name="read",
-                arguments={"path": f"voidcode://artifact/{self._artifact_id}", "limit": 100},
-            )
-            step.output = None  # type: ignore[attr-defined]
-            step.events = ()  # type: ignore[attr-defined]
-            step.is_finished = False  # type: ignore[attr-defined]
             self._done = True
-        else:
-            step.tool_call = None  # type: ignore[attr-defined]
-            step.output = "completed"  # type: ignore[attr-defined]
-            step.events = ()  # type: ignore[attr-defined]
-            step.is_finished = True  # type: ignore[attr-defined]
-        return step
+            return TurnPlan(
+                tool_calls=(
+                    ToolCall(
+                        tool_name="read",
+                        arguments={"path": f"voidcode://artifact/{self._artifact_id}", "limit": 100},
+                    ),
+                )
+            )
+        return TurnPlan(output="completed", is_finished=True)
 
 
 def test_read_artifact_uri_rejects_foreign_session_artifact(tmp_path: Path) -> None:
@@ -1542,7 +1479,7 @@ def test_read_artifact_uri_rejects_foreign_session_artifact(tmp_path: Path) -> N
     owner_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([_LargeOutputTool(), ReadTool()]),
-        graph=owner_graph,
+        turn_producer=owner_graph,
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",
@@ -1555,7 +1492,7 @@ def test_read_artifact_uri_rejects_foreign_session_artifact(tmp_path: Path) -> N
     foreign_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ReadTool()]),
-        graph=_ForeignArtifactUriReadGraph(owner_graph.artifact_id),
+        turn_producer=_ForeignArtifactUriReadGraph(owner_graph.artifact_id),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="yolo",

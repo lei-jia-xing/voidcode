@@ -22,7 +22,7 @@ from ..command.models import CommandDefinition
 from ..core.questions import QuestionResponse
 from ..core.tool_context import EditSchema
 from ..core.transcript import ContextSegment, ToolResultView
-from ..graph.contracts import GraphRunRequest, RuntimeGraph
+from ..core.turns import TurnProducer, TurnRequest
 from ..hook.plan import ResolvedHookPlan, hook_plan_from_session_metadata, materialize_hook_plan
 from ..hook.presets import (
     ResolvedHookPresetSnapshot,
@@ -201,7 +201,6 @@ from .events import (
 from .execution import chunk_builders
 from .execution.delegation.task import TaskCommand
 from .execution.delegation.task_batch import TaskBatchCommand
-from .execution.graph_adapter import graph_request_for_session, graph_session_snapshot
 from .execution.process.background_process import BackgroundProcessCommand
 from .execution.provider_execution_metadata import (
     run_id_from_session_metadata,
@@ -209,9 +208,10 @@ from .execution.provider_execution_metadata import (
 from .execution.seams import (
     provider_model_required_message,
     resolve_runtime_session_routing,
-    select_graph_for_effective_config,
+    select_turn_producer_for_effective_config,
 )
 from .execution.tool_resources import ToolCatalogReader, WorkspaceDiagnostics
+from .execution.turn_adapter import turn_request_for_session, turn_session_snapshot
 from .hook_preset_metadata import (
     hook_preset_event_payload_from_session_metadata,
     hook_preset_refs_for_agent,
@@ -483,8 +483,8 @@ class VoidCodeRuntime(RuntimeSurface):
     _tool_registry: ToolRegistry
     _tool_materializer: RuntimeToolMaterializer
     _tool_materialization: RuntimeToolMaterialization
-    _graph: RuntimeGraph | None
-    _graph_override: RuntimeGraph | None
+    _turn_producer: TurnProducer | None
+    _turn_producer_override: TurnProducer | None
     _config: RuntimeConfig
     _initial_effective_config: EffectiveRuntimeConfig
     _permission_policy: PermissionPolicy
@@ -499,7 +499,7 @@ class VoidCodeRuntime(RuntimeSurface):
     _mcp_manager: McpManager
     _mcp_manager_is_injected: bool
     _acp_adapter: AcpAdapter
-    _graph_cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph]
+    _turn_producer_cache: dict[tuple[ExecutionEngineName, str], TurnProducer]
     _context_window_config_override: RuntimeContextWindowConfig | None
     _agent_registry: AgentManifestRegistry
     _run_loop_coordinator: RuntimeRunLoopCoordinator
@@ -516,7 +516,7 @@ class VoidCodeRuntime(RuntimeSurface):
         *,
         workspace: Path,
         tool_registry: ToolRegistry | None = None,
-        graph: RuntimeGraph | None = None,
+        turn_producer: TurnProducer | None = None,
         config: RuntimeConfig | None = None,
         permission_policy: PermissionPolicy | None = None,
         session_store: SessionStore | None = None,
@@ -593,8 +593,8 @@ class VoidCodeRuntime(RuntimeSurface):
         self._tool_materializer = RuntimeToolMaterializer(self._base_tool_registry)
         self._tool_materialization = self._tool_materializer.base()
         self._tool_registry = self._tool_materialization.registry
-        self._graph_override = graph
-        self._graph_cache = {}
+        self._turn_producer_override = turn_producer
+        self._turn_producer_cache = {}
         self._context_window_config_override = context_window_config_from_policy(context_window_policy)
         initial_context_window = self._context_window_config_override or self._config.context_window
         self._initial_effective_config = EffectiveRuntimeConfig(
@@ -612,12 +612,12 @@ class VoidCodeRuntime(RuntimeSurface):
             policy=self._config.policy,
             reminders=self._config.reminders,
         )
-        if graph is not None:
-            self._graph = graph
-        elif self._can_build_graph_for_effective_config(self._initial_effective_config):
-            self._graph = self._build_graph_for_engine_from_config(self._initial_effective_config)
+        if turn_producer is not None:
+            self._turn_producer = turn_producer
+        elif self._can_build_turn_producer_for_effective_config(self._initial_effective_config):
+            self._turn_producer = self._build_turn_producer_for_engine_from_config(self._initial_effective_config)
         else:
-            self._graph = None
+            self._turn_producer = None
         self._permission_policy = permission_policy or PermissionPolicy(mode=self._config.approval_mode)
         self._session_store = session_store or SqliteSessionStore()
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
@@ -705,7 +705,7 @@ class VoidCodeRuntime(RuntimeSurface):
             skill_registry_is_injected=self._skill_registry_is_injected,
             mcp_manager=self._mcp_manager,
             mcp_manager_is_injected=self._mcp_manager_is_injected,
-            graph_override_present=lambda: self._graph_override is not None,
+            turn_producer_override_present=lambda: self._turn_producer_override is not None,
         )
         self._finalize_coordinator = FinalizeCoordinator(
             self,
@@ -895,20 +895,20 @@ class VoidCodeRuntime(RuntimeSurface):
             updated_session = session_with_current_acp_metadata(updated_session, self._acp_adapter.current_state())
         return emitted, updated_session, last_sequence or sequence, None
 
-    def _build_graph_for_engine_from_config(
+    def _build_turn_producer_for_engine_from_config(
         self,
         config: EffectiveRuntimeConfig,
         *,
         use_cache: bool = True,
-    ) -> RuntimeGraph:
-        return select_graph_for_effective_config(
+    ) -> TurnProducer:
+        return select_turn_producer_for_effective_config(
             config=config,
-            cache=self._graph_cache,
+            cache=self._turn_producer_cache,
             force_rebuild=not use_cache,
-        ).graph
+        ).producer
 
     @staticmethod
-    def _can_build_graph_for_effective_config(config: EffectiveRuntimeConfig) -> bool:
+    def _can_build_turn_producer_for_effective_config(config: EffectiveRuntimeConfig) -> bool:
         if config.execution_engine != "provider":
             return True
         return config.resolved_provider.active_target.provider is not None
@@ -1392,32 +1392,6 @@ class VoidCodeRuntime(RuntimeSurface):
             response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
             self.persist_response(request=request, response=response)
 
-            # Follow-up messages are delivered only after the current run has
-            # reached a durable terminal state. They become ordinary prompts
-            # on the same session and therefore share the existing runtime
-            # approval, persistence, and event paths.
-            if final_session.status == "completed":
-                followup_metadata, followups = drain_runtime_messages(
-                    final_session.metadata,
-                    kind="follow_up",
-                )
-                if followups:
-                    self._session_store.update_session_metadata(
-                        workspace=self._workspace,
-                        session_id=session_id,
-                        metadata=followup_metadata,
-                    )
-                    for followup in followups:
-                        followup_request = RuntimeRequest(
-                            prompt=followup.content,
-                            session_id=session_id,
-                            parent_session_id=request.parent_session_id,
-                            metadata=request.metadata,
-                        )
-                        yield from self.run_with_persistence(
-                            followup_request,
-                            allow_internal_metadata=allow_internal_metadata,
-                        )
         finally:
             self._unregister_active_session_id(session_id, run_id=run_id)
 
@@ -1621,7 +1595,7 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         if startup is None:
             return
-        session, sequence, graph, graph_request, tool_results = startup
+        session, sequence, producer, turn_request, tool_results = startup
         # The run-start checkpoint was written before this run materialized the
         # capability binding and skill snapshot a resume replays from, so an
         # interruption before the first safe boundary used to leave a session
@@ -1629,12 +1603,12 @@ class VoidCodeRuntime(RuntimeSurface):
         # is the last point before any tool call, so every execution window is
         # covered. See docs/contracts/execution-lifecycle.md → (b).
         self._refresh_run_checkpoint(session=session, prompt=prepared.request.prompt, sequence=sequence)
-        loop = yield from self._run_stream_graph_loop(
-            graph=graph,
+        loop = yield from self._run_stream_turn_engine(
+            producer=producer,
             tool_registry=tool_registry,
             session=session,
             sequence=sequence,
-            graph_request=graph_request,
+            turn_request=turn_request,
             tool_results=tool_results,
         )
         yield from self._finalize_stream_run(*loop)
@@ -1644,7 +1618,7 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> _PreparedStreamSession:
         resolved_session_id = session_id or resolve_runtime_session_routing(request).session_id
         effective_config = self.runtime_config_for_request(request)
-        if self._graph_override is None:
+        if self._turn_producer_override is None:
             self._validate_provider_execution_ready(effective_config)
         request_metadata = self._fresh_request_metadata(request.metadata)
         # A structured command payload's declared mode (frontmatter or replay)
@@ -1974,7 +1948,7 @@ class VoidCodeRuntime(RuntimeSurface):
         *,
         abort_signal: ProviderAbortSignal | None,
         hook_guidance: tuple[str, ...] = (),
-    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, RuntimeGraph, GraphRunRequest, list[ToolResult]] | None]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, TurnProducer, TurnRequest, list[ToolResult]] | None]:
         request = prep.request
         effective_config = prep.effective_config
         request_metadata = prep.request_metadata
@@ -2100,9 +2074,9 @@ class VoidCodeRuntime(RuntimeSurface):
             session,
             dict(assembled_context.metadata),
         )
-        graph_request = graph_request_for_session(
-            GraphRunRequest(
-                session=graph_session_snapshot(session),
+        turn_request = turn_request_for_session(
+            TurnRequest(
+                session=turn_session_snapshot(session),
                 prompt=request.prompt,
                 available_tools=self.provider_tool_definitions(tool_registry, effective_config),
                 context_window=assembled_context.context_window
@@ -2130,17 +2104,17 @@ class VoidCodeRuntime(RuntimeSurface):
             session,
         )
         tool_results: list[ToolResult] = list(rehydrated_tool_results)
-        graph = self.graph_for_session_metadata(session.metadata)
-        return session, sequence, graph, graph_request, tool_results
+        producer = self.turn_producer_for_session_metadata(session.metadata)
+        return session, sequence, producer, turn_request, tool_results
 
-    def _run_stream_graph_loop(
+    def _run_stream_turn_engine(
         self,
         *,
-        graph: RuntimeGraph,
+        producer: TurnProducer,
         tool_registry: ToolRegistry,
         session: SessionState,
         sequence: int,
-        graph_request: GraphRunRequest,
+        turn_request: TurnRequest,
         tool_results: list[ToolResult],
     ) -> Generator[RuntimeStreamChunk, None, tuple[RuntimeStreamChunk | None, int, RuntimeStreamChunk | None, Exception | None]]:
         last_chunk: RuntimeStreamChunk | None = None
@@ -2148,12 +2122,12 @@ class VoidCodeRuntime(RuntimeSurface):
         deferred_failed_chunk: RuntimeStreamChunk | None = None
         graph_loop_error: Exception | None = None
         try:
-            for chunk in self._run_loop_coordinator.execute_graph_loop(
-                graph=graph,
+            for chunk in self._run_loop_coordinator.execute_turn_engine(
+                producer=producer,
                 tool_registry=tool_registry,
                 session=session,
                 sequence=sequence,
-                graph_request=graph_request,
+                turn_request=turn_request,
                 tool_results=tool_results,
                 permission_policy=self._permission_policy,
             ):
@@ -2332,6 +2306,7 @@ class VoidCodeRuntime(RuntimeSurface):
         request_payload: dict[str, object] = {
             "request_id": pending.request_id,
             "tool": pending.tool_name,
+            "tool_call_id": tool_call.tool_call_id,
             "decision": "ask",
             "arguments": pending.arguments,
             "target_summary": pending.target_summary,
@@ -3072,13 +3047,13 @@ class VoidCodeRuntime(RuntimeSurface):
             providers=refreshed_config.providers,
             resolved_provider=resolved_provider_config,
         )
-        new_graph: RuntimeGraph | None
-        if self._graph_override is not None:
-            new_graph = self._graph_override
-        elif self._can_build_graph_for_effective_config(effective_config):
-            new_graph = self._build_graph_for_engine_from_config(effective_config, use_cache=False)
+        new_producer: TurnProducer | None
+        if self._turn_producer_override is not None:
+            new_producer = self._turn_producer_override
+        elif self._can_build_turn_producer_for_effective_config(effective_config):
+            new_producer = self._build_turn_producer_for_engine_from_config(effective_config, use_cache=False)
         else:
-            new_graph = None
+            new_producer = None
 
         # Commit only after all parsing, provider resolution, and graph creation
         # succeeded. No collaborator that owns local governance is replaced by
@@ -3094,8 +3069,8 @@ class VoidCodeRuntime(RuntimeSurface):
         self._provider_model = resolved_provider_config.active_target
         self._provider_chain = resolved_provider_config.target_chain
         self._initial_effective_config = effective_config
-        self._graph_cache = {}
-        self._graph = new_graph
+        self._turn_producer_cache = {}
+        self._turn_producer = new_producer
         self._inspection_coordinator.update_provider_state(
             config=self._config,
             model_provider_registry=provider_registry,
@@ -3182,14 +3157,14 @@ class VoidCodeRuntime(RuntimeSurface):
             return active_target.metadata.tool_feedback_mode
         return "standard"
 
-    def provider_context_policy_decision_for_graph_request(
+    def provider_context_policy_decision_for_turn_request(
         self,
         *,
-        graph_request: GraphRunRequest,
+        turn_request: TurnRequest,
         effective_config: EffectiveRuntimeConfig,
     ) -> RuntimeProviderContextPolicyDecision | None:
-        return self._inspection_coordinator.provider_context_policy_decision_for_graph_request(
-            graph_request=graph_request,
+        return self._inspection_coordinator.provider_context_policy_decision_for_turn_request(
+            turn_request=turn_request,
             effective_config=effective_config,
         )
 
@@ -5016,13 +4991,13 @@ class VoidCodeRuntime(RuntimeSurface):
             reminders=materialized.reminders if materialized.reminders is not None else self._config.reminders,
         )
 
-    def graph_for_session_metadata(self, metadata: dict[str, object] | None) -> RuntimeGraph:
-        if self._graph_override is not None:
-            return self._graph_override
+    def turn_producer_for_session_metadata(self, metadata: dict[str, object] | None) -> TurnProducer:
+        if self._turn_producer_override is not None:
+            return self._turn_producer_override
 
         effective_config = self.effective_runtime_config_from_metadata(metadata)
         if isinstance((metadata or {}).get("command"), dict):
-            return self._build_graph_for_engine_from_config(effective_config, use_cache=False)
+            return self._build_turn_producer_for_engine_from_config(effective_config, use_cache=False)
 
         # Reuse self._graph if the session's config matches the runtime's config
         if (
@@ -5034,13 +5009,13 @@ class VoidCodeRuntime(RuntimeSurface):
             and effective_config.agent == self._initial_effective_config.agent
             and effective_config.context_window == self._initial_effective_config.context_window
         ):
-            if self._graph is not None:
-                return self._graph
-            self._graph = self._build_graph_for_engine_from_config(effective_config)
-            return self._graph
+            if self._turn_producer is not None:
+                return self._turn_producer
+            self._turn_producer = self._build_turn_producer_for_engine_from_config(effective_config)
+            return self._turn_producer
 
         # Otherwise use cached graph or build new one
-        return self._build_graph_for_engine_from_config(effective_config)
+        return self._build_turn_producer_for_engine_from_config(effective_config)
 
     def _load_existing_session_if_present(self, *, session_id: str) -> RuntimeResponse | None:
         return self._finalize_coordinator.load_existing_session_if_present(session_id=session_id)

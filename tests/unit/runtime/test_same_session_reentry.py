@@ -22,6 +22,7 @@ from typing import Any, cast
 import pytest
 
 from voidcode.core.tool_context import ToolContext
+from voidcode.core.turns import TurnPlan
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeRequestError
 from voidcode.runtime.permission import PermissionPolicy
@@ -49,40 +50,30 @@ class _GatedTool:
         return ToolResult(tool_name=self.definition.name, status="ok", content="gated done")
 
 
-class _GraphStep:
-    def __init__(self, *, tool_call: ToolCall | None = None, output: str | None = None, is_finished: bool = False) -> None:
-        self.events: tuple[object, ...] = ()
-        self.tool_call = tool_call
-        self.output = output
-        self.is_finished = is_finished
-        self.reasoning: str | None = None
-        self.provider_usage: object | None = None
-
-
 class _SingleToolGraph:
     def __init__(self, tool_name: str, *, output: str = "done") -> None:
         self._tool_name = tool_name
         self._output = output
 
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> _GraphStep:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> TurnPlan:
         _ = request, session
         if not tool_results:
-            return _GraphStep(tool_call=ToolCall(tool_name=self._tool_name, arguments={}))
-        return _GraphStep(output=self._output, is_finished=True)
+            return TurnPlan(tool_calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
+        return TurnPlan(output=self._output, is_finished=True)
 
 
 class _ImmediateGraph:
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> _GraphStep:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> TurnPlan:
         _ = request, tool_results, session
-        return _GraphStep(output="second run done", is_finished=True)
+        return TurnPlan(output="second run done", is_finished=True)
 
 
-def _runtime(workspace: Path, *, tool: object | None, graph: object) -> VoidCodeRuntime:
+def _runtime(workspace: Path, *, tool: object | None, turn_producer: object) -> VoidCodeRuntime:
     tools = [] if tool is None else [tool]
     return VoidCodeRuntime(
         workspace=workspace,
         tool_registry=ToolRegistry.from_tools(tools),
-        graph=graph,
+        turn_producer=turn_producer,
         config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
@@ -136,7 +127,7 @@ def test_a_second_run_appends_without_rewriting_the_in_flight_history(tmp_path: 
     active run, so the still-running first run keeps a writable row.
     """
     tool = _GatedTool()
-    first = _InFlightRun(_runtime(tmp_path, tool=tool, graph=_SingleToolGraph(_GATED_TOOL)), tool)
+    first = _InFlightRun(_runtime(tmp_path, tool=tool, turn_producer=_SingleToolGraph(_GATED_TOOL)), tool)
     in_flight_prompt = "steer while the first run is in flight"
     # ``queue_steering`` is the queued re-entry path: accepted while the run is
     # active, delivered to the next run, never injected mid-run.
@@ -145,7 +136,7 @@ def test_a_second_run_appends_without_rewriting_the_in_flight_history(tmp_path: 
     assert _status(tmp_path) == "interrupted"
 
     second_chunks = list(
-        _runtime(tmp_path, tool=None, graph=_ImmediateGraph()).run_stream(RuntimeRequest(prompt="second run", session_id=SESSION_ID))
+        _runtime(tmp_path, tool=None, turn_producer=_ImmediateGraph()).run_stream(RuntimeRequest(prompt="second run", session_id=SESSION_ID))
     )
 
     assert second_chunks[-1].session.status == "completed"
@@ -175,12 +166,12 @@ def test_resume_is_refused_while_a_run_owns_the_session_and_rewrites_nothing(tmp
     under a live run would delete events that run still owns.
     """
     tool = _GatedTool()
-    first = _InFlightRun(_runtime(tmp_path, tool=tool, graph=_SingleToolGraph(_GATED_TOOL)), tool)
+    first = _InFlightRun(_runtime(tmp_path, tool=tool, turn_producer=_SingleToolGraph(_GATED_TOOL)), tool)
     before = _entries(tmp_path)
     checkpoint_before = _checkpoint(tmp_path)
     assert before and _status(tmp_path) == "interrupted"
 
-    resume_runtime = _runtime(tmp_path, tool=None, graph=_ImmediateGraph())
+    resume_runtime = _runtime(tmp_path, tool=None, turn_producer=_ImmediateGraph())
     with pytest.raises(RuntimeRequestError, match="has a run in flight"):
         resume_runtime.resume(SESSION_ID)
     with pytest.raises(RuntimeRequestError, match="has a run in flight"):
@@ -206,13 +197,13 @@ class _PromptRecordingGraph:
         self.prompts: list[str] = []
         self._lock = threading.Lock()
 
-    def step(self, request: Any, tool_results: tuple[object, ...], *, session: object) -> _GraphStep:
+    def produce(self, request: Any, tool_results: tuple[object, ...], *, session: object) -> TurnPlan:
         _ = session
         with self._lock:
             self.prompts.append(cast(str, request.prompt))
         if not tool_results:
-            return _GraphStep(tool_call=ToolCall(tool_name=self._tool_name, arguments={}))
-        return _GraphStep(output="done", is_finished=True)
+            return TurnPlan(tool_calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
+        return TurnPlan(output="done", is_finished=True)
 
 
 def test_steering_while_a_run_is_in_flight_is_queued_until_the_next_turn(tmp_path: Path) -> None:
@@ -224,7 +215,7 @@ def test_steering_while_a_run_is_in_flight_is_queued_until_the_next_turn(tmp_pat
     """
     tool = _GatedTool()
     graph = _PromptRecordingGraph(_GATED_TOOL)
-    first = _InFlightRun(_runtime(tmp_path, tool=tool, graph=graph), tool)
+    first = _InFlightRun(_runtime(tmp_path, tool=tool, turn_producer=graph), tool)
     before = _entries(tmp_path)
 
     queued = first.runtime.queue_steering(SESSION_ID, content="queued steering")

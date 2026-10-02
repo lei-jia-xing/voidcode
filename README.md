@@ -147,17 +147,18 @@ Workspace-local runtime config lives in `.voidcode.json` at the workspace root (
 For a provider path, use one explicit model such as `"model": "openai/gpt-4o-mini"` and provide `OPENAI_API_KEY` through the environment. User-level provider/TUI/Web settings resolve from `~/.config/voidcode/config.json`; environment variables are field-specific inputs rather than a blanket override: for top-level runtime fields, explicit/request and repo-local values take precedence over environment values, while provider configs merge repo-local > environment > user. See [`.env.example`](./.env.example).
 ## Architecture overview
 
-VoidCode uses a runtime-centric architecture: **runtime** is the system control plane and **graph** is the execution/orchestration layer implemented in plain Python.
+VoidCode keeps runtime governance separate from core turn progression: `core.engine.TurnEngine` advances provider and deterministic producer batches through one host boundary, while `runtime.run_loop.RuntimeHost` supplies governed execution and durable lifecycle.
 
-- The runtime owns session state, permissions, tools, storage, streaming, and governance.
-- The graph advances execution state through a deterministic reference slice and a provider-backed single-agent path. New product behavior should prefer the provider-backed path when a model/provider is configured.
-- Clients such as the CLI, web frontend, and future integrations talk to the runtime rather than invoking tools or graph code directly.
+- The runtime owns session state, permissions, tool governance and execution, storage, streaming, and recovery.
+- Core owns producer contracts and host-agnostic turn/batch progression; it does not own sessions, SQLite, or policy.
+- `RuntimeHost` adapts core turns to runtime context, approvals, hooks, persistence, recovery, and provider retry/fallback.
+- Clients such as the CLI, web frontend, and future integrations talk to the runtime rather than invoking tools or the core engine directly.
 - The repository already contains `src/voidcode/agent/` as a declaration layer for agent presets, but true multi-agent execution semantics are still post-MVP.
 
 Key backend boundaries:
 
-- `src/voidcode/runtime/` — runtime services and execution boundary
-- `src/voidcode/graph/` — execution/orchestration layer
+- `src/voidcode/core/` — `TurnEngine`, producer contracts, and deterministic/provider producers
+- `src/voidcode/runtime/` — runtime services, host, governance, and execution boundary
 - `src/voidcode/tools/` — built-in tools and tool metadata
 - `src/voidcode/hook/` — hook configuration and executor
 - `src/voidcode/lsp/`, `skills/`, `provider/`, `acp/`, `mcp/` — capability-layer boundaries
@@ -165,7 +166,7 @@ Key backend boundaries:
 
 Design principles that currently shape the project:
 
-- keep runtime, orchestration, and UI responsibilities clearly separated
+- keep runtime governance, core turn progression, and client responsibilities clearly separated
 - gate tool usage through registry, permission, and hook policies
 - make sessions and execution state resumable
 - allow concurrent reads while controlling writes

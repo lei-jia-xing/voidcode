@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 
 from voidcode.core.tool_context import ToolContext
+from voidcode.core.transcript import tool_result_output
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.read import ReadTool
 
@@ -93,7 +94,10 @@ def test_read_tool_reports_non_utf8_archive_member_without_raising(tmp_path: Pat
 
     assert result.status == "ok"
     assert result.data["type"] == "archive_binary"
-    assert "not UTF-8 text" in str(result.content)
+    output = tool_result_output(result)
+    assert output is not None
+    assert "not UTF-8 text" in output
+    assert "4 bytes" in output
 
 
 def test_read_tool_allows_workspace_escape_path_with_absolute_display(tmp_path: Path) -> None:

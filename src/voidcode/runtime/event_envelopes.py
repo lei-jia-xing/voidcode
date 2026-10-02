@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..graph.contracts import GraphEvent
+from ..core.turns import TurnFact
 from .events import (
     EMITTED_EVENT_TYPES,
     RUNTIME_REASONING_PART,
@@ -146,7 +146,7 @@ class ReasoningCaptureState:
 
 
 def renumber_events(
-    events: tuple[GraphEvent, ...],
+    events: tuple[TurnFact, ...],
     *,
     session_id: str,
     start_sequence: int,
@@ -155,11 +155,11 @@ def renumber_events(
     envelopes: list[EventEnvelope] = []
     capture_state = reasoning_capture_state or ReasoningCaptureState()
     for event in events:
-        event_type = event.event_type
-        source = event.source
+        event_type = f"graph.{event.kind}"
+        source = "graph"
         payload = event.payload
         reasoning_payload = None
-        if event.event_type == "graph.provider_stream":
+        if event.kind == "provider_stream":
             capture_state.stream_observed = True
             reasoning_payload = runtime_reasoning_part_from_provider_stream(event.payload)
         if reasoning_payload is not None:

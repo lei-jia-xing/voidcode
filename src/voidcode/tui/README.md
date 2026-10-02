@@ -30,8 +30,8 @@ VoidCode 的终端客户端层：inline 渲染 + 原生 scrollback 的 TUI。
   错位后续批次；toggle 落在提交边界之后时（无法重绘）由 `set_expanded()` 的返回值如实报告，
   app 据此在 live 区给一行提示。composer 不提供任何 slash 命令补全；以 `/` 开头的输入不再被
   客户端拦截，而是作为普通 prompt 提交给 runtime，由 runtime 的 prompt command 解析
-  （`/init`、`/plan`，以及用户/项目 `commands/**/*.md`）统一处理：可解析的命令渲染模板后进入
-  graph（`/plan add X` 的 `X` 经 `$ARGUMENTS` 保留），未知 `/foo` 由 runtime 拒绝，其错误以
+  （`/init`、`/plan`，以及用户/项目 `commands/**/*.md`）统一处理：可解析的命令渲染模板后由
+  runtime 通过 core turn engine 执行（`/plan add X` 的 `X` 经 `$ARGUMENTS` 保留），未知 `/foo` 由 runtime 拒绝，其错误以
   error 块呈现。
 - **live 帧只含尾部**：未结块 + 状态行 + composer（或当前浮层），走 `paint_frame` 逐行 diff。
 - **帧节奏**：最短 33 ms 一帧（`MIN_RENDER_INTERVAL_MS`），上一帧慢时按 omp 的自适应退避

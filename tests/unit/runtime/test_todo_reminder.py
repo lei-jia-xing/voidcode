@@ -12,12 +12,12 @@ session keeps counters, the client gets one event, the transcript keeps nothing.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from voidcode.core.turns import TurnPlan
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
 from voidcode.runtime.background.models import BackgroundTaskRef, StoredBackgroundTaskSummary
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig, RuntimeRemindersConfig
@@ -57,24 +57,14 @@ _TODO_INIT_CALL = ToolCall(
 _TODO_DONE_CALL = ToolCall(tool_name="todo", arguments={"op": "done"})
 
 
-@dataclass(slots=True)
-class _Step:
-    tool_call: ToolCall | None = None
-    output: str | None = None
-    is_finished: bool = False
-    events: tuple[object, ...] = ()
-    reasoning: str | None = None
-    provider_usage: object | None = None
-
-
 class _ScriptedGraph:
     """Hands out scripted steps in order and records every assembled context."""
 
-    def __init__(self, script: list[_Step]) -> None:
+    def __init__(self, script: list[TurnPlan]) -> None:
         self._script = list(script)
         self.seen_segments: list[tuple[Any, ...]] = []
 
-    def step(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> _Step:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> TurnPlan:
         _ = tool_results, session
         self.seen_segments.append(tuple(request.assembled_context.segments))
         if not self._script:
@@ -138,7 +128,7 @@ def _runtime(
         workspace=tmp_path,
         session_store=session_store,
         tool_registry=ToolRegistry.from_tools([TodoTool(), GlobTool()]),
-        graph=graph,
+        turn_producer=graph,
         config=config,
         permission_policy=PermissionPolicy(mode="yolo"),
     )
@@ -181,7 +171,7 @@ def _stored_session(tmp_path: Path) -> Any:
 
 def test_terminal_turn_with_unfinished_todos_injects_one_per_call_reminder(tmp_path: Path) -> None:
     graph = _ScriptedGraph(
-        [_Step(tool_call=_TODO_INIT_CALL), _Step(output="done for now", is_finished=True), _Step(output="finished", is_finished=True)]
+        [TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="done for now", is_finished=True), TurnPlan(output="finished", is_finished=True)]
     )
 
     chunks = _run(tmp_path, graph)
@@ -223,11 +213,11 @@ def test_terminal_turn_with_unfinished_todos_injects_one_per_call_reminder(tmp_p
 
 
 def test_reminder_budget_stops_after_max_per_cycle_attempts(tmp_path: Path) -> None:
-    script: list[_Step] = [_Step(tool_call=_TODO_INIT_CALL)]
+    script: list[TurnPlan] = [TurnPlan(tool_calls=(_TODO_INIT_CALL,))]
     for _attempt in range(3):
-        script.append(_Step(output="stopping", is_finished=True))
-        script.append(_Step(tool_call=_PROGRESS_CALL))
-    script.append(_Step(output="stopping", is_finished=True))
+        script.append(TurnPlan(output="stopping", is_finished=True))
+        script.append(TurnPlan(tool_calls=(_PROGRESS_CALL,)))
+    script.append(TurnPlan(output="stopping", is_finished=True))
     graph = _ScriptedGraph(script)
 
     chunks = _run(tmp_path, graph)
@@ -242,7 +232,7 @@ def test_repeated_stop_without_progress_does_not_repeat_the_reminder(tmp_path: P
     """A reminder still awaiting agent action suppresses the next one."""
 
     graph = _ScriptedGraph(
-        [_Step(tool_call=_TODO_INIT_CALL), _Step(output="stopping", is_finished=True), _Step(output="stopping again", is_finished=True)]
+        [TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="stopping", is_finished=True), TurnPlan(output="stopping again", is_finished=True)]
     )
 
     chunks = _run(tmp_path, graph)
@@ -272,9 +262,9 @@ def test_counters_from_a_previous_cycle_are_ignored() -> None:
 def test_completed_todos_never_earn_a_reminder(tmp_path: Path) -> None:
     graph = _ScriptedGraph(
         [
-            _Step(tool_call=_TODO_INIT_CALL),
-            _Step(tool_call=_TODO_DONE_CALL),
-            _Step(output="all done", is_finished=True),
+            TurnPlan(tool_calls=(_TODO_INIT_CALL,)),
+            TurnPlan(tool_calls=(_TODO_DONE_CALL,)),
+            TurnPlan(output="all done", is_finished=True),
         ]
     )
 
@@ -287,7 +277,7 @@ def test_completed_todos_never_earn_a_reminder(tmp_path: Path) -> None:
 
 
 def test_disabled_reminders_never_inject(tmp_path: Path) -> None:
-    graph = _ScriptedGraph([_Step(tool_call=_TODO_INIT_CALL), _Step(output="stopping", is_finished=True)])
+    graph = _ScriptedGraph([TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="stopping", is_finished=True)])
 
     chunks = _run(tmp_path, graph, reminders=RuntimeRemindersConfig(enabled=False))
 
@@ -298,7 +288,7 @@ def test_disabled_reminders_never_inject(tmp_path: Path) -> None:
 def test_non_provider_engine_never_injects(tmp_path: Path) -> None:
     """The channel nudges a model call; a non-provider graph has none."""
 
-    graph = _ScriptedGraph([_Step(tool_call=_TODO_INIT_CALL), _Step(output="stopping", is_finished=True)])
+    graph = _ScriptedGraph([TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="stopping", is_finished=True)])
 
     chunks = _run(tmp_path, graph, execution_engine="deterministic")
 
@@ -310,7 +300,9 @@ def test_non_provider_engine_never_injects(tmp_path: Path) -> None:
 
 
 def test_reminder_text_stays_out_of_the_persisted_transcript(tmp_path: Path) -> None:
-    graph = _ScriptedGraph([_Step(tool_call=_TODO_INIT_CALL), _Step(output="stopping", is_finished=True), _Step(output="finished", is_finished=True)])
+    graph = _ScriptedGraph(
+        [TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="stopping", is_finished=True), TurnPlan(output="finished", is_finished=True)]
+    )
 
     _run(tmp_path, graph)
 
@@ -387,7 +379,9 @@ def test_runtime_waits_for_user_reads_the_parked_plan_state() -> None:
 
 
 def test_reminder_segment_is_never_replayed_history(tmp_path: Path) -> None:
-    graph = _ScriptedGraph([_Step(tool_call=_TODO_INIT_CALL), _Step(output="stopping", is_finished=True), _Step(output="finished", is_finished=True)])
+    graph = _ScriptedGraph(
+        [TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="stopping", is_finished=True), TurnPlan(output="finished", is_finished=True)]
+    )
 
     _run(tmp_path, graph)
 
@@ -399,7 +393,7 @@ def test_reminder_segment_is_never_replayed_history(tmp_path: Path) -> None:
 
 
 def test_pending_background_task_suppresses_the_reminder_end_to_end(tmp_path: Path) -> None:
-    graph = _ScriptedGraph([_Step(tool_call=_TODO_INIT_CALL), _Step(output="stopping", is_finished=True)])
+    graph = _ScriptedGraph([TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="stopping", is_finished=True)])
 
     chunks = _run(tmp_path, graph, session_store=_PendingBackgroundTaskStore())
 

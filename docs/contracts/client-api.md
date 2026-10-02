@@ -240,8 +240,8 @@ fork 与 checkout 仍是两件事：fork 产出**新的会话 id**（复制前�
 
 输出：
 - 一个 `RuntimeResponse`。**它有两种模式，由该会话自己持久化的 resume checkpoint 决定，调用方无法选择**：
-  - **存储重放（stored replay）**：checkpoint 的 kind 不是 `interrupted` / `provider_failure_retryable`（最常见的是 `terminal`，也包括没有 checkpoint）时，运行时不执行任何图步骤，直接返回已持久化的 session / events / output（`VoidCodeRuntime.resume(session_id)` → `_load_replay_response`，`runtime/service.py:3241-3265`）。此时响应就是该会话落盘真相的重放。
-  - **重跑（truncate-and-rerun）**：checkpoint 为 `interrupted` 时，运行时先把持久化事件尾部截断到 checkpoint 记录的 `last_event_sequence`（丢弃 checkpoint 之后、那批未完成调用留下的孤儿事件），再重新进入 graph loop、重新执行 provider（`runtime/resume.py:1282-1286` 截断；`:1381` 起 `execute_graph_loop`）。checkpoint 为 `provider_failure_retryable` 时同样重新进入 graph loop 并重新执行 provider（`runtime/resume.py:1149-1167`、`:1350`），但**不截断**已有事件，而是把本轮新事件追加在其后。两种重跑模式下响应都是「保留的存储事件 + 本次重跑产生的新事件」，`output` 是本次重跑的输出（重跑未产生输出时回退为存储输出）；持久化的会话日志也随之改写。
+  - **存储重放（stored replay）**：checkpoint 的 kind 不是 `interrupted` / `provider_failure_retryable`（最常见的是 `terminal`，也包括没有 checkpoint）时，运行时不执行任何 turn，直接返回已持久化的 session / events / output（`VoidCodeRuntime.resume` → `_load_replay_response`）。此时响应就是该会话落盘真相的重放。
+  - **恢复续跑（branch-aware continuation）**：interrupted checkpoint 在改动 session 位置前先验证 checkpoint、capability binding 与 durable batch。若允许续跑的 authentic batch 比 checkpoint 更新，保留当前 leaf 和该 batch；否则只把 leaf 移到 checkpoint 的 `last_event_sequence`。两种情况都不截断或删除 event rows；off-path rows 保留，可由后续 checkout 恢复。允许继续的 batch 由 `runtime/execution/turn_recovery.py::restored_turn_batch` 校验原始 calls 与完整 completed-result ID prefix，再经 `runtime/run_loop.py::RuntimeRunLoopCoordinator.execute_turn_engine` 和 runtime host 治理剩余调用。未结算的 pending `replay_policy="never"` intent 不会凭 intent 本身成为 seed、伪造 completed result 或自动重放；若 provider 之后再次请求该操作，必须来自新的真实 provider response 和其真实 call ID。恢复响应的事件是当前 root→leaf path 加本次新追加事件，而不是 flat event log。`provider_failure_retryable` 也通过同一 runtime turn coordinator 重试 provider，从当前 leaf 追加事件，不回移既有位置。
 
 因此客户端 MUST NOT 假设 resume 总是返回逐字节等于既有持久化内容的响应；需要纯只读重放时使用只读的会话加载 surface（见下文 `GET /api/sessions/{id}`）。
 
@@ -282,16 +282,16 @@ MVP 生命周期：
 目前的实现可以持久化足以支持以下操作的数据：
 
 - `sessions list` 返回 `StoredSessionSummary`
-- 未完成会话（`interrupted` / `provider_failure_retryable`）持久化足够的 checkpoint（prompt、session metadata、tool results、最后安全事件序号），使 `sessions resume <id>` 能重跑该轮；已终结会话则由 `sessions resume <id>` 重放存储的响应
+- 未完成会话（`interrupted` / `provider_failure_retryable`）持久化 checkpoint（prompt、session metadata、已完成 tool results、最后安全事件位置），使 `sessions resume <id>` 能按 authenticated batch/replay policy 续跑，或重新请求 provider；已终结会话则重放已存储响应。
 
-目前的集成测试验证了两条路径：`tests/integration/test_read_only_slice.py::test_cli_lists_and_resumes_persisted_session`（重放存储的输出与事件序列）与 `tests/integration/test_read_only_slice.py::test_runtime_resume_truncates_orphaned_tail_after_interrupted_checkpoint`（`interrupted` 重跑并丢弃孤儿 tail）。
+目前的集成测试验证了跨 runtime 实例的持久化续跑（`tests/integration/test_read_only_slice.py::test_runtime_persists_and_resumes_session_across_instances`）和 branch-aware interrupted resume（`tests/integration/test_read_only_slice.py::test_runtime_resume_restores_leaf_and_keeps_orphaned_tail_rows`；移动 leaf、保留 tail rows）。
 
 ## API 不变量
 
 - 客户端必须将运行时视为系统边界
 - 客户端不直接调用工具
 - 客户端不创建与持久化的运行时状态相背离的私有会话状态
-- 恢复（resume）返回的两类响应都是 runtime 拥有的真相，而非根据 UI 状态推断出的重建版本：无 checkpoint 可续时是**已存储响应的重放**；checkpoint 为 `interrupted` / `provider_failure_retryable` 时是**运行时重跑**（`interrupted` 先截断孤儿事件尾部）后的新响应；客户端不得把后者当作已存储内容或当作纯 UI 重建
+- 恢复（resume）返回的两类响应都是 runtime 拥有的真相，而非根据 UI 状态推断出的重建版本：无 checkpoint 可续时是**已存储响应的重放**；`interrupted` 在验证后继续允许的 authentic batch，或请求 provider 作真实新调用；`provider_failure_retryable` 按 provider retry 路径重试。interrupted resume 移动 active leaf 并保留 off-path rows（不截断或删除 tail）。客户端不得把恢复响应当作纯 UI 重建。
 - 客户端必须按交付顺序处理运行时事件，即使未来的图模式在现有阶段之间插入额外事件
 - 客户端必须能够容忍新增的有序事件，而不能假设当前的确定性事件序列已经穷尽所有情况
 
@@ -320,7 +320,7 @@ MVP 生命周期：
 - `POST /api/sessions/{id}/question` — 回答等待中的问题，返回恢复后的 `RuntimeResponse`；成功 `200`；错误 `400`、`404`、`409`（`code=no_pending_question`）、`405`
 - `POST /api/sessions/{id}/cancel` — 按 run identity 取消/中断会话；成功 `200`；错误 `400`、`405`
 - `POST /api/sessions/{id}/steer` — 向会话排队一条 steer 消息；成功 `200`；错误 `400`、`404`、`409`（`code=session_sealed`）、`405`
-- `POST /api/sessions/{id}/resume` — 显式恢复 interrupted / failed-retryable 会话（会重新进入 graph loop 并重新执行 provider）；成功 `200`；错误 `404`、`405`
+- `POST /api/sessions/{id}/resume` — 显式恢复 interrupted / failed-retryable 会话：仅在校验通过后沿 active leaf/path 续跑 authentic batch 或重试 provider；保留 off-path rows，成功 `200`；错误 `404`、`405`
 - `GET /api/sessions/{parent}/tasks` — 按 parent session 列出 background tasks；成功 `200`；错误 `404`、`405`
 - `GET /api/tasks` — 列出 background tasks（workspace 全局视图）；成功 `200`；错误 `405`
 - `POST /api/tasks` — 创建 background task；成功 `201`；错误 `400`、`405`

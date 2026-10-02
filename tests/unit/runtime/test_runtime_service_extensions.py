@@ -7,7 +7,7 @@ import sqlite3
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
@@ -23,8 +23,7 @@ from voidcode.agent import (
 )
 from voidcode.core.questions import QuestionResponse
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.transcript import AssembledContext
-from voidcode.graph.contracts import GraphSession
+from voidcode.core.turns import TurnPlan, TurnRequest, TurnSession
 from voidcode.provider.config import (
     ProviderEndpointConfig,
     ProviderTransientRetryConfig,
@@ -56,9 +55,6 @@ from voidcode.runtime.config import (
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
 )
-from voidcode.runtime.context.window import (
-    RuntimeContextWindow,
-)
 from voidcode.runtime.contracts import (
     SESSION_TITLE_MAX_LENGTH,
     RuntimeRequestError,
@@ -83,14 +79,12 @@ from voidcode.runtime.permission import (
     ExternalDirectoryPermissionConfig,
     ExternalDirectoryPolicy,
     PatternPermissionRule,
-    PendingApproval,
     PermissionPolicy,
 )
 from voidcode.runtime.permission_context import RuntimePermissionContextResolver
 from voidcode.runtime.permission_path_helpers import extract_paths_from_patch
 from voidcode.runtime.policy import RuntimePolicyConfig, RuntimePolicyToolPolicyConfig
 from voidcode.runtime.service import (
-    GraphRunRequest,
     RuntimeRequest,
     RuntimeRequestMetadataPayload,
     RuntimeResponse,
@@ -207,89 +201,83 @@ def test_runtime_shell_read_probe_external_path_stays_workspace_scoped(tmp_path:
     assert context == ("workspace", None, "execute", ())
 
 
-@dataclass(slots=True)
-class _StubStep:
-    tool_call: ToolCall | None = None
-    output: str | None = None
-    events: tuple[EventEnvelope, ...] = ()
-    is_finished: bool = False
-    reasoning: str | None = None
-    provider_usage: object | None = None
-
-
 class _SkillCapturingStubGraph:
-    last_request: GraphRunRequest | None = None
+    last_request: TurnRequest | None = None
 
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = tool_results, session
         type(self).last_request = request
-        return _StubStep(output=request.prompt, is_finished=True)
+        return TurnPlan(output=request.prompt, is_finished=True)
 
 
 class _ApprovalThenCaptureSkillGraph:
-    last_request: GraphRunRequest | None = None
+    last_request: TurnRequest | None = None
 
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = session
         type(self).last_request = request
         if not tool_results:
-            return _StubStep(tool_call=ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}))
+            return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),))
         if session.metadata.get("parent_session_id") is not None:
-            return _StubStep(tool_call=ToolCall(tool_name="yield", arguments={"summary": "done"}))
-        return _StubStep(output="done", is_finished=True)
+            return TurnPlan(tool_calls=(ToolCall(tool_name="yield", arguments={"summary": "done"}),))
+        return TurnPlan(output="done", is_finished=True)
 
 
 class _GithubWorkflowWriteGraph:
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = request, session
         if not tool_results:
-            return _StubStep(
-                tool_call=ToolCall(
-                    tool_name="write",
-                    arguments={"path": ".github/workflows/ci.yml", "content": "name: CI\n"},
+            return TurnPlan(
+                tool_calls=(
+                    ToolCall(
+                        tool_name="write",
+                        arguments={"path": ".github/workflows/ci.yml", "content": "name: CI\n"},
+                    ),
                 )
             )
-        return _StubStep(output="done", is_finished=True)
+        return TurnPlan(output="done", is_finished=True)
 
 
 class _ExternalWriteGraph:
     def __init__(self, target: Path) -> None:
         self._target = target
 
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = request, session
         if not tool_results:
-            return _StubStep(
-                tool_call=ToolCall(
-                    tool_name="write",
-                    arguments={"path": self._target.as_posix(), "content": "blocked"},
+            return TurnPlan(
+                tool_calls=(
+                    ToolCall(
+                        tool_name="write",
+                        arguments={"path": self._target.as_posix(), "content": "blocked"},
+                    ),
                 )
             )
-        return _StubStep(output="done", is_finished=True)
+        return TurnPlan(output="done", is_finished=True)
 
 
 class _BlockingApprovalResumeGraph:
@@ -297,51 +285,34 @@ class _BlockingApprovalResumeGraph:
         self.resume_started = threading.Event()
         self.release_resume = threading.Event()
 
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = request, session
         if not tool_results:
-            return _StubStep(tool_call=ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}))
+            return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),))
         self.resume_started.set()
         if not self.release_resume.wait(timeout=2.0):
             raise RuntimeError("resume was not released")
-        return _StubStep(output="done", is_finished=True)
-
-
-class _DivergentApprovalReplayGraph:
-    def step(
-        self,
-        request: GraphRunRequest,
-        tool_results: tuple[object, ...],
-        *,
-        session: GraphSession,
-    ) -> _StubStep:
-        _ = request, tool_results, session
-        return _StubStep(
-            tool_call=ToolCall(
-                tool_name="write",
-                arguments={"path": "danger.txt", "content": "divergent"},
-            )
-        )
+        return TurnPlan(output="done", is_finished=True)
 
 
 class _AbortSignalApprovalGraph:
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = request, session
         if not tool_results:
-            return _StubStep(tool_call=ToolCall(tool_name="write", arguments={}))
-        return _StubStep(output="captured", is_finished=True)
+            return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={}),))
+        return TurnPlan(output="captured", is_finished=True)
 
 
 class _AbortBeforeInvokeTool:
@@ -362,76 +333,80 @@ class _AbortBeforeInvokeTool:
 
 
 class _QuestionThenDoneGraph:
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = request, session
         if not tool_results:
-            return _StubStep(
-                tool_call=ToolCall(
-                    tool_name="question",
-                    arguments={
-                        "questions": [
-                            {
-                                "question": "Which runtime path should we use?",
-                                "header": "Runtime path",
-                                "options": [
-                                    {"label": "Reuse existing", "description": ""},
-                                    {"label": "Add new path", "description": ""},
-                                ],
-                                "multiple": False,
-                            }
-                        ]
-                    },
+            return TurnPlan(
+                tool_calls=(
+                    ToolCall(
+                        tool_name="question",
+                        arguments={
+                            "questions": [
+                                {
+                                    "question": "Which runtime path should we use?",
+                                    "header": "Runtime path",
+                                    "options": [
+                                        {"label": "Reuse existing", "description": ""},
+                                        {"label": "Add new path", "description": ""},
+                                    ],
+                                    "multiple": False,
+                                }
+                            ]
+                        },
+                    ),
                 )
             )
         if session.metadata.get("parent_session_id") is not None:
-            return _StubStep(tool_call=ToolCall(tool_name="yield", arguments={"summary": "done"}))
-        return _StubStep(output="done", is_finished=True)
+            return TurnPlan(tool_calls=(ToolCall(tool_name="yield", arguments={"summary": "done"}),))
+        return TurnPlan(output="done", is_finished=True)
 
 
 class _TwoQuestionThenDoneGraph:
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = request, session
         if not tool_results:
-            return _StubStep(
-                tool_call=ToolCall(
-                    tool_name="question",
-                    arguments={
-                        "questions": [
-                            {
-                                "question": "Which runtime path should we use?",
-                                "header": "Runtime path",
-                                "options": [
-                                    {"label": "Reuse existing", "description": ""},
-                                    {"label": "Add new path", "description": ""},
-                                ],
-                                "multiple": False,
-                            },
-                            {
-                                "question": "Which review mode should we use?",
-                                "header": "Review mode",
-                                "options": [
-                                    {"label": "Fast", "description": ""},
-                                    {"label": "Thorough", "description": ""},
-                                ],
-                                "multiple": False,
-                            },
-                        ]
-                    },
+            return TurnPlan(
+                tool_calls=(
+                    ToolCall(
+                        tool_name="question",
+                        arguments={
+                            "questions": [
+                                {
+                                    "question": "Which runtime path should we use?",
+                                    "header": "Runtime path",
+                                    "options": [
+                                        {"label": "Reuse existing", "description": ""},
+                                        {"label": "Add new path", "description": ""},
+                                    ],
+                                    "multiple": False,
+                                },
+                                {
+                                    "question": "Which review mode should we use?",
+                                    "header": "Review mode",
+                                    "options": [
+                                        {"label": "Fast", "description": ""},
+                                        {"label": "Thorough", "description": ""},
+                                    ],
+                                    "multiple": False,
+                                },
+                            ]
+                        },
+                    ),
                 )
             )
-        return _StubStep(output="done", is_finished=True)
+        return TurnPlan(output="done", is_finished=True)
 
 
 class _ScriptedTurnProvider:
@@ -658,22 +633,24 @@ class _WriteThenResultAwareModelProvider:
 
 
 class _BackgroundTaskSuccessGraph:
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = tool_results
         if session.metadata.get("parent_session_id") is not None:
-            return _StubStep(
-                tool_call=ToolCall(
-                    tool_name="yield",
-                    arguments={"summary": request.prompt},
+            return TurnPlan(
+                tool_calls=(
+                    ToolCall(
+                        tool_name="yield",
+                        arguments={"summary": request.prompt},
+                    ),
                 )
             )
-        return _StubStep(output=request.prompt, is_finished=True)
+        return TurnPlan(output=request.prompt, is_finished=True)
 
 
 class _BlockingBackgroundTaskGraph:
@@ -682,20 +659,20 @@ class _BlockingBackgroundTaskGraph:
         self.first_started = threading.Event()
         self.prompts_seen: list[str] = []
 
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = tool_results, session
         self.prompts_seen.append(request.prompt)
         if request.prompt == "first background task":
             self.first_started.set()
             if not self.release_first.wait(timeout=2.0):
                 raise RuntimeError("first background task was not released")
-        return _StubStep(output=request.prompt, is_finished=True)
+        return TurnPlan(output=request.prompt, is_finished=True)
 
 
 class _TwoEpisodeTransientModelProvider:
@@ -919,28 +896,28 @@ class _ApprovalThenRateLimitTurnProvider:
 
 
 class _BackgroundTaskFailureGraph:
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = request, tool_results, session
         raise RuntimeError("background boom")
 
 
 class _ParentSuccessBackgroundTaskFailureGraph:
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = tool_results, session
         if request.prompt == "parent":
-            return _StubStep(output=request.prompt, is_finished=True)
+            return TurnPlan(output=request.prompt, is_finished=True)
         raise RuntimeError("background boom")
 
 
@@ -1023,7 +1000,7 @@ class _InjectedMcpNamespaceTool:
 
 
 def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
 
     started = runtime.start_background_task(RuntimeRequest(prompt="background hello"))
     completed = _wait_for_background_task(runtime, started.task.id)
@@ -1046,7 +1023,7 @@ def test_runtime_exit_waits_for_background_task_worker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     supervisor = runtime._background_task_supervisor
     task = BackgroundTaskState(
         task=BackgroundTaskRef(id="task-exit-joins-worker"),
@@ -1079,7 +1056,7 @@ def test_runtime_shutdown_terminalizes_unfinished_background_worker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     supervisor = runtime._background_task_supervisor
     task = BackgroundTaskState(
         task=BackgroundTaskRef(id="task-exit-unfinished-worker"),
@@ -1121,7 +1098,7 @@ def test_runtime_shutdown_terminalizes_unfinished_background_worker(
 def test_runtime_shutdown_after_mark_running_terminalizes_task_before_worker(
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     supervisor = runtime._background_task_supervisor
     task = BackgroundTaskState(
         task=BackgroundTaskRef(id="task-shutdown-before-worker"),
@@ -1156,7 +1133,7 @@ def test_runtime_background_task_concurrency_limit_queues_and_drains(tmp_path: P
     graph = _BlockingBackgroundTaskGraph()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=graph,
+        turn_producer=graph,
         config=RuntimeConfig(
             background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
             mcp=RuntimeMcpConfig(enabled=False),
@@ -1187,7 +1164,7 @@ def test_runtime_background_task_queued_read_path_drain_re_dispatches(
     re-dispatched by a subsequent read-path drain instead of being stranded."""
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
             background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
             mcp=RuntimeMcpConfig(enabled=False),
@@ -1221,7 +1198,7 @@ def test_runtime_background_task_shutdown_blocked_returns_interrupted(tmp_path: 
     durable reason instead of being stranded as ``queued``."""
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
         ),
@@ -1241,7 +1218,7 @@ def test_runtime_background_task_shutdown_terminalizes_queued(
     cross-process ``queued`` orphans survive teardown."""
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
             background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
             mcp=RuntimeMcpConfig(enabled=False),
@@ -1310,7 +1287,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     _write_demo_skill(skill_dir, content="# Demo\nSnapshot this skill body.")
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
+        turn_producer=_SkillCapturingStubGraph(),
         mcp_manager=_StubMcpManager(),
         config=RuntimeConfig(
             execution_engine="provider",
@@ -1360,110 +1337,10 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     assert replayed.session.metadata["agent_capability_snapshot"] == capability_snapshot
 
 
-def test_runtime_denies_divergent_approval_replay_without_fresh_permission(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-    runtime_config_metadata = cast(
-        Callable[[], dict[str, object]],
-        _private_attr(runtime, "_runtime_config_metadata"),
-    )
-    prepare_provider_context_window = cast(
-        Callable[..., RuntimeContextWindow],
-        _private_attr(runtime, "prepare_provider_context_window"),
-    )
-    assemble_provider_context = cast(
-        Callable[..., AssembledContext],
-        _private_attr(runtime, "assemble_provider_context"),
-    )
-    execute_graph_loop = cast(
-        Callable[..., Iterator[Any]],
-        runtime._run_loop_coordinator.execute_graph_loop,
-    )
-    session_metadata: dict[str, object] = {
-        "runtime_config": runtime_config_metadata(),
-    }
-    session = SessionState(
-        session=SessionRef(id="divergent-deny"),
-        status="running",
-        turn=1,
-        metadata=session_metadata,
-    )
-    tool_registry = ToolRegistry.with_defaults()
-    graph_request = GraphRunRequest(
-        session=session,
-        prompt="write danger.txt",
-        available_tools=tool_registry.definitions(),
-        context_window=prepare_provider_context_window(
-            prompt="write danger.txt",
-            tool_results=(),
-            session_metadata=session.metadata,
-        ),
-        assembled_context=assemble_provider_context(
-            prompt="write danger.txt",
-            tool_results=(),
-            session_metadata=session.metadata,
-        ),
-        metadata={"provider_attempt": 0},
-    )
-    pending = PendingApproval(
-        request_id="approval-original",
-        tool_name="write",
-        arguments={"path": "danger.txt", "content": "original"},
-        target_summary="write danger.txt",
-        reason="non-read-only tool invocation",
-        policy_mode="ask",
-    )
-
-    def _fail_fresh_permission(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("denied divergent approval replay must not ask fresh permission")
-
-    monkeypatch.setattr(runtime, "resolve_permission", _fail_fresh_permission)
-
-    session_store = _private_attr(runtime, "_session_store")
-    session_store.save_interrupted_checkpoint(
-        workspace=tmp_path,
-        session_id="divergent-deny",
-        prompt="write danger.txt",
-        session_metadata=session_metadata,
-        tool_results=(),
-        last_event_sequence=0,
-        create_if_missing=True,
-    )
-
-    chunks: list[Any] = list(
-        execute_graph_loop(
-            graph=_DivergentApprovalReplayGraph(),
-            tool_registry=tool_registry,
-            session=session,
-            sequence=0,
-            graph_request=graph_request,
-            tool_results=[],
-            approval_resolution=(pending, "deny"),
-            permission_policy=PermissionPolicy(mode="ask"),
-        )
-    )
-    events = [chunk.event for chunk in chunks if chunk.event is not None]
-
-    assert [event.event_type for event in events] == [
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.approval_resolved",
-        "runtime.tool_completed",
-    ]
-    assert events[-2].payload == {"request_id": "approval-original", "decision": "deny"}
-    assert events[-1].payload["status"] == "error"
-    assert events[-1].payload["permission_denied"] is True
-    assert events[-1].payload["error"] == "permission denied for tool: write"
-    assert chunks[-1].session.status == "running"
-    assert (tmp_path / "danger.txt").exists() is False
-
-
 def test_runtime_pattern_permission_rule_asks_for_workspace_write(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_GithubWorkflowWriteGraph(),
+        turn_producer=_GithubWorkflowWriteGraph(),
         config=RuntimeConfig(
             permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="write", path=".github/**", decision="ask"),))
         ),
@@ -1533,7 +1410,7 @@ def test_runtime_pattern_permission_rule_cannot_bypass_external_write_policy(
     external_path = tmp_path.parent / "external-pattern-denied.txt"
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ExternalWriteGraph(external_path),
+        turn_producer=_ExternalWriteGraph(external_path),
         config=RuntimeConfig(
             permission=ExternalDirectoryPermissionConfig(
                 write=ExternalDirectoryPolicy(rules=(("*", "deny"),)),
@@ -1577,7 +1454,7 @@ def test_runtime_persists_pattern_permission_rules_for_resume(tmp_path: Path) ->
 
 
 def test_runtime_cancel_session_interrupts_active_run(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
 
     stream = runtime.run_stream(RuntimeRequest(prompt="cancel me", session_id="active-cancel"))
     first_chunk = next(stream)
@@ -1759,7 +1636,7 @@ def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
     tool = _AbortBeforeInvokeTool()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_AbortSignalApprovalGraph(),
+        turn_producer=_AbortSignalApprovalGraph(),
         tool_registry=ToolRegistry.from_tools([tool]),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
@@ -1800,7 +1677,7 @@ def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
 
 
 def test_runtime_cancel_session_rejects_stale_run_id(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
 
     stream = runtime.run_stream(RuntimeRequest(prompt="stale cancel", session_id="stale-cancel"))
     first_chunk = next(stream)
@@ -1817,7 +1694,7 @@ def test_runtime_cancel_session_interrupts_active_approval_resume_run(tmp_path: 
     graph = _BlockingApprovalResumeGraph()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=graph,
+        turn_producer=graph,
         config=RuntimeConfig(approval_mode="ask", mcp=RuntimeMcpConfig(enabled=False)),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -1876,7 +1753,7 @@ def test_runtime_cancel_after_approved_tool_started_skips_invoke_and_closes_tool
     tool = _AbortBeforeInvokeTool()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_AbortSignalApprovalGraph(),
+        turn_producer=_AbortSignalApprovalGraph(),
         tool_registry=ToolRegistry.from_tools([tool]),
         config=RuntimeConfig(approval_mode="ask", mcp=RuntimeMcpConfig(enabled=False)),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -1921,7 +1798,7 @@ def test_runtime_cancel_after_approved_tool_started_skips_invoke_and_closes_tool
 
 
 def test_runtime_cancel_session_returns_not_active_for_idle_session(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
 
     result = runtime.cancel_session("idle-cancel")
 
@@ -1930,14 +1807,14 @@ def test_runtime_cancel_session_returns_not_active_for_idle_session(tmp_path: Pa
 
 
 def test_runtime_rejects_unknown_parent_session_id(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
 
     with pytest.raises(ValueError, match="parent session does not exist: missing-parent"):
         _ = runtime.run(RuntimeRequest(prompt="child task", parent_session_id="missing-parent"))
 
 
 def test_runtime_rejects_self_parenting_session_request(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
 
     with pytest.raises(ValueError, match="parent_session_id must not match session_id"):
         _ = runtime.run(
@@ -1950,7 +1827,7 @@ def test_runtime_rejects_self_parenting_session_request(tmp_path: Path) -> None:
 
 
 def test_runtime_lists_background_tasks_by_parent_session(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     _ = runtime.run(RuntimeRequest(prompt="leader a", session_id="leader-a"))
     _ = runtime.run(RuntimeRequest(prompt="leader b", session_id="leader-b"))
 
@@ -1974,7 +1851,7 @@ def test_runtime_resume_rejects_malformed_persisted_pending_approval_policy_mode
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2003,14 +1880,13 @@ def test_runtime_resume_rejects_malformed_persisted_pending_approval_policy_mode
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
     with pytest.raises(
         RuntimeError,
-        match=("persisted pending approval for session 'malformed-pending-approval' has invalid policy_mode 'not-a-real-mode'"),
     ):
         _ = resumed_runtime.resume(
             "malformed-pending-approval",
@@ -2024,7 +1900,7 @@ def test_runtime_resume_rejects_persisted_approval_owned_by_different_session(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2053,14 +1929,13 @@ def test_runtime_resume_rejects_persisted_approval_owned_by_different_session(
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
     with pytest.raises(
         ValueError,
-        match="approval resume must target the child session that owns the approval request",
     ):
         _ = resumed_runtime.resume(
             "owned-approval-child",
@@ -2074,7 +1949,7 @@ def test_runtime_resume_rejects_tampered_pending_approval_payload_against_record
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2103,20 +1978,20 @@ def test_runtime_resume_rejects_tampered_pending_approval_payload_against_record
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
     with pytest.raises(
         ValueError,
-        match="persisted pending approval no longer matches the recorded approval request payload",
     ):
         _ = resumed_runtime.resume(
             "approval-binding-mismatch",
             approval_request_id=approval_request_id,
             approval_decision="allow",
         )
+    assert not (tmp_path / "beta.txt").exists()
 
 
 def test_runtime_resume_rejects_stale_duplicate_approval_replay_when_pending_state_is_reinserted(
@@ -2124,7 +1999,7 @@ def test_runtime_resume_rejects_stale_duplicate_approval_replay_when_pending_sta
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2190,14 +2065,13 @@ def test_runtime_resume_rejects_stale_duplicate_approval_replay_when_pending_sta
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
     with pytest.raises(
         ValueError,
-        match="approval request was already resolved; stale approval replay is not allowed",
     ):
         _ = resumed_runtime.resume(
             "stale-approval-replay",
@@ -2211,7 +2085,7 @@ def test_runtime_background_task_waiting_approval_resume_with_fresh_runtime_pres
 ) -> None:
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2229,7 +2103,7 @@ def test_runtime_background_task_waiting_approval_resume_with_fresh_runtime_pres
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2251,7 +2125,7 @@ def test_runtime_background_task_waiting_approval_resume_with_fresh_runtime_pres
 def test_runtime_resume_rejects_parent_session_for_child_owned_approval(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2283,7 +2157,7 @@ def test_runtime_child_question_is_rejected_by_child_tool_policy(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2299,7 +2173,7 @@ def test_runtime_child_question_is_rejected_by_child_tool_policy(
 def test_runtime_resume_rejects_wrong_workspace_metadata_on_approval_resume(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2329,7 +2203,7 @@ def test_runtime_resume_rejects_wrong_workspace_metadata_on_approval_resume(tmp_
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2348,7 +2222,7 @@ def test_runtime_resume_rejects_wrong_workspace_metadata_on_approval_resume(tmp_
 def test_runtime_answer_question_rejects_wrong_workspace_metadata(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2378,7 +2252,7 @@ def test_runtime_answer_question_rejects_wrong_workspace_metadata(tmp_path: Path
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2399,7 +2273,7 @@ def test_runtime_answer_question_rejects_tampered_pending_question_payload_again
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2429,7 +2303,7 @@ def test_runtime_answer_question_rejects_tampered_pending_question_payload_again
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2448,7 +2322,7 @@ def test_runtime_answer_question_rejects_tampered_pending_question_payload_again
 def test_runtime_cancel_background_task_propagates_to_waiting_child_session(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -2479,7 +2353,7 @@ def test_runtime_cancel_background_task_propagates_to_waiting_child_session(tmp_
 
 
 def test_runtime_reuses_existing_session_lineage_when_parent_is_omitted(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     first_child = runtime.run(
         RuntimeRequest(
@@ -2496,7 +2370,7 @@ def test_runtime_reuses_existing_session_lineage_when_parent_is_omitted(tmp_path
 
 
 def test_runtime_rejects_rebinding_existing_session_to_new_parent(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     _ = runtime.run(RuntimeRequest(prompt="leader one", session_id="leader-one"))
     _ = runtime.run(RuntimeRequest(prompt="leader two", session_id="leader-two"))
     _ = runtime.run(
@@ -2523,7 +2397,7 @@ def test_runtime_rejects_rebinding_existing_session_to_new_parent(tmp_path: Path
 def test_runtime_background_task_worker_allocates_session_id_when_requested_without_explicit_session(  # noqa: E501
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
 
     started = runtime.start_background_task(RuntimeRequest(prompt="background hello", allocate_session_id=True))
     completed = _wait_for_background_task(runtime, started.task.id)
@@ -2541,7 +2415,7 @@ def test_runtime_background_task_worker_allocates_session_id_when_requested_with
 
 
 def test_runtime_background_task_persists_failure_state(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskFailureGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskFailureGraph())
 
     started = runtime.start_background_task(RuntimeRequest(prompt="background fail"))
     _ = runtime.load_background_task(started.task.id)
@@ -2560,7 +2434,7 @@ def test_runtime_retries_failed_background_task_as_fresh_queued_task(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ParentSuccessBackgroundTaskFailureGraph(),
+        turn_producer=_ParentSuccessBackgroundTaskFailureGraph(),
     )
     _ = runtime.run(RuntimeRequest(prompt="parent", session_id="leader-session"))
     started = runtime.start_background_task(
@@ -2598,7 +2472,7 @@ def test_runtime_retries_failed_background_task_as_fresh_queued_task(
 def test_runtime_retries_cancelled_background_task(
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     store = _private_attr(runtime, "_session_store")
     store.create_background_task(
         workspace=tmp_path,
@@ -2621,7 +2495,7 @@ def test_runtime_retries_cancelled_background_task(
 
 
 def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     store = _private_attr(runtime, "_session_store")
     store.create_background_task(
         workspace=tmp_path,
@@ -2652,7 +2526,7 @@ def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) 
 
 
 def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     store = _private_attr(runtime, "_session_store")
     store.create_background_task(
         workspace=tmp_path,
@@ -2675,7 +2549,7 @@ def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path
 
 
 def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> None:
-    first_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     store = _private_attr(first_runtime, "_session_store")
     store.create_background_task(
         workspace=tmp_path,
@@ -2687,7 +2561,7 @@ def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> N
         ),
     )
 
-    second_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    second_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     reconciled = _wait_for_background_task(second_runtime, "task-orphan")
 
     assert reconciled.status == "completed"
@@ -2697,7 +2571,7 @@ def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> N
 def test_runtime_status_reconciles_stale_running_background_tasks(
     tmp_path: Path,
 ) -> None:
-    first_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     store = _private_attr(first_runtime, "_session_store")
     store.create_background_task(
         workspace=tmp_path,
@@ -2714,7 +2588,7 @@ def test_runtime_status_reconciles_stale_running_background_tasks(
         session_id="missing-child-session",
     )
 
-    second_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    second_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     status = second_runtime.current_status().background_tasks
     task = second_runtime.load_background_task("task-stale-running")
 
@@ -2733,7 +2607,7 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
 ) -> None:
     first_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
             background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
             mcp=RuntimeMcpConfig(enabled=False),
@@ -2788,7 +2662,7 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
 
     second_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
             background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
             mcp=RuntimeMcpConfig(enabled=False),
@@ -2809,7 +2683,7 @@ def test_runtime_drain_releases_slot_when_worker_start_fails(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
     )
     real_thread_start = threading.Thread.start
@@ -2835,7 +2709,7 @@ def test_runtime_drain_releases_slot_when_worker_start_fails(
 def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_start_transition(
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     runtime._background_task_supervisor.reconciled = True
     store = _private_attr(runtime, "_session_store")
     store.create_background_task(
@@ -2867,7 +2741,7 @@ def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_star
 
 
 def test_runtime_background_task_worker_rechecks_cancel_before_dispatch(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     runtime._background_task_supervisor.reconciled = True
     store = _private_attr(runtime, "_session_store")
     store.create_background_task(
@@ -2902,7 +2776,7 @@ def test_runtime_background_task_worker_rechecks_cancel_before_dispatch(tmp_path
 def test_runtime_reconciliation_preserves_terminal_task_even_if_child_session_disagrees(
     tmp_path: Path,
 ) -> None:
-    initial_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    initial_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     store = _private_attr(initial_runtime, "_session_store")
     store.create_background_task(
@@ -2965,7 +2839,7 @@ def test_runtime_reconciliation_preserves_terminal_task_even_if_child_session_di
         ),
     )
 
-    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
 
     reconciled = resumed_runtime.load_background_task("task-terminal-truth")
     leader_response = _wait_for_session_event(
@@ -2982,7 +2856,7 @@ def test_runtime_reconciliation_preserves_terminal_task_even_if_child_session_di
 def test_runtime_reconciliation_turns_cancel_requested_running_task_into_cancelled(
     tmp_path: Path,
 ) -> None:
-    first_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     store = _private_attr(first_runtime, "_session_store")
     store.create_background_task(
         workspace=tmp_path,
@@ -3001,7 +2875,7 @@ def test_runtime_reconciliation_turns_cancel_requested_running_task_into_cancell
         task_id="task-orphan-cancel-request",
     )
 
-    second_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    second_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     reconciled = second_runtime.load_background_task("task-orphan-cancel-request")
 
     assert reconciled.status == "cancelled"
@@ -3015,7 +2889,7 @@ def test_runtime_rejects_client_supplied_workflow_metadata_on_fresh_request(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
+        turn_producer=_SkillCapturingStubGraph(),
         config=_provider_runtime_config(),
     )
 
@@ -3237,7 +3111,7 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode-zen/gpt-5.4",
@@ -3285,7 +3159,7 @@ def test_runtime_rejects_client_supplied_applied_skill_payloads_on_new_run(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
+        turn_producer=_SkillCapturingStubGraph(),
         config=RuntimeConfig(),
     )
 
@@ -3314,7 +3188,7 @@ def test_runtime_rejects_client_supplied_applied_skill_payloads_on_new_run(
 
 
 def test_runtime_rejects_unsupported_request_metadata_field(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubGraph())
 
     with pytest.raises(
         ValueError,
@@ -3329,7 +3203,7 @@ def test_runtime_rejects_unsupported_request_metadata_field(tmp_path: Path) -> N
 
 
 def test_runtime_rejects_non_string_request_metadata_key(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubGraph())
 
     with pytest.raises(
         ValueError,
@@ -3347,7 +3221,7 @@ def test_runtime_rejects_non_string_request_metadata_key(tmp_path: Path) -> None
 
 
 def test_runtime_run_stream_rejects_unsupported_request_metadata_field(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubGraph())
 
     with pytest.raises(ValueError, match="unsupported request metadata field\\(s\\): client"):
         _ = list(
@@ -3363,7 +3237,7 @@ def test_runtime_run_stream_rejects_unsupported_request_metadata_field(tmp_path:
 def test_runtime_start_background_task_rejects_unsupported_request_metadata_field(
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
 
     with pytest.raises(
         ValueError,
@@ -3373,7 +3247,7 @@ def test_runtime_start_background_task_rejects_unsupported_request_metadata_fiel
 
 
 def test_runtime_rejects_non_boolean_provider_stream_request_metadata(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubGraph())
 
     with pytest.raises(ValueError, match="request metadata 'provider_stream' must be a boolean"):
         _ = runtime.run(
@@ -3385,7 +3259,7 @@ def test_runtime_rejects_non_boolean_provider_stream_request_metadata(tmp_path: 
 
 
 def test_runtime_rejects_non_boolean_show_thinking_request_metadata(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubGraph())
 
     with pytest.raises(ValueError, match="request metadata 'show_thinking' must be a boolean"):
         _ = runtime.run(
@@ -3398,7 +3272,7 @@ def test_runtime_rejects_non_boolean_show_thinking_request_metadata(tmp_path: Pa
 
 @pytest.mark.parametrize("invalid_value", ["none", "banana", "High", "", 1, True, None])
 def test_runtime_rejects_invalid_reasoning_effort_request_metadata(tmp_path: Path, invalid_value: object) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_SkillCapturingStubGraph())
 
     with pytest.raises(
         ValueError,
@@ -3423,7 +3297,7 @@ def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path
 
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -3472,7 +3346,7 @@ def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -3489,19 +3363,19 @@ def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path
 
 
 class _MultiStepStubGraph:
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = request, session
         if not tool_results:
-            return _StubStep(tool_call=ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}))
+            return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),))
         if len(tool_results) == 1:
-            return _StubStep(tool_call=ToolCall(tool_name="write", arguments={"path": "beta.txt", "content": "2"}))
-        return _StubStep(output="done", is_finished=True)
+            return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={"path": "beta.txt", "content": "2"}),))
+        return TurnPlan(output="done", is_finished=True)
 
 
 def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_changes(
@@ -3516,7 +3390,7 @@ def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_chang
 
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -3534,7 +3408,7 @@ def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_chang
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -3557,7 +3431,7 @@ def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
 ) -> None:
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -3578,7 +3452,7 @@ def test_runtime_resume_preserves_explicit_empty_applied_skill_snapshot(
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -4235,7 +4109,7 @@ def test_runtime_resume_uses_persisted_selected_skill_names_when_payloads_missin
     )
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
                 preset="leader",
@@ -4301,7 +4175,7 @@ def test_runtime_resume_uses_persisted_selected_skill_names_when_payloads_missin
     )
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
             agent=RuntimeAgentConfig(
                 preset="leader",
@@ -4776,7 +4650,7 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_resolved_p
 def test_runtime_persists_resume_checkpoint_for_waiting_session(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
             approval_mode="ask",
             skills=RuntimeSkillsConfig(enabled=True),
@@ -4816,7 +4690,7 @@ def test_runtime_persists_resume_checkpoint_for_waiting_session(tmp_path: Path) 
 def test_runtime_answer_question_rejects_stale_request_id(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -4834,7 +4708,7 @@ def test_runtime_answer_question_rejects_stale_request_id(tmp_path: Path) -> Non
 def test_answer_question_rejects_duplicate_headers(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_TwoQuestionThenDoneGraph(),
+        turn_producer=_TwoQuestionThenDoneGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -4858,7 +4732,7 @@ def test_runtime_resume_approval_rebuilds_from_persisted_checkpoint_after_restar
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -4876,7 +4750,7 @@ def test_runtime_resume_approval_rebuilds_from_persisted_checkpoint_after_restar
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -4896,7 +4770,7 @@ def test_runtime_resume_emits_skill_binding_mismatch_event_when_checkpoint_bindi
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
             approval_mode="ask",
             skills=RuntimeSkillsConfig(enabled=True),
@@ -4932,7 +4806,7 @@ def test_runtime_resume_emits_skill_binding_mismatch_event_when_checkpoint_bindi
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
             approval_mode="ask",
             skills=RuntimeSkillsConfig(enabled=True),
@@ -4965,7 +4839,7 @@ def test_runtime_resume_rejects_skill_snapshot_hash_mismatch_with_checkpoint(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
             approval_mode="ask",
             skills=RuntimeSkillsConfig(enabled=True),
@@ -4999,7 +4873,7 @@ def test_runtime_resume_rejects_skill_snapshot_hash_mismatch_with_checkpoint(
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
             approval_mode="ask",
             skills=RuntimeSkillsConfig(enabled=True),
@@ -5021,7 +4895,7 @@ def test_runtime_resume_rejects_skill_snapshot_hash_mismatch_with_checkpoint(
 def test_runtime_resume_rejects_missing_persisted_checkpoint(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5042,7 +4916,7 @@ def test_runtime_resume_rejects_missing_persisted_checkpoint(tmp_path: Path) -> 
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5060,7 +4934,7 @@ def test_runtime_resume_rejects_persisted_checkpoint_json_is_corrupt(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5081,7 +4955,7 @@ def test_runtime_resume_rejects_persisted_checkpoint_json_is_corrupt(
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5099,7 +4973,7 @@ def test_runtime_resume_rejects_persisted_checkpoint_payload_is_not_object(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5120,7 +4994,7 @@ def test_runtime_resume_rejects_persisted_checkpoint_payload_is_not_object(
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5141,7 +5015,7 @@ def test_runtime_resume_rejects_malformed_persisted_checkpoint_payload_with_vali
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5174,7 +5048,7 @@ def test_runtime_resume_rejects_malformed_persisted_checkpoint_payload_with_vali
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5193,7 +5067,7 @@ def test_runtime_resume_rejects_malformed_persisted_checkpoint_payload_with_vali
 def test_runtime_resume_rejects_checkpoint_kind_mismatch(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5221,7 +5095,7 @@ def test_runtime_resume_rejects_checkpoint_kind_mismatch(tmp_path: Path) -> None
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5243,7 +5117,7 @@ def test_runtime_resume_rejects_checkpoint_kind_mismatch(tmp_path: Path) -> None
 def test_runtime_resume_rejects_checkpoint_version_mismatch(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5271,7 +5145,7 @@ def test_runtime_resume_rejects_checkpoint_version_mismatch(tmp_path: Path) -> N
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5292,7 +5166,7 @@ def test_runtime_resume_rejects_malformed_persisted_checkpoint_tool_result_entry
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_MultiStepStubGraph(),
+        turn_producer=_MultiStepStubGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5334,7 +5208,7 @@ def test_runtime_resume_rejects_malformed_persisted_checkpoint_tool_result_entry
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_MultiStepStubGraph(),
+        turn_producer=_MultiStepStubGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5353,7 +5227,7 @@ def test_runtime_resume_rejects_malformed_persisted_checkpoint_tool_result_entry
 def test_runtime_answer_question_rejects_checkpoint_kind_mismatch(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5381,7 +5255,7 @@ def test_runtime_answer_question_rejects_checkpoint_kind_mismatch(tmp_path: Path
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_QuestionThenDoneGraph(),
+        turn_producer=_QuestionThenDoneGraph(),
         config=RuntimeConfig(approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -5403,7 +5277,7 @@ def test_runtime_answer_question_rejects_checkpoint_kind_mismatch(tmp_path: Path
 def test_runtime_interrupted_resume_restores_leaf_and_keeps_orphaned_tail(
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     session_store = runtime._session_store
     assert isinstance(session_store, SqliteSessionStore)
     session_id = "interrupted-resume-session"
@@ -5487,7 +5361,7 @@ def test_runtime_interrupted_resume_restores_leaf_and_keeps_orphaned_tail(
 def test_runtime_session_end_hook_failure_does_not_override_terminal_truth(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_BackgroundTaskSuccessGraph(),
+        turn_producer=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
             hooks=RuntimeHooksConfig(
                 enabled=True,
@@ -5510,7 +5384,7 @@ def test_runtime_session_idle_hook_failure_warn_does_not_fail_waiting_session(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
+        turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
             approval_mode="ask",
             hooks=RuntimeHooksConfig(
@@ -5541,22 +5415,24 @@ class _WriteOnceGraph:
     def __init__(self, target: Path) -> None:
         self._target = target
 
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = request, session
         if not tool_results:
-            return _StubStep(
-                tool_call=ToolCall(
-                    tool_name="write",
-                    arguments={"path": self._target.as_posix(), "content": "blocked"},
+            return TurnPlan(
+                tool_calls=(
+                    ToolCall(
+                        tool_name="write",
+                        arguments={"path": self._target.as_posix(), "content": "blocked"},
+                    ),
                 )
             )
-        return _StubStep(output="done", is_finished=True)
+        return TurnPlan(output="done", is_finished=True)
 
 
 def test_pre_tool_hook_cancel_blocks_tool_with_llm_visible_reason(tmp_path: Path) -> None:
@@ -5564,7 +5440,7 @@ def test_pre_tool_hook_cancel_blocks_tool_with_llm_visible_reason(tmp_path: Path
     stdout = json.dumps({"action": "cancel", "diagnostic": "operator_hold"})
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_WriteOnceGraph(target),
+        turn_producer=_WriteOnceGraph(target),
         config=RuntimeConfig(
             hooks=RuntimeHooksConfig(
                 enabled=True,
@@ -5588,7 +5464,7 @@ def test_pre_tool_hook_failure_warn_blocks_tool_and_fail_escalates(tmp_path: Pat
     warn_target = tmp_path / "warn.txt"
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_WriteOnceGraph(warn_target),
+        turn_producer=_WriteOnceGraph(warn_target),
         config=RuntimeConfig(
             hooks=RuntimeHooksConfig(
                 enabled=True,
@@ -5609,7 +5485,7 @@ def test_pre_tool_hook_failure_warn_blocks_tool_and_fail_escalates(tmp_path: Pat
     fail_target = tmp_path / "fail.txt"
     fail_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_WriteOnceGraph(fail_target),
+        turn_producer=_WriteOnceGraph(fail_target),
         config=RuntimeConfig(
             hooks=RuntimeHooksConfig(
                 enabled=True,
@@ -5635,7 +5511,7 @@ def test_pre_tool_match_filter_applies_on_plan_path(tmp_path: Path) -> None:
     stdout = json.dumps({"action": "cancel", "diagnostic": "operator_hold"})
     filtered = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_WriteOnceGraph(filtered_target),
+        turn_producer=_WriteOnceGraph(filtered_target),
         config=RuntimeConfig(hooks=RuntimeHooksConfig(enabled=True, pre_tool=(("echo", stdout),), pre_tool_match=("read*",))),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
@@ -5653,7 +5529,7 @@ def test_pre_tool_match_filter_runs_hook_for_matching_tool_on_plan_path(tmp_path
     stdout = json.dumps({"action": "cancel", "diagnostic": "operator_hold"})
     matched = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_WriteOnceGraph(matched_target),
+        turn_producer=_WriteOnceGraph(matched_target),
         config=RuntimeConfig(hooks=RuntimeHooksConfig(enabled=True, pre_tool=(("echo", stdout),), pre_tool_match=("write*",))),
         permission_policy=PermissionPolicy(mode="yolo"),
     )

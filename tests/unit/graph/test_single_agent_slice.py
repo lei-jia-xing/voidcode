@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
-import logging
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from voidcode.core.transcript import ContextSegment
-from voidcode.graph.contracts import GraphRunRequest, GraphSessionSnapshot
-from voidcode.graph.provider_graph import ProviderGraph
+from voidcode.core.deterministic_turns import DeterministicTurnProducer
+from voidcode.core.engine import CallSeed, TurnEngine
+from voidcode.core.memory_host import MemoryHost
+from voidcode.core.provider_turns import ProviderTurnProducer
+from voidcode.core.tool_context import ToolContext
+from voidcode.core.transcript import ContextSegment, tool_result_output
+from voidcode.core.turns import TurnRequest, TurnSessionSnapshot
 from voidcode.provider.protocol import (
     ProviderErrorKind,
     ProviderExecutionError,
@@ -19,12 +24,11 @@ from voidcode.provider.protocol import (
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
 from voidcode.runtime.context.window import (
-    ContextProjection,
     RuntimeAssembledContext,
     RuntimeContextWindow,
-    normalize_read_output,
 )
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from voidcode.tools.read import ReadTool
 
 
 class _StubTurnProvider:
@@ -43,8 +47,7 @@ class _StubTurnProvider:
         if step_index >= len(commands):
             if not assembled_context.tool_results:
                 raise ValueError("request must contain at least one actionable command")
-            normalized = normalize_read_output(assembled_context.tool_results[-1].content)
-            return ProviderTurnResult(output="" if normalized is None else normalized)
+            return ProviderTurnResult(output=tool_result_output(assembled_context.tool_results[-1]) or "")
 
         path = commands[step_index].removeprefix("read ").strip()
         return ProviderTurnResult(tool_call=ToolCall(tool_name="read", arguments={"path": path}))
@@ -57,12 +60,12 @@ def _tool_definitions() -> tuple[ToolDefinition, ...]:
     )
 
 
-def _session(session_id: str = "s1") -> GraphSessionSnapshot:
-    return GraphSessionSnapshot(session_id=session_id)
+def _session(session_id: str = "s1") -> TurnSessionSnapshot:
+    return TurnSessionSnapshot(session_id=session_id)
 
 
-def _session_with_run(session_id: str = "s1", run_id: str = "run-one") -> GraphSessionSnapshot:
-    return GraphSessionSnapshot(session_id=session_id, metadata={"run_id": run_id})
+def _session_with_run(session_id: str = "s1", run_id: str = "run-one") -> TurnSessionSnapshot:
+    return TurnSessionSnapshot(session_id=session_id, metadata={"run_id": run_id})
 
 
 def _assembled_from_context_window(context_window: RuntimeContextWindow) -> RuntimeAssembledContext:
@@ -101,28 +104,6 @@ def _assembled_from_context_window(context_window: RuntimeContextWindow) -> Runt
         segments=tuple(segments),
         metadata=context_window.metadata_payload(),
     )
-
-
-class _CapturingTurnProvider:
-    name = "opencode-zen"
-
-    def __init__(self) -> None:
-        self.requests: list[ProviderTurnRequest] = []
-        self.abort_cancelled_values: list[bool | None] = []
-
-    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
-        self.requests.append(request)
-        self.abort_cancelled_values.append(request.abort_signal.cancelled if request.abort_signal is not None else None)
-        return ProviderTurnResult(output="done")
-
-
-class _AbortSignal:
-    def __init__(self, *, cancelled: bool = False) -> None:
-        self._cancelled = cancelled
-
-    @property
-    def cancelled(self) -> bool:
-        return self._cancelled
 
 
 class _MixedNonStreamingTurnProvider:
@@ -388,14 +369,14 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_StubTurnProvider(name="opencode-zen"),
         provider_model=provider_model,
     )
 
     request_context = RuntimeContextWindow(prompt="read sample.txt")
-    step = graph.step(
-        request=GraphRunRequest(
+    step = graph.produce(
+        request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
@@ -406,13 +387,13 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
         session=_session(),
     )
 
-    assert step.tool_call is not None
-    assert step.tool_call.tool_name == "read"
+    assert step.tool_calls[0] is not None
+    assert step.tool_calls[0].tool_name == "read"
     assert step.output is None
     assert step.is_finished is False
-    assert [event.event_type for event in step.events] == ["graph.loop_step", "graph.model_turn"]
-    assert step.events[0].payload == {"step": 1, "phase": "plan"}
-    assert step.events[1].payload == {
+    assert [event.kind for event in step.facts] == ["loop_step", "model_turn"]
+    assert step.facts[0].payload == {"step": 1, "phase": "plan"}
+    assert step.facts[1].payload == {
         "turn": 1,
         "mode": "provider",
         "provider": "opencode-zen",
@@ -423,331 +404,24 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
     }
 
 
-def test_provider_graph_queues_non_streaming_tool_call_batch() -> None:
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
-    request_context = RuntimeContextWindow(prompt="read two files")
-    request = GraphRunRequest(
+def test_deterministic_read_preserves_actual_body_whitespace(tmp_path: Path) -> None:
+    body = "\n    alpha: beta\n(parenthetical user text)\n\n  gamma"
+    (tmp_path / "sample.txt").write_text(f"{body}\n", encoding="utf-8")
+    tool = ReadTool()
+    result = tool.invoke(ToolCall("read", {"path": "sample.txt"}), context=ToolContext(workspace=tmp_path))
+    context = RuntimeContextWindow(prompt="read sample.txt", tool_results=(result,))
+    request = TurnRequest(
         session=_session(),
-        prompt="read two files",
-        available_tools=_tool_definitions(),
-        context_window=request_context,
-        assembled_context=_assembled_from_context_window(request_context),
-    )
-
-    first_step = graph.step(request=request, tool_results=(), session=_session())
-    second_step = graph.step(
-        request=request,
-        tool_results=(ToolResult(tool_name="read", status="ok", content="alpha"),),
-        session=_session(),
-    )
-
-    assert first_step.tool_call is not None
-    assert first_step.tool_call.tool_call_id == "call-alpha"
-    assert len(first_step.tool_calls) == 2
-    assert second_step.tool_call is not None
-    assert second_step.tool_call.tool_call_id == "call-beta"
-    assert second_step.events == ()
-
-
-def test_provider_graph_discards_queued_tool_call_batch_for_different_session() -> None:
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
-    first_context = RuntimeContextWindow(prompt="read two files")
-    first_request = GraphRunRequest(
-        session=_session("session-one"),
-        prompt="read two files",
-        available_tools=_tool_definitions(),
-        context_window=first_context,
-        assembled_context=_assembled_from_context_window(first_context),
-    )
-
-    first_step = graph.step(request=first_request, tool_results=(), session=_session("session-one"))
-
-    second_context = RuntimeContextWindow(prompt="unrelated session")
-    second_request = GraphRunRequest(
-        session=_session("session-two"),
-        prompt="unrelated session",
-        available_tools=_tool_definitions(),
-        context_window=second_context,
-        assembled_context=_assembled_from_context_window(second_context),
-    )
-    second_step = graph.step(
-        request=second_request,
-        tool_results=(),
-        session=_session("session-two"),
-    )
-
-    assert first_step.tool_call is not None
-    assert first_step.tool_call.tool_call_id == "call-alpha"
-    assert second_step.tool_call is not None
-    assert second_step.tool_call.tool_call_id == "call-alpha"
-    assert second_step.events != ()
-
-
-def test_provider_graph_discards_queued_tool_call_batch_for_new_run() -> None:
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
-    first_context = RuntimeContextWindow(prompt="read two files")
-    first_session = _session_with_run("shared-session", "run-one")
-    first_request = GraphRunRequest(
-        session=first_session,
-        prompt="read two files",
-        available_tools=_tool_definitions(),
-        context_window=first_context,
-        assembled_context=_assembled_from_context_window(first_context),
-        metadata={"run_id": "run-one"},
-    )
-
-    first_step = graph.step(request=first_request, tool_results=(), session=first_session)
-
-    second_context = RuntimeContextWindow(prompt="unrelated follow-up")
-    second_session = _session_with_run("shared-session", "run-two")
-    second_request = GraphRunRequest(
-        session=second_session,
-        prompt="unrelated follow-up",
-        available_tools=_tool_definitions(),
-        context_window=second_context,
-        assembled_context=_assembled_from_context_window(second_context),
-        metadata={"run_id": "run-two"},
-    )
-    second_step = graph.step(request=second_request, tool_results=(), session=second_session)
-
-    assert first_step.tool_call is not None
-    assert first_step.tool_call.tool_call_id == "call-alpha"
-    assert second_step.tool_call is not None
-    assert second_step.tool_call.tool_call_id == "call-alpha"
-    assert second_step.events != ()
-
-
-def test_provider_graph_discards_queued_tool_call_batch_for_nested_new_run() -> None:
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
-    first_context = RuntimeContextWindow(prompt="read two files")
-    first_session = GraphSessionSnapshot(
-        session_id="shared-session",
-        metadata={"runtime_state": {"run_id": "run-one"}},
-    )
-    first_request = GraphRunRequest(
-        session=first_session,
-        prompt="read two files",
-        available_tools=_tool_definitions(),
-        context_window=first_context,
-        assembled_context=_assembled_from_context_window(first_context),
-    )
-
-    first_step = graph.step(request=first_request, tool_results=(), session=first_session)
-
-    second_context = RuntimeContextWindow(prompt="unrelated follow-up")
-    second_session = GraphSessionSnapshot(
-        session_id="shared-session",
-        metadata={"runtime_state": {"run_id": "run-two"}},
-    )
-    second_request = GraphRunRequest(
-        session=second_session,
-        prompt="unrelated follow-up",
-        available_tools=_tool_definitions(),
-        context_window=second_context,
-        assembled_context=_assembled_from_context_window(second_context),
-    )
-    second_step = graph.step(request=second_request, tool_results=(), session=second_session)
-
-    assert first_step.tool_call is not None
-    assert first_step.tool_call.tool_call_id == "call-alpha"
-    assert second_step.tool_call is not None
-    assert second_step.tool_call.tool_call_id == "call-alpha"
-    assert second_step.events != ()
-
-
-def test_provider_graph_preserves_queued_tool_call_batch_for_approval_resume() -> None:
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
-    first_context = RuntimeContextWindow(prompt="read then write")
-    first_session = _session_with_run("approval-session", "original-run")
-    first_request = GraphRunRequest(
-        session=first_session,
-        prompt="read then write",
-        available_tools=_tool_definitions(),
-        context_window=first_context,
-        assembled_context=_assembled_from_context_window(first_context),
-        metadata={"run_id": "original-run"},
-    )
-
-    first_step = graph.step(request=first_request, tool_results=(), session=first_session)
-
-    resumed_context = RuntimeContextWindow(
-        prompt="read then write",
-        tool_results=(ToolResult(tool_name="read", status="ok", content="alpha"),),
-    )
-    resumed_session = _session_with_run("approval-session", "resume-run")
-    resumed_request = GraphRunRequest(
-        session=resumed_session,
-        prompt="read then write",
-        available_tools=_tool_definitions(),
-        context_window=resumed_context,
-        assembled_context=_assembled_from_context_window(resumed_context),
-        metadata={
-            "run_id": "resume-run",
-            "resume_kind": "approval",
-            "approval_request_id": "approval-1",
-        },
-    )
-    resumed_step = graph.step(
-        request=resumed_request,
-        tool_results=resumed_context.tool_results,
-        session=resumed_session,
-    )
-
-    assert first_step.tool_call is not None
-    assert first_step.tool_call.tool_call_id == "call-alpha"
-    assert resumed_step.tool_call is not None
-    assert resumed_step.tool_call.tool_call_id == "call-beta"
-    assert resumed_step.events == ()
-
-
-def test_provider_graph_passes_runtime_abort_signal_to_provider() -> None:
-    provider = _CapturingTurnProvider()
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    graph = ProviderGraph(provider=provider, provider_model=provider_model)
-    request_context = RuntimeContextWindow(prompt="stop")
-    abort_signal = _AbortSignal(cancelled=True)
-
-    _ = graph.step(
-        request=GraphRunRequest(
-            session=_session(),
-            prompt="stop",
-            available_tools=_tool_definitions(),
-            context_window=request_context,
-            assembled_context=_assembled_from_context_window(request_context),
-            abort_signal=abort_signal,
-        ),
-        tool_results=(),
-        session=_session(),
-    )
-
-    assert provider.requests[0].abort_signal is abort_signal
-    assert provider.requests[0].abort_signal.cancelled is True
-
-
-def test_provider_graph_resets_internal_abort_signal_between_requests() -> None:
-    provider = _CapturingTurnProvider()
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    graph = ProviderGraph(provider=provider, provider_model=provider_model)
-    cancelled_context = RuntimeContextWindow(prompt="cancel")
-    next_context = RuntimeContextWindow(prompt="continue")
-
-    _ = graph.step(
-        request=GraphRunRequest(
-            session=_session(),
-            prompt="cancel",
-            context_window=cancelled_context,
-            assembled_context=_assembled_from_context_window(cancelled_context),
-            metadata={"abort_requested": True},
-        ),
-        tool_results=(),
-        session=_session(),
-    )
-    _ = graph.step(
-        request=GraphRunRequest(
-            session=_session(),
-            prompt="continue",
-            context_window=next_context,
-            assembled_context=_assembled_from_context_window(next_context),
-        ),
-        tool_results=(),
-        session=_session(),
-    )
-
-    assert provider.abort_cancelled_values == [True, False]
-
-
-def test_provider_provider_graph_finalizes_after_tool_result() -> None:
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    graph = ProviderGraph(
-        provider=_StubTurnProvider(name="opencode-zen"),
-        provider_model=provider_model,
-    )
-
-    request_context = RuntimeContextWindow(
         prompt="read sample.txt",
-        tool_results=(
-            ToolResult(
-                tool_name="read",
-                content="alpha\n",
-                status="ok",
-                data={"path": "sample.txt", "content": "alpha\n"},
-            ),
-        ),
-    )
-    step = graph.step(
-        request=GraphRunRequest(
-            session=_session(),
-            prompt="read sample.txt",
-            available_tools=_tool_definitions(),
-            context_window=request_context,
-            assembled_context=_assembled_from_context_window(request_context),
-            run_step=2,
-        ),
-        tool_results=(
-            ToolResult(
-                tool_name="read",
-                content="alpha\n",
-                status="ok",
-                data={"path": "sample.txt", "content": "alpha\n"},
-            ),
-        ),
-        session=_session(),
+        available_tools=(tool.definition,),
+        context_window=context,
+        assembled_context=_assembled_from_context_window(context),
+        run_step=2,
     )
 
-    assert step.tool_call is None
-    assert step.output == "alpha\n"
-    assert step.is_finished is True
-    assert [event.event_type for event in step.events] == [
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
-    assert step.events[0].payload == {"step": 2, "phase": "plan"}
-    assert step.events[1].payload == {
-        "turn": 2,
-        "mode": "provider",
-        "provider": "opencode-zen",
-        "model": "gpt-5.4",
-        "attempt": 0,
-        "streaming": False,
-        "prompt": "read sample.txt",
-    }
-    assert step.events[2].payload == {"step": 3, "phase": "finalize"}
-    assert step.events[3].payload == {
-        "output_preview": "alpha\n",
-        "finish_reason": "unknown",
-        "finish_reason_reported": False,
-    }
+    plan = DeterministicTurnProducer().produce(request, (result,), session=request.session)
+
+    assert plan.output == body
 
 
 def test_provider_provider_graph_prefers_nonstream_tool_call_over_text() -> None:
@@ -755,14 +429,14 @@ def test_provider_provider_graph_prefers_nonstream_tool_call_over_text() -> None
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_MixedNonStreamingTurnProvider(),
         provider_model=provider_model,
     )
 
     request_context = RuntimeContextWindow(prompt="read sample.txt")
-    step = graph.step(
-        request=GraphRunRequest(
+    step = graph.produce(
+        request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
@@ -773,8 +447,8 @@ def test_provider_provider_graph_prefers_nonstream_tool_call_over_text() -> None
         session=_session(),
     )
 
-    assert step.tool_call is not None
-    assert step.tool_call.tool_name == "read"
+    assert step.tool_calls[0] is not None
+    assert step.tool_calls[0].tool_name == "read"
     assert step.output is None
 
 
@@ -783,7 +457,7 @@ def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() ->
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_EmptyNonStreamingTurnProvider(),
         provider_model=provider_model,
     )
@@ -792,8 +466,8 @@ def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() ->
         ProviderExecutionError,
         match="neither output nor tool calls",
     ) as exc_info:
-        _ = graph.step(
-            request=GraphRunRequest(
+        _ = graph.produce(
+            request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
@@ -825,10 +499,10 @@ def test_provider_graph_treats_unrecognized_nonstream_finish_reason_as_completed
                 metadata={"finish_reason_raw": "eos_token"},
             )
 
-    graph = ProviderGraph(provider=_UnknownDoneReasonTurnProvider(), provider_model=provider_model)
+    graph = ProviderTurnProducer(provider=_UnknownDoneReasonTurnProvider(), provider_model=provider_model)
 
-    step = graph.step(
-        request=GraphRunRequest(
+    step = graph.produce(
+        request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
@@ -867,10 +541,10 @@ def test_provider_graph_treats_unrecognized_stream_finish_reason_as_completed() 
                 )
             )
 
-    graph = ProviderGraph(provider=_UnknownDoneReasonStreamTurnProvider(), provider_model=provider_model)
+    graph = ProviderTurnProducer(provider=_UnknownDoneReasonStreamTurnProvider(), provider_model=provider_model)
 
-    step = graph.step(
-        request=GraphRunRequest(
+    step = graph.produce(
+        request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
@@ -918,9 +592,9 @@ def test_provider_graph_treats_omitted_finish_reason_as_completed() -> None:
 
     cases = ((_UnknownNonStreamingTurnProvider(), {}), (_UnknownStreamingTurnProvider(), {"provider_stream": True}))
     for provider, metadata in cases:
-        graph = ProviderGraph(provider=provider, provider_model=provider_model)
-        step = graph.step(
-            request=GraphRunRequest(
+        graph = ProviderTurnProducer(provider=provider, provider_model=provider_model)
+        step = graph.produce(
+            request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
@@ -934,77 +608,6 @@ def test_provider_graph_treats_omitted_finish_reason_as_completed() -> None:
 
         assert step.is_finished is True
         assert step.output == "done"
-
-
-def test_provider_graph_warns_when_a_terminal_turn_reported_no_finish_reason(caplog: pytest.LogCaptureFixture) -> None:
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-
-    class _AbsentFinishReasonTurnProvider:
-        name = "opencode-zen"
-
-        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
-            _ = request
-            return ProviderTurnResult(output="done", done_reason="unknown", finish_reason_reported=False)
-
-    graph = ProviderGraph(provider=_AbsentFinishReasonTurnProvider(), provider_model=provider_model)
-
-    with caplog.at_level(logging.WARNING, logger="voidcode.graph.provider_graph"):
-        step = graph.step(
-            request=GraphRunRequest(
-                session=_session(),
-                prompt="read sample.txt",
-                available_tools=_tool_definitions(),
-                context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
-            ),
-            tool_results=(),
-            session=_session(),
-        )
-
-    assert step.is_finished is True
-    assert "without reporting a finish reason" in caplog.text
-
-
-def test_provider_graph_logs_an_unrecognized_finish_reason_at_debug(caplog: pytest.LogCaptureFixture) -> None:
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-
-    class _UnrecognizedFinishReasonTurnProvider:
-        name = "opencode-zen"
-
-        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
-            _ = request
-            return ProviderTurnResult(
-                output="done",
-                done_reason="unknown",
-                finish_reason_reported=True,
-                metadata={"finish_reason_raw": "eos_token"},
-            )
-
-    graph = ProviderGraph(provider=_UnrecognizedFinishReasonTurnProvider(), provider_model=provider_model)
-
-    with caplog.at_level(logging.DEBUG, logger="voidcode.graph.provider_graph"):
-        step = graph.step(
-            request=GraphRunRequest(
-                session=_session(),
-                prompt="read sample.txt",
-                available_tools=_tool_definitions(),
-                context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
-            ),
-            tool_results=(),
-            session=_session(),
-        )
-
-    assert step.is_finished is True
-    # A reported-but-unrecognized token is diagnosable but not a truncation warning.
-    assert "unrecognized finish reason" in caplog.text
-    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
 
 def test_provider_provider_graph_preserves_stream_error_details() -> None:
@@ -1041,14 +644,14 @@ def test_provider_provider_graph_preserves_stream_error_details() -> None:
                 )
             )
 
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_DetailedStreamErrorTurnProvider(),
         provider_model=provider_model,
     )
 
     with pytest.raises(ProviderExecutionError, match="network interrupted") as exc_info:
-        _ = graph.step(
-            request=GraphRunRequest(
+        _ = graph.produce(
+            request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
@@ -1105,7 +708,7 @@ def test_provider_provider_graph_prefers_parsed_stream_error_kind_over_generic_t
                 )
             )
 
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_ContextLimitStreamErrorTurnProvider(),
         provider_model=provider_model,
     )
@@ -1114,8 +717,8 @@ def test_provider_provider_graph_prefers_parsed_stream_error_kind_over_generic_t
         ProviderExecutionError,
         match="prompt exceeds the context window",
     ) as exc_info:
-        _ = graph.step(
-            request=GraphRunRequest(
+        _ = graph.produce(
+            request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
@@ -1162,14 +765,14 @@ def test_provider_provider_graph_preserves_explicit_stream_error_kind(
                 )
             )
 
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_ExplicitKindStreamErrorTurnProvider(),
         provider_model=provider_model,
     )
 
     with pytest.raises(ProviderExecutionError, match="provider stream failed") as exc_info:
-        _ = graph.step(
-            request=GraphRunRequest(
+        _ = graph.produce(
+            request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
@@ -1184,151 +787,18 @@ def test_provider_provider_graph_preserves_explicit_stream_error_kind(
     assert exc_info.value.kind == error_kind
 
 
-def test_provider_provider_graph_forwards_request_surface_to_provider() -> None:
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    provider = _CapturingTurnProvider()
-    graph = ProviderGraph(provider=provider, provider_model=provider_model)
-
-    # 1) The assembled context reaches the provider verbatim.
-    step = graph.step(
-        request=GraphRunRequest(
-            session=_session(),
-            prompt="read sample.txt",
-            available_tools=_tool_definitions(),
-            context_window=RuntimeContextWindow(prompt="read sample.txt"),
-            assembled_context=RuntimeAssembledContext(
-                prompt="read sample.txt",
-                tool_results=(),
-                continuity_state=None,
-                segments=(
-                    ContextSegment(role="system", content="Runtime-managed skills are active."),
-                    ContextSegment(role="user", content="read sample.txt"),
-                ),
-                metadata={},
-            ),
-        ),
-        tool_results=(),
-        session=_session(),
-    )
-
-    assert step.output == "done"
-    assert provider.requests[0].assembled_context is not None
-    assert provider.requests[0].assembled_context.prompt == "read sample.txt"
-    assert provider.requests[0].assembled_context.segments[0].role == "system"
-    assert provider.requests[0].assembled_context.segments[0].content == ("Runtime-managed skills are active.")
-
-    # 2) The agent preset (including its execution engine) reaches the provider verbatim.
-    step = graph.step(
-        request=GraphRunRequest(
-            session=_session(),
-            prompt="read sample.txt",
-            available_tools=_tool_definitions(),
-            context_window=RuntimeContextWindow(prompt="read sample.txt"),
-            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
-            metadata={
-                "agent_preset": {
-                    "preset": "leader",
-                    "prompt_profile": "leader",
-                    "model": "opencode-zen/gpt-5.4",
-                    "execution_engine": "provider",
-                }
-            },
-        ),
-        tool_results=(),
-        session=_session(),
-    )
-
-    assert step.output == "done"
-    assert provider.requests[1].agent_preset == {
-        "preset": "leader",
-        "prompt_profile": "leader",
-        "model": "opencode-zen/gpt-5.4",
-        "execution_engine": "provider",
-    }
-
-
-def test_provider_provider_graph_forwards_bounded_context_window_to_provider() -> None:
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    provider = _CapturingTurnProvider()
-    graph = ProviderGraph(provider=provider, provider_model=provider_model)
-
-    bounded_context = RuntimeContextWindow(
-        prompt="read sample.txt",
-        tool_results=(
-            ToolResult(
-                tool_name="read",
-                content="new\n",
-                status="ok",
-                data={"path": "sample.txt", "content": "new\n"},
-            ),
-        ),
-        compacted=True,
-        compaction_reason="tool_result_window",
-        original_tool_result_count=3,
-        retained_tool_result_count=1,
-        continuity_state=ContextProjection(
-            summary_text=(
-                "Compacted 2 earlier tool results:\n"
-                '1. read ok path=sample.txt content_preview="old\\n"\n'
-                '2. read ok path=sample.txt content_preview="older\\n"'
-            ),
-            dropped_tool_result_count=2,
-            retained_tool_result_count=1,
-            source="tool_result_window",
-        ),
-    )
-
-    _ = graph.step(
-        request=GraphRunRequest(
-            session=_session(),
-            prompt="read sample.txt",
-            available_tools=_tool_definitions(),
-            context_window=bounded_context,
-            assembled_context=_assembled_from_context_window(bounded_context),
-        ),
-        tool_results=(
-            ToolResult(
-                tool_name="read",
-                content="old\n",
-                status="ok",
-                data={"path": "sample.txt", "content": "old\n"},
-            ),
-        ),
-        session=_session(),
-    )
-
-    assert provider.requests[0].assembled_context is not None
-    assert provider.requests[0].assembled_context.tool_results == bounded_context.tool_results
-    assert provider.requests[0].assembled_context.continuity_state == ContextProjection(
-        summary_text=(
-            "Compacted 2 earlier tool results:\n"
-            '1. read ok path=sample.txt content_preview="old\\n"\n'
-            '2. read ok path=sample.txt content_preview="older\\n"'
-        ),
-        dropped_tool_result_count=2,
-        retained_tool_result_count=1,
-        source="tool_result_window",
-    )
-
-
 def test_provider_provider_graph_streams_ordered_events_and_deterministic_output() -> None:
     provider_model = resolve_provider_model(
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_StreamOutputTurnProvider(),
         provider_model=provider_model,
     )
 
-    step = graph.step(
-        request=GraphRunRequest(
+    step = graph.produce(
+        request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
@@ -1342,9 +812,9 @@ def test_provider_provider_graph_streams_ordered_events_and_deterministic_output
 
     assert step.is_finished is True
     assert step.output == "stream-final"
-    stream_events = [event for event in step.events if event.event_type == "graph.provider_stream"]
+    stream_events = [event for event in step.facts if event.kind == "provider_stream"]
     assert [event.payload["kind"] for event in stream_events] == ["delta", "delta", "done"]
-    model_turn_events = [event for event in step.events if event.event_type == "graph.model_turn"]
+    model_turn_events = [event for event in step.facts if event.kind == "model_turn"]
     assert model_turn_events
     assert model_turn_events[0].payload["streaming"] is True
 
@@ -1354,13 +824,13 @@ def test_provider_graph_preserves_reasoning_stream_metadata() -> None:
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_StreamReasoningMetadataTurnProvider(),
         provider_model=provider_model,
     )
 
-    step = graph.step(
-        request=GraphRunRequest(
+    step = graph.produce(
+        request=TurnRequest(
             session=_session(),
             prompt="think",
             available_tools=_tool_definitions(),
@@ -1372,7 +842,7 @@ def test_provider_graph_preserves_reasoning_stream_metadata() -> None:
         session=_session(),
     )
 
-    stream_events = [event for event in step.events if event.event_type == "graph.provider_stream"]
+    stream_events = [event for event in step.facts if event.kind == "provider_stream"]
     reasoning_event = next(event for event in stream_events if event.payload.get("channel") == "reasoning")
     assert reasoning_event.payload["text"] == "private chain"
     assert reasoning_event.payload["metadata"] == {"source": "fixture"}
@@ -1385,11 +855,11 @@ def test_provider_provider_graph_stream_done_without_text_is_rejected() -> None:
         registry=ModelProviderRegistry.with_defaults(),
     )
     provider = _StreamNoTextDoneTurnProvider()
-    graph = ProviderGraph(provider=provider, provider_model=provider_model)
+    graph = ProviderTurnProducer(provider=provider, provider_model=provider_model)
 
     with pytest.raises(ProviderExecutionError, match="neither output nor tool calls"):
-        _ = graph.step(
-            request=GraphRunRequest(
+        _ = graph.produce(
+            request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
@@ -1417,13 +887,13 @@ def test_provider_provider_graph_parses_streamed_tool_call(provider_class: type[
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=provider_class(),
         provider_model=provider_model,
     )
 
-    step = graph.step(
-        request=GraphRunRequest(
+    step = graph.produce(
+        request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
@@ -1437,9 +907,9 @@ def test_provider_provider_graph_parses_streamed_tool_call(provider_class: type[
 
     assert step.is_finished is False
     assert step.output is None
-    assert step.tool_call is not None
-    assert step.tool_call.tool_name == "read"
-    assert step.tool_call.arguments == {"path": "sample.txt"}
+    assert step.tool_calls[0] is not None
+    assert step.tool_calls[0].tool_name == "read"
+    assert step.tool_calls[0].arguments == {"path": "sample.txt"}
 
 
 def test_provider_provider_graph_prefers_streamed_tool_call_over_text() -> None:
@@ -1447,13 +917,13 @@ def test_provider_provider_graph_prefers_streamed_tool_call_over_text() -> None:
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_MixedStreamingTurnProvider(),
         provider_model=provider_model,
     )
 
-    step = graph.step(
-        request=GraphRunRequest(
+    step = graph.produce(
+        request=TurnRequest(
             session=_session(),
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
@@ -1465,41 +935,9 @@ def test_provider_provider_graph_prefers_streamed_tool_call_over_text() -> None:
         session=_session(),
     )
 
-    assert step.tool_call is not None
-    assert step.tool_call.tool_name == "read"
+    assert step.tool_calls[0] is not None
+    assert step.tool_calls[0].tool_name == "read"
     assert step.output is None
-
-
-def test_provider_provider_graph_returns_streamed_tool_call_batch() -> None:
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    graph = ProviderGraph(provider=_StreamToolBatchTurnProvider(), provider_model=provider_model)
-    request_context = RuntimeContextWindow(prompt="read two files")
-    request = GraphRunRequest(
-        session=_session(),
-        prompt="read two files",
-        available_tools=_tool_definitions(),
-        context_window=request_context,
-        assembled_context=_assembled_from_context_window(request_context),
-        metadata={"provider_stream": True},
-    )
-
-    first_step = graph.step(request=request, tool_results=(), session=_session())
-    second_step = graph.step(
-        request=request,
-        tool_results=(ToolResult(tool_name="read", status="ok", content="alpha"),),
-        session=_session(),
-    )
-
-    assert first_step.is_finished is False
-    assert first_step.tool_call is not None
-    assert first_step.tool_call.tool_call_id == "call-alpha"
-    assert len(first_step.tool_calls) == 2
-    assert second_step.tool_call is not None
-    assert second_step.tool_call.tool_call_id == "call-beta"
-    assert second_step.events == ()
 
 
 def test_provider_provider_graph_rejects_malformed_streamed_tool_payload() -> None:
@@ -1507,14 +945,14 @@ def test_provider_provider_graph_rejects_malformed_streamed_tool_payload() -> No
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_StreamMalformedToolTurnProvider(),
         provider_model=provider_model,
     )
 
     with pytest.raises(ProviderExecutionError, match="malformed tool payload") as exc_info:
-        _ = graph.step(
-            request=GraphRunRequest(
+        _ = graph.produce(
+            request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
@@ -1534,14 +972,14 @@ def test_provider_provider_graph_requires_done_event_for_stream_completion() -> 
         "opencode-zen/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
     )
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_StreamMissingDoneTurnProvider(),
         provider_model=provider_model,
     )
 
     with pytest.raises(ProviderExecutionError, match="without a done event") as exc_info:
-        _ = graph.step(
-            request=GraphRunRequest(
+        _ = graph.produce(
+            request=TurnRequest(
                 session=_session(),
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
@@ -1554,40 +992,6 @@ def test_provider_provider_graph_requires_done_event_for_stream_completion() -> 
         )
 
     assert exc_info.value.kind == "transient_failure"
-
-
-def test_provider_graph_safe_boundary_reflects_pending_tool_calls() -> None:
-    provider_model = resolve_provider_model(
-        "opencode-zen/gpt-5.4",
-        registry=ModelProviderRegistry.with_defaults(),
-    )
-    graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
-    request_context = RuntimeContextWindow(prompt="read two files")
-    request = GraphRunRequest(
-        session=_session(),
-        prompt="read two files",
-        available_tools=_tool_definitions(),
-        context_window=request_context,
-        assembled_context=_assembled_from_context_window(request_context),
-    )
-
-    first_step = graph.step(request=request, tool_results=(), session=_session())
-
-    assert first_step.tool_call is not None
-    assert first_step.tool_call.tool_call_id == "call-alpha"
-    assert graph.pending_tool_call_count == 1
-    assert graph.is_at_safe_boundary() is False
-
-    second_step = graph.step(
-        request=request,
-        tool_results=(ToolResult(tool_name="read", status="ok", content="alpha"),),
-        session=_session(),
-    )
-
-    assert second_step.tool_call is not None
-    assert second_step.tool_call.tool_call_id == "call-beta"
-    assert graph.pending_tool_call_count == 0
-    assert graph.is_at_safe_boundary() is True
 
 
 def test_provider_graph_maps_tool_call_lifecycle_and_builds_final_call() -> None:
@@ -1634,13 +1038,13 @@ def test_provider_graph_maps_tool_call_lifecycle_and_builds_final_call() -> None
                 )
             )
 
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_LifecycleProvider(),
         provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
     )
     context = RuntimeContextWindow(prompt="read sample.txt")
-    step = graph.step(
-        GraphRunRequest(
+    step = graph.produce(
+        TurnRequest(
             session=_session(),
             prompt=context.prompt,
             available_tools=_tool_definitions(),
@@ -1651,12 +1055,12 @@ def test_provider_graph_maps_tool_call_lifecycle_and_builds_final_call() -> None
         (),
         session=_session(),
     )
-    assert step.tool_call is not None and step.tool_call.arguments == {"path": "sample.txt"}
-    assert [event.event_type for event in step.events if event.event_type.startswith("graph.tool_call_")] == [
-        "graph.tool_call_start",
-        "graph.tool_call_delta",
-        "graph.tool_call_delta",
-        "graph.tool_call_end",
+    assert step.tool_calls[0] is not None and step.tool_calls[0].arguments == {"path": "sample.txt"}
+    assert [event.kind for event in step.facts if event.kind.startswith("tool_call_")] == [
+        "tool_call_start",
+        "tool_call_delta",
+        "tool_call_delta",
+        "tool_call_end",
     ]
 
 
@@ -1690,14 +1094,14 @@ def test_provider_graph_rejects_incomplete_lifecycle_call() -> None:
                 )
             )
 
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_IncompleteProvider(),
         provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
     )
     context = RuntimeContextWindow(prompt="read sample.txt")
     with pytest.raises(ProviderExecutionError, match="neither output nor tool calls"):
-        graph.step(
-            GraphRunRequest(
+        graph.produce(
+            TurnRequest(
                 session=_session(),
                 prompt=context.prompt,
                 available_tools=_tool_definitions(),
@@ -1760,13 +1164,13 @@ def test_provider_graph_merges_explicit_and_complete_streamed_tool_calls() -> No
                 )
             )
 
-    graph = ProviderGraph(
+    graph = ProviderTurnProducer(
         provider=_MixedToolCallProvider(),
         provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
     )
     context = RuntimeContextWindow(prompt="read and write")
-    step = graph.step(
-        GraphRunRequest(
+    step = graph.produce(
+        TurnRequest(
             session=_session(),
             prompt=context.prompt,
             available_tools=_tool_definitions(),
@@ -1780,3 +1184,49 @@ def test_provider_graph_merges_explicit_and_complete_streamed_tool_calls() -> No
 
     assert [call.tool_call_id for call in step.tool_calls] == ["complete", "explicit"]
     assert [call.tool_name for call in step.tool_calls] == ["read", "write"]
+
+
+def test_turn_engine_restores_completed_seed_result_without_replaying_it(tmp_path: Path) -> None:
+    class _WorkspaceReadTool:
+        definition = ReadTool.definition
+
+        def __init__(self, workspace: Path) -> None:
+            self.workspace = workspace
+            self.delegate = ReadTool()
+            self.call_ids: list[str | None] = []
+
+        def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+            self.call_ids.append(call.tool_call_id)
+            return self.delegate.invoke(call, context=replace(context, workspace=self.workspace))
+
+    body = "real seeded tool output"
+    _ = (tmp_path / "sample.txt").write_text(body, encoding="utf-8")
+    tool = _WorkspaceReadTool(tmp_path)
+    call = ToolCall("read", {"path": "sample.txt"}, "call-authenticated-read")
+    actual_result = tool.invoke(
+        call,
+        context=ToolContext(session_id="seed-session", invocation_id=call.tool_call_id),
+    )
+    seed_result = replace(
+        actual_result,
+        data={**actual_result.data, "tool_call_id": call.tool_call_id, "arguments": dict(call.arguments)},
+    )
+    invocations_before = tuple(tool.call_ids)
+
+    host = MemoryHost(tools=(tool,))
+    engine = TurnEngine(DeterministicTurnProducer()).run(
+        host.request("read sample.txt"),
+        host=host,
+        seed=CallSeed((call,), completed_results=(seed_result,)),
+    )
+    while True:
+        try:
+            _ = next(engine)
+        except StopIteration as completed:
+            result = completed.value
+            break
+
+    assert invocations_before == ("call-authenticated-read",)
+    assert tuple(tool.call_ids) == invocations_before
+    assert result.status == "completed"
+    assert result.output == body

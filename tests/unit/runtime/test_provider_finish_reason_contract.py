@@ -21,8 +21,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
-from voidcode.graph.contracts import GraphRunRequest
-from voidcode.graph.provider_graph import ProviderGraph
+from voidcode.core.provider_turns import ProviderTurnProducer
+from voidcode.core.turns import TurnRequest
 from voidcode.provider.config import ProviderEndpointConfig, ProviderTransientRetryConfig
 from voidcode.provider.protocol import (
     ProviderDoneReason,
@@ -58,7 +58,7 @@ def _create_session_row(store: SqliteSessionStore, *, workspace: Path, session_i
     )
 
 
-def _graph_request(runtime: VoidCodeRuntime, *, session_id: str) -> tuple[SessionState, GraphRunRequest, ToolRegistry]:
+def _turn_request(runtime: VoidCodeRuntime, *, session_id: str) -> tuple[SessionState, TurnRequest, ToolRegistry]:
     effective_config = runtime.effective_runtime_config()
     runtime_config_metadata = runtime._runtime_config_metadata()
     runtime_policy = materialize_runtime_policy_snapshot(
@@ -76,7 +76,7 @@ def _graph_request(runtime: VoidCodeRuntime, *, session_id: str) -> tuple[Sessio
         metadata={"runtime_config": runtime_config_metadata, "runtime_policy": runtime_policy},
     )
     tool_registry = runtime.tool_registry_for_effective_config(effective_config)
-    request = GraphRunRequest(
+    request = TurnRequest(
         session=session,
         prompt="hi",
         available_tools=tool_registry.definitions(),
@@ -156,14 +156,14 @@ class _RestartStreamingProvider:
         yield ProviderStreamEvent(kind="done", done_reason=self._finish_reason)
 
 
-def _graph_for(provider: TurnProvider) -> ProviderGraph:
-    return ProviderGraph(
+def _provider_turn_producer_for(provider: TurnProvider) -> ProviderTurnProducer:
+    return ProviderTurnProducer(
         provider=provider,
         provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
     )
 
 
-def _run_graph_loop(
+def _run_turn_engine(
     *,
     tmp_path: Path,
     provider: TurnProvider,
@@ -172,14 +172,14 @@ def _run_graph_loop(
     store = SqliteSessionStore()
     _create_session_row(store, workspace=tmp_path, session_id=session_id)
     runtime = VoidCodeRuntime(workspace=tmp_path, session_store=store)
-    session, request, tool_registry = _graph_request(runtime, session_id=session_id)
+    session, request, tool_registry = _turn_request(runtime, session_id=session_id)
     chunks = list(
-        runtime._run_loop_coordinator.execute_graph_loop(
-            graph=_graph_for(provider),
+        runtime._run_loop_coordinator.execute_turn_engine(
+            producer=_provider_turn_producer_for(provider),
             tool_registry=tool_registry,
             session=session,
             sequence=0,
-            graph_request=request,
+            turn_request=request,
             tool_results=[],
         )
     )
@@ -188,7 +188,7 @@ def _run_graph_loop(
 
 def test_unrecognized_finish_reason_completes_without_a_restart(tmp_path: Path) -> None:
     provider = _UnknownThenStopStreamingProvider()
-    chunks, store = _run_graph_loop(tmp_path=tmp_path, provider=provider, session_id="session-1")
+    chunks, store = _run_turn_engine(tmp_path=tmp_path, provider=provider, session_id="session-1")
 
     # One provider response, one assistant message: the text reaches the client
     # once and the round completes instead of being restarted as a failure.
@@ -203,7 +203,7 @@ def test_unrecognized_finish_reason_completes_without_a_restart(tmp_path: Path) 
 def test_transient_failure_after_streamed_text_retries_and_announces_the_discard(tmp_path: Path) -> None:
     provider = _RestartStreamingProvider(fail_on_attempt=1)
 
-    chunks, store = _run_graph_loop(tmp_path=tmp_path, provider=provider, session_id="session-2")
+    chunks, store = _run_turn_engine(tmp_path=tmp_path, provider=provider, session_id="session-2")
 
     # The runtime keeps the recovery; the retried attempt is the one that lands.
     assert _streamed_text(chunks) == ["attempt 1", "attempt 2"]
@@ -235,7 +235,7 @@ def test_transient_failure_before_any_streamed_text_has_no_discard_field(tmp_pat
             yield ProviderStreamEvent(kind="done", done_reason="stop")
 
     failing = _FailsBeforeStreamingProvider(fail_on_attempt=1)
-    chunks, _store = _run_graph_loop(tmp_path=tmp_path, provider=failing, session_id="session-3")
+    chunks, _store = _run_turn_engine(tmp_path=tmp_path, provider=failing, session_id="session-3")
 
     retry_payloads = _events_of_type(chunks, "runtime.provider_transient_retry")
     assert len(retry_payloads) == 1
@@ -244,7 +244,7 @@ def test_transient_failure_before_any_streamed_text_has_no_discard_field(tmp_pat
 
 def test_absent_finish_reason_is_recorded_in_the_persisted_transcript(tmp_path: Path) -> None:
     provider = _RestartStreamingProvider(fail_on_attempt=None, finish_reason="unknown")
-    chunks, store = _run_graph_loop(tmp_path=tmp_path, provider=provider, session_id="session-4")
+    chunks, store = _run_turn_engine(tmp_path=tmp_path, provider=provider, session_id="session-4")
 
     assert _streamed_text(chunks) == ["attempt 1"]
     assert _response_ready_payloads(store, workspace=tmp_path, session_id="session-4") == [
@@ -254,7 +254,7 @@ def test_absent_finish_reason_is_recorded_in_the_persisted_transcript(tmp_path: 
 
 def test_reported_finish_reason_is_recorded_as_reported(tmp_path: Path) -> None:
     provider = _RestartStreamingProvider(fail_on_attempt=None, finish_reason="stop")
-    _chunks, store = _run_graph_loop(tmp_path=tmp_path, provider=provider, session_id="session-5")
+    _chunks, store = _run_turn_engine(tmp_path=tmp_path, provider=provider, session_id="session-5")
 
     assert _response_ready_payloads(store, workspace=tmp_path, session_id="session-5") == [
         {"output_preview": "attempt 1", "finish_reason": "stop", "finish_reason_reported": True}

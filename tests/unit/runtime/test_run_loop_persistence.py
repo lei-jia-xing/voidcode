@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from voidcode.graph.contracts import GraphEvent, GraphRunRequest
+from voidcode.core.turns import TurnFact, TurnPlan, TurnRequest
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.policy import materialize_runtime_policy_snapshot
 from voidcode.runtime.resume import RuntimeResumeCoordinator
@@ -13,16 +12,6 @@ from voidcode.runtime.service import RuntimeStreamChunk, SessionState, ToolRegis
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.tools.contracts import ToolCall, ToolDiagnostics, ToolResult
-
-
-@dataclass(frozen=True, slots=True)
-class _GraphStep:
-    events: tuple[GraphEvent, ...] = ()
-    tool_call: ToolCall | None = None
-    output: str | None = None
-    is_finished: bool = False
-    reasoning: str | None = None
-    provider_usage: object | None = None
 
 
 def _create_session_row(store: SqliteSessionStore, *, workspace: Path, session_id: str) -> None:
@@ -45,7 +34,7 @@ def _loaded_events(store: SqliteSessionStore, *, workspace: Path, session_id: st
     return store.load_session(workspace=workspace, session_id=session_id).events
 
 
-def _graph_request(runtime: VoidCodeRuntime, *, session_id: str, provider_stream: bool = False) -> tuple[SessionState, GraphRunRequest, ToolRegistry]:
+def _turn_request(runtime: VoidCodeRuntime, *, session_id: str, provider_stream: bool = False) -> tuple[SessionState, TurnRequest, ToolRegistry]:
     effective_config = runtime.effective_runtime_config()
     runtime_config_metadata = runtime._runtime_config_metadata()
     runtime_policy = materialize_runtime_policy_snapshot(
@@ -72,7 +61,7 @@ def _graph_request(runtime: VoidCodeRuntime, *, session_id: str, provider_stream
         tool_results=(),
         session_metadata=session.metadata,
     )
-    request = GraphRunRequest(
+    request = TurnRequest(
         session=session,
         prompt=prompt,
         available_tools=tool_registry.definitions(),
@@ -206,53 +195,39 @@ def test_serialized_tool_results_roundtrip_through_checkpoint_reader() -> None:
     assert rehydrated[1].diagnostics.kind == "tool_timeout"
 
 
-def test_execute_graph_loop_streaming_dedupes_raw_provider_stream(tmp_path: Path) -> None:
+def test_execute_turn_engine_streaming_dedupes_raw_provider_stream(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     _create_session_row(store, workspace=tmp_path, session_id="session-1")
     runtime = _runtime_with_store(tmp_path, store)
 
     class _StreamingGraph:
-        def step(self, request: GraphRunRequest, tool_results: tuple, *, session: SessionState) -> _GraphStep:
+        def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> TurnPlan:
             _ = request, tool_results, session
             raise AssertionError("streaming branch must not call step")
 
-        def stream_step(self, request: GraphRunRequest, tool_results: tuple, *, session: SessionState):
+        def stream_produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState):
             _ = request, tool_results, session
-            yield GraphEvent(
-                event_type="graph.provider_stream",
-                source="graph",
-                payload={"kind": "delta", "channel": "text", "text": "hello"},
+            yield TurnFact(kind="provider_stream", payload={"kind": "delta", "channel": "text", "text": "hello"})
+            yield TurnFact(kind="tool_call_start", payload={"kind": "tool_call_start", "tool_call_id": "call-1", "tool_name": "read", "ordinal": 0})
+            yield TurnFact(kind="tool_call_delta", payload={"kind": "tool_call_delta", "tool_call_id": "call-1", "arguments_delta": '{"path":'})
+            yield TurnFact(
+                kind="tool_call_end", payload={"kind": "tool_call_end", "tool_call_id": "call-1", "parsed_arguments": {"path": "sample.txt"}}
             )
-            yield GraphEvent(
-                event_type="graph.tool_call_start",
-                source="graph",
-                payload={"kind": "tool_call_start", "tool_call_id": "call-1", "tool_name": "read", "ordinal": 0},
-            )
-            yield GraphEvent(
-                event_type="graph.tool_call_delta",
-                source="graph",
-                payload={"kind": "tool_call_delta", "tool_call_id": "call-1", "arguments_delta": '{"path":'},
-            )
-            yield GraphEvent(
-                event_type="graph.tool_call_end",
-                source="graph",
-                payload={"kind": "tool_call_end", "tool_call_id": "call-1", "parsed_arguments": {"path": "sample.txt"}},
-            )
-            yield _GraphStep(
-                events=(GraphEvent(event_type="graph.response_ready", source="graph", payload={"output_preview": "done"}),),
+            yield TurnPlan(
+                facts=(TurnFact(kind="response_ready", payload={"output_preview": "done"}),),
                 output="done",
                 is_finished=True,
             )
 
-    session, request, tool_registry = _graph_request(runtime, session_id="session-1", provider_stream=True)
+    session, request, tool_registry = _turn_request(runtime, session_id="session-1", provider_stream=True)
 
     chunks = list(
-        runtime._run_loop_coordinator.execute_graph_loop(
-            graph=_StreamingGraph(),
+        runtime._run_loop_coordinator.execute_turn_engine(
+            producer=_StreamingGraph(),
             tool_registry=tool_registry,
             session=session,
             sequence=0,
-            graph_request=request,
+            turn_request=request,
             tool_results=[],
         )
     )
@@ -277,43 +252,35 @@ def test_execute_graph_loop_streaming_dedupes_raw_provider_stream(tmp_path: Path
     assert response_ready_chunk.event is not None and response_ready_chunk.event.sequence == 1
 
 
-def test_execute_graph_loop_streaming_persists_aggregated_reasoning(tmp_path: Path) -> None:
+def test_execute_turn_engine_streaming_persists_aggregated_reasoning(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     _create_session_row(store, workspace=tmp_path, session_id="session-1")
     runtime = _runtime_with_store(tmp_path, store)
 
     class _StreamingReasoningGraph:
-        def step(self, request: GraphRunRequest, tool_results: tuple, *, session: SessionState) -> _GraphStep:
+        def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> TurnPlan:
             _ = request, tool_results, session
             raise AssertionError("streaming branch must not call step")
 
-        def stream_step(self, request: GraphRunRequest, tool_results: tuple, *, session: SessionState):
+        def stream_produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState):
             _ = request, tool_results, session
-            yield GraphEvent(
-                event_type="graph.provider_stream",
-                source="graph",
-                payload={"kind": "delta", "channel": "reasoning", "text": "first thought "},
-            )
-            yield GraphEvent(
-                event_type="graph.provider_stream",
-                source="graph",
-                payload={"kind": "delta", "channel": "reasoning", "text": "second thought"},
-            )
-            yield _GraphStep(
-                events=(GraphEvent(event_type="graph.response_ready", source="graph", payload={"output_preview": "done"}),),
+            yield TurnFact(kind="provider_stream", payload={"kind": "delta", "channel": "reasoning", "text": "first thought "})
+            yield TurnFact(kind="provider_stream", payload={"kind": "delta", "channel": "reasoning", "text": "second thought"})
+            yield TurnPlan(
+                facts=(TurnFact(kind="response_ready", payload={"output_preview": "done"}),),
                 output="done",
                 is_finished=True,
             )
 
-    session, request, tool_registry = _graph_request(runtime, session_id="session-1", provider_stream=True)
+    session, request, tool_registry = _turn_request(runtime, session_id="session-1", provider_stream=True)
 
     chunks = list(
-        runtime._run_loop_coordinator.execute_graph_loop(
-            graph=_StreamingReasoningGraph(),
+        runtime._run_loop_coordinator.execute_turn_engine(
+            producer=_StreamingReasoningGraph(),
             tool_registry=tool_registry,
             session=session,
             sequence=0,
-            graph_request=request,
+            turn_request=request,
             tool_results=[],
         )
     )
@@ -339,34 +306,34 @@ def test_execute_graph_loop_streaming_persists_aggregated_reasoning(tmp_path: Pa
     assert reasoning.payload["source"] == "provider_stream"
 
 
-def test_execute_graph_loop_non_streaming_persists_step_reasoning(tmp_path: Path) -> None:
+def test_execute_turn_engine_non_streaming_persists_step_reasoning(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     _create_session_row(store, workspace=tmp_path, session_id="session-1")
     runtime = _runtime_with_store(tmp_path, store)
 
     class _NonStreamingReasoningGraph:
-        def step(self, request: GraphRunRequest, tool_results: tuple, *, session: SessionState) -> _GraphStep:
+        def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> TurnPlan:
             _ = request, tool_results, session
-            return _GraphStep(
-                events=(GraphEvent(event_type="graph.response_ready", source="graph", payload={"output_preview": "done"}),),
+            return TurnPlan(
+                facts=(TurnFact(kind="response_ready", payload={"output_preview": "done"}),),
                 output="done",
                 is_finished=True,
                 reasoning="background child thought",
             )
 
-        def stream_step(self, request: GraphRunRequest, tool_results: tuple, *, session: SessionState):
+        def stream_produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState):
             _ = request, tool_results, session
             raise AssertionError("non-streaming branch must not call stream_step")
 
-    session, request, tool_registry = _graph_request(runtime, session_id="session-1")
+    session, request, tool_registry = _turn_request(runtime, session_id="session-1")
 
     chunks = list(
-        runtime._run_loop_coordinator.execute_graph_loop(
-            graph=_NonStreamingReasoningGraph(),
+        runtime._run_loop_coordinator.execute_turn_engine(
+            producer=_NonStreamingReasoningGraph(),
             tool_registry=tool_registry,
             session=session,
             sequence=0,
-            graph_request=request,
+            turn_request=request,
             tool_results=[],
         )
     )
@@ -390,7 +357,7 @@ def test_execute_graph_loop_non_streaming_persists_step_reasoning(tmp_path: Path
     assert diagnostic.payload["captured_text_char_count"] == len("background child thought")
 
 
-def test_execute_graph_loop_captures_safe_boundary_checkpoint(tmp_path: Path) -> None:
+def test_execute_turn_engine_captures_safe_boundary_checkpoint(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     _create_session_row(store, workspace=tmp_path, session_id="session-1")
     runtime = _runtime_with_store(tmp_path, store)
@@ -398,26 +365,26 @@ def test_execute_graph_loop_captures_safe_boundary_checkpoint(tmp_path: Path) ->
     _ = sample_file.write_text("alpha\n", encoding="utf-8")
 
     class _ToolThenFinalGraph:
-        def step(self, request: GraphRunRequest, tool_results: tuple, *, session: SessionState) -> _GraphStep:
+        def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> TurnPlan:
             _ = request, session
             if not tool_results:
-                return _GraphStep(
-                    tool_call=ToolCall(tool_name="read", arguments={"path": str(sample_file)}),
+                return TurnPlan(
+                    tool_calls=(ToolCall(tool_name="read", arguments={"path": str(sample_file)}),),
                 )
-            return _GraphStep(output="done", is_finished=True)
+            return TurnPlan(output="done", is_finished=True)
 
         def is_at_safe_boundary(self) -> bool:
             return True
 
-    session, request, tool_registry = _graph_request(runtime, session_id="session-1")
+    session, request, tool_registry = _turn_request(runtime, session_id="session-1")
 
     chunks = list(
-        runtime._run_loop_coordinator.execute_graph_loop(
-            graph=_ToolThenFinalGraph(),
+        runtime._run_loop_coordinator.execute_turn_engine(
+            producer=_ToolThenFinalGraph(),
             tool_registry=tool_registry,
             session=session,
             sequence=0,
-            graph_request=request,
+            turn_request=request,
             tool_results=[],
         )
     )

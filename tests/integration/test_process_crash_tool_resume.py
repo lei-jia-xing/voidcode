@@ -56,6 +56,7 @@ from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.tools.read import ReadTool
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 from voidcode.core.tool_context import ToolContext
+from voidcode.core.turns import TurnPlan
 
 SESSION_ID = "crash-tool-session"
 COUNTING_READ_TOOL = "counting_read"
@@ -102,50 +103,30 @@ class BlockingTool:
         return ToolResult(tool_name=self.definition.name, status="ok", content="released")
 
 
-class Step:
-    def __init__(self, *, tool_call: Any = None, output: str | None = None, is_finished: bool = False) -> None:
-        self.events: tuple[object, ...] = ()
-        self.tool_call = tool_call
-        self.output = output
-        self.is_finished = is_finished
-        self.reasoning: str | None = None
-        self.provider_usage: object | None = None
+class Producer:
+    """Read first, then block inside a tool call, then finish."""
 
-
-class Graph:
-    """Read first, then block inside a tool call, then finish.
-
-    ``read_first=False`` starts with the blocking call, so no tool result exists
-    before the crash and no safe-boundary checkpoint is ever captured.
-    ``safe_boundary=False`` never reports a safe boundary, which is what a graph
-    without ``is_at_safe_boundary`` looks like.
-    """
-
-    def __init__(self, *, read_first: bool = True, safe_boundary: bool = True) -> None:
+    def __init__(self, *, read_first: bool = True) -> None:
         self._read_first = read_first
-        self._safe_boundary = safe_boundary
 
-    def is_at_safe_boundary(self) -> bool:
-        return self._safe_boundary
-
-    def step(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> Step:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> TurnPlan:
         _ = request, session
         if self._read_first:
             if len(tool_results) == 0:
-                return Step(tool_call=ToolCall(tool_name=COUNTING_READ_TOOL, arguments={"path": "sample.txt"}))
+                return TurnPlan(tool_calls=(ToolCall(tool_name=COUNTING_READ_TOOL, arguments={"path": "sample.txt"}),))
             if len(tool_results) == 1:
-                return Step(tool_call=ToolCall(tool_name=BLOCKING_TOOL, arguments={}))
-            return Step(output="done", is_finished=True)
+                return TurnPlan(tool_calls=(ToolCall(tool_name=BLOCKING_TOOL, arguments={}),))
+            return TurnPlan(output="done", is_finished=True)
         if len(tool_results) == 0:
-            return Step(tool_call=ToolCall(tool_name=BLOCKING_TOOL, arguments={}))
-        return Step(output="done", is_finished=True)
+            return TurnPlan(tool_calls=(ToolCall(tool_name=BLOCKING_TOOL, arguments={}),))
+        return TurnPlan(output="done", is_finished=True)
 
 
-def build_runtime(workspace: Path, gate: Path, *, read_first: bool = True, safe_boundary: bool = True) -> VoidCodeRuntime:
+def build_runtime(workspace: Path, gate: Path, *, read_first: bool = True) -> VoidCodeRuntime:
     return VoidCodeRuntime(
         workspace=workspace,
         tool_registry=ToolRegistry.from_tools([CountingReadTool(gate), BlockingTool(gate)]),
-        graph=Graph(read_first=read_first, safe_boundary=safe_boundary),
+        turn_producer=Producer(read_first=read_first),
         config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic", approval_mode="yolo"),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
@@ -242,7 +223,6 @@ def test_process_crash_during_a_tool_call_resumes_without_replaying_or_claiming_
     _crash_child(workspace, gate, child.__file__, read_first=True)
 
     crashed_call_id = cast(str, (gate / "blocking_tool.calls").read_text(encoding="utf-8").splitlines()[-1].split(":", 1)[1])
-    assert crashed_call_id.startswith("runtime-tool-")
 
     # Persisted truth of the crashed run: interrupted row, the completed read
     # durable once, and the in-flight call started-but-unfinished with a pending

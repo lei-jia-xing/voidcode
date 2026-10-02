@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from ..core.transcript import ContextSegment, ToolResultView
-from ..graph.contracts import GraphRunRequest, RuntimeGraph
+from ..core.turns import TurnProducer, TurnRequest
 from ..provider.protocol import ProviderAbortSignal
 from ..skills.registry import SkillRegistry
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
@@ -60,7 +60,7 @@ class PermissionOutcome:
 
 
 class RuntimeSurface(Protocol):
-    # --- config truth (reads _config / registries / graph-override state) ---
+    # --- config truth (reads _config / registries / turn-producer override state) ---
     def effective_runtime_config_from_metadata(self, metadata: dict[str, object] | None) -> EffectiveRuntimeConfig: ...
 
     def runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig: ...
@@ -180,14 +180,14 @@ class RuntimeSurface(Protocol):
         effective_config: EffectiveRuntimeConfig,
     ) -> tuple[ToolDefinition, ...]: ...
 
-    # --- graph selection (reads _graph_override / _graph_cache) ---
-    def graph_for_session_metadata(self, metadata: dict[str, object] | None) -> RuntimeGraph: ...
+    # --- turn-producer selection (reads _turn_producer_override / _turn_producer_cache) ---
+    def turn_producer_for_session_metadata(self, metadata: dict[str, object] | None) -> TurnProducer: ...
 
     # --- provider context policy decision (runtime-owned config/tool composition) ---
-    def provider_context_policy_decision_for_graph_request(
+    def provider_context_policy_decision_for_turn_request(
         self,
         *,
-        graph_request: GraphRunRequest,
+        turn_request: TurnRequest,
         effective_config: EffectiveRuntimeConfig,
     ) -> RuntimeProviderContextPolicyDecision | None: ...
 

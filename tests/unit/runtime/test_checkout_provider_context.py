@@ -10,33 +10,21 @@ in the table and checking back out to B succeeds.
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
 from pathlib import Path
 
-from voidcode.graph.contracts import GraphEvent, GraphRunRequest, GraphSession
+from voidcode.core.turns import TurnPlan, TurnRequest, TurnSession
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import ToolCall
 
 _SESSION_ID = "checkout-context"
 
 
-@dataclass(slots=True)
-class _Step:
-    tool_call: ToolCall | None = None
-    output: str | None = None
-    events: tuple[GraphEvent, ...] = ()
-    is_finished: bool = False
-    reasoning: str | None = None
-    provider_usage: object | None = None
+class _FinishingTurnProducer:
+    """A producer that finishes on the first turn, only used to persist a real metadata snapshot."""
 
-
-class _FinishingGraph:
-    """A graph that finishes on the first step, only used to persist a real metadata snapshot."""
-
-    def step(self, request: GraphRunRequest, tool_results: tuple[object, ...], *, session: GraphSession) -> _Step:
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> TurnPlan:
         _ = request, tool_results, session
-        return _Step(output="done", is_finished=True)
+        return TurnPlan(output="done", is_finished=True)
 
 
 def _seed_session(store: SqliteSessionStore, *, workspace: Path) -> None:
@@ -167,7 +155,7 @@ def _debug_provider_tool_contents(runtime: VoidCodeRuntime, *, workspace: Path) 
 
 def test_debug_provider_context_follows_the_checked_out_leaf(tmp_path: Path) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "checkout-debug-context.sqlite3")
-    runtime = VoidCodeRuntime(workspace=tmp_path, session_store=store, graph=_FinishingGraph())
+    runtime = VoidCodeRuntime(workspace=tmp_path, session_store=store, turn_producer=_FinishingTurnProducer())
 
     # Harvest the full metadata snapshot a real run persists (runtime_config +
     # agent_capability_snapshot) so the debug read passes its boundary checks.

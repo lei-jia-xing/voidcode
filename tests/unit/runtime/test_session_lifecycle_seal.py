@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import importlib
 import threading
-from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -26,7 +25,7 @@ import pytest
 
 from voidcode.core.questions import PendingQuestionOption, PendingQuestionPrompt
 from voidcode.core.tool_context import ToolContext
-from voidcode.graph.contracts import GraphEvent, GraphRunRequest, GraphSession
+from voidcode.core.turns import TurnFact, TurnPlan, TurnRequest, TurnSession
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -68,16 +67,6 @@ def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config_module, "_default_runtime_mcp_servers", lambda: {})
 
 
-@dataclass(slots=True)
-class _StubStep:
-    tool_call: ToolCall | None = None
-    output: str | None = None
-    is_finished: bool = False
-    reasoning: str | None = None
-    provider_usage: object | None = None
-    events: tuple[object, ...] = ()
-
-
 def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session") -> RuntimeRequest:
     return RuntimeRequest(
         prompt=prompt,
@@ -96,17 +85,17 @@ def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session"
 class _SuccessGraph:
     """Top-level runs finish immediately; delegated children call yield."""
 
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
-    ) -> _StubStep:
+        session: TurnSession,
+    ) -> TurnPlan:
         _ = tool_results
         if session.metadata.get("parent_session_id") is not None:
-            return _StubStep(tool_call=ToolCall(tool_name="yield", arguments={"summary": request.prompt}))
-        return _StubStep(output=request.prompt, is_finished=True)
+            return TurnPlan(tool_calls=(ToolCall(tool_name="yield", arguments={"summary": request.prompt}),))
+        return TurnPlan(output=request.prompt, is_finished=True)
 
 
 def _seed_child_session_and_task(
@@ -379,22 +368,22 @@ class _BlockingThenResultTool:
 
 
 class _ToolThenNothingGraph:
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
         session: SessionState,
-    ) -> _StubStep:
+    ) -> TurnPlan:
         _ = request, tool_results, session
-        return _StubStep(tool_call=ToolCall(tool_name="write", arguments={}))
+        return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={}),))
 
 
 def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Path) -> None:
     tool = _BlockingThenResultTool()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ToolThenNothingGraph(),
+        turn_producer=_ToolThenNothingGraph(),
         tool_registry=ToolRegistry.from_tools([tool]),
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
         permission_policy=PermissionPolicy(mode="yolo"),
@@ -473,32 +462,24 @@ def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> No
             self.deltas_seen = threading.Event()
             self.release = threading.Event()
 
-        def stream_step(self, request: GraphRunRequest, tool_results: tuple, *, session: GraphSession):
+        def stream_produce(self, request: TurnRequest, tool_results: tuple, *, session: TurnSession):
             _ = request, tool_results
             for index in range(3):
-                yield GraphEvent(
-                    event_type="graph.provider_stream",
-                    source="graph",
-                    payload={"kind": "delta", "channel": "text", "text": f"delta-{index}"},
-                )
+                yield TurnFact(kind="provider_stream", payload={"kind": "delta", "channel": "text", "text": f"delta-{index}"})
             self.deltas_seen.set()
             if not self.release.wait(timeout=5.0):
                 raise RuntimeError("streaming graph was not released")
             for index in range(3, 10):
-                yield GraphEvent(
-                    event_type="graph.provider_stream",
-                    source="graph",
-                    payload={"kind": "delta", "channel": "text", "text": f"delta-{index}"},
-                )
-            yield _StubStep(output="done", is_finished=True)
+                yield TurnFact(kind="provider_stream", payload={"kind": "delta", "channel": "text", "text": f"delta-{index}"})
+            yield TurnPlan(output="done", is_finished=True)
 
-        def step(self, request: GraphRunRequest, tool_results: tuple, *, session: GraphSession) -> _StubStep:
+        def produce(self, request: TurnRequest, tool_results: tuple, *, session: TurnSession) -> TurnPlan:
             raise AssertionError("streaming graph must not call step")
 
     graph = _StreamingGraph()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=graph,  # type: ignore[arg-type]
+        turn_producer=graph,  # type: ignore[arg-type]
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     streamed_deltas: list[str] = []
@@ -538,22 +519,24 @@ def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> No
 
 
 class _ApprovalThenDoneGraph:
-    def step(
+    def produce(
         self,
-        request: GraphRunRequest,
+        request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
         session: SessionState,
-    ) -> _StubStep:
+    ) -> TurnPlan:
         _ = session
         if not tool_results and "pre-seal steer" not in request.prompt:
-            return _StubStep(
-                tool_call=ToolCall(
-                    tool_name="write",
-                    arguments={"path": "alpha.txt", "content": "1"},
+            return TurnPlan(
+                tool_calls=(
+                    ToolCall(
+                        tool_name="write",
+                        arguments={"path": "alpha.txt", "content": "1"},
+                    ),
                 )
             )
-        return _StubStep(output="done", is_finished=True)
+        return TurnPlan(output="done", is_finished=True)
 
 
 def _waiting_approval_request_id(response: RuntimeResponse) -> str:
@@ -567,7 +550,7 @@ def _waiting_approval_request_id(response: RuntimeResponse) -> str:
 def test_steer_landing_after_approval_resolution_is_rejected(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenDoneGraph(),
+        turn_producer=_ApprovalThenDoneGraph(),
         config=RuntimeConfig(approval_mode="ask", execution_engine="deterministic"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -597,7 +580,7 @@ def test_steer_queued_while_waiting_is_delivered_on_next_run_without_reactivatin
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ApprovalThenDoneGraph(),
+        turn_producer=_ApprovalThenDoneGraph(),
         config=RuntimeConfig(approval_mode="ask", execution_engine="deterministic"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
@@ -627,19 +610,19 @@ def test_steer_queued_while_waiting_is_delivered_on_next_run_without_reactivatin
 
 def test_steer_queued_while_run_active_is_accepted(tmp_path: Path) -> None:
     class _ImmediateDoneGraph:
-        def step(
+        def produce(
             self,
-            request: GraphRunRequest,
+            request: TurnRequest,
             tool_results: tuple[object, ...],
             *,
-            session: GraphSession,
-        ) -> _StubStep:
+            session: TurnSession,
+        ) -> TurnPlan:
             _ = request, tool_results, session
-            return _StubStep(output="done", is_finished=True)
+            return TurnPlan(output="done", is_finished=True)
 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_ImmediateDoneGraph(),  # type: ignore[arg-type]
+        turn_producer=_ImmediateDoneGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     stream = runtime.run_stream(RuntimeRequest(prompt="active steer", session_id="steer-active"))
@@ -665,25 +648,25 @@ def test_follow_up_queued_during_active_run_survives_outer_snapshot_and_is_consu
             self.prompts: list[str] = []
             self._calls = 0
 
-        def step(
+        def produce(
             self,
-            request: GraphRunRequest,
+            request: TurnRequest,
             tool_results: tuple[object, ...],
             *,
-            session: GraphSession,
-        ) -> _StubStep:
+            session: TurnSession,
+        ) -> TurnPlan:
             _ = tool_results, session
             self.prompts.append(request.prompt)
             self._calls += 1
             if self._calls == 1:
                 self.started.set()
                 assert self.release.wait(timeout=5.0)
-            return _StubStep(output=request.prompt, is_finished=True)
+            return TurnPlan(output=request.prompt, is_finished=True)
 
     graph = _BlockingGraph()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=graph,  # type: ignore[arg-type]
+        turn_producer=graph,  # type: ignore[arg-type]
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     stream = runtime.run_stream(RuntimeRequest(prompt="outer", session_id="follow-up-active"))
@@ -754,7 +737,7 @@ def test_steer_rejected_on_interrupted_session_without_active_run(tmp_path: Path
 def test_child_background_completion_cannot_mutate_sealed_parent(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_SuccessGraph(),  # type: ignore[arg-type]
+        turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     parent = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
@@ -840,7 +823,7 @@ def test_child_background_completion_cannot_mutate_sealed_parent(tmp_path: Path)
 def test_finalize_is_idempotent_and_backfill_repairs_missing_parent_event(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_SuccessGraph(),  # type: ignore[arg-type]
+        turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
@@ -878,7 +861,7 @@ def test_finalize_is_idempotent_and_backfill_repairs_missing_parent_event(tmp_pa
 def test_cancel_wins_completion_race_without_mutating_child_truth(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_SuccessGraph(),  # type: ignore[arg-type]
+        turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
@@ -907,7 +890,7 @@ def test_cancel_wins_completion_race_without_mutating_child_truth(tmp_path: Path
 def test_unknown_parent_drops_delivery_but_preserves_child_and_task_truth(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_SuccessGraph(),  # type: ignore[arg-type]
+        turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     store = runtime._session_store
@@ -942,7 +925,7 @@ def test_runtime_shutdown_drains_background_worker_results_before_teardown(
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_SuccessGraph(),  # type: ignore[arg-type]
+        turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
@@ -963,7 +946,7 @@ def test_runtime_shutdown_drains_background_worker_results_before_teardown(
 def _background_lifecycle_runtime(workspace: Path) -> VoidCodeRuntime:
     return VoidCodeRuntime(
         workspace=workspace,
-        graph=_SuccessGraph(),  # type: ignore[arg-type]
+        turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(
             approval_mode="yolo",
             execution_engine="deterministic",

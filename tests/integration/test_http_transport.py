@@ -525,7 +525,7 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
     payload = cast(dict[str, object], response.json())
 
     assert response.status == 200
-    assert payload["output"] == "Read 1 line(s) from sample.txt."
+    assert payload["output"] == "http replay"
     request_event = _event_by_type(
         cast(list[dict[str, object]], payload["events"]),
         "runtime.request_received",
@@ -1866,7 +1866,7 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(
         cast(dict[str, object], replay_payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert replay_payload["output"] == "Read 1 line(s) from sample.txt."
+    assert replay_payload["output"] == "stream replay"
     _assert_ordered_event_types(
         _event_types_from_payload_events(replay_payload),
         [

@@ -168,6 +168,12 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 
 **风险：** batch resume 重复执行、stream 已可见输出被静默 retry、失败被当成功结束。保留 externally meaningful 顺序，而非整个内部事件 golden dump：最终参数校验/授权 → durable intent → hook/execute → durable result → 下一 provider turn；progress 在 completion 之前，safe checkpoint 不拆 batch/pair。若现有 resume 特例顺序不同，先用副作用/恢复场景证明其含义，再统一，不能借 refactor 偷改行为。
 
+**已完成（P3）：**
+
+- Provider 与 deterministic producers 均经 `src/voidcode/core/engine.py::TurnEngine` 推进；`src/voidcode/runtime/run_loop.py::RuntimeHost` 仍拥有产品治理、context、工具执行、审批、持久化与恢复。旧 graph 包、`GraphRunRequest`、`RuntimeGraph` 与重复 turn loop 已删除，无兼容 alias。恢复 seed 的 completed prefix 按原始 call ID 校验，并只加入 engine history 一次，保留此前历史，不重放已完成工具。
+- 实际纯工具控制 smoke（`python /tmp/p3_local_sdk_fixture.py`，exit 0）验证两工具 batch steering、follow-up history 与 batch 内 abort；工具副作用/原始 IDs/真实 reasoning 均按场景确认，runtime/SQLite/UI 模块未加载。实际 OpenAI SDK + 本地 SSE transport（`uv run python /tmp/p3_runtime_sdk_smoke.py`，exit 0）经 RuntimeHost 执行 Read/Glob 并 SQLite replay，2 个 SDK 请求保留原生 reasoning、call IDs 与真实结果；这不是在线 provider 运行。
+- 实际 ReadTool 输出 smoke 和 12 个关联测试通过；CLI deterministic read 保留六行内容并只完成一次工具调用（未声称 TUI 验证）。恢复行为批次 165 passed，三项最终 root repair checks 3 passed；当前 core deterministic/read seeded-continuation test 一次读取保留完整已完成结果、返回真实输出且无第二次读取，1 passed。最终 provider/core+graph/read-only/runtime recovery 集成范围 494 passed。
+
 ### P4：拆 events/repositories，保留已有 SQLite 真相
 
 **进入：** core 不依赖 runtime events，runtime host 已唯一执行入口。

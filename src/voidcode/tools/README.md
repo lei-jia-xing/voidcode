@@ -21,7 +21,7 @@
 
 ## 边界关系
 
-工具通过 runtime 注册和执行，graph 与客户端都不应绕过 runtime 直接管理工具生命周期。工具契约面向 runtime 消费，而不是直接面向 UI。
+产品执行路径由 runtime 注册并治理工具；core turn engine 只向 host 请求执行，不管理产品能力生命周期，客户端也不绕过 runtime。工具契约面向 runtime 和有明确 host 的独立调用，而不是直接面向 UI。
 
 ## 显式调用边界
 
@@ -41,6 +41,13 @@ task/process 的真实算法与生命周期位于 `runtime/execution/delegation`
 `runtime/execution/process`。工具只获得当前 approved call、caller、workspace
 和 cancellation 绑定的窄 callback；native、resume、inner invoke 共用
 runtime canonical executor。runtime 的 execution-ownership lease 保持独立。
+
+`read` 的 `content` 是显示摘要；实际已限界文本位于 `data.raw_content`，
+文件和 archive 文本也有 `data.lines`。`raw_content` 只在真实文本正文存在时提供，
+空文本可为 `""`；image/PDF 与未解码的二进制 archive member 没有该字段。
+确定性最终输出与 continuity preview 共用中立结构化正文选择器，不解析显示文本；
+已 clipped/pruned 的 `ToolResultView` 继续使用投影后的 `content`。
+
 
 ## 当前状态
 

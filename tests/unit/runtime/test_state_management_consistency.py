@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from voidcode.graph.contracts import GraphSession
+from voidcode.core.turns import TurnPlan, TurnSession
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -76,12 +76,12 @@ class _BlockingTaskGraph:
         self.release = threading.Event()
         self.prompts_seen: list[str] = []
 
-    def step(
+    def produce(
         self,
         request: Any,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
+        session: TurnSession,
     ) -> Any:
         _ = tool_results
         self.prompts_seen.append(request.prompt)
@@ -89,18 +89,8 @@ class _BlockingTaskGraph:
             if not self.started.is_set():
                 self.started.set()
                 assert self.release.wait(timeout=5)
-            return _StubStep(output=f"{request.prompt} done", is_finished=True)
-        return _StubStep(output=request.prompt, is_finished=True)
-
-
-class _StubStep:
-    def __init__(self, *, output: str | None = None, is_finished: bool = False, tool_call: Any | None = None) -> None:
-        self.output = output
-        self.is_finished = is_finished
-        self.tool_call = tool_call
-        self.reasoning: str | None = None
-        self.provider_usage: object | None = None
-        self.events: tuple[object, ...] = ()
+            return TurnPlan(output=f"{request.prompt} done", is_finished=True)
+        return TurnPlan(output=request.prompt, is_finished=True)
 
 
 def _wait_for_terminal(runtime: VoidCodeRuntime, task_id: str, *, timeout: float = 5.0) -> BackgroundTaskState:
@@ -160,7 +150,7 @@ def test_shutdown_terminalized_queued_task_emits_interrupted_event(
 def runtime_factory(tmp_path: Path) -> VoidCodeRuntime:
     return VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_BlockingTaskGraph(),
+        turn_producer=_BlockingTaskGraph(),
         config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
     )
 
@@ -536,21 +526,17 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
 class _YieldChildGraph:
     """Top-level runs finish immediately; delegated children call yield."""
 
-    def step(
+    def produce(
         self,
         request: Any,
         tool_results: tuple[object, ...],
         *,
-        session: GraphSession,
+        session: TurnSession,
     ) -> Any:
         _ = request, tool_results
         if session.metadata.get("parent_session_id") is not None:
-            return _StubStep(
-                output=None,
-                is_finished=False,
-                tool_call=ToolCall(tool_name="yield", arguments={"summary": request.prompt}),
-            )
-        return _StubStep(output=request.prompt, is_finished=True)
+            return TurnPlan(tool_calls=(ToolCall(tool_name="yield", arguments={"summary": request.prompt}),))
+        return TurnPlan(output=request.prompt, is_finished=True)
 
 
 def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session") -> RuntimeRequest:
@@ -632,7 +618,7 @@ def test_completed_background_child_session_is_sealed_completed(tmp_path: Path) 
     max — never left ``interrupted`` at a stale checkpoint."""
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_YieldChildGraph(),  # type: ignore[arg-type]
+        turn_producer=_YieldChildGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(
             approval_mode="yolo",
             execution_engine="deterministic",

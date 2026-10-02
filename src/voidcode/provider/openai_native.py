@@ -490,6 +490,16 @@ class OpenAIChatCompletionsProvider:
         messages: list[dict[str, object]] = []
         for segment in request.assembled_context.segments:
             if segment.role == "assistant" and segment.tool_name is not None:
+                if requires_reasoning_content and segment.tool_call_id not in reasoning_content_by_tool_call_id:
+                    raise ProviderExecutionError(
+                        kind="stream_tool_feedback_shape",
+                        provider_name=request.provider_name or self.name,
+                        model_name=self._model_name(request),
+                        message="tool-call replay requires the original provider reasoning content",
+                        retryable=False,
+                        fallback_allowed=False,
+                        details={"source": "messages", "reason": "missing_reasoning_content", "tool_call_id": segment.tool_call_id},
+                    )
                 arguments = json.dumps(self._visible_arguments(segment.tool_name, segment.tool_arguments or {}), ensure_ascii=False, sort_keys=True)
                 messages.append(
                     {
@@ -498,9 +508,7 @@ class OpenAIChatCompletionsProvider:
                         # DeepSeek requires the prior reasoning_content on the
                         # assistant tool-call message of a replayed turn.
                         **(
-                            {"reasoning_content": reasoning_content_by_tool_call_id.get(segment.tool_call_id or "") or " "}
-                            if requires_reasoning_content
-                            else {}
+                            {"reasoning_content": reasoning_content_by_tool_call_id[segment.tool_call_id or ""]} if requires_reasoning_content else {}
                         ),
                         "tool_calls": [
                             {
@@ -687,7 +695,8 @@ class OpenAIChatCompletionsProvider:
         # reason is not handed a reasoning knob.
         if wire.tools and (metadata is None or metadata.supports_tools is not False):
             payload["tools"] = wire.tools
-            payload["tool_choice"] = "auto"
+            if not rule.requires_reasoning_content_for_tool_calls:
+                payload["tool_choice"] = "auto"
         if rule.sends_output_cap_by_default:
             # OMP sends no output cap unless the caller asks for one; the kimi
             # family is the one exception, and it sends the model's own maximum

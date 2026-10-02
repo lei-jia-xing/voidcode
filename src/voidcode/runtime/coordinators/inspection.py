@@ -157,7 +157,7 @@ from ..status_projection import project_acp_status
 from ..storage import SessionStore
 
 if TYPE_CHECKING:
-    from ...graph.contracts import GraphRunRequest
+    from ...core.turns import TurnRequest
     from ..background.supervisor import RuntimeBackgroundTaskSupervisor
     from ..runtime_surface import RuntimeSurface
 
@@ -1753,10 +1753,10 @@ class InspectionCoordinator:
             "model": effective_config.model,
         }
 
-    def provider_context_policy_decision_for_graph_request(
+    def provider_context_policy_decision_for_turn_request(
         self,
         *,
-        graph_request: GraphRunRequest,
+        turn_request: TurnRequest,
         effective_config: EffectiveRuntimeConfig,
     ) -> RuntimeProviderContextPolicyDecision | None:
         if effective_config.execution_engine != "provider":
@@ -1765,7 +1765,7 @@ class InspectionCoordinator:
         if context_window_config.provider_context_diagnostics == "off" and context_window_config.context_transform_failure_policy != "block":
             return None
         snapshot = self._provider_context_snapshot_for_assembled_context(
-            assembled_context=graph_request.assembled_context,
+            assembled_context=turn_request.assembled_context,
             effective_config=effective_config,
         )
         return snapshot.policy_decision

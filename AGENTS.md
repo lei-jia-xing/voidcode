@@ -12,7 +12,7 @@ Local-first coding agent runtime. Python backend (`src/voidcode`) plus Bun/React
 voidcode/
 ├── src/voidcode/         # Python package in src-layout
 │   ├── runtime/          # Session, storage, events, runtime boundary
-│   ├── graph/            # Deterministic orchestration slice
+│   ├── core/             # Host-agnostic turn engine + provider/deterministic producers
 │   └── tools/            # Built-in tool contracts + implementations
 ├── tests/                # pytest unit + integration coverage
 ├── frontend/             # Bun/Vite/React shell; see frontend/AGENTS.md
@@ -26,16 +26,17 @@ voidcode/
 |------|----------|-------|
 | CLI behavior | `src/voidcode/cli/` | `voidcode run`, `sessions list`, `sessions resume`, `sessions answer` |
 | Python entrypoint | `src/voidcode/__main__.py` | `python -m voidcode` delegates to CLI |
-| Runtime orchestration boundary | `src/voidcode/runtime/service.py` | CLI calls runtime, not graph directly |
+| Runtime orchestration boundary | `src/voidcode/runtime/service.py` | runtime uses `RuntimeHost` to run the core turn engine |
 | Runtime implementation work | `src/voidcode/runtime/AGENTS.md` | read before touching runtime control-plane code |
 | Delegated/background task contract | `docs/contracts/background-task-delegation.md` | runtime-owned subagent routing, result retrieval, retry/cancel notes |
 | Session persistence | `src/voidcode/runtime/storage/` | SQLite-backed local session store |
 | Runtime contracts | `src/voidcode/runtime/contracts.py` | request/response boundary types |
 | Portable session bundles | `src/voidcode/runtime/bundle.py` | schema-versioned import/export artifact with redaction defaults |
-| Graph planning/finalization | `src/voidcode/graph/deterministic_graph.py` | current deterministic slice |
+| Core turn engine | `src/voidcode/core/engine.py` | `TurnEngine` advances producer batches through the host boundary |
+| Runtime host | `src/voidcode/runtime/run_loop.py::RuntimeHost` | runtime-governed context, tools, approvals, persistence, and recovery |
 | Tool behavior | `src/voidcode/tools/` | builtin tools include read/write/edit/glob/grep/web_fetch/web_search/apply_patch/multi_edit/todo/lsp |
-| Unit tests | `tests/unit/` | contracts, metadata, import, CLI smoke |
-| Integration tests | `tests/integration/test_read_only_slice.py` | full deterministic slice + session persistence |
+| Unit tests | `tests/unit/` | core engine, provider adapters, tools, and runtime contracts/lifecycle |
+| Integration tests | `tests/integration/` | runtime execution, persistence/recovery, and HTTP transport |
 | Dev workflow | `mise.toml` | canonical task runner |
 | Repo standards | `docs/coding-standards.md` | coding + commit rules |
 | Frontend work | `frontend/AGENTS.md` | read for any `frontend/` change |
@@ -61,21 +62,21 @@ voidcode/
 - Optimize for understandability, readability, and changeability. Follow the repository's standard conventions and existing contracts; prefer KISS and the Boy Scout rule, and fix root causes rather than symptoms.
 - Keep one clear responsibility per module and function, with small, explicit functions, few parameters, and no flag arguments that hide distinct behaviors. Keep side effects separate from pure computation and make them explicit.
 - Use descriptive, searchable names and named constants for domain rules. Encapsulate boundary inputs and outputs with typed contracts, dataclasses, Protocols, Literal/TypedDict shapes, and value objects instead of broad `Any` or unstructured dictionaries.
-- Preserve ownership: `runtime/` owns governance, approvals, persistence, recovery, and lifecycle; `graph/` only advances deterministic steps; `tools/` only implements tool behavior. Use dependency injection and the Law of Demeter so collaborators do not pierce those boundaries or reach through private state.
+- Preserve ownership: `runtime/` owns governance, approvals, persistence, recovery, and lifecycle; `core/` owns host-agnostic turn progression; `tools/` owns tool behavior. Use dependency injection and the Law of Demeter so collaborators do not pierce those boundaries or reach through private state.
 - Isolate threading, caches, registries, SQLite/file writes, and external processes behind explicit owners and lifecycle boundaries. Keep concurrency and other side effects out of code that only models decisions or values.
 - Remove duplicate orchestration, parsing, and serialization paths; avoid over-configurable designs, dead code, and commented-out code. Keep one authoritative implementation and avoid compatibility aliases or contract drift.
 - Write tests that are readable, fast, independent, and repeatable. Test observable contracts, boundaries, errors, and state transitions rather than implementation details; preserve runtime governance and the existing typed contracts.
 - Keep refactors and changes focused and minimal. Verify the affected behavior with the narrowest meaningful check, and provide reproducible evidence for user-facing CLI/TUI/HTTP behavior when applicable.
 
 ## ANTI-PATTERNS (THIS PROJECT)
-- Do not have execution engines talk directly to UI clients; flow goes CLI/client → runtime → graph/tools.
+- Do not have execution engines talk directly to UI clients; flow goes CLI/client → runtime host → core turn engine → runtime-governed tools.
 - Do not claim full frontend/runtime parity; the web client now has a minimal live runtime path, but it is not yet a fully productized runtime-driven app.
 - Do not expand current MVP scope into multi-agent/cloud/IDE-plugin work unless the task explicitly targets roadmap changes.
 - Do not commit generated frontend artifacts.
 - Do not open public issues for security-sensitive reports.
 
 ## UNIQUE STYLES
-- Backend architecture is intentionally split into `runtime/`, `graph/`, and `tools/` with contract files marking boundaries. Current graph implementations are plain Python; runtime owns governance.
+- Backend architecture is intentionally split into `runtime/`, `core/`, and `tools/` with contract files marking boundaries. The core turn engine is host-agnostic; runtime owns governance.
 - Session recovery is user-global and SQLite-backed under `$XDG_STATE_HOME/voidcode/sessions.sqlite3` (POSIX default `~/.local/state/voidcode/sessions.sqlite3`), with workspace-scoped `.voidcode/` still reserved for project config and agent assets. The runtime schema is versioned with SQLite `PRAGMA user_version` and stores scoped columns as `workspace_id`.
 - The backend now exposes a broader tool surface including read/write/edit/search/web and patch workflows under `src/voidcode/tools/`.
 - Runtime-owned delegated child execution exists for supported child presets through background task and child session surfaces; it is not an arbitrary multi-agent topology.

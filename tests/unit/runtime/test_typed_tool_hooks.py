@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from voidcode.core.tool_context import ToolContext
-from voidcode.graph.contracts import GraphEvent, GraphRunRequest
+from voidcode.core.turns import TurnPlan, TurnRequest
 from voidcode.hook.typed import BlockDecision, RewriteDecision, ToolInputDecision, ToolInputEvent, ToolInputHandlerBinding, ToolInputHandlerRegistry
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
@@ -17,23 +16,13 @@ from voidcode.tools.contracts import RuntimeToolTimeoutError, ToolCall, ToolDefi
 from voidcode.tools.invoke_tool import InvokeTool
 
 
-@dataclass(frozen=True, slots=True)
-class _Step:
-    tool_call: ToolCall | None = None
-    output: str | None = None
-    is_finished: bool = False
-    events: tuple[GraphEvent, ...] = ()
-    reasoning: str | None = None
-    provider_usage: object | None = None
-
-
-class _OneToolGraph:
+class _OneToolProducer:
     def __init__(self, call: ToolCall) -> None:
         self.call = call
 
-    def step(self, request: GraphRunRequest, tool_results: tuple[ToolResult, ...], *, session: object) -> _Step:
+    def produce(self, request: TurnRequest, tool_results: tuple[ToolResult, ...], *, session: object) -> TurnPlan:
         _ = request, session
-        return _Step(tool_call=self.call) if not tool_results else _Step(output="done", is_finished=True)
+        return TurnPlan(tool_calls=(self.call,)) if not tool_results else TurnPlan(output="done", is_finished=True)
 
 
 class _CaptureTool:
@@ -76,7 +65,7 @@ def _runtime(
     return VoidCodeRuntime(
         workspace=workspace,
         tool_registry=ToolRegistry.from_tools(tools),
-        graph=_OneToolGraph(initial_call or ToolCall(tool_name="capture", arguments={"path": "./input.txt"})),
+        turn_producer=_OneToolProducer(initial_call or ToolCall(tool_name="capture", arguments={"path": "./input.txt"})),
         config=RuntimeConfig(execution_engine="deterministic", approval_mode=approval_mode, mcp=RuntimeMcpConfig(enabled=False)),
         permission_policy=PermissionPolicy(mode=approval_mode),
         tool_input_handler_registry=registry,

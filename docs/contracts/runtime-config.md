@@ -153,7 +153,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 当前生命周期约定为：
 
 - `provider`：产品默认主路径；执行前必须配置 `model = "provider/model"`（或等价环境变量），否则 runtime 会在 run preflight 阶段返回清晰的 provider/model 配置错误。
-- `deterministic`：保留为显式支持的 test/dev/no-key harness，并继续承担 graph harness 与确定性回归测试。
+- `deterministic`：保留为显式支持的 test/dev/no-key harness，并继续承担 core turn-engine harness 与确定性回归测试。
 - `voidcode config init` 默认不写入 `execution_engine`，避免 repo-local config 锁死 provider/no-model 状态；若显式写入 `execution_engine = "provider"`，应同时写入 `model`。
 - 会话 replay/resume 必须读取持久化 runtime config 元数据，不得被新默认值覆盖。
 
@@ -225,7 +225,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - compaction 的窗口由随包 catalog 提供：`max_input_tokens`（无上游 `limit.input` 时由 `context_window - max_output_tokens` 派生）优先，否则 `context_window`；调用方显式提供的 `context_window` / `threshold_tokens` / `reserve_tokens` 仍然优先于它，catalog 未描述的 model 则让 compaction 保持 unsized
 - 阈值 = `window − reserve`，其中 `reserve = max(floor(0.15 × window), 16384)`（对齐上游；显式 `context_window.compaction.reserve_tokens` 最高优先）。锚点不可用（无 provider usage）时仍按同一阈值做纯估算判定，并在 `usage_tokens_estimated` 里标为纯估算
 - token usage 只来自 provider response/terminal stream，并保留 `None`（未报告）与 `0`（观测到零）的区别；它是后验 turn usage，不是下一轮 transcript 余额
-- `provider_usage.latest.cost_usd` / `provider_usage.cumulative.cost_usd`：USD 金额，由该 turn 自己的 usage 与 catalog 的扁平 `cost_per_*` 费率（加可选的 long-context 政策 tier）在 graph 中计算一次，写入 `latest` 并累加到 `cumulative`；token 桶保持整数、金额是 float，持久化的 usage 不会被重新计价。前端在 composer 的上下文行显示 `cumulative.cost_usd`（`$1.50 spent`），未定价的 model 整个省略而不是显示 `$0.00`
+- `provider_usage.latest.cost_usd` / `provider_usage.cumulative.cost_usd`：USD 金额，由 `core.provider_turns.ProviderTurnProducer` 根据该 turn 自己的 usage 与 catalog 扁平 `cost_per_*` 费率（加可选的 long-context 政策 tier）计算一次，写入 `latest` 并累加到 `cumulative`；token 桶保持整数、金额是 float，持久化的 usage 不会被重新计价。前端在 composer 的上下文行显示 `cumulative.cost_usd`（`$1.50 spent`），未定价的 model 整个省略而不是显示 `$0.00`
 - `lsp.enabled`：布尔值；默认 `true`（未声明即开启，显式 `false` 关闭；未配置 `servers` 时不启动任何 server 进程）
 - `lsp.servers`：对象
 
@@ -293,7 +293,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - reminder 是 runtime-owned 的临时 provider-context 尾部注入：它只存在于本次 provider context assembly，不追加到 SQLite transcript；可持久化的只有 cycle 计数器（`SessionState.metadata["runtime_state"]["reminders"]`）与一条 `runtime.reminder_injected` 事件（见 `docs/contracts/runtime-events.md`）。
 - mid-run nudge 无独立开关：它随 `reminders.enabled` 启用，阈值（累计 12 次变更类工具调用）与每 cycle 上限（2 条）是命名常量（对齐上游），不提供配置键。
 - 第一个 reminder 类型是 todo 完成提醒：terminal assistant 回合结束时若仍有 `pending` / `in_progress` todo，runtime 注入一条 `<system-reminder>` 尾巴并继续同一 run（而不是结束回合）；提醒文本列出未完成的 phase/task 与 `(Reminder k/max)`。
-- 抑制条件：`reminders.enabled = false`、execution engine 不是 `provider`（deterministic graph 没有可注入的 provider 调用）、todo 全部完成、上一条 reminder 之后的回合没有产生新的 tool result（仍在等待 agent 行动）、本 cycle 已达 `reminders.todo.max_per_cycle`、assistant 已停在等待用户回答（`plan_state.status` 为 `waiting_question` / `waiting_approval`）、父会话仍有会重新唤醒 loop 的 background task，或当前是被委派的 child session（必须通过 `yield` 终止）。
+- 抑制条件：`reminders.enabled = false`、execution engine 不是 `provider`（deterministic producer 没有可注入的 provider 调用）、todo 全部完成、上一条 reminder 之后的回合没有产生新的 tool result（仍在等待 agent 行动）、本 cycle 已达 `reminders.todo.max_per_cycle`、assistant 已停在等待用户回答（`plan_state.status` 为 `waiting_question` / `waiting_approval`）、父会话仍有会重新唤醒 loop 的 background task，或当前是被委派的 child session（必须通过 `yield` 终止）。
 - cycle 由 run 标识：每次 `run` / `resume` 都是新的 cycle，`attempts` 随之复位；持久化的 `runtime_state.reminders` 因此不携带跨 run 的累计语义，也不参与 context checkpoint 的完整性校验（见 `context/continuity.py`）。
 - 该配置是仓库本地（`.voidcode.json`）配置面；像 `background_task` 一样，它随会话的 `runtime_config` 快照持久化，缺省时以当前进程解析出的默认值补齐。
 
@@ -319,7 +319,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `permission.rules` 不能扩大 hard boundary：agent/tool allowlist 仍先收窄可见与可调用工具；外部目录规则仍先保护 workspace 外路径，且 pattern rule 只能把 external decision 收紧（例如 `allow -> ask/deny` 或 `ask -> deny`），不能把 external `deny` 降级为 `allow`。
 - workspace 内只读工具仍默认允许；如果需要让某个只读工具进入审批或拒绝路径，可用 `permission.rules` 显式 `ask` 或 `deny`。
 
-这些规则不替代稳定 runtime `mode` / `read_only` 策略。`analyze`、`plan` 与显式 `read_only=true` 会先形成 effective read-only context：mutating tools 会被 registry policy 隐藏/拒绝；`shell_exec` 仍可见，但每条命令还要经过 centralized shell classifier，package-manager、mutating 与 destructive command 在 read-only context 中会被拒绝。CLI / frontend / graph 只能传递请求意图，不应复制这层 enforcement。
+- 这些规则不替代稳定 runtime `mode` / `read_only` 策略。`analyze`、`plan` 与显式 `read_only=true` 会先形成 effective read-only context：mutating tools 会被 registry policy 隐藏/拒绝；`shell_exec` 仍可见，但每条命令还要经过 centralized shell classifier，package-manager、mutating 与 destructive command 在 read-only context 中会被拒绝。CLI / frontend 只传递请求意图，不应复制这层 enforcement。
 
 常见策略示例：
 

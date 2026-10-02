@@ -2,14 +2,14 @@
 
 ## 目的
 
-本文档是 **execution lifecycle 的唯一权威表述**：一次执行（foreground run，或 runtime 派发的 background execution）在「取消如何传入」「何时允许提交」「何时失去所有权」「何时可以释放资源」四个问题上的规范，以及每条规范的**执行点**（enforcement point，注明 `file:line`）。
+本文档是 **execution lifecycle 的唯一权威表述**：一次执行（foreground run，或 runtime 派发的 background execution）在「取消如何传入」「何时允许提交」「何时失去所有权」「何时可以释放资源」四个问题上的规范，以及每条规范的 enforcement anchor（优先使用 `file::symbol`；源码行为为准）。
 
 术语：
 
 - **execution**：由 runtime 拥有的一次执行主体——前台 run 或 `background_task` 派发的一次 worker turn。两者共享同一套提交与真相规则。
 - **run 级信号**：一次 run 的 `abort_signal`，由 `ACTIVE_SESSION_REGISTRY` 在 run 注册时创建，`interrupt_active_run` 会取消它。
 - **invocation**：一次工具调用。它有独立的取消视图，不是 run 信号本身。
-- **执行点**：源码是行为真相。下面的行号引用的是实现该规范的那一处代码；改动该处必须同步本文。
+- **执行点**：源码是行为真相。下表以稳定的 `file::symbol` anchor 为主；保留的行号只作导航，不是契约。
 
 非目标：不定义工具如何实现自己的行为（见 `agent-tool-calling.md`），不定义 delegated 任务的 parent/child 契约细节（见 `background-task-delegation.md`），不定义多进程（跨进程对同一 SQLite 的并发写入属于既有 SQLite 并发模型）。
 
@@ -25,14 +25,14 @@
 
 | 规范 | 执行点 |
 | --- | --- |
-| run 级信号创建 | `src/voidcode/runtime/active_session.py:88`（`ActiveSessionRegistry.register`） |
-| run 入口注册 / 注销 | `src/voidcode/runtime/service.py:1436`（注册）、`:1564`（注销） |
-| 用户中断取消 run 信号 | `src/voidcode/runtime/active_session.py:184` → `:220`（`set_cancelled`） |
-| request 级 abort flag | `src/voidcode/graph/provider_graph.py:264` → `:277` |
-| invocation 取消视图 | `runtime/tool_execution.py::_InvocationCancelSignal`；`_invoke_tool` 通过显式 `ToolContext` 传入，未使用 tool-identity ContextVar |
-| 超时置位（停止等待之前） | `runtime/tool_execution.py::_invoke_with_progress` |
-| 工具侧读取该槽位 | `core/tool_context.py::ToolContext.abort_signal` |
-| 超时不得把 run 变成 interrupted | run 信号的写点只有 `active_session.py:220` 与 `graph/provider_graph.py:277`；工具超时只写 invocation 信号 |
+| run 级信号创建 | `src/voidcode/runtime/active_session.py::ActiveSessionRegistry.register` |
+| run 入口注册 / 注销 | `src/voidcode/runtime/service.py::_register_active_session_id` / `_unregister_active_session_id` |
+| 用户中断取消 run 信号 | `src/voidcode/runtime/active_session.py::ActiveSessionRegistry.interrupt` |
+| core request / engine 观察 abort | `src/voidcode/core/turns.py::TurnRequest.abort_signal` → `src/voidcode/core/engine.py::EngineState.cancelled` |
+| invocation 取消视图 | `src/voidcode/runtime/tool_execution.py::_InvocationCancelSignal`；`_invoke_tool` 通过显式 `ToolContext` 传入，未使用 tool-identity ContextVar |
+| 超时置位（停止等待之前） | `src/voidcode/runtime/tool_execution.py::_invoke_with_progress` |
+| 工具侧读取该槽位 | `src/voidcode/core/tool_context.py::ToolContext.abort_signal` |
+| 超时不得把 run 变成 interrupted | 仅 active-session interrupt 写 run signal；工具超时只写 invocation signal |
 
 runtime command 的绑定捕获真实 caller/session/run/invocation、approved call 和
 abort signal；`runtime/execution/tool_resources.py::bind_tool_command` 在实际
@@ -48,24 +48,24 @@ dispatch 前拒绝已取消的调用，调用者换一个 context 或清掉 abor
 3. 所有 runtime 真相写入都必须经过唯一的 storage 写网关；已封印的 session 拒绝任何 late event。
 4. 同一 session 上并发 run 共享事件流：终态封印属于**最后一个**活跃 run，先结束的 run 不得封印。
 5. 工具结果提交后立即清除该调用的 pending intent；未清除的 pending intent 只是**未结算意图**，不等于结果。
-6. **进程崩溃后的可恢复性**：一次执行一旦物化了它要复现的绑定（capability binding + skill snapshot），它的 checkpoint 就必须记录这些绑定，使「执行中崩溃」的 session 可被 resume；resume 只从 checkpoint 的**已完成** tool_results 重新进入循环，丢弃 orphan tail，因此崩溃时在飞的调用**既不会被报告为完成、也不会被自动重放**——模型若仍需要它，会发出一次全新的调用（新的 `tool_call_id`）。
+6. **进程崩溃后的可恢复性**：checkpoint 保留执行绑定与真实 durable batch；只有原始 calls 和 durable completed-result IDs 经 `src/voidcode/runtime/execution/turn_recovery.py::restored_turn_batch` 验证为原 batch 的完整前缀，才可按允许的 replay policy 作为 `InterruptedTurn` 续跑，并重新经过 `src/voidcode/runtime/run_loop.py::RuntimeRunLoopCoordinator.execute_turn_engine` / `RuntimeHost` 的权限、审批与执行治理。未结算的 pending intent 从不等于结果；pending `replay_policy="never"` 不会凭 intent 本身产生 seed 或 completed result，也不会自动重放未结算操作；只有实际 durable result 才可作为已完成事实。若 provider 之后仍需未完成操作，只能由新的真实 provider response 发出新的 call ID。interrupted resume 将 active leaf 移到 checkpoint 位置；若允许续跑的 authentic batch 始于 checkpoint 之后，则保留当前 leaf/batch。leaf 移动不删除 event rows：off-path/orphan rows 留在存储中，可由 checkout 恢复；resume response 只含当前 root→leaf path 与本次新追加事件。
 7. 若 checkpoint 完全没有记录绑定（执行在物化绑定之前就被中断），resume 必须在**改写任何真相之前**以具名原因拒绝（`RuntimeRequestError`），而不是在更深处抛出内部缺字段错误。
 
 执行点：
 
 | 规范 | 执行点 |
 | --- | --- |
-| 有界回收 + 事实判定 | `src/voidcode/runtime/tool_execution.py:402`（`join(_TOOL_TIMEOUT_REAP_SECONDS)`）、`:35`（窗口常量）、`:402-406`（late item 只诊断、不提交）、`:420`（按回收结果判定事实） |
-| 提交超时结果（含诚实措辞） | `src/voidcode/runtime/run_loop.py:1040`（`runtime.tool_completed`）、`:1017`（`runtime.tool_timeout`）、`:381`（事实投影） |
-| 提交正常工具结果 + 清除 intent | `src/voidcode/runtime/run_loop.py:1187` → `:1193`（`clear_tool_execution_intent`） |
-| 唯一 storage 写网关 | `src/voidcode/runtime/storage/sqlite.py:576`（`_write_connect` 内的 `assert_writes_allowed`，位于 `BEGIN IMMEDIATE` 之前） |
+| 有界回收 + 事实判定 | `src/voidcode/runtime/tool_execution.py::RuntimeToolExecutor._invoke_with_progress`、`src/voidcode/runtime/tool_execution.py::_TOOL_TIMEOUT_REAP_SECONDS`（timeout signal 先置位，回收后判定 execution/side-effect 事实，late result 不提交） |
+| 提交超时结果（含诚实措辞） | `src/voidcode/runtime/run_loop.py::RuntimeRunLoopCoordinator._execute_tool_and_recover`、`src/voidcode/runtime/run_loop.py::_tool_timeout_execution_facts` |
+| 提交正常工具结果 + 清除 intent | `src/voidcode/runtime/run_loop.py::RuntimeRunLoopCoordinator._emit_tool_completed_events` → `src/voidcode/runtime/session_metadata_helpers.py::clear_tool_execution_intent` |
+| 唯一 storage 写网关 | `src/voidcode/runtime/storage/sqlite.py::SqliteSessionStore._write_connect` → `src/voidcode/runtime/execution_ownership.py::ExecutionOwnershipRegistry.assert_writes_allowed`（位于 `BEGIN IMMEDIATE` 之前） |
 | 封印：storage 层 | `src/voidcode/runtime/storage/shared.py:108`，由 `storage/sessions.py:367`、`storage/sessions.py:460` 两个 append 入口调用 |
-| 封印：runtime 层（含无活跃 run 的 `interrupted`） | `src/voidcode/runtime/service.py:6414`（`_sealed_session_status`） |
-| 只有最后一个活跃 run 可封印 | `src/voidcode/runtime/service.py:2643`（`active_run_count <= 1`） |
-| 崩溃后仍可 resume：checkpoint 记录绑定 | `src/voidcode/runtime/service.py:1883`（`_refresh_run_checkpoint` 调用，位于 ACP/skill 绑定物化之后、任何工具调用之前）、`:2195`（helper） |
+| 封印：runtime 层（含无活跃 run 的 `interrupted`） | `src/voidcode/runtime/service.py::VoidCodeRuntime._sealed_session_status` → `src/voidcode/runtime/coordinators/finalize.py::FinalizeCoordinator.sealed_session_status` |
+| 只有最后一个活跃 run 可封印 | `src/voidcode/runtime/coordinators/finalize.py::FinalizeCoordinator.persist_response`（active run count `<= 1`） |
+| 崩溃后仍可 resume：checkpoint 记录绑定 | `src/voidcode/runtime/service.py::VoidCodeRuntime._refresh_run_checkpoint`（绑定物化后、工具调用前） |
 | checkpoint 的版本要求 | `src/voidcode/runtime/execution/resume_checkpoint.py:206-208`（`version = checkpoint.get("version")` 后 `version != 1` 即拒绝；每个 checkpoint 都带 `kind` + `version`，未知版本不得被当作可续跑） |
-| safe boundary 才捕获 checkpoint | `src/voidcode/runtime/run_loop.py:1650`（`len(tool_results) > checkpoint_tool_result_count and self._at_safe_boundary(graph)`）→ `:1651`（`_capture_interrupted_checkpoint`），因此批次中未完成的调用不会进入 checkpoint 的 `tool_results` |
-| 无绑定记录时具名拒绝 | `src/voidcode/runtime/resume.py:1266`（拒绝点，先于 tail 截断）、`:95`（`_require_recorded_capability_snapshot`） |
+| safe boundary 才捕获 checkpoint | `src/voidcode/runtime/run_loop.py::RuntimeRunLoopCoordinator._capture_iteration_checkpoint` 仅在结果数量增加且 `src/voidcode/core/engine.py::EngineState.at_safe_boundary` 为真时 capture；batch 内未完成调用不会进入 checkpoint 的 `tool_results` |
+| 无绑定记录时具名拒绝 | `src/voidcode/runtime/resume.py::_require_recorded_capability_snapshot`，由 `RuntimeResumeCoordinator._resume_checkpoint_stream` 在 leaf 移动前调用；无 authentic batch 的 legacy intent 同样在更改位置前具名拒绝 |
 
 ## (c) 何时失去所有权，前 owner 还能做什么
 
@@ -104,27 +104,27 @@ dispatch 前拒绝已取消的调用，调用者换一个 context 或清掉 abor
 
 1. `VoidCodeRuntime` 关闭时的排空顺序是**固定且不可交换**的：① 先 drain background execution（join / revoke / terminalize）→ ② 停 background process manager → ③ 最后才关 ACP/MCP/LSP 适配器。
 2. 第 ① 步内，join 超时的 worker 先被 revoke，再被标记 `interrupted`（keep-alive）/`failed`；因此「关闭完成」的含义是：每个已派发 task 行 terminal、按时完成的真相已落盘、未能完成的 execution 已失去写资格。
-3. 适配器排在最后，是因为一次 run 的 per-session release 事件由 run loop 在 run 结束时增量落盘；释放适配器不得与这些持久化写入竞争。
+3. 适配器排在最后，因为 run 与 background execution 的持久化必须先完成。MCP 连接是 runtime-scoped，不在 session/run 结束时释放；只在 runtime 关闭阶段停止。
 4. 工具超时导致的资源回收不是「释放执行依赖」，而是 (a)/(b) 的调用级收尾：它不得触发 run 级资源释放，也不得改变 run 的终态。
 
 执行点：
 
 | 规范 | 执行点 |
 | --- | --- |
-| 关闭顺序 | `src/voidcode/runtime/service.py:697`（drain）→ `:698`（process manager）→ `:699-701`（ACP/MCP/LSP） |
+| 关闭顺序 | `src/voidcode/runtime/service.py::VoidCodeRuntime.__exit__`（drain → background processes → ACP/MCP/LSP adapters） |
 | drain 内部：revoke 再 terminalize | `src/voidcode/runtime/background/supervisor.py:434`（`_fail_unfinished_shutdown_threads`）→ `:447` |
-| run 结束时的 MCP release 事件 | `src/voidcode/runtime/service.py:2572`、`src/voidcode/runtime/resume.py:1518` |
+| MCP 生命周期收尾 | runtime 关闭时 `src/voidcode/runtime/coordinators/inspection.py::InspectionCoordinator.shutdown_mcp` → `src/voidcode/runtime/mcp.py::ManagedMcpManager.shutdown`；没有 per-run MCP release |
 
 ## 并发与 re-entry（同一 session）
 
 | 场景 | 结果 | 执行点 |
 | --- | --- | --- |
-| 同一 session 上的第二个 fresh run（第一个仍在飞行中） | **允许**：并发追加，各次 append 在同一写网关内串行；终态封印属于最后一个活跃 run | `src/voidcode/runtime/service.py:2643` |
-| steering / follow-up | **排队**：写入 session outbox（不产生 mid-run 事件），在下一个 turn 边界或下一次 run 生效 | `src/voidcode/runtime/run_loop.py:1314`、`src/voidcode/runtime/service.py:4606` |
-| checkpoint resume（interrupted / provider-failure） | **拒绝**：session 有**其它**活跃 run 时抛 `RuntimeRequestError`，不改写任何真相。streaming resume 会先为自己注册一个 run（`service.py:4734`/`:4757`），该自身 handle 被排除——排除它才不会把自己的注册误判成竞争 owner；blocking resume 不注册，因此任何已注册 run 都会拒绝它 | `src/voidcode/runtime/resume.py:1244`（`exclude_run_id=run_id`）、`src/voidcode/runtime/active_session.py:138`（`contains(..., exclude_run_id=...)`）、`src/voidcode/runtime/service.py:4734`/`:4757`（streaming resume 注册自身 run） |
-| resume 的前置校验 | 绑定记录（capability + skill snapshot）与只读准备先于 tail 截断；无绑定记录的 resume 在**截断之前**按名拒绝，无法兑现的 resume 在截断之前失败 | `src/voidcode/runtime/resume.py:1266`（绑定记录）→ `:1279`（准备）→ `:1313`（截断）→ `:1321`（重载） |
+| 同一 session 上的第二个 fresh run（第一个仍在飞行中） | **允许**：并发追加，各次 append 在同一写网关内串行；终态封印属于最后一个活跃 run | `src/voidcode/runtime/coordinators/finalize.py::FinalizeCoordinator.persist_response` |
+| steering / follow-up | **排队**：写入 session outbox（不产生 mid-run 事件），在下一个 turn 边界或下一次 run 生效 | `src/voidcode/runtime/service.py::VoidCodeRuntime.queue_steering` / `queue_follow_up` → `src/voidcode/runtime/run_loop.py::RuntimeRunLoopCoordinator.drain_messages` |
+| checkpoint resume（interrupted / provider-failure） | **拒绝**：session 有**其它**活跃 run 时抛 `RuntimeRequestError`，不改写其进行中的 path。streaming resume 注册的自身 handle 会被排除；blocking resume 不注册，因此任何已注册 run 都会拒绝它 | `src/voidcode/runtime/resume.py::RuntimeResumeCoordinator._resume_checkpoint_stream` → `src/voidcode/runtime/active_session.py::ActiveSessionRegistry.contains` |
+| resume 前置校验与路径恢复 | checkpoint、binding、runtime config 与 durable batch 先验证；可信 batch 的 completed prefix 只按原始 call ID 续跑。interrupted resume 移动 leaf 到安全 checkpoint（较新的 authentic batch 除外），保留 off-path rows，再从 root→leaf path 继续；不会删除 tail rows | `src/voidcode/runtime/resume.py::RuntimeResumeCoordinator._resume_checkpoint_stream` / `_restored_batch` / `_stored_response_on_path` → `src/voidcode/runtime/storage/sessions.py::SqliteSessionStore.restore_leaf_after_interrupted_resume` |
 
-多条 run 共享一个 session 时，「取消/超时/所有权」规则依然逐 execution 生效：一次 invocation 的超时只影响该 invocation；一次 background execution 的撤销只影响该 execution；session 的历史重写（resume 的 tail 截断）是唯一要求独占所有权的操作。
+多条 run 共享一个 session 时，「取消/超时/所有权」规则依然逐 execution 生效：一次 invocation 的超时只影响该 invocation；一次 background execution 的撤销只影响该 execution；interrupted resume 的独占操作是恢复 session 的 active leaf position，不是从存储中删除 event-log tail。off-path rows 留存，checkout 可恢复其 branch。
 
 ## 与详细章节的关系
 

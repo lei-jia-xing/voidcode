@@ -209,6 +209,7 @@ class RuntimeStateMetadata(TypedDict, total=False):
     context_projection_summary: dict[str, object]
     todos: dict[str, object]
     pending_tool_intent: dict[str, object]
+    turn_batch: dict[str, object]
     context_compacted: dict[str, object]
     context_transform_applied: dict[str, object]
     # Per-call reminder cycle counters (``reminders.py``); never reminder text.

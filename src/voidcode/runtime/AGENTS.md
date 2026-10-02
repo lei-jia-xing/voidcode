@@ -11,7 +11,7 @@ Runtime control plane for execution, persistence, approvals, hooks, capability m
 | Task | Location | Notes |
 |------|----------|-------|
 | Public runtime exports | `__init__.py` | lazy-loads `VoidCodeRuntime` and `ToolRegistry` via `__getattr__` |
-| Main control plane | `service.py` | runtime graph loop, tool execution, approvals, resume, background tasks |
+| Main control plane | `service.py`, `run_loop.py::RuntimeHost` | resolved governance, tool execution, approvals, durable resume, background tasks; delegates turn/batch progression to `core.engine.TurnEngine` |
 | Runtime config loading | `config.py` | merges env, user, repo-local, and request overrides |
 | Config data boundary | `config_models.py` | one Pydantic definition source for every config input shape; `config_schema.py` generates `schema/voidcode.config.schema.json` from it (`mise run schema:check`). Models own shape only — precedence/merge/snapshot/policy stay in `config.py`, `config_materializer.py`, `policy.py`, `provider/config.py` |
 | Session persistence | `storage/` | SQLite schema, pending approval, background task state |
@@ -23,7 +23,7 @@ Runtime control plane for execution, persistence, approvals, hooks, capability m
 | Skill runtime bridge | `skills.py` | converts pure skill metadata into runtime contexts |
 | Session state types | `session.py`, `task.py`, `background/` | session refs/status plus background task types |
 | Context assembly | `context/` | provider context projection, transformations, rules, and continuity |
-| Execution support | `execution/` | graph adapters, provider fallback, chunk builders, and recovery metadata |
+| Execution support | `execution/` | core/runtime execution seams, provider fallback, chunk builders, and recovery metadata |
 | Background task contract | `../../docs/contracts/background-task-delegation.md` | parent/child linkage, result output, retry/cancel semantics |
 
 ## STRUCTURE
@@ -34,7 +34,7 @@ runtime/
 ├── storage/          # SQLite-backed session/task store and storage mixins
 ├── background/       # task/process execution, routing, and child completion
 ├── context/          # provider context assembly and projection
-├── execution/        # graph/provider execution seams and recovery helpers
+├── execution/        # core/runtime execution seams and recovery helpers
 ├── permission.py     # approval policy and PendingApproval
 ├── transport/        # HTTP transport integration
 │   └── http.py       # runtime transport app
@@ -42,7 +42,7 @@ runtime/
 ```
 
 ## CONVENTIONS
-- Preserve the control-plane split: runtime owns governance, graph owns step progression, tools own tool logic.
+- Preserve the control-plane split: runtime owns governance, core owns host-agnostic turn progression, tools own tool logic.
 - Keep `runtime/__init__.py` lazy-import behavior for `VoidCodeRuntime`, `ToolRegistry`, and HTTP exports to avoid import cycles.
 - Treat `load_runtime_config()` precedence as load-bearing: environment, user config, repo-local config, request metadata, and persisted session metadata each have distinct roles.
 - `ToolDefinition.effects` supplies behavior facts; shared static read-tier classification and actual per-call operation class feed runtime permission policy. Effects never grant execution authority.
@@ -52,13 +52,13 @@ runtime/
 - MCP servers are managed at runtime scope through `runtime/mcp.py`; do not document or implement workspace-scoped MCP lifecycle without a separate explicit task.
 
 ## HOTSPOTS
-- `service.py` is the central monolith. Read the surrounding methods before changing `_build_graph_for_engine_from_config`, `_tool_registry_for_effective_config`, `_execute_graph_loop`, `start_background_task`, or resume helpers.
+- `service.py` is the central composition point. Read the owning module before changing `_build_turn_producer_for_engine_from_config`, `tool_registry_for_effective_config`, `start_background_task`, or resume helpers; the runtime turn adapter is `run_loop.py::RuntimeRunLoopCoordinator.execute_turn_engine` with `run_loop.py::RuntimeHost`.
 - `storage/` owns schema evolution and terminal-state bookkeeping. Runtime SQLite persistence is user-global at the XDG state path resolved by `runtime/paths.py`, via `sessions_db_path()` for sessions and `provider_catalog_cache_path()` for the provider model catalog cache. The canonical runtime schema uses `workspace_id` columns and SQLite `PRAGMA user_version`; schema/version mismatch handling is fail-fast and does not migrate old schemas unless a task explicitly requires migration support. `SqliteSessionStore._connect` verifies that schema at most once per database file per process (`_ensure_schema_once`, keyed on the file identity plus the connection's own `PRAGMA user_version` / `PRAGMA schema_version` / sequence-row sentinels), because every storage read opens a connection; keep those sentinels authoritative instead of assuming a warm cache.
 - `context/` owns provider-facing context assembly and projection. Keep runtime governance, persistence, and provider transport outside this package.
-- `execution/` owns runtime-to-graph/provider seams and recovery helpers. It must not become a second runtime orchestration boundary.
+- `execution/` owns runtime-to-core/provider seams and authenticated recovery helpers. It must not become a second turn engine or grant authority through a continuation seed.
 
 ## ANTI-PATTERNS
-- Do not move product governance into `graph/`; runtime chooses and configures graphs.
+- Do not move product governance into `core/`; runtime chooses/configures producers and owns permissions, approval admission, durable intent, event projection, and provider fault policy.
 - Do not let clients or tools bypass runtime state for approvals, persistence, notifications, or capability lifecycle.
 - Do not add eager imports to `runtime/__init__.py` for service/http symbols.
 - Do not change `_EXECUTABLE_AGENT_PRESETS`, tool allowlist scoping, or provider fallback metadata casually; they affect active execution semantics.
@@ -66,13 +66,13 @@ runtime/
 - Do not treat permission denials as terminal session failures; denied tool calls should surface as tool-level feedback so the model can adapt.
 
 ## KEY FLOWS
-- **Run path:** `VoidCodeRuntime.run_stream()` → `_stream_chunks()` → `_execute_graph_loop()`.
-- **Graph selection:** `_runtime_config_for_request()` / `_effective_runtime_config_from_metadata()` → `_build_graph_for_engine_from_config()`.
-- **Tool scoping:** `_tool_registry_for_effective_config()` applies builtin registry, agent manifest allowlist, and per-request tool config.
+- **Run path:** `VoidCodeRuntime.run_stream()` → `_stream_chunks()` → `RuntimeRunLoopCoordinator.execute_turn_engine()` → `TurnEngine.run(..., host=RuntimeHost(...))`.
+- **Producer selection:** `runtime_config_for_request()` / `effective_runtime_config_from_metadata()` → `_build_turn_producer_for_engine_from_config()`.
+- **Tool scoping:** `tool_registry_for_effective_config()` applies builtin registry, agent manifest allowlist, and per-request tool config.
 - **Delegated routing:** `task` tool routing validates supported child presets before `start_background_task()` creates a child session lineage.
-- **Approval path:** `_resolve_permission()` emits pending approval state; `resume()` / `resume_stream()` re-enter via `_resume_pending_approval_*` helpers.
+- **Resume path:** approval, question, and interrupted continuations enter the same `TurnEngine.run` path after runtime admission. Preserve authentic original batch IDs/arguments and completed prefixes. A pending `never` intent is not replayed or claimed; restore the safe checkpoint branch and obtain a genuine new provider invocation.
 - **Background tasks:** `start_background_task()` persists queued state, spawns worker threads, and finalizes lifecycle hooks and notifications. The model-facing `background_task` facade provides bounded output/roster reads plus cancel/steer controls; all truth and ownership remain runtime-owned.
-- **Provider fallback:** `_execute_graph_loop()` increments `provider_attempt`, swaps active target, and rebuilds the graph when retryable provider failures occur.
+- **Provider fallback:** `RuntimeHost.invoke()` delegates retry/fallback policy to runtime, swaps the active target/producer, and preserves the current core run-step watermark. Core owns batch completion and safe-boundary steering/follow-up progression.
 
 ## NOTES
 - Top-level execution is limited to `leader`; supported delegated child presets are `advisor`, `explore`, `researcher`, `worker`, and `product` (read-only plan agent delegated via `task`, handing the plan back with `yield`).

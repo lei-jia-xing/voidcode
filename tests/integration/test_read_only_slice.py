@@ -14,7 +14,7 @@ from typing import Any, Protocol, cast
 
 import pytest
 
-from voidcode.graph.contracts import GraphSession
+from voidcode.core.turns import TurnPlan, TurnSession
 from voidcode.runtime.paths import sessions_db_path
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
@@ -294,6 +294,8 @@ class SessionStoreLike(Protocol):
 
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponseLike: ...
 
+    def session_path(self, *, workspace: Path, session_id: str, sequence: int | None = None) -> tuple[EventLike, ...]: ...
+
     def load_resume_checkpoint(self, *, workspace: Path, session_id: str) -> dict[str, object] | None: ...
 
     def save_pending_approval(
@@ -321,16 +323,6 @@ def _load_runtime_types() -> tuple[RuntimeRequestFactory, RuntimeFactory]:
     runtime_request = cast(RuntimeRequestFactory, contracts_module.RuntimeRequest)
     runtime_class = cast(RuntimeFactory, service_module.VoidCodeRuntime)
     return runtime_request, runtime_class
-
-
-@dataclass(frozen=True, slots=True)
-class _GraphStep:
-    events: tuple[object, ...]
-    tool_call: object
-    output: str | None = None
-    is_finished: bool = False
-    reasoning: str | None = None
-    provider_usage: object | None = None
 
 
 class _NoopMcpManager:
@@ -379,50 +371,54 @@ class _DefaultConfiguredMcpManager(_NoopMcpManager):
 
 
 class _AstGrepPreviewGraph:
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
         _ = request, session
         if not tool_results:
-            return _GraphStep(
-                events=(),
-                tool_call=cast(
-                    ToolCallFactory,
-                    importlib.import_module("voidcode.tools.contracts").ToolCall,
-                )(
-                    tool_name="ast_grep",
-                    arguments={
-                        "mode": "preview",
-                        "pattern": "print($X)",
-                        "rewrite": "logger.info($X)",
-                        "path": "sample.py",
-                        "lang": "python",
-                    },
+            return TurnPlan(
+                facts=(),
+                tool_calls=(
+                    cast(
+                        ToolCallFactory,
+                        importlib.import_module("voidcode.tools.contracts").ToolCall,
+                    )(
+                        tool_name="ast_grep",
+                        arguments={
+                            "mode": "preview",
+                            "pattern": "print($X)",
+                            "rewrite": "logger.info($X)",
+                            "path": "sample.py",
+                            "lang": "python",
+                        },
+                    ),
                 ),
             )
-        return _GraphStep(events=(), tool_call=None, output="previewed", is_finished=True)
+        return TurnPlan(facts=(), tool_calls=(), output="previewed", is_finished=True)
 
 
 class _AstGrepReplaceGraph:
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
         _ = request, session
         if not tool_results:
-            return _GraphStep(
-                events=(),
-                tool_call=cast(
-                    ToolCallFactory,
-                    importlib.import_module("voidcode.tools.contracts").ToolCall,
-                )(
-                    tool_name="ast_grep",
-                    arguments={
-                        "mode": "replace",
-                        "pattern": "print($X)",
-                        "rewrite": "logger.info($X)",
-                        "path": "sample.py",
-                        "lang": "python",
-                        "apply": True,
-                    },
+            return TurnPlan(
+                facts=(),
+                tool_calls=(
+                    cast(
+                        ToolCallFactory,
+                        importlib.import_module("voidcode.tools.contracts").ToolCall,
+                    )(
+                        tool_name="ast_grep",
+                        arguments={
+                            "mode": "replace",
+                            "pattern": "print($X)",
+                            "rewrite": "logger.info($X)",
+                            "path": "sample.py",
+                            "lang": "python",
+                            "apply": True,
+                        },
+                    ),
                 ),
             )
-        return _GraphStep(events=(), tool_call=None, output="applied", is_finished=True)
+        return TurnPlan(facts=(), tool_calls=(), output="applied", is_finished=True)
 
 
 class _SingleToolGraph:
@@ -430,41 +426,45 @@ class _SingleToolGraph:
         self._tool_name = tool_name
         self._arguments = arguments
 
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
         _ = request, session
         if not tool_results:
-            return _GraphStep(
-                events=(),
-                tool_call=cast(
-                    ToolCallFactory,
-                    importlib.import_module("voidcode.tools.contracts").ToolCall,
-                )(
-                    tool_name=self._tool_name,
-                    arguments=self._arguments,
+            return TurnPlan(
+                facts=(),
+                tool_calls=(
+                    cast(
+                        ToolCallFactory,
+                        importlib.import_module("voidcode.tools.contracts").ToolCall,
+                    )(
+                        tool_name=self._tool_name,
+                        arguments=self._arguments,
+                    ),
                 ),
             )
-        return _GraphStep(events=(), tool_call=None, output="done", is_finished=True)
+        return TurnPlan(facts=(), tool_calls=(), output="done", is_finished=True)
 
 
 class _SequentialToolGraph:
     def __init__(self, calls: tuple[tuple[str, dict[str, object]], ...]) -> None:
         self._calls = calls
 
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
         _ = request, session
         if len(tool_results) < len(self._calls):
             tool_name, arguments = self._calls[len(tool_results)]
-            return _GraphStep(
-                events=(),
-                tool_call=cast(
-                    ToolCallFactory,
-                    importlib.import_module("voidcode.tools.contracts").ToolCall,
-                )(
-                    tool_name=tool_name,
-                    arguments=arguments,
+            return TurnPlan(
+                facts=(),
+                tool_calls=(
+                    cast(
+                        ToolCallFactory,
+                        importlib.import_module("voidcode.tools.contracts").ToolCall,
+                    )(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                    ),
                 ),
             )
-        return _GraphStep(events=(), tool_call=None, output="done", is_finished=True)
+        return TurnPlan(facts=(), tool_calls=(), output="done", is_finished=True)
 
 
 class _SequentialSafeBoundaryGraph(_SequentialToolGraph):
@@ -578,15 +578,10 @@ class _ReadFileParityModelProvider:
 
 
 class _SingleThenBatchTurnProvider:
-    """Scripted turn provider that emits a single call, then a two-call batch.
+    """Scripted provider that returns one call, then an authentic two-call batch.
 
-    Used with ``ProviderGraph`` to model a multi-tool-call turn: the first
-    provider query returns one ``read`` call, the second returns two
-    ``read`` calls at once (queued by ``ProviderGraph``), and a later
-    query with all three tool results returns terminal output. The per-query
-    tool-result counts are recorded so a test can prove a resume re-queries
-    the provider from durable ``tool_results`` rather than relying on the
-    graph's in-memory ``_pending_tool_calls``.
+    The batch is restored from the runtime's durable continuation after a crash,
+    so the next provider request must follow all three completed results.
     """
 
     name = "opencode-zen"
@@ -824,14 +819,16 @@ def _write_demo_skill(skill_dir: Path, *, content: str) -> None:
 
 
 class _ParentBackgroundOutputGraph:
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: GraphSession) -> object:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: TurnSession) -> object:
         _ = request
         if session.metadata.get("parent_session_id") is not None:
-            return _GraphStep(
-                events=(),
-                tool_call=cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
-                    tool_name="yield",
-                    arguments={"summary": "child background final"},
+            return TurnPlan(
+                facts=(),
+                tool_calls=(
+                    cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
+                        tool_name="yield",
+                        arguments={"summary": "child background final"},
+                    ),
                 ),
             )
         tool_call_factory = cast(
@@ -839,75 +836,78 @@ class _ParentBackgroundOutputGraph:
             importlib.import_module("voidcode.tools.contracts").ToolCall,
         )
         if not tool_results:
-            return _GraphStep(
-                events=(),
-                tool_call=tool_call_factory(
-                    tool_name="task",
-                    arguments={
-                        "prompt": "finish in the background",
-                        "run_in_background": True,
-                        "load_skills": [],
-                        "subagent_type": "explore",
-                        "description": "Background E2E child",
-                    },
+            return TurnPlan(
+                facts=(),
+                tool_calls=(
+                    tool_call_factory(
+                        tool_name="task",
+                        arguments={
+                            "prompt": "finish in the background",
+                            "run_in_background": True,
+                            "load_skills": [],
+                            "subagent_type": "explore",
+                            "description": "Background E2E child",
+                        },
+                    ),
                 ),
             )
         first_result = cast(ToolResultLike, tool_results[0])
         first_data = first_result.data
         if len(tool_results) == 1:
-            return _GraphStep(
-                events=(),
-                tool_call=tool_call_factory(
-                    tool_name="task",
-                    arguments={
-                        "operation": "output",
-                        "task_id": first_data["task_id"],
-                        "block": True,
-                        "timeout": 3000,
-                        "full_session": True,
-                    },
+            return TurnPlan(
+                facts=(),
+                tool_calls=(
+                    tool_call_factory(
+                        tool_name="task",
+                        arguments={
+                            "operation": "output",
+                            "task_id": first_data["task_id"],
+                            "block": True,
+                            "timeout": 3000,
+                            "full_session": True,
+                        },
+                    ),
                 ),
             )
         final_result = cast(ToolResultLike, tool_results[1])
-        return _GraphStep(
-            events=(),
-            tool_call=None,
-            output=final_result.content,
-            is_finished=True,
-        )
+        return TurnPlan(facts=(), tool_calls=(), output=final_result.content, is_finished=True)
 
 
 class _FailingBackgroundChildGraph:
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: GraphSession) -> object:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: TurnSession) -> object:
         _ = request, tool_results
         if session.metadata.get("parent_session_id") is not None:
             raise RuntimeError("delegated child failed twice")
-        return _GraphStep(events=(), tool_call=None, output="leader ready", is_finished=True)
+        return TurnPlan(facts=(), tool_calls=(), output="leader ready", is_finished=True)
 
 
 class _McpEchoGraph:
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: GraphSession) -> object:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: TurnSession) -> object:
         _ = request, session
         if not tool_results:
-            return _GraphStep(
-                events=(),
-                tool_call=cast(
-                    ToolCallFactory,
-                    importlib.import_module("voidcode.tools.contracts").ToolCall,
-                )(
-                    tool_name="mcp/echo/echo",
-                    arguments={"text": "delegated mcp"},
+            return TurnPlan(
+                facts=(),
+                tool_calls=(
+                    cast(
+                        ToolCallFactory,
+                        importlib.import_module("voidcode.tools.contracts").ToolCall,
+                    )(
+                        tool_name="mcp/echo/echo",
+                        arguments={"text": "delegated mcp"},
+                    ),
                 ),
             )
         if session.metadata.get("parent_session_id") is not None:
-            return _GraphStep(
-                events=(),
-                tool_call=cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
-                    tool_name="yield",
-                    arguments={"summary": "mcp child done", "data": {"completed_work": ["called delegated MCP"]}},
+            return TurnPlan(
+                facts=(),
+                tool_calls=(
+                    cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
+                        tool_name="yield",
+                        arguments={"summary": "mcp child done", "data": {"completed_work": ["called delegated MCP"]}},
+                    ),
                 ),
             )
-        return _GraphStep(events=(), tool_call=None, output="mcp parent done", is_finished=True)
+        return TurnPlan(facts=(), tool_calls=(), output="mcp parent done", is_finished=True)
 
 
 def test_runtime_background_restart_reconcile_reloads_terminal_delegated_result(
@@ -916,7 +916,7 @@ def test_runtime_background_restart_reconcile_reloads_terminal_delegated_result(
     runtime_request, runtime_class = _load_runtime_types()
     first_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, graph=_ParentBackgroundOutputGraph())),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_ParentBackgroundOutputGraph())),
     )
     _ = first_runtime.run(runtime_request(prompt="leader", session_id="leader-restart"))
     started = first_runtime.start_background_task(
@@ -930,7 +930,7 @@ def test_runtime_background_restart_reconcile_reloads_terminal_delegated_result(
 
     second_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, graph=_ParentBackgroundOutputGraph())),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_ParentBackgroundOutputGraph())),
     )
     reloaded = second_runtime.load_background_task(started.task.id)
     task_result = cast(Any, second_runtime).load_background_task_result(started.task.id)
@@ -1011,7 +1011,7 @@ def test_runtime_skips_hooks_for_nested_hook_launched_runtime_invocations(tmp_pa
 
     assert marker_path.read_text(encoding="utf-8") == "1"
     nested_output = nested_output_path.read_text(encoding="utf-8")
-    assert nested_output == "Read 1 line(s) from nested.txt.\n"
+    assert nested_output == "nested hook read\n"
     assert "runtime.tool_hook_pre" not in nested_output
     assert "runtime.tool_hook_post" not in nested_output
     assert [event.event_type for event in result.events].count("runtime.tool_hook_pre") == 1
@@ -1219,7 +1219,7 @@ class _DivergentWriteFileGraph:
     def __init__(self) -> None:
         self._call_count = 0
 
-    def step(
+    def produce(
         self,
         request: object,
         tool_results: tuple[object, ...],
@@ -1230,20 +1230,22 @@ class _DivergentWriteFileGraph:
         self._call_count += 1
         if not tool_results:
             suffix = "first" if self._call_count == 1 else "second"
-            return _GraphStep(
-                events=(),
-                tool_call=cast(
-                    ToolCallFactory,
-                    importlib.import_module("voidcode.tools.contracts").ToolCall,
-                )(
-                    tool_name="write",
-                    arguments={
-                        "path": "divergent.txt",
-                        "content": f"body-{suffix}",
-                    },
+            return TurnPlan(
+                facts=(),
+                tool_calls=(
+                    cast(
+                        ToolCallFactory,
+                        importlib.import_module("voidcode.tools.contracts").ToolCall,
+                    )(
+                        tool_name="write",
+                        arguments={
+                            "path": "divergent.txt",
+                            "content": f"body-{suffix}",
+                        },
+                    ),
                 ),
             )
-        return _GraphStep(events=(), tool_call=None, output="written", is_finished=True)
+        return TurnPlan(facts=(), tool_calls=(), output="written", is_finished=True)
 
 
 def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_overrides(
@@ -1361,16 +1363,18 @@ def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     class FailingFinalizeGraph:
-        def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+        def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
             if not tool_results:
-                return _GraphStep(
-                    events=(),
-                    tool_call=cast(
-                        ToolCallFactory,
-                        importlib.import_module("voidcode.tools.contracts").ToolCall,
-                    )(
-                        tool_name="write",
-                        arguments={"path": "danger.txt", "content": "finalize failure"},
+                return TurnPlan(
+                    facts=(),
+                    tool_calls=(
+                        cast(
+                            ToolCallFactory,
+                            importlib.import_module("voidcode.tools.contracts").ToolCall,
+                        )(
+                            tool_name="write",
+                            arguments={"path": "danger.txt", "content": "finalize failure"},
+                        ),
                     ),
                 )
             raise RuntimeError("finalize boom")
@@ -1382,7 +1386,7 @@ def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path
             object,
             resumed_runtime_class(
                 workspace=tmp_path,
-                graph=FailingFinalizeGraph(),
+                turn_producer=FailingFinalizeGraph(),
                 permission_policy=policy,
             ),
         ),
@@ -1403,7 +1407,7 @@ def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path
             object,
             _load_runtime_types()[1](
                 workspace=tmp_path,
-                graph=FailingFinalizeGraph(),
+                turn_producer=FailingFinalizeGraph(),
                 permission_policy=policy,
             ),
         ),
@@ -1503,6 +1507,9 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
 
         def load_session(self, *, workspace: Path, session_id: str) -> object:
             return base_store.load_session(workspace=workspace, session_id=session_id)
+
+        def session_path(self, *, workspace: Path, session_id: str, sequence: int | None = None) -> tuple[EventLike, ...]:
+            return base_store.session_path(workspace=workspace, session_id=session_id, sequence=sequence)
 
         def save_pending_approval(
             self,
@@ -1637,7 +1644,7 @@ def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_p
 
     first_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, graph=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
     )
     stream = first_runtime.run_stream(runtime_request(prompt="read two files", session_id="crash-session"))
     # The interrupted checkpoint is captured as a side effect at the top of the
@@ -1653,7 +1660,7 @@ def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_p
     _drop_crashed_run_registration(workspace=tmp_path, session_id="crash-session")
     second_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, graph=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
     )
     summaries = second_runtime.list_sessions()
     assert [summary.session.id for summary in summaries] == ["crash-session"]
@@ -1698,7 +1705,7 @@ def test_runtime_resume_restores_leaf_and_keeps_orphaned_tail_rows(tmp_path: Pat
 
     first_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, graph=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
     )
     stream = first_runtime.run_stream(runtime_request(prompt="read two files", session_id="orphan-session"))
     tool_requests = 0
@@ -1736,7 +1743,7 @@ def test_runtime_resume_restores_leaf_and_keeps_orphaned_tail_rows(tmp_path: Pat
 
     resumed_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, graph=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
     )
     resumed = resumed_runtime.resume("orphan-session")
 
@@ -1761,7 +1768,7 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="yolo")
-    provider_graph_module = importlib.import_module("voidcode.graph.provider_graph")
+    provider_turns_module = importlib.import_module("voidcode.core.provider_turns")
     resolution_module = importlib.import_module("voidcode.provider.resolution")
     registry_module = importlib.import_module("voidcode.provider.registry")
     provider_model = resolution_module.resolve_provider_model(
@@ -1770,10 +1777,10 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
     )
 
     first_provider = _SingleThenBatchTurnProvider()
-    first_graph = provider_graph_module.ProviderGraph(provider=first_provider, provider_model=provider_model)
+    first_producer = provider_turns_module.ProviderTurnProducer(provider=first_provider, provider_model=provider_model)
     first_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, graph=first_graph, permission_policy=policy)),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=first_producer, permission_policy=policy)),
     )
     stream = first_runtime.run_stream(runtime_request(prompt="read three files", session_id="multi-tool-crash"))
     completed_tools = 0
@@ -1783,10 +1790,8 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
             if completed_tools >= 2:
                 break
 
-    # Crash mid-batch: the second turn emitted b and c at once; only b completed
-    # and c is still queued in memory, so the durable checkpoint reflects only
-    # the completed first-turn call rather than the in-flight batch.
-    assert first_graph.pending_tool_call_count == 1
+    # Stop after b is durable but before the active batch advances to c. The
+    # interrupted checkpoint still records only a's completed result.
 
     _drop_crashed_run_registration(workspace=tmp_path, session_id="multi-tool-crash")
     storage_module = importlib.import_module("voidcode.runtime.storage")
@@ -1797,25 +1802,21 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
     assert [cast(dict[str, object], result).get("tool_name") for result in checkpoint_tool_results] == ["read"]
 
     resumed_provider = _SingleThenBatchTurnProvider()
-    resumed_graph = provider_graph_module.ProviderGraph(provider=resumed_provider, provider_model=provider_model)
+    resumed_producer = provider_turns_module.ProviderTurnProducer(provider=resumed_provider, provider_model=provider_model)
     resumed_runtime = cast(
         RuntimeRunner,
-        cast(object, runtime_class(workspace=tmp_path, graph=resumed_graph, permission_policy=policy)),
+        cast(object, runtime_class(workspace=tmp_path, turn_producer=resumed_producer, permission_policy=policy)),
     )
     resumed = resumed_runtime.resume("multi-tool-crash")
 
     assert resumed.session.status == "completed"
     assert resumed.output == "done"
-    # The _SingleThenBatchTurnProvider yields a read batch per turn, so the
-    # response holds three completions: the one the crash checkpointed plus the
-    # two the resume re-ran.
-    assert [cast(str, event.payload.get("tool")) for event in resumed.events if event.event_type == "runtime.tool_completed"] == [
-        "read",
-        "read",
-        "read",
+    completed = [event for event in resumed.events if event.event_type == "runtime.tool_completed"]
+    assert [(event.payload.get("tool"), event.payload.get("tool_call_id")) for event in completed] == [
+        ("read", "call-a"),
+        ("read", "call-b"),
+        ("read", "call-c"),
     ]
-    # The resumed provider was re-queried with durable tool-result counts [1, 3],
-    # proving the queued "c" call was recovered from durable tool_results rather
-    # than the graph's lost in-memory pending queue.
-    assert resumed_provider.propose_turn_tool_result_counts == [1, 3]
-    assert resumed_graph.pending_tool_call_count == 0
+    # The host restored c from the interrupted batch; the provider was not
+    # queried again until all three durable tool results were available.
+    assert resumed_provider.propose_turn_tool_result_counts == [3]

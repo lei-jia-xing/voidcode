@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from voidcode.core.deterministic_turns import DeterministicTurnProducer
 from voidcode.core.transcript import ContextSegment
-from voidcode.graph.contracts import GraphRunRequest, GraphSessionSnapshot
-from voidcode.graph.deterministic_graph import DeterministicGraph
+from voidcode.core.turns import TurnRequest, TurnSessionSnapshot
 from voidcode.runtime.context.window import RuntimeAssembledContext
 from voidcode.tools.contracts import ToolDefinition, ToolEffect, ToolResult
 
 
-def _request(prompt: str) -> GraphRunRequest:
+def _request(prompt: str) -> TurnRequest:
     assembled = RuntimeAssembledContext(
         prompt=prompt,
         tool_results=(),
@@ -17,8 +17,8 @@ def _request(prompt: str) -> GraphRunRequest:
         segments=(ContextSegment(role="user", content=prompt),),
         metadata={},
     )
-    return GraphRunRequest(
-        session=GraphSessionSnapshot(session_id="graph-session"),
+    return TurnRequest(
+        session=TurnSessionSnapshot(session_id="turn-session"),
         prompt=prompt,
         assembled_context=assembled,
         available_tools=(
@@ -30,35 +30,32 @@ def _request(prompt: str) -> GraphRunRequest:
     )
 
 
-def test_graph_direct_import_and_step_work_without_runtime_cycle() -> None:
-    graph = DeterministicGraph()
+def test_deterministic_producer_selects_read_tool() -> None:
+    producer = DeterministicTurnProducer()
     request = _request("read sample.txt")
 
-    step = graph.step(request, (), session=request.session)
+    plan = producer.produce(request, (), session=request.session)
 
-    assert step.tool_call is not None
-    assert step.tool_call.tool_name == "read"
-    assert step.tool_call.arguments == {"path": "sample.txt"}
-    assert [event.event_type for event in step.events] == [
-        "graph.loop_step",
-        "graph.model_turn",
-    ]
+    assert len(plan.tool_calls) == 1
+    assert plan.tool_calls[0].tool_name == "read"
+    assert plan.tool_calls[0].arguments == {"path": "sample.txt"}
+    assert [fact.kind for fact in plan.facts] == ["loop_step", "model_turn"]
 
 
-def test_graph_run_step_is_a_watermark_not_a_budget() -> None:
-    graph = DeterministicGraph()
+def test_turn_run_step_is_a_watermark_not_a_budget() -> None:
+    producer = DeterministicTurnProducer()
     request = replace(_request("read sample.txt"), run_step=100)
 
-    step = graph.step(request, (), session=request.session)
+    plan = producer.produce(request, (), session=request.session)
 
-    assert step.tool_call is not None
-    assert step.events[0].payload == {"step": 100, "phase": "plan"}
+    assert plan.tool_calls[0].tool_name == "read"
+    assert plan.facts[0].payload == {"step": 100, "phase": "plan"}
 
-    finished = graph.step(
+    finished = producer.produce(
         replace(request, run_step=101),
         (ToolResult(tool_name="read", status="ok", content="hello", data={}),),
         session=request.session,
     )
     assert finished.is_finished is True
     assert finished.output == "hello"
-    assert finished.events[-2].payload == {"step": 102, "phase": "finalize"}
+    assert finished.facts[-2].payload == {"step": 102, "phase": "finalize"}

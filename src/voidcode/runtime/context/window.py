@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
-from ...core.transcript import ContextSegment, ToolResultView
+from ...core.transcript import ContextSegment, ToolResultView, tool_result_output
 from ...provider.model_catalog import static_catalog_metadata
 from ...provider.tokenizer import count_tokens
 from ...tools.contracts import ToolResult
@@ -348,7 +348,7 @@ def _tool_result_preview(result: ToolResult | ToolResultView, *, max_preview_cha
     if isinstance(command, str) and command:
         parts.append(f"command={command}")
 
-    content = normalize_read_output(result.content)
+    content = tool_result_output(result)
     error = result.error.strip() if result.error else ""
     preview_source = content or error
     if preview_source:
@@ -746,34 +746,6 @@ def _truncated_view_for_result(
         ),
         True,
     )
-
-
-def normalize_read_output(content: str | None) -> str | None:
-    if not content:
-        return content
-
-    stripped = content.strip()
-    if not (stripped.startswith("<path>") and "<content>" in stripped and "</content>" in stripped):
-        return content
-
-    body_start = stripped.find("<content>") + len("<content>")
-    body_end = stripped.rfind("</content>")
-    body = stripped[body_start:body_end].strip()
-    lines: list[str] = []
-    for raw_line in body.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if line.startswith("("):
-            if line.startswith("(Showing lines ") or line.startswith("(Output capped at "):
-                lines.append(line)
-            continue
-        if ": " in raw_line:
-            _, text = raw_line.split(": ", 1)
-            lines.append(text)
-            continue
-        lines.append(line)
-    return "\n".join(lines)
 
 
 def _build_continuity_state(

@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from voidcode.core.turns import TurnPlan
 from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.permission import (
@@ -33,7 +34,7 @@ from voidcode.tools.mcp import McpTool
 from voidcode.tools.shell_exec import ShellExecTool
 from voidcode.tools.write import WriteTool
 
-from .test_todo_reminder import _ScriptedGraph, _Step
+from .test_todo_reminder import _ScriptedGraph
 
 #: The omp matrix: mode → tier → decision. This is the expected side; the test
 #: drives the real resolver and compares against it.
@@ -93,11 +94,11 @@ def test_default_mode_auto_approves_write_tier_through_the_real_path(tmp_path: P
     Neither the mode nor the permission policy is passed here, so the runtime's
     own default selection is what resolves the call.
     """
-    graph = _ScriptedGraph([_write_step(), _Step(output="done", is_finished=True)])
+    graph = _ScriptedGraph([_write_step(), TurnPlan(output="done", is_finished=True)])
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([WriteTool()]),
-        graph=graph,
+        turn_producer=graph,
         config=RuntimeConfig(execution_engine="deterministic"),
     )
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id="approval-default-mode")))
@@ -166,12 +167,12 @@ def test_read_only_denial_still_wins_over_yolo_resolution() -> None:
     assert outcome.pending_approval.policy_surface == "mode.plan"
 
 
-def _write_step() -> _Step:
-    return _Step(tool_call=ToolCall(tool_name="write", arguments={"path": "auto.txt", "content": "written"}))
+def _write_step() -> TurnPlan:
+    return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={"path": "auto.txt", "content": "written"}),))
 
 
-def _exec_step() -> _Step:
-    return _Step(tool_call=ToolCall(tool_name="shell_exec", arguments={"command": "echo hi"}))
+def _exec_step() -> TurnPlan:
+    return TurnPlan(tool_calls=(ToolCall(tool_name="shell_exec", arguments={"command": "echo hi"}),))
 
 
 @pytest.mark.parametrize(
@@ -191,12 +192,12 @@ def test_write_mode_auto_approves_write_tier_but_prompts_for_execute(
     """End-to-end: under mode ``write`` the write-tier call resolves with no
     pending approval (``runtime.approval_resolved`` with ``allow``), while the
     execute-tier call parks on a ``runtime.approval_requested``."""
-    graph = _ScriptedGraph([step(), _Step(output="done", is_finished=True)])
+    graph = _ScriptedGraph([step(), TurnPlan(output="done", is_finished=True)])
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         session_store=None,
         tool_registry=ToolRegistry.from_tools([WriteTool(), ShellExecTool()]),
-        graph=graph,
+        turn_producer=graph,
         config=RuntimeConfig(
             execution_engine="deterministic",
             approval_mode=mode,

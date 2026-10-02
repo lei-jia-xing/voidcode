@@ -4,8 +4,8 @@
 
 ## Boundaries
 
-- **Prompt commands / slash commands** render into runtime prompts before graph execution.
-- **Tool instructions** (`read`, `grep`, `run`, `write`) are parsed here so graph and provider paths share one implementation.
+- **Prompt commands / slash commands** render into runtime prompts before core turn execution.
+- **Tool instructions** (`read`, `grep`, `run`, `write`) are parsed here so prompt paths share one implementation.
 - **TUI commands** are local UI actions identified by stable IDs and are intentionally separate from prompt commands.
 
 ## Sources
@@ -48,6 +48,6 @@ VoidCode ships two builtin prompt commands. They package common workflow intent 
 
 `/init` is intentionally a prompt command, not a separate CLI bootstrap flag: the active agent inspects the actual repository and writes a structured `AGENTS.md` with stable project knowledge. It should preserve useful existing guidance, avoid secrets and transient task state, and verify by reading the final file.
 
-Commands render templates into runtime prompts through `CommandRegistry` → `resolve_prompt_command()` → `render_command_template()`. The rendered prompt replaces the slash command line before graph or provider execution. Builtins are defined in `loader.py` as `_BUILTIN_COMMANDS` and can be overridden by project-local `commands/**/*.md` files.
+Commands render templates into runtime prompts through `CommandRegistry` → `resolve_prompt_command()` → `render_command_template()`. The rendered prompt replaces the slash command line before provider turn execution through the runtime host. Builtins are defined in `loader.py` as `_BUILTIN_COMMANDS` and can be overridden by project-local `commands/**/*.md` files.
 
 A command-declared `mode` is written into the request metadata `mode` field, where the runtime aggregation point (`resolve_mode`) turns it into the effective read-only stance and context transform refs.

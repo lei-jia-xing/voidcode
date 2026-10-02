@@ -4,7 +4,7 @@
 
 ## 定位
 
-`voidcode.runtime` 负责把执行、配置、权限、事件、持久化与恢复收口到同一个 runtime truth 中。CLI、HTTP、Web 以及后续 TUI 都应通过这里暴露的契约消费运行状态，而不是各自维护执行路径。
+`voidcode.runtime` 负责把执行、配置、权限、事件、持久化与恢复收口到同一个 runtime truth 中。CLI、HTTP、Web 和 TUI 都应通过这里暴露的契约消费运行状态，而不是各自维护执行路径。
 
 ## 负责什么
 
@@ -17,16 +17,16 @@
 
 ## 不负责什么
 
-- graph 内部的编排细节
+- core engine 的通用 turn/batch progression
 - tools 自己的具体业务实现
 - 客户端 UI 布局与交互逻辑
 - 独立 capability layer 的纯 schema / registry / preset 数据定义
 
 ## 边界关系
 
-- `voidcode.graph` 负责执行编排，不负责产品治理。
-- `voidcode.tools`、`voidcode.hook` 以及 capability-layer 目录都通过 runtime 进入真实执行路径。
-- 客户端只能消费 runtime contracts、events 和 session state，不能绕过 runtime 直接执行工具。
+- `voidcode.core.engine.TurnEngine` 推进 producer turns 与 tool batches，不负责产品治理。
+- `runtime.run_loop.RuntimeHost` 把 core engine 接入 runtime context、受治理的工具执行、审批、hooks、持久化与恢复。
+- `voidcode.tools`、`voidcode.hook` 以及 capability-layer 目录都通过 runtime 进入真实执行路径；客户端只消费 runtime contracts、events 和 session state。
 
 ## 当前状态
 

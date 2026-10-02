@@ -66,6 +66,14 @@ class ToolResultView:
         return getattr(self.result, name)
 
 
+def tool_result_output(result: ToolResult | ToolResultView) -> str | None:
+    if result.tool_name == "read" and result.status == "ok" and not (isinstance(result, ToolResultView) and (result.pruned or result.clipped)):
+        raw_content = result.data.get("raw_content")
+        if isinstance(raw_content, str):
+            return raw_content
+    return result.content
+
+
 @dataclass(frozen=True, slots=True)
 class ContextSegment:
     role: MessageRole
