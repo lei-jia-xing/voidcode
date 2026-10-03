@@ -1,6 +1,6 @@
 # Agent Core 重构实施计划
 
-状态：P0 治理基线与 P1–P3 contracts / 显式 tool invocation / 单一 turn engine cutover 已完成实现和 scoped 行为验证，P3 milestone 为 `9dc84ab`。P4 当前实现与 scoped 行为验证已完成，待独占 review 和 normal-hook milestone commit；P5–P6 及下述新增类型收敛计划尚未实施，实施与 milestone commit 须等待计划 review。scoped 验证不代表最终十项验收或项目级 gates 已通过。
+状态：P0 治理基线与 P1–P3 contracts / 显式 tool invocation / 单一 turn engine cutover 曾在 P3 工作区完成实现并通过 scoped 行为验证；但旧引用 P3 milestone `9dc84ab` 并非自包含的源码交付（`src/voidcode/core/engine.py` 不在该 commit tree），该 core 源码随 P4 normal-hook milestone `c67b854` 一并提交。P4 当前实现与 scoped 行为验证已由 normal-hook milestone `c67b854` 提交。P5–P6 与已批准但仅计划的新增类型收敛尚未实施。scoped 验证不代表最终十项验收或项目级 gates 已通过。
 
 依据：[pi × VoidCode 可扩展性审计](../audits/pi-voidcode-extensibility.md)。审计是历史快照，不改写；本计划的当前状态须以源码和实际行为为准。目标覆盖审计 P0-1～P0-6、P1-7～P1-8、§5 的组合问题和 §8 全部十项验收，不把 roadmap 当成增加产品功能的授权。
 
