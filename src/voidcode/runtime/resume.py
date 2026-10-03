@@ -6,9 +6,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..core.engine import CallSeed
 from ..core.questions import QuestionResponse
-from ..core.turns import TurnRequest
+from ..core.turns import CallSeed, TurnRequest
 from ..provider.protocol import ProviderAbortSignal
 from ..tools.contracts import ToolCall, ToolResult
 from ..tools.question import QuestionTool
@@ -82,7 +81,7 @@ from .session_metadata_helpers import (
     waiting_reason_from_session,
 )
 from .skills import skill_binding_mismatch_payload, skill_prompt_context_for_assembly
-from .storage import SessionStore
+from .storage import SessionEventRepository, SessionRecoveryRepository, SessionRepository
 
 if TYPE_CHECKING:
     from .acp import AcpAdapter
@@ -117,7 +116,9 @@ class RuntimeResumeCoordinator:
         self,
         surface: RuntimeSurface,
         *,
-        session_store: SessionStore,
+        events: SessionEventRepository,
+        sessions: SessionRepository,
+        recovery: SessionRecoveryRepository,
         workspace: Path,
         config: RuntimeConfig,
         permission_policy: PermissionPolicy,
@@ -127,7 +128,9 @@ class RuntimeResumeCoordinator:
         run_loop_coordinator: RuntimeRunLoopCoordinator,
     ) -> None:
         self._surface = surface
-        self._session_store = session_store
+        self._events = events
+        self._sessions = sessions
+        self._recovery = recovery
         self._workspace = workspace
         self._config = config
         self._permission_policy = permission_policy
@@ -423,7 +426,7 @@ class RuntimeResumeCoordinator:
         # append happens here, after every pre-loop refusal, so a resume that
         # cannot be honored (missing capability snapshot, bad checkpoint, ...)
         # fails before it consumes the pending answer.
-        persisted_answer_events = self._session_store.append_session_events(
+        persisted_answer_events = self._events.append_session_events(
             workspace=self._workspace,
             session_id=session.session.id,
             events=(
@@ -578,7 +581,7 @@ class RuntimeResumeCoordinator:
         if final_session is None:
             raise ValueError("runtime stream emitted no chunks")
         if final_session.status == "waiting":
-            final_session = reload_persisted_session(self._session_store, self._workspace, session_id=final_session.session.id)
+            final_session = reload_persisted_session(self._sessions, self._workspace, session_id=final_session.session.id)
         response = RuntimeResponse(
             session=final_session,
             events=stored_response.events + tuple(streamed_events),
@@ -1034,7 +1037,7 @@ class RuntimeResumeCoordinator:
         )
 
     def load_resume_checkpoint(self, *, session_id: str) -> dict[str, object] | None:
-        return self._session_store.load_resume_checkpoint(
+        return self._recovery.load_resume_checkpoint(
             workspace=self._workspace,
             session_id=session_id,
         )
@@ -1049,13 +1052,13 @@ class RuntimeResumeCoordinator:
         table — a later checkout restores them — and only the response is
         narrowed.
         """
-        stored = self._session_store.load_session(
+        stored = self._sessions.load_session(
             workspace=self._workspace,
             session_id=session_id,
         )
         path_sequences = {
             event.sequence
-            for event in self._session_store.session_path(
+            for event in self._events.session_path(
                 workspace=self._workspace,
                 session_id=session_id,
             )
@@ -1218,7 +1221,7 @@ class RuntimeResumeCoordinator:
         # no capability snapshot to replay — must fail without having moved the
         # session's position, and the session row is read here only for its
         # identity and turn.
-        stored_row = self._session_store.load_session(
+        stored_row = self._sessions.load_session(
             workspace=self._workspace,
             session_id=session_id,
         )
@@ -1290,7 +1293,7 @@ class RuntimeResumeCoordinator:
         elif intent is not None and not never_replay:
             raise ValueError("legacy v3 interrupted native call has no authentic durable batch; migrate it before resuming")
         if checkpoint_last_sequence is not None:
-            self._session_store.restore_leaf_after_interrupted_resume(
+            self._recovery.restore_leaf_after_interrupted_resume(
                 workspace=self._workspace,
                 session_id=session_id,
                 sequence=checkpoint_last_sequence,
@@ -1374,7 +1377,7 @@ class RuntimeResumeCoordinator:
         # via ``append_session_events``, which rejects non-lifecycle events on a
         # sealed row. Transition it back to ``interrupted`` (the same un-seal the
         # fresh-run path performs) so the resumed loop can append.
-        self._session_store.save_interrupted_checkpoint(
+        self._recovery.save_interrupted_checkpoint(
             workspace=self._workspace,
             session_id=session_id,
             prompt=prompt,
@@ -1520,7 +1523,7 @@ class RuntimeResumeCoordinator:
         started = raw.get("started_sequence")
         if not isinstance(started, int) or isinstance(started, bool):
             raise ValueError("persisted native batch has no valid start sequence")
-        path = self._session_store.session_path(workspace=self._workspace, session_id=session.session.id, sequence=sequence)
+        path = self._events.session_path(workspace=self._workspace, session_id=session.session.id, sequence=sequence)
         _, durable_results = prompt_and_tool_results_from_debug_events(tuple(event for event in path if event.sequence > started))
         if not path:
             raw_calls = raw.get("calls")
@@ -1538,12 +1541,12 @@ class RuntimeResumeCoordinator:
         session_id: str,
         approval_request_id: str,
     ) -> tuple[Any, PendingApproval, dict[str, object] | None]:
-        stored_response = self._session_store.load_session(
+        stored_response = self._sessions.load_session(
             workspace=self._workspace,
             session_id=session_id,
         )
         validate_session_workspace(stored_response.session, session_id=session_id, workspace=self._workspace)
-        pending = self._session_store.load_pending_approval(
+        pending = self._recovery.load_pending_approval(
             workspace=self._workspace,
             session_id=session_id,
         )
@@ -1561,7 +1564,7 @@ class RuntimeResumeCoordinator:
 
     def claim_pending_approval(self, *, session_id: str, approval_request_id: str) -> None:
         """Validate and atomically claim an approval before tool execution."""
-        pending = self._session_store.load_pending_approval(
+        pending = self._recovery.load_pending_approval(
             workspace=self._workspace,
             session_id=session_id,
         )
@@ -1571,7 +1574,7 @@ class RuntimeResumeCoordinator:
             session_id=session_id,
             approval_request_id=approval_request_id,
         )
-        if not self._session_store.claim_pending_approval(
+        if not self._recovery.claim_pending_approval(
             workspace=self._workspace,
             session_id=session_id,
             request_id=approval_request_id,
@@ -1585,12 +1588,12 @@ class RuntimeResumeCoordinator:
         question_request_id: str,
         responses: tuple[QuestionResponse, ...],
     ) -> tuple[Any, PendingQuestion, dict[str, object] | None, tuple[QuestionResponse, ...]]:
-        stored_response = self._session_store.load_session(
+        stored_response = self._sessions.load_session(
             workspace=self._workspace,
             session_id=session_id,
         )
         validate_session_workspace(stored_response.session, session_id=session_id, workspace=self._workspace)
-        pending = self._session_store.load_pending_question(
+        pending = self._recovery.load_pending_question(
             workspace=self._workspace,
             session_id=session_id,
         )

@@ -1,17 +1,25 @@
 import json
 import sqlite3
+import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from voidcode.core.questions import QuestionResponse
+from voidcode.core.tool_context import ToolContext
 from voidcode.core.turns import TurnPlan, TurnRequest, TurnSession
-from voidcode.runtime.config import RuntimeConfig
+from voidcode.runtime.config import RuntimeConfig, RuntimeHooksConfig
+from voidcode.runtime.fact_store import SqliteFactStore
 from voidcode.runtime.paths import sessions_db_path
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
-from voidcode.tools.contracts import ToolCall
+from voidcode.runtime.storage import SqliteSessionStore
+from voidcode.runtime.storage.ports import RuntimeRepositories
+from voidcode.runtime.tool_registry import ToolRegistry
+from voidcode.tools.contracts import ToolCall, ToolResult
+from voidcode.tools.write import WriteTool
 
 
 class _QuestionThenWriteGraph:
@@ -165,3 +173,78 @@ def test_question_answer_is_durable_in_session_events_and_replay(tmp_path: Path)
     checkpoint = json.loads(checkpoint_json)
     answers = [answers for tool_result in checkpoint["tool_results"] for answers in (tool_result["data"].get("responses") or [])]
     assert {"header": "Path", "answers": ["A"]} in answers
+
+
+@pytest.mark.parametrize("boundary", ("stream_close", "terminal_save_failure"))
+def test_completed_approved_write_reopens_once_with_frozen_hook_semantics(tmp_path: Path, boundary: str) -> None:
+    class RecordingWrite:
+        definition = WriteTool.definition
+
+        def __init__(self) -> None:
+            self.call_ids: list[str | None] = []
+            self.delegate = WriteTool()
+
+        def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+            self.call_ids.append(call.tool_call_id)
+            return self.delegate.invoke(call, context=context)
+
+    class FailingTerminalOwner(SqliteSessionStore):
+        fail_completed = False
+
+        def save_run(self, **kwargs: Any) -> None:
+            if self.fail_completed and kwargs["response"].session.status == "completed":
+                self.fail_completed = False
+                raise OSError("planned terminal-save failure")
+            super().save_run(**kwargs)
+
+    database = tmp_path / "approved.sqlite3"
+    owner = FailingTerminalOwner(database_path=database)
+    writer = RecordingWrite()
+    tools = ToolRegistry.with_defaults()
+    tools.tools["write"] = writer
+    command = (sys.executable, "-c", "from pathlib import Path; Path('frozen-hook.txt').write_text('frozen')")
+    config = RuntimeConfig(
+        execution_engine="deterministic",
+        approval_mode="ask",
+        hooks=RuntimeHooksConfig(enabled=True, on_session_end=(command,)),
+    )
+    session_id = "approved-recovery"
+    target = tmp_path / "approved.txt"
+    with VoidCodeRuntime(
+        workspace=tmp_path,
+        repositories=RuntimeRepositories(owner, owner, owner, owner, owner, owner, owner),
+        tool_registry=tools,
+        config=config,
+    ) as runtime:
+        waiting = runtime.run(RuntimeRequest(prompt="write approved.txt approved-once", session_id=session_id))
+        request_id = next(str(event.payload["request_id"]) for event in waiting.events if event.event_type == "runtime.approval_requested")
+        assert writer.call_ids == [] and not target.exists()
+        if boundary == "stream_close":
+            stream = runtime.resume_stream(session_id, approval_request_id=request_id, approval_decision="allow")
+            for chunk in stream:
+                if chunk.event is not None and chunk.event.event_type == "runtime.tool_completed":
+                    stream.close()
+                    break
+            else:
+                pytest.fail("the real approved write did not commit")
+        else:
+            owner.fail_completed = True
+            with pytest.raises(OSError):
+                runtime.resume(session_id, approval_request_id=request_id, approval_decision="allow")
+        written = (target.read_bytes(), target.stat().st_mtime_ns)
+        assert written[0] == b"approved-once" and len(writer.call_ids) == 1
+    reopened = SqliteSessionStore(database_path=database)
+    seed = SqliteFactStore(events=reopened, recovery=reopened, workspace=tmp_path, session_id=session_id).restore_batch()
+    assert [result.data["tool_call_id"] for result in seed.completed_results] == writer.call_ids
+    marker = tmp_path / "frozen-hook.txt"
+    marker.unlink(missing_ok=True)
+    with VoidCodeRuntime(
+        workspace=tmp_path,
+        repositories=RuntimeRepositories(reopened, reopened, reopened, reopened, reopened, reopened, reopened),
+        tool_registry=tools,
+        config=replace(config, hooks=RuntimeHooksConfig(enabled=False)),
+    ) as runtime:
+        response = runtime.resume(session_id)
+    assert response.session.status == "completed"
+    assert len(writer.call_ids) == 1 and written == (target.read_bytes(), target.stat().st_mtime_ns)
+    assert marker.read_text(encoding="utf-8") == "frozen"

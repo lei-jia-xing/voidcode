@@ -14,7 +14,18 @@ from ..core.engine import CallOutcome, EngineState, TurnBatch, TurnEngine
 from ..core.todos import TodoPhase
 from ..core.tool_context import ToolContext
 from ..core.transcript import AssembledContext, ContextSegment, ToolResultView
-from ..core.turns import StreamingTurnProducer, TurnFact, TurnPlan, TurnProducer, TurnRequest
+from ..core.turns import (
+    CallSeed,
+    StreamFact,
+    StreamingTurnProducer,
+    ToolCompletedFact,
+    ToolRequestedFact,
+    TurnFact,
+    TurnPlan,
+    TurnProducer,
+    TurnRequest,
+    normalize_call_result,
+)
 from ..hook.config import RuntimeHookSurface
 from ..hook.typed import (
     ToolInputEvent,
@@ -71,7 +82,6 @@ from .event_envelopes import (
     envelopes_for_acp_events,
     envelopes_for_lsp_events,
     envelopes_for_mcp_events,
-    renumber_events,
 )
 from .events import (
     REASONING_PERSISTED_LIMIT_CHARS,
@@ -122,16 +132,15 @@ from .execution.tool_result_projection import (
     _normalized_tool_result,
     _progress_payload_size,
     _serialized_tool_results,
-    _tool_completed_identity_payload,
-    _tool_completed_payload,
     _tool_error_details,
-    _tool_error_diagnostics,  # noqa: F401 — preserve run_loop private import compatibility
-    _tool_error_payload,
+    _tool_error_diagnostics,
     _tool_error_retry_guidance,
     _tool_error_summary,
 )
 from .execution.turn_adapter import turn_request_for_session, turn_session_snapshot
 from .execution.turn_recovery import AnsweredQuestion, ApprovedInvocation, RuntimeContinuation, persisted_turn_batch
+from .fact_codec import encode_fact
+from .fact_store import SqliteFactStore
 from .hook_runtime import (
     HOOK_RECURSION_ENV_VAR,
     before_compact_input_from_hook_outcome,
@@ -178,7 +187,7 @@ from .session_metadata_helpers import (
     session_with_todo_state,
 )
 from .skill_metadata import skill_snapshot_from_metadata
-from .storage import SessionStore
+from .storage import SessionEventRepository, SessionRecoveryRepository, SessionRepository
 from .todos import runtime_todo_phases_from_payload, todo_state_from_session_metadata
 from .tool_call_preview import PREVIEW_SNAPSHOT_MAX_BYTES, WRITE_PREVIEW_TOOLS, build_partial_tool_call_preview, build_tool_call_preview
 from .tool_display import build_tool_display, build_tool_status
@@ -482,14 +491,11 @@ def _live_event_surfaces_output(event: TurnFact) -> bool:
     assistant output. ``error``/``done`` markers carry no output, so they must not
     block a retry/fallback.
     """
+    if not isinstance(event, StreamFact):
+        return False
     if event.kind == "provider_stream":
-        if event.payload.get("kind") not in {"delta", "content"}:
-            return False
-        if event.payload.get("channel") not in {"text", "reasoning"}:
-            return False
-        text = event.payload.get("text")
-        return isinstance(text, str) and bool(text)
-    return event.kind in {"tool_call_start", "tool_call_delta", "tool_call_end"}
+        return event.event.kind in {"delta", "content"} and event.event.channel in {"text", "reasoning"} and bool(event.event.text)
+    return True
 
 
 class _ProviderErrorPolicyVerdict(TypedDict):
@@ -522,7 +528,9 @@ class RuntimeRunLoopCoordinator:
         self,
         surface: RuntimeSurface,
         *,
-        session_store: SessionStore,
+        events: SessionEventRepository,
+        sessions: SessionRepository,
+        recovery: SessionRecoveryRepository,
         workspace: Path,
         config: RuntimeConfig,
         permission_policy: PermissionPolicy,
@@ -534,7 +542,9 @@ class RuntimeRunLoopCoordinator:
         tool_executor: RuntimeToolExecutor,
     ) -> None:
         self._surface = surface
-        self._session_store = session_store
+        self._events = events
+        self._sessions = sessions
+        self._recovery = recovery
         self._workspace = workspace
         self._config = config
         self._permission_policy = permission_policy
@@ -584,7 +594,7 @@ class RuntimeRunLoopCoordinator:
         session_id: str,
         events: tuple[tuple[str, EventSource, dict[str, object], str | None], ...],
     ) -> tuple[EventEnvelope, ...]:
-        return self._session_store.append_session_events(
+        return self._events.append_session_events(
             workspace=self._workspace,
             session_id=session_id,
             events=events,
@@ -603,6 +613,16 @@ class RuntimeRunLoopCoordinator:
             session_id=session_id,
             events=((event_type, source, payload, dedupe_key),),
         )[0]
+
+    def _fact_store(self, session: SessionState) -> SqliteFactStore:
+        return SqliteFactStore(
+            events=self._events, recovery=self._recovery, workspace=self._workspace, session_id=session.session.id, session=session
+        )
+
+    def _persist_fact(self, *, session: SessionState, fact: TurnFact) -> EventEnvelope:
+        if isinstance(fact, ToolCompletedFact):
+            fact = replace(fact, result=normalize_call_result(fact.call, fact.result, final_arguments=fact.call.arguments))
+        return self._fact_store(session).append_for_publication((fact,))[0]
 
     def _persist_chunk(self, chunk: RuntimeStreamChunk) -> tuple[RuntimeStreamChunk, int]:
         event = chunk.event
@@ -645,7 +665,7 @@ class RuntimeRunLoopCoordinator:
             raise ValueError("yield progress payload is missing its bounded progress object")
         # The event log is the sole ordinal/retention authority. Storage
         # failures must propagate rather than silently restarting at ordinal 1.
-        stored = self._session_store.load_session(workspace=self._workspace, session_id=session.session.id)
+        stored = self._sessions.load_session(workspace=self._workspace, session_id=session.session.id)
         prior_progress = [
             event
             for event in stored.events
@@ -687,7 +707,7 @@ class RuntimeRunLoopCoordinator:
         last_event_sequence: int,
     ) -> None:
         current_turn_results = [result for result in tool_results if result.source != "replayed_conversation"]
-        self._session_store.save_interrupted_checkpoint(
+        self._recovery.save_interrupted_checkpoint(
             workspace=self._workspace,
             session_id=session.session.id,
             prompt=prompt,
@@ -708,37 +728,9 @@ class RuntimeRunLoopCoordinator:
         tool_call_id: str,
         abort_signal: ProviderAbortSignal | None,
     ) -> tuple[RuntimeStreamChunk, RuntimeStreamChunk]:
-        sanitized_args = sanitize_tool_arguments(dict(tool_call.arguments))
-        failed_display = build_tool_display(tool_call.tool_name, sanitized_args)
-        failed_status = build_tool_status(
-            tool_call.tool_name,
-            tool_call_id,
-            phase="failed",
-            status="failed",
-            display=failed_display,
-        )
-        completed_chunk, _ = self._persist_chunk(
-            RuntimeStreamChunk(
-                kind="event",
-                session=session,
-                event=EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=sequence + 1,
-                    event_type="runtime.tool_completed",
-                    source="tool",
-                    payload={
-                        **_tool_completed_identity_payload(session),
-                        "tool": tool_call.tool_name,
-                        "tool_call_id": tool_call_id,
-                        "arguments": sanitized_args,
-                        "status": "error",
-                        "error": "run interrupted",
-                        "display": failed_display,
-                        "tool_status": failed_status,
-                    },
-                ),
-            )
-        )
+        result = ToolResult(tool_name=tool_call.tool_name, status="error", error="run interrupted")
+        completion = self._persist_fact(session=session, fact=ToolCompletedFact(replace(tool_call, tool_call_id=tool_call_id), result))
+        completed_chunk = RuntimeStreamChunk(kind="event", session=session, event=completion)
         failed_chunk, _ = self._persist_chunk(
             chunk_builders.failed_chunk(
                 session=session,
@@ -839,7 +831,7 @@ class RuntimeRunLoopCoordinator:
                 updates={"pending_tool_intent": intent_payload},
             ),
         )
-        persist_tool_execution_intent(self._session_store, self._workspace, session, intent_payload)
+        persist_tool_execution_intent(self._sessions, self._workspace, session, intent_payload)
         return canonical_tool_call, canonical_tool_call_id, intent_payload, session
 
     def _emit_started_tool_event(
@@ -1022,21 +1014,12 @@ class RuntimeRunLoopCoordinator:
         session: SessionState,
         sequence: int,
         turn_plan: TurnPlan,
-        reasoning_capture_state: ReasoningCaptureState,
         current_chunk_session: SessionState,
     ) -> Generator[RuntimeStreamChunk, None, int]:
-        live_only_kinds = {"provider_stream", "tool_call_start", "tool_call_delta", "tool_call_end"}
-        step_events = tuple(fact for fact in turn_plan.facts if fact.kind not in live_only_kinds)
-        renumbered_events = renumber_events(
-            step_events,
-            session_id=session.session.id,
-            start_sequence=sequence + 1,
-            reasoning_capture_state=reasoning_capture_state,
-        )
-        persisted_events = self._persist_events(
-            session_id=session.session.id,
-            events=tuple((event.event_type, event.source, event.payload, None) for event in renumbered_events),
-        )
+        if any(isinstance(fact, (ToolRequestedFact, ToolCompletedFact)) for fact in turn_plan.facts):
+            raise ValueError("producer facts cannot claim governed runtime tool execution")
+        step_events = tuple(fact for fact in turn_plan.facts if not isinstance(fact, StreamFact))
+        persisted_events = self._fact_store(session).append_for_publication(step_events)
         for envelope in persisted_events:
             sequence = envelope.sequence
             yield RuntimeStreamChunk(kind="event", session=current_chunk_session, event=envelope)
@@ -1624,46 +1607,34 @@ class RuntimeRunLoopCoordinator:
             partial_tool_names: dict[str, str] = {}
 
             def decorate_live_event(event: TurnFact) -> TurnFact:
-                if event.kind not in {"tool_call_start", "tool_call_delta", "tool_call_end"}:
+                if not isinstance(event, StreamFact) or event.kind == "provider_stream":
                     return event
-                payload = dict(event.payload)
-                raw_call_id = payload.get("tool_call_id")
-                call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id else None
-                raw_name = payload.get("tool_name")
-                tool_name = raw_name if isinstance(raw_name, str) else None
+                raw_event = event.event
+                call_id = raw_event.tool_call_id
+                tool_name = event.tool_name or raw_event.tool_name
                 tracking_id = call_id or f"anonymous:{tool_name or 'unknown'}"
+                preview = event.diff_preview
                 if call_id is not None or tool_name in WRITE_PREVIEW_TOOLS:
                     partial_tool_names[tracking_id] = tool_name or partial_tool_names.get(tracking_id, "")
                     fragments = partial_fragments.setdefault(tracking_id, [])
-                    raw_delta = payload.get("arguments_delta")
-                    if isinstance(raw_delta, str):
+                    if raw_event.arguments_delta is not None:
                         chars = partial_fragment_chars.get(tracking_id, 0)
                         if chars < PREVIEW_SNAPSHOT_MAX_BYTES:
-                            fragment = raw_delta[: PREVIEW_SNAPSHOT_MAX_BYTES - chars]
+                            fragment = raw_event.arguments_delta[: PREVIEW_SNAPSHOT_MAX_BYTES - chars]
                             fragments.append(fragment)
                             partial_fragment_chars[tracking_id] = chars + len(fragment)
-                    raw_parsed = payload.get("parsed_arguments")
-                    parsed = raw_parsed if isinstance(raw_parsed, dict) else None
                     tool_name = partial_tool_names.get(tracking_id) or tool_name
-                    if tool_name in WRITE_PREVIEW_TOOLS:
-                        if "diff_preview" not in payload:
-                            try:
-                                diff_preview = build_partial_tool_call_preview(
-                                    workspace=self._workspace,
-                                    tool_name=tool_name,
-                                    argument_text="".join(fragments),
-                                    parsed_arguments=parsed,
-                                )
-                            except Exception:
-                                diff_preview = None
-                            if diff_preview is not None:
-                                payload["diff_preview"] = diff_preview
-                        # The write payload can include arbitrary source or
-                        # secret-like content; diff_preview is the canonical,
-                        # bounded projection for these lifecycle events.
-                        payload.pop("arguments_delta", None)
-                        payload.pop("parsed_arguments", None)
-                return TurnFact(kind=event.kind, payload=payload)
+                    if tool_name in WRITE_PREVIEW_TOOLS and preview is None:
+                        try:
+                            preview = build_partial_tool_call_preview(
+                                workspace=self._workspace,
+                                tool_name=tool_name,
+                                argument_text="".join(fragments),
+                                parsed_arguments=raw_event.parsed_arguments,
+                            )
+                        except Exception:
+                            preview = None
+                return replace(event, diff_preview=preview, tool_name=tool_name)
 
             stream_request = replace(
                 turn_request,
@@ -1693,22 +1664,19 @@ class RuntimeRunLoopCoordinator:
                     continue
                 if isinstance(streamed_item, TurnFact):
                     streamed_item = decorate_live_event(streamed_item)
+                    encoded = encode_fact(streamed_item, session=session)
+                    if encoded.persistable:
+                        raise ValueError("producer streaming yields live provider facts, not durable execution claims")
                     # Content-bearing live events are about to reach the client;
                     # from here on the attempt has user-visible stream output and
                     # must not be silently replayed (retry/fallback).
                     if _live_event_surfaces_output(streamed_item):
                         attempt_stream_visibility.surfaced = True
-                    # Live client-only stream deltas are NOT persisted, so
-                    # they must not advance the persisted-sequence cursor.
-                    # They share the current cursor value; the renumbered
-                    # batch persisted after this loop continues monotonically.
-                    # Reasoning deltas are additionally accumulated so the
-                    # turn can persist one aggregated runtime.reasoning_part
-                    # below, keeping replay faithful after the live stream
-                    # ends (mirrors renumber_events capture semantics).
+                    # Live deltas are client-only. Aggregate reasoning separately
+                    # for one durable runtime.reasoning_part after the stream.
                     if streamed_item.kind == "provider_stream":
                         reasoning_capture_state.stream_observed = True
-                        reasoning_payload = runtime_reasoning_part_from_provider_stream(streamed_item.payload)
+                        reasoning_payload = runtime_reasoning_part_from_provider_stream(encoded.payload)
                         if reasoning_payload is not None:
                             reasoning_capture_state.reasoning_observed = True
                             captured_text = reasoning_payload.get("text")
@@ -1724,9 +1692,9 @@ class RuntimeRunLoopCoordinator:
                         event=EventEnvelope(
                             session_id=session.session.id,
                             sequence=sequence,
-                            event_type=f"graph.{streamed_item.kind}",
-                            source="graph",
-                            payload=streamed_item.payload,
+                            event_type=encoded.event_type,
+                            source=encoded.source,
+                            payload=encoded.payload,
                         ),
                     )
                 else:
@@ -2248,11 +2216,7 @@ class RuntimeRunLoopCoordinator:
         explicit_tool_call_id = plan_tool_call.tool_call_id
         tool_call_id = explicit_tool_call_id or f"runtime-tool-{uuid4().hex}"
         if approved is None:
-            graph_payload: dict[str, object] = {
-                "tool": original_tool_call.tool_name,
-                "arguments": dict(original_tool_call.arguments),
-                **({"path": path} if isinstance((path := original_tool_call.arguments.get("path")), str) else {}),
-            }
+            diff_preview = None
             if original_tool_call.tool_name in WRITE_PREVIEW_TOOLS:
                 try:
                     diff_preview = build_tool_call_preview(
@@ -2260,13 +2224,7 @@ class RuntimeRunLoopCoordinator:
                     )
                 except Exception:
                     diff_preview = None
-                if diff_preview is not None:
-                    graph_payload["diff_preview"] = diff_preview
-            if explicit_tool_call_id is not None or runtime.effective_runtime_config_from_metadata(session.metadata).execution_engine == "provider":
-                graph_payload["tool_call_id"] = tool_call_id
-            envelope = self._persist_event(
-                session_id=session.session.id, event_type="graph.tool_request_created", source="graph", payload=graph_payload
-            )
+            envelope = self._persist_fact(session=session, fact=ToolRequestedFact(original_tool_call, diff_preview=diff_preview))
             sequence = envelope.sequence
             yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
         delegation_policy_error = runtime.delegation_tool_policy_error(session=session, tool_name=plan_tool_call.tool_name)
@@ -2516,41 +2474,22 @@ class RuntimeRunLoopCoordinator:
                     },
                 )
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-                timeout_sanitized_args = sanitize_tool_arguments(dict(plan_tool_call.arguments))
-                failed_display = build_tool_display(plan_tool_call.tool_name, timeout_sanitized_args)
-                failed_status = build_tool_status(
-                    plan_tool_call.tool_name,
-                    tool_call_id,
-                    phase="failed",
-                    status="failed",
-                    display=failed_display,
+                timeout_error = partial_timeout_error or exc.error_message
+                timeout_result = ToolResult(
+                    tool_name=plan_tool_call.tool_name,
+                    status="error",
+                    content=partial_timeout_content,
+                    error=timeout_error,
+                    data={**partial_timeout_payload, **timeout_facts},
+                    diagnostics=_tool_error_diagnostics(
+                        tool_name=plan_tool_call.tool_name,
+                        error=timeout_error,
+                        error_kind="tool_timeout",
+                        extra_details={"timed_out": True, "timeout_seconds": tool_timeout, **timeout_facts},
+                    ),
                 )
-                envelope = self._persist_event(
-                    session_id=session.session.id,
-                    event_type="runtime.tool_completed",
-                    source="tool",
-                    payload={
-                        **_tool_completed_identity_payload(session),
-                        **partial_timeout_payload,
-                        "tool": plan_tool_call.tool_name,
-                        "tool_call_id": tool_call_id,
-                        "arguments": timeout_sanitized_args,
-                        "status": "error",
-                        "content": partial_timeout_content,
-                        **timeout_facts,
-                        **_tool_error_payload(
-                            tool_name=plan_tool_call.tool_name,
-                            error=partial_timeout_error or exc.error_message,
-                            error_kind="tool_timeout",
-                            extra_details={
-                                "timed_out": True,
-                                "timeout_seconds": tool_timeout,
-                                **timeout_facts,
-                            },
-                        ),
-                        "display": failed_display,
-                        "tool_status": failed_status,
-                    },
+                envelope = self._persist_fact(
+                    session=session, fact=ToolCompletedFact(replace(plan_tool_call, tool_call_id=tool_call_id), timeout_result)
                 )
                 sequence = envelope.sequence
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
@@ -2570,33 +2509,15 @@ class RuntimeRunLoopCoordinator:
                 yield failed_chunk
                 return "returned", None, session, sequence
             if not tool_exception_recovery_enabled and not _is_tool_timeout_like_exception(exc):
-                error_sanitized_args = sanitize_tool_arguments(dict(plan_tool_call.arguments))
-                failed_display = build_tool_display(plan_tool_call.tool_name, error_sanitized_args)
-                failed_status = build_tool_status(
-                    plan_tool_call.tool_name,
-                    tool_call_id,
-                    phase="failed",
-                    status="failed",
-                    display=failed_display,
+                error_result = ToolResult(
+                    tool_name=plan_tool_call.tool_name,
+                    status="error",
+                    content=_tool_error_content(plan_tool_call.tool_name, str(exc)),
+                    error=str(exc),
+                    diagnostics=_tool_error_diagnostics(tool_name=plan_tool_call.tool_name, error=str(exc)),
                 )
-                envelope = self._persist_event(
-                    session_id=session.session.id,
-                    event_type="runtime.tool_completed",
-                    source="tool",
-                    payload={
-                        **_tool_completed_identity_payload(session),
-                        "tool": plan_tool_call.tool_name,
-                        "tool_call_id": tool_call_id,
-                        "arguments": error_sanitized_args,
-                        "status": "error",
-                        "content": _tool_error_content(plan_tool_call.tool_name, str(exc)),
-                        **_tool_error_payload(
-                            tool_name=plan_tool_call.tool_name,
-                            error=str(exc),
-                        ),
-                        "display": failed_display,
-                        "tool_status": failed_status,
-                    },
+                envelope = self._persist_fact(
+                    session=session, fact=ToolCompletedFact(replace(plan_tool_call, tool_call_id=tool_call_id), error_result)
                 )
                 sequence = envelope.sequence
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
@@ -2759,26 +2680,18 @@ class RuntimeRunLoopCoordinator:
         sequence: int,
         plan_tool_call: ToolCall,
         tool_call_id: str,
-        sanitized_arguments: dict[str, object],
         tool_result: ToolResult,
         runtime_tool_result_data: dict[str, object],
         todo_mutated: bool,
+        batch: CallSeed | None = None,
     ) -> Generator[RuntimeStreamChunk, None, tuple[int, SessionState]]:
-        completed_payload = _tool_completed_payload(
-            session=session,
-            tool_result=tool_result,
-            tool_call_id=tool_call_id,
-            sanitized_arguments=sanitized_arguments,
+        envelope = self._persist_fact(
+            session=session, fact=ToolCompletedFact(replace(plan_tool_call, tool_call_id=tool_call_id), tool_result, batch=batch)
         )
-        envelope = self._persist_event(
-            session_id=session.session.id,
-            event_type="runtime.tool_completed",
-            source="tool",
-            payload=completed_payload,
-        )
+        completed_payload = envelope.payload
         sequence = envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-        session = clear_tool_execution_intent(self._session_store, self._workspace, session)
+        session = clear_tool_execution_intent(self._sessions, self._workspace, session)
 
         if plan_tool_call.tool_name == "skill" and tool_result.status == "ok":
             skill_payload = completed_payload.get("skill")
@@ -2843,25 +2756,8 @@ class RuntimeRunLoopCoordinator:
                 guidance="Check the tool name and arguments, then retry.",
             ),
         )
-        completed_display = build_tool_display(tool_name, sanitized_arguments, result_data=tool_result.data)
-        completed_status = build_tool_status(tool_name, tool_call_id, phase="failed", status="failed", display=completed_display)
-        envelope = self._persist_event(
-            session_id=session.session.id,
-            event_type="runtime.tool_completed",
-            source="tool",
-            payload={
-                **_tool_completed_identity_payload(session),
-                **tool_result.data,
-                "tool": tool_result.tool_name,
-                "tool_call_id": tool_call_id,
-                "arguments": sanitized_arguments,
-                "status": tool_result.status,
-                "content": tool_result.content,
-                "error": tool_result.error,
-                "diagnostics": tool_result.diagnostics.as_payload() if tool_result.diagnostics is not None else None,
-                "display": completed_display,
-                "tool_status": completed_status,
-            },
+        envelope = self._persist_fact(
+            session=session, fact=ToolCompletedFact(ToolCall(tool_name=tool_name, arguments=arguments, tool_call_id=tool_call_id), tool_result)
         )
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
         return (envelope.sequence, replace(tool_result, data={**tool_result.data, "tool_call_id": tool_call_id, "arguments": sanitized_arguments}))
@@ -2908,7 +2804,7 @@ class RuntimeRunLoopCoordinator:
         inner_arguments = dict(parsed.arguments or {})
         original_inner_call = ToolCall(tool_name=inner_name, arguments=dict(inner_arguments), tool_call_id=outer_call_id)
         inner_call = original_inner_call
-        tool_request_payload: dict[str, object] = {"tool": original_inner_call.tool_name, "arguments": dict(original_inner_call.arguments)}
+        diff_preview = None
         if original_inner_call.tool_name in WRITE_PREVIEW_TOOLS:
             try:
                 diff_preview = build_tool_call_preview(
@@ -2916,13 +2812,7 @@ class RuntimeRunLoopCoordinator:
                 )
             except Exception:
                 diff_preview = None
-            if diff_preview is not None:
-                tool_request_payload["diff_preview"] = diff_preview
-        if outer_call_id is not None:
-            tool_request_payload["tool_call_id"] = outer_call_id
-        envelope = self._persist_event(
-            session_id=session.session.id, event_type="graph.tool_request_created", source="graph", payload=tool_request_payload
-        )
+        envelope = self._persist_fact(session=session, fact=ToolRequestedFact(original_inner_call, diff_preview=diff_preview))
         sequence = envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
         delegation_policy_error = runtime.delegation_tool_policy_error(session=session, tool_name=inner_name)
@@ -3136,32 +3026,10 @@ class RuntimeRunLoopCoordinator:
             )
             yield failed_chunk
             return (session, sequence, CallOutcome("stopped"))
-        completed_payload = {
-            **_tool_completed_identity_payload(session),
-            **tool_result.data,
-            "tool_call_id": outer_call_id,
-            "arguments": sanitized_arguments,
-            "status": tool_result.status,
-            "content": tool_result.content,
-            "error": tool_result.error,
-        }
-        if tool_result.diagnostics is not None:
-            completed_payload["diagnostics"] = tool_result.diagnostics.as_payload()
-        completed_payload["tool"] = tool_result.tool_name
-        completed_display = build_tool_display(inner_name, sanitized_arguments, result_data=tool_result.data)
-        completed_status = build_tool_status(
-            inner_name,
-            outer_call_id,
-            phase="completed" if tool_result.status == "ok" else "failed",
-            status="completed" if tool_result.status == "ok" else "failed",
-            display=completed_display,
-        )
-        completed_payload["display"] = completed_display
-        completed_payload["tool_status"] = completed_status
-        envelope = self._persist_event(session_id=session.session.id, event_type="runtime.tool_completed", source="tool", payload=completed_payload)
+        envelope = self._persist_fact(session=session, fact=ToolCompletedFact(replace(inner_call, tool_call_id=outer_call_id), tool_result))
         sequence = envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-        session = clear_tool_execution_intent(self._session_store, self._workspace, session)
+        session = clear_tool_execution_intent(self._sessions, self._workspace, session)
         if _is_abort_signal_requested(abort_signal):
             failed_chunk, _ = self._persist_chunk(
                 chunk_builders.failed_chunk(
@@ -3261,26 +3129,7 @@ class RuntimeRunLoopCoordinator:
                 guidance="Adjust the request or approval settings, then retry.",
             ),
         )
-        completed_display = build_tool_display(tool_call.tool_name, sanitized_arguments, result_data=tool_result.data)
-        completed_status = build_tool_status(tool_call.tool_name, tool_feedback_id, phase="failed", status="failed", display=completed_display)
-        envelope = self._persist_event(
-            session_id=session.session.id,
-            event_type="runtime.tool_completed",
-            source="tool",
-            payload={
-                **_tool_completed_identity_payload(session),
-                **tool_result.data,
-                "tool": tool_result.tool_name,
-                "tool_call_id": tool_feedback_id,
-                "arguments": sanitized_arguments,
-                "status": tool_result.status,
-                "content": tool_result.content,
-                "error": tool_result.error,
-                "diagnostics": tool_result.diagnostics.as_payload() if tool_result.diagnostics is not None else None,
-                "display": completed_display,
-                "tool_status": completed_status,
-            },
-        )
+        envelope = self._persist_fact(session=session, fact=ToolCompletedFact(replace(tool_call, tool_call_id=tool_feedback_id), tool_result))
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
         return (
             envelope.sequence,
@@ -3435,6 +3284,7 @@ class RuntimeHost:
         self.continuation = continuation
         self.state: EngineState | None = None
         self.current_batch: TurnBatch | None = None
+        self.batch_snapshot: CallSeed | None = None
         self.batch_started_sequence = continuation.started_sequence if continuation is not None else sequence
         coordinator._pending_hook_guidance = []
 
@@ -3444,14 +3294,24 @@ class RuntimeHost:
             if self.current_batch is not None or self.continuation is None:
                 self.batch_started_sequence = self.sequence
             self.current_batch = batch
+            self.batch_snapshot = CallSeed(batch.calls, reasoning=batch.reasoning, run_step=batch.run_step)
+        assert self.batch_snapshot is not None
         self.session = replace(
             self.session,
             metadata=session_metadata_with_runtime_state_updates(
                 self.session.metadata,
-                updates={"turn_batch": persisted_turn_batch(state, session_id=self.session.session.id, started_sequence=self.batch_started_sequence)},
+                updates={
+                    "turn_batch": persisted_turn_batch(
+                        self.batch_snapshot,
+                        session_id=self.session.session.id,
+                        run_id=state.request.run_id,
+                        started_sequence=self.batch_started_sequence,
+                        completed_call_ids=tuple(cast(str, result.data["tool_call_id"]) for result in batch.results),
+                    )
+                },
             ),
         )
-        self.coordinator._session_store.update_session_metadata(
+        self.coordinator._sessions.update_session_metadata(
             workspace=self.coordinator._workspace,
             session_id=self.session.session.id,
             metadata=self.session.metadata,
@@ -3667,7 +3527,6 @@ class RuntimeHost:
             session=self.session,
             sequence=self.sequence,
             turn_plan=plan,
-            reasoning_capture_state=self.reasoning_capture_state,
             current_chunk_session=self.current_chunk_session,
         )
         return True
@@ -3765,6 +3624,13 @@ class RuntimeHost:
             if action == "returned":
                 return CallOutcome("stopped")
             assert tool_result is not None
+        if approved is not None or answered is not None:
+            self.coordinator._capture_interrupted_checkpoint(
+                session=self.session,
+                prompt=state.request.prompt,
+                tool_results=state.results,
+                last_event_sequence=self.sequence,
+            )
         self.continuation = None
         tool_result, todo_mutated, runtime_data, self.session, self.sequence, terminated = yield from self.coordinator._finalize_tool_result(
             session=self.session,
@@ -3790,10 +3656,10 @@ class RuntimeHost:
             sequence=self.sequence,
             plan_tool_call=final_call,
             tool_call_id=call_id,
-            sanitized_arguments=arguments,
             tool_result=tool_result,
             runtime_tool_result_data=runtime_data,
             todo_mutated=todo_mutated,
+            batch=self.batch_snapshot,
         )
         completed = replace(tool_result, data={**tool_result.data, "tool_call_id": call_id, "arguments": arguments})
         if _is_abort_requested(state.request):
@@ -3847,7 +3713,7 @@ class RuntimeHost:
     def drain_messages(self, *, kind: Literal["steering", "followup"]) -> tuple[str, ...]:
         messages = self.runtime.drain_queued_messages(self.session.session.id, kind="follow_up" if kind == "followup" else "steering")
         if messages:
-            stored = self.coordinator._session_store.load_session(workspace=self.coordinator._workspace, session_id=self.session.session.id)
+            stored = self.coordinator._sessions.load_session(workspace=self.coordinator._workspace, session_id=self.session.session.id)
             metadata = dict(self.session.metadata)
             for key in ("pending_messages", "runtime_interaction_delivery_cursor"):
                 if key in stored.session.metadata:

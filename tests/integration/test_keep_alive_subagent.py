@@ -41,6 +41,7 @@ import pytest
 
 from voidcode.core.turns import TurnPlan, TurnSession
 from voidcode.runtime.execution_ownership import EXECUTION_OWNERSHIP
+from voidcode.runtime.storage import SessionRepository
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
@@ -140,7 +141,7 @@ class RuntimeFactory(Protocol):
         config: object | None = None,
         mcp_manager: object | None = None,
         permission_policy: object | None = None,
-        session_store: object | None = None,
+        repositories: object | None = None,
     ) -> RuntimeRunner: ...
 
 
@@ -353,16 +354,6 @@ class BackgroundTaskSupervisorLike(Protocol):
     threads: dict[str, threading.Thread]
 
 
-class StoredSessionLike(Protocol):
-    events: tuple[EventLike, ...]
-
-
-class SessionStoreLike(Protocol):
-    def load_session(self, *, workspace: Path, session_id: str) -> StoredSessionLike: ...
-
-    def load_session_status(self, *, workspace: Path, session_id: str) -> str: ...
-
-
 @dataclass(frozen=True, slots=True)
 class _SeizedKeepAlive:
     """Observable result of seizing a blocked keep-alive execution."""
@@ -392,7 +383,7 @@ def _session_ledger(runtime: RuntimeRunner, workspace: Path, session_id: str) ->
     point of the seized assertion is to read the row *while* the run is
     unfinished.
     """
-    store = cast(SessionStoreLike, _runtime_internals(runtime)._session_store)
+    store = cast(SessionRepository, _runtime_internals(runtime)._repositories.sessions)
     events = store.load_session(workspace=workspace, session_id=session_id).events
     return {
         "status": store.load_session_status(workspace=workspace, session_id=session_id),

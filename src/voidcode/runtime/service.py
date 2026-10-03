@@ -9,7 +9,7 @@ from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast, final
+from typing import TYPE_CHECKING, Literal, final
 
 from ..agent import AgentManifestRegistry, get_builtin_agent_manifest, load_agent_manifest_registry
 from ..agent.prompts import render_agent_prompt
@@ -93,7 +93,7 @@ from .background.models import (
     StoredBackgroundTaskSummary,
     is_background_task_terminal,
 )
-from .background.process import BackgroundProcessManager, BackgroundProcessPersistence
+from .background.process import BackgroundProcessManager
 from .background.routing import (
     delegated_model_for_route_from_configs,
     provider_fallback_for_agent_selection,
@@ -222,7 +222,6 @@ from .hook_runtime import (
     hook_execution_policy_from_metadata,
     run_lifecycle_hooks_for_session,
 )
-from .interaction_queue import drain_runtime_messages, enqueue_runtime_message
 from .lsp import LspManager, LspManagerState, LspRequestResult, build_lsp_manager
 from .mcp import McpManager, build_mcp_manager, mcp_server_for_tool_name
 from .mcp_tool_cache import McpToolCatalogCache
@@ -306,7 +305,7 @@ from .skills import (
     skill_prompt_context_for_assembly,
 )
 from .status_projection import project_acp_status
-from .storage import SessionSealedError, SessionStore, SqliteSessionStore
+from .storage import RuntimeRepositories, SessionSealedError, SqliteSessionStore
 from .tool_execution import RuntimeToolExecutor
 from .tool_materialization import materialize, materialize_unscoped, workspace_local_tools_factory
 from .tool_materializer import RuntimeToolMaterialization, RuntimeToolMaterializer
@@ -488,7 +487,7 @@ class VoidCodeRuntime(RuntimeSurface):
     _config: RuntimeConfig
     _initial_effective_config: EffectiveRuntimeConfig
     _permission_policy: PermissionPolicy
-    _session_store: SessionStore
+    _repositories: RuntimeRepositories
     _model_provider_registry: ModelProviderRegistry
     _provider_model: ResolvedProviderModel
     _provider_chain: ResolvedProviderChain
@@ -519,7 +518,7 @@ class VoidCodeRuntime(RuntimeSurface):
         turn_producer: TurnProducer | None = None,
         config: RuntimeConfig | None = None,
         permission_policy: PermissionPolicy | None = None,
-        session_store: SessionStore | None = None,
+        repositories: RuntimeRepositories | None = None,
         model_provider_registry: ModelProviderRegistry | None = None,
         skill_registry: SkillRegistry | None = None,
         lsp_manager: LspManager | None = None,
@@ -619,21 +618,38 @@ class VoidCodeRuntime(RuntimeSurface):
         else:
             self._turn_producer = None
         self._permission_policy = permission_policy or PermissionPolicy(mode=self._config.approval_mode)
-        self._session_store = session_store or SqliteSessionStore()
+        if repositories is None:
+            sqlite_store = SqliteSessionStore()
+            repositories = RuntimeRepositories(
+                events=sqlite_store,
+                sessions=sqlite_store,
+                run_writer=sqlite_store,
+                recovery=sqlite_store,
+                tasks=sqlite_store,
+                maintenance=sqlite_store,
+                process_persistence=sqlite_store,
+            )
+        self._repositories = repositories
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
         self._context_transform_registry = context_transform_registry or default_runtime_context_transform_registry()
         self._tool_input_handler_registry = tool_input_handler_registry or builtin_tool_input_handler_registry()
         self._default_context_window_policy = context_window_policy_from_config(initial_context_window)
         self._background_task_supervisor = RuntimeBackgroundTaskSupervisor(
             self,
-            session_store=self._session_store,
+            events=self._repositories.events,
+            sessions=self._repositories.sessions,
+            run_writer=self._repositories.run_writer,
+            recovery=self._repositories.recovery,
+            tasks=self._repositories.tasks,
             workspace=self._workspace,
             config=self._config,
             acp_adapter=self._acp_adapter,
         )
         self._run_loop_coordinator = RuntimeRunLoopCoordinator(
             self,
-            session_store=self._session_store,
+            events=self._repositories.events,
+            sessions=self._repositories.sessions,
+            recovery=self._repositories.recovery,
             workspace=self._workspace,
             config=self._config,
             permission_policy=self._permission_policy,
@@ -661,7 +677,9 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         self._resume_coordinator = RuntimeResumeCoordinator(
             self,
-            session_store=self._session_store,
+            events=self._repositories.events,
+            sessions=self._repositories.sessions,
+            recovery=self._repositories.recovery,
             workspace=self._workspace,
             config=self._config,
             permission_policy=self._permission_policy,
@@ -672,7 +690,12 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         self._inspection_coordinator = InspectionCoordinator(
             self,
-            session_store=self._session_store,
+            events=self._repositories.events,
+            sessions=self._repositories.sessions,
+            run_writer=self._repositories.run_writer,
+            recovery=self._repositories.recovery,
+            tasks=self._repositories.tasks,
+            maintenance=self._repositories.maintenance,
             workspace=self._workspace,
             config=self._config,
             lsp_manager=self._lsp_manager,
@@ -709,7 +732,10 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         self._finalize_coordinator = FinalizeCoordinator(
             self,
-            session_store=self._session_store,
+            events=self._repositories.events,
+            sessions=self._repositories.sessions,
+            run_writer=self._repositories.run_writer,
+            recovery=self._repositories.recovery,
             workspace=self._workspace,
             config=self._config,
             acp_adapter=self._acp_adapter,
@@ -722,11 +748,7 @@ class VoidCodeRuntime(RuntimeSurface):
             ),
         )
         self._background_process_manager = BackgroundProcessManager(
-            # Ceiling: ``BackgroundProcessPersistence`` declares an optional
-            # ``reconciliation_reason`` that the ``SessionStore`` protocol omits, so
-            # the concrete store satisfies the seam without declaring it. Remove the
-            # cast once the storage protocol carries the parameter.
-            persistence=cast(BackgroundProcessPersistence, self._session_store),
+            persistence=self._repositories.process_persistence,
             workspace=self._workspace,
         )
 
@@ -838,7 +860,7 @@ class VoidCodeRuntime(RuntimeSurface):
             now = time.monotonic()
             if cached_report is None or now >= cached_until:
                 try:
-                    cached_report = self._session_store.tool_effectiveness_report(workspace=self._workspace)
+                    cached_report = self._repositories.maintenance.tool_effectiveness_report(workspace=self._workspace)
                 except Exception:
                     return EditSchema.FLEXIBLE
                 cached_until = now + ttl_seconds
@@ -1458,7 +1480,7 @@ class VoidCodeRuntime(RuntimeSurface):
             raise ValueError("runtime stream emitted no chunks")
 
         if final_session.status == "waiting":
-            final_session = reload_persisted_session(self._session_store, self._workspace, session_id=final_session.session.id)
+            final_session = reload_persisted_session(self._repositories.sessions, self._workspace, session_id=final_session.session.id)
 
         final_session = self._session_with_loaded_skill_metadata(
             final_session,
@@ -1636,13 +1658,15 @@ class VoidCodeRuntime(RuntimeSurface):
             else None
         )
         if existing_session is not None and request.session_id is not None:
-            queued_metadata, queued_steering = drain_runtime_messages(
-                existing_session.session.metadata,
+            queued_steering = self._repositories.sessions.drain_session_messages(
+                workspace=self._workspace,
+                session_id=resolved_session_id,
                 kind="steering",
                 remember_dedupe=True,
             )
-            queued_metadata, queued_followups = drain_runtime_messages(
-                queued_metadata,
+            queued_followups = self._repositories.sessions.drain_session_messages(
+                workspace=self._workspace,
+                session_id=resolved_session_id,
                 kind="follow_up",
             )
             if queued_followups:
@@ -1655,12 +1679,6 @@ class VoidCodeRuntime(RuntimeSurface):
                 request = replace(
                     request,
                     prompt=(f"{request.prompt}\n\nRuntime steering messages:\n{steering_text}" if request.prompt.strip() else steering_text),
-                )
-            if queued_steering or queued_followups:
-                self._session_store.update_session_metadata(
-                    workspace=self._workspace,
-                    session_id=resolved_session_id,
-                    metadata=queued_metadata,
                 )
         rehydrated_conversation_segments = self.replayed_conversation_segments_for_existing_session(
             stored=existing_session,
@@ -1772,7 +1790,7 @@ class VoidCodeRuntime(RuntimeSurface):
         # exists before the first append. Resume / approval / question paths
         # enter through ``_resume_coordinator``, not this method, so their
         # checkpoints are untouched.
-        self._session_store.save_interrupted_checkpoint(
+        self._repositories.recovery.save_interrupted_checkpoint(
             workspace=self._workspace,
             session_id=resolved_session_id,
             prompt=request.prompt,
@@ -1925,7 +1943,7 @@ class VoidCodeRuntime(RuntimeSurface):
         ``save_interrupted_checkpoint`` writes the row only (no events), so this is
         a cheap metadata refresh at the last durable event of this run's prefix.
         """
-        self._session_store.save_interrupted_checkpoint(
+        self._repositories.recovery.save_interrupted_checkpoint(
             workspace=self._workspace,
             session_id=session.session.id,
             prompt=prompt,
@@ -2540,7 +2558,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         self._background_task_supervisor.drain_queued_background_tasks()
         validate_id(task_id, field_name="task_id")
-        task = self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
+        task = self._repositories.tasks.load_background_task(workspace=self._workspace, task_id=task_id)
         return self._background_task_supervisor.task_with_observability(task)
 
     def wait_for_background_task(self, task_id: str, *, timeout_seconds: float) -> BackgroundTaskState:
@@ -2610,7 +2628,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         self._background_task_supervisor.drain_queued_background_tasks()
         validated_child_session_id = validate_id(child_session_id, field_name="child_session_id")
-        task = self._session_store.load_background_task_by_child_session(
+        task = self._repositories.tasks.load_background_task_by_child_session(
             workspace=self._workspace,
             child_session_id=validated_child_session_id,
         )
@@ -2624,7 +2642,9 @@ class VoidCodeRuntime(RuntimeSurface):
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         self._background_task_supervisor.drain_queued_background_tasks()
-        return self._background_task_supervisor.summaries_with_observability(self._session_store.list_background_tasks(workspace=self._workspace))
+        return self._background_task_supervisor.summaries_with_observability(
+            self._repositories.tasks.list_background_tasks(workspace=self._workspace)
+        )
 
     def has_pending_background_tasks(self, *, parent_session_id: str) -> bool:
         """Whether a non-terminal background task will re-wake this parent session.
@@ -2635,7 +2655,7 @@ class VoidCodeRuntime(RuntimeSurface):
         as pending, which errs toward staying silent.
         """
         validated_parent_session_id = validate_id(parent_session_id, field_name="parent_session_id")
-        summaries = self._session_store.list_background_tasks_by_parent_session(
+        summaries = self._repositories.tasks.list_background_tasks_by_parent_session(
             workspace=self._workspace,
             parent_session_id=validated_parent_session_id,
         )
@@ -2646,7 +2666,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self._background_task_supervisor.drain_queued_background_tasks()
         validated_parent_session_id = validate_id(parent_session_id, field_name="parent_session_id")
         return self._background_task_supervisor.summaries_with_observability(
-            self._session_store.list_background_tasks_by_parent_session(
+            self._repositories.tasks.list_background_tasks_by_parent_session(
                 workspace=self._workspace,
                 parent_session_id=validated_parent_session_id,
             )
@@ -2662,7 +2682,7 @@ class VoidCodeRuntime(RuntimeSurface):
         selected = summaries[:limit]
         tasks: list[dict[str, object]] = []
         for summary in selected:
-            state = self._session_store.load_background_task(
+            state = self._repositories.tasks.load_background_task(
                 workspace=self._workspace,
                 task_id=summary.task.id,
             )
@@ -3293,28 +3313,19 @@ class VoidCodeRuntime(RuntimeSurface):
         allow_terminal_completion: bool = False,
     ) -> tuple[dict[str, object], ...]:
         validate_id(session_id)
-        response = self._load_stored_response(session_id=session_id)
         # Steering/follow-up is rejected once the session is sealed. A
         # completion interaction is a runtime outbox record created only after
         # its parent lifecycle event is durable, so it is allowed for backfill.
         sealed_status = self._sealed_session_status(session_id=session_id)
         if sealed_status is not None and not allow_terminal_completion:
             raise SessionSealedError(f"session {session_id!r} is {sealed_status}: refusing to queue {kind} message on a terminal session")
-        metadata = enqueue_runtime_message(
-            response.session.metadata,
+        return self._repositories.sessions.enqueue_session_message(
+            workspace=self._workspace,
+            session_id=session_id,
             content=content,
             kind=kind,
             dedupe_key=dedupe_key,
         )
-        self._session_store.update_session_metadata(
-            workspace=self._workspace,
-            session_id=session_id,
-            metadata=metadata,
-        )
-        raw = metadata.get("pending_messages")
-        if not isinstance(raw, list):
-            return ()
-        return tuple(item for item in raw if isinstance(item, dict))
 
     def drain_queued_messages(
         self,
@@ -3323,14 +3334,13 @@ class VoidCodeRuntime(RuntimeSurface):
         kind: Literal["steering", "follow_up"],
     ) -> tuple[str, ...]:
         validate_id(session_id)
-        if not self._session_store.has_session(workspace=self._workspace, session_id=session_id):
+        if not self._repositories.sessions.has_session(workspace=self._workspace, session_id=session_id):
             return ()
-        response = self._load_stored_response(session_id=session_id)
-        metadata, messages = drain_runtime_messages(response.session.metadata, kind=kind, remember_dedupe=True)
-        self._session_store.update_session_metadata(
+        messages = self._repositories.sessions.drain_session_messages(
             workspace=self._workspace,
             session_id=session_id,
-            metadata=metadata,
+            kind=kind,
+            remember_dedupe=True,
         )
         return tuple(message.content for message in messages)
 
@@ -3502,7 +3512,7 @@ class VoidCodeRuntime(RuntimeSurface):
             request_id=approval_request_id,
             request_kind="approval",
         )
-        pending = self._session_store.load_pending_approval(
+        pending = self._repositories.recovery.load_pending_approval(
             workspace=self._workspace,
             session_id=session_id,
         )
@@ -3514,14 +3524,14 @@ class VoidCodeRuntime(RuntimeSurface):
             return
 
     def _reconcile_resolved_approval(self, *, session_id: str) -> bool:
-        pending = self._session_store.load_pending_approval(
+        pending = self._repositories.recovery.load_pending_approval(
             workspace=self._workspace,
             session_id=session_id,
         )
         if pending is None:
             return False
         return bool(
-            self._session_store.reconcile_resolved_approval(
+            self._repositories.recovery.reconcile_resolved_approval(
                 workspace=self._workspace,
                 session_id=session_id,
                 request_id=pending.request_id,
@@ -3558,11 +3568,11 @@ class VoidCodeRuntime(RuntimeSurface):
             if request_kind == "approval"
             else "question answer must target the child session that owns the question request"
         )
-        for task_summary in self._session_store.list_background_tasks_by_parent_session(
+        for task_summary in self._repositories.tasks.list_background_tasks_by_parent_session(
             workspace=self._workspace,
             parent_session_id=session_id,
         ):
-            task = self._session_store.load_background_task(
+            task = self._repositories.tasks.load_background_task(
                 workspace=self._workspace,
                 task_id=task_summary.task.id,
             )
@@ -3919,7 +3929,7 @@ class VoidCodeRuntime(RuntimeSurface):
         # ``parent_sequence`` edges), so the one authoritative path walk in
         # storage is called again — one extra read per rehydration,
         # deliberately, rather than a second implementation of the walk here.
-        path_events = self._session_store.session_path(
+        path_events = self._repositories.events.session_path(
             workspace=self._workspace,
             session_id=stored.session.session.id,
         )
@@ -3954,7 +3964,7 @@ class VoidCodeRuntime(RuntimeSurface):
         # ``parent_sequence`` edges), so the one authoritative path walk in
         # storage is called again — one extra read per replay, deliberately,
         # rather than a second implementation of the walk here.
-        replay_events = self._session_store.session_path(
+        replay_events = self._repositories.events.session_path(
             workspace=self._workspace,
             session_id=stored.session.session.id,
         )

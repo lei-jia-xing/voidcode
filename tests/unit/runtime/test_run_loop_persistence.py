@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 from typing import cast
 
-from voidcode.core.turns import TurnFact, TurnPlan, TurnRequest
+from tests.runtime_storage import repositories_for_test_store
+from voidcode.core.turns import ResponseReadyFact, StreamFact, TurnPlan, TurnRequest
+from voidcode.provider.protocol import ProviderStreamEvent
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.policy import materialize_runtime_policy_snapshot
 from voidcode.runtime.resume import RuntimeResumeCoordinator
@@ -27,7 +29,7 @@ def _create_session_row(store: SqliteSessionStore, *, workspace: Path, session_i
 
 
 def _runtime_with_store(tmp_path: Path, store: SqliteSessionStore) -> VoidCodeRuntime:
-    return VoidCodeRuntime(workspace=tmp_path, session_store=store)
+    return VoidCodeRuntime(workspace=tmp_path, repositories=repositories_for_test_store(store))
 
 
 def _loaded_events(store: SqliteSessionStore, *, workspace: Path, session_id: str) -> tuple[EventEnvelope, ...]:
@@ -207,14 +209,12 @@ def test_execute_turn_engine_streaming_dedupes_raw_provider_stream(tmp_path: Pat
 
         def stream_produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState):
             _ = request, tool_results, session
-            yield TurnFact(kind="provider_stream", payload={"kind": "delta", "channel": "text", "text": "hello"})
-            yield TurnFact(kind="tool_call_start", payload={"kind": "tool_call_start", "tool_call_id": "call-1", "tool_name": "read", "ordinal": 0})
-            yield TurnFact(kind="tool_call_delta", payload={"kind": "tool_call_delta", "tool_call_id": "call-1", "arguments_delta": '{"path":'})
-            yield TurnFact(
-                kind="tool_call_end", payload={"kind": "tool_call_end", "tool_call_id": "call-1", "parsed_arguments": {"path": "sample.txt"}}
-            )
+            yield StreamFact(ProviderStreamEvent(kind="delta", channel="text", text="hello"))
+            yield StreamFact(ProviderStreamEvent(kind="tool_call_start", tool_call_id="call-1", tool_name="read", tool_call_ordinal=0))
+            yield StreamFact(ProviderStreamEvent(kind="tool_call_delta", tool_call_id="call-1", arguments_delta='{"path":'))
+            yield StreamFact(ProviderStreamEvent(kind="tool_call_end", tool_call_id="call-1", parsed_arguments={"path": "sample.txt"}))
             yield TurnPlan(
-                facts=(TurnFact(kind="response_ready", payload={"output_preview": "done"}),),
+                facts=(ResponseReadyFact("done"),),
                 output="done",
                 is_finished=True,
             )
@@ -264,10 +264,10 @@ def test_execute_turn_engine_streaming_persists_aggregated_reasoning(tmp_path: P
 
         def stream_produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState):
             _ = request, tool_results, session
-            yield TurnFact(kind="provider_stream", payload={"kind": "delta", "channel": "reasoning", "text": "first thought "})
-            yield TurnFact(kind="provider_stream", payload={"kind": "delta", "channel": "reasoning", "text": "second thought"})
+            yield StreamFact(ProviderStreamEvent(kind="delta", channel="reasoning", text="first thought "))
+            yield StreamFact(ProviderStreamEvent(kind="delta", channel="reasoning", text="second thought"))
             yield TurnPlan(
-                facts=(TurnFact(kind="response_ready", payload={"output_preview": "done"}),),
+                facts=(ResponseReadyFact("done"),),
                 output="done",
                 is_finished=True,
             )
@@ -315,7 +315,7 @@ def test_execute_turn_engine_non_streaming_persists_step_reasoning(tmp_path: Pat
         def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> TurnPlan:
             _ = request, tool_results, session
             return TurnPlan(
-                facts=(TurnFact(kind="response_ready", payload={"output_preview": "done"}),),
+                facts=(ResponseReadyFact("done"),),
                 output="done",
                 is_finished=True,
                 reasoning="background child thought",

@@ -39,7 +39,6 @@ def test_deterministic_producer_selects_read_tool() -> None:
     assert len(plan.tool_calls) == 1
     assert plan.tool_calls[0].tool_name == "read"
     assert plan.tool_calls[0].arguments == {"path": "sample.txt"}
-    assert [fact.kind for fact in plan.facts] == ["loop_step", "model_turn"]
 
 
 def test_turn_run_step_is_a_watermark_not_a_budget() -> None:
@@ -49,7 +48,6 @@ def test_turn_run_step_is_a_watermark_not_a_budget() -> None:
     plan = producer.produce(request, (), session=request.session)
 
     assert plan.tool_calls[0].tool_name == "read"
-    assert plan.facts[0].payload == {"step": 100, "phase": "plan"}
 
     finished = producer.produce(
         replace(request, run_step=101),
@@ -58,4 +56,3 @@ def test_turn_run_step_is_a_watermark_not_a_budget() -> None:
     )
     assert finished.is_finished is True
     assert finished.output == "hello"
-    assert finished.facts[-2].payload == {"step": 102, "phase": "finalize"}

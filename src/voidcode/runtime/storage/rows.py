@@ -132,6 +132,11 @@ class SessionLeafSequenceRow(TypedDict):
     leaf_sequence: int | None
 
 
+class SessionEventPageStateRow(TypedDict):
+    leaf_sequence: int | None
+    last_event_sequence: int
+
+
 class SessionRuntimeStateRow(TypedDict):
     status: str
     pending_approval_json: str | None
@@ -190,6 +195,17 @@ class SessionTreeEventRow(TypedDict):
     event_type: str
     source: str
     payload_json: str
+
+
+class SessionEventPageRow(TypedDict):
+    leaf_found: int
+    cursor_found: int
+    broken_path: int
+    sequence: int | None
+    parent_sequence: int | None
+    event_type: str | None
+    source: str | None
+    payload_json: str | None
 
 
 class SessionEventWithSessionRow(TypedDict):

@@ -20,7 +20,7 @@ from .event_envelopes import envelopes_for_acp_events
 from .events import RUNTIME_ACP_DELEGATED_LIFECYCLE
 from .session import SessionState
 from .session_metadata_helpers import session_with_current_acp_metadata
-from .storage import SessionEventAppender, SessionStore
+from .storage import SessionEventAppender
 
 if TYPE_CHECKING:
     from .background.models import BackgroundTaskState
@@ -440,7 +440,7 @@ def publish_delegated_acp_event(
 
 
 def append_parent_acp_delegated_lifecycle_event(
-    appender: SessionStore,
+    appender: SessionEventAppender,
     *,
     workspace: Path,
     task: BackgroundTaskState,

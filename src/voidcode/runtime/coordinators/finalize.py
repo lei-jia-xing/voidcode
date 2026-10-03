@@ -8,7 +8,7 @@ Reads via constructor-injected collaborators plus a narrow ``RuntimeSurface``
 for run/resume-owned composition (policy snapshots, hook execution, ACP
 finalize, provider context). Run-mutable registry state (tool registry
 materialization) stays owned by the service: this module never mutates it.
-All store writes below delegate to pre-existing ``SessionStore`` methods.
+All storage writes below route through the narrow injected repositories.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from ..config import RuntimeConfig
     from ..mcp import McpManager
     from ..runtime_surface import RuntimeSurface
-    from ..storage import SessionStore
+    from ..storage import SessionEventRepository, SessionRecoveryRepository, SessionRepository, SessionRunWriter
 logger = logging.getLogger(__name__)
 
 _POLICY_PROJECTED_EVENT_TYPES = frozenset({"runtime.request_received"})
@@ -52,7 +52,10 @@ class FinalizeCoordinator:
         self,
         surface: RuntimeSurface,
         *,
-        session_store: SessionStore,
+        events: SessionEventRepository,
+        sessions: SessionRepository,
+        run_writer: SessionRunWriter,
+        recovery: SessionRecoveryRepository,
         workspace: Path,
         config: RuntimeConfig,
         acp_adapter: AcpAdapter,
@@ -62,7 +65,10 @@ class FinalizeCoordinator:
         active_run_count: Callable[[str], int],
     ) -> None:
         self._surface = surface
-        self._session_store = session_store
+        self._events = events
+        self._sessions = sessions
+        self._run_writer = run_writer
+        self._recovery = recovery
         self._workspace = workspace
         self._config = config
         self._acp_adapter = acp_adapter
@@ -81,7 +87,7 @@ class FinalizeCoordinator:
         dedupe_key: str | None = None,
     ) -> EventEnvelope:
         """Persist one service-emitted event; return its DB-assigned envelope."""
-        return self._session_store.append_session_events(
+        return self._events.append_session_events(
             workspace=self._workspace,
             session_id=session_id,
             events=((event_type, source, payload, dedupe_key),),
@@ -125,7 +131,7 @@ class FinalizeCoordinator:
     def load_stored_response(self, *, session_id: str) -> RuntimeResponse:
         from ..session import validate_session_workspace
 
-        response = self._session_store.load_session(
+        response = self._sessions.load_session(
             workspace=self._workspace,
             session_id=session_id,
         )
@@ -133,7 +139,7 @@ class FinalizeCoordinator:
         return response
 
     def load_existing_session_if_present(self, *, session_id: str) -> RuntimeResponse | None:
-        if not self._session_store.has_session(workspace=self._workspace, session_id=session_id):
+        if not self._sessions.has_session(workspace=self._workspace, session_id=session_id):
             return None
         return self.load_stored_response(session_id=session_id)
 
@@ -151,7 +157,7 @@ class FinalizeCoordinator:
         parent_session_id: str | None = None,
     ) -> None:
         normalized_results = tuple(tool_results)
-        self._session_store.save_interrupted_checkpoint(
+        self._recovery.save_interrupted_checkpoint(
             workspace=self._workspace,
             session_id=session_id,
             prompt=prompt,
@@ -169,7 +175,7 @@ class FinalizeCoordinator:
         if self._is_active_session_fn(session_id):
             return None
         try:
-            status = self._session_store.load_session_status(workspace=self._workspace, session_id=session_id)
+            status = self._sessions.load_session_status(workspace=self._workspace, session_id=session_id)
         except UnknownSessionError:
             return None
         if is_session_status_terminal(status):
@@ -208,7 +214,7 @@ class FinalizeCoordinator:
         if response.session.status == "waiting":
             pending_question = pending_question_from_response(response)
             if pending_question is not None:
-                self._session_store.save_pending_question(
+                self._recovery.save_pending_question(
                     workspace=self._workspace,
                     request=request,
                     response=response,
@@ -216,7 +222,7 @@ class FinalizeCoordinator:
                 )
                 return
             pending_approval = pending_approval_from_response(response)
-            self._session_store.save_pending_approval(
+            self._recovery.save_pending_approval(
                 workspace=self._workspace,
                 request=request,
                 response=response,
@@ -224,7 +230,7 @@ class FinalizeCoordinator:
             )
             return
         seal_terminal_status = self._active_run_count_fn(response.session.session.id) <= 1
-        self._session_store.save_run(
+        self._run_writer.save_run(
             workspace=self._workspace,
             request=request,
             response=response,
@@ -289,7 +295,7 @@ class FinalizeCoordinator:
             payload=failed_event.payload,
         )
 
-        checkpoint = self._session_store.load_resume_checkpoint(
+        checkpoint = self._recovery.load_resume_checkpoint(
             workspace=self._workspace,
             session_id=final_session.session.id,
         )
@@ -297,7 +303,7 @@ class FinalizeCoordinator:
         tool_results: tuple[dict[str, object], ...] = (
             tuple(item for item in raw_tool_results if isinstance(item, dict)) if isinstance(raw_tool_results, list) else ()
         )
-        self._session_store.save_interrupted_checkpoint(
+        self._recovery.save_interrupted_checkpoint(
             workspace=self._workspace,
             session_id=final_session.session.id,
             prompt=request.prompt,

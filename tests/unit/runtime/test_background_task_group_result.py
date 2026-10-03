@@ -62,7 +62,8 @@ class _Surface:
 def _supervisor(workspace: Path, store: SqliteSessionStore) -> RuntimeBackgroundTaskSupervisor:
     supervisor = object.__new__(RuntimeBackgroundTaskSupervisor)
     supervisor._workspace = workspace
-    supervisor._session_store = store
+    supervisor._tasks = store
+    supervisor._events = store
     supervisor._surface = _Surface()
     supervisor.backfill_parent_background_task_event = lambda *, task: None
     supervisor.task_observability = lambda task: None

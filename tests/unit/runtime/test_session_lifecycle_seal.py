@@ -23,9 +23,11 @@ from typing import cast
 
 import pytest
 
+from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.questions import PendingQuestionOption, PendingQuestionPrompt
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import TurnFact, TurnPlan, TurnRequest, TurnSession
+from voidcode.core.turns import StreamFact, TurnPlan, TurnRequest, TurnSession
+from voidcode.provider.protocol import ProviderStreamEvent
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -51,6 +53,7 @@ from voidcode.runtime.service import (
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SessionSealedError, SqliteSessionStore
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from voidcode.tools.read import ReadTool
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
@@ -388,7 +391,8 @@ def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Pa
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
-    store = runtime._session_store
+    sessions = runtime._repositories.sessions
+    events = runtime._repositories.events
     chunks: list[RuntimeStreamChunk] = []
     errors: list[BaseException] = []
 
@@ -414,7 +418,7 @@ def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Pa
 
     # The real tool result arrived AFTER the interrupt and is a late event: it
     # must be dropped, not persisted.
-    persisted = store.load_session(workspace=tmp_path, session_id="race-1")
+    persisted = sessions.load_session(workspace=tmp_path, session_id="race-1")
     completed_events = [event for event in persisted.events if event.event_type == "runtime.tool_completed"]
     assert completed_events == []
     # The terminal failure chunk records the interruption as session truth.
@@ -434,13 +438,13 @@ def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Pa
     # (``VoidCodeRuntime._sealed_session_status``), which gates the
     # interaction queue — the storage append paths stay open for lifecycle
     # re-entry.
-    assert store.append_session_events(
+    assert events.append_session_events(
         workspace=tmp_path,
         session_id="race-1",
         events=(("runtime.tool_completed", "tool", {"tool": "write", "status": "ok", "content": "late"}, None),),
     )
     assert (
-        store.append_session_event(
+        events.append_session_event(
             workspace=tmp_path,
             session_id="race-1",
             event_type="graph.response_ready",
@@ -465,12 +469,12 @@ def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> No
         def stream_produce(self, request: TurnRequest, tool_results: tuple, *, session: TurnSession):
             _ = request, tool_results
             for index in range(3):
-                yield TurnFact(kind="provider_stream", payload={"kind": "delta", "channel": "text", "text": f"delta-{index}"})
+                yield StreamFact(ProviderStreamEvent(kind="delta", channel="text", text=f"delta-{index}"))
             self.deltas_seen.set()
             if not self.release.wait(timeout=5.0):
                 raise RuntimeError("streaming graph was not released")
             for index in range(3, 10):
-                yield TurnFact(kind="provider_stream", payload={"kind": "delta", "channel": "text", "text": f"delta-{index}"})
+                yield StreamFact(ProviderStreamEvent(kind="delta", channel="text", text=f"delta-{index}"))
             yield TurnPlan(output="done", is_finished=True)
 
         def produce(self, request: TurnRequest, tool_results: tuple, *, session: TurnSession) -> TurnPlan:
@@ -504,7 +508,7 @@ def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> No
     assert consumer.is_alive() is False
     # Deltas after the interrupt are late events and are dropped.
     assert streamed_deltas == ["delta-0", "delta-1", "delta-2"]
-    persisted = runtime._session_store.load_session(workspace=tmp_path, session_id="race-stream")
+    persisted = runtime._repositories.sessions.load_session(workspace=tmp_path, session_id="race-stream")
     failed_events = [event for event in persisted.events if event.event_type == "runtime.failed"]
     assert failed_events
     assert failed_events[-1].payload["kind"] == "interrupted"
@@ -575,39 +579,6 @@ def test_steer_landing_after_approval_resolution_is_rejected(tmp_path: Path) -> 
     assert "pending_messages" not in stored.session.metadata
 
 
-def test_steer_queued_while_waiting_is_delivered_on_next_run_without_reactivating(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_ApprovalThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask", execution_engine="deterministic"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-    waiting = runtime.run(RuntimeRequest(prompt="approval steer pre", session_id="steer-2"))
-    assert waiting.session.status == "waiting"
-
-    # A steer that lands BEFORE the seal is accepted (the session is resumable,
-    # not terminal) and must be delivered on the next run — the interleave is
-    # decided deterministically by the guard at enqueue time.
-    queued = runtime.queue_steering("steer-2", "pre-seal steer")
-    assert any(item.get("kind") == "steering" and item.get("content") == "pre-seal steer" for item in queued)
-
-    approval_request_id = _waiting_approval_request_id(waiting)
-    resolved = runtime.resume(
-        "steer-2",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-    assert resolved.session.status == "completed"
-
-    # The follow-up run drains the pre-seal steering into its prompt.
-    followup = runtime.run(RuntimeRequest(prompt="follow up", session_id="steer-2"))
-    assert followup.session.status == "completed"
-    request_received = next(event for event in followup.events if event.event_type == "runtime.request_received")
-    assert "pre-seal steer" in cast(str, request_received.payload["prompt"])
-
-
 def test_steer_queued_while_run_active_is_accepted(tmp_path: Path) -> None:
     class _ImmediateDoneGraph:
         def produce(
@@ -638,70 +609,38 @@ def test_steer_queued_while_run_active_is_accepted(tmp_path: Path) -> None:
     assert stored.session.status == "completed"
 
 
-def test_follow_up_queued_during_active_run_survives_outer_snapshot_and_is_consumed(
-    tmp_path: Path,
-) -> None:
-    class _BlockingGraph:
+def test_same_run_followup_executes_each_real_read_once_in_input_order(tmp_path: Path) -> None:
+    (tmp_path / "first.txt").write_text("first real file", encoding="utf-8")
+    (tmp_path / "second.txt").write_text("second real file", encoding="utf-8")
+
+    class TrackedRead:
+        definition = ReadTool.definition
+
         def __init__(self) -> None:
-            self.started = threading.Event()
-            self.release = threading.Event()
-            self.prompts: list[str] = []
-            self._calls = 0
+            self.paths: list[object] = []
+            self.delegate = ReadTool()
 
-        def produce(
-            self,
-            request: TurnRequest,
-            tool_results: tuple[object, ...],
-            *,
-            session: TurnSession,
-        ) -> TurnPlan:
-            _ = tool_results, session
-            self.prompts.append(request.prompt)
-            self._calls += 1
-            if self._calls == 1:
-                self.started.set()
-                assert self.release.wait(timeout=5.0)
-            return TurnPlan(output=request.prompt, is_finished=True)
+        def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+            self.paths.append(call.arguments["path"])
+            return self.delegate.invoke(call, context=context)
 
-    graph = _BlockingGraph()
-    runtime = VoidCodeRuntime(
+    tool = TrackedRead()
+    owner = SqliteSessionStore(database_path=tmp_path / "follow-up.sqlite3")
+    with VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=graph,  # type: ignore[arg-type]
+        repositories=repositories_for_test_store(owner),
+        tool_registry=ToolRegistry.from_tools((tool,)),
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
-    )
-    stream = runtime.run_stream(RuntimeRequest(prompt="outer", session_id="follow-up-active"))
-    assert next(stream).session.status == "running"
-    errors: list[BaseException] = []
-
-    def consume_outer_run() -> None:
-        try:
-            list(stream)
-        except BaseException as exc:  # pragma: no cover - asserted via errors
-            errors.append(exc)
-
-    worker = threading.Thread(target=consume_outer_run)
-    worker.start()
-    assert graph.started.wait(timeout=5.0)
-
-    queued = runtime.queue_follow_up("follow-up-active", "queued follow-up")
-    assert any(item.get("kind") == "follow_up" and item.get("content") == "queued follow-up" for item in queued)
-    graph.release.set()
-    worker.join(timeout=5.0)
-    assert not worker.is_alive()
-    assert errors == []
-
-    # The active run's response is a stale metadata snapshot.  The queued
-    # follow-up is source session metadata and must survive that terminal seal.
-    stored = runtime._session_store.load_session(workspace=tmp_path, session_id="follow-up-active")
-    pending = stored.session.metadata.get("pending_messages")
-    assert isinstance(pending, list)
-    assert any(item.get("kind") == "follow_up" and item.get("content") == "queued follow-up" for item in pending if isinstance(item, dict))
-
-    followup = runtime.run(RuntimeRequest(prompt="next run", session_id="follow-up-active"))
-    assert followup.session.status == "completed"
-    assert graph.prompts[-1] == "queued follow-up"
-    reloaded = runtime._session_store.load_session(workspace=tmp_path, session_id="follow-up-active")
-    assert "pending_messages" not in reloaded.session.metadata
+    ) as runtime:
+        for chunk in runtime.run_stream(RuntimeRequest(prompt="read first.txt", session_id="follow-up-active")):
+            if chunk.event is not None and chunk.event.event_type == "runtime.tool_completed" and tool.paths == ["first.txt"]:
+                runtime.queue_follow_up("follow-up-active", "read second.txt")
+        completed = runtime.session_result(session_id="follow-up-active")
+        assert completed.session.status == "completed"
+        assert completed.output == "second real file"
+        assert tool.paths == ["first.txt", "second.txt"]
+        results = [event for event in completed.transcript if event.event_type == "runtime.tool_completed"]
+        assert [cast(dict[str, object], event.payload["arguments"])["path"] for event in results] == ["first.txt", "second.txt"]
 
 
 def test_steer_rejected_on_interrupted_session_without_active_run(tmp_path: Path) -> None:
@@ -717,7 +656,7 @@ def test_steer_rejected_on_interrupted_session_without_active_run(tmp_path: Path
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        session_store=store,
+        repositories=repositories_for_test_store(store),
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
 
@@ -735,15 +674,16 @@ def test_steer_rejected_on_interrupted_session_without_active_run(tmp_path: Path
 
 
 def test_child_background_completion_cannot_mutate_sealed_parent(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
+        repositories=repositories_for_test_store(store),
         turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     parent = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     assert parent.session.status == "completed"
 
-    store = runtime._session_store
     _seed_child_session_and_task(
         store,
         workspace=tmp_path,
@@ -821,13 +761,14 @@ def test_child_background_completion_cannot_mutate_sealed_parent(tmp_path: Path)
 
 
 def test_finalize_is_idempotent_and_backfill_repairs_missing_parent_event(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
+        repositories=repositories_for_test_store(store),
         turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-    store = runtime._session_store
     _seed_child_session_and_task(
         store,
         workspace=tmp_path,
@@ -859,13 +800,14 @@ def test_finalize_is_idempotent_and_backfill_repairs_missing_parent_event(tmp_pa
 
 
 def test_cancel_wins_completion_race_without_mutating_child_truth(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
+        repositories=repositories_for_test_store(store),
         turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-    store = runtime._session_store
     _seed_child_session_and_task(
         store,
         workspace=tmp_path,
@@ -888,12 +830,13 @@ def test_cancel_wins_completion_race_without_mutating_child_truth(tmp_path: Path
 
 
 def test_unknown_parent_drops_delivery_but_preserves_child_and_task_truth(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
+        repositories=repositories_for_test_store(store),
         turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
     )
-    store = runtime._session_store
     _seed_child_session_and_task(
         store,
         workspace=tmp_path,
@@ -936,16 +879,18 @@ def test_runtime_shutdown_drains_background_worker_results_before_teardown(
     # parent notification) is durable by the time shutdown returns.
     runtime.shutdown_background_tasks(timeout_seconds=5.0)
 
-    task = runtime._session_store.load_background_task(workspace=tmp_path, task_id=started.task.id)
+    task = runtime._repositories.tasks.load_background_task(workspace=tmp_path, task_id=started.task.id)
     assert is_background_task_terminal(task.status)
     assert runtime._background_task_supervisor.threads == {}
-    leader = runtime._session_store.load_session(workspace=tmp_path, session_id="leader-session")
+    leader = runtime._repositories.sessions.load_session(workspace=tmp_path, session_id="leader-session")
     assert any(event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED for event in leader.events)
 
 
-def _background_lifecycle_runtime(workspace: Path) -> VoidCodeRuntime:
-    return VoidCodeRuntime(
+def _background_lifecycle_runtime(workspace: Path) -> tuple[VoidCodeRuntime, SqliteSessionStore]:
+    store = SqliteSessionStore()
+    runtime = VoidCodeRuntime(
         workspace=workspace,
+        repositories=repositories_for_test_store(store),
         turn_producer=_SuccessGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(
             approval_mode="yolo",
@@ -953,15 +898,15 @@ def _background_lifecycle_runtime(workspace: Path) -> VoidCodeRuntime:
             background_task=RuntimeBackgroundTaskConfig(delegated_reminders_enabled=False),
         ),
     )
+    return runtime, store
 
 
 def test_fresh_and_restarted_reads_backfill_terminal_and_waiting_parent_events_once(
     tmp_path: Path,
 ) -> None:
-    runtime = _background_lifecycle_runtime(tmp_path)
+    runtime, store = _background_lifecycle_runtime(tmp_path)
     parent_response = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     capability_snapshot = cast(dict[str, object], parent_response.session.metadata["agent_capability_snapshot"])
-    store = runtime._session_store
     _seed_child_session_and_task(
         store,
         workspace=tmp_path,
@@ -979,7 +924,7 @@ def test_fresh_and_restarted_reads_backfill_terminal_and_waiting_parent_events_o
         wait_kind="approval",
         capability_snapshot=capability_snapshot,
     )
-    fresh_runtime = _background_lifecycle_runtime(tmp_path)
+    fresh_runtime, _ = _background_lifecycle_runtime(tmp_path)
     first_summaries = fresh_runtime.list_background_tasks()
     assert {summary.task.id: summary.status for summary in first_summaries} == {
         "task-terminal-read": "completed",
@@ -1021,7 +966,7 @@ def test_fresh_and_restarted_reads_backfill_terminal_and_waiting_parent_events_o
     assert sum(event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED for event in repeated_parent.transcript) == 1
     assert sum(event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL for event in repeated_parent.transcript) == 1
 
-    restarted_runtime = _background_lifecycle_runtime(tmp_path)
+    restarted_runtime, _ = _background_lifecycle_runtime(tmp_path)
     _ = restarted_runtime.list_background_tasks()
     _ = restarted_runtime.session_result(session_id="child-terminal-read")
     _ = restarted_runtime.session_result(session_id="child-approval-read")
@@ -1037,10 +982,9 @@ def test_cancel_waiting_background_child_clears_pending_state_before_task_termin
     monkeypatch: pytest.MonkeyPatch,
     wait_kind: str,
 ) -> None:
-    runtime = _background_lifecycle_runtime(tmp_path)
+    runtime, store = _background_lifecycle_runtime(tmp_path)
     parent_response = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     capability_snapshot = cast(dict[str, object], parent_response.session.metadata["agent_capability_snapshot"])
-    store = runtime._session_store
     task_id = f"task-cancel-{wait_kind}"
     child_session_id = f"child-cancel-{wait_kind}"
     _seed_waiting_child_and_task(

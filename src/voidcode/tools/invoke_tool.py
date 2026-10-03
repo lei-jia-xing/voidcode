@@ -9,7 +9,7 @@ registry or permission access of its own. The runtime run loop recognizes
 ``invoke_tool`` calls and re-enters the standard tool-execution pipeline
 (policy denial -> registry resolve -> permission -> hooks -> executor) with
 the *inner* tool call, reusing the exact boundary provider-native tool calls
-use (see ``runtime/run_loop.py`` ``execute_graph_loop``). Direct invocation of
+use (see ``runtime/run_loop.py`` ``execute_turn_engine``). Direct invocation of
 this tool outside that boundary is a governance error.
 """
 

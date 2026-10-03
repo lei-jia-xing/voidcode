@@ -9,8 +9,8 @@ for stream-prep-owned composition (effective config, context assembly, tool
 registries). Cross-bucket entry points that stay owned elsewhere
 (``load_background_task``, ``_refresh_mcp_tools``, active-run registry) arrive
 as explicit callbacks so this module never pierces runtime privates and adds
-no new storage write paths: every store mutation below delegates to an
-existing ``SessionStore`` method.
+no new storage write paths: every store mutation below routes through its
+narrow injected repository.
 """
 
 from __future__ import annotations
@@ -154,7 +154,14 @@ from ..session import (
 from ..skill_metadata import fresh_request_metadata, skill_snapshot_from_metadata
 from ..skills import SkillRegistry
 from ..status_projection import project_acp_status
-from ..storage import SessionStore
+from ..storage import (
+    BackgroundTaskRepository,
+    RuntimeStorageMaintenance,
+    SessionEventRepository,
+    SessionRecoveryRepository,
+    SessionRepository,
+    SessionRunWriter,
+)
 
 if TYPE_CHECKING:
     from ...core.turns import TurnRequest
@@ -325,7 +332,12 @@ class InspectionCoordinator:
         self,
         surface: RuntimeSurface,
         *,
-        session_store: SessionStore,
+        events: SessionEventRepository,
+        sessions: SessionRepository,
+        run_writer: SessionRunWriter,
+        recovery: SessionRecoveryRepository,
+        tasks: BackgroundTaskRepository,
+        maintenance: RuntimeStorageMaintenance,
         workspace: Path,
         config: RuntimeConfig,
         lsp_manager: LspManager,
@@ -348,7 +360,12 @@ class InspectionCoordinator:
         active_session_metadata: Callable[[str], dict[str, object] | None],
     ) -> None:
         self._surface = surface
-        self._session_store = session_store
+        self._events = events
+        self._sessions = sessions
+        self._run_writer = run_writer
+        self._recovery = recovery
+        self._tasks = tasks
+        self._maintenance = maintenance
         self._workspace = workspace
         self._config = config
         self._lsp_manager = lsp_manager
@@ -477,7 +494,7 @@ class InspectionCoordinator:
         )
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
-        return self._session_store.list_sessions(workspace=self._workspace)
+        return self._sessions.list_sessions(workspace=self._workspace)
 
     def rename_session(self, *, session_id: str, title: str) -> StoredSessionSummary:
         """Set the user-settable title and return the updated summary.
@@ -489,12 +506,12 @@ class InspectionCoordinator:
         """
         validate_id(session_id)
         validated_title = validate_session_title(title)
-        self._session_store.rename_session(
+        self._sessions.rename_session(
             workspace=self._workspace,
             session_id=session_id,
             title=validated_title,
         )
-        for summary in self._session_store.list_sessions(workspace=self._workspace):
+        for summary in self._sessions.list_sessions(workspace=self._workspace):
             if summary.session.id == session_id:
                 return summary
         raise UnknownSessionError(f"unknown session: {session_id}")
@@ -516,7 +533,7 @@ class InspectionCoordinator:
         validate_id(session_id)
         if at_sequence is not None and at_sequence < 1:
             raise ValueError("fork sequence must be a positive integer")
-        return self._session_store.fork_session(
+        return self._sessions.fork_session(
             workspace=self._workspace,
             session_id=session_id,
             at_sequence=at_sequence,
@@ -531,14 +548,14 @@ class InspectionCoordinator:
         """
         if session_id is not None:
             validate_id(session_id)
-        return self._session_store.session_lineage(
+        return self._sessions.session_lineage(
             workspace=self._workspace,
             session_id=session_id,
         )
 
     def session_forest(self) -> tuple[StoredSessionForestEntry, ...]:
         """Read-only workspace fork forest, parents before children."""
-        return self._session_store.session_forest(workspace=self._workspace)
+        return self._sessions.session_forest(workspace=self._workspace)
 
     def session_entries(self, *, session_id: str) -> tuple[SessionEntrySummary, ...]:
         """Read-only entry listing for one session, ascending ``sequence``.
@@ -547,7 +564,7 @@ class InspectionCoordinator:
         session method; the store owns the path walk and the on-path marking.
         """
         validate_id(session_id)
-        return self._session_store.session_entries(
+        return self._sessions.session_entries(
             workspace=self._workspace,
             session_id=session_id,
         )
@@ -563,17 +580,17 @@ class InspectionCoordinator:
         validate_id(session_id)
         if sequence < 1:
             raise ValueError("checkout sequence must be a positive integer")
-        return self._session_store.checkout_session(
+        return self._sessions.checkout_session(
             workspace=self._workspace,
             session_id=session_id,
             sequence=sequence,
         )
 
     def tool_effectiveness_report(self) -> ToolEffectivenessReport:
-        return self._session_store.tool_effectiveness_report(workspace=self._workspace)
+        return self._maintenance.tool_effectiveness_report(workspace=self._workspace)
 
     def _load_stored_response(self, *, session_id: str) -> RuntimeResponse:
-        response = self._session_store.load_session(
+        response = self._sessions.load_session(
             workspace=self._workspace,
             session_id=session_id,
         )
@@ -581,13 +598,13 @@ class InspectionCoordinator:
         return response
 
     def _load_existing_session_if_present(self, *, session_id: str) -> RuntimeResponse | None:
-        if not self._session_store.has_session(workspace=self._workspace, session_id=session_id):
+        if not self._sessions.has_session(workspace=self._workspace, session_id=session_id):
             return None
         return self._load_stored_response(session_id=session_id)
 
     def _load_session_result(self, *, session_id: str) -> RuntimeSessionResult:
         validate_id(session_id)
-        result = self._session_store.load_session_result(
+        result = self._sessions.load_session_result(
             workspace=self._workspace,
             session_id=session_id,
         )
@@ -631,7 +648,7 @@ class InspectionCoordinator:
         if session_id != caller_session_id:
             lineage_ok = session_state.session.parent_id == caller_session_id
             if not lineage_ok:
-                task = self._session_store.load_background_task_by_child_session(
+                task = self._tasks.load_background_task_by_child_session(
                     workspace=self._workspace,
                     child_session_id=session_id,
                 )
@@ -679,12 +696,12 @@ class InspectionCoordinator:
         return tuple(projected)
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
-        delegated_task = self._session_store.load_background_task_by_child_session(
+        delegated_task = self._tasks.load_background_task_by_child_session(
             workspace=self._workspace,
             child_session_id=session_id,
         )
         if delegated_task is not None:
-            self._session_store.stop_background_task_idle_reminder(
+            self._tasks.stop_background_task_idle_reminder(
                 workspace=self._workspace,
                 task_id=delegated_task.task.id,
                 stop_condition="result_read",
@@ -715,7 +732,7 @@ class InspectionCoordinator:
     def session_events_after(self, *, session_id: str, after_sequence: int) -> SessionEventBatch:
         """Read only the persisted events after ``after_sequence`` plus the row status."""
         validate_id(session_id)
-        stored = self._session_store.read_session_events_after(
+        stored = self._events.read_session_events_after(
             workspace=self._workspace,
             session_id=session_id,
             after_sequence=after_sequence,
@@ -736,7 +753,7 @@ class InspectionCoordinator:
         gone, so this is a position move and nothing is hidden or deleted.
         """
         validate_id(session_id)
-        target = self._session_store.newest_sequence_before(
+        target = self._events.newest_sequence_before(
             workspace=self._workspace,
             session_id=session_id,
             sequence=sequence,
@@ -753,7 +770,7 @@ class InspectionCoordinator:
         aborted turn began. Returns the new leaf.
         """
         validate_id(session_id)
-        path = self._session_store.session_path(workspace=self._workspace, session_id=session_id)
+        path = self._events.session_path(workspace=self._workspace, session_id=session_id)
         latest_request = next((event.sequence for event in reversed(path) if event.event_type == "runtime.request_received"), None)
         if latest_request is None:
             raise ValueError(f"session {session_id} has no user turn to undo")
@@ -768,7 +785,7 @@ class InspectionCoordinator:
     ) -> dict[str, object]:
         """Resolve spilled tool output artifact metadata for a session."""
         validate_id(session_id)
-        result = self._session_store.load_session_result(
+        result = self._sessions.load_session_result(
             workspace=self._workspace,
             session_id=session_id,
         )
@@ -838,7 +855,7 @@ class InspectionCoordinator:
         )
 
     def storage_diagnostics(self) -> dict[str, object]:
-        return self._session_store.storage_diagnostics(workspace=self._workspace)
+        return self._maintenance.storage_diagnostics(workspace=self._workspace)
 
     def export_session_bundle(
         self,
@@ -849,7 +866,8 @@ class InspectionCoordinator:
         validate_id(session_id)
         _ = self._load_session_result(session_id=session_id)
         return build_session_bundle(
-            session_store=self._session_store,
+            sessions=self._sessions,
+            tasks=self._tasks,
             workspace=self._workspace,
             session_id=session_id,
             options=options or SessionBundleOptions(),
@@ -867,7 +885,10 @@ class InspectionCoordinator:
         bundle = read_session_bundle(bundle_path)
         return apply_session_bundle(
             bundle,
-            session_store=self._session_store,
+            session_repository=self._sessions,
+            events=self._events,
+            recovery=self._recovery,
+            run_writer=self._run_writer,
             workspace=self._workspace,
             dry_run=dry_run,
         )
@@ -908,7 +929,7 @@ class InspectionCoordinator:
         keep_background_tasks: int | None = None,
         older_than: int | None = None,
     ) -> dict[str, int]:
-        return self._session_store.prune_runtime_storage(
+        return self._maintenance.prune_runtime_storage(
             workspace=self._workspace,
             keep_sessions=keep_sessions,
             keep_background_tasks=keep_background_tasks,
@@ -916,7 +937,7 @@ class InspectionCoordinator:
         )
 
     def reset_runtime_storage(self) -> dict[str, object]:
-        return self._session_store.reset_runtime_storage(workspace=self._workspace)
+        return self._maintenance.reset_runtime_storage(workspace=self._workspace)
 
     def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot:
         validate_id(session_id)
@@ -938,15 +959,15 @@ class InspectionCoordinator:
         pending_question: PendingQuestion | None = None
         resume_checkpoint: dict[str, object] | None = None
         try:
-            pending_approval = self._session_store.load_pending_approval(
+            pending_approval = self._recovery.load_pending_approval(
                 workspace=self._workspace,
                 session_id=session_id,
             )
-            pending_question = self._session_store.load_pending_question(
+            pending_question = self._recovery.load_pending_question(
                 workspace=self._workspace,
                 session_id=session_id,
             )
-            resume_checkpoint = self._session_store.load_resume_checkpoint(
+            resume_checkpoint = self._recovery.load_resume_checkpoint(
                 workspace=self._workspace,
                 session_id=session_id,
             )
@@ -1087,7 +1108,7 @@ class InspectionCoordinator:
         # (``load_session`` returns every row without the ``parent_sequence``
         # edges), so the one authoritative storage walk is called here — the
         # same seam ``_rehydrated_tool_results_for_existing_session`` uses.
-        path_events = self._session_store.session_path(
+        path_events = self._events.session_path(
             workspace=self._workspace,
             session_id=result.session.session.id,
         )

@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.turns import TurnPlan
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
 from voidcode.runtime.background.models import BackgroundTaskRef, StoredBackgroundTaskSummary
@@ -112,7 +113,7 @@ def _runtime(
     graph: _ScriptedGraph,
     *,
     reminders: RuntimeRemindersConfig | None = None,
-    session_store: SqliteSessionStore | None = None,
+    store: SqliteSessionStore | None = None,
     execution_engine: str = "provider",
 ) -> VoidCodeRuntime:
     config = (
@@ -126,7 +127,7 @@ def _runtime(
     )
     return VoidCodeRuntime(
         workspace=tmp_path,
-        session_store=session_store,
+        repositories=(repositories_for_test_store(store) if store is not None else None),
         tool_registry=ToolRegistry.from_tools([TodoTool(), GlobTool()]),
         turn_producer=graph,
         config=config,
@@ -147,10 +148,10 @@ def _run(
     graph: _ScriptedGraph,
     *,
     reminders: RuntimeRemindersConfig | None = None,
-    session_store: SqliteSessionStore | None = None,
+    store: SqliteSessionStore | None = None,
     execution_engine: str = "provider",
 ) -> list[Any]:
-    runtime = _runtime(tmp_path, graph, reminders=reminders, session_store=session_store, execution_engine=execution_engine)
+    runtime = _runtime(tmp_path, graph, reminders=reminders, store=store, execution_engine=execution_engine)
     return list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=SESSION_ID)))
 
 
@@ -395,7 +396,7 @@ def test_reminder_segment_is_never_replayed_history(tmp_path: Path) -> None:
 def test_pending_background_task_suppresses_the_reminder_end_to_end(tmp_path: Path) -> None:
     graph = _ScriptedGraph([TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="stopping", is_finished=True)])
 
-    chunks = _run(tmp_path, graph, session_store=_PendingBackgroundTaskStore())
+    chunks = _run(tmp_path, graph, store=_PendingBackgroundTaskStore())
 
     assert _reminder_events(chunks) == []
     assert chunks[-1].session.status == "completed"

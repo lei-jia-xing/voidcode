@@ -16,6 +16,7 @@ import pytest
 
 from voidcode.core.turns import TurnPlan, TurnSession
 from voidcode.runtime.paths import sessions_db_path
+from voidcode.runtime.storage import RuntimeRepositories, SqliteSessionStore
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
@@ -190,7 +191,7 @@ class RuntimeFactory(Protocol):
         config: object | None = None,
         mcp_manager: object | None = None,
         permission_policy: object | None = None,
-        session_store: object | None = None,
+        repositories: object | None = None,
     ) -> RuntimeRunner: ...
 
 
@@ -250,68 +251,6 @@ class ToolRegistryLike(Protocol):
 
 class ToolRegistryClassLike(Protocol):
     def with_defaults(self) -> ToolRegistryLike: ...
-
-
-class SessionStoreLike(Protocol):
-    def save_run(
-        self,
-        *,
-        workspace: Path,
-        request: RuntimeRequestLike,
-        response: RuntimeResponseLike,
-        clear_pending_approval: bool = True,
-    ) -> None: ...
-
-    def append_session_events(
-        self,
-        *,
-        workspace: Path,
-        session_id: str,
-        events: tuple[tuple[str, str, dict[str, object], str | None], ...],
-        interrupted_checkpoint: dict[str, object] | None = None,
-    ) -> tuple[object, ...]: ...
-
-    def save_interrupted_checkpoint(
-        self,
-        *,
-        workspace: Path,
-        session_id: str,
-        prompt: str,
-        session_metadata: dict[str, object],
-        tool_results: tuple[dict[str, object], ...],
-        last_event_sequence: int,
-        output: str | None = None,
-        create_if_missing: bool = True,
-        turn: int = 1,
-        parent_session_id: str | None = None,
-    ) -> None: ...
-
-    def restore_leaf_after_interrupted_resume(self, *, workspace: Path, session_id: str, sequence: int) -> None: ...
-
-    def has_session(self, *, workspace: Path, session_id: str) -> bool: ...
-
-    def list_sessions(self, *, workspace: Path) -> tuple[StoredSessionSummaryLike, ...]: ...
-
-    def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponseLike: ...
-
-    def session_path(self, *, workspace: Path, session_id: str, sequence: int | None = None) -> tuple[EventLike, ...]: ...
-
-    def load_resume_checkpoint(self, *, workspace: Path, session_id: str) -> dict[str, object] | None: ...
-
-    def save_pending_approval(
-        self,
-        *,
-        workspace: Path,
-        request: RuntimeRequestLike,
-        response: RuntimeResponseLike,
-        pending_approval: object,
-    ) -> None: ...
-
-    def load_pending_approval(self, *, workspace: Path, session_id: str) -> object: ...
-
-    def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None: ...
-
-    def create_background_task(self, *, workspace: Path, task: object) -> None: ...
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -1083,7 +1022,7 @@ def test_runtime_background_task_cancel_reconciles_orphaned_task_from_fresh_runt
 
     first_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
     _ = first_runtime
-    store = cast(SessionStoreLike, storage_module.SqliteSessionStore())
+    store = cast(SqliteSessionStore, storage_module.SqliteSessionStore())
     store.create_background_task(
         workspace=tmp_path,
         task=task_module.BackgroundTaskState(
@@ -1427,7 +1366,7 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     storage_module = importlib.import_module("voidcode.runtime.storage")
-    sqlite_store_class = cast(Callable[[], SessionStoreLike], storage_module.SqliteSessionStore)
+    sqlite_store_class = cast(Callable[[], SqliteSessionStore], storage_module.SqliteSessionStore)
     base_store = sqlite_store_class()
 
     class FailingTerminalSaveStore:
@@ -1435,114 +1374,20 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
             self,
             *,
             workspace: Path,
-            request: object,
-            response: object,
+            request: Any,
+            response: Any,
             clear_pending_approval: bool = True,
             seal_terminal_status: bool = True,
         ) -> None:
-            _ = request
             if clear_pending_approval:
                 raise RuntimeError("save boom")
             base_store.save_run(
                 workspace=workspace,
-                request=cast(RuntimeRequestLike, request),
-                response=cast(RuntimeResponseLike, response),
+                request=request,
+                response=response,
                 clear_pending_approval=clear_pending_approval,
                 seal_terminal_status=seal_terminal_status,
             )
-
-        def append_session_events(
-            self,
-            *,
-            workspace: Path,
-            session_id: str,
-            events: tuple[tuple[str, str, dict[str, object], str | None], ...],
-            interrupted_checkpoint: dict[str, object] | None = None,
-        ) -> tuple[object, ...]:
-            return base_store.append_session_events(
-                workspace=workspace,
-                session_id=session_id,
-                events=events,
-                interrupted_checkpoint=interrupted_checkpoint,
-            )
-
-        def save_interrupted_checkpoint(
-            self,
-            *,
-            workspace: Path,
-            session_id: str,
-            prompt: str,
-            session_metadata: dict[str, object],
-            tool_results: tuple[dict[str, object], ...],
-            last_event_sequence: int,
-            output: str | None = None,
-            create_if_missing: bool = True,
-            turn: int = 1,
-            parent_session_id: str | None = None,
-        ) -> None:
-            base_store.save_interrupted_checkpoint(
-                workspace=workspace,
-                session_id=session_id,
-                prompt=prompt,
-                session_metadata=session_metadata,
-                tool_results=tool_results,
-                last_event_sequence=last_event_sequence,
-                output=output,
-                create_if_missing=create_if_missing,
-                turn=turn,
-                parent_session_id=parent_session_id,
-            )
-
-        def list_sessions(self, *, workspace: Path) -> tuple[object, ...]:
-            return base_store.list_sessions(workspace=workspace)
-
-        def list_background_tasks_by_parent_session(self, *, workspace: Path, parent_session_id: str) -> tuple[object, ...]:
-            return base_store.list_background_tasks_by_parent_session(workspace=workspace, parent_session_id=parent_session_id)
-
-        def claim_pending_approval(self, *, workspace: Path, session_id: str, request_id: str) -> bool:
-            return base_store.claim_pending_approval(workspace=workspace, session_id=session_id, request_id=request_id)
-
-        def list_background_processes(self, *, workspace: Path) -> tuple[dict[str, object], ...]:
-            return base_store.list_background_processes(workspace=workspace)
-
-        def load_session(self, *, workspace: Path, session_id: str) -> object:
-            return base_store.load_session(workspace=workspace, session_id=session_id)
-
-        def session_path(self, *, workspace: Path, session_id: str, sequence: int | None = None) -> tuple[EventLike, ...]:
-            return base_store.session_path(workspace=workspace, session_id=session_id, sequence=sequence)
-
-        def save_pending_approval(
-            self,
-            *,
-            workspace: Path,
-            request: object,
-            response: object,
-            pending_approval: object,
-        ) -> None:
-            base_store.save_pending_approval(
-                workspace=workspace,
-                request=cast(RuntimeRequestLike, request),
-                response=cast(RuntimeResponseLike, response),
-                pending_approval=pending_approval,
-            )
-
-        def load_pending_approval(self, *, workspace: Path, session_id: str) -> object:
-            return base_store.load_pending_approval(workspace=workspace, session_id=session_id)
-
-        def load_resume_checkpoint(self, *, workspace: Path, session_id: str) -> object:
-            return base_store.load_resume_checkpoint(workspace=workspace, session_id=session_id)
-
-        def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None:
-            base_store.clear_pending_approval(workspace=workspace, session_id=session_id)
-
-        def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None:
-            base_store.update_session_metadata(workspace=workspace, session_id=session_id, metadata=metadata)
-
-        def has_session(self, *, workspace: Path, session_id: str) -> bool:
-            return base_store.has_session(workspace=workspace, session_id=session_id)
-
-        def restore_leaf_after_interrupted_resume(self, *, workspace: Path, session_id: str, sequence: int) -> None:
-            base_store.restore_leaf_after_interrupted_resume(workspace=workspace, session_id=session_id, sequence=sequence)
 
     resumed_runtime_class = _load_runtime_types()[1]
     resumed_runtime = cast(
@@ -1552,7 +1397,15 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
             resumed_runtime_class(
                 workspace=tmp_path,
                 permission_policy=policy,
-                session_store=FailingTerminalSaveStore(),
+                repositories=RuntimeRepositories(
+                    events=base_store,
+                    sessions=base_store,
+                    run_writer=FailingTerminalSaveStore(),
+                    recovery=base_store,
+                    tasks=base_store,
+                    maintenance=base_store,
+                    process_persistence=base_store,
+                ),
             ),
         ),
     )
@@ -1667,7 +1520,7 @@ def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_p
     assert summaries[0].status == "interrupted"
 
     storage_module = importlib.import_module("voidcode.runtime.storage")
-    store = cast(SessionStoreLike, storage_module.SqliteSessionStore())
+    store = cast(SqliteSessionStore, storage_module.SqliteSessionStore())
     stored = store.load_session(workspace=tmp_path, session_id="crash-session")
     assert stored.session.status == "interrupted"
 
@@ -1717,7 +1570,7 @@ def test_runtime_resume_restores_leaf_and_keeps_orphaned_tail_rows(tmp_path: Pat
 
     _drop_crashed_run_registration(workspace=tmp_path, session_id="orphan-session")
     storage_module = importlib.import_module("voidcode.runtime.storage")
-    store = cast(SessionStoreLike, storage_module.SqliteSessionStore())
+    store = cast(SqliteSessionStore, storage_module.SqliteSessionStore())
     checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="orphan-session")
     assert checkpoint is not None and checkpoint.get("kind") == "interrupted"
     last_event_sequence = cast(int, checkpoint["last_event_sequence"])
@@ -1725,7 +1578,7 @@ def test_runtime_resume_restores_leaf_and_keeps_orphaned_tail_rows(tmp_path: Pat
     # Events persisted after the checkpoint but before the crash. Under the tree
     # they are a retained off-path branch, not garbage: the resume restores the
     # leaf behind them and leaves every row in place.
-    second_store = cast(SessionStoreLike, storage_module.SqliteSessionStore())
+    second_store = cast(SqliteSessionStore, storage_module.SqliteSessionStore())
     second_store.append_session_events(
         workspace=tmp_path,
         session_id="orphan-session",
@@ -1795,7 +1648,7 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
 
     _drop_crashed_run_registration(workspace=tmp_path, session_id="multi-tool-crash")
     storage_module = importlib.import_module("voidcode.runtime.storage")
-    store = cast(SessionStoreLike, storage_module.SqliteSessionStore())
+    store = cast(SqliteSessionStore, storage_module.SqliteSessionStore())
     checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="multi-tool-crash")
     assert checkpoint is not None and checkpoint.get("kind") == "interrupted"
     checkpoint_tool_results = cast(list[object], checkpoint.get("tool_results", []))

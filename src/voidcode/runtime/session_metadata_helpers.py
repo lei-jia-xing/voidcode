@@ -52,7 +52,7 @@ from .todos import (
 
 if TYPE_CHECKING:
     from .acp import AcpAdapterState
-    from .storage import SessionStore
+    from .storage import SessionRepository
 
 logger = logging.getLogger(__name__)
 
@@ -697,7 +697,7 @@ def session_with_current_acp_metadata(
 
 
 def persist_tool_execution_intent(
-    store: SessionStore,
+    store: SessionRepository,
     workspace: Path,
     session: SessionState,
     intent: dict[str, object],
@@ -721,7 +721,7 @@ def persist_tool_execution_intent(
 
 
 def clear_tool_execution_intent(
-    store: SessionStore,
+    store: SessionRepository,
     workspace: Path,
     session: SessionState,
 ) -> SessionState:

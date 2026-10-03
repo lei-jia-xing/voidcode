@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.runtime_storage import repositories_for_test_store
 from voidcode.runtime import VoidCodeRuntime
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
@@ -45,7 +46,7 @@ def _runtime_with_store(
     monkeypatch.setenv("VOIDCODE_DB_PATH", str(db_path))
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        session_store=store,
+        repositories=repositories_for_test_store(store),
         config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
     )
     return runtime, store

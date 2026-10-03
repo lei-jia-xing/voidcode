@@ -4,7 +4,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from ...core.engine import CallSeed, EngineState
+from ...core.turns import CallSeed
 from ...security.redaction import REDACTED_PLACEHOLDER, redact_mapping
 from ...tools.contracts import ToolCall, ToolResult
 from ..events import REASONING_PERSISTED_LIMIT_CHARS
@@ -40,16 +40,24 @@ class InterruptedTurn:
 type RuntimeContinuation = ApprovedInvocation | AnsweredQuestion | InterruptedTurn
 
 
-def persisted_turn_batch(state: EngineState, *, session_id: str, started_sequence: int) -> dict[str, object]:
-    batch = state.batches[-1]
+def persisted_turn_batch(
+    batch: CallSeed, *, session_id: str, run_id: str | None, started_sequence: int, completed_call_ids: tuple[str, ...] = ()
+) -> dict[str, object]:
+    if batch.run_step is None or batch.run_step < 1:
+        raise ValueError("native batch has no actual positive run step")
+    ids = tuple(call.tool_call_id for call in batch.calls)
+    if not ids or any(not call_id for call_id in ids) or len(set(ids)) != len(ids):
+        raise ValueError("native batch requires unique original call identities")
+    if completed_call_ids != ids[: len(completed_call_ids)]:
+        raise ValueError("native completion identities are not the original batch prefix")
     raw: dict[str, object] = {
         "session_id": session_id,
-        "run_id": state.request.run_id,
+        "run_id": run_id,
         "started_sequence": started_sequence,
         "run_step": batch.run_step,
         "calls": [{"tool_name": call.tool_name, "tool_call_id": call.tool_call_id, "arguments": dict(call.arguments)} for call in batch.calls],
         "reasoning": batch.reasoning,
-        "completed_call_ids": [result.data["tool_call_id"] for result in batch.results],
+        "completed_call_ids": list(completed_call_ids),
     }
     safe = redact_mapping(raw)
     if isinstance(safe["reasoning"], str):

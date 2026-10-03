@@ -52,7 +52,8 @@ def _task(task_id: str, parent: str, group: str, size: int) -> BackgroundTaskSta
 def _supervisor(workspace: Path, store: SqliteSessionStore) -> RuntimeBackgroundTaskSupervisor:
     supervisor = object.__new__(RuntimeBackgroundTaskSupervisor)
     supervisor._workspace = workspace
-    supervisor._session_store = store
+    supervisor._tasks = store
+    supervisor._events = store
     return supervisor
 
 

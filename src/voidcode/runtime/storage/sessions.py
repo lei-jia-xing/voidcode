@@ -21,6 +21,7 @@ from ..events import (
     EventEnvelope,
     EventSource,
 )
+from ..interaction_queue import QueuedMessageKind, QueuedRuntimeMessage, drain_runtime_messages, enqueue_runtime_message
 from ..session import (
     SessionEntrySummary,
     SessionRef,
@@ -36,6 +37,8 @@ from .fork import _NON_TRANSFERABLE_METADATA_KEYS, _dangling_interaction
 from .rows import (
     SessionCreatedAtRow,
     SessionCreatedAtUnixMsRow,
+    SessionEventPageRow,
+    SessionEventPageStateRow,
     SessionEventRow,
     SessionForkProvenanceRow,
     SessionLastEventSequenceRow,
@@ -64,11 +67,11 @@ else:
 
 @dataclass(frozen=True, slots=True)
 class SessionEventsAfter:
-    """Bounded transcript slice plus the row state a follow client needs.
+    """Flat durable event tail plus the row state a follow client needs.
 
     ``status`` is the persisted row status and ``metadata`` the raw persisted
-    session metadata at read time; ``events`` are the replay-visible events
-    with ``sequence > after_sequence`` in ascending ``sequence`` order.
+    session metadata at read time; ``events`` are all stored rows with
+    ``sequence > after_sequence`` in ascending order, not an active-path page.
     """
 
     status: SessionStatus
@@ -85,6 +88,21 @@ class SessionTreeEvent:
 
     event: EventEnvelope
     parent_sequence: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionEventPage:
+    """One immutable path page pinned to a stored leaf.
+
+    ``max_sequence`` is the durable row watermark, which can exceed the leaf
+    when abandoned events remain stored. ``next_after_sequence`` is set only
+    when another page remains on this pinned path.
+    """
+
+    leaf_sequence: int | None
+    max_sequence: int
+    entries: tuple[SessionTreeEvent, ...]
+    next_after_sequence: int | None
 
 
 def session_event_path(
@@ -306,20 +324,12 @@ class _SessionStorageMixin(_MixinBase):
         session_id: str,
         metadata: dict[str, object],
     ) -> dict[str, object]:
-        """Carry only durable interaction-queue state into a row snapshot.
+        """Preserve the queue owner's current state, including consumed absence.
 
-        ``save_run`` receives an in-memory response that may have been built
-        before another active run queued a steering/follow-up message. The
-        sessions row is authoritative when it contains that runtime-owned
-        outbox field, but all other metadata remains owned by the response
-        snapshot: merging the whole row could regress a newer runtime policy,
-        turn, or context projection. If the row has no queue field, preserve a
-        response-owned queue (for example, one recovered from a resume
-        checkpoint) rather than dropping it. The workspace/session predicate
-        keeps this read on the same tenant and session as the snapshot write.
-        Writers serialize through the surrounding transaction, so a queue
-        commit before this read is retained; a queue writer that starts after
-        this transaction commits its update afterward and is not overwritten.
+        Snapshot writers own all other metadata; only explicit enqueue/drain
+        transactions own pending input and its delivery cursor. Reading those
+        fields within the same write transaction prevents stale snapshots from
+        erasing newly queued input or resurrecting already consumed messages.
         """
         row = fetch_row(
             connection,
@@ -330,15 +340,14 @@ class _SessionStorageMixin(_MixinBase):
             return metadata
         stored_metadata = json.loads(decode_row(row, SessionMetadataRow)["metadata_json"])
         if not isinstance(stored_metadata, dict):
-            return metadata
+            raise ValueError("session metadata must decode to an object")
 
         merged = dict(metadata)
-        if "pending_messages" in stored_metadata:
-            pending_messages = stored_metadata["pending_messages"]
-            if isinstance(pending_messages, list):
-                merged["pending_messages"] = pending_messages
+        for key in ("pending_messages", "runtime_interaction_delivery_cursor"):
+            if key in stored_metadata:
+                merged[key] = stored_metadata[key]
             else:
-                merged.pop("pending_messages", None)
+                merged.pop(key, None)
         return merged
 
     @staticmethod
@@ -666,7 +675,19 @@ class _SessionStorageMixin(_MixinBase):
                 # either column.
                 parent_sequence = sequence
                 assigned.append(event)
-            if interrupted_checkpoint is not None:
+            if interrupted_checkpoint is not None and assigned:
+                checkpoint_metadata = interrupted_checkpoint.get("session_metadata")
+                if not isinstance(checkpoint_metadata, dict):
+                    raise ValueError("atomic checkpoint requires its canonical session metadata")
+                interrupted_checkpoint = {
+                    **interrupted_checkpoint,
+                    "session_metadata": self._merge_runtime_owned_metadata(
+                        connection=connection,
+                        workspace=workspace,
+                        session_id=session_id,
+                        metadata=checkpoint_metadata,
+                    ),
+                }
                 checkpoint_updated_at = self._next_timestamp(connection=connection)
                 _ = connection.execute(
                     """
@@ -675,7 +696,7 @@ class _SessionStorageMixin(_MixinBase):
                     WHERE workspace_id = ? AND session_id = ?
                     """,
                     (
-                        json.dumps(interrupted_checkpoint, sort_keys=True),
+                        json.dumps({**interrupted_checkpoint, "last_event_sequence": assigned[-1].sequence}, sort_keys=True),
                         checkpoint_updated_at,
                         str(workspace),
                         session_id,
@@ -1112,6 +1133,161 @@ class _SessionStorageMixin(_MixinBase):
             raise UnknownSessionError(f"unknown session: {session_id}")
         return self._parse_session_status(decode_row(row, SessionStatusRow)["status"])
 
+    def read_session_event_page(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        after_sequence: int,
+        limit: int,
+        leaf_sequence: int | None = None,
+    ) -> SessionEventPage:
+        """Read a bounded page from a pinned root→leaf session path.
+
+        The first call omits ``leaf_sequence`` to snapshot the current leaf.
+        Pass the returned leaf on later calls so appends or checkouts do not
+        change which branch the cursor traverses. ``max_sequence`` is the
+        durable watermark and may exceed that pinned leaf.
+        """
+        if not isinstance(after_sequence, int) or isinstance(after_sequence, bool) or after_sequence < 0:
+            raise ValueError("after_sequence must be a non-negative integer")
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            raise ValueError("event page limit must be a positive integer")
+        if leaf_sequence is not None and (not isinstance(leaf_sequence, int) or isinstance(leaf_sequence, bool) or leaf_sequence < 1):
+            raise ValueError("leaf_sequence must be a positive integer")
+
+        with self._connect(workspace) as connection:
+            _ = connection.execute("BEGIN")
+            state_row = fetch_row(
+                connection,
+                """
+                SELECT leaf_sequence, last_event_sequence
+                FROM sessions
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+                (str(workspace), session_id),
+            )
+            if state_row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            state = decode_row(state_row, SessionEventPageStateRow)
+            selected_leaf = state["leaf_sequence"] if leaf_sequence is None else leaf_sequence
+            max_sequence = state["last_event_sequence"]
+            if selected_leaf is None:
+                if max_sequence != 0:
+                    raise SessionTreePathError(f"session {session_id} has events but no leaf")
+                if after_sequence != 0:
+                    raise ValueError("after_sequence is not on the empty session path")
+                connection.commit()
+                return SessionEventPage(
+                    leaf_sequence=None,
+                    max_sequence=max_sequence,
+                    entries=(),
+                    next_after_sequence=None,
+                )
+            if selected_leaf > max_sequence:
+                raise SessionTreePathError(f"session {session_id} leaf exceeds its event watermark")
+
+            raw_rows = fetch_rows(
+                connection,
+                """
+                WITH RECURSIVE path(sequence, parent_sequence, event_type, source, payload_json) AS (
+                    SELECT sequence, parent_sequence, event_type, source, payload_json
+                    FROM session_events
+                    WHERE workspace_id = ? AND session_id = ? AND sequence = ?
+                    UNION ALL
+                    SELECT parent.sequence, parent.parent_sequence,
+                           parent.event_type, parent.source, parent.payload_json
+                    FROM session_events AS parent
+                    JOIN path AS child
+                      ON parent.workspace_id = ?
+                     AND parent.session_id = ?
+                     AND parent.sequence = child.parent_sequence
+                    WHERE parent.sequence < child.sequence
+                ),
+                validation AS (
+                    SELECT
+                        EXISTS(SELECT 1 FROM path WHERE sequence = ?) AS leaf_found,
+                        CASE WHEN ? = 0 THEN 1
+                             ELSE EXISTS(SELECT 1 FROM path WHERE sequence = ?)
+                        END AS cursor_found,
+                        EXISTS(
+                            SELECT 1
+                            FROM path AS child
+                            WHERE child.parent_sequence IS NOT NULL
+                              AND NOT EXISTS(
+                                  SELECT 1
+                                  FROM session_events AS parent
+                                  WHERE parent.workspace_id = ?
+                                    AND parent.session_id = ?
+                                    AND parent.sequence = child.parent_sequence
+                                    AND parent.sequence < child.sequence
+                              )
+                        ) AS broken_path
+                ),
+                page AS (
+                    SELECT sequence, parent_sequence, event_type, source, payload_json
+                    FROM path
+                    WHERE sequence > ?
+                    ORDER BY sequence ASC
+                    LIMIT ?
+                )
+                SELECT validation.leaf_found, validation.cursor_found, validation.broken_path,
+                       page.sequence, page.parent_sequence, page.event_type, page.source, page.payload_json
+                FROM validation
+                LEFT JOIN page ON 1 = 1
+                ORDER BY page.sequence ASC
+                """,
+                (
+                    str(workspace),
+                    session_id,
+                    selected_leaf,
+                    str(workspace),
+                    session_id,
+                    selected_leaf,
+                    after_sequence,
+                    after_sequence,
+                    str(workspace),
+                    session_id,
+                    after_sequence,
+                    limit + 1,
+                ),
+            )
+            if not raw_rows:
+                raise SessionTreePathError(f"session {session_id} event path could not be read")
+            page_rows = [decode_row(row, SessionEventPageRow) for row in raw_rows]
+            validation = page_rows[0]
+            if validation["broken_path"]:
+                raise SessionTreePathError(f"session {session_id} has broken event ancestry")
+            if not validation["leaf_found"]:
+                raise SessionTreePathError(f"session {session_id} has no event sequence {selected_leaf}")
+            if not validation["cursor_found"]:
+                raise ValueError(f"after_sequence {after_sequence} is not on the selected session path")
+
+            stored_rows = [row for row in page_rows if row["sequence"] is not None]
+            has_more = len(stored_rows) > limit
+            entries = tuple(
+                SessionTreeEvent(
+                    event=EventEnvelope(
+                        session_id=session_id,
+                        sequence=cast(int, row["sequence"]),
+                        event_type=cast(str, row["event_type"]),
+                        source=self._parse_event_source(cast(str, row["source"])),
+                        payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
+                    ),
+                    parent_sequence=row["parent_sequence"],
+                )
+                for row in stored_rows[:limit]
+            )
+            next_after_sequence = entries[-1].event.sequence if has_more else None
+            connection.commit()
+
+        return SessionEventPage(
+            leaf_sequence=selected_leaf,
+            max_sequence=max_sequence,
+            entries=entries,
+            next_after_sequence=next_after_sequence,
+        )
+
     def read_session_events_after(
         self,
         *,
@@ -1119,14 +1295,13 @@ class _SessionStorageMixin(_MixinBase):
         session_id: str,
         after_sequence: int,
     ) -> SessionEventsAfter:
-        """Return a bounded, replay-visible slice of a session transcript.
+        """Return the flat durable event tail and row state for follow clients.
 
-        Incremental read for follow-style clients that already replayed the
-        session: one connection reads the row state (status + raw metadata) and
+        One connection reads the row state (status + raw metadata) and performs
         one range scan on the ``(workspace_id, session_id, sequence)`` primary
-        key returns the events after ``after_sequence``, so an idle poll never
-        materializes the transcript again. Events come back undecorated; the
-        runtime applies its policy projection afterwards.
+        key. This preserves the existing follow-client contract; consumers
+        needing bounded active-lineage reads use ``read_session_event_page``.
+        Events come back undecorated for runtime policy projection.
         """
         with self._connect(workspace) as connection:
             session_row = fetch_row(
@@ -1185,16 +1360,82 @@ class _SessionStorageMixin(_MixinBase):
             connection.commit()
 
     def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None:
-        """Persist bounded runtime metadata without fabricating a new response."""
+        """Persist a bounded snapshot without replacing queue-owned input."""
         persisted = session_metadata_for_persistence(metadata)
         with self._write_connect(workspace) as connection:
-            updated = connection.execute(
-                "UPDATE sessions SET metadata_json = ?, updated_at = ? WHERE workspace_id = ? AND session_id = ?",
-                (json.dumps(persisted, sort_keys=True), self._next_timestamp(connection=connection), str(workspace), session_id),
-            ).rowcount
-            if updated != 1:
-                raise UnknownSessionError(f"unknown session: {session_id}")
+            persisted = self._merge_runtime_owned_metadata(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+                metadata=persisted,
+            )
+            self._write_session_metadata_row(connection=connection, workspace=workspace, session_id=session_id, metadata=persisted)
             connection.commit()
+
+    def enqueue_session_message(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        content: str,
+        kind: QueuedMessageKind,
+        dedupe_key: str | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        with self._write_connect(workspace) as connection:
+            metadata = self._read_session_message_metadata(connection=connection, workspace=workspace, session_id=session_id)
+            updated = enqueue_runtime_message(metadata, content=content, kind=kind, dedupe_key=dedupe_key)
+            self._write_session_metadata_row(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+                metadata=session_metadata_for_persistence(updated),
+            )
+            connection.commit()
+            pending = updated.get("pending_messages")
+            return tuple(item for item in pending if isinstance(item, dict)) if isinstance(pending, list) else ()
+
+    def drain_session_messages(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        kind: QueuedMessageKind,
+        remember_dedupe: bool = False,
+    ) -> tuple[QueuedRuntimeMessage, ...]:
+        with self._write_connect(workspace) as connection:
+            metadata = self._read_session_message_metadata(connection=connection, workspace=workspace, session_id=session_id)
+            updated, messages = drain_runtime_messages(metadata, kind=kind, remember_dedupe=remember_dedupe)
+            if messages:
+                self._write_session_metadata_row(
+                    connection=connection,
+                    workspace=workspace,
+                    session_id=session_id,
+                    metadata=session_metadata_for_persistence(updated),
+                )
+            connection.commit()
+            return messages
+
+    @staticmethod
+    def _read_session_message_metadata(*, connection: sqlite3.Connection, workspace: Path, session_id: str) -> dict[str, object]:
+        row = fetch_row(connection, "SELECT metadata_json FROM sessions WHERE workspace_id = ? AND session_id = ?", (str(workspace), session_id))
+        if row is None:
+            raise UnknownSessionError(f"unknown session: {session_id}")
+        return normalize_persisted_session_metadata(json.loads(decode_row(row, SessionMetadataRow)["metadata_json"]))
+
+    def _write_session_metadata_row(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        session_id: str,
+        metadata: dict[str, object],
+    ) -> None:
+        updated = connection.execute(
+            "UPDATE sessions SET metadata_json = ?, updated_at = ? WHERE workspace_id = ? AND session_id = ?",
+            (json.dumps(metadata, sort_keys=True), self._next_timestamp(connection=connection), str(workspace), session_id),
+        ).rowcount
+        if updated != 1:
+            raise UnknownSessionError(f"unknown session: {session_id}")
 
     def _load_session_response(
         self,

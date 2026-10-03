@@ -54,6 +54,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **core/runtime:** replace dictionary-based `TurnFact` construction with concrete domain facts and move the authentic continuation `CallSeed` to `core.turns` (breaking, no aliases). A real isolated memory event tree and bounded SQLite fact adapter preserve append-only branch edges, dedupe and the existing client wire; live provider deltas remain client-only. Native completions validate actual identity/final authorized arguments before atomic completed-prefix checkpoint publication. Approved writes and answered questions survive stream-close/reopen or terminal-save failure without repeating completed I/O; canonical frozen hook metadata keeps its existing owner projection, separate from native payload redaction.
+
+- **runtime/storage:** make the existing session repository the transactional enqueue/drain owner. Stale metadata/checkpoint/terminal snapshots preserve current queued input and consumed absence, and corrupt non-object stored metadata explicitly rejects replacement. P4 retains physical SQLite, bundle, checkpoint and fact-codec version 1; future capability/outer-format cutover is not implied.
+
+- **runtime/storage (breaking):** replace `VoidCodeRuntime(session_store=...)` with `repositories=RuntimeRepositories(...)` and remove the mega `SessionStore` and its exports, without a shim. `SqliteSessionStore` remains the physical owner; the seven repository roles are reference-only composition, not a transaction-forwarding facade.
+
 - **core/runtime:** converge provider-backed and deterministic turns on `core.engine.TurnEngine`, with `runtime.run_loop.RuntimeHost` as the governed host; remove the legacy `voidcode.graph`, `GraphRunRequest`, and `RuntimeGraph` surfaces without aliases (breaking for direct importers). Authenticated completed seed results remain available to later turns exactly once, without replaying completed tool calls.
 
 - **core/tools:** require explicit `ToolContext` for every tool invocation and replace `ToolDefinition.read_only` with behavior effects (breaking: no hidden invocation binder or compatibility facade); move task/process execution to runtime-owned commands, bind scoped resources to the approved caller/call/workspace, and reject cancelled commands before dispatch while preserving runtime approval, progress, replay and execution-lease ownership.

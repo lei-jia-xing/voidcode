@@ -67,7 +67,8 @@ def _supervisor(
 ) -> RuntimeBackgroundTaskSupervisor:
     supervisor = object.__new__(RuntimeBackgroundTaskSupervisor)
     supervisor._workspace = workspace
-    supervisor._session_store = store
+    supervisor._sessions = store
+    supervisor._events = store
     supervisor._config = SimpleNamespace(hooks=hooks)
     supervisor.background_task_result = lambda *, task: SimpleNamespace(
         delegated_execution=SimpleNamespace(selected_preset="explore"),

@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.turns import TurnPlan, TurnRequest, TurnSession
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
@@ -66,7 +67,7 @@ def _stored_sequences(database_path: Path) -> list[int]:
 
 def test_replayed_context_follows_the_checked_out_leaf(tmp_path: Path) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "checkout-context.sqlite3")
-    runtime = VoidCodeRuntime(workspace=tmp_path, session_store=store)
+    runtime = VoidCodeRuntime(workspace=tmp_path, repositories=repositories_for_test_store(store))
     database_path = store._resolve_database_path()
     _seed_session(store, workspace=tmp_path)
 
@@ -131,7 +132,7 @@ def _rehydrated_tool_contents(runtime: VoidCodeRuntime, *, store: SqliteSessionS
 
 def test_rehydrated_tool_results_follow_the_checked_out_leaf(tmp_path: Path) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "checkout-tool-results.sqlite3")
-    runtime = VoidCodeRuntime(workspace=tmp_path, session_store=store)
+    runtime = VoidCodeRuntime(workspace=tmp_path, repositories=repositories_for_test_store(store))
     database_path = store._resolve_database_path()
     _seed_session(store, workspace=tmp_path)
 
@@ -155,7 +156,7 @@ def _debug_provider_tool_contents(runtime: VoidCodeRuntime, *, workspace: Path) 
 
 def test_debug_provider_context_follows_the_checked_out_leaf(tmp_path: Path) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "checkout-debug-context.sqlite3")
-    runtime = VoidCodeRuntime(workspace=tmp_path, session_store=store, turn_producer=_FinishingTurnProducer())
+    runtime = VoidCodeRuntime(workspace=tmp_path, repositories=repositories_for_test_store(store), turn_producer=_FinishingTurnProducer())
 
     # Harvest the full metadata snapshot a real run persists (runtime_config +
     # agent_capability_snapshot) so the debug read passes its boundary checks.

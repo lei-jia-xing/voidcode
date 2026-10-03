@@ -21,6 +21,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
+from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.provider_turns import ProviderTurnProducer
 from voidcode.core.turns import TurnRequest
 from voidcode.provider.config import ProviderEndpointConfig, ProviderTransientRetryConfig
@@ -171,7 +172,7 @@ def _run_turn_engine(
 ) -> tuple[list[RuntimeStreamChunk], SqliteSessionStore]:
     store = SqliteSessionStore()
     _create_session_row(store, workspace=tmp_path, session_id=session_id)
-    runtime = VoidCodeRuntime(workspace=tmp_path, session_store=store)
+    runtime = VoidCodeRuntime(workspace=tmp_path, repositories=repositories_for_test_store(store))
     session, request, tool_registry = _turn_request(runtime, session_id=session_id)
     chunks = list(
         runtime._run_loop_coordinator.execute_turn_engine(
@@ -301,7 +302,7 @@ def test_transient_failure_after_streamed_text_falls_back_and_announces_the_disc
     with tempfile.TemporaryDirectory() as state_dir:
         with VoidCodeRuntime(
             workspace=tmp_path,
-            session_store=SqliteSessionStore(),
+            repositories=repositories_for_test_store(SqliteSessionStore()),
             config=RuntimeConfig(
                 approval_mode="yolo",
                 execution_engine="provider",

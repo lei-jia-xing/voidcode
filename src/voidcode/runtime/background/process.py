@@ -19,7 +19,20 @@ _MAX_BACKGROUND_PROCESS_LOG_LINES = 500
 class BackgroundProcessPersistence(Protocol):
     """Persistence boundary used by the runtime-owned process manager."""
 
-    def register_background_process(self, **kwargs: object) -> None: ...
+    def register_background_process(
+        self,
+        *,
+        workspace: Path,
+        process_id: str,
+        owner_session_id: str | None,
+        command: str,
+        cwd: str,
+        pid: int,
+        process_group_id: int | None,
+        process_identity: str | None,
+        stdout_path: str,
+        stderr_path: str,
+    ) -> None: ...
 
     def load_background_process(self, *, workspace: Path, process_id: str) -> dict[str, object] | None: ...
 

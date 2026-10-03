@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 
 import pytest
 
+from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.tool_context import ToolContext
 from voidcode.core.turns import TurnPlan
 from voidcode.runtime.active_session import ActiveSessionRegistry
@@ -606,7 +607,7 @@ def test_runtime_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
-        session_store=store,
+        repositories=repositories_for_test_store(store),
     )
     store.save_interrupted_checkpoint(
         workspace=tmp_path,

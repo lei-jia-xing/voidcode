@@ -8,12 +8,12 @@ from typing import Any
 import pytest
 
 from voidcode.core.deterministic_turns import DeterministicTurnProducer
-from voidcode.core.engine import CallSeed, TurnEngine
+from voidcode.core.engine import TurnEngine
 from voidcode.core.memory_host import MemoryHost
 from voidcode.core.provider_turns import ProviderTurnProducer
 from voidcode.core.tool_context import ToolContext
 from voidcode.core.transcript import ContextSegment, tool_result_output
-from voidcode.core.turns import TurnRequest, TurnSessionSnapshot
+from voidcode.core.turns import CallSeed, StreamFact, TurnRequest, TurnSessionSnapshot
 from voidcode.provider.protocol import (
     ProviderErrorKind,
     ProviderExecutionError,
@@ -391,17 +391,6 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
     assert step.tool_calls[0].tool_name == "read"
     assert step.output is None
     assert step.is_finished is False
-    assert [event.kind for event in step.facts] == ["loop_step", "model_turn"]
-    assert step.facts[0].payload == {"step": 1, "phase": "plan"}
-    assert step.facts[1].payload == {
-        "turn": 1,
-        "mode": "provider",
-        "provider": "opencode-zen",
-        "model": "gpt-5.4",
-        "attempt": 0,
-        "streaming": False,
-        "prompt": "read sample.txt",
-    }
 
 
 def test_deterministic_read_preserves_actual_body_whitespace(tmp_path: Path) -> None:
@@ -812,11 +801,8 @@ def test_provider_provider_graph_streams_ordered_events_and_deterministic_output
 
     assert step.is_finished is True
     assert step.output == "stream-final"
-    stream_events = [event for event in step.facts if event.kind == "provider_stream"]
-    assert [event.payload["kind"] for event in stream_events] == ["delta", "delta", "done"]
-    model_turn_events = [event for event in step.facts if event.kind == "model_turn"]
-    assert model_turn_events
-    assert model_turn_events[0].payload["streaming"] is True
+    stream_events = [event for event in step.facts if isinstance(event, StreamFact)]
+    assert [event.event.kind for event in stream_events] == ["delta", "delta", "done"]
 
 
 def test_provider_graph_preserves_reasoning_stream_metadata() -> None:
@@ -842,10 +828,10 @@ def test_provider_graph_preserves_reasoning_stream_metadata() -> None:
         session=_session(),
     )
 
-    stream_events = [event for event in step.facts if event.kind == "provider_stream"]
-    reasoning_event = next(event for event in stream_events if event.payload.get("channel") == "reasoning")
-    assert reasoning_event.payload["text"] == "private chain"
-    assert reasoning_event.payload["metadata"] == {"source": "fixture"}
+    stream_events = [event for event in step.facts if isinstance(event, StreamFact)]
+    reasoning_event = next(event for event in stream_events if event.event.channel == "reasoning")
+    assert reasoning_event.event.text == "private chain"
+    assert reasoning_event.event.metadata == {"source": "fixture"}
     assert step.output == "answer"
 
 

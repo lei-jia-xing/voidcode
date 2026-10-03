@@ -37,7 +37,7 @@ from voidcode.runtime.skills import (
     build_skill_execution_snapshot,
     snapshot_payload,
 )
-from voidcode.runtime.storage import SessionStore
+from voidcode.runtime.storage import SessionRepository
 from voidcode.runtime.todos import todo_state_from_session_metadata
 
 
@@ -307,7 +307,7 @@ def test_write_path_constructors_reject_unknown_runtime_state_keys() -> None:
         )
     with pytest.raises(ValueError, match="is not supported"):
         persist_tool_execution_intent(
-            cast(SessionStore, None),
+            cast(SessionRepository, None),
             Path("."),
             typo_session,
             intent={"tool_call_id": "call-1"},

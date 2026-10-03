@@ -138,7 +138,7 @@ class RuntimeFactory(Protocol):
         graph: object | None = None,
         mcp_manager: object | None = None,
         permission_policy: object | None = None,
-        session_store: object | None = None,
+        repositories: object | None = None,
     ) -> RuntimeRunner: ...
 
 
@@ -578,12 +578,13 @@ def test_transport_get_session_replay_is_read_only_for_interrupted_session(tmp_p
     stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="interrupted-replay-session"))
     original_events = cast(Any, stored).events
     original_count = len(original_events)
-    store = runtime._session_store
-    loaded = store.load_session(workspace=tmp_path, session_id="interrupted-replay-session")
+    sessions = runtime._repositories.sessions
+    recovery = runtime._repositories.recovery
+    loaded = sessions.load_session(workspace=tmp_path, session_id="interrupted-replay-session")
     # Un-seal the terminal row into the mid-run "interrupted" state (the same
     # state every session row has while it is running) with an interrupted
     # checkpoint at the end of the persisted transcript.
-    store.save_interrupted_checkpoint(
+    recovery.save_interrupted_checkpoint(
         workspace=tmp_path,
         session_id="interrupted-replay-session",
         prompt="read sample.txt",
@@ -591,7 +592,7 @@ def test_transport_get_session_replay_is_read_only_for_interrupted_session(tmp_p
         tool_results=(),
         last_event_sequence=original_count,
     )
-    interrupted = store.load_session(workspace=tmp_path, session_id="interrupted-replay-session")
+    interrupted = sessions.load_session(workspace=tmp_path, session_id="interrupted-replay-session")
     assert interrupted.session.status == "interrupted"
 
     app = create_runtime_app(workspace=tmp_path)
@@ -605,7 +606,7 @@ def test_transport_get_session_replay_is_read_only_for_interrupted_session(tmp_p
     assert sum(1 for event in replay_events if event["event_type"] == "graph.model_turn") == 1
     # The persisted transcript must be untouched: no truncation, no re-run, no
     # new provider turn appended.
-    after = store.load_session(workspace=tmp_path, session_id="interrupted-replay-session")
+    after = sessions.load_session(workspace=tmp_path, session_id="interrupted-replay-session")
     assert len(after.events) == original_count
     assert [event.sequence for event in after.events] == [event.sequence for event in original_events]
     assert [event.event_type for event in after.events] == [event.event_type for event in original_events]
@@ -620,9 +621,10 @@ def test_transport_post_session_resume_reexecutes_interrupted_session(tmp_path: 
     runtime = runtime_class(workspace=tmp_path)
     stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="resume-session"))
     original_count = len(cast(Any, stored).events)
-    store = runtime._session_store
-    loaded = store.load_session(workspace=tmp_path, session_id="resume-session")
-    store.save_interrupted_checkpoint(
+    sessions = runtime._repositories.sessions
+    recovery = runtime._repositories.recovery
+    loaded = sessions.load_session(workspace=tmp_path, session_id="resume-session")
+    recovery.save_interrupted_checkpoint(
         workspace=tmp_path,
         session_id="resume-session",
         prompt="read sample.txt",
@@ -639,7 +641,7 @@ def test_transport_post_session_resume_reexecutes_interrupted_session(tmp_path: 
     assert cast(dict[str, object], payload["session"])["status"] == "completed"
     # The explicit resume re-executes the graph loop from the checkpoint: new
     # events are appended past the original transcript and the row is sealed.
-    after = store.load_session(workspace=tmp_path, session_id="resume-session")
+    after = sessions.load_session(workspace=tmp_path, session_id="resume-session")
     assert len(after.events) > original_count
     assert [event.sequence for event in after.events] == list(range(1, len(after.events) + 1))
     assert after.events[-1].event_type == "graph.response_ready"
@@ -654,7 +656,7 @@ def test_transport_post_session_resume_reexecutes_interrupted_session(tmp_path: 
     assert replay_response.status == 200
     assert cast(dict[str, object], replay_payload["session"])["status"] == "completed"
     assert len(cast(list[dict[str, object]], replay_payload["events"])) == len(after.events)
-    replay_after = store.load_session(workspace=tmp_path, session_id="resume-session")
+    replay_after = sessions.load_session(workspace=tmp_path, session_id="resume-session")
     assert len(replay_after.events) == len(after.events)
 
 

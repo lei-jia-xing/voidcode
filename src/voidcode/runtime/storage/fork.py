@@ -1,23 +1,9 @@
-"""Fork storage: copy a session's event-log prefix into a NEW session row.
+"""Copy retained prefix rows into a new session without rewriting parent edges.
 
-VoidCode persists one linear ``session_events`` log per session row with a
-``last_event_sequence`` watermark. There is no mutable leaf pointer, so the
-honest minimum "fork" is:
-
-    new session row
-  + events ``1..N`` copied from the source (renumbered contiguously)
-  + provenance columns (``forked_from_session_id`` / ``forked_at_sequence``)
-
-The source session is never written to. Provenance uses its own columns because
-``parent_session_id`` means *delegated background-task child* to every reader
-(list filtering, delegation routing, parent-terminal checks, orphan pruning).
-
-Transferable state: the prompt, the session-scoped effective config and policy
-(``runtime_config``/``runtime_policy`` — ``run -r``/inspection reject a session
-without them), and a replay-only terminal resume checkpoint. ``runtime_state``
-(context projection, todos) is dropped: it describes the position of the copied
-run, and stale todo state would describe events the fork does not own. The
-fork's next run re-derives its own run position.
+The child owns its own leaf/watermark and separate fork provenance. Delegated
+``parent_session_id`` is never fork provenance. Pair safety follows the selected
+ancestor path; abandoned rows remain append-only but cannot close its calls.
+Session config/policy transfer; position-scoped runtime state is discarded.
 """
 
 from __future__ import annotations
@@ -65,13 +51,9 @@ if TYPE_CHECKING:
 else:
     _MixinBase = object
 
-#: Events that open an interaction the log must close again. A fork boundary
-#: that keeps one of these without its resolution would hand the child a
-#: dangling call/request. ``runtime.tool_started`` pairs with
-#: ``runtime.tool_completed`` on ``tool_call_id``;
-#: ``runtime.approval_requested``/``runtime.question_requested`` pair with their
-#: resolved/answered counterpart on ``request_id``.
-_TOOL_PAIR = (RUNTIME_TOOL_STARTED, RUNTIME_TOOL_COMPLETED)
+# A normalized graph request and governed runtime start describe the same native
+# identity, even when input governance rewrites its name/arguments.
+_TOOL_REQUEST_TYPES = frozenset({"graph.tool_request_created", RUNTIME_TOOL_STARTED})
 _REQUEST_PAIRS = (
     (RUNTIME_APPROVAL_REQUESTED, RUNTIME_APPROVAL_RESOLVED),
     (RUNTIME_QUESTION_REQUESTED, RUNTIME_QUESTION_ANSWERED),
@@ -101,32 +83,35 @@ def _dangling_interaction(events: tuple[EventEnvelope, ...]) -> tuple[str, str] 
     approval/question request whose ``request_id`` has no resolution, means the
     boundary splits a pair.
     """
-    open_tools: list[str] = []
-    completed_tools: set[str] = set()
-    request_ids: dict[str, tuple[str, str]] = {}
-    resolved_ids: set[str] = set()
+    open_tools: dict[str, None] = {}
+    open_requests: dict[tuple[str, str], None] = {}
     for event in events:
         payload = event.payload
-        if event.event_type == _TOOL_PAIR[0] and (call_id := _normalized_tool_call_id(payload)) is not None:
-            open_tools.append(call_id)
-        elif event.event_type == _TOOL_PAIR[1] and (call_id := _normalized_tool_call_id(payload)) is not None:
-            completed_tools.add(call_id)
-        else:
-            for request_type, resolution_type in _REQUEST_PAIRS:
-                if event.event_type == request_type:
-                    request_id = payload.get("request_id")
-                    if isinstance(request_id, str) and request_id:
-                        request_ids[request_id] = (request_type, resolution_type)
-                elif event.event_type == resolution_type:
-                    request_id = payload.get("request_id")
-                    if isinstance(request_id, str) and request_id:
-                        resolved_ids.add(request_id)
-    for call_id in reversed(open_tools):
-        if call_id not in completed_tools:
-            return ("tool", call_id)
-    for request_id, (request_type, _resolution_type) in request_ids.items():
-        if request_id not in resolved_ids:
-            return ("request", f"{request_id} ({request_type})")
+        if event.event_type in _TOOL_REQUEST_TYPES or event.event_type == RUNTIME_TOOL_COMPLETED:
+            call_id = _normalized_tool_call_id(payload)
+            if call_id is None:
+                return ("tool", f"event {event.sequence} lacks an original native identity; migrate the legacy history")
+            if event.event_type in _TOOL_REQUEST_TYPES:
+                open_tools[call_id] = None
+            else:
+                open_tools.pop(call_id, None)
+            continue
+        for request_type, resolution_type in _REQUEST_PAIRS:
+            if event.event_type not in {request_type, resolution_type}:
+                continue
+            request_id = payload.get("request_id")
+            if not isinstance(request_id, str) or not request_id:
+                return ("request", f"event {event.sequence} lacks its original request identity")
+            key = (request_type, request_id)
+            if event.event_type == request_type:
+                open_requests[key] = None
+            else:
+                open_requests.pop(key, None)
+    if open_tools:
+        return ("tool", next(reversed(open_tools)))
+    if open_requests:
+        request_type, request_id = next(iter(open_requests))
+        return ("request", f"{request_id} ({request_type})")
     return None
 
 
@@ -262,7 +247,13 @@ class _ForkStorageMixin(_MixinBase):
             )
             if not events:
                 raise ValueError(f"session {session_id} has no events at or before sequence {boundary} to fork")
-            dangling = _dangling_interaction(events)
+            from .sessions import SessionTreeEvent, session_event_path
+
+            path = session_event_path(
+                tuple(SessionTreeEvent(event, row["parent_sequence"]) for event, row in zip(events, decoded_rows, strict=True)),
+                target_sequence=boundary,
+            )
+            dangling = _dangling_interaction(path)
             if dangling is not None:
                 kind, label = dangling
                 safe_sequence = events[-1].sequence

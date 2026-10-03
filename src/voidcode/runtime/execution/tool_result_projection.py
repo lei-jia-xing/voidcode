@@ -23,13 +23,15 @@ from ..session_metadata_helpers import session_model_identity
 from ..tool_display import build_tool_display, build_tool_status
 
 
-def _tool_completed_identity_payload(session: SessionState) -> dict[str, str]:
+def _tool_completed_identity_payload(session: SessionState | None) -> dict[str, str]:
     """Additive model/provider identity for ``runtime.tool_completed`` payloads.
 
     Merged into the payload before the existing keys so it never overrides
     result data; omitted entirely when the session metadata does not carry a
     model/provider.
     """
+    if session is None:
+        return {}
     model, provider = session_model_identity(session.metadata)
     identity: dict[str, str] = {}
     if model is not None:
@@ -64,7 +66,7 @@ def _normalized_tool_result(
 
 def _tool_completed_payload(
     *,
-    session: SessionState,
+    session: SessionState | None,
     tool_result: ToolResult,
     tool_call_id: str,
     sanitized_arguments: dict[str, object],

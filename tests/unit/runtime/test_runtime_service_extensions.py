@@ -954,7 +954,7 @@ def _wait_for_session_event(
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
         try:
-            response = runtime._session_store.load_session(
+            response = runtime._repositories.sessions.load_session(
                 workspace=runtime._workspace,
                 session_id=session_id,
             )
@@ -1029,7 +1029,7 @@ def test_runtime_exit_waits_for_background_task_worker(
         task=BackgroundTaskRef(id="task-exit-joins-worker"),
         request=BackgroundTaskRequestSnapshot(prompt="background exit join"),
     )
-    runtime._session_store.create_background_task(workspace=tmp_path, task=task)
+    runtime._repositories.tasks.create_background_task(workspace=tmp_path, task=task)
     worker_started = threading.Event()
     release_worker = threading.Event()
     worker_finished = threading.Event()
@@ -1062,7 +1062,7 @@ def test_runtime_shutdown_terminalizes_unfinished_background_worker(
         task=BackgroundTaskRef(id="task-exit-unfinished-worker"),
         request=BackgroundTaskRequestSnapshot(prompt="background exit unfinished"),
     )
-    runtime._session_store.create_background_task(workspace=tmp_path, task=task)
+    runtime._repositories.tasks.create_background_task(workspace=tmp_path, task=task)
     worker_started = threading.Event()
     release_worker = threading.Event()
     worker_released: list[bool] = []
@@ -1104,7 +1104,7 @@ def test_runtime_shutdown_after_mark_running_terminalizes_task_before_worker(
         task=BackgroundTaskRef(id="task-shutdown-before-worker"),
         request=BackgroundTaskRequestSnapshot(prompt="background shutdown race"),
     )
-    runtime._session_store.create_background_task(workspace=tmp_path, task=task)
+    runtime._repositories.tasks.create_background_task(workspace=tmp_path, task=task)
 
     def request_shutdown_from_started_hook(
         *,
@@ -1528,7 +1528,7 @@ def test_runtime_abort_during_provider_stream_seals_interrupted(tmp_path: Path) 
     assert failed_events[-1].payload["model"] == "model-a"
     assert failed_events[-1].payload["error"] == "provider stream cancelled"
     # The persisted row must seal interrupted, never failed.
-    stored = runtime._session_store.load_session(
+    stored = runtime._repositories.sessions.load_session(
         workspace=runtime._workspace,
         session_id="stream-abort",
     )
@@ -1623,7 +1623,7 @@ def test_runtime_provider_error_with_abort_stays_failed(tmp_path: Path) -> None:
     assert failed_chunks, "expected the real provider failure to surface"
     assert failed_chunks[-1].session.status == "failed"
     assert failed_chunks[-1].event.payload.get("cancelled") is not True
-    stored = runtime._session_store.load_session(
+    stored = runtime._repositories.sessions.load_session(
         workspace=runtime._workspace,
         session_id="provider-error-abort",
     )
@@ -2473,7 +2473,7 @@ def test_runtime_retries_cancelled_background_task(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
-    store = _private_attr(runtime, "_session_store")
+    store = _private_attr(runtime, "_repositories").tasks
     store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
@@ -2496,7 +2496,7 @@ def test_runtime_retries_cancelled_background_task(
 
 def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
-    store = _private_attr(runtime, "_session_store")
+    store = _private_attr(runtime, "_repositories").tasks
     store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
@@ -2527,7 +2527,7 @@ def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) 
 
 def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
-    store = _private_attr(runtime, "_session_store")
+    store = _private_attr(runtime, "_repositories").tasks
     store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
@@ -2550,7 +2550,7 @@ def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path
 
 def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> None:
     first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
-    store = _private_attr(first_runtime, "_session_store")
+    store = _private_attr(first_runtime, "_repositories").tasks
     store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
@@ -2572,7 +2572,7 @@ def test_runtime_status_reconciles_stale_running_background_tasks(
     tmp_path: Path,
 ) -> None:
     first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
-    store = _private_attr(first_runtime, "_session_store")
+    store = _private_attr(first_runtime, "_repositories").tasks
     store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
@@ -2614,7 +2614,7 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
         ),
     )
     parent = first_runtime.run(RuntimeRequest(prompt="parent"))
-    store = _private_attr(first_runtime, "_session_store")
+    store = _private_attr(first_runtime, "_repositories").tasks
     store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
@@ -2711,7 +2711,7 @@ def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_star
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     runtime._background_task_supervisor.reconciled = True
-    store = _private_attr(runtime, "_session_store")
+    store = _private_attr(runtime, "_repositories").tasks
     store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
@@ -2743,7 +2743,7 @@ def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_star
 def test_runtime_background_task_worker_rechecks_cancel_before_dispatch(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     runtime._background_task_supervisor.reconciled = True
-    store = _private_attr(runtime, "_session_store")
+    store = _private_attr(runtime, "_repositories").tasks
     store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
@@ -2778,8 +2778,9 @@ def test_runtime_reconciliation_preserves_terminal_task_even_if_child_session_di
 ) -> None:
     initial_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-    store = _private_attr(initial_runtime, "_session_store")
-    store.create_background_task(
+    tasks = _private_attr(initial_runtime, "_repositories").tasks
+    run_writer = _private_attr(initial_runtime, "_repositories").run_writer
+    tasks.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-terminal-truth"),
@@ -2795,7 +2796,7 @@ def test_runtime_reconciliation_preserves_terminal_task_even_if_child_session_di
             finished_at=2,
         ),
     )
-    store.save_run(
+    run_writer.save_run(
         workspace=tmp_path,
         request=RuntimeRequest(
             prompt="background child",
@@ -2857,7 +2858,7 @@ def test_runtime_reconciliation_turns_cancel_requested_running_task_into_cancell
     tmp_path: Path,
 ) -> None:
     first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
-    store = _private_attr(first_runtime, "_session_store")
+    store = _private_attr(first_runtime, "_repositories").tasks
     store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
@@ -3540,8 +3541,9 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_external_wri
     permission_metadata = cast(dict[str, object], runtime_config_metadata["permission"])
     del permission_metadata["external_directory_write"]
 
-    store = _private_attr(initial_runtime, "_session_store")
-    stored = store.load_session(
+    sessions = _private_attr(initial_runtime, "_repositories").sessions
+    run_writer = _private_attr(initial_runtime, "_repositories").run_writer
+    stored = sessions.load_session(
         workspace=tmp_path,
         session_id="persisted-missing-external-write",
     )
@@ -3549,7 +3551,7 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_external_wri
     session_runtime_config = cast(dict[str, object], session_metadata["runtime_config"])
     session_permission = cast(dict[str, object], session_runtime_config["permission"])
     del session_permission["external_directory_write"]
-    store.save_run(
+    run_writer.save_run(
         workspace=tmp_path,
         request=RuntimeRequest(
             prompt="read sample.txt",
@@ -5278,14 +5280,14 @@ def test_runtime_interrupted_resume_restores_leaf_and_keeps_orphaned_tail(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
-    session_store = runtime._session_store
-    assert isinstance(session_store, SqliteSessionStore)
+    repositories = runtime._repositories
+    assert isinstance(repositories.sessions, SqliteSessionStore)
     session_id = "interrupted-resume-session"
 
     # Harvest a full session metadata snapshot from a seed run so the resumed
     # interrupted checkpoint carries the same skill/capability snapshots a real
     # run loop would persist.
-    session_store.save_interrupted_checkpoint(
+    repositories.recovery.save_interrupted_checkpoint(
         workspace=tmp_path,
         session_id="meta-seed",
         prompt="seed",
@@ -5298,7 +5300,7 @@ def test_runtime_interrupted_resume_restores_leaf_and_keeps_orphaned_tail(
     session_metadata = dict(seed.session.metadata)
 
     # Seed the interrupted session row (checkpoint boundary 0, no events yet).
-    session_store.save_interrupted_checkpoint(
+    repositories.recovery.save_interrupted_checkpoint(
         workspace=tmp_path,
         session_id=session_id,
         prompt="interrupted probe",
@@ -5308,7 +5310,7 @@ def test_runtime_interrupted_resume_restores_leaf_and_keeps_orphaned_tail(
         create_if_missing=True,
     )
     # Legitimate pre-checkpoint events land at sequences 1 and 2.
-    session_store.append_session_events(
+    repositories.events.append_session_events(
         workspace=tmp_path,
         session_id=session_id,
         events=(
@@ -5317,7 +5319,7 @@ def test_runtime_interrupted_resume_restores_leaf_and_keeps_orphaned_tail(
         ),
     )
     # Re-capture the checkpoint at the safe boundary (sequence 2).
-    session_store.save_interrupted_checkpoint(
+    repositories.recovery.save_interrupted_checkpoint(
         workspace=tmp_path,
         session_id=session_id,
         prompt="interrupted probe",
@@ -5327,7 +5329,7 @@ def test_runtime_interrupted_resume_restores_leaf_and_keeps_orphaned_tail(
         create_if_missing=False,
     )
     # Orphaned events appended past the checkpoint boundary (sequences 3 and 4).
-    session_store.append_session_events(
+    repositories.events.append_session_events(
         workspace=tmp_path,
         session_id=session_id,
         events=(
@@ -5347,14 +5349,14 @@ def test_runtime_interrupted_resume_restores_leaf_and_keeps_orphaned_tail(
 
     # ...but nothing was deleted: the tail rows are still in the table, and the
     # session's path is what starts after the checkpoint instead of the tail.
-    stored = session_store.load_session(workspace=tmp_path, session_id=session_id)
+    stored = repositories.sessions.load_session(workspace=tmp_path, session_id=session_id)
     assert [event.event_type for event in stored.events] == [
         "runtime.request_received",
         "graph.loop_step",
         "graph.loop_step",
         "runtime.tool_started",
     ]
-    path = session_store.session_path(workspace=tmp_path, session_id=session_id)
+    path = repositories.events.session_path(workspace=tmp_path, session_id=session_id)
     assert [event.sequence for event in path] == [1, 2]
 
 
@@ -5547,7 +5549,7 @@ def test_runtime_rename_session_bounds_rejects_and_returns_updated_summary(tmp_p
     runtime = VoidCodeRuntime(workspace=tmp_path)
 
     def _seed(session_id: str, prompt: str) -> None:
-        runtime._session_store.save_run(
+        runtime._repositories.run_writer.save_run(
             workspace=tmp_path,
             request=RuntimeRequest(prompt=prompt, session_id=session_id),
             response=RuntimeResponse(
@@ -5576,7 +5578,7 @@ def test_runtime_rename_session_bounds_rejects_and_returns_updated_summary(tmp_p
 
 def test_runtime_rename_session_accepts_exactly_at_the_bound(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
-    runtime._session_store.save_run(
+    runtime._repositories.run_writer.save_run(
         workspace=tmp_path,
         request=RuntimeRequest(prompt="boundary", session_id="boundary-session"),
         response=RuntimeResponse(

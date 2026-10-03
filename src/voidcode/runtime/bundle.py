@@ -53,7 +53,13 @@ from .contracts import (
 )
 from .events import EventEnvelope, EventSource
 from .session import SessionRef, SessionState, SessionStatus, session_metadata_for_persistence
-from .storage import SessionStore
+from .storage import (
+    BackgroundTaskRepository,
+    SessionEventRepository,
+    SessionRecoveryRepository,
+    SessionRepository,
+    SessionRunWriter,
+)
 
 SESSION_BUNDLE_SCHEMA_NAME: Final[str] = "voidcode.session.bundle.v1"
 SESSION_BUNDLE_SCHEMA_VERSION: Final[int] = 1
@@ -481,7 +487,8 @@ class _SessionBundleBuilder:
     def __init__(
         self,
         *,
-        session_store: SessionStore,
+        sessions: SessionRepository,
+        tasks: BackgroundTaskRepository,
         workspace: Path,
         options: SessionBundleOptions,
         storage_diagnostics: dict[str, object] | None,
@@ -489,7 +496,8 @@ class _SessionBundleBuilder:
         provider_summary: dict[str, object] | None,
         clock: Callable[[], int] | None = None,
     ) -> None:
-        self._session_store = session_store
+        self._sessions = sessions
+        self._tasks = tasks
         self._workspace = workspace
         self._options = options
         self._storage_diagnostics = storage_diagnostics
@@ -609,7 +617,7 @@ class _SessionBundleBuilder:
         return tuple(sessions), event_total
 
     def _load_session_response(self, *, session_id: str) -> RuntimeResponse:
-        return self._session_store.load_session(
+        return self._sessions.load_session(
             workspace=self._workspace,
             session_id=session_id,
         )
@@ -643,7 +651,7 @@ class _SessionBundleBuilder:
         )
 
     def _session_prompt(self, *, session_id: str) -> str:
-        result = self._session_store.load_session_result(
+        result = self._sessions.load_session_result(
             workspace=self._workspace,
             session_id=session_id,
         )
@@ -661,7 +669,7 @@ class _SessionBundleBuilder:
         }
 
     def _child_session_ids(self, *, parent_session_id: str) -> tuple[str, ...]:
-        tasks = self._session_store.list_background_tasks_by_parent_session(
+        tasks = self._tasks.list_background_tasks_by_parent_session(
             workspace=self._workspace,
             parent_session_id=parent_session_id,
         )
@@ -676,7 +684,7 @@ class _SessionBundleBuilder:
         return tuple(ordered)
 
     def _collect_background_tasks(self, *, session_id: str) -> tuple[SessionBundleBackgroundTaskPayload, ...]:
-        tasks = self._session_store.list_background_tasks_by_parent_session(
+        tasks = self._tasks.list_background_tasks_by_parent_session(
             workspace=self._workspace,
             parent_session_id=session_id,
         )
@@ -684,7 +692,7 @@ class _SessionBundleBuilder:
 
     def _build_task_payload(self, task: StoredBackgroundTaskSummary) -> SessionBundleBackgroundTaskPayload:
         try:
-            full = self._session_store.load_background_task(
+            full = self._tasks.load_background_task(
                 workspace=self._workspace,
                 task_id=task.task.id,
             )
@@ -705,7 +713,8 @@ class _SessionBundleBuilder:
 
 def build_session_bundle(
     *,
-    session_store: SessionStore,
+    sessions: SessionRepository,
+    tasks: BackgroundTaskRepository,
     workspace: Path,
     session_id: str,
     options: SessionBundleOptions | None = None,
@@ -717,7 +726,8 @@ def build_session_bundle(
     """Build a redacted, schema-versioned session bundle for ``session_id``."""
 
     builder = _SessionBundleBuilder(
-        session_store=session_store,
+        sessions=sessions,
+        tasks=tasks,
         workspace=workspace,
         options=options or SessionBundleOptions(),
         storage_diagnostics=storage_diagnostics,
@@ -1129,17 +1139,20 @@ def _session_metadata_with_import_marker(
 def apply_session_bundle(
     bundle: SessionBundle,
     *,
-    session_store: SessionStore,
+    session_repository: SessionRepository,
+    events: SessionEventRepository,
+    recovery: SessionRecoveryRepository,
+    run_writer: SessionRunWriter,
     workspace: Path,
     dry_run: bool = False,
     session_id_resolver: Callable[[str], str] | None = None,
 ) -> SessionBundleImportResult:
-    """Persist ``bundle`` into ``session_store``; never overwrites existing ids by default."""
+    """Persist ``bundle`` through the session repositories; never overwrites existing ids by default."""
 
-    resolver = session_id_resolver or _default_id_collision_resolver(session_store, workspace)
+    resolver = session_id_resolver or _default_id_collision_resolver(session_repository, workspace)
     rebound_id_for = _resolve_import_session_ids(
         bundle.sessions,
-        session_store=session_store,
+        session_repository=session_repository,
         workspace=workspace,
         resolver=resolver,
     )
@@ -1179,7 +1192,7 @@ def apply_session_bundle(
         # ``append_session_events`` reject non-lifecycle appends via
         # ``_assert_terminal_session_events_allowed``), and replay/resume of a
         # sealed imported session is read-only and cannot re-activate it.
-        session_store.save_interrupted_checkpoint(
+        recovery.save_interrupted_checkpoint(
             workspace=workspace,
             session_id=target_id,
             prompt=session.prompt,
@@ -1190,14 +1203,14 @@ def apply_session_bundle(
             turn=session.turn,
             parent_session_id=rebound_session.parent_id,
         )
-        assigned_events = session_store.append_session_events(
+        assigned_events = events.append_session_events(
             workspace=workspace,
             session_id=target_id,
             events=tuple((event.event_type, event.source, event.payload, None) for event in response.events),
         )
         # Seal with the store-assigned envelopes so the row's
         # ``last_event_sequence`` matches the actual stored event log.
-        session_store.save_run(
+        run_writer.save_run(
             workspace=workspace,
             request=request,
             response=RuntimeResponse(
@@ -1233,11 +1246,14 @@ def _remap_parent_id(
     return rebound.get(parent_id, parent_id)
 
 
-def _default_id_collision_resolver(session_store: SessionStore, workspace: Path) -> Callable[[str], str]:
+def _default_id_collision_resolver(
+    session_repository: SessionRepository,
+    workspace: Path,
+) -> Callable[[str], str]:
     def resolve(original: str) -> str:
         candidate = f"{original}-imported"
         attempt = 1
-        while session_store.has_session(workspace=workspace, session_id=candidate):
+        while session_repository.has_session(workspace=workspace, session_id=candidate):
             attempt += 1
             candidate = f"{original}-imported-{attempt}"
         return candidate
@@ -1246,19 +1262,19 @@ def _default_id_collision_resolver(session_store: SessionStore, workspace: Path)
 
 
 def _resolve_import_session_ids(
-    sessions: tuple[SessionBundleSessionPayload, ...],
+    bundle_sessions: tuple[SessionBundleSessionPayload, ...],
     *,
-    session_store: SessionStore,
+    session_repository: SessionRepository,
     workspace: Path,
     resolver: Callable[[str], str],
 ) -> dict[str, str]:
     rebound: dict[str, str] = {}
     reserved: set[str] = set()
-    for session in sessions:
+    for session in bundle_sessions:
         if session.id in rebound:
             raise SessionBundleError(f"duplicate session id in bundle: {session.id!r}")
         target_id = _resolve_target_id(
-            session_store=session_store,
+            session_repository=session_repository,
             workspace=workspace,
             bundle_session_id=session.id,
             resolver=resolver,
@@ -1271,18 +1287,21 @@ def _resolve_import_session_ids(
 
 def _resolve_target_id(
     *,
-    session_store: SessionStore,
+    session_repository: SessionRepository,
     workspace: Path,
     bundle_session_id: str,
     resolver: Callable[[str], str],
     reserved: set[str],
 ) -> str:
     validate_id(bundle_session_id)
-    if bundle_session_id not in reserved and not session_store.has_session(workspace=workspace, session_id=bundle_session_id):
+    if bundle_session_id not in reserved and not session_repository.has_session(
+        workspace=workspace,
+        session_id=bundle_session_id,
+    ):
         return bundle_session_id
     candidate = resolver(bundle_session_id)
     attempt = 1
-    while candidate in reserved or session_store.has_session(
+    while candidate in reserved or session_repository.has_session(
         workspace=workspace,
         session_id=candidate,
     ):

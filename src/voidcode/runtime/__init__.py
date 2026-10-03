@@ -33,7 +33,7 @@ from .events import (
 )
 from .permission import ApprovalMode, PendingApproval, PermissionDecision, PermissionPolicy, PermissionResolution
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
-from .storage import SessionStore
+from .storage import RuntimeRepositories
 
 if TYPE_CHECKING:
     from .service import VoidCodeRuntime
@@ -70,7 +70,7 @@ __all__ = [
     "SessionRef",
     "SessionState",
     "SessionStatus",
-    "SessionStore",
+    "RuntimeRepositories",
     "StoredSessionSummary",
     "StoredBackgroundTaskSummary",
     "ToolRegistry",

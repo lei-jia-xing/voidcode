@@ -195,7 +195,6 @@ def test_write_mode_auto_approves_write_tier_but_prompts_for_execute(
     graph = _ScriptedGraph([step(), TurnPlan(output="done", is_finished=True)])
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        session_store=None,
         tool_registry=ToolRegistry.from_tools([WriteTool(), ShellExecTool()]),
         turn_producer=graph,
         config=RuntimeConfig(

@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.turns import TurnPlan, TurnSession
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
@@ -131,7 +132,7 @@ def test_shutdown_terminalized_queued_task_emits_interrupted_event(
     assert terminal.status == "interrupted"
     assert terminal.session_id is None
 
-    leader = runtime._session_store.load_session(workspace=tmp_path, session_id="leader-session")
+    leader = runtime._repositories.sessions.load_session(workspace=tmp_path, session_id="leader-session")
     interrupted_events = [
         event
         for event in leader.events
@@ -442,11 +443,13 @@ def test_reconcile_failure_is_observable_and_not_marked_complete(tmp_path: Path,
 def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> None:
     runtime = runtime_factory(tmp_path)
     supervisor = runtime._background_task_supervisor
-    store = runtime._session_store
+    tasks = runtime._repositories.tasks
+    recovery = runtime._repositories.recovery
+    events = runtime._repositories.events
 
     # A running task whose child session is waiting on a pending approval must
     # survive (approval/question waiting state is preserved across restarts).
-    store.create_background_task(
+    tasks.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-waiting"),
@@ -455,7 +458,7 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
             session_id="child-waiting",
         ),
     )
-    store.save_interrupted_checkpoint(
+    recovery.save_interrupted_checkpoint(
         workspace=tmp_path,
         session_id="child-waiting",
         prompt="waiting child",
@@ -464,7 +467,7 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
         last_event_sequence=0,
         create_if_missing=True,
     )
-    store.append_session_events(
+    events.append_session_events(
         workspace=tmp_path,
         session_id="child-waiting",
         events=(
@@ -472,7 +475,7 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
             ("runtime.approval_requested", "runtime", {"request_id": "approval-1", "tool": "write"}, None),
         ),
     )
-    store.save_pending_approval(
+    recovery.save_pending_approval(
         workspace=tmp_path,
         request=RuntimeRequest(prompt="waiting child", session_id="child-waiting"),
         response=RuntimeResponse(
@@ -492,7 +495,7 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
     # In-process worker death AFTER reconcile: a running task whose worker
     # thread no longer exists must be terminalized by the next drain instead of
     # staying ``running`` forever.
-    store.create_background_task(
+    tasks.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-dead-worker"),
@@ -501,7 +504,7 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
             session_id="child-dead",
         ),
     )
-    store.save_interrupted_checkpoint(
+    recovery.save_interrupted_checkpoint(
         workspace=tmp_path,
         session_id="child-dead",
         prompt="dead worker",
@@ -632,17 +635,18 @@ def test_completed_background_child_session_is_sealed_completed(tmp_path: Path) 
     assert task.status == "completed"
     assert task.session_id is not None
 
-    store = runtime._session_store
-    child = store.load_session(workspace=tmp_path, session_id=task.session_id)
+    sessions = runtime._repositories.sessions
+    recovery = runtime._repositories.recovery
+    child = sessions.load_session(workspace=tmp_path, session_id=task.session_id)
     assert child.session.status == "completed"
     assert child.session.session.parent_id == "leader-session"
     # The seal watermark references the actual persisted event log, not a
     # stale mid-run checkpoint.
-    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id=task.session_id)
+    checkpoint = recovery.load_resume_checkpoint(workspace=tmp_path, session_id=task.session_id)
     assert checkpoint is not None
     assert checkpoint["kind"] == "terminal"
     assert checkpoint["last_event_sequence"] == max(event.sequence for event in child.events)
-    assert store.load_session_status(workspace=tmp_path, session_id=task.session_id) == "completed"
+    assert sessions.load_session_status(workspace=tmp_path, session_id=task.session_id) == "completed"
 
 
 def test_interrupted_child_with_yield_handoff_is_repaired_completed(
@@ -671,7 +675,7 @@ def test_interrupted_child_with_yield_handoff_is_repaired_completed(
 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        session_store=store,
+        repositories=repositories_for_test_store(store),
         config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
     )
     supervisor = runtime._background_task_supervisor
@@ -720,7 +724,7 @@ def test_finalize_completed_task_repairs_unsealed_child_session(
 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        session_store=store,
+        repositories=repositories_for_test_store(store),
         config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
     )
     supervisor = runtime._background_task_supervisor
@@ -791,7 +795,7 @@ def test_interrupted_child_without_handoff_stays_resumable(
 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        session_store=store,
+        repositories=repositories_for_test_store(store),
         config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
     )
     supervisor = runtime._background_task_supervisor

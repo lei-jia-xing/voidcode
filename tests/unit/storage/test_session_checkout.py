@@ -99,6 +99,91 @@ def test_checkout_moves_leaf_and_keeps_the_abandoned_events(tmp_path: Path) -> N
     assert [event.sequence for event in store.session_path(workspace=workspace, session_id="s1")] == [1, 2, 3, 4]
 
 
+def test_event_pages_pin_a_branch_and_keep_the_durable_watermark(tmp_path: Path) -> None:
+    store, workspace = _seed_store(tmp_path)
+    _seed_session(
+        store,
+        workspace=workspace,
+        session_id="paged",
+        events=(
+            ("runtime.request_received", "runtime", {"prompt": "run"}),
+            ("runtime.tool_started", "runtime", {"tool": "read", "tool_call_id": "call-1"}),
+            ("runtime.tool_completed", "tool", {"tool": "read", "tool_call_id": "call-1", "status": "ok"}),
+            ("graph.response_ready", "graph", {"summary": "original"}),
+        ),
+    )
+    store.checkout_session(workspace=workspace, session_id="paged", sequence=1)
+    store.append_session_events(
+        workspace=workspace,
+        session_id="paged",
+        events=(("graph.response_ready", cast(EventSource, "graph"), {"summary": "new branch"}, None),),
+    )
+
+    first = store.read_session_event_page(
+        workspace=workspace,
+        session_id="paged",
+        after_sequence=0,
+        limit=2,
+        leaf_sequence=4,
+    )
+    assert first.leaf_sequence == 4
+    assert first.max_sequence == 5
+    assert [entry.event.sequence for entry in first.entries] == [1, 2]
+    assert [entry.parent_sequence for entry in first.entries] == [None, 1]
+    assert first.next_after_sequence == 2
+
+    second = store.read_session_event_page(
+        workspace=workspace,
+        session_id="paged",
+        after_sequence=2,
+        limit=2,
+        leaf_sequence=4,
+    )
+    assert [entry.event.sequence for entry in second.entries] == [3, 4]
+    assert second.next_after_sequence is None
+    assert [entry.parent_sequence for entry in second.entries] == [2, 3]
+
+    current = store.read_session_event_page(
+        workspace=workspace,
+        session_id="paged",
+        after_sequence=0,
+        limit=10,
+    )
+    assert current.leaf_sequence == 5
+    assert current.max_sequence == 5
+    assert [entry.event.sequence for entry in current.entries] == [1, 5]
+    with pytest.raises(ValueError, match="selected session path"):
+        store.read_session_event_page(
+            workspace=workspace,
+            session_id="paged",
+            after_sequence=2,
+            limit=2,
+            leaf_sequence=5,
+        )
+    with pytest.raises(
+        SessionTreePathError,
+        match="leaf exceeds its event watermark",
+    ):
+        store.read_session_event_page(
+            workspace=workspace,
+            session_id="paged",
+            after_sequence=0,
+            limit=2,
+            leaf_sequence=9,
+        )
+    _seed_session(store, workspace=workspace, session_id="empty", events=())
+    empty = store.read_session_event_page(
+        workspace=workspace,
+        session_id="empty",
+        after_sequence=0,
+        limit=1,
+    )
+    assert empty.leaf_sequence is None
+    assert empty.max_sequence == 0
+    assert empty.entries == ()
+    assert empty.next_after_sequence is None
+
+
 def test_checkout_refuses_unknown_sequence(tmp_path: Path) -> None:
     store, workspace = _seed_store(tmp_path)
     _seed_session(

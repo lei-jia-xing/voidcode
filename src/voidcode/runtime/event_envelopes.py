@@ -3,19 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..core.turns import TurnFact
 from .events import (
     EMITTED_EVENT_TYPES,
-    RUNTIME_REASONING_PART,
     EventEnvelope,
-    runtime_reasoning_part_from_provider_stream,
 )
 
 if TYPE_CHECKING:
     from ..mcp.types import McpRuntimeEvent
     from .acp import AcpRuntimeEvent
     from .lsp import LspRuntimeEvent
-
 # Each surface (LSP/ACP/MCP) accepts exactly the ``EMITTED_EVENT_TYPES`` members
 # of its own family. The sets are DERIVED by prefix from events.py's
 # authoritative tuple (not hand-picked copies) so a newly added runtime event
@@ -145,49 +141,10 @@ class ReasoningCaptureState:
     output_diagnostic_emitted: bool = False
 
 
-def renumber_events(
-    events: tuple[TurnFact, ...],
-    *,
-    session_id: str,
-    start_sequence: int,
-    reasoning_capture_state: ReasoningCaptureState | None = None,
-) -> tuple[EventEnvelope, ...]:
-    envelopes: list[EventEnvelope] = []
-    capture_state = reasoning_capture_state or ReasoningCaptureState()
-    for event in events:
-        event_type = f"graph.{event.kind}"
-        source = "graph"
-        payload = event.payload
-        reasoning_payload = None
-        if event.kind == "provider_stream":
-            capture_state.stream_observed = True
-            reasoning_payload = runtime_reasoning_part_from_provider_stream(event.payload)
-        if reasoning_payload is not None:
-            capture_state.reasoning_observed = True
-            text_char_count = reasoning_payload.get("text_char_count")
-            event_type = RUNTIME_REASONING_PART
-            source = "runtime"
-            payload = reasoning_payload
-            capture_state.part_count += 1
-            if isinstance(text_char_count, int):
-                capture_state.text_char_count += text_char_count
-        envelopes.append(
-            EventEnvelope(
-                session_id=session_id,
-                sequence=start_sequence + len(envelopes),
-                event_type=event_type,
-                source=source,
-                payload=payload,
-            )
-        )
-    return tuple(envelopes)
-
-
 __all__ = [
     "ReasoningCaptureState",
     "envelopes_for_acp_events",
     "envelopes_for_lsp_events",
     "envelopes_for_mcp_events",
-    "renumber_events",
     "resequence_event",
 ]

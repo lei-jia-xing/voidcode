@@ -11,7 +11,7 @@ from .mode import backfill_runtime_policy_mode, runtime_mode_from_metadata, runt
 from .policy import runtime_policy_snapshot_from_session_metadata
 
 if TYPE_CHECKING:
-    from .storage import SessionStore
+    from .storage import SessionRepository
 
 type SessionStatus = Literal["idle", "running", "waiting", "completed", "failed", "interrupted"]
 type SessionKind = Literal["top_level", "child"]
@@ -392,7 +392,7 @@ def validate_session_workspace(
 
 
 def reload_persisted_session(
-    store: SessionStore,
+    store: SessionRepository,
     workspace: Path,
     *,
     session_id: str,
