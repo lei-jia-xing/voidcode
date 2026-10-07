@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
 from ..core.tool_context import ToolContext
+from ..security.json_values import json_wire_object, own_json_object
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._pydantic_args import parse_tool_args
 from ._repair import raise_tool_diagnostic
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 from .guards import enforce_seen_lines
 
 
@@ -29,6 +32,21 @@ class _WorkspaceEditArgs(BaseModel):
     edits: list[_TextEdit] = Field(min_length=1)
 
 
+@dataclass(frozen=True, slots=True)
+class ApplyWorkspaceEditResultBody:
+    paths: tuple[str, ...]
+    diagnostics: tuple[Mapping[str, object], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "diagnostics", tuple(own_json_object(item) for item in self.diagnostics))
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"paths": list(self.paths)}
+        if self.diagnostics:
+            payload["diagnostics"] = [json_wire_object(item) for item in self.diagnostics]
+        return payload
+
+
 class ApplyWorkspaceEditTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="apply_workspace_edit",
@@ -39,8 +57,7 @@ class ApplyWorkspaceEditTool:
                 "minItems": 1,
                 "description": (
                     "Text edits with 1-based line/character ranges. Every edit requires expectedHash: "
-                    "the SHA-256 hash of the current file content, taken from data.content_hash of a "
-                    "prior read result."
+                    "the SHA-256 content hash shown in the read output."
                 ),
                 "items": {
                     "type": "object",
@@ -65,7 +82,7 @@ class ApplyWorkspaceEditTool:
                         error_kind="tool_input_mismatch",
                         reason="missing_expected_hash",
                         retry_guidance=(
-                            "Use read on each target path, copy data.content_hash from the results, "
+                            "Use read on each target path and copy its SHA-256 content hash from the output, "
                             "then retry apply_workspace_edit with expectedHash on every edit."
                         ),
                         details={
@@ -95,7 +112,7 @@ class ApplyWorkspaceEditTool:
                     message=f"apply_workspace_edit rejected because {edit.path} changed since it was read (stale edit).",
                     error_kind="stale_edit",
                     reason="content_hash_mismatch",
-                    retry_guidance="Read the file again, use the returned data.content_hash, then retry apply_workspace_edit.",
+                    retry_guidance="Read the file again, use the SHA-256 content hash shown in read output, then retry apply_workspace_edit.",
                     details={"path": edit.path, "expected_hash": edit.expectedHash, "actual_hash": actual_hash},
                 )
             lines = current.splitlines(keepends=True)
@@ -141,12 +158,11 @@ class ApplyWorkspaceEditTool:
             raise
         display_paths = list(display_by_path.values())
         diagnostics = post_edit_lsp_diagnostics(context=context, workspace=workspace, paths=display_paths)
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.definition.name,
-            status="ok",
-            content=f"Applied {len(args.edits)} workspace edit(s).",
-            data={
-                "paths": sorted(set(display_paths)),
-                "diagnostics": diagnostics,
-            },
+            output=TextOutput(f"Applied {len(args.edits)} workspace edit(s)."),
+            body=ApplyWorkspaceEditResultBody(
+                paths=tuple(sorted(set(display_paths))),
+                diagnostics=tuple(diagnostics),
+            ),
         )

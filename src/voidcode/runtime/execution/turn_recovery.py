@@ -4,9 +4,10 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from ...core.turns import CallSeed
+from ...core.turns import CallSeed, ReportedCall
+from ...security.json_values import json_wire_object
 from ...security.redaction import REDACTED_PLACEHOLDER, redact_mapping
-from ...tools.contracts import ToolCall, ToolResult
+from ...tools.contracts import ToolCall
 from ..events import REASONING_PERSISTED_LIMIT_CHARS
 from ..permission import PendingApproval, PermissionResolution
 from ..question import PendingQuestion
@@ -26,7 +27,7 @@ class ApprovedInvocation:
 class AnsweredQuestion:
     pending: PendingQuestion
     call: ToolCall
-    result: ToolResult
+    result: ReportedCall
     batch: CallSeed
     started_sequence: int
 
@@ -55,7 +56,14 @@ def persisted_turn_batch(
         "run_id": run_id,
         "started_sequence": started_sequence,
         "run_step": batch.run_step,
-        "calls": [{"tool_name": call.tool_name, "tool_call_id": call.tool_call_id, "arguments": dict(call.arguments)} for call in batch.calls],
+        "calls": [
+            {
+                "tool_name": call.tool_name,
+                "tool_call_id": call.tool_call_id,
+                "arguments": json_wire_object(call.arguments),
+            }
+            for call in batch.calls
+        ],
         "reasoning": batch.reasoning,
         "completed_call_ids": list(completed_call_ids),
     }
@@ -70,7 +78,7 @@ def restored_turn_batch(
     metadata: Mapping[str, object],
     *,
     session_id: str,
-    tool_results: Sequence[ToolResult],
+    tool_results: Sequence[ReportedCall],
 ) -> tuple[CallSeed, int]:
     raw = runtime_state_value(metadata, "turn_batch")
     if not isinstance(raw, dict):
@@ -105,13 +113,13 @@ def restored_turn_batch(
     if not isinstance(recorded_ids, list) or recorded_ids != ids[: len(recorded_ids)]:
         raise ValueError("persisted completed call identities must be an exact original batch prefix")
     batch_ids = set(ids)
-    if any(result.data.get("tool_call_id") not in batch_ids for result in tool_results):
+    if any(report.tool_call_id not in batch_ids for report in tool_results):
         raise ValueError("durable native result does not belong to the recorded batch")
     matching = tuple(tool_results)
-    completed_ids = [result.data.get("tool_call_id") for result in matching]
+    completed_ids = [report.tool_call_id for report in matching]
     if completed_ids != ids[: len(completed_ids)] or recorded_ids != completed_ids[: len(recorded_ids)]:
         raise ValueError("durable native results contain a gap, duplicate, or mismatched completed call identity")
     reasoning = raw.get("reasoning")
     if reasoning is not None and not isinstance(reasoning, str):
         raise ValueError("persisted native reasoning must be text or null")
-    return CallSeed(tuple(calls), reasoning=reasoning, completed_results=matching, run_step=run_step), started_sequence
+    return CallSeed(tuple(calls), reasoning=reasoning, completed_reports=matching, run_step=run_step), started_sequence

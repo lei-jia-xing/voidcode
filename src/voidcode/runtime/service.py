@@ -9,9 +9,16 @@ from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, final
+from typing import TYPE_CHECKING, Any, Literal, cast, final
 
-from ..agent import AgentManifestRegistry, get_builtin_agent_manifest, load_agent_manifest_registry
+from ..agent import (
+    AgentManifest,
+    AgentManifestRegistry,
+    AgentPromptMaterialization,
+    get_builtin_agent_manifest,
+    list_builtin_agent_manifests,
+    load_agent_manifest_registry,
+)
 from ..agent.prompts import render_agent_prompt
 from ..command import (
     is_prompt_command,
@@ -20,9 +27,9 @@ from ..command import (
 )
 from ..command.models import CommandDefinition
 from ..core.questions import QuestionResponse
-from ..core.tool_context import EditSchema
-from ..core.transcript import ContextSegment, ToolResultView
-from ..core.turns import TurnProducer, TurnRequest
+from ..core.tool_context import ArtifactRead, EditSchema, TranscriptRead
+from ..core.transcript import ContextSegment, ToolResultView, project_report
+from ..core.turns import ReportedCall, TurnProducer, TurnRequest
 from ..hook.plan import ResolvedHookPlan, hook_plan_from_session_metadata, materialize_hook_plan
 from ..hook.presets import (
     ResolvedHookPresetSnapshot,
@@ -30,42 +37,48 @@ from ..hook.presets import (
     resolve_hook_preset_refs,
 )
 from ..hook.typed import (
+    ToolInputHandlerDeclaration,
     ToolInputHandlerRegistry,
-    builtin_tool_input_handler_registry,
+    builtin_tool_input_handler_declarations,
+    materialize_builtin_tool_input_handler,
     tool_input_arguments_sha256,
 )
-from ..mcp import McpCachedToolSurface, McpToolDescriptor
+from ..mcp import McpCachedToolSurface, McpToolDescriptor, list_builtin_mcp_descriptors
 from ..provider.auth import (
     ProviderAuthResolver,
 )
-from ..provider.model_catalog import ToolFeedbackMode
+from ..provider.config import (
+    PROVIDER_WIRES,
+    ProviderFallbackConfig,
+    parse_provider_configs_payload,
+    serialize_provider_configs,
+)
+from ..provider.model_catalog import ProviderModelMetadata, ToolFeedbackMode
 from ..provider.models import (
+    BoundProviderConfig,
+    ProviderDescriptor,
+    ProviderModelSelection,
     ResolvedProviderChain,
+    ResolvedProviderConfig,
     ResolvedProviderModel,
 )
 from ..provider.naming import split_provider_model_reference
-from ..provider.protocol import (
-    ProviderAbortSignal,
-    ProviderTurnRequest,
-    ProviderTurnResult,
-)
-from ..provider.registry import ModelProviderRegistry
+from ..provider.protocol import ModelTurnProvider, ProviderAbortSignal, ProviderTurnRequest, ProviderTurnResult
+from ..provider.registry import ModelProviderRegistry, materialize_builtin_provider
 from ..provider.resolution import resolve_provider_config
 from ..provider.snapshot import (
     parse_resolved_provider_snapshot,
     resolved_provider_snapshot,
 )
+from ..security.json_values import json_wire_object
 from ..skills import SkillRegistry
 from ..tools.contracts import (
     Tool,
     ToolCall,
     ToolDefinition,
-    ToolResult,
 )
-from ..tools.delegation import TaskBatchTool, TaskTool
-from ..tools.process import BackgroundProcessTool
-from ..tools.question import QuestionTool
-from ..tools.skill import SkillTool
+from ..tools.local_custom import LocalCustomTool, LocalCustomToolManifest, local_custom_tool_definition
+from ..tools.mcp import McpTool, mcp_tool_definition
 from . import skills
 from .acp import (
     AcpAdapter,
@@ -86,6 +99,7 @@ from .agent_capability import (
     agent_capability_prompt_snapshot,
     agent_capability_tool_snapshot,
     agent_mcp_binding_payload,
+    composition_ref_from_session_metadata,
     validate_agent_capability_snapshot,
 )
 from .background.models import (
@@ -104,13 +118,24 @@ from .bundle import (
     SessionBundleImportResult,
     SessionBundleOptions,
 )
+from .composition import (
+    BuiltinDeclaration,
+    ComponentDeclaration,
+    ComponentSelection,
+    ComponentSlot,
+    CompositionOwner,
+    CompositionRef,
+    FrozenComposition,
+    PackageDeclaration,
+    SessionCompositionOwner,
+    ValidatedConfig,
+)
 from .config import (
     ExecutionEngineName,
     RuntimeAgentConfig,
     RuntimeAgentInternalState,
     RuntimeConfig,
     RuntimeContextWindowConfig,
-    RuntimeHooksConfig,
     RuntimeProviderFallbackConfig,
     RuntimeWebSettings,
     load_runtime_config,
@@ -124,13 +149,18 @@ from .config_materializer import (
     parse_persisted_runtime_config,
     serialize_runtime_config_core,
 )
-from .context.continuity import replayed_conversation_segments_from_events
+from .context.continuity import (
+    replayed_conversation_segments_from_events,
+    verified_checkpoint_session_metadata,
+)
 from .context.provider import inspect_provider_context
 from .context.rules import build_rule_catalog, read_rule_uri, rulebook_snapshot_from_payload, rulebook_snapshot_payload
 from .context.transforms import (
+    RuntimeContextTransformDeclaration,
     RuntimeContextTransformRegistry,
     build_provider_context_transform_result,
-    default_runtime_context_transform_registry,
+    builtin_runtime_context_transform_declarations,
+    materialize_builtin_context_transform,
 )
 from .context.window import (
     BeforeCompactInput,
@@ -205,6 +235,7 @@ from .execution.process.background_process import BackgroundProcessCommand
 from .execution.provider_execution_metadata import (
     run_id_from_session_metadata,
 )
+from .execution.resume_checkpoint import validated_resume_checkpoint_envelope
 from .execution.seams import (
     provider_model_required_message,
     resolve_runtime_session_routing,
@@ -223,7 +254,7 @@ from .hook_runtime import (
     run_lifecycle_hooks_for_session,
 )
 from .lsp import LspManager, LspManagerState, LspRequestResult, build_lsp_manager
-from .mcp import McpManager, build_mcp_manager, mcp_server_for_tool_name
+from .mcp import McpManager, build_mcp_manager
 from .mcp_tool_cache import McpToolCatalogCache
 from .mode import MODE_DEFINITIONS, resolve_mode, runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .paths import mcp_tool_catalog_cache_path, provider_catalog_cache_path
@@ -262,7 +293,6 @@ from .runtime_debug import (
     last_tool_summary,
     operator_guidance,
     prompt_and_tool_results_from_debug_events,
-    provider_visible_tool_result_data,
 )
 from .runtime_surface import PermissionOutcome, RuntimeSurface
 from .session import (
@@ -307,15 +337,10 @@ from .skills import (
 from .status_projection import project_acp_status
 from .storage import RuntimeRepositories, SessionSealedError, SqliteSessionStore
 from .tool_execution import RuntimeToolExecutor
-from .tool_materialization import materialize, materialize_unscoped, workspace_local_tools_factory
-from .tool_materializer import RuntimeToolMaterialization, RuntimeToolMaterializer
-from .tool_provider import scoped_tool_registry_for_agent
-from .tool_registry import (
-    DeferredToolSource,
-    ToolPolicyDecision,
-    ToolRegistry,
-    agent_required_tool_patterns,
-)
+from .tool_materialization import materialize, materialize_unscoped, workspace_local_tool_manifests_provider
+from .tool_materializer import RuntimeToolMaterialization, RuntimeToolMaterializer, tool_provenance
+from .tool_provider import BUILTIN_TOOL_NAMES, builtin_tool_definitions, materialize_builtin_tool
+from .tool_registry import ToolPolicyDecision, ToolRegistry, agent_required_tool_patterns
 from .tool_scope import RuntimeToolScopeResolver
 
 if TYPE_CHECKING:
@@ -358,7 +383,7 @@ class _PlainTextProviderContext:
     prompt: str
 
     @property
-    def tool_results(self) -> tuple[ToolResult, ...]:
+    def tool_results(self) -> tuple[ToolResultView, ...]:
         return ()
 
     @property
@@ -377,7 +402,7 @@ class _PlainTextProviderContext:
         return {}
 
 
-def _continuity_summary_input(tool_results: Sequence[ToolResult | ToolResultView]) -> str:
+def _continuity_summary_input(tool_results: Sequence[ReportedCall | ToolResultView]) -> str:
     """Bounded, provider-visible text of the results pruning is discarding.
 
     Oldest first (the pruning order), each result previewed under its own cap so
@@ -386,7 +411,8 @@ def _continuity_summary_input(tool_results: Sequence[ToolResult | ToolResultView
     """
     parts: list[str] = []
     used = 0
-    for index, result in enumerate(tool_results):
+    for index, item in enumerate(tool_results):
+        result = project_report(item) if isinstance(item, ReportedCall) else item
         body = result_payload_text(result)
         preview = body[:_CONTINUITY_SUMMARY_RESULT_CHARS]
         parts.append(f"[{index}] tool={result.tool_name} status={result.status}\n{preview}")
@@ -473,13 +499,176 @@ def _permission_chunks_with_hook_reason(
     return tuple(rebuilt)
 
 
+def _builtin_provider_component_config(value: object) -> ValidatedConfig:
+    if not isinstance(value, Mapping):
+        raise ValueError("builtin provider component config must be an object")
+    payload = json_wire_object(value)
+    provider_name = payload.get("provider_name")
+    providers = payload.get("providers")
+    if not isinstance(provider_name, str) or not provider_name or not isinstance(providers, dict):
+        raise ValueError("builtin provider component config is incomplete")
+    parsed = parse_provider_configs_payload(
+        providers,
+        source=f"composition.providers.{provider_name}",
+        env=os.environ,
+    )
+    descriptor = ModelProviderRegistry.with_defaults(provider_configs=parsed).resolve_static(provider_name)
+    return ValidatedConfig(
+        value=descriptor,
+        snapshot={"provider_name": provider_name, "providers": providers},
+    )
+
+
+def _builtin_provider_component_factory(value: object, _context: object) -> object:
+    if not isinstance(value, ProviderDescriptor):
+        raise ValueError("builtin provider factory requires its admitted descriptor")
+    return materialize_builtin_provider(value)
+
+
+def _builtin_tool_component_config(value: object) -> ValidatedConfig:
+    if not isinstance(value, Mapping) or not isinstance(value.get("name"), str):
+        raise ValueError("builtin tool component config requires a name")
+    definition = next((item for item in builtin_tool_definitions() if item.name == value["name"]), None)
+    if definition is None:
+        raise ValueError(f"unknown builtin tool component: {value['name']}")
+    return ValidatedConfig(
+        value=definition,
+        snapshot={"name": definition.name, "schema": json_wire_object(definition.input_schema)},
+    )
+
+
+def _builtin_tool_component_factory(value: object, context: object) -> object:
+    if not isinstance(value, ToolDefinition) or not isinstance(context, VoidCodeRuntime):
+        raise ValueError("builtin tool factory requires its admitted definition and runtime")
+    return materialize_builtin_tool(value.name, hooks_config=context._config.hooks)
+
+
+def _builtin_agent_component_config(value: object) -> ValidatedConfig:
+    if not isinstance(value, Mapping) or not isinstance(value.get("name"), str):
+        raise ValueError("builtin agent component config requires a name")
+    requested = value.get("id", value["name"])
+    manifest = get_builtin_agent_manifest(requested) if isinstance(requested, str) else None
+    if manifest is None:
+        manifest = next((item for item in list_builtin_agent_manifests() if item.name == value["name"]), None)
+    if manifest is None:
+        raise ValueError(f"unknown builtin agent component: {value['name']}")
+    return ValidatedConfig(value=manifest, snapshot={"id": manifest.id, "name": manifest.name, "mode": manifest.mode})
+
+
+def _builtin_agent_component_factory(value: object, _context: object) -> object:
+    if not isinstance(value, AgentManifest):
+        raise ValueError("builtin agent factory requires its admitted manifest")
+    return value
+
+
+def _builtin_context_component_config(value: object) -> ValidatedConfig:
+    if not isinstance(value, Mapping) or not isinstance(value.get("name"), str):
+        raise ValueError("builtin context component config requires a name")
+    declaration = next(
+        (item for item in builtin_runtime_context_transform_declarations() if item.provider_id == value["name"]),
+        None,
+    )
+    if declaration is None:
+        raise ValueError(f"unknown builtin context component: {value['name']}")
+    return ValidatedConfig(
+        value=declaration,
+        snapshot={"name": declaration.provider_id, "version": declaration.provider_version},
+    )
+
+
+def _builtin_context_component_factory(value: object, _context: object) -> object:
+    if not isinstance(value, RuntimeContextTransformDeclaration):
+        raise ValueError("builtin context factory requires its admitted declaration")
+    return materialize_builtin_context_transform(value.provider_id)
+
+
+def _builtin_typed_input_component_config(value: object) -> ValidatedConfig:
+    if not isinstance(value, Mapping) or not isinstance(value.get("name"), str):
+        raise ValueError("builtin typed-input component config requires a name")
+    declaration = next(
+        (item for item in builtin_tool_input_handler_declarations() if item.name == value["name"]),
+        None,
+    )
+    if declaration is None:
+        raise ValueError(f"unknown builtin typed-input component: {value['name']}")
+    return ValidatedConfig(value=declaration, snapshot={"name": declaration.name, "version": declaration.version})
+
+
+def _builtin_typed_input_component_factory(value: object, _context: object) -> object:
+    if not isinstance(value, ToolInputHandlerDeclaration):
+        raise ValueError("builtin typed-input factory requires its admitted declaration")
+    return materialize_builtin_tool_input_handler(value.name)
+
+
+def _builtin_runtime_package(root: Path, provider_names: Iterable[str]) -> BuiltinDeclaration:
+    components = [
+        ComponentDeclaration(
+            slot="provider",
+            name=name,
+            factory="voidcode.runtime.service:_builtin_provider_component_factory",
+            validate_config="voidcode.runtime.service:_builtin_provider_component_config",
+        )
+        for name in sorted(set(provider_names))
+    ]
+    components.extend(
+        ComponentDeclaration(
+            slot="tool",
+            name=definition.name,
+            factory="voidcode.runtime.service:_builtin_tool_component_factory",
+            validate_config="voidcode.runtime.service:_builtin_tool_component_config",
+        )
+        for definition in builtin_tool_definitions()
+    )
+    components.extend(
+        ComponentDeclaration(
+            slot="agent",
+            name=str(manifest.id),
+            factory="voidcode.runtime.service:_builtin_agent_component_factory",
+            validate_config="voidcode.runtime.service:_builtin_agent_component_config",
+        )
+        for manifest in list_builtin_agent_manifests()
+    )
+    components.extend(
+        ComponentDeclaration(
+            slot="context",
+            name=declaration.provider_id,
+            factory="voidcode.runtime.service:_builtin_context_component_factory",
+            validate_config="voidcode.runtime.service:_builtin_context_component_config",
+        )
+        for declaration in builtin_runtime_context_transform_declarations()
+    )
+    components.extend(
+        ComponentDeclaration(
+            slot="typed-input",
+            name=declaration.name,
+            factory="voidcode.runtime.service:_builtin_typed_input_component_factory",
+            validate_config="voidcode.runtime.service:_builtin_typed_input_component_config",
+        )
+        for declaration in builtin_tool_input_handler_declarations()
+    )
+    return BuiltinDeclaration(
+        declaration=PackageDeclaration(
+            schema_version=1,
+            files=(
+                "voidcode/agent/builtin.py",
+                "voidcode/hook/typed.py",
+                "voidcode/provider/registry.py",
+                "voidcode/runtime/context/transforms.py",
+                "voidcode/runtime/service.py",
+                "voidcode/runtime/tool_provider.py",
+            ),
+            components=tuple(components),
+        ),
+        root=root,
+    )
+
+
 @final
 class VoidCodeRuntime(RuntimeSurface):
     """Headless runtime entrypoint for one local deterministic request."""
 
     _workspace: Path
     _base_tool_registry: ToolRegistry
-    _tool_registry: ToolRegistry
     _tool_materializer: RuntimeToolMaterializer
     _tool_materialization: RuntimeToolMaterialization
     _turn_producer: TurnProducer | None
@@ -489,6 +678,7 @@ class VoidCodeRuntime(RuntimeSurface):
     _permission_policy: PermissionPolicy
     _repositories: RuntimeRepositories
     _model_provider_registry: ModelProviderRegistry
+    _composition_owner: CompositionOwner
     _provider_model: ResolvedProviderModel
     _provider_chain: ResolvedProviderChain
     _provider_auth_resolver: ProviderAuthResolver
@@ -530,8 +720,8 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> None:
         self._workspace = workspace.resolve()
         self._permission_context_resolver = RuntimePermissionContextResolver(workspace=self._workspace)
-        self._agent_registry = self._runtime_agent_registry()
         self._config = config or load_runtime_config(self._workspace)
+        self._agent_registry = self._runtime_agent_registry()
         self._bind_tool_scope_resolver()
         self._permission_engine = PermissionEngine(
             _context_resolver=self._permission_context_resolver,
@@ -539,6 +729,24 @@ class VoidCodeRuntime(RuntimeSurface):
             _patch_path_extractor=extract_paths_from_patch,
         )
         self._model_provider_registry = model_provider_registry or ModelProviderRegistry.with_defaults(provider_configs=self._config.providers)
+        self._composition_owner = CompositionOwner(
+            builtins=(
+                _builtin_runtime_package(
+                    Path(__file__).resolve().parents[2],
+                    self._model_provider_registry.descriptors,
+                ),
+            )
+        )
+        if self._config.components:
+            preflight = self._composition_owner.prepare(self._config.components, intent={"provider_registry_preflight": True})
+            for component in preflight.binding.components:
+                if component.slot != "provider" or component.distribution == "voidcode":
+                    continue
+                descriptor = self._composition_owner.validated_value(preflight, component.key)
+                if not isinstance(descriptor, ProviderDescriptor) or descriptor.provider_name != component.name:
+                    raise ValueError("installed provider component validator returned a mismatched descriptor")
+                self._model_provider_registry.register(descriptor)
+        self._activated_provider_bindings: dict[str, tuple[ResolvedProviderConfig, BoundProviderConfig]] = {}
         self._bind_provider_catalog_collaborators()
         self._provider_summary_projector = ProviderSummaryProjector()
         self._hydrate_provider_model_catalog_cache()
@@ -589,9 +797,23 @@ class VoidCodeRuntime(RuntimeSurface):
         self._skill_registry_is_injected = skill_registry is not None
         self._skill_registry = skill_registry or StreamPrepCoordinator.build_skill_registry_for_workspace(self._workspace, self._config.skills)
         self._base_tool_registry = tool_registry or self._build_base_tool_registry()
-        self._tool_materializer = RuntimeToolMaterializer(self._base_tool_registry)
+        base_provenance = tuple(
+            tool_provenance(
+                definition,
+                source_kind="base" if definition.name not in self._base_tool_registry.tools else "package",
+                source_id=(
+                    f"base:{definition.name}"
+                    if definition.name not in self._base_tool_registry.tools
+                    else (
+                        f"{type(self._base_tool_registry.tools[definition.name]).__module__}:"
+                        f"{type(self._base_tool_registry.tools[definition.name]).__qualname__}"
+                    )
+                ),
+            )
+            for definition in self._base_tool_registry.definitions()
+        )
+        self._tool_materializer = RuntimeToolMaterializer(self._base_tool_registry, base_provenance)
         self._tool_materialization = self._tool_materializer.base()
-        self._tool_registry = self._tool_materialization.registry
         self._turn_producer_override = turn_producer
         self._turn_producer_cache = {}
         self._context_window_config_override = context_window_config_from_policy(context_window_policy)
@@ -610,6 +832,7 @@ class VoidCodeRuntime(RuntimeSurface):
             tools=self._config.tools,
             policy=self._config.policy,
             reminders=self._config.reminders,
+            components=self._config.components,
         )
         if turn_producer is not None:
             self._turn_producer = turn_producer
@@ -631,8 +854,12 @@ class VoidCodeRuntime(RuntimeSurface):
             )
         self._repositories = repositories
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
-        self._context_transform_registry = context_transform_registry or default_runtime_context_transform_registry()
-        self._tool_input_handler_registry = tool_input_handler_registry or builtin_tool_input_handler_registry()
+        self._context_transform_registry = context_transform_registry or RuntimeContextTransformRegistry.from_declarations(
+            builtin_runtime_context_transform_declarations()
+        ).bind(materialize_builtin_context_transform)
+        self._tool_input_handler_registry = tool_input_handler_registry or ToolInputHandlerRegistry.from_declarations(
+            builtin_tool_input_handler_declarations()
+        ).bind(materialize_builtin_tool_input_handler)
         self._default_context_window_policy = context_window_policy_from_config(initial_context_window)
         self._background_task_supervisor = RuntimeBackgroundTaskSupervisor(
             self,
@@ -824,22 +1051,13 @@ class VoidCodeRuntime(RuntimeSurface):
         so doc reads stay consistent with the live registry even after MCP
         refreshes.
         """
-        tool = self._tool_materialization.registry.tools.get(tool_name)
-        return None if tool is None else tool.definition
+        return self._tool_materialization.registry.definition(tool_name)
 
     def _build_base_tool_registry(self) -> ToolRegistry:
-        # __init__-time path: the stream-prep coordinator does not exist yet,
-        # so build the LSP tool through the static constructor directly.
-        lsp_tool = StreamPrepCoordinator.build_lsp_tool_for_manager(self._lsp_manager)
-        return ToolRegistry.with_defaults(
-            lsp_tool=lsp_tool,
-            hooks_config=self._config.hooks or RuntimeHooksConfig(),
-            skill_tool=SkillTool(),
-            task_batch_tool=TaskBatchTool(),
-            task_tool=TaskTool(),
-            question_tool=QuestionTool(),
-            background_process_tool=BackgroundProcessTool(),
-        )
+        definitions = builtin_tool_definitions()
+        if self._lsp_manager is None or self._lsp_manager.current_state().mode != "managed":
+            definitions = tuple(definition for definition in definitions if definition.name != "lsp")
+        return ToolRegistry.from_definitions(definitions)
 
     def _edit_schema_resolver(self) -> EditSchemaResolver:
         """Resolve the per-model edit schema from observed edit effectiveness.
@@ -876,11 +1094,13 @@ class VoidCodeRuntime(RuntimeSurface):
         self,
         effective_config: EffectiveRuntimeConfig,
     ) -> RuntimeToolMaterialization:
+        local_config = effective_config.tools.local if effective_config.tools is not None else None
+        manifests = workspace_local_tool_manifests_provider(self._workspace)(local_config)
         return materialize_unscoped(
             effective_config,
             materialization=self._tool_materialization,
             materializer=self._tool_materializer,
-            local_tools_provider_factory=workspace_local_tools_factory(self._workspace),
+            local_tool_manifests_provider=lambda _: manifests,
         )
 
     def _start_run_acp(
@@ -931,20 +1151,259 @@ class VoidCodeRuntime(RuntimeSurface):
 
     @staticmethod
     def _can_build_turn_producer_for_effective_config(config: EffectiveRuntimeConfig) -> bool:
-        if config.execution_engine != "provider":
-            return True
-        return config.resolved_provider.active_target.provider is not None
+        # Provider adapters are constructed only after their immutable composition
+        # binding and initial checkpoint have been reloaded from storage.
+        return config.execution_engine != "provider"
 
     @staticmethod
     def _validate_provider_execution_ready(config: EffectiveRuntimeConfig) -> None:
         if config.execution_engine != "provider":
             return
-        if config.resolved_provider.active_target.provider is not None:
+        if config.resolved_provider.active_target.descriptor is not None:
             return
         raise RuntimeRequestError(provider_model_required_message())
 
     def runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
         return self._stream_prep_coordinator.runtime_config_for_request(request)
+
+    def _provider_component_config(self, provider_name: str) -> dict[str, object]:
+        payload = serialize_provider_configs(self._config.providers, include_secrets=False) or {}
+        wire = PROVIDER_WIRES.get(provider_name)
+        if wire is not None:
+            selected = {wire.payload_key: payload[wire.payload_key]} if wire.payload_key in payload else {}
+        else:
+            custom = payload.get("custom")
+            selected = {"custom": {provider_name: custom[provider_name]}} if isinstance(custom, dict) and provider_name in custom else {}
+        return {"provider_name": provider_name, "providers": selected}
+
+    def _prepare_execution_composition(self, config: EffectiveRuntimeConfig) -> FrozenComposition:
+        selections = list(config.components)
+        selected = {(item.distribution, item.slot, item.name) for item in selections}
+        package_providers = {item.name for item in selections if item.slot == "provider"}
+
+        def add_builtin(slot: ComponentSlot, name: str, configuration: Mapping[str, object]) -> None:
+            identity = ("voidcode", slot, name)
+            if identity not in selected:
+                selections.append(
+                    ComponentSelection(
+                        distribution="voidcode",
+                        slot=slot,
+                        name=name,
+                        configuration=configuration,
+                        provenance=("effective_runtime_config",),
+                    )
+                )
+                selected.add(identity)
+
+        for definition in builtin_tool_definitions():
+            add_builtin("tool", definition.name, {"name": definition.name})
+        for declaration in builtin_runtime_context_transform_declarations():
+            add_builtin("context", declaration.provider_id, {"name": declaration.provider_id})
+        for declaration in builtin_tool_input_handler_declarations():
+            add_builtin("typed-input", declaration.name, {"name": declaration.name})
+        if config.agent is not None and config.agent.preset is not None:
+            agent_name = str(config.agent.preset)
+            if agent_name not in {item.name for item in selections if item.slot == "agent"}:
+                add_builtin("agent", agent_name, {"name": agent_name})
+
+        selected_provider_names: set[str] = set()
+        for target in config.resolved_provider.target_chain.all_targets:
+            descriptor = target.descriptor
+            if descriptor is None:
+                raise ValueError("selected provider target has no admitted static descriptor")
+            if descriptor.provider_name in selected_provider_names:
+                continue
+            selected_provider_names.add(descriptor.provider_name)
+            if descriptor.provider_name in package_providers:
+                continue
+            add_builtin(
+                "provider",
+                descriptor.provider_name,
+                self._provider_component_config(descriptor.provider_name),
+            )
+        return self._composition_owner.prepare(
+            selections,
+            intent={
+                "resolved_provider": resolved_provider_snapshot(config.resolved_provider),
+                "provider_target_metadata": [
+                    target.metadata.payload() if target.metadata is not None else None for target in config.resolved_provider.target_chain.all_targets
+                ],
+            },
+        )
+
+    def _activate_execution_composition(
+        self,
+        prep: _PreparedStreamSession,
+    ) -> EffectiveRuntimeConfig:
+        return self._activate_frozen_composition(
+            prep.frozen_composition,
+            composition_ref=prep.composition_ref,
+            base_config=prep.effective_config,
+        )
+
+    def _activate_frozen_composition(
+        self,
+        frozen: FrozenComposition,
+        *,
+        composition_ref: CompositionRef,
+        base_config: EffectiveRuntimeConfig,
+    ) -> EffectiveRuntimeConfig:
+        if composition_ref.workspace != str(self._workspace):
+            raise ValueError("composition reference names a different workspace")
+        active = self._composition_owner.activate(
+            frozen,
+            read_persisted=lambda: self._repositories.recovery.load_execution_composition(ref=composition_ref),
+        )
+        descriptors: dict[str, ProviderDescriptor] = {}
+        component_keys: dict[str, str] = {}
+        for component in frozen.binding.components:
+            if component.slot != "provider":
+                continue
+            descriptor = active.admitted_value(component.key)
+            if not isinstance(descriptor, ProviderDescriptor) or descriptor.provider_name != component.name:
+                raise ValueError("activated provider component does not match its frozen declaration")
+            descriptors[component.name] = descriptor
+            component_keys[component.name] = component.key
+        resolved = self._resolved_provider_from_composition(frozen, descriptors)
+        bound = self._model_provider_registry.bind(
+            resolved,
+            materialize=lambda descriptor: cast(ModelTurnProvider, active.construct(component_keys[descriptor.provider_name], context=self)),
+        )
+        self._activated_provider_bindings[composition_ref.binding_id] = (resolved, bound)
+        return replace(base_config, resolved_provider=resolved, bound_provider=bound)
+
+    def _activate_existing_session_composition(self, session_id: str) -> EffectiveRuntimeConfig:
+        stored = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        metadata = json_wire_object(stored.session.metadata)
+        composition_ref = composition_ref_from_session_metadata(metadata)
+        frozen = self._repositories.recovery.load_execution_composition(ref=composition_ref)
+        return self._activate_frozen_composition(
+            frozen,
+            composition_ref=composition_ref,
+            base_config=self.effective_runtime_config_from_metadata(metadata),
+        )
+
+    def _background_task_composition_ref(self, *, task_id: str, session_id: str) -> CompositionRef:
+        task = self._repositories.tasks.load_background_task(workspace=self._workspace, task_id=task_id)
+        if task.session_id != session_id:
+            raise ValueError("background task composition owner does not name the dispatched session")
+        ref = CompositionRef.model_validate(task.request.metadata.get("composition_ref"))
+        if ref.workspace != str(self._workspace):
+            raise ValueError("background task composition reference names a different workspace")
+        return ref
+
+    def _admit_existing_session_composition(self, session_id: str) -> FrozenComposition:
+        stored = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        stored_metadata = json_wire_object(stored.session.metadata)
+        checkpoint = self._repositories.recovery.load_resume_checkpoint(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
+        if checkpoint is not None:
+            kind = checkpoint.get("kind")
+            if not isinstance(kind, str) or kind not in {
+                "approval_wait",
+                "interrupted",
+                "provider_failure_retryable",
+                "question_wait",
+                "terminal",
+            }:
+                raise ValueError("persisted resume checkpoint kind is unsupported")
+            validated_resume_checkpoint_envelope(checkpoint=checkpoint, expected_kind=kind)
+        elif stored.session.status in {"interrupted", "waiting"}:
+            raise ValueError("persisted resume checkpoint is required")
+        if not isinstance(stored_metadata.get("agent_capability_snapshot"), dict):
+            raise RuntimeRequestError(
+                "session cannot be resumed: its checkpoint records no agent capability snapshot, "
+                "so the runtime cannot replay the capabilities (provider, model, tools, skills) that run was bound to"
+            )
+        ref = composition_ref_from_session_metadata(stored_metadata)
+        raw_task_id = stored_metadata.get("background_task_id")
+        if raw_task_id is not None:
+            if (
+                not isinstance(raw_task_id, str)
+                or self._background_task_composition_ref(
+                    task_id=raw_task_id,
+                    session_id=session_id,
+                )
+                != ref
+            ):
+                raise ValueError("persisted session composition reference does not match its background task")
+        if ref.workspace != str(self._workspace):
+            raise ValueError("persisted session composition reference names a different workspace")
+        frozen = self._repositories.recovery.load_execution_composition(ref=ref)
+        owner_payload = stored_metadata.get("execution_composition")
+        if owner_payload is not None and owner_payload != frozen.to_payload():
+            raise ValueError("session metadata does not match its canonical composition owner")
+        if checkpoint is not None:
+            checkpoint_metadata = checkpoint.get("session_metadata")
+            if (
+                not isinstance(checkpoint_metadata, dict)
+                or verified_checkpoint_session_metadata(
+                    checkpoint_metadata=checkpoint_metadata,
+                    stored_metadata={**stored_metadata, "execution_composition": frozen.to_payload()},
+                )
+                is None
+            ):
+                raise ValueError("persisted session metadata does not match its resume checkpoint")
+        self._composition_owner.refresh(frozen)
+        return frozen
+
+    @staticmethod
+    def _resolved_provider_from_composition(
+        frozen: FrozenComposition,
+        descriptors: Mapping[str, ProviderDescriptor],
+    ) -> ResolvedProviderConfig:
+        raw_snapshot = frozen.binding.intent.get("resolved_provider")
+        if raw_snapshot is None:
+            return ResolvedProviderConfig()
+        if not isinstance(raw_snapshot, Mapping):
+            raise ValueError("frozen execution composition has an invalid provider snapshot")
+        raw_targets = raw_snapshot.get("targets")
+        raw_active = raw_snapshot.get("active_target")
+        metadata_items = frozen.binding.intent.get("provider_target_metadata")
+        if not isinstance(raw_targets, (list, tuple)) or not isinstance(raw_active, Mapping) or not isinstance(metadata_items, (list, tuple)):
+            raise ValueError("frozen execution composition is missing provider targets")
+        if len(metadata_items) != len(raw_targets) or not raw_targets:
+            raise ValueError("frozen execution composition provider metadata does not match its targets")
+        targets: list[ResolvedProviderModel] = []
+        for raw_target, raw_metadata in zip(raw_targets, metadata_items, strict=True):
+            if not isinstance(raw_target, Mapping):
+                raise ValueError("frozen provider target must be an object")
+            raw_model, provider, model = (raw_target.get(key) for key in ("raw_model", "provider", "model"))
+            if not all(isinstance(value, str) and value for value in (raw_model, provider, model)):
+                raise ValueError("frozen provider target is incomplete")
+            if split_provider_model_reference(raw_model) != (provider, model):
+                raise ValueError("frozen provider target identity is inconsistent")
+            descriptor = descriptors.get(provider)
+            if descriptor is None:
+                raise ValueError("frozen provider target has no activated owner")
+            metadata = ProviderModelMetadata(**cast(dict[str, Any], json_wire_object(raw_metadata))) if isinstance(raw_metadata, Mapping) else None
+            targets.append(
+                ResolvedProviderModel(
+                    selection=ProviderModelSelection(raw_model=raw_model, provider=provider, model=model),
+                    descriptor=descriptor,
+                    metadata=metadata,
+                )
+            )
+        active_raw = raw_active.get("raw_model")
+        active_index = next((index for index, target in enumerate(targets) if target.selection.raw_model == active_raw), None)
+        if active_index is None:
+            raise ValueError("frozen active provider target is outside its target chain")
+        fallback = (
+            ProviderFallbackConfig(
+                preferred_model=cast(str, targets[0].selection.raw_model),
+                fallback_models=tuple(cast(str, target.selection.raw_model) for target in targets[1:]),
+            )
+            if len(targets) > 1
+            else None
+        )
+        return ResolvedProviderConfig(
+            model=targets[0].selection.raw_model,
+            provider_fallback=fallback,
+            active_target=targets[active_index],
+            target_chain=ResolvedProviderChain(preferred=targets[0], all_targets=tuple(targets)),
+        )
 
     def skill_registry_for_effective_config(
         self,
@@ -952,11 +1411,8 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> SkillRegistry:
         return self._stream_prep_coordinator.skill_registry_for_effective_config(effective_config)
 
-    def _mcp_tools_from_descriptors(self, descriptors: Iterable[McpToolDescriptor]) -> tuple[Tool, ...]:
-        return StreamPrepCoordinator.mcp_tools_from_descriptors(descriptors)
-
-    def _build_mcp_tools(self) -> tuple[Tool, ...]:
-        return self._stream_prep_coordinator.build_mcp_tools()
+    def _list_mcp_descriptors(self) -> tuple[McpToolDescriptor, ...]:
+        return self._stream_prep_coordinator.list_mcp_descriptors()
 
     def mcp_cached_surface(self) -> McpCachedToolSurface:
         return self._stream_prep_coordinator.mcp_cached_surface()
@@ -980,9 +1436,9 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def _refresh_mcp_tools(self) -> None:
         if self._mcp_manager.current_state().mode != "managed":
+            self._tool_materialization = self._tool_materializer.base()
             return
-        self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._build_mcp_tools())
-        self._tool_registry = self._tool_materialization.registry
+        self._tool_materialization = self._tool_materializer.materialize_mcp_descriptors(self._list_mcp_descriptors())
 
     def materialize_mcp_tools_for_run(
         self,
@@ -992,20 +1448,11 @@ class VoidCodeRuntime(RuntimeSurface):
         request_metadata: Mapping[str, object],
         effective_config: EffectiveRuntimeConfig,
         failure_kind: str,
-    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None]:
-        """Materialize MCP tools at run start under the runtime's laziness policy.
-
-        Laziness comes from the catalog, never from hiding the surface: a run
-        whose configured servers are all covered by a previous discovery
-        connects to nothing, while a cold install (or a server whose
-        configuration changed) discovers once, synchronously, exactly as it did
-        before — and persists the result so later runs connect never. Discovery
-        failures stay run-start diagnostics. A caller-injected manager keeps its
-        explicit discovery behaviour.
-        """
+    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None, tuple[McpToolDescriptor, ...]]:
+        """Materialize the actual descriptor surface at run start."""
         if not self.mcp_tools_available_for_run(request_metadata=request_metadata, effective_config=effective_config):
-            self.reset_tool_registry_to_base()
-            return (), session, sequence, None
+            self._tool_materialization = self._tool_materializer.base()
+            return (), session, sequence, None, ()
         if self._mcp_manager_is_injected:
             return self.refresh_mcp_tools_for_session(
                 session=session,
@@ -1020,93 +1467,51 @@ class VoidCodeRuntime(RuntimeSurface):
                 sequence=sequence,
                 failure_kind=failure_kind,
             )
-        self._materialize_cached_mcp_tools(surface)
-        return (), session, sequence, None
+        descriptors = self._materialize_cached_mcp_tools(surface)
+        return (), session, sequence, None, descriptors
 
-    def _materialize_cached_mcp_tools(self, surface: McpCachedToolSurface) -> None:
-        """Advertise a discovered MCP surface without connecting."""
-        self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._mcp_tools_from_descriptors(surface.descriptors()))
-        self._tool_registry = self._tool_materialization.registry
+    def _materialize_cached_mcp_tools(self, surface: McpCachedToolSurface) -> tuple[McpToolDescriptor, ...]:
+        """Advertise captured descriptors without connecting or binding adapters."""
+        descriptors = surface.descriptors()
+        self._tool_materialization = self._tool_materializer.materialize_mcp_descriptors(descriptors)
+        return descriptors
 
     def tool_registry_for_run(
         self,
         *,
         session: SessionState,
         effective_config: EffectiveRuntimeConfig,
+        mcp_descriptors: tuple[McpToolDescriptor, ...],
+        tool_materialization: RuntimeToolMaterialization | None = None,
+        local_manifests: tuple[LocalCustomToolManifest, ...] | None = None,
     ) -> ToolRegistry:
-        """Registry for one run: scoped tools plus on-demand MCP resolution."""
-        registry = self.tool_registry_for_effective_config(effective_config, metadata=session.metadata)
-        if not self.mcp_tools_available_for_run(request_metadata=session.metadata, effective_config=effective_config):
-            return registry
-        return registry.with_deferred_tools(
-            self._deferred_mcp_tool_source(
-                session=session,
-                effective_config=effective_config,
+        """Bind only descriptors captured for this activated run."""
+        if local_manifests is None:
+            local_config = effective_config.tools.local if effective_config.tools is not None else None
+            local_manifests = workspace_local_tool_manifests_provider(self._workspace)(local_config)
+        if tool_materialization is None:
+            base = self._tool_materializer.materialize_mcp_descriptors(mcp_descriptors)
+            tool_materialization = self._tool_materialization_for_effective_config(
+                effective_config,
+                session.metadata,
+                materialization=base,
+                local_manifests=local_manifests,
             )
-        )
+        mcp_by_name = {mcp_tool_definition(item).name: item for item in mcp_descriptors}
+        local_by_name = {local_custom_tool_definition(item).name: item for item in local_manifests}
 
-    def _deferred_mcp_tool_source(
-        self,
-        *,
-        session: SessionState,
-        effective_config: EffectiveRuntimeConfig,
-    ) -> DeferredToolSource | None:
-        """Resolve an MCP tool call by discovering its server on demand.
+        def materialize_definition(definition: ToolDefinition) -> Tool:
+            if definition.name in BUILTIN_TOOL_NAMES:
+                return materialize_builtin_tool(definition.name, hooks_config=self._config.hooks)
+            descriptor = mcp_by_name.get(definition.name)
+            if descriptor is not None:
+                return McpTool(descriptor)
+            manifest = local_by_name.get(definition.name)
+            if manifest is not None:
+                return LocalCustomTool(manifest)
+            raise ValueError(f"no activated tool factory for declaration: {definition.name}")
 
-        Returned only for runtime-owned managers: an injected manager keeps the
-        explicit discovery behaviour its caller asked for.
-        """
-        if self._mcp_manager_is_injected:
-            return None
-        state = self._mcp_manager.current_state()
-        if state.mode != "managed":
-            return None
-        server_names = tuple(state.configuration.servers)
-        if not server_names:
-            return None
-
-        def resolve_on_miss(tool_name: str) -> Mapping[str, Tool]:
-            server_name = mcp_server_for_tool_name(tool_name, server_names)
-            if server_name is None:
-                return {}
-            return self._discover_mcp_tools_for_session(
-                session=session,
-                effective_config=effective_config,
-                server_name=server_name,
-            )
-
-        return resolve_on_miss
-
-    def _discover_mcp_tools_for_session(
-        self,
-        *,
-        session: SessionState,
-        effective_config: EffectiveRuntimeConfig,
-        server_name: str | None = None,
-    ) -> Mapping[str, Tool]:
-        """Connect for the missing MCP tool surface and return the tools this run may use.
-
-        Discovery failures are not run failures: the requested tool simply stays
-        unresolvable, exactly as it would be if the server had failed at startup.
-        """
-        try:
-            descriptors = self._mcp_manager.list_tools(
-                workspace=self._workspace,
-                server_name=server_name,
-            )
-        except Exception:
-            logger.info(
-                "MCP discovery for session %s failed during tool resolution",
-                session.session.id,
-                exc_info=True,
-            )
-            return {}
-        self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._mcp_tools_from_descriptors(descriptors))
-        self._tool_registry = self._tool_materialization.registry
-        # The agent allowlist is the same gate the run-start materialization
-        # applies, so a lazily discovered tool cannot widen this run's scope.
-        scoped = scoped_tool_registry_for_agent(self._tool_materialization.registry, agent=effective_config.agent)
-        return {name: tool for name, tool in scoped.tools.items() if name.startswith("mcp/")}
+        return tool_materialization.registry.bind(materialize_definition)
 
     def refresh_mcp_tools_for_session(
         self,
@@ -1114,12 +1519,13 @@ class VoidCodeRuntime(RuntimeSurface):
         session: SessionState,
         sequence: int,
         failure_kind: str,
-    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None]:
+    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None, tuple[McpToolDescriptor, ...]]:
         try:
             if self._mcp_manager.current_state().mode != "managed":
-                return (), session, sequence, None
-            self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._stream_prep_coordinator.build_mcp_tools())
-            self._tool_registry = self._tool_materialization.registry
+                self._tool_materialization = self._tool_materializer.base()
+                return (), session, sequence, None, ()
+            descriptors = self._list_mcp_descriptors()
+            self._tool_materialization = self._tool_materializer.materialize_mcp_descriptors(descriptors)
         except Exception:
             logger.info(
                 "continuing session %s after MCP tool refresh failure",
@@ -1134,8 +1540,8 @@ class VoidCodeRuntime(RuntimeSurface):
             )
             emitted = tuple(RuntimeStreamChunk(kind="event", session=session, event=event) for event in emitted_events)
             last_sequence = emitted_events[-1].sequence if emitted_events else sequence
-            return emitted, session, last_sequence, None
-        return (), session, sequence, None
+            return emitted, session, last_sequence, None, ()
+        return (), session, sequence, None, descriptors
 
     def should_skip_mcp_startup_for_request(
         self,
@@ -1158,9 +1564,6 @@ class VoidCodeRuntime(RuntimeSurface):
             metadata,
         ).registry
 
-    def reset_tool_registry_to_base(self) -> None:
-        self._tool_registry = self._base_tool_registry
-
     def provider_tool_definitions(
         self,
         tool_registry: ToolRegistry,
@@ -1179,18 +1582,36 @@ class VoidCodeRuntime(RuntimeSurface):
             allowlist_patterns=agent_required_tool_patterns(effective_config.agent),
         )
 
+    @staticmethod
+    def _builtin_mcp_tool_names_for_materialization(materialization: RuntimeToolMaterialization) -> tuple[str, ...]:
+        builtin_server_prefixes = tuple(f"mcp/{descriptor.name}/" for descriptor in list_builtin_mcp_descriptors())
+        return tuple(
+            item.tool_name for item in materialization.provenance if item.source_kind == "mcp" and item.tool_name.startswith(builtin_server_prefixes)
+        )
+
     def _tool_materialization_for_effective_config(
         self,
         effective_config: EffectiveRuntimeConfig,
         metadata: dict[str, object] | None = None,
+        *,
+        materialization: RuntimeToolMaterialization | None = None,
+        local_manifests: tuple[LocalCustomToolManifest, ...] | None = None,
+        builtin_mcp_tool_names: tuple[str, ...] | None = None,
     ) -> RuntimeToolMaterialization:
+        local_config = effective_config.tools.local if effective_config.tools is not None else None
+        captured_manifests = workspace_local_tool_manifests_provider(self._workspace)(local_config) if local_manifests is None else local_manifests
+        source_materialization = self._tool_materialization if materialization is None else materialization
+        captured_builtin_mcp_names = (
+            self._builtin_mcp_tool_names_for_materialization(source_materialization) if builtin_mcp_tool_names is None else builtin_mcp_tool_names
+        )
         return materialize(
             effective_config,
-            materialization=self._tool_materialization,
+            materialization=source_materialization,
             materializer=self._tool_materializer,
-            local_tools_provider_factory=workspace_local_tools_factory(self._workspace),
+            local_tool_manifests_provider=lambda _: captured_manifests,
             scope_resolver=self._tool_scope_resolver,
             metadata=metadata,
+            builtin_mcp_tool_names=captured_builtin_mcp_names,
         )
 
     def tool_policy_denial(
@@ -1200,12 +1621,13 @@ class VoidCodeRuntime(RuntimeSurface):
         tool_name: str,
     ) -> ToolPolicyDecision | None:
         effective_config = self.effective_runtime_config_from_metadata(session.metadata)
-        registry = self._tool_materialization_with_effective_local_tools(effective_config).registry
+        materialization = self._tool_materialization_with_effective_local_tools(effective_config)
         return self._tool_scope_resolver.denial(
-            registry,
+            materialization.registry,
             agent=effective_config.agent,
             metadata=session.metadata,
             tool_name=tool_name,
+            builtin_mcp_tool_names=self._builtin_mcp_tool_names_for_materialization(materialization),
         )
 
     def delegation_tool_policy_error(
@@ -1593,6 +2015,10 @@ class VoidCodeRuntime(RuntimeSurface):
             prepared,
             run_id=run_id,
         )
+        prepared = replace(
+            prepared,
+            effective_config=self._activate_execution_composition(prepared),
+        )
         session, sequence = yield from self._emit_stream_prelude_events(
             prepared,
             session,
@@ -1642,6 +2068,37 @@ class VoidCodeRuntime(RuntimeSurface):
         effective_config = self.runtime_config_for_request(request)
         if self._turn_producer_override is None:
             self._validate_provider_execution_ready(effective_config)
+        existing_owner_session = self._load_existing_session_if_present(session_id=request.session_id) if request.session_id is not None else None
+        raw_composition_ref = request.metadata.get("composition_ref")
+        raw_task_id = request.metadata.get("background_task_id")
+        background_dispatch = request.metadata.get("background_run") is True or raw_task_id is not None
+        task_composition_ref: CompositionRef | None = None
+        if background_dispatch:
+            if not isinstance(raw_task_id, str) or raw_composition_ref is None:
+                raise ValueError("background task dispatch requires its persisted composition reference")
+            task_composition_ref = self._background_task_composition_ref(
+                task_id=raw_task_id,
+                session_id=resolved_session_id,
+            )
+            if CompositionRef.model_validate(raw_composition_ref) != task_composition_ref:
+                raise ValueError("background task request composition reference does not match its owner")
+        elif raw_composition_ref is not None:
+            raise ValueError("only a background task may supply a request composition reference")
+        if existing_owner_session is not None:
+            frozen_composition = self._admit_existing_session_composition(existing_owner_session.session.session.id)
+            composition_ref = composition_ref_from_session_metadata(existing_owner_session.session.metadata)
+            if task_composition_ref is not None and task_composition_ref != composition_ref:
+                raise ValueError("background task and session composition references disagree")
+        elif task_composition_ref is not None:
+            composition_ref = task_composition_ref
+            frozen_composition = self._repositories.recovery.load_execution_composition(ref=composition_ref)
+            self._composition_owner.refresh(frozen_composition)
+        else:
+            frozen_composition = self._prepare_execution_composition(effective_config)
+            composition_ref = frozen_composition.reference(
+                workspace=str(self._workspace),
+                owner=SessionCompositionOwner(kind="session", session_id=resolved_session_id),
+            )
         request_metadata = self._fresh_request_metadata(request.metadata)
         # A structured command payload's declared mode (frontmatter or replay)
         # takes precedence over top-level request metadata mode.
@@ -1714,6 +2171,8 @@ class VoidCodeRuntime(RuntimeSurface):
             request=request,
             resolved_session_id=resolved_session_id,
             effective_config=effective_config,
+            frozen_composition=frozen_composition,
+            composition_ref=composition_ref,
             request_metadata=request_metadata,
             existing_session=existing_session,
             rehydrated_conversation_segments=rehydrated_conversation_segments,
@@ -1780,6 +2239,17 @@ class VoidCodeRuntime(RuntimeSurface):
                 ),
             },
         )
+        composition_ref = prep.composition_ref
+        composition_ref_payload = composition_ref.model_dump(mode="json")
+        session = self._session_with_agent_capability_snapshot(
+            session=session,
+            effective_config=effective_config,
+            request_metadata=request_metadata,
+            resolved_hook_presets=resolved_hook_presets,
+            tool_materialization=self._tool_materialization,
+            composition_ref=composition_ref_payload,
+        )
+        session = replace(session, metadata={**session.metadata, "composition_ref": composition_ref_payload})
         # Every fresh run must start from a writable row, ALWAYS. ``status`` in
         # {completed, failed} is per-TURN, not per-session: follow-up messages
         # re-enter the same session_id, so a previously sealed row would reject
@@ -1797,6 +2267,14 @@ class VoidCodeRuntime(RuntimeSurface):
             session_metadata=session.metadata,
             tool_results=(),
             last_event_sequence=0,
+            composition_ref=composition_ref,
+            composition=(
+                prep.frozen_composition
+                if existing_session is None
+                and isinstance(composition_ref.owner, SessionCompositionOwner)
+                and composition_ref.owner.session_id == resolved_session_id
+                else None
+            ),
             output=None,
             create_if_missing=True,
             turn=session.turn,
@@ -1876,6 +2354,7 @@ class VoidCodeRuntime(RuntimeSurface):
             session,
             sequence,
             mcp_failed_chunk,
+            mcp_descriptors,
         ) = self.materialize_mcp_tools_for_run(
             session=session,
             sequence=sequence,
@@ -1891,9 +2370,19 @@ class VoidCodeRuntime(RuntimeSurface):
             yield self._persist_emitted_chunk(mcp_failed_chunk)
             return None
 
+        local_config = effective_config.tools.local if effective_config.tools is not None else None
+        local_manifests = workspace_local_tool_manifests_provider(self._workspace)(local_config)
+        mcp_materialization = self._tool_materializer.materialize_mcp_descriptors(mcp_descriptors)
+        builtin_mcp_servers = {descriptor.name for descriptor in list_builtin_mcp_descriptors()}
+        builtin_mcp_tool_names = tuple(
+            mcp_tool_definition(descriptor).name for descriptor in mcp_descriptors if descriptor.server_name in builtin_mcp_servers
+        )
         tool_materialization = self._tool_materialization_for_effective_config(
             effective_config,
             session.metadata,
+            materialization=mcp_materialization,
+            local_manifests=local_manifests,
+            builtin_mcp_tool_names=builtin_mcp_tool_names,
         )
         session = self._session_with_agent_capability_snapshot(
             session=session,
@@ -1901,8 +2390,15 @@ class VoidCodeRuntime(RuntimeSurface):
             request_metadata=request_metadata,
             resolved_hook_presets=resolved_hook_presets,
             tool_materialization=tool_materialization,
+            composition_ref=prep.composition_ref.model_dump(mode="json"),
         )
-        tool_registry = self.tool_registry_for_run(session=session, effective_config=effective_config)
+        tool_registry = self.tool_registry_for_run(
+            session=session,
+            effective_config=effective_config,
+            tool_materialization=tool_materialization,
+            mcp_descriptors=mcp_descriptors,
+            local_manifests=local_manifests,
+        )
         skill_registry = self.skill_registry_for_effective_config(effective_config)
 
         start_hook_outcome = run_lifecycle_hooks_for_session(
@@ -1943,6 +2439,7 @@ class VoidCodeRuntime(RuntimeSurface):
         ``save_interrupted_checkpoint`` writes the row only (no events), so this is
         a cheap metadata refresh at the last durable event of this run's prefix.
         """
+        ref = composition_ref_from_session_metadata(session.metadata)
         self._repositories.recovery.save_interrupted_checkpoint(
             workspace=self._workspace,
             session_id=session.session.id,
@@ -1950,6 +2447,7 @@ class VoidCodeRuntime(RuntimeSurface):
             session_metadata=session.metadata,
             tool_results=(),
             last_event_sequence=sequence,
+            composition_ref=ref,
             output=None,
             create_if_missing=False,
             turn=session.turn,
@@ -1966,7 +2464,7 @@ class VoidCodeRuntime(RuntimeSurface):
         *,
         abort_signal: ProviderAbortSignal | None,
         hook_guidance: tuple[str, ...] = (),
-    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, TurnProducer, TurnRequest, list[ToolResult]] | None]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, TurnProducer, TurnRequest, list[ReportedCall]] | None]:
         request = prep.request
         effective_config = prep.effective_config
         request_metadata = prep.request_metadata
@@ -2121,7 +2619,7 @@ class VoidCodeRuntime(RuntimeSurface):
             ),
             session,
         )
-        tool_results: list[ToolResult] = list(rehydrated_tool_results)
+        tool_results: list[ReportedCall] = list(rehydrated_tool_results)
         producer = self.turn_producer_for_session_metadata(session.metadata)
         return session, sequence, producer, turn_request, tool_results
 
@@ -2133,7 +2631,7 @@ class VoidCodeRuntime(RuntimeSurface):
         session: SessionState,
         sequence: int,
         turn_request: TurnRequest,
-        tool_results: list[ToolResult],
+        tool_results: list[ReportedCall],
     ) -> Generator[RuntimeStreamChunk, None, tuple[RuntimeStreamChunk | None, int, RuntimeStreamChunk | None, Exception | None]]:
         last_chunk: RuntimeStreamChunk | None = None
         last_sequence = sequence
@@ -2478,6 +2976,7 @@ class VoidCodeRuntime(RuntimeSurface):
         linear event log per session and has no leaf pointer, so "branch" is
         exactly this plus continuing the returned session.
         """
+        self._admit_existing_session_composition(session_id)
         return self._inspection_coordinator.fork_session(
             session_id=session_id,
             at_sequence=at_sequence,
@@ -2524,6 +3023,7 @@ class VoidCodeRuntime(RuntimeSurface):
         A target that splits a tool/approval pair is refused with
         ``RuntimeSessionCheckoutBoundaryError``.
         """
+        self._admit_existing_session_composition(session_id)
         return self._inspection_coordinator.checkout_session(
             session_id=session_id,
             sequence=sequence,
@@ -2545,7 +3045,11 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
         validated_request = self._validated_request(request)
-        return self._background_task_supervisor.start_background_task(validated_request)
+        composition = self._prepare_execution_composition(self.runtime_config_for_request(validated_request))
+        return self._background_task_supervisor.start_background_task(
+            validated_request,
+            composition=composition,
+        )
 
     def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None:
         """Authorize a parent session before a tool reads or cancels its task."""
@@ -2751,6 +3255,13 @@ class VoidCodeRuntime(RuntimeSurface):
         return self._background_task_supervisor.cancel_background_task(task_id)
 
     def retry_background_task(self, task_id: str) -> BackgroundTaskState:
+        task = self._repositories.tasks.load_background_task(workspace=self._workspace, task_id=task_id)
+        if "bundle_import_provenance" in task.request.metadata:
+            raise ValueError("imported background task observations cannot be retried")
+        composition_ref = CompositionRef.model_validate(task.request.metadata.get("composition_ref"))
+        if composition_ref.workspace != str(self._workspace):
+            raise ValueError("background task composition reference names a different workspace")
+        self._composition_owner.refresh(self._repositories.recovery.load_execution_composition(ref=composition_ref))
         return self._background_task_supervisor.retry_background_task(task_id)
 
     def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState:
@@ -2793,7 +3304,7 @@ class VoidCodeRuntime(RuntimeSurface):
         caller_session_id: str,
         session_id: str,
         limit: int | None = None,
-    ) -> dict[str, object] | None:
+    ) -> TranscriptRead:
         return self._inspection_coordinator.read_tool_transcript(caller_session_id=caller_session_id, session_id=session_id, limit=limit)
 
     def resolve_tool_output_artifact(
@@ -2818,7 +3329,7 @@ class VoidCodeRuntime(RuntimeSurface):
         tool_call_id: str | None = None,
         offset: int = 0,
         limit: int = 2000,
-    ) -> dict[str, object]:
+    ) -> ArtifactRead:
         """Read a bounded slice from a spilled tool output artifact."""
         return self._inspection_coordinator.read_tool_output_artifact(
             session_id=session_id,
@@ -3313,6 +3824,7 @@ class VoidCodeRuntime(RuntimeSurface):
         allow_terminal_completion: bool = False,
     ) -> tuple[dict[str, object], ...]:
         validate_id(session_id)
+        self._admit_existing_session_composition(session_id)
         # Steering/follow-up is rejected once the session is sealed. A
         # completion interaction is a runtime outbox record created only after
         # its parent lifecycle event is durable, so it is allowed for backfill.
@@ -3383,7 +3895,11 @@ class VoidCodeRuntime(RuntimeSurface):
         approval_decision: PermissionResolution | None = None,
     ) -> RuntimeResponse:
         validate_id(session_id)
+        self._admit_existing_session_composition(session_id)
         if approval_request_id is None and approval_decision is None:
+            checkpoint = self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
+            if checkpoint is not None and checkpoint.get("kind") in {"provider_failure_retryable", "interrupted"}:
+                self._activate_existing_session_composition(session_id)
             _ = self._reconcile_resolved_approval(session_id=session_id)
             checkpoint = self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
             if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
@@ -3408,6 +3924,7 @@ class VoidCodeRuntime(RuntimeSurface):
             session_id=session_id,
             approval_request_id=approval_request_id,
         )
+        self._activate_existing_session_composition(session_id)
         with ACTIVE_SESSION_REGISTRY.approval_resolution_lock(
             workspace=self._workspace,
             session_id=session_id,
@@ -3439,8 +3956,11 @@ class VoidCodeRuntime(RuntimeSurface):
         approval_decision: PermissionResolution | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
         validate_id(session_id)
+        self._admit_existing_session_composition(session_id)
         if approval_request_id is None and approval_decision is None:
             checkpoint = self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
+            if checkpoint is not None and checkpoint.get("kind") in {"provider_failure_retryable", "interrupted"}:
+                self._activate_existing_session_composition(session_id)
             if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
                 self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
                 with self._active_resume_registration(
@@ -3479,6 +3999,7 @@ class VoidCodeRuntime(RuntimeSurface):
             session_id=session_id,
             approval_request_id=approval_request_id,
         )
+        self._activate_existing_session_composition(session_id)
         with ACTIVE_SESSION_REGISTRY.approval_resolution_lock(
             workspace=self._workspace,
             session_id=session_id,
@@ -3596,10 +4117,12 @@ class VoidCodeRuntime(RuntimeSurface):
         responses: tuple[QuestionResponse, ...],
     ) -> RuntimeResponse:
         validate_id(session_id)
+        self._admit_existing_session_composition(session_id)
         self._validate_question_targets_owned_request(
             session_id=session_id,
             question_request_id=question_request_id,
         )
+        self._activate_existing_session_composition(session_id)
         with self._active_resume_registration(
             session_id,
             resume_kind="question",
@@ -3623,10 +4146,12 @@ class VoidCodeRuntime(RuntimeSurface):
         responses: tuple[QuestionResponse, ...],
     ) -> Iterator[RuntimeStreamChunk]:
         validate_id(session_id)
+        self._admit_existing_session_composition(session_id)
         self._validate_question_targets_owned_request(
             session_id=session_id,
             question_request_id=question_request_id,
         )
+        self._activate_existing_session_composition(session_id)
         with self._active_resume_registration(
             session_id,
             resume_kind="question",
@@ -3892,7 +4417,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self,
         *,
         prompt: str,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall | ToolResultView, ...],
         session_metadata: dict[str, object],
         policy: ContextWindowPolicy | None = None,
         abort_signal: ProviderAbortSignal | None = None,  # noqa: ARG002 — retained by RuntimeSurface protocol for abort-aware callers.
@@ -3913,7 +4438,7 @@ class VoidCodeRuntime(RuntimeSurface):
         stored: RuntimeResponse | None = None,
         session_id: str | None = None,
         parent_session_id: str | None,
-    ) -> tuple[ToolResult, ...]:
+    ) -> tuple[ReportedCall, ...]:
         if stored is None and session_id is not None:
             stored = self._load_existing_session_if_present(session_id=session_id)
         if stored is None:
@@ -3934,12 +4459,7 @@ class VoidCodeRuntime(RuntimeSurface):
             session_id=stored.session.session.id,
         )
         _prompt, tool_results = prompt_and_tool_results_from_debug_events(path_events)
-        # Tag prior-run results so context assembly can place them into the
-        # replayed history (before the current prompt) instead of appending
-        # them after the current prompt as if they were this run's own tool
-        # calls. ``ToolResult.source`` is not rendered to providers, so the
-        # marker is invisible to the model while distinguishing history.
-        return tuple(replace(result, source="replayed_conversation") for result in self._eligible_rehydrated_tool_results(tool_results))
+        return tuple(self._eligible_rehydrated_tool_results(tool_results))
 
     def replayed_conversation_segments_for_existing_session(
         self,
@@ -3977,33 +4497,38 @@ class VoidCodeRuntime(RuntimeSurface):
             current_request_sequence = matching_requests[-1] if matching_requests else None
             if current_request_sequence is not None:
                 replay_events = tuple(event for event in replay_events if event.sequence < current_request_sequence)
+
+        def report_from_event(event: EventEnvelope) -> ReportedCall | None:
+            _prompt, reports = prompt_and_tool_results_from_debug_events((event,))
+            return reports[0] if reports else None
+
         return replayed_conversation_segments_from_events(
             replay_events,
             output=stored.output,
-            provider_visible_tool_result_data=provider_visible_tool_result_data,
+            reported_call_from_event=report_from_event,
         )
 
     @staticmethod
     def _eligible_rehydrated_tool_results(
-        tool_results: list[ToolResult],
-    ) -> list[ToolResult]:
-        eligible: list[ToolResult] = []
-        for result in tool_results:
-            if result.tool_name in {"read", "grep", "glob", "ast_grep"}:
-                eligible.append(result)
+        tool_results: list[ReportedCall],
+    ) -> list[ReportedCall]:
+        eligible: list[ReportedCall] = []
+        for report in tool_results:
+            if report.final_tool_name in {"read", "grep", "glob", "ast_grep"}:
+                eligible.append(report)
                 continue
-            if result.tool_name != "shell_exec":
+            if report.final_tool_name != "shell_exec":
                 continue
-            command = result.data.get("command")
+            command = report.authorized_arguments.get("command")
             if isinstance(command, str) and command.strip():
-                eligible.append(result)
+                eligible.append(report)
         return eligible
 
     def assemble_provider_context(
         self,
         *,
         prompt: str,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall | ToolResultView, ...],
         session_metadata: dict[str, object],
         skill_prompt_context: str = "",
         replayed_conversation_segments: tuple[ContextSegment, ...] = (),
@@ -4051,37 +4576,18 @@ class VoidCodeRuntime(RuntimeSurface):
                             entry[k] = v
                     typed.append(entry)
             loaded_skills = tuple(typed)
-        raw_runtime_config = session_metadata.get("runtime_config")
-        raw_runtime_agent = raw_runtime_config.get("agent") if isinstance(raw_runtime_config, dict) else None
-        raw_agent_preset = session_metadata.get("agent_preset")
-        agent_preset = dict(raw_agent_preset) if isinstance(raw_agent_preset, dict) else None
-        if agent_preset is None and isinstance(raw_runtime_agent, dict):
-            agent_preset = dict(raw_runtime_agent)
-        if agent_preset is not None:
-            agent_preset.pop("runtime_internal", None)
-            if isinstance(raw_runtime_agent, dict):
-                raw_internal = raw_runtime_agent.get("runtime_internal")
-                if isinstance(raw_internal, dict):
-                    raw_materialization = raw_internal.get("prompt_materialization")
-                    if isinstance(raw_materialization, dict):
-                        projected_materialization = {
-                            key: raw_materialization[key]
-                            for key in (
-                                "profile",
-                                "version",
-                                "source",
-                                "format",
-                                "body",
-                                "prompt_append",
-                            )
-                            if key in raw_materialization
-                        }
-                        if projected_materialization:
-                            agent_preset["runtime_internal"] = {
-                                "prompt_materialization": projected_materialization,
-                            }
+        agent = effective_config.agent
+        agent_prompt_materialization: AgentPromptMaterialization | None = None
+        if agent is not None:
+            internal = agent.runtime_internal
+            if internal is not None and internal.prompt_materialization is not None:
+                agent_prompt_materialization = internal.prompt_materialization
+            else:
+                manifest = self._agent_registry.get(agent.preset)
+                if manifest is not None:
+                    agent_prompt_materialization = manifest.prompt_materialization
         tool_feedback_mode = self._tool_feedback_mode_for_effective_config(effective_config)
-        agent_prompt_context = render_agent_prompt(agent_preset) or ""
+        agent_prompt_context = render_agent_prompt(agent_prompt_materialization) or ""
         hook_preset_context = self._hook_preset_context_from_metadata(
             session_metadata,
             agent=effective_config.agent,
@@ -4148,7 +4654,7 @@ class VoidCodeRuntime(RuntimeSurface):
     def summarize_continuity(
         self,
         *,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall | ToolResultView, ...],
         session_metadata: dict[str, object],
     ) -> str | None:
         """One-shot, runtime-owned summary of the conversation pruning is discarding.
@@ -4165,17 +4671,17 @@ class VoidCodeRuntime(RuntimeSurface):
             return None
         try:
             resolved = self.effective_runtime_config_from_metadata(session_metadata)
-            target = resolved.resolved_provider.active_target
-            provider = target.provider
-            if provider is None:
+            bound_target = resolved.bound_provider.active_target if resolved.bound_provider is not None else None
+            if bound_target is None:
                 return None
-            selection = target.selection
+            provider = bound_target.provider
+            selection = bound_target.selection
             request = ProviderTurnRequest(
                 assembled_context=_PlainTextProviderContext(prompt),
                 raw_model=selection.raw_model,
                 provider_name=selection.provider,
                 model_name=selection.model,
-                model_metadata=target.metadata,
+                model_metadata=bound_target.metadata,
                 session_id=None,
                 attempt=0,
             )
@@ -4215,7 +4721,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self,
         *,
         prompt: str,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall | ToolResultView, ...],
         session_metadata: dict[str, object],
         replayed_conversation_segments: tuple[ContextSegment, ...],
     ) -> RuntimeAssembledContext:
@@ -4366,6 +4872,7 @@ class VoidCodeRuntime(RuntimeSurface):
         metadata: dict[str, object],
         request_metadata: dict[str, object],
         resolved_hook_presets: ResolvedHookPresetSnapshot,
+        composition_ref: Mapping[str, object],
         parent_capability_snapshot: dict[str, object] | None = None,
     ) -> dict[str, object]:
         runtime_config = metadata.get("runtime_config")
@@ -4416,6 +4923,7 @@ class VoidCodeRuntime(RuntimeSurface):
             parent_capability_snapshot=parent_capability_snapshot,
         )
         return {
+            "composition_ref": dict(composition_ref),
             "snapshot_version": AGENT_CAPABILITY_SNAPSHOT_VERSION,
             "precedence": {
                 "order": [
@@ -4467,6 +4975,7 @@ class VoidCodeRuntime(RuntimeSurface):
         request_metadata: dict[str, object],
         resolved_hook_presets: ResolvedHookPresetSnapshot,
         tool_materialization: RuntimeToolMaterialization,
+        composition_ref: Mapping[str, object],
     ) -> SessionState:
         parent_capability_snapshot = self._parent_capability_snapshot_for_session(session)
         return SessionState(
@@ -4481,6 +4990,7 @@ class VoidCodeRuntime(RuntimeSurface):
                     metadata=session.metadata,
                     request_metadata=request_metadata,
                     resolved_hook_presets=resolved_hook_presets,
+                    composition_ref=composition_ref,
                     parent_capability_snapshot=parent_capability_snapshot,
                 ),
             },
@@ -4625,8 +5135,8 @@ class VoidCodeRuntime(RuntimeSurface):
             and resolved.agent.preset == raw_agent_payload.get("preset")
         ):
             inherited_materialization = resolved.agent.runtime_internal.prompt_materialization
-            inherited_body = inherited_materialization.get("body") if isinstance(inherited_materialization, Mapping) else None
-            if isinstance(inherited_body, str) and inherited_body.strip():
+            inherited_body = inherited_materialization.body if inherited_materialization is not None else None
+            if inherited_body is not None:
                 agent_payload_for_parse = {**raw_agent_payload, "prompt": inherited_body}
         agent = parse_runtime_agent_payload(
             agent_payload_for_parse,
@@ -4699,6 +5209,7 @@ class VoidCodeRuntime(RuntimeSurface):
             context_window=resolved.context_window,
             tools=resolved.tools,
             policy=resolved.policy,
+            components=resolved.components,
         )
 
     def _validate_runtime_agent_for_execution(
@@ -4932,6 +5443,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 tools=self._config.tools,
                 policy=self._config.policy,
                 reminders=self._config.reminders,
+                components=self._config.components,
             )
 
         persisted_runtime_config = metadata.get("runtime_config")
@@ -4967,8 +5479,20 @@ class VoidCodeRuntime(RuntimeSurface):
                 )
         else:
             agent = None
+        activated_binding: tuple[ResolvedProviderConfig, BoundProviderConfig] | None = None
+        if metadata is not None:
+            raw_capability = metadata.get("agent_capability_snapshot")
+            if isinstance(raw_capability, dict):
+                raw_ref = raw_capability.get("composition_ref")
+                if isinstance(raw_ref, dict) and isinstance(raw_ref.get("binding_id"), str):
+                    activated_binding = self._activated_provider_bindings.get(raw_ref["binding_id"])
         raw_resolved_provider = materialized.raw_resolved_provider
-        if raw_resolved_provider is not None:
+        bound_provider = None
+        if activated_binding is not None:
+            resolved_provider, bound_provider = activated_binding
+            model = resolved_provider.model
+            provider_fallback = resolved_provider.provider_fallback
+        elif raw_resolved_provider is not None:
             resolved_provider = parse_resolved_provider_snapshot(
                 raw_resolved_provider,
                 source="persisted runtime_config.resolved_provider",
@@ -4992,6 +5516,7 @@ class VoidCodeRuntime(RuntimeSurface):
             provider_fallback=provider_fallback,
             providers=providers,
             resolved_provider=resolved_provider,
+            bound_provider=bound_provider,
             agent=agent,
             context_window=context_window,
             tools=tools,
@@ -4999,6 +5524,7 @@ class VoidCodeRuntime(RuntimeSurface):
             # A snapshot written before this key existed has no reminder policy;
             # the live resolved config is the only remaining source.
             reminders=materialized.reminders if materialized.reminders is not None else self._config.reminders,
+            components=self._config.components,
         )
 
     def turn_producer_for_session_metadata(self, metadata: dict[str, object] | None) -> TurnProducer:
@@ -5099,9 +5625,11 @@ class _PreparedStreamSession:
     request: RuntimeRequest
     resolved_session_id: str
     effective_config: EffectiveRuntimeConfig
+    composition_ref: CompositionRef
+    frozen_composition: FrozenComposition
     request_metadata: dict[str, object]
     existing_session: RuntimeResponse | None
     rehydrated_conversation_segments: tuple[ContextSegment, ...]
-    rehydrated_tool_results: tuple[ToolResult, ...]
+    rehydrated_tool_results: tuple[ReportedCall, ...]
     resolved_hook_presets: ResolvedHookPresetSnapshot
     resolved_hook_plan: ResolvedHookPlan

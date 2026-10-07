@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any, cast
 
 import voidcode.tools.output as output_module
-from voidcode.tools.contracts import ToolResult
+from voidcode.core.tool_context import ArtifactInvalid, ArtifactPage, ArtifactUnavailable, NextPage
+from voidcode.tools.contracts import TextOutput, ToolFailure, ToolSuccess
 from voidcode.tools.output import (
     cap_tool_result_output,
     read_tool_output_artifact,
@@ -17,8 +18,16 @@ from voidcode.tools.output import (
 )
 
 
+def _metadata(result: object) -> dict[str, object]:
+    output = result.output
+    assert isinstance(output, TextOutput)
+    reference = output.bounds.reference
+    assert reference is not None and reference.artifact is not None
+    return dict(reference.artifact)
+
+
 def test_cap_tool_result_output_noops_under_limits(tmp_path: Path) -> None:
-    result = ToolResult(tool_name="sample", status="ok", content="small output")
+    result = ToolSuccess(tool_name="sample", output=TextOutput("small output"))
 
     capped = cap_tool_result_output(result)
 
@@ -28,36 +37,37 @@ def test_cap_tool_result_output_noops_under_limits(tmp_path: Path) -> None:
 
 def test_cap_tool_result_output_caps_by_line_count_and_saves_full_output(tmp_path: Path) -> None:
     content = "".join(f"line-{index}\n" for index in range(6))
-    result = ToolResult(tool_name="sample", status="ok", content=content)
+    result = ToolSuccess(tool_name="sample", output=TextOutput(content))
 
     capped = cap_tool_result_output(result, max_lines=3, max_bytes=10_000)
 
-    assert capped.content is not None
-    assert "line-0" in capped.content
-    assert "line-3" not in capped.content
-    assert "Tool output truncated" in capped.content
-    assert capped.truncated is True
-    assert capped.partial is True
-    assert isinstance(capped.reference, str)
-    assert capped.reference.startswith("voidcode://artifact/")
+    assert isinstance(capped.output, TextOutput)
+    assert "line-0" in capped.output.text
+    assert "line-3" not in capped.output.text
+    assert "Tool output truncated" in capped.output.text
+    assert capped.output.bounds.truncated is True
+    assert capped.output.bounds.partial is True
+    assert capped.output.bounds.reference is not None
+    assert capped.output.bounds.reference is not None
+    assert capped.output.bounds.reference.uri.startswith("voidcode://artifact/")
     assert not (tmp_path / ".voidcode" / "tool-output").exists()
-    raw_artifact = capped.data["artifact"]
+    raw_artifact = _metadata(capped)["artifact"]
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)
     assert artifact["status"] == "available"
     assert artifact["producer"] == "voidcode.tool_output.v1"
-    assert capped.data["artifact_id"] == artifact["artifact_id"]
-    normalization = cast(dict[str, object], capped.data["normalization"])
+    assert _metadata(capped)["artifact_id"] == artifact["artifact_id"]
+    normalization = cast(dict[str, object], _metadata(capped)["normalization"])
     assert normalization["kind"] == "tool_output_truncated"
     assert normalization["artifact_id"] == artifact["artifact_id"]
-    assert "retry_guidance" in capped.data
-    diagnostics = cast(list[dict[str, object]], capped.data["diagnostics"])
+    assert "retry_guidance" in _metadata(capped)
+    diagnostics = cast(list[dict[str, object]], _metadata(capped)["diagnostics"])
     assert diagnostics[-1]["reason"] == "tool_output_truncated"
     artifact_path = Path(cast(str, artifact["path"]))
     assert artifact_path.read_text(encoding="utf-8") == content
     assert artifact_path.stat().st_mode & 0o777 == 0o600
     assert tool_output_artifact_temp_root().stat().st_mode & 0o777 == 0o700
-    assert capped.data["original_line_count"] == 6
+    assert _metadata(capped)["original_line_count"] == 6
 
 
 def test_tool_output_artifact_temp_root_uses_xdg_cache_home(
@@ -89,7 +99,7 @@ def test_tool_output_artifact_temp_root_uses_windows_local_app_data(
 
 def test_tool_output_artifact_retrieval_supports_offsets_and_search(tmp_path: Path) -> None:
     content = "alpha\nbeta\ngamma\nbeta-two\n"
-    result = ToolResult(tool_name="sample", status="ok", content=content)
+    result = ToolSuccess(tool_name="sample", output=TextOutput(content))
 
     capped = cap_tool_result_output(
         result,
@@ -99,13 +109,14 @@ def test_tool_output_artifact_retrieval_supports_offsets_and_search(tmp_path: Pa
         max_bytes=10_000,
     )
 
-    raw_artifact = capped.data["artifact"]
+    raw_artifact = _metadata(capped)["artifact"]
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)
     read_result = read_tool_output_artifact(artifact, offset=1, limit=2)
-    assert read_result["artifact_missing"] is False
-    assert read_result["content"] == "beta\ngamma\n"
-    assert read_result["next_offset"] == 3
+    assert isinstance(read_result, ArtifactPage)
+    assert read_result.text == "beta\ngamma\n"
+    assert isinstance(read_result.page, NextPage)
+    assert read_result.page.offset == 3
 
     search_result = search_tool_output_artifact(artifact, pattern="beta")
     assert search_result["artifact_missing"] is False
@@ -117,7 +128,7 @@ def test_tool_output_artifact_retrieval_supports_offsets_and_search(tmp_path: Pa
 
 def test_tool_output_artifact_reference_metadata_is_bounded_and_safe(tmp_path: Path) -> None:
     raw_content = "".join(f"artifact-line-{index}\n" for index in range(40))
-    result = ToolResult(tool_name="shell_exec", status="ok", content=raw_content)
+    result = ToolSuccess(tool_name="shell_exec", output=TextOutput(raw_content))
 
     capped = cap_tool_result_output(
         result,
@@ -127,32 +138,34 @@ def test_tool_output_artifact_reference_metadata_is_bounded_and_safe(tmp_path: P
         max_bytes=80,
     )
 
-    assert capped.content is not None
-    assert "artifact-line-0" in capped.content
-    assert "artifact-line-10" not in capped.content
-    assert capped.reference == f"voidcode://artifact/{capped.data['artifact_id']}"
-    assert "read(path=" in capped.content
-    assert 'task(operation="output", full_session=true)' not in capped.content
-    assert capped.data["retry_guidance"] == f'Read the full output with read(path="{capped.reference}").'
-    raw_artifact = capped.data["artifact"]
+    assert isinstance(capped.output, TextOutput)
+    assert "artifact-line-0" in capped.output.text
+    assert "artifact-line-10" not in capped.output.text
+    assert capped.output.bounds.reference is not None
+    assert capped.output.bounds.reference.uri == f"voidcode://artifact/{_metadata(capped)['artifact_id']}"
+    assert "read(path=" in capped.output.text
+    assert 'task(operation="output", full_session=true)' not in capped.output.text
+    assert _metadata(capped)["retry_guidance"] == f'Read the full output with read(path="{capped.output.bounds.reference.uri}").'
+    raw_artifact = _metadata(capped)["artifact"]
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)
-    assert artifact["artifact_id"] == capped.data["artifact_id"]
+    assert artifact["artifact_id"] == _metadata(capped)["artifact_id"]
     assert artifact["tool_call_id"] == "call-1"
     assert artifact["byte_count"] == len(raw_content.encode("utf-8"))
     assert artifact["line_count"] == 40
-    assert capped.data["output_path"] == artifact["path"]
+    assert _metadata(capped)["output_path"] == artifact["path"]
     assert str(tmp_path / ".voidcode") not in cast(str, artifact["path"])
     assert ".xdg-cache" in cast(str, artifact["path"])
+    retrieved = read_tool_output_artifact(artifact, offset=0, limit=10)
 
-    retrieved = read_tool_output_artifact(artifact, limit=10)
-    assert retrieved["artifact_missing"] is False
-    assert retrieved["content"] == "".join(f"artifact-line-{index}\n" for index in range(10))
-    assert retrieved["next_offset"] == 10
+    assert isinstance(retrieved, ArtifactPage)
+    assert retrieved.text == "".join(f"artifact-line-{index}\n" for index in range(10))
+    assert isinstance(retrieved.page, NextPage)
+    assert retrieved.page.offset == 10
 
 
 def test_tool_output_artifact_resolves_from_events_by_id_or_tool_call(tmp_path: Path) -> None:
-    result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
+    result = ToolSuccess(tool_name="sample", output=TextOutput("one\ntwo\nthree\n"))
     capped = cap_tool_result_output(
         result,
         session_id="session-1",
@@ -160,9 +173,9 @@ def test_tool_output_artifact_resolves_from_events_by_id_or_tool_call(tmp_path: 
         max_lines=1,
         max_bytes=10_000,
     )
-    artifact_id = capped.data["artifact_id"]
+    artifact_id = _metadata(capped)["artifact_id"]
     assert isinstance(artifact_id, str)
-    events = [{"payload": {"artifact": capped.data["artifact"]}}]
+    events = [{"payload": {"artifact": _metadata(capped)["artifact"]}}]
 
     by_artifact_id = resolve_tool_output_artifact(events, artifact_id=artifact_id)
     by_tool_call_id = resolve_tool_output_artifact(events, tool_call_id="call-1")
@@ -176,7 +189,7 @@ def test_tool_output_artifact_resolves_from_events_by_id_or_tool_call(tmp_path: 
 def test_tool_output_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
     tmp_path: Path,
 ) -> None:
-    result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
+    result = ToolSuccess(tool_name="sample", output=TextOutput("one\ntwo\nthree\n"))
     capped = cap_tool_result_output(
         result,
         session_id="session-1",
@@ -184,7 +197,7 @@ def test_tool_output_artifact_resolver_skips_invalid_candidate_for_same_tool_cal
         max_lines=1,
         max_bytes=10_000,
     )
-    valid_artifact = capped.data["artifact"]
+    valid_artifact = _metadata(capped)["artifact"]
     assert isinstance(valid_artifact, dict)
     forged_artifact = {
         **cast(dict[str, object], valid_artifact),
@@ -198,13 +211,13 @@ def test_tool_output_artifact_resolver_skips_invalid_candidate_for_same_tool_cal
     resolved = resolve_tool_output_artifact(events, tool_call_id="call-1")
 
     assert resolved is not None
-    assert resolved["artifact_id"] == capped.data["artifact_id"]
+    assert resolved["artifact_id"] == _metadata(capped)["artifact_id"]
 
 
 def test_tool_output_artifact_resolver_skips_invalid_candidate_for_same_artifact_id(
     tmp_path: Path,
 ) -> None:
-    result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
+    result = ToolSuccess(tool_name="sample", output=TextOutput("one\ntwo\nthree\n"))
     capped = cap_tool_result_output(
         result,
         session_id="session-1",
@@ -212,7 +225,7 @@ def test_tool_output_artifact_resolver_skips_invalid_candidate_for_same_artifact
         max_lines=1,
         max_bytes=10_000,
     )
-    valid_artifact = capped.data["artifact"]
+    valid_artifact = _metadata(capped)["artifact"]
     assert isinstance(valid_artifact, dict)
     artifact = cast(dict[str, object], valid_artifact)
     raw_artifact_id = artifact["artifact_id"]
@@ -247,8 +260,7 @@ def test_tool_output_artifact_rejects_untrusted_paths(tmp_path: Path) -> None:
     search_result = search_tool_output_artifact(forged_artifact, pattern="must")
     resolved = resolve_tool_output_artifact([{"payload": {"artifact": forged_artifact}}], artifact_id="artifact_forged")
 
-    assert read_result["status"] == "invalid"
-    assert "content" not in read_result
+    assert isinstance(read_result, ArtifactInvalid)
     assert search_result["status"] == "invalid"
     assert resolved is None
 
@@ -270,8 +282,7 @@ def test_tool_output_artifact_rejects_traversal_reference(tmp_path: Path) -> Non
         tool_call_id="call-1",
     )
 
-    assert read_result["status"] == "invalid"
-    assert "content" not in read_result
+    assert isinstance(read_result, ArtifactInvalid)
     assert search_result["status"] == "invalid"
     assert resolved is None
 
@@ -279,9 +290,9 @@ def test_tool_output_artifact_rejects_traversal_reference(tmp_path: Path) -> Non
 def test_tool_output_artifact_rejects_short_id_for_another_artifact_path(
     tmp_path: Path,
 ) -> None:
-    result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
+    result = ToolSuccess(tool_name="sample", output=TextOutput("one\ntwo\nthree\n"))
     capped = cap_tool_result_output(result, max_lines=1, max_bytes=10_000)
-    real_artifact = capped.data["artifact"]
+    real_artifact = _metadata(capped)["artifact"]
     assert isinstance(real_artifact, dict)
     forged_artifact = {
         **cast(dict[str, object], real_artifact),
@@ -292,8 +303,7 @@ def test_tool_output_artifact_rejects_short_id_for_another_artifact_path(
     search_result = search_tool_output_artifact(forged_artifact, pattern="three")
     resolved = resolve_tool_output_artifact([{"payload": {"artifact": forged_artifact}}], artifact_id="artifact_")
 
-    assert read_result["status"] == "invalid"
-    assert "content" not in read_result
+    assert isinstance(read_result, ArtifactInvalid)
     assert search_result["status"] == "invalid"
     assert resolved is None
 
@@ -301,9 +311,9 @@ def test_tool_output_artifact_rejects_short_id_for_another_artifact_path(
 def test_tool_output_artifact_rejects_valid_shaped_id_for_another_artifact_path(
     tmp_path: Path,
 ) -> None:
-    result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
+    result = ToolSuccess(tool_name="sample", output=TextOutput("one\ntwo\nthree\n"))
     capped = cap_tool_result_output(result, max_lines=1, max_bytes=10_000)
-    real_artifact = capped.data["artifact"]
+    real_artifact = _metadata(capped)["artifact"]
     assert isinstance(real_artifact, dict)
     forged_id = "artifact_000000000000000000000000"
     forged_artifact = {
@@ -315,30 +325,28 @@ def test_tool_output_artifact_rejects_valid_shaped_id_for_another_artifact_path(
     search_result = search_tool_output_artifact(forged_artifact, pattern="three")
     resolved = resolve_tool_output_artifact([{"payload": {"artifact": forged_artifact}}], artifact_id=forged_id)
 
-    assert read_result["status"] == "invalid"
-    assert "content" not in read_result
+    assert isinstance(read_result, ArtifactInvalid)
     assert search_result["status"] == "invalid"
     assert resolved is None
 
 
 def test_tool_output_artifact_retrieval_reports_missing(tmp_path: Path) -> None:
-    result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
+    result = ToolSuccess(tool_name="sample", output=TextOutput("one\ntwo\nthree\n"))
     capped = cap_tool_result_output(result, max_lines=1, max_bytes=10_000)
-    raw_artifact = capped.data["artifact"]
+    raw_artifact = _metadata(capped)["artifact"]
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)
     Path(cast(str, artifact["path"])).unlink()
 
     missing = read_tool_output_artifact(artifact)
 
-    assert missing["status"] == "missing"
-    assert missing["artifact_missing"] is True
+    assert isinstance(missing, ArtifactUnavailable)
 
 
 def test_tool_output_artifact_search_reports_missing(tmp_path: Path) -> None:
-    result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
+    result = ToolSuccess(tool_name="sample", output=TextOutput("one\ntwo\nthree\n"))
     capped = cap_tool_result_output(result, max_lines=1, max_bytes=10_000)
-    raw_artifact = capped.data["artifact"]
+    raw_artifact = _metadata(capped)["artifact"]
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)
     Path(cast(str, artifact["path"])).unlink()
@@ -352,29 +360,29 @@ def test_tool_output_artifact_search_reports_missing(tmp_path: Path) -> None:
 
 def test_cap_tool_result_output_caps_by_utf8_byte_count_safely(tmp_path: Path) -> None:
     content = "π" * 100
-    result = ToolResult(tool_name="unicode", status="ok", content=content)
+    result = ToolSuccess(tool_name="unicode", output=TextOutput(content))
 
     capped = cap_tool_result_output(result, max_lines=2000, max_bytes=51)
 
-    assert capped.content is not None
-    assert "�" not in capped.content
-    assert "Tool output truncated" in capped.content
-    assert isinstance(capped.reference, str)
-    raw_artifact = capped.data["artifact"]
+    assert isinstance(capped.output, TextOutput)
+    assert "�" not in capped.output.text
+    assert "Tool output truncated" in capped.output.text
+    assert capped.output.bounds.reference is not None
+    raw_artifact = _metadata(capped)["artifact"]
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)
     assert Path(cast(str, artifact["path"])).read_text(encoding="utf-8") == content
 
 
 def test_cap_tool_result_output_skips_errors_and_empty_content(tmp_path: Path) -> None:
-    empty = ToolResult(tool_name="sample", status="ok", content="")
+    empty = ToolSuccess(tool_name="sample", output=TextOutput(""))
 
     assert cap_tool_result_output(empty) is empty
 
 
 def test_cap_tool_result_output_caps_large_errors(tmp_path: Path) -> None:
     error_text = "".join(f"error-{index}\n" for index in range(10))
-    result = ToolResult(tool_name="sample", status="error", error=error_text)
+    result = ToolFailure(tool_name="sample", error=error_text, output=TextOutput(error_text))
 
     capped = cap_tool_result_output(result, max_lines=3, max_bytes=10_000)
 
@@ -382,16 +390,16 @@ def test_cap_tool_result_output_caps_large_errors(tmp_path: Path) -> None:
     assert "error-0" in capped.error
     assert "error-4" not in capped.error
     assert "Tool error truncated" in capped.error
-    assert capped.truncated is True
-    diagnostics = cast(list[dict[str, object]], capped.data["diagnostics"])
+    assert capped.output.bounds.truncated is True
+    diagnostics = cast(list[dict[str, object]], _metadata(capped)["diagnostics"])
     assert diagnostics[-1]["reason"] == "tool_error_truncated"
     retry_guidance = cast(str, diagnostics[-1]["retry_guidance"])
     assert 'task(operation="output", full_session=true)' not in retry_guidance
     assert "full error" in retry_guidance
-    assert isinstance(capped.reference, str)
-    normalization = cast(dict[str, object], capped.data["normalization"])
+    assert capped.output.bounds.reference is not None
+    normalization = cast(dict[str, object], _metadata(capped)["normalization"])
     assert normalization["kind"] == "tool_error_truncated"
-    raw_artifact = capped.data["artifact"]
+    raw_artifact = _metadata(capped)["artifact"]
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)
     assert Path(cast(str, artifact["path"])).read_text(encoding="utf-8") == error_text

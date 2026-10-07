@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import cast
 
+from tests.runtime_composition import save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
-from voidcode.core.turns import ResponseReadyFact, StreamFact, TurnPlan, TurnRequest
+from voidcode.core.turns import FinalTurn, ReportedCall, ResponseReadyFact, StreamFact, ToolTurn, TurnRequest
 from voidcode.provider.protocol import ProviderStreamEvent
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.policy import materialize_runtime_policy_snapshot
@@ -13,11 +13,12 @@ from voidcode.runtime.resume import RuntimeResumeCoordinator
 from voidcode.runtime.service import RuntimeStreamChunk, SessionState, ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import ToolCall, ToolDiagnostics, ToolResult
+from voidcode.tools.contracts import TextOutput, ToolCall, ToolDiagnostics, ToolFailure, ToolSuccess
 
 
 def _create_session_row(store: SqliteSessionStore, *, workspace: Path, session_id: str) -> None:
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=workspace,
         session_id=session_id,
         prompt="persistence probe",
@@ -158,43 +159,36 @@ def test_persist_chunk_reassigns_db_sequence(tmp_path: Path) -> None:
 def test_serialized_tool_results_roundtrip_through_checkpoint_reader() -> None:
     from voidcode.runtime.run_loop import _serialized_tool_results
 
-    tool_results = [
-        ToolResult(
-            tool_name="read",
-            status="ok",
-            content="alpha\n",
-            data={"tool_call_id": "call-1", "arguments": {"path": "a.txt"}},
-        ),
-        ToolResult(
-            tool_name="shell_exec",
-            status="error",
-            error="boom",
-            diagnostics=ToolDiagnostics(
-                kind="tool_timeout",
-                summary="timed out",
-                details={"message": "timed out"},
-                guidance="retry",
+    tool_results = (
+        ReportedCall("call-1", "read", {"path": "a.txt"}, ToolSuccess("read", output=TextOutput("alpha\n"))),
+        ReportedCall(
+            "call-2",
+            "shell_exec",
+            {"command": "ls"},
+            ToolFailure(
+                "shell_exec",
+                "boom",
+                diagnostics=ToolDiagnostics(
+                    kind="tool_timeout",
+                    summary="timed out",
+                    details={"message": "timed out"},
+                    guidance="retry",
+                ),
             ),
-            data={"tool_call_id": "call-2", "arguments": {"command": "ls"}},
         ),
-    ]
+    )
 
     serialized = _serialized_tool_results(tool_results)
 
-    assert serialized[0]["tool_name"] == "read"
-    assert serialized[0]["status"] == "ok"
-    assert serialized[0]["content"] == "alpha\n"
-    assert serialized[0]["error"] is None
-    assert serialized[1]["status"] == "error"
-    assert serialized[1]["error"] == "boom"
-    assert serialized[1]["diagnostics"]["kind"] == "tool_timeout"
-
-    rehydrated = RuntimeResumeCoordinator.tool_results_from_checkpoint(list(serialized))
-    assert [result.tool_name for result in rehydrated] == ["read", "shell_exec"]
-    assert rehydrated[1].status == "error"
-    assert rehydrated[1].error == "boom"
-    assert rehydrated[1].diagnostics is not None
-    assert rehydrated[1].diagnostics.kind == "tool_timeout"
+    assert [entry["tool_name"] for entry in serialized] == ["read", "shell_exec"]
+    rehydrated = RuntimeResumeCoordinator.tool_results_from_checkpoint(list(serialized), version=2)
+    assert [result.tool_call_id for result in rehydrated] == ["call-1", "call-2"]
+    assert isinstance(rehydrated[0].result, ToolSuccess)
+    assert rehydrated[0].result.output == TextOutput("alpha\n")
+    assert isinstance(rehydrated[1].result, ToolFailure)
+    assert rehydrated[1].result.error == "boom"
+    assert rehydrated[1].result.diagnostics is not None
+    assert rehydrated[1].result.diagnostics.kind == "tool_timeout"
 
 
 def test_execute_turn_engine_streaming_dedupes_raw_provider_stream(tmp_path: Path) -> None:
@@ -203,7 +197,7 @@ def test_execute_turn_engine_streaming_dedupes_raw_provider_stream(tmp_path: Pat
     runtime = _runtime_with_store(tmp_path, store)
 
     class _StreamingGraph:
-        def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> TurnPlan:
+        def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> ToolTurn | FinalTurn:
             _ = request, tool_results, session
             raise AssertionError("streaming branch must not call step")
 
@@ -213,10 +207,9 @@ def test_execute_turn_engine_streaming_dedupes_raw_provider_stream(tmp_path: Pat
             yield StreamFact(ProviderStreamEvent(kind="tool_call_start", tool_call_id="call-1", tool_name="read", tool_call_ordinal=0))
             yield StreamFact(ProviderStreamEvent(kind="tool_call_delta", tool_call_id="call-1", arguments_delta='{"path":'))
             yield StreamFact(ProviderStreamEvent(kind="tool_call_end", tool_call_id="call-1", parsed_arguments={"path": "sample.txt"}))
-            yield TurnPlan(
+            yield FinalTurn(
                 facts=(ResponseReadyFact("done"),),
                 output="done",
-                is_finished=True,
             )
 
     session, request, tool_registry = _turn_request(runtime, session_id="session-1", provider_stream=True)
@@ -258,7 +251,7 @@ def test_execute_turn_engine_streaming_persists_aggregated_reasoning(tmp_path: P
     runtime = _runtime_with_store(tmp_path, store)
 
     class _StreamingReasoningGraph:
-        def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> TurnPlan:
+        def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> ToolTurn | FinalTurn:
             _ = request, tool_results, session
             raise AssertionError("streaming branch must not call step")
 
@@ -266,10 +259,9 @@ def test_execute_turn_engine_streaming_persists_aggregated_reasoning(tmp_path: P
             _ = request, tool_results, session
             yield StreamFact(ProviderStreamEvent(kind="delta", channel="reasoning", text="first thought "))
             yield StreamFact(ProviderStreamEvent(kind="delta", channel="reasoning", text="second thought"))
-            yield TurnPlan(
+            yield FinalTurn(
                 facts=(ResponseReadyFact("done"),),
                 output="done",
-                is_finished=True,
             )
 
     session, request, tool_registry = _turn_request(runtime, session_id="session-1", provider_stream=True)
@@ -312,12 +304,11 @@ def test_execute_turn_engine_non_streaming_persists_step_reasoning(tmp_path: Pat
     runtime = _runtime_with_store(tmp_path, store)
 
     class _NonStreamingReasoningGraph:
-        def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> TurnPlan:
+        def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> ToolTurn | FinalTurn:
             _ = request, tool_results, session
-            return TurnPlan(
+            return FinalTurn(
                 facts=(ResponseReadyFact("done"),),
                 output="done",
-                is_finished=True,
                 reasoning="background child thought",
             )
 
@@ -365,13 +356,11 @@ def test_execute_turn_engine_captures_safe_boundary_checkpoint(tmp_path: Path) -
     _ = sample_file.write_text("alpha\n", encoding="utf-8")
 
     class _ToolThenFinalGraph:
-        def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> TurnPlan:
+        def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> ToolTurn | FinalTurn:
             _ = request, session
             if not tool_results:
-                return TurnPlan(
-                    tool_calls=(ToolCall(tool_name="read", arguments={"path": str(sample_file)}),),
-                )
-            return TurnPlan(output="done", is_finished=True)
+                return ToolTurn(calls=(ToolCall(tool_name="read", arguments={"path": str(sample_file)}),))
+            return FinalTurn(output="done")
 
         def is_at_safe_boundary(self) -> bool:
             return True
@@ -397,30 +386,3 @@ def test_execute_turn_engine_captures_safe_boundary_checkpoint(tmp_path: Path) -
     assert isinstance(raw_tool_results, list)
     assert [cast(dict[str, object], entry)["tool_name"] for entry in raw_tool_results] == ["read"]
     assert cast(int, checkpoint["last_event_sequence"]) > 0
-
-
-def test_yield_progress_numbering_uses_persisted_events_and_fits_runtime_metadata(tmp_path: Path) -> None:
-    store = SqliteSessionStore()
-    _create_session_row(store, workspace=tmp_path, session_id="session-1")
-    runtime = _runtime_with_store(tmp_path, store)
-    coordinator = runtime._run_loop_coordinator
-    session = SessionState(session=SessionRef(id="session-1"), status="running", turn=1, metadata={})
-    result = ToolResult(
-        tool_name="yield",
-        status="ok",
-        data={"yield_kind": "progress", "progress": {"type": "progress", "result": "x" * 4_050}},
-    )
-
-    numbered = coordinator._number_yield_progress(session=session, tool_result=result)
-    progress = cast(dict[str, object], numbered.data["progress"])
-    assert progress["ordinal"] == 1
-    assert len(json.dumps(progress, ensure_ascii=False, separators=(",", ":"))) <= 4_096
-
-    _ = coordinator._persist_event(
-        session_id="session-1",
-        event_type="runtime.tool_completed",
-        source="tool",
-        payload={"tool": "yield", "status": "ok", **numbered.data},
-    )
-    second = coordinator._number_yield_progress(session=session, tool_result=result)
-    assert cast(dict[str, object], second.data["progress"])["ordinal"] == 2

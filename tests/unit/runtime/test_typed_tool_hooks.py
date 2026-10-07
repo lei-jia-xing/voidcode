@@ -5,14 +5,31 @@ from pathlib import Path
 import pytest
 
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import TurnPlan, TurnRequest
-from voidcode.hook.typed import BlockDecision, RewriteDecision, ToolInputDecision, ToolInputEvent, ToolInputHandlerBinding, ToolInputHandlerRegistry
+from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest
+from voidcode.hook.typed import (
+    BlockDecision,
+    RewriteDecision,
+    ToolInputDecision,
+    ToolInputEvent,
+    ToolInputHandler,
+    ToolInputHandlerBinding,
+    ToolInputHandlerDeclaration,
+    ToolInputHandlerRegistry,
+)
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.permission import ApprovalMode, PermissionPolicy
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.tool_registry import ToolRegistry
-from voidcode.tools.contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolEffect, ToolResult
+from voidcode.tools.contracts import (
+    RuntimeToolTimeoutError,
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolEffect,
+    ToolResult,
+    ToolSuccess,
+)
 from voidcode.tools.invoke_tool import InvokeTool
 
 
@@ -20,9 +37,15 @@ class _OneToolProducer:
     def __init__(self, call: ToolCall) -> None:
         self.call = call
 
-    def produce(self, request: TurnRequest, tool_results: tuple[ToolResult, ...], *, session: object) -> TurnPlan:
+    def produce(
+        self,
+        request: TurnRequest,
+        tool_results: tuple[ToolResult, ...],
+        *,
+        session: object,
+    ) -> ToolTurn | FinalTurn:
         _ = request, session
-        return TurnPlan(tool_calls=(self.call,)) if not tool_results else TurnPlan(output="done", is_finished=True)
+        return ToolTurn(calls=(self.call,)) if not tool_results else FinalTurn(output="done")
 
 
 class _CaptureTool:
@@ -47,7 +70,7 @@ class _CaptureTool:
         self.calls.append(call)
         if self.failure is not None:
             raise self.failure
-        return ToolResult(tool_name=call.tool_name, status="ok", content=str(call.arguments["path"]))
+        return ToolSuccess(tool_name=call.tool_name, output=TextOutput(text=str(call.arguments["path"])))
 
 
 def _runtime(
@@ -90,9 +113,16 @@ def _blocker(reason: str, calls: list[str] | None = None):
     return block
 
 
+def _registry(name: str, handler: ToolInputHandler) -> ToolInputHandlerRegistry:
+    declaration = ToolInputHandlerDeclaration(name=name, version="1")
+    return ToolInputHandlerRegistry.from_declarations((declaration,)).bind(
+        lambda _: ToolInputHandlerBinding(declaration=declaration, handler=handler)
+    )
+
+
 def test_typed_rewrite_preserves_raw_graph_args_uses_final_execution_args_and_canonical_started_id(tmp_path: Path) -> None:
     tool = _CaptureTool()
-    registry = ToolInputHandlerRegistry((ToolInputHandlerBinding("canonicalize", _canonicalizer("canonical.txt")),))
+    registry = _registry("canonicalize", _canonicalizer("canonical.txt"))
     response = _runtime(
         tmp_path,
         tool,
@@ -115,6 +145,9 @@ def test_typed_rewrite_preserves_raw_graph_args_uses_final_execution_args_and_ca
     metadata = trace.payload["rewrite"]
     assert isinstance(metadata, dict)
     assert metadata["original_sha256"] != metadata["final_sha256"]
+    assert metadata["version"] == 2
+    assert metadata["handlers"] == [{"name": "canonicalize", "version": "1", "priority": 0}]
+    assert metadata["omitted_handler_count"] == 0
     started = next(event for event in response.events if event.event_type == "runtime.tool_started")
     completed = next(event for event in response.events if event.event_type == "runtime.tool_completed")
     assert started.payload["tool_call_id"] == completed.payload["tool_call_id"] == "native-call-1"
@@ -129,7 +162,7 @@ def test_typed_rewrite_preserves_raw_graph_args_uses_final_execution_args_and_ca
 def test_approval_resume_uses_final_started_id_once_and_does_not_repeat_typed_handler(tmp_path: Path) -> None:
     tool = _CaptureTool()
     handler_calls: list[str] = []
-    registry = ToolInputHandlerRegistry((ToolInputHandlerBinding("canonicalize", _canonicalizer("approved.txt", handler_calls)),))
+    registry = _registry("canonicalize", _canonicalizer("approved.txt", handler_calls))
     runtime = _runtime(tmp_path, tool, registry, approval_mode="ask")
     waiting = runtime.run(RuntimeRequest(prompt="capture", session_id="approval-session"))
     approval = next(event for event in waiting.events if event.event_type == "runtime.approval_requested")
@@ -185,7 +218,7 @@ def test_inner_invoke_enforces_delegated_child_policy_before_execution(tmp_path:
 def test_invoke_tool_outer_is_not_rewritten_and_inner_runs_once(tmp_path: Path) -> None:
     tool = _CaptureTool()
     handler_calls: list[str] = []
-    registry = ToolInputHandlerRegistry((ToolInputHandlerBinding("canonicalize", _canonicalizer("inner-final.txt", handler_calls)),))
+    registry = _registry("canonicalize", _canonicalizer("inner-final.txt", handler_calls))
     runtime = _runtime(
         tmp_path,
         tool,
@@ -218,13 +251,14 @@ def test_invoke_tool_outer_is_not_rewritten_and_inner_runs_once(tmp_path: Path) 
     assert [event.sequence for event in response.events] == list(range(1, len(response.events) + 1))
     metadata = trace.payload["rewrite"]
     assert isinstance(metadata, dict)
-    assert isinstance(metadata["handler_names"], list)
+    assert metadata["version"] == 2
+    assert metadata["handlers"] == [{"name": "canonicalize", "version": "1", "priority": 0}]
 
 
 def test_invoke_inner_block_emits_lookup_then_typed_trace_before_feedback(tmp_path: Path) -> None:
     tool = _CaptureTool()
     handler_calls: list[str] = []
-    registry = ToolInputHandlerRegistry((ToolInputHandlerBinding("block", _blocker("blocked by typed policy", handler_calls)),))
+    registry = _registry("block", _blocker("blocked by typed policy", handler_calls))
     runtime = _runtime(
         tmp_path,
         tool,
@@ -252,13 +286,15 @@ def test_invoke_inner_block_emits_lookup_then_typed_trace_before_feedback(tmp_pa
     feedback = next(event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "capture")
     assert inner_request.sequence < lookup.sequence < trace.sequence < feedback.sequence
     assert trace.payload["hook_status"] == "blocked"
+    assert trace.payload["version"] == 2
+    assert trace.payload["handlers"] == [{"name": "block", "version": "1", "priority": 0}]
     assert feedback.payload["status"] == "error"
     assert feedback.payload["error"] == "blocked by typed policy"
 
 
 def test_invoke_inner_error_feedback_uses_final_rewritten_args(tmp_path: Path) -> None:
     tool = _CaptureTool(failure=ValueError("inner failed"))
-    registry = ToolInputHandlerRegistry((ToolInputHandlerBinding("canonicalize", _canonicalizer("error-final.txt")),))
+    registry = _registry("canonicalize", _canonicalizer("error-final.txt"))
     runtime = _runtime(
         tmp_path,
         tool,
@@ -276,7 +312,7 @@ def test_invoke_inner_error_feedback_uses_final_rewritten_args(tmp_path: Path) -
 
 def test_invoke_inner_timeout_feedback_uses_final_rewritten_args(tmp_path: Path) -> None:
     tool = _CaptureTool(failure=RuntimeToolTimeoutError("timed out"))
-    registry = ToolInputHandlerRegistry((ToolInputHandlerBinding("canonicalize", _canonicalizer("timeout-final.txt")),))
+    registry = _registry("canonicalize", _canonicalizer("timeout-final.txt"))
     runtime = _runtime(
         tmp_path,
         tool,

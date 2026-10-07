@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from voidcode.core.transcript import ToolResultView
 from voidcode.runtime import EventEnvelope, RuntimeStreamChunk, SessionRef, SessionState
 from voidcode.runtime.config import RuntimeCompactionConfig
 from voidcode.runtime.context.window import (
@@ -15,14 +16,14 @@ from voidcode.runtime.context.window import (
     prepare_provider_context,
 )
 from voidcode.runtime.hook_runtime import RuntimeHookOutcome, before_compact_input_from_hook_outcome
-from voidcode.tools.contracts import ToolResult
+from voidcode.tools.contracts import TextOutput
 
 
-def _result(content: str, tool_name: str = "read") -> ToolResult:
-    return ToolResult(tool_name=tool_name, status="ok", content=content)
+def _result(content: str, tool_name: str = "read") -> ToolResultView:
+    return ToolResultView("fixture-call", tool_name, {}, TextOutput(content), "ok")
 
 
-def _over_budget_results() -> tuple[ToolResult, ToolResult]:
+def _over_budget_results() -> tuple[ToolResultView, ToolResultView]:
     # Sized so the reclaim crosses the production savings floor (20_000 tokens).
     return (_result("x" * 60_000), _result("y" * 60_000))
 

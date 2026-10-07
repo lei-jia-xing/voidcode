@@ -8,10 +8,14 @@ from .config import (
     CopilotProviderConfig,
     EndpointAuthScheme,
     GoogleProviderConfig,
+    OpenAICompatibleProviderConfig,
     OpenAIProviderConfig,
+    ProviderConfigEntry,
     ProviderEndpointConfig,
     openai_compatible_default_base_url,
+    openai_compatible_endpoint_config,
 )
+from .naming import UnknownProviderIdError, canonical_provider_id
 from .provider_table import PROVIDER_TABLE, PROVIDER_TABLE_BY_ID
 
 # Vendor defaults for the providers whose wire is the OpenAI chat protocol, read
@@ -212,3 +216,33 @@ def vendor_endpoint_config(
         model_map=dict(config.model_map),
         transient_retry=config.transient_retry,
     )
+
+
+def resolved_provider_endpoint_config(
+    provider_name: str,
+    configuration: ProviderConfigEntry | None,
+) -> ProviderEndpointConfig:
+    """Project native config without constructing or consulting a live adapter."""
+    provider_name = canonical_provider_id(provider_name)
+    wire = PROVIDER_WIRES.get(provider_name)
+    if wire is None:
+        if isinstance(configuration, ProviderEndpointConfig):
+            return endpoint_provider_config(configuration)
+        raise UnknownProviderIdError(provider_name)
+    match wire.shape, configuration:
+        case "openai", OpenAIProviderConfig() | None:
+            return openai_provider_config(configuration)
+        case "anthropic", AnthropicProviderConfig() | None:
+            return anthropic_compatible_endpoint_config(provider_name, configuration)
+        case "google", GoogleProviderConfig() | None:
+            return google_provider_config(configuration)
+        case "copilot", CopilotProviderConfig() | None:
+            return copilot_provider_config(configuration)
+        case "endpoint", ProviderEndpointConfig() | None:
+            return endpoint_provider_config(configuration)
+        case "named_endpoint", ProviderEndpointConfig() | None:
+            row = PROVIDER_TABLE_BY_ID[provider_name]
+            return vendor_endpoint_config(configuration, base_url=row.default_base_url, api_key_env_var=row.env_vars[0])
+        case "openai_compatible", OpenAICompatibleProviderConfig() | None:
+            return openai_compatible_endpoint_config(provider_name, configuration)
+    raise ValueError(f"provider configuration has the wrong type for {provider_name!r}")

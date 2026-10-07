@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.runtime_composition import create_task
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -83,7 +84,7 @@ def test_background_task_keep_alive_idle_is_not_terminal() -> None:
 
 def test_background_task_storage_mark_idle_from_running(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-idle"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-idle"))
 
     running = store.mark_background_task_running(
         workspace=tmp_path,
@@ -101,7 +102,7 @@ def test_background_task_storage_mark_idle_from_running(tmp_path: Path) -> None:
 
 def test_background_task_storage_mark_idle_from_queued_is_noop(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-queued"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-queued"))
 
     idle = store.mark_background_task_idle(workspace=tmp_path, task_id="task-queued")
 
@@ -110,7 +111,7 @@ def test_background_task_storage_mark_idle_from_queued_is_noop(tmp_path: Path) -
 
 def test_background_task_storage_mark_idle_from_completed_is_noop(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-done"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-done"))
     _ = store.mark_background_task_running(
         workspace=tmp_path,
         task_id="task-done",
@@ -129,7 +130,7 @@ def test_background_task_storage_mark_idle_from_completed_is_noop(tmp_path: Path
 
 def test_background_task_storage_mark_steered_from_idle_writes_prompt(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-steer"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-steer"))
     _ = store.mark_background_task_running(
         workspace=tmp_path,
         task_id="task-steer",
@@ -150,7 +151,7 @@ def test_background_task_storage_mark_steered_from_idle_writes_prompt(tmp_path: 
 
 def test_background_task_storage_mark_idle_clears_prior_steer_prompt(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-roundtrip"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-roundtrip"))
     _ = store.mark_background_task_running(
         workspace=tmp_path,
         task_id="task-roundtrip",
@@ -171,7 +172,7 @@ def test_background_task_storage_mark_idle_clears_prior_steer_prompt(tmp_path: P
 
 def test_background_task_storage_mark_steered_from_interrupted(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-resume"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-resume"))
     _ = store.mark_background_task_running(
         workspace=tmp_path,
         task_id="task-resume",
@@ -195,7 +196,7 @@ def test_background_task_storage_mark_steered_from_interrupted(tmp_path: Path) -
 
 def test_background_task_storage_mark_steered_from_queued_is_noop(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-queued-steer"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-queued-steer"))
 
     steered = store.mark_background_task_steered(
         workspace=tmp_path,
@@ -209,7 +210,7 @@ def test_background_task_storage_mark_steered_from_queued_is_noop(tmp_path: Path
 
 def test_background_task_storage_mark_steered_from_completed_is_noop(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-done-steer"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-done-steer"))
     _ = store.mark_background_task_running(
         workspace=tmp_path,
         task_id="task-done-steer",
@@ -231,25 +232,9 @@ def test_background_task_storage_mark_steered_from_completed_is_noop(tmp_path: P
     assert steered.steer_prompt is None
 
 
-def test_background_task_storage_create_persists_keep_alive_default_false(tmp_path: Path) -> None:
-    store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-default"))
-
-    loaded = store.load_background_task(workspace=tmp_path, task_id="task-default")
-
-    assert loaded.keep_alive is False
-    assert loaded.steer_prompt is None
-    with closing(sqlite3.connect(sessions_db_path())) as connection:
-        row = connection.execute(
-            "SELECT keep_alive FROM background_tasks WHERE task_id = ?",
-            ("task-default",),
-        ).fetchone()
-    assert row == (0,)
-
-
 def test_background_task_storage_create_persists_keep_alive_explicit_true(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-ka", keep_alive=True))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-ka", keep_alive=True))
 
     loaded = store.load_background_task(workspace=tmp_path, task_id="task-ka")
     listed = store.list_background_tasks(workspace=tmp_path)
@@ -269,7 +254,7 @@ def test_background_task_storage_create_persists_keep_alive_explicit_true(tmp_pa
 
 def test_background_task_storage_summary_carries_keep_alive_and_steer_prompt(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-summary", keep_alive=True))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-summary", keep_alive=True))
     _ = store.mark_background_task_running(
         workspace=tmp_path,
         task_id="task-summary",

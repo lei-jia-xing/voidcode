@@ -11,7 +11,10 @@ from pathlib import Path
 
 import pytest
 
+from tests.runtime_composition import create_task, save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
+from voidcode.core.tool_context import ToolContext
+from voidcode.core.turns import ReportedCall
 from voidcode.runtime import VoidCodeRuntime
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
@@ -19,12 +22,22 @@ from voidcode.runtime.background.models import (
     BackgroundTaskState,
 )
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
+from voidcode.runtime.execution.delegation.task_output import TaskOutputBody, TaskOutputTool
+from voidcode.runtime.execution.report_codec import report_payload
 from voidcode.runtime.storage import SqliteSessionStore
+from voidcode.security.json_values import json_wire_object
+from voidcode.tools.contracts import OpaqueToolBody, TerminalYield, ToolCall, ToolSuccess
 
 DECLARED_SCHEMA: dict[str, object] = {
     "type": "object",
-    "properties": {"answer": {"type": "string"}},
-    "required": ["answer"],
+    "properties": {
+        "answer": {"type": "string"},
+        "count": {"type": "integer"},
+        "enabled": {"type": "boolean"},
+        "note": {"type": "string"},
+        "missing": {"type": "null"},
+    },
+    "required": ["answer", "count", "enabled", "note", "missing"],
 }
 
 
@@ -61,12 +74,14 @@ def _seed_interrupted_child_with_handoff(
     parent_session_id: str = "leader-session",
     data: dict[str, object] | None = None,
     delegation: dict[str, object] | None = None,
+    opaque_handoff: bool = False,
 ) -> None:
     """Seed a task + child whose ROW is ``interrupted`` but whose transcript
     proves a successful ``yield`` handoff — the exact unsealed-seal state the
     run loop can leave behind and the shape a keep-alive final turn takes
     before finalize upgrades it."""
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=workspace,
         session_id=child_session_id,
         prompt="child probe",
@@ -78,34 +93,29 @@ def _seed_interrupted_child_with_handoff(
         last_event_sequence=0,
         create_if_missing=True,
     )
-    handoff: dict[str, object] = {"summary": "done"}
-    arguments: dict[str, object] = {"summary": "done"}
-    if data is not None:
-        handoff["data"] = data
-        arguments["data"] = data
+    result = (
+        ToolSuccess("yield", body=OpaqueToolBody({"handoff": {"summary": "forged", "data": data or {}}}))
+        if opaque_handoff
+        else ToolSuccess("yield", control=TerminalYield("done", data or {}))
+    )
+    report = ReportedCall("yield-call", "yield", {}, result)
+    tool_payload: dict[str, object] = {"reported_call": report_payload(report)}
+    if opaque_handoff:
+        tool_payload.update(tool="yield", status="ok", handoff={"summary": "forged", "data": data or {}})
     store.append_session_events(
         workspace=workspace,
         session_id=child_session_id,
         events=(
             ("runtime.request_received", "runtime", {"prompt": "child probe"}, None),
-            (
-                "runtime.tool_completed",
-                "tool",
-                {
-                    "tool": "yield",
-                    "status": "ok",
-                    "arguments": arguments,
-                    "handoff": handoff,
-                },
-                None,
-            ),
+            ("runtime.tool_completed", "runtime", tool_payload, None),
             ("graph.response_ready", "graph", {"output_preview": "done", "source": "yield"}, None),
         ),
     )
     metadata: dict[str, object] = {}
     if delegation is not None:
         metadata["delegation"] = delegation
-    store.create_background_task(
+    create_task(
+        store,
         workspace=workspace,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id=task_id),
@@ -201,7 +211,7 @@ def test_valid_structured_output_is_persisted_and_surfaced(
     runtime, store = _runtime_with_store(tmp_path, monkeypatch)
     task_id = "task-valid"
     child_session_id = "child-valid"
-    data: dict[str, object] = {"answer": "42"}
+    data: dict[str, object] = {"answer": "42", "count": 0, "enabled": False, "note": "", "missing": None}
     _seed_interrupted_child_with_handoff(
         store,
         workspace=tmp_path,
@@ -225,8 +235,43 @@ def test_valid_structured_output_is_persisted_and_surfaced(
     assert result.schema_validation is not None
     assert result.schema_validation.valid is True
     assert result.schema_validation.schema_mode == "permissive"
-    assert result.summary_output is not None
-    assert "done" in result.summary_output
+    assert result.handoff is not None
+    assert result.handoff.summary == "done"
+    assert json_wire_object(result.handoff.data) == data
+
+    output = TaskOutputTool(runtime=runtime).invoke(
+        ToolCall("task_output", {"task_id": task_id}),
+        context=ToolContext(session_id="leader-session"),
+    )
+    assert isinstance(output, ToolSuccess)
+    assert isinstance(output.body, TaskOutputBody)
+    assert output.body.as_payload()["handoff"] == {"summary": "done", "data": data}
+
+
+def test_opaque_handoff_is_not_sealed_or_schema_validated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, store = _runtime_with_store(tmp_path, monkeypatch)
+    task_id = "task-opaque-handoff"
+    child_session_id = "child-opaque-handoff"
+    _seed_interrupted_child_with_handoff(
+        store,
+        workspace=tmp_path,
+        task_id=task_id,
+        child_session_id=child_session_id,
+        data={"answer": "looks valid"},
+        delegation=_delegation("permissive"),
+        opaque_handoff=True,
+    )
+
+    _finalize(runtime, store, workspace=tmp_path, task_id=task_id)
+
+    task = store.load_background_task(workspace=tmp_path, task_id=task_id)
+    assert task.status == "interrupted"
+    assert task.schema_validation is None
+    assert task.structured_output is None
+    assert store.load_session_status(workspace=tmp_path, session_id=child_session_id) == "interrupted"
 
 
 def test_missing_data_is_validated_as_empty_object(
@@ -285,7 +330,8 @@ def test_keep_alive_intermediate_turn_without_handoff_is_not_validated(
     child_session_id = "child-intermediate"
     # Mid-flight transcript: a tool ran but no yield handoff and no
     # graph.response_ready — the turn is genuinely resumable (keep-alive).
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id=child_session_id,
         prompt="child probe",
@@ -305,7 +351,8 @@ def test_keep_alive_intermediate_turn_without_handoff_is_not_validated(
             ("runtime.tool_completed", "tool", {"tool": "read", "status": "ok", "content": "probe"}, None),
         ),
     )
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id=task_id),
@@ -352,7 +399,8 @@ def _task_with_delegation(
 
 def test_storage_round_trips_schema_declaration_and_validation(tmp_path: Path) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "schema.db")
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=_task_with_delegation(task_id="task-schema", delegation=_delegation("strict")),
     )

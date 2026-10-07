@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping
-from copy import deepcopy
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import Literal, Protocol
 
 import jsonschema
 
+from ..security.json_values import json_wire_object
 from ..security.shell_policy import non_interactive_shell_env
 from ..tools.contracts import ToolCall, ToolDefinition, ToolDiagnostics
 
@@ -89,16 +90,31 @@ class ToolInputHandler(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class ToolInputHandlerBinding:
+class ToolInputHandlerDeclaration:
     name: str
-    handler: ToolInputHandler
+    version: str
     priority: int = 0
 
     def __post_init__(self) -> None:
-        if not self.name.strip():
+        if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("tool input handler name must be non-empty")
-        if isinstance(self.priority, bool):
+        if not isinstance(self.version, str) or not self.version.strip():
+            raise ValueError("tool input handler version must be non-empty")
+        if type(self.priority) is not int:
             raise ValueError("tool input handler priority must be an integer")
+
+    def to_payload(self) -> dict[str, object]:
+        return {"name": self.name, "version": self.version, "priority": self.priority}
+
+
+@dataclass(frozen=True, slots=True)
+class ToolInputHandlerBinding:
+    declaration: ToolInputHandlerDeclaration
+    handler: ToolInputHandler
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.declaration, ToolInputHandlerDeclaration) or not callable(self.handler):
+            raise ValueError("tool input binding requires a declaration and callable handler")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,54 +122,114 @@ class ToolInputHookOutcome:
     tool_call: ToolCall
     action: ToolInputAction = "unchanged"
     diagnostics: tuple[str, ...] = ()
-    handler_names: tuple[str, ...] = ()
+    handlers: tuple[ToolInputHandlerDeclaration, ...] = ()
+    omitted_handler_count: int = 0
     blocked_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if len(self.handlers) > _MAX_HANDLER_NAMES or any(not isinstance(handler, ToolInputHandlerDeclaration) for handler in self.handlers):
+            raise ValueError("input outcome requires at most 32 real handler declarations")
+        if type(self.omitted_handler_count) is not int or self.omitted_handler_count < 0:
+            raise ValueError("input outcome omitted_handler_count must be a nonnegative integer")
+
+    def metadata_payload(self) -> dict[str, object]:
+        return {
+            "version": 2,
+            "action": self.action,
+            "handlers": [handler.to_payload() for handler in self.handlers],
+            "omitted_handler_count": self.omitted_handler_count,
+            "diagnostics": list(self.diagnostics),
+            **({"reason": self.blocked_reason} if self.blocked_reason is not None else {}),
+        }
 
 
 class ToolInputHandlerRegistry:
-    """Stable, runtime-injected composition of typed pre-tool handlers."""
+    """One declaration catalogue with genuinely bound pre-tool handlers."""
 
-    def __init__(self, bindings: Iterable[ToolInputHandlerBinding] = ()) -> None:
-        indexed = tuple(enumerate(bindings))
-        names: set[str] = set()
-        for _index, binding in indexed:
-            if binding.name in names:
-                raise ValueError(f"duplicate tool input handler name: {binding.name}")
-            names.add(binding.name)
-        # Explicit priority is the primary order; Python's stable sort keeps
-        # registration order for equal priorities.
-        self._bindings = tuple(binding for _index, binding in sorted(indexed, key=lambda item: item[1].priority))
+    def __init__(
+        self,
+        bindings: Iterable[ToolInputHandlerBinding] = (),
+        *,
+        declarations: Iterable[ToolInputHandlerDeclaration] | None = None,
+    ) -> None:
+        bound = tuple(bindings)
+        declared = tuple(declarations) if declarations is not None else tuple(binding.declaration for binding in bound)
+        by_name: dict[str, ToolInputHandlerDeclaration] = {}
+        for declaration in declared:
+            if type(declaration) is not ToolInputHandlerDeclaration:
+                raise ValueError("input declarations must be pure ToolInputHandlerDeclaration records")
+            if declaration.name in by_name:
+                raise ValueError(f"duplicate tool input handler name: {declaration.name}")
+            by_name[declaration.name] = declaration
+        bound_by_name: dict[str, ToolInputHandlerBinding] = {}
+        for binding in bound:
+            name = binding.declaration.name
+            if name in bound_by_name or by_name.get(name) != binding.declaration:
+                raise ValueError(f"tool input binding does not match unique declaration: {name}")
+            bound_by_name[name] = binding
+        self._declarations = MappingProxyType(by_name)
+        # Stable ties preserve the declaration registration order.
+        self._bindings = tuple(
+            bound_by_name[declaration.name] for declaration in sorted(declared, key=lambda item: item.priority) if declaration.name in bound_by_name
+        )
+
+    @classmethod
+    def from_declarations(cls, declarations: Iterable[ToolInputHandlerDeclaration]) -> ToolInputHandlerRegistry:
+        return cls(declarations=declarations)
+
+    @property
+    def declarations(self) -> Mapping[str, ToolInputHandlerDeclaration]:
+        return self._declarations
 
     @property
     def bindings(self) -> tuple[ToolInputHandlerBinding, ...]:
         return self._bindings
 
+    def bind(self, materialize: Callable[[str], ToolInputHandlerBinding]) -> ToolInputHandlerRegistry:
+        if len(self._bindings) == len(self._declarations):
+            return self
+        existing = {binding.declaration.name: binding for binding in self._bindings}
+        bound: list[ToolInputHandlerBinding] = []
+        for name, declaration in self._declarations.items():
+            binding = existing[name] if name in existing else materialize(name)
+            if not isinstance(binding, ToolInputHandlerBinding) or binding.declaration != declaration:
+                raise ValueError(f"materialized input handler does not match declaration: {name}")
+            bound.append(binding)
+        return ToolInputHandlerRegistry(bound, declarations=self._declarations.values())
+
     def apply(self, *, event: ToolInputEvent) -> ToolInputHookOutcome:
-        original_arguments = deepcopy(dict(event.tool_call.arguments))
-        current_call = replace(event.tool_call, arguments=deepcopy(original_arguments))
+        if len(self._bindings) != len(self._declarations):
+            raise RuntimeError("tool input handlers must be bound after activation before dispatch")
+        original_arguments = json_wire_object(event.tool_call.arguments)
+        current_call = replace(event.tool_call, arguments=original_arguments)
         diagnostics: list[str] = []
-        names: list[str] = []
+        handlers: list[ToolInputHandlerDeclaration] = []
+        omitted_handler_count = 0
         changed = False
 
         for binding in self._bindings:
-            if len(names) < _MAX_HANDLER_NAMES:
-                names.append(binding.name)
-            elif len(names) == _MAX_HANDLER_NAMES:
-                names.append("[additional handlers omitted]")
+            if len(handlers) < _MAX_HANDLER_NAMES:
+                handlers.append(binding.declaration)
+            else:
+                omitted_handler_count += 1
             # Both call and definition are snapshots. A handler cannot mutate
             # the runtime's call or published schema through a nested dict.
-            handler_call = replace(current_call, arguments=deepcopy(dict(current_call.arguments)))
-            handler_tool = replace(event.tool, input_schema=deepcopy(event.tool.input_schema))
+            handler_call = replace(current_call, arguments=json_wire_object(current_call.arguments))
+            handler_tool = replace(event.tool, input_schema=json_wire_object(event.tool.input_schema))
             current_event = replace(event, tool_call=handler_call, tool=handler_tool)
             try:
                 decision = binding.handler(current_event)
+                if not isinstance(decision, UnchangedDecision | RewriteDecision | BlockDecision | DiagnosticDecision):
+                    raise ValueError("tool input handler returned an invalid decision")
+                next_arguments = json_wire_object(decision.arguments) if isinstance(decision, RewriteDecision) else None
             except Exception as exc:
                 return ToolInputHookOutcome(
                     tool_call=current_call,
                     action="block",
                     diagnostics=tuple(diagnostics),
-                    handler_names=tuple(names),
-                    blocked_reason=_safe_text(f"tool input handler '{binding.name}' failed: {exc}"),
+                    handlers=tuple(handlers),
+                    omitted_handler_count=omitted_handler_count,
+                    blocked_reason=_safe_text(f"tool input handler '{binding.declaration.name}' failed: {exc}"),
                 )
             if decision.action == "diagnostic":
                 if len(diagnostics) < _MAX_DIAGNOSTICS:
@@ -164,7 +240,7 @@ class ToolInputHandlerRegistry:
             if decision.action == "unchanged":
                 continue
             if decision.action == "rewrite":
-                next_arguments = deepcopy(dict(decision.arguments))
+                assert next_arguments is not None
                 changed = changed or next_arguments != current_call.arguments
                 current_call = replace(current_call, arguments=next_arguments)
                 continue
@@ -172,7 +248,8 @@ class ToolInputHandlerRegistry:
                 tool_call=current_call,
                 action="block",
                 diagnostics=tuple(diagnostics),
-                handler_names=tuple(names),
+                handlers=tuple(handlers),
+                omitted_handler_count=omitted_handler_count,
                 blocked_reason=decision.reason,
             )
 
@@ -181,7 +258,8 @@ class ToolInputHandlerRegistry:
             tool_call=current_call,
             action=action,
             diagnostics=tuple(diagnostics),
-            handler_names=tuple(names),
+            handlers=tuple(handlers),
+            omitted_handler_count=omitted_handler_count,
         )
 
 
@@ -197,12 +275,19 @@ def _shell_non_interactive_env_handler(event: ToolInputEvent, /) -> ToolInputDec
     return DiagnosticDecision(diagnostic=f"shell non-interactive env injected: {', '.join(keys)}")
 
 
-def builtin_tool_input_handler_registry() -> ToolInputHandlerRegistry:
-    """Return the production builtin registry (shell env policy as composed hook)."""
-    # ponytail: diagnostic-only on purpose; Popen env merge stays in
-    # ShellExecTool/hook executor (one line each). Add a typed env channel
-    # only if a handler ever needs to change keys, not just announce them.
-    return ToolInputHandlerRegistry((ToolInputHandlerBinding(name="shell-non-interactive-env", handler=_shell_non_interactive_env_handler),))
+_BUILTIN_INPUT_HANDLERS = ((ToolInputHandlerDeclaration(name="shell-non-interactive-env", version="1"), _shell_non_interactive_env_handler),)
+
+
+def builtin_tool_input_handler_declarations() -> tuple[ToolInputHandlerDeclaration, ...]:
+    return tuple(declaration for declaration, _handler in _BUILTIN_INPUT_HANDLERS)
+
+
+def materialize_builtin_tool_input_handler(name: str) -> ToolInputHandlerBinding:
+    for declaration, handler in _BUILTIN_INPUT_HANDLERS:
+        if declaration.name == name:
+            # Diagnostic only: actual Popen env merging stays in shell/argv owners.
+            return ToolInputHandlerBinding(declaration=declaration, handler=handler)
+    raise ValueError(f"unknown builtin tool input handler: {name}")
 
 
 def validate_tool_input_schema(tool: ToolDefinition, arguments: Mapping[str, object]) -> None:
@@ -241,17 +326,12 @@ def tool_input_rewrite_metadata(*, original: ToolCall, outcome: ToolInputHookOut
         "final_sha256": _arguments_sha256(outcome.tool_call.arguments),
         "original_argument_keys": _bounded_keys(original.arguments),
         "final_argument_keys": _bounded_keys(outcome.tool_call.arguments),
-        "handler_names": list(outcome.handler_names[:_MAX_HANDLER_NAMES]),
-        "diagnostics": list(outcome.diagnostics[:_MAX_DIAGNOSTICS]),
-        "action": outcome.action,
+        **outcome.metadata_payload(),
     }
 
 
 def _arguments_sha256(arguments: Mapping[str, object]) -> str:
-    try:
-        encoded = json.dumps(dict(arguments), ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=repr).encode()
-    except Exception:
-        encoded = repr(sorted(arguments)).encode()
+    encoded = json.dumps(json_wire_object(arguments), ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -281,10 +361,13 @@ __all__ = [
     "ToolInputDecision",
     "ToolInputEvent",
     "ToolInputHandler",
+    "ToolInputHandlerBinding",
+    "ToolInputHandlerDeclaration",
     "ToolInputHandlerRegistry",
     "ToolInputHookOutcome",
     "UnchangedDecision",
-    "builtin_tool_input_handler_registry",
+    "builtin_tool_input_handler_declarations",
+    "materialize_builtin_tool_input_handler",
     "tool_input_arguments_sha256",
     "tool_input_rewrite_metadata",
     "validate_tool_input_schema",

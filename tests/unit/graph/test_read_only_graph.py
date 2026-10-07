@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import replace
 
 from voidcode.core.deterministic_turns import DeterministicTurnProducer
-from voidcode.core.transcript import ContextSegment
-from voidcode.core.turns import TurnRequest, TurnSessionSnapshot
+from voidcode.core.transcript import ContextSegment, ToolResultView
+from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSessionSnapshot
 from voidcode.runtime.context.window import RuntimeAssembledContext
-from voidcode.tools.contracts import ToolDefinition, ToolEffect, ToolResult
+from voidcode.tools.contracts import TextOutput, ToolDefinition, ToolEffect
 
 
 def _request(prompt: str) -> TurnRequest:
@@ -33,26 +33,27 @@ def _request(prompt: str) -> TurnRequest:
 def test_deterministic_producer_selects_read_tool() -> None:
     producer = DeterministicTurnProducer()
     request = _request("read sample.txt")
-
     plan = producer.produce(request, (), session=request.session)
 
-    assert len(plan.tool_calls) == 1
-    assert plan.tool_calls[0].tool_name == "read"
-    assert plan.tool_calls[0].arguments == {"path": "sample.txt"}
+    assert isinstance(plan, ToolTurn)
+    assert len(plan.calls) == 1
+    assert plan.calls[0].tool_name == "read"
+    assert plan.calls[0].arguments == {"path": "sample.txt"}
 
 
 def test_turn_run_step_is_a_watermark_not_a_budget() -> None:
     producer = DeterministicTurnProducer()
-    request = replace(_request("read sample.txt"), run_step=100)
+    prompt = "\n".join(["read sample.txt"] * 100)
+    request = replace(_request(prompt), run_step=100)
 
     plan = producer.produce(request, (), session=request.session)
-
-    assert plan.tool_calls[0].tool_name == "read"
+    assert isinstance(plan, ToolTurn)
+    assert plan.calls[0].tool_name == "read"
 
     finished = producer.produce(
         replace(request, run_step=101),
-        (ToolResult(tool_name="read", status="ok", content="hello", data={}),),
+        (ToolResultView("read-call", "read", {"path": "sample.txt"}, TextOutput("hello"), "ok"),),
         session=request.session,
     )
-    assert finished.is_finished is True
+    assert isinstance(finished, FinalTurn)
     assert finished.output == "hello"

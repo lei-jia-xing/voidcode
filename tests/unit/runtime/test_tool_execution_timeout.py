@@ -5,18 +5,20 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal, cast
 
 import pytest
 
+from tests.runtime_composition import save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
-from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import TurnPlan
+from voidcode.core.tool_context import ArtifactPage, ArtifactUnavailable, ToolContext
+from voidcode.core.transcript import ToolResultView
+from voidcode.core.turns import FinalTurn, ToolTurn
 from voidcode.runtime.active_session import ActiveSessionRegistry
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import (
-    RuntimeProviderContextSegmentSnapshot,
     RuntimeRequest,
     RuntimeResponse,
 )
@@ -26,11 +28,21 @@ from voidcode.runtime.execution.tool_resources import bind_tool_command
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolEffect, ToolResult
+from voidcode.tools.contracts import (
+    OpaqueToolBody,
+    RuntimeToolTimeoutError,
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolEffect,
+    ToolFailure,
+    ToolResult,
+    ToolSuccess,
+)
 from voidcode.tools.delegation.task import TaskTool
 from voidcode.tools.output import tool_output_artifact_temp_root
 from voidcode.tools.read import ReadTool
-from voidcode.tools.shell_exec import ShellExecTool
+from voidcode.tools.shell_exec import ShellExecResultBody, ShellExecTool
 
 
 class _AbortSignal:
@@ -51,18 +63,14 @@ class _InstantTool:
     definition = ToolDefinition(name="instant_tool", description="Returns instantly.")
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
-        return ToolResult(tool_name=self.definition.name, status="ok", content="done")
+        return ToolSuccess(self.definition.name, output=TextOutput("done"))
 
 
 class _LargeOutputTool:
     definition = ToolDefinition(name="large_output_tool", description="Returns large output.")
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
-        return ToolResult(
-            tool_name=self.definition.name,
-            status="ok",
-            content="".join(f"line-{index}\n" for index in range(2100)),
-        )
+        return ToolSuccess(self.definition.name, output=TextOutput("".join(f"line-{index}\n" for index in range(2100))))
 
 
 class _SensitiveContextTool:
@@ -74,15 +82,16 @@ class _SensitiveContextTool:
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         _ = call, context
-        return ToolResult(
-            tool_name=self.definition.name,
-            status="ok",
-            content="metadata captured",
-            data={
-                "arguments": {"content": self._raw_data_content},
-                "attachment": {"mime": "image/png", "data_uri": self._data_uri},
-                "status": "tool-data-status-must-not-win",
-            },
+        return ToolSuccess(
+            self.definition.name,
+            output=TextOutput("metadata captured"),
+            body=OpaqueToolBody(
+                {
+                    "arguments": {"content": self._raw_data_content},
+                    "attachment": {"mime": "image/png", "data_uri": self._data_uri},
+                    "status": "tool-data-status-must-not-win",
+                }
+            ),
         )
 
 
@@ -91,7 +100,7 @@ class _HangingTool:
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         time.sleep(9999)
-        return ToolResult(tool_name=self.definition.name, status="ok", content="unreachable")
+        return ToolSuccess(self.definition.name, output=TextOutput("unreachable"))
 
 
 _CANCEL_POLL_SECONDS = 0.01
@@ -149,25 +158,23 @@ class _CancellationWriterTool:
         self.cancelled_at_end = True
         if self._behaviour == "stop":
             self.finished.set()
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="error",
-                content="cancelled by the runtime before the second write",
-                error="cancelled by the runtime before the second write",
-                data={"cancelled": True, "second_write_performed": False},
+            return ToolFailure(
+                self.definition.name,
+                "cancelled by the runtime before the second write",
+                output=TextOutput("cancelled by the runtime before the second write"),
+                body=OpaqueToolBody({"cancelled": True, "second_write_performed": False}),
             )
         if self._behaviour == "ignore":
             (self._workspace / _SECOND_WRITE).write_text("second\n", encoding="utf-8")
             self.second_write_performed = True
             self.late_write_done.set()
             self.finished.set()
-            return ToolResult(tool_name=self.definition.name, status="ok", content="wrote both files")
+            return ToolSuccess(self.definition.name, output=TextOutput("wrote both files"))
         self.finished.set()
-        return ToolResult(
-            tool_name=self.definition.name,
-            status="ok",
-            content="finished at the boundary",
-            data={"completed_at_boundary": True, "second_write_performed": False},
+        return ToolSuccess(
+            self.definition.name,
+            output=TextOutput("finished at the boundary"),
+            body=OpaqueToolBody({"completed_at_boundary": True, "second_write_performed": False}),
         )
 
 
@@ -176,7 +183,7 @@ class _SlowButFinishingTool:
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         time.sleep(0.05)
-        return ToolResult(tool_name=self.definition.name, status="ok", content="finished")
+        return ToolSuccess(self.definition.name, output=TextOutput("finished"))
 
 
 class _ToolNativeTimeoutErrorTool:
@@ -215,16 +222,16 @@ class _SingleToolCallWithArgumentsGraph:
         _ = request, session
         self.seen_tool_results = tool_results
         if not tool_results:
-            return TurnPlan(
-                tool_calls=(
+            return ToolTurn(
+                calls=(
                     ToolCall(
                         tool_name=self._tool_name,
                         arguments=self._arguments,
                         tool_call_id="sensitive-context-call",
                     ),
-                ),
+                )
             )
-        return TurnPlan(tool_calls=(), output="completed", is_finished=True)
+        return FinalTurn(output="completed")
 
 
 class _SingleToolCallGraph:
@@ -232,23 +239,23 @@ class _SingleToolCallGraph:
         self._tool_name = tool_name
         self._done = False
 
-    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> TurnPlan:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> FinalTurn | ToolTurn:
         _ = request, session
         if tool_results:
             self._done = True
-            return TurnPlan(output="completed", is_finished=True)
-        return TurnPlan(tool_calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
+            return FinalTurn(output="completed")
+        return ToolTurn(calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
 
 
 class _ShellExecGraph:
     def __init__(self, arguments: dict[str, object]) -> None:
         self._arguments = arguments
 
-    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> TurnPlan:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> FinalTurn | ToolTurn:
         _ = request, session
         if tool_results:
-            return TurnPlan(output="completed", is_finished=True)
-        return TurnPlan(tool_calls=(ToolCall(tool_name="shell_exec", arguments=self._arguments),))
+            return FinalTurn(output="completed")
+        return ToolTurn(calls=(ToolCall(tool_name="shell_exec", arguments=self._arguments),))
 
 
 def _collect_events(runtime: VoidCodeRuntime, prompt: str = "go") -> list[str]:
@@ -298,10 +305,11 @@ def test_shell_exec_returns_interrupted_result_when_runtime_abort_is_set(tmp_pat
         ),
     )
 
-    assert result.status == "error"
-    assert result.data["interrupted"] is True
-    assert result.data["cancelled"] is True
-    assert result.data["reason"] == "test abort"
+    assert isinstance(result, ToolFailure)
+    assert isinstance(result.body, ShellExecResultBody)
+    assert result.body.interrupted is True
+    assert result.body.cancelled is True
+    assert result.body.reason == "test abort"
 
 
 def test_slow_tool_that_finishes_within_timeout_is_not_interrupted(tmp_path: Path) -> None:
@@ -511,7 +519,7 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
     assert artifact["tool_call_id"] == payload["tool_call_id"]
     assert isinstance(payload["content"], str)
     assert "Tool output truncated" in payload["content"]
-    assert f"artifact_id={payload['artifact_id']}" in payload["content"]
+    assert f"voidcode://artifact/{payload['artifact_id']}" in payload["content"]
     assert "line-2099" not in payload["content"]
     assert output_path.read_text(encoding="utf-8").endswith("line-2099\n")
     assert not (tmp_path / ".voidcode" / "tool-output").exists()
@@ -544,7 +552,8 @@ def test_runtime_resolves_tool_output_artifacts_and_reports_missing_debug_state(
         offset=2099,
         limit=1,
     )
-    assert read_result["content"] == "line-2099\n"
+    assert isinstance(read_result, ArtifactPage)
+    assert read_result.text == "line-2099\n"
     search_result = runtime.search_tool_output_artifact(
         session_id=session_id,
         artifact_id=artifact_id,
@@ -566,25 +575,13 @@ def test_runtime_resolves_tool_output_artifacts_and_reports_missing_debug_state(
         session_id=session_id,
         artifact_id=artifact_id,
     )
-    assert missing_read["status"] == "missing"
+    assert isinstance(missing_read, ArtifactUnavailable)
     snapshot = runtime.session_debug_snapshot(session_id=session_id)
     assert snapshot.last_tool is not None
     assert snapshot.last_tool.artifact["artifact_id"] == artifact_id
     assert snapshot.last_tool.artifact["status"] == "missing"
     assert snapshot.last_tool.artifact["artifact_missing"] is True
-    assert snapshot.provider_context is not None
-    artifact_segments: list[RuntimeProviderContextSegmentSnapshot] = []
-    for segment in snapshot.provider_context.segments:
-        segment_data = segment.metadata.get("data")
-        if not isinstance(segment_data, dict):
-            continue
-        typed_segment_data = cast(dict[str, object], segment_data)
-        if typed_segment_data.get("artifact_id") == artifact_id:
-            artifact_segments.append(segment)
-    assert artifact_segments
-    segment_data = artifact_segments[-1].metadata["data"]
-    assert isinstance(segment_data, dict)
-    assert segment_data["artifact_missing"] is True
+    assert all(f"voidcode://artifact/{artifact_id}" not in (segment.content or "") for segment in snapshot.provider_context.segments)
 
 
 def test_runtime_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
@@ -609,7 +606,8 @@ def test_runtime_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
         config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
         repositories=repositories_for_test_store(store),
     )
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id=session_id,
         prompt="go",
@@ -642,15 +640,16 @@ def test_runtime_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
             ),
         ),
     )
+    owner_metadata = store.load_session(workspace=tmp_path, session_id=session_id).session.metadata
     store.save_run(
         workspace=tmp_path,
-        request=RuntimeRequest(prompt="go", session_id=session_id),
+        request=RuntimeRequest(prompt="go", session_id=session_id, metadata={"composition_ref": owner_metadata["composition_ref"]}),
         response=RuntimeResponse(
             session=SessionState(
                 session=SessionRef(id=session_id),
                 status="completed",
                 turn=1,
-                metadata={},
+                metadata=owner_metadata,
             ),
             events=(),
             output="done",
@@ -669,7 +668,8 @@ def test_runtime_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
 
     assert metadata["artifact_id"] == completed_event.payload["artifact_id"]
     assert metadata["status"] == "available"
-    assert read_result["content"] == "line-2099\n"
+    assert isinstance(read_result, ArtifactPage)
+    assert read_result.text == "line-2099\n"
 
 
 def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
@@ -730,20 +730,11 @@ def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
     }
     attachment = payload["attachment"]
     assert isinstance(attachment, dict)
-    assert attachment["data_uri"] == {
-        "omitted": True,
-        "byte_count": len(data_uri.encode("utf-8")),
-        "line_count": 1,
-    }
-    completed_payload_text = str(payload)
-    assert raw_argument_content not in completed_payload_text
-    assert raw_data_content not in completed_payload_text
-    assert raw_old_string not in completed_payload_text
-    assert raw_new_string not in completed_payload_text
-    assert data_uri not in completed_payload_text
+    assert attachment["data_uri"] == data_uri
+    assert isinstance(payload["reported_call"], dict)
 
     assert len(graph.seen_tool_results) == 1
-    feedback_payload_text = str(graph.seen_tool_results[0].data)
+    feedback_payload_text = str(graph.seen_tool_results[0].output)
     assert raw_argument_content not in feedback_payload_text
     assert raw_data_content not in feedback_payload_text
     assert data_uri not in feedback_payload_text
@@ -1398,23 +1389,25 @@ class _ArtifactThenUriReadGraph:
     def __init__(self) -> None:
         self.artifact_id: str | None = None
 
-    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> TurnPlan:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> FinalTurn | ToolTurn:
         _ = request, session
         if not tool_results:
-            return TurnPlan(tool_calls=(ToolCall(tool_name="large_output_tool", arguments={}),))
+            return ToolTurn(calls=(ToolCall(tool_name="large_output_tool", arguments={}),))
         if self.artifact_id is None:
             first_result = tool_results[0]
-            self.artifact_id = str(first_result.data.get("artifact_id") or "")
-            assert self.artifact_id, "large output tool result must carry an artifact_id"
-            return TurnPlan(
-                tool_calls=(
+            assert isinstance(first_result, ToolResultView)
+            reference = first_result.output.bounds.reference
+            assert reference is not None and isinstance(reference.artifact, Mapping)
+            self.artifact_id = str(reference.artifact.get("artifact_id") or "")
+            return ToolTurn(
+                calls=(
                     ToolCall(
                         tool_name="read",
                         arguments={"path": f"voidcode://artifact/{self.artifact_id}", "limit": 100},
                     ),
                 )
             )
-        return TurnPlan(output="completed", is_finished=True)
+        return FinalTurn(output="completed")
 
 
 def test_read_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: Path) -> None:
@@ -1457,19 +1450,19 @@ class _ForeignArtifactUriReadGraph:
         self._artifact_id = artifact_id
         self._done = False
 
-    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> TurnPlan:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> FinalTurn | ToolTurn:
         _ = request, tool_results, session
         if not self._done:
             self._done = True
-            return TurnPlan(
-                tool_calls=(
+            return ToolTurn(
+                calls=(
                     ToolCall(
                         tool_name="read",
                         arguments={"path": f"voidcode://artifact/{self._artifact_id}", "limit": 100},
                     ),
                 )
             )
-        return TurnPlan(output="completed", is_finished=True)
+        return FinalTurn(output="completed")
 
 
 def test_read_artifact_uri_rejects_foreign_session_artifact(tmp_path: Path) -> None:

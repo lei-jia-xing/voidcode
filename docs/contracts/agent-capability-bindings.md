@@ -19,7 +19,8 @@ runtime materialize agent capability 时按以下顺序收口：
 
 每次 run / delegated child session 会持久化 `agent_capability_snapshot`，包含：
 
-- `snapshot_version`：当前为 `2`；runtime 不迁移、不合成、也不接受旧版本；
+- `snapshot_version`：当前为 `4`；runtime 不迁移、不合成、也不接受缺失或旧版本；
+- `composition_ref`：必须是有效 canonical `CompositionRef`，引用 session row 所拥有的 immutable composition pair；checkpoint 只保存该精确引用，不复制 owner payload；
 - `agent`：selected preset、manifest id、mode、来源、source scope/path；
 - `prompt`：profile/ref/source 与 prompt materialization metadata；builtin 使用 profile/version，custom markdown 使用 `source=custom_markdown`、`format=markdown`、持久化 markdown body 与可选 `prompt_append`；
 - `tools`：manifest allowlist、request allowlist/default、builtin-tool 开关、effective tool names，以及执行该 run 的 scoped tool materialization `generation`；
@@ -72,7 +73,9 @@ Agent declarations can only select or narrow capability intent before policy mat
 
 ## Replay 要求
 
-Replay/debug 必须读取 persisted `agent_capability_snapshot`。只有 version 2 且包含非空 `tools.generation` 的 snapshot 有效；缺失版本、其他版本以及缺失 generation 都必须 fail-fast，不能回退到 runtime config、重新 materialize 当前 workspace，或合成 snapshot。
+Replay/debug 必须读取 persisted `agent_capability_snapshot`。只有 version 4 且包含非空 `tools.generation` 与有效 `composition_ref` 的 snapshot 才有效；缺失/旧/未知版本、无 generation 或无效 composition reference 都必须 fail-fast，不能回退到 runtime config、重新 materialize 当前 workspace、转换旧 snapshot 或合成 snapshot。
+
+Snapshot v4 is a closed JSON shape: the root and each fixed section reject missing or unknown keys, and `snapshot_version` must be the integer `4` (not a boolean or coerced number). Replay admission validates this shape and canonical `CompositionRef` before recovery proceeds.
 
 ## 非目标
 

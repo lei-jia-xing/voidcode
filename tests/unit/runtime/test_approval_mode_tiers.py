@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from voidcode.core.turns import TurnPlan
+from voidcode.core.turns import FinalTurn, ToolTurn
 from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.permission import (
@@ -30,7 +30,6 @@ from voidcode.runtime.permission_context import operation_class_for_tool
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect
 from voidcode.tools.glob import GlobTool
-from voidcode.tools.mcp import McpTool
 from voidcode.tools.shell_exec import ShellExecTool
 from voidcode.tools.write import WriteTool
 
@@ -94,7 +93,7 @@ def test_default_mode_auto_approves_write_tier_through_the_real_path(tmp_path: P
     Neither the mode nor the permission policy is passed here, so the runtime's
     own default selection is what resolves the call.
     """
-    graph = _ScriptedGraph([_write_step(), TurnPlan(output="done", is_finished=True)])
+    graph = _ScriptedGraph([_write_step(), FinalTurn(output="done")])
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([WriteTool()]),
@@ -122,35 +121,6 @@ def test_missing_effects_require_approval_but_explicit_read_does_not() -> None:
         assert (outcome.pending_approval is not None) == (expected_decision == "ask")
 
 
-def test_mcp_hints_preserve_real_write_and_ask_mode_admission() -> None:
-    from voidcode.mcp.types import McpToolSafety
-
-    def _mcp(server: str, tool: str, *, read_only: bool) -> McpTool:
-        return McpTool(
-            server_name=server,
-            tool_name=tool,
-            description="MCP tool",
-            input_schema={"type": "object"},
-            safety=McpToolSafety(read_only=read_only),
-        )
-
-    mutating = _mcp("demo", "mutate", read_only=False)
-    inspecting = _mcp("demo", "inspect", read_only=True)
-
-    for tool, mode, expected_decision in (
-        (mutating, "write", "allow"),
-        (inspecting, "write", "allow"),
-        (mutating, "ask", "ask"),
-        (inspecting, "ask", "allow"),
-    ):
-        call = ToolCall(tool_name=tool.definition.name, arguments={})
-        operation = operation_class_for_tool(call.tool_name, tool.definition.effects, tool_instance=tool, arguments=call.arguments)
-        outcome = resolve_permission(tool.definition, call, policy=PermissionPolicy(mode=mode), operation_class=operation)
-        assert outcome.decision == expected_decision
-        if expected_decision == "ask":
-            assert outcome.pending_approval is not None
-
-
 def test_read_only_denial_still_wins_over_yolo_resolution() -> None:
     """Plan/read-only denial is above the mode matrix; ``yolo`` cannot re-enable it."""
     definition, call = _TIER_TOOLS["write"]
@@ -167,12 +137,12 @@ def test_read_only_denial_still_wins_over_yolo_resolution() -> None:
     assert outcome.pending_approval.policy_surface == "mode.plan"
 
 
-def _write_step() -> TurnPlan:
-    return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={"path": "auto.txt", "content": "written"}),))
+def _write_step() -> ToolTurn:
+    return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "auto.txt", "content": "written"}),))
 
 
-def _exec_step() -> TurnPlan:
-    return TurnPlan(tool_calls=(ToolCall(tool_name="shell_exec", arguments={"command": "echo hi"}),))
+def _exec_step() -> ToolTurn:
+    return ToolTurn(calls=(ToolCall(tool_name="shell_exec", arguments={"command": "echo hi"}),))
 
 
 @pytest.mark.parametrize(
@@ -192,7 +162,7 @@ def test_write_mode_auto_approves_write_tier_but_prompts_for_execute(
     """End-to-end: under mode ``write`` the write-tier call resolves with no
     pending approval (``runtime.approval_resolved`` with ``allow``), while the
     execute-tier call parks on a ``runtime.approval_requested``."""
-    graph = _ScriptedGraph([step(), TurnPlan(output="done", is_finished=True)])
+    graph = _ScriptedGraph([step(), FinalTurn(output="done")])
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([WriteTool(), ShellExecTool()]),

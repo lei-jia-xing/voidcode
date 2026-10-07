@@ -8,8 +8,8 @@ import time
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
 
+from ..core.tool_context import ArtifactInvalid, ArtifactPage, ArtifactRead, ArtifactUnavailable, NextPage, PageEnd
 from ..security.redaction import (
     MODEL_FIELD_CHARS as MAX_MODEL_FIELD_CHARS,
 )
@@ -19,7 +19,7 @@ from ..security.redaction import (
 from ..security.redaction import (
     TOOL_OUTPUT_LINES as MAX_TOOL_OUTPUT_LINES,
 )
-from .contracts import ToolResult
+from .contracts import OutputReference, TextOutput, ToolFailure, ToolResult
 
 _SENSITIVE_TEXT_ARGUMENT_KEYS = frozenset(
     {
@@ -103,7 +103,7 @@ def _sanitize_value(value: object, *, key: str | None = None, argument: bool = F
         if len(value) > MAX_MODEL_FIELD_CHARS:
             return _string_summary(value, include_preview=True)
         return value
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return _sanitize_mapping(value, argument=argument)
     if isinstance(value, list):
         return [_sanitize_value(item, key=key, argument=argument) for item in value]
@@ -112,18 +112,18 @@ def _sanitize_value(value: object, *, key: str | None = None, argument: bool = F
     return value
 
 
-def sanitize_tool_arguments(arguments: dict[str, object]) -> dict[str, object]:
+def sanitize_tool_arguments(arguments: Mapping[str, object]) -> dict[str, object]:
     return _sanitize_mapping(arguments, argument=True)
 
 
-def sanitize_tool_data(data: dict[str, object]) -> dict[str, object]:
+def sanitize_tool_data(data: Mapping[str, object]) -> dict[str, object]:
     return _sanitize_mapping(data, argument=False)
 
 
-def sanitize_tool_result_data(data: dict[str, object]) -> dict[str, object]:
+def sanitize_tool_result_data(data: Mapping[str, object]) -> dict[str, object]:
     sanitized = sanitize_tool_data(data)
     raw_arguments = data.get("arguments")
-    if isinstance(raw_arguments, dict):
+    if isinstance(raw_arguments, Mapping):
         sanitized["arguments"] = sanitize_tool_arguments(raw_arguments)
     return sanitized
 
@@ -195,13 +195,6 @@ def _safe_artifact_segment(value: str | None, *, fallback: str = "") -> str:
     raw = value if value else fallback
     safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in raw)
     return safe[:96]
-
-
-def _diagnostics_with(existing_data: dict[str, object], diagnostic: dict[str, object]) -> list[object]:
-    current = existing_data.get("diagnostics")
-    if isinstance(current, list):
-        return [*current, diagnostic]
-    return [diagnostic]
 
 
 def _normalization_payload(
@@ -425,14 +418,14 @@ def read_tool_output_artifact(
     *,
     offset: int = 0,
     limit: int = 2000,
-) -> dict[str, object]:
+) -> ArtifactRead:
     """Read a bounded line slice from a temp-backed tool output artifact."""
 
     path = _artifact_path_from_metadata(artifact)
     if path is None:
-        return _artifact_invalid_payload(artifact)
+        return ArtifactInvalid("artifact metadata is invalid")
     if not path.is_file():
-        return _artifact_missing_payload(artifact)
+        return ArtifactUnavailable("artifact is missing from storage")
 
     start = max(0, offset)
     bounded_limit = max(0, limit)
@@ -446,16 +439,16 @@ def read_tool_output_artifact(
                 next_offset = line_index
                 break
             selected.append(line)
-    return {
-        "artifact_id": artifact.get("artifact_id"),
-        "status": "available",
-        "artifact_missing": False,
-        "offset": start,
-        "limit": bounded_limit,
-        "line_count": _line_count(path),
-        "next_offset": next_offset,
-        "content": "".join(selected),
-    }
+    artifact_id = artifact.get("artifact_id")
+    assert isinstance(artifact_id, str)
+    return ArtifactPage(
+        artifact_id=artifact_id,
+        text="".join(selected),
+        line_count=_line_count(path),
+        offset=start,
+        limit=bounded_limit,
+        page=PageEnd() if next_offset is None else NextPage(next_offset),
+    )
 
 
 def search_tool_output_artifact(
@@ -501,129 +494,82 @@ def cap_tool_result_output(
     max_lines: int = MAX_TOOL_OUTPUT_LINES,
     max_bytes: int = MAX_TOOL_OUTPUT_BYTES,
 ) -> ToolResult:
-    """Cap model-visible tool output/error text and save the full text as a temp artifact."""
+    """Cap text output/error and retain full content in a session-owned artifact."""
 
-    if result.content is None or result.content == "":
-        if result.error is None or result.error == "":
-            return result
-        error_size = len(result.error.encode("utf-8"))
-        error_lines = len(result.error.splitlines())
-        if error_size <= max_bytes and error_lines <= max_lines:
-            return result
+    def spill(content: str, *, kind: str) -> tuple[str, OutputReference] | None:
+        byte_count = len(content.encode("utf-8"))
+        line_count = len(content.splitlines())
+        if byte_count <= max_bytes and line_count <= max_lines:
+            return None
         artifact = _artifact_metadata(
             session_id=session_id,
             tool_call_id=tool_call_id,
             tool_name=result.tool_name,
-            content=result.error,
-            kind="error",
+            content=content,
+            kind=kind,
         )
-        preview = _preview_text(result.error, max_lines=max_lines, max_bytes=max_bytes)
-        reference = f"{_ARTIFACT_REFERENCE_PREFIX}{artifact['artifact_id']}"
-        hint = f'\n\n[Tool error truncated: artifact_id={artifact["artifact_id"]}. Read the full error with read(path="{reference}").]'
-        return replace(
-            result,
-            error=f"{preview}{hint}",
-            data={
-                **result.data,
-                "truncated": True,
-                "normalization": _normalization_payload(
-                    kind="tool_error_truncated",
-                    artifact_id=cast(str, artifact["artifact_id"]),
-                    original_byte_count=error_size,
-                    original_line_count=error_lines,
-                    max_bytes=max_bytes,
-                    max_lines=max_lines,
-                ),
-                "diagnostics": _diagnostics_with(
-                    result.data,
-                    {
-                        "source": "tool_output",
-                        "severity": "warning",
-                        "reason": "tool_error_truncated",
-                        "message": "Tool error was truncated before being sent to the model.",
-                        "retry_guidance": f'Read the full error with read(path="{reference}").',
-                    },
-                ),
-                "retry_guidance": f'Read the full error with read(path="{reference}").',
-                "artifact": artifact,
-                "artifact_id": artifact["artifact_id"],
-                "artifact_status": "available",
-                "artifact_missing": False,
-                "output_path": artifact["path"],
-                "original_error_byte_count": error_size,
-                "original_error_line_count": error_lines,
-                "tool_output_max_bytes": max_bytes,
-                "tool_output_max_lines": max_lines,
-            },
-            truncated=True,
-            partial=True,
-            reference=reference,
+        artifact_id = artifact["artifact_id"]
+        assert isinstance(artifact_id, str)
+        uri = f"{_ARTIFACT_REFERENCE_PREFIX}{artifact_id}"
+        preview = _preview_text(content, max_lines=max_lines, max_bytes=max_bytes)
+        omitted_bytes = max(0, byte_count - len(preview.encode("utf-8")))
+        omitted_lines = max(0, line_count - len(preview.splitlines()))
+        label = "error" if kind == "error" else "output"
+        hint = (
+            f"\n\n[Tool {label} truncated: omitted {omitted_bytes} bytes and {omitted_lines} lines. "
+            f'Artifact ID={artifact_id}. Read the full {label} with read(path="{uri}").]'
         )
-
-    content = result.content
-    encoded_size = len(content.encode("utf-8"))
-    line_count = len(content.splitlines())
-    if encoded_size <= max_bytes and line_count <= max_lines:
-        return result
-
-    artifact = _artifact_metadata(
-        session_id=session_id,
-        tool_call_id=tool_call_id,
-        tool_name=result.tool_name,
-        content=content,
-        kind="content",
-    )
-
-    preview = _preview_text(content, max_lines=max_lines, max_bytes=max_bytes)
-    omitted_bytes = max(0, encoded_size - len(preview.encode("utf-8")))
-    omitted_lines = max(0, line_count - len(preview.splitlines()))
-    reference = f"{_ARTIFACT_REFERENCE_PREFIX}{artifact['artifact_id']}"
-    hint = (
-        "\n\n[Tool output truncated: "
-        f"omitted {omitted_bytes} bytes and {omitted_lines} lines. "
-        f"artifact_id={artifact['artifact_id']}. "
-        f'Read the full output with read(path="{reference}").]'
-    )
-
-    return replace(
-        result,
-        content=f"{preview}{hint}",
-        data={
-            **result.data,
-            "truncated": True,
+        retry_guidance = f'Read the full {label} with read(path="{uri}").'
+        metadata: dict[str, object] = {
             "normalization": _normalization_payload(
-                kind="tool_output_truncated",
-                artifact_id=cast(str, artifact["artifact_id"]),
-                original_byte_count=encoded_size,
+                kind="tool_error_truncated" if kind == "error" else "tool_output_truncated",
+                artifact_id=artifact_id,
+                original_byte_count=byte_count,
                 original_line_count=line_count,
                 max_bytes=max_bytes,
                 max_lines=max_lines,
             ),
-            "diagnostics": _diagnostics_with(
-                result.data,
+            "diagnostics": [
                 {
                     "source": "tool_output",
                     "severity": "warning",
-                    "reason": "tool_output_truncated",
-                    "message": "Tool output was truncated before being sent to the model.",
-                    "retry_guidance": f'Read the full output with read(path="{reference}").',
-                },
-            ),
-            "retry_guidance": f'Read the full output with read(path="{reference}").',
+                    "reason": "tool_error_truncated" if kind == "error" else "tool_output_truncated",
+                    "message": f"Tool {label} was truncated before being sent to the model.",
+                    "retry_guidance": retry_guidance,
+                }
+            ],
+            "retry_guidance": retry_guidance,
             "artifact": artifact,
-            "artifact_id": artifact["artifact_id"],
+            "artifact_id": artifact_id,
             "artifact_status": "available",
             "artifact_missing": False,
             "output_path": artifact["path"],
-            "original_byte_count": encoded_size,
-            "original_line_count": line_count,
             "tool_output_max_bytes": max_bytes,
             "tool_output_max_lines": max_lines,
-        },
-        truncated=True,
-        partial=True,
-        reference=reference,
-    )
+        }
+        if kind == "error":
+            metadata["original_error_byte_count"] = byte_count
+            metadata["original_error_line_count"] = line_count
+        else:
+            metadata["original_byte_count"] = byte_count
+            metadata["original_line_count"] = line_count
+        return f"{preview}{hint}", OutputReference(uri=uri, artifact=metadata)
+
+    if isinstance(result, ToolFailure):
+        capped = spill(result.error, kind="error")
+        if capped is None:
+            return result
+        error, reference = capped
+        bounds = replace(result.output.bounds, truncated=True, partial=True, reference=reference)
+        return replace(result, error=error, output=replace(result.output, bounds=bounds))
+    if isinstance(result.output, TextOutput):
+        capped = spill(result.output.text, kind="content")
+        if capped is None:
+            return result
+        text, reference = capped
+        bounds = replace(result.output.bounds, truncated=True, partial=True, reference=reference)
+        return replace(result, output=replace(result.output, text=text, bounds=bounds))
+    return result
 
 
 __all__ = [

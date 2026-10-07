@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.runtime_composition import create_task, save_run
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -22,7 +23,8 @@ from voidcode.runtime.storage import SqliteSessionStore
 
 
 def _parent(store: SqliteSessionStore, workspace: Path, session_id: str) -> None:
-    store.save_run(
+    save_run(
+        store,
         workspace=workspace,
         request=RuntimeRequest(prompt="leader", session_id=session_id),
         response=RuntimeResponse(
@@ -72,7 +74,8 @@ def test_parallel_group_emits_one_terminal_aggregate_for_mixed_children(
     store = SqliteSessionStore(database_path=tmp_path / "group.sqlite3")
     _parent(store, tmp_path, "leader")
     for task_id in ("done", "failed", "cancelled"):
-        store.create_background_task(
+        create_task(
+            store,
             workspace=tmp_path,
             task=_task(task_id, "leader", "g-mixed", 3),
         )
@@ -99,7 +102,7 @@ def test_parallel_group_does_not_complete_while_any_child_is_running(
     store = SqliteSessionStore(database_path=tmp_path / "group.sqlite3")
     _parent(store, tmp_path, "leader")
     for task_id in ("done", "running"):
-        store.create_background_task(workspace=tmp_path, task=_task(task_id, "leader", "g-running", 2))
+        create_task(store, workspace=tmp_path, task=_task(task_id, "leader", "g-running", 2))
     store.mark_background_task_terminal(workspace=tmp_path, task_id="done", status="completed")
     store.mark_background_task_running(workspace=tmp_path, task_id="running", session_id="child-running")
 
@@ -115,7 +118,7 @@ def test_parallel_group_terminal_event_is_deduped_and_scoped_to_parent_owner(
     _parent(store, tmp_path, "leader")
     _parent(store, tmp_path, "other-leader")
     for task_id, parent in (("leader-child", "leader"), ("other-child", "other-leader")):
-        store.create_background_task(workspace=tmp_path, task=_task(task_id, parent, "same-id", 1))
+        create_task(store, workspace=tmp_path, task=_task(task_id, parent, "same-id", 1))
         store.mark_background_task_terminal(workspace=tmp_path, task_id=task_id, status="completed")
 
     supervisor = _supervisor(tmp_path, store)

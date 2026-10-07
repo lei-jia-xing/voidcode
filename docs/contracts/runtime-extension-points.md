@@ -115,7 +115,15 @@ Context transform 在 runtime-owned context assembly 阶段贡献有界 provider
 
 ### Context transform provider descriptor
 
-每个 `RuntimeContextTransformProvider` 都必须提供稳定的 `provider_id`、`provider_version`、`scope`、`priority` 与 `failure_policy`。当前唯一允许的 scope 是 `provider_context`：provider 只能返回有界 injection 或 diagnostic，不能修改原始 request prompt、工具参数、SQLite/session truth、approval/denial、owner boundary 或 tool allowlist。registry 负责按 `(priority, provider_id)` 排序、校验唯一 id，并将 provider metadata 与有界 trace 纳入现有 `context_transform` metadata；这不是新的 event bus 或 executor。
+每个 `RuntimeContextTransformProvider` 都必须提供稳定的 `provider_id`、
+`provider_version`、`scope`、`priority` 与 `failure_policy`。当前唯一允许的 scope 是
+`provider_context`：provider 只能返回有界 injection 或 diagnostic，不能修改原始 request
+prompt、工具参数、SQLite/session truth、approval/denial、owner boundary 或 tool allowlist。
+registry 负责按 `(priority, provider_id)` 排序、校验唯一 id，并将 provider metadata 与
+有界 trace 纳入现有 `context_transform` metadata；这不是新的 event bus 或 executor。
+失败诊断的 severity 由 request-level context-transform `failure_policy` 决定；trace
+分别保留 provider 声明的 `failure_policy` 与 request policy 的 `request_failure_policy`，
+不能用 provider metadata 覆盖 runtime request policy。
 
 ### Provider message validation（未实现）
 

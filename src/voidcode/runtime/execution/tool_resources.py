@@ -5,7 +5,18 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...core.tool_context import LspRequester, LspResponse, McpCallResult, McpRequester, RuleReader, ToolCommandHandler, ToolContext
+from ...core.tool_context import (
+    ArtifactRead,
+    LspRequester,
+    LspResponse,
+    McpCallResult,
+    McpRequester,
+    RulePage,
+    RuleReader,
+    ToolCommandHandler,
+    ToolContext,
+    TranscriptRead,
+)
 from ...tools.contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
 
 
@@ -20,7 +31,7 @@ class ToolCatalogReader:
 @dataclass(frozen=True, slots=True)
 class SessionArtifactReader:
     caller_session_id: str
-    read: Callable[..., dict[str, object]]
+    read: Callable[..., ArtifactRead]
 
     def read_artifact(
         self,
@@ -29,22 +40,21 @@ class SessionArtifactReader:
         artifact_id: str,
         offset: int | None = None,
         limit: int | None = None,
-    ) -> dict[str, object] | None:
+    ) -> ArtifactRead:
         if caller_session_id != self.caller_session_id:
             raise RuntimeError("artifact reader is bound to its invoking session")
-        result = self.read(
+        return self.read(
             session_id=self.caller_session_id,
             artifact_id=artifact_id,
             offset=0 if offset is None else offset,
             limit=2000 if limit is None else limit,
         )
-        return None if result.get("status") == "artifact_not_found" else result
 
 
 @dataclass(frozen=True, slots=True)
 class SessionTranscriptReader:
     caller_session_id: str
-    read: Callable[..., dict[str, object] | None]
+    read: Callable[..., TranscriptRead]
 
     def read_transcript(
         self,
@@ -52,7 +62,7 @@ class SessionTranscriptReader:
         caller_session_id: str,
         session_id: str,
         limit: int | None = None,
-    ) -> dict[str, object] | None:
+    ) -> TranscriptRead:
         if caller_session_id != self.caller_session_id:
             raise RuntimeError("transcript reader is bound to its invoking session")
         return self.read(caller_session_id=self.caller_session_id, session_id=session_id, limit=limit)
@@ -109,7 +119,7 @@ def bind_lsp_request(request: LspRequester, *, workspace: Path) -> LspRequester:
 
 
 def bind_mcp_request(request: McpRequester, *, call: ToolCall, workspace: Path) -> McpRequester:
-    approved_arguments = deepcopy(call.arguments)
+    approved_arguments = dict(call.arguments)
 
     def invoke(*, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path) -> McpCallResult:
         if f"mcp/{server_name}/{tool_name}" != call.tool_name or arguments != approved_arguments or workspace != authenticated_workspace:
@@ -121,7 +131,7 @@ def bind_mcp_request(request: McpRequester, *, call: ToolCall, workspace: Path) 
 
 
 def bind_rule_reader(read: RuleReader, *, workspace: Path) -> RuleReader:
-    def invoke(path: str, *, workspace: Path, offset: int, limit: int) -> dict[str, object]:
+    def invoke(path: str, *, workspace: Path, offset: int, limit: int) -> RulePage:
         if workspace != authenticated_workspace:
             raise RuntimeError("rule reader is bound to its invoking workspace")
         return read(path, workspace=authenticated_workspace, offset=offset, limit=limit)

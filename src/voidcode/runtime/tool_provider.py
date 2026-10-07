@@ -1,63 +1,86 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING
 
 from ..hook.config import RuntimeHooksConfig
+from ..tools.apply_patch import ApplyPatchTool
 from ..tools.apply_workspace_edit import ApplyWorkspaceEditTool
-from ..tools.contracts import Tool
+from ..tools.ast_grep import AstGrepTool
+from ..tools.contracts import Tool, ToolDefinition
+from ..tools.delegation import TaskBatchTool, TaskTool
 from ..tools.edit import EditTool
 from ..tools.glob import GlobTool
 from ..tools.grep import GrepTool
 from ..tools.invoke_tool import InvokeTool
-from ..tools.local_custom import discover_local_custom_tools
+from ..tools.lsp import LspTool
+from ..tools.multi_edit import MultiEditTool
+from ..tools.process.background_process import BackgroundProcessTool
+from ..tools.question import QuestionTool
 from ..tools.read import ReadTool
 from ..tools.shell_exec import ShellExecTool
+from ..tools.skill import SkillTool
+from ..tools.todo import TodoTool
 from ..tools.web_fetch import WebFetchTool
 from ..tools.web_search import WebSearchTool
 from ..tools.write import WriteTool
 from ..tools.yield_tool import YieldTool
-from .config import RuntimeAgentConfig, RuntimeToolsLocalConfig
+from .config import RuntimeAgentConfig
 
 if TYPE_CHECKING:
     from .tool_registry import ToolRegistry
 
-BUILTIN_TOOL_NAMES = frozenset(
-    {
-        "apply_patch",
-        "apply_workspace_edit",
-        "ast_grep",
-        "background_process",
-        "edit",
-        "glob",
-        "grep",
-        "invoke_tool",
-        "lsp",
-        "multi_edit",
-        "read",
-        "question",
-        "shell_exec",
-        "skill",
-        "yield",
-        "task",
-        "task_batch",
-        "todo",
-        "web_fetch",
-        "web_search",
-        "write",
-        "mcp/context7/resolve-library-id",
-        "mcp/context7/query-docs",
-        "mcp/websearch/web_fetch_exa",
-        "mcp/websearch/web_search_exa",
-        "mcp/grep_app/searchGitHub",
-    }
+# Each row references the real definition owner and defers genuine construction.
+_BUILTIN_TOOLS: tuple[tuple[ToolDefinition, Callable[[RuntimeHooksConfig | None], Tool]], ...] = (
+    (ApplyWorkspaceEditTool.definition, lambda _: ApplyWorkspaceEditTool()),
+    (EditTool.definition, lambda hooks: EditTool(hooks_config=hooks)),
+    (GlobTool.definition, lambda _: GlobTool()),
+    (GrepTool.definition, lambda _: GrepTool()),
+    (InvokeTool.definition, lambda _: InvokeTool()),
+    (ReadTool.definition, lambda _: ReadTool()),
+    (ShellExecTool.definition, lambda _: ShellExecTool()),
+    (YieldTool.definition, lambda _: YieldTool()),
+    (WebFetchTool.definition, lambda _: WebFetchTool()),
+    (WebSearchTool.definition, lambda _: WebSearchTool()),
+    (WriteTool.definition, lambda hooks: WriteTool(hooks_config=hooks)),
+    (LspTool.definition, lambda _: LspTool()),
+    (SkillTool.definition, lambda _: SkillTool()),
+    (TaskTool.definition, lambda _: TaskTool()),
+    (TaskBatchTool.definition, lambda _: TaskBatchTool()),
+    (QuestionTool.definition, lambda _: QuestionTool()),
+    (BackgroundProcessTool.definition, lambda _: BackgroundProcessTool()),
+    (ApplyPatchTool.definition, lambda hooks: ApplyPatchTool(hooks_config=hooks)),
+    (AstGrepTool.definition, lambda _: AstGrepTool()),
+    (MultiEditTool.definition, lambda hooks: MultiEditTool(hooks_config=hooks)),
+    (TodoTool.definition, lambda _: TodoTool()),
 )
+
+
+def builtin_tool_definitions() -> tuple[ToolDefinition, ...]:
+    """Supported native declarations; selection and authorization belong to the root."""
+    return tuple(definition for definition, _ in _BUILTIN_TOOLS)
+
+
+def materialize_builtin_tool(
+    tool_name: str,
+    *,
+    hooks_config: RuntimeHooksConfig | None = None,
+) -> Tool:
+    """Construct one selected native tool after the caller's activation gate."""
+    for definition, factory in _BUILTIN_TOOLS:
+        if definition.name == tool_name:
+            return factory(hooks_config)
+    raise ValueError(f"unknown builtin tool: {tool_name}")
+
+
+BUILTIN_TOOL_NAMES = frozenset(definition.name for definition, _ in _BUILTIN_TOOLS)
 
 
 def scoped_tool_registry_for_agent(
     registry: ToolRegistry,
     *,
     agent: RuntimeAgentConfig | None,
+    builtin_mcp_tool_names: Iterable[str] = (),
 ) -> ToolRegistry:
     if agent is None:
         return registry
@@ -69,165 +92,10 @@ def scoped_tool_registry_for_agent(
 
     if agent.tools is not None:
         if agent.tools.builtin is not None and agent.tools.builtin.enabled is False:
-            scoped_registry = scoped_registry.excluding(BUILTIN_TOOL_NAMES)
+            scoped_registry = scoped_registry.excluding((*BUILTIN_TOOL_NAMES, *builtin_mcp_tool_names))
         if agent.tools.allowlist is not None:
             scoped_registry = scoped_registry.filtered(agent.tools.allowlist)
         if agent.tools.default is not None:
             scoped_registry = scoped_registry.filtered(agent.tools.default)
 
     return scoped_registry
-
-
-class _NoArgToolFactory(Protocol):
-    def __call__(self) -> Tool: ...
-
-
-class _HookedToolFactory(Protocol):
-    def __call__(self, *, hooks_config: RuntimeHooksConfig | None = None) -> Tool: ...
-
-
-# Import optional tools independently so one failure doesn't hide others.
-try:
-    from ..tools.apply_patch import ApplyPatchTool
-except ImportError:
-    _ApplyPatchTool: _HookedToolFactory | None = None
-else:
-    _ApplyPatchTool: _HookedToolFactory | None = ApplyPatchTool
-
-try:
-    from ..tools.ast_grep import AstGrepTool
-except ImportError:
-    _AstGrepTool: _NoArgToolFactory | None = None
-else:
-    _AstGrepTool: _NoArgToolFactory | None = AstGrepTool
-
-try:
-    from ..tools.multi_edit import MultiEditTool
-except ImportError:
-    _MultiEditTool: _HookedToolFactory | None = None
-else:
-    _MultiEditTool: _HookedToolFactory | None = MultiEditTool
-
-try:
-    from ..tools.question import QuestionTool
-except ImportError:
-    _QuestionTool: _NoArgToolFactory | None = None
-else:
-    _QuestionTool: _NoArgToolFactory | None = QuestionTool
-
-try:
-    from ..tools.skill import SkillTool
-except ImportError:
-    _SkillTool: _NoArgToolFactory | None = None
-else:
-    _SkillTool: _NoArgToolFactory | None = SkillTool
-
-try:
-    from ..tools.todo import TodoTool
-except ImportError:
-    _TodoTool: _NoArgToolFactory | None = None
-else:
-    _TodoTool: _NoArgToolFactory | None = TodoTool
-
-
-class LocalCustomToolProvider:
-    def __init__(self, *, workspace: Path, config: RuntimeToolsLocalConfig | None) -> None:
-        self._workspace = workspace
-        self._config = config
-
-    def provide_tools(self) -> tuple[Tool, ...]:
-        if self._config is None:
-            return ()
-        if not self._config.path:
-            raise ValueError("local custom tools path must not be empty")
-        relative_path = Path(self._config.path)
-        if relative_path.is_absolute():
-            raise ValueError("local custom tools path must be workspace-relative")
-        if ".." in relative_path.parts:
-            raise ValueError("local custom tools path must not contain '..'")
-        return discover_local_custom_tools(
-            self._workspace,
-            enabled=self._config.enabled,
-            relative_path=str(relative_path),
-        )
-
-
-class BuiltinToolProvider:
-    _lsp_tool: Tool | None
-    _mcp_tools: tuple[Tool, ...]
-    _hooks_config: RuntimeHooksConfig | None
-    _skill_tool: Tool | None
-    _task_tool: Tool | None
-    _task_batch_tool: Tool | None
-    _question_tool: Tool | None
-    _background_process_tool: Tool | None
-
-    def __init__(
-        self,
-        *,
-        lsp_tool: Tool | None = None,
-        mcp_tools: tuple[Tool, ...] = (),
-        hooks_config: RuntimeHooksConfig | None = None,
-        skill_tool: Tool | None = None,
-        task_tool: Tool | None = None,
-        task_batch_tool: Tool | None = None,
-        question_tool: Tool | None = None,
-        background_process_tool: Tool | None = None,
-    ) -> None:
-        self._lsp_tool = lsp_tool
-        self._mcp_tools = mcp_tools
-        self._hooks_config = hooks_config
-        self._skill_tool = skill_tool
-        self._task_batch_tool = task_batch_tool
-        self._task_tool = task_tool
-        self._question_tool = question_tool
-        self._background_process_tool = background_process_tool
-
-    def provide_tools(self) -> tuple[Tool, ...]:
-        edit_tool = EditTool(hooks_config=self._hooks_config)
-        tools: list[Tool] = [
-            ApplyWorkspaceEditTool(),
-            edit_tool,
-            GlobTool(),
-            GrepTool(),
-            InvokeTool(),
-            ReadTool(),
-            ShellExecTool(),
-            YieldTool(),
-            WebFetchTool(),
-            WebSearchTool(),
-            WriteTool(hooks_config=self._hooks_config),
-        ]
-
-        if self._lsp_tool is not None:
-            tools.append(self._lsp_tool)
-
-        if self._skill_tool is not None:
-            tools.append(self._skill_tool)
-        elif _SkillTool is not None:
-            tools.append(_SkillTool())
-
-        if self._task_tool is not None:
-            tools.append(self._task_tool)
-        if self._task_batch_tool is not None:
-            tools.append(self._task_batch_tool)
-
-        if self._question_tool is not None:
-            tools.append(self._question_tool)
-        elif _QuestionTool is not None:
-            tools.append(_QuestionTool())
-        if self._background_process_tool is not None:
-            tools.append(self._background_process_tool)
-
-        tools.extend(self._mcp_tools)
-
-        if _ApplyPatchTool is not None:
-            tools.append(_ApplyPatchTool(hooks_config=self._hooks_config))
-        if _AstGrepTool is not None:
-            tools.append(_AstGrepTool())
-        if _MultiEditTool is not None:
-            tools.append(_MultiEditTool(hooks_config=self._hooks_config))
-        if _TodoTool is not None:
-            tools.append(_TodoTool())
-
-        return tuple(tools)

@@ -9,7 +9,7 @@ import pytest
 
 from voidcode.core.questions import QuestionResponse
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import TurnPlan, TurnRequest, TurnSession
+from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSession
 from voidcode.runtime.config import RuntimeConfig, RuntimeHooksConfig
 from voidcode.runtime.fact_store import SqliteFactStore
 from voidcode.runtime.paths import sessions_db_path
@@ -19,14 +19,15 @@ from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.runtime.storage.ports import RuntimeRepositories
 from voidcode.runtime.tool_registry import ToolRegistry
 from voidcode.tools.contracts import ToolCall, ToolResult
+from voidcode.tools.question import QuestionTool
 from voidcode.tools.write import WriteTool
 
 
 class _QuestionThenWriteGraph:
-    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> TurnPlan:
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> ToolTurn | FinalTurn:
         if not tool_results:
-            return TurnPlan(
-                tool_calls=(
+            return ToolTurn(
+                calls=(
                     ToolCall(
                         tool_name="question",
                         arguments={
@@ -43,8 +44,8 @@ class _QuestionThenWriteGraph:
                 )
             )
         if len(tool_results) == 1:
-            return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={"path": "answered.txt", "content": "answered"}),))
-        return TurnPlan(output="done", is_finished=True)
+            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "answered.txt", "content": "answered"}),))
+        return FinalTurn(output="done")
 
 
 @pytest.mark.parametrize("outcome", ["complete", "interrupt", "raise"])
@@ -171,8 +172,93 @@ def test_question_answer_is_durable_in_session_events_and_replay(tmp_path: Path)
     # The resume checkpoint still carries the answers -- it is what a resume
     # rebuilds the provider context from -- but it is no longer the only carrier.
     checkpoint = json.loads(checkpoint_json)
-    answers = [answers for tool_result in checkpoint["tool_results"] for answers in (tool_result["data"].get("responses") or [])]
+    answers = [
+        response
+        for entry in checkpoint["tool_results"]
+        if isinstance(entry, dict)
+        for report in (entry.get("reported_call"),)
+        if isinstance(report, dict)
+        for result in (report.get("result"),)
+        if isinstance(result, dict)
+        for control in (result.get("control"),)
+        if isinstance(control, dict) and control.get("kind") == "question_answered"
+        for response in (control.get("responses") if isinstance(control.get("responses"), list) else [])
+    ]
     assert {"header": "Path", "answers": ["A"]} in answers
+
+
+def test_question_write_resumes_after_close_without_replaying_effect(tmp_path: Path) -> None:
+    database = tmp_path / "question.sqlite3"
+    owner = SqliteSessionStore(database_path=database)
+    call_ids: list[str | None] = []
+
+    class RecordingWrite:
+        definition = WriteTool.definition
+
+        def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+            call_ids.append(call.tool_call_id)
+            return WriteTool().invoke(call, context=context)
+
+    def tools() -> ToolRegistry:
+        return ToolRegistry.from_tools([QuestionTool(), RecordingWrite()])
+
+    def repositories(store: SqliteSessionStore) -> RuntimeRepositories:
+        return RuntimeRepositories(store, store, store, store, store, store, store)
+
+    config = RuntimeConfig(execution_engine="deterministic", approval_mode="yolo")
+    session_id = "question-write-resume"
+    with VoidCodeRuntime(
+        workspace=tmp_path,
+        repositories=repositories(owner),
+        tool_registry=tools(),
+        turn_producer=_QuestionThenWriteGraph(),
+        config=config,
+    ) as runtime:
+        waiting = runtime.run(RuntimeRequest(prompt="ask", session_id=session_id))
+        request_id = next(event.payload["request_id"] for event in waiting.events if event.event_type == "runtime.question_requested")
+        stream = runtime.answer_question_stream(
+            session_id,
+            question_request_id=request_id,
+            responses=(QuestionResponse(header="Path", answers=("A",)),),
+        )
+        for chunk in stream:
+            if chunk.event is not None and chunk.event.event_type == "runtime.tool_completed" and call_ids:
+                stream.close()
+                break
+        else:
+            pytest.fail("the answered question did not commit its write")
+
+    assert len(call_ids) == 1
+    target = tmp_path / "answered.txt"
+    assert target.read_text(encoding="utf-8") == "answered"
+    stored = owner.load_session(workspace=tmp_path, session_id=session_id)
+    checkpoint = owner.load_resume_checkpoint(workspace=tmp_path, session_id=session_id)
+    assert checkpoint is not None
+    assert "execution_composition" in stored.session.metadata
+    checkpoint_metadata = checkpoint["session_metadata"]
+    assert isinstance(checkpoint_metadata, dict)
+    assert "execution_composition" not in checkpoint_metadata
+    stored_capability = stored.session.metadata["agent_capability_snapshot"]
+    checkpoint_capability = checkpoint_metadata["agent_capability_snapshot"]
+    assert isinstance(stored_capability, dict) and isinstance(checkpoint_capability, dict)
+    assert checkpoint_capability["composition_ref"] == stored_capability["composition_ref"]
+    seed = SqliteFactStore(events=owner, recovery=owner, workspace=tmp_path, session_id=session_id).restore_batch()
+    assert [report.tool_call_id for report in seed.completed_reports] == call_ids
+
+    reopened = SqliteSessionStore(database_path=database)
+    with VoidCodeRuntime(
+        workspace=tmp_path,
+        repositories=repositories(reopened),
+        tool_registry=tools(),
+        turn_producer=_QuestionThenWriteGraph(),
+        config=config,
+    ) as runtime:
+        resumed = runtime.resume(session_id)
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
+    assert target.read_text(encoding="utf-8") == "answered"
+    assert call_ids == [seed.completed_reports[-1].tool_call_id]
 
 
 @pytest.mark.parametrize("boundary", ("stream_close", "terminal_save_failure"))
@@ -200,8 +286,7 @@ def test_completed_approved_write_reopens_once_with_frozen_hook_semantics(tmp_pa
     database = tmp_path / "approved.sqlite3"
     owner = FailingTerminalOwner(database_path=database)
     writer = RecordingWrite()
-    tools = ToolRegistry.with_defaults()
-    tools.tools["write"] = writer
+    tools = ToolRegistry.from_tools([QuestionTool(), writer])
     command = (sys.executable, "-c", "from pathlib import Path; Path('frozen-hook.txt').write_text('frozen')")
     config = RuntimeConfig(
         execution_engine="deterministic",
@@ -235,7 +320,7 @@ def test_completed_approved_write_reopens_once_with_frozen_hook_semantics(tmp_pa
         assert written[0] == b"approved-once" and len(writer.call_ids) == 1
     reopened = SqliteSessionStore(database_path=database)
     seed = SqliteFactStore(events=reopened, recovery=reopened, workspace=tmp_path, session_id=session_id).restore_batch()
-    assert [result.data["tool_call_id"] for result in seed.completed_results] == writer.call_ids
+    assert [report.tool_call_id for report in seed.completed_reports] == writer.call_ids
     marker = tmp_path / "frozen-hook.txt"
     marker.unlink(missing_ok=True)
     with VoidCodeRuntime(

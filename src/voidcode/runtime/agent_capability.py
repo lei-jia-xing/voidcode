@@ -4,63 +4,125 @@ from collections.abc import Mapping
 
 from ..agent.models import AgentManifest
 from .background.routing import CALLABLE_SUBAGENT_PRESETS
+from .composition import CompositionRef
 from .config import RuntimeAgentConfig
 from .session_metadata_helpers import parse_delegation_metadata
 from .tool_provider import BUILTIN_TOOL_NAMES
 from .tool_registry import ToolRegistry
 
-AGENT_CAPABILITY_SNAPSHOT_VERSION = 3
+AGENT_CAPABILITY_SNAPSHOT_VERSION = 4
 
 
 class AgentCapabilitySnapshotVersionError(ValueError):
     """Raised when persisted agent capability materialization is not current."""
 
 
+def _require_exact_fields(
+    value: Mapping[str, object],
+    *,
+    name: str,
+    expected: frozenset[str],
+) -> None:
+    if frozenset(value) != expected:
+        raise AgentCapabilitySnapshotVersionError(f"agent_capability_snapshot {name} fields are unsupported")
+
+
 def validate_agent_capability_snapshot(
     snapshot: dict[str, object],
 ) -> dict[str, object]:
     version = snapshot.get("snapshot_version")
-    if version != AGENT_CAPABILITY_SNAPSHOT_VERSION:
+    if type(version) is not int or version != AGENT_CAPABILITY_SNAPSHOT_VERSION:
         raise AgentCapabilitySnapshotVersionError(
             f"unsupported agent_capability_snapshot snapshot_version: {version!r}; expected {AGENT_CAPABILITY_SNAPSHOT_VERSION!r}"
         )
-    object_fields = (
-        "precedence",
-        "agent",
-        "prompt",
-        "tools",
-        "skills",
-        "hooks",
-        "mcp",
-        "delegation",
-        "runtime",
-        "execution",
+    _require_exact_fields(
+        snapshot,
+        name="root",
+        expected=frozenset(
+            {
+                "composition_ref",
+                "snapshot_version",
+                "precedence",
+                "agent",
+                "prompt",
+                "tools",
+                "skills",
+                "hooks",
+                "mcp",
+                "delegation",
+                "runtime",
+                "execution",
+            }
+        ),
     )
-    sections: dict[str, Mapping[str, object]] = {}
-    for field in object_fields:
-        value = snapshot.get(field)
-        if not isinstance(value, dict):
-            raise AgentCapabilitySnapshotVersionError(f"agent_capability_snapshot v{AGENT_CAPABILITY_SNAPSHOT_VERSION} requires a {field} object")
-        sections[field] = value
-    tools = sections["tools"]
-    required_tool_fields = {
-        "manifest_allowlist",
-        "request_allowlist",
-        "request_default",
-        "builtin_tools_enabled",
-        "builtin_tool_names",
-        "effective_names",
-        "generation",
+    raw_composition_ref = snapshot["composition_ref"]
+    if not isinstance(raw_composition_ref, dict):
+        raise AgentCapabilitySnapshotVersionError("agent_capability_snapshot v4 requires a canonical composition_ref object")
+    try:
+        CompositionRef.model_validate(raw_composition_ref)
+    except Exception as error:
+        raise AgentCapabilitySnapshotVersionError("agent_capability_snapshot composition_ref is invalid") from error
+
+    expected_sections = {
+        "precedence": frozenset({"order", "notes"}),
+        "skills": frozenset({"manifest_refs", "selected_names", "force_loaded_names", "scope"}),
+        "hooks": frozenset({"manifest_refs", "resolved_refs", "snapshot", "materialization", "authority"}),
+        "mcp": frozenset({"binding_intent", "configured_enabled", "mode", "configured_servers", "governance"}),
+        "delegation": frozenset({"selected_preset", "allowed_child_presets", "denied", "parent_bounded", "can_expand_parent_policy"}),
+        "runtime": frozenset({"approval_mode", "tool_timeout_seconds", "permission"}),
+        "execution": frozenset({"execution_engine", "model", "fallback_models", "resolved_provider", "reasoning_effort"}),
+        "tools": frozenset(
+            {
+                "manifest_allowlist",
+                "request_allowlist",
+                "request_default",
+                "builtin_tools_enabled",
+                "builtin_tool_names",
+                "effective_names",
+                "generation",
+            }
+        ),
     }
-    missing_tool_fields = sorted(required_tool_fields - tools.keys())
-    if missing_tool_fields:
-        raise AgentCapabilitySnapshotVersionError(
-            f"agent_capability_snapshot v{AGENT_CAPABILITY_SNAPSHOT_VERSION} tools is missing required fields: {missing_tool_fields!r}"
-        )
-    generation = tools["generation"]
+    sections: dict[str, Mapping[str, object]] = {}
+    for name, expected in expected_sections.items():
+        value = snapshot[name]
+        if not isinstance(value, dict):
+            raise AgentCapabilitySnapshotVersionError(f"agent_capability_snapshot v4 requires a {name} object")
+        _require_exact_fields(value, name=name, expected=expected)
+        sections[name] = value
+
+    precedence = sections["precedence"]
+    notes = precedence["notes"]
+    if not isinstance(notes, dict):
+        raise AgentCapabilitySnapshotVersionError("agent_capability_snapshot precedence.notes must be an object")
+    _require_exact_fields(notes, name="precedence.notes", expected=frozenset({"skills", "hooks", "mcp"}))
+
+    agent = snapshot["agent"]
+    if not isinstance(agent, dict) or frozenset(agent) not in (
+        frozenset({"preset"}),
+        frozenset({"preset", "manifest_id", "mode", "source", "source_scope", "source_path"}),
+    ):
+        raise AgentCapabilitySnapshotVersionError("agent_capability_snapshot agent fields are unsupported")
+    prompt = snapshot["prompt"]
+    if not isinstance(prompt, dict) or not frozenset(prompt).issubset({"profile", "ref", "source", "materialization"}):
+        raise AgentCapabilitySnapshotVersionError("agent_capability_snapshot prompt fields are unsupported")
+
+    generation = sections["tools"]["generation"]
     if not isinstance(generation, str) or not generation:
-        raise AgentCapabilitySnapshotVersionError(f"agent_capability_snapshot v{AGENT_CAPABILITY_SNAPSHOT_VERSION} requires tools.generation")
+        raise AgentCapabilitySnapshotVersionError("agent_capability_snapshot v4 requires tools.generation")
     return snapshot
+
+
+def composition_ref_from_session_metadata(metadata: Mapping[str, object]) -> CompositionRef:
+    raw_ref = metadata.get("composition_ref")
+    raw_snapshot = metadata.get("agent_capability_snapshot")
+    if not isinstance(raw_snapshot, dict):
+        raise AgentCapabilitySnapshotVersionError("persisted session requires agent_capability_snapshot")
+    validate_agent_capability_snapshot(raw_snapshot)
+    ref = CompositionRef.model_validate(raw_ref)
+    if CompositionRef.model_validate(raw_snapshot["composition_ref"]) != ref:
+        raise AgentCapabilitySnapshotVersionError("session and capability composition references disagree")
+    return ref
 
 
 def agent_capability_agent_snapshot(
@@ -98,13 +160,14 @@ def agent_capability_prompt_snapshot(
             raw_materialization = raw_internal.get("prompt_materialization")
             if isinstance(raw_materialization, dict):
                 prompt["materialization"] = raw_materialization
-    if "materialization" not in prompt and manifest is not None:
-        materialization = manifest.prompt_materialization
+    if "materialization" not in prompt:
+        materialization = internal.prompt_materialization if internal is not None else None
         if materialization is not None:
             materialization_profile = agent.prompt_profile if agent is not None else None
             prompt["materialization"] = materialization.to_payload(profile=materialization_profile)
-    if "materialization" not in prompt and internal is not None and internal.prompt_materialization is not None:
-        prompt["materialization"] = dict(internal.prompt_materialization)
+        elif manifest is not None and manifest.prompt_materialization is not None:
+            materialization_profile = agent.prompt_profile if agent is not None else None
+            prompt["materialization"] = manifest.prompt_materialization.to_payload(profile=materialization_profile)
     return {key: value for key, value in prompt.items() if value is not None}
 
 
@@ -125,7 +188,7 @@ def agent_capability_tool_snapshot(
             agent is not None and agent.tools is not None and agent.tools.builtin is not None and agent.tools.builtin.enabled is False
         ),
         "builtin_tool_names": sorted(BUILTIN_TOOL_NAMES),
-        "effective_names": sorted(registry.tools),
+        "effective_names": sorted(registry.declarations),
         "generation": generation,
     }
 

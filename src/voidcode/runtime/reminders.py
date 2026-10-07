@@ -18,10 +18,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Final, Literal
+from typing import Final, Literal
 
 from ..core.todos import TodoPhase
 from ..core.transcript import ContextSegment
+from ..core.turns import ReportedCall
 
 #: ``session.metadata["runtime_state"]["reminders"]`` section key.
 REMINDERS_RUNTIME_STATE_KEY: Final[str] = "reminders"
@@ -313,25 +314,19 @@ def todo_mid_run_segment(decision: ReminderDecision[TodoMidRunState]) -> Context
 
 
 def todo_mutation_count(
-    tool_results: Sequence[Any],
+    tool_results: Sequence[ReportedCall],
     *,
     read_only_tool_names: frozenset[str],
 ) -> int:
-    """Successful mutation-tool results since the last successful todo call.
-
-    Mutation classification uses effect-derived read-tier names supplied by
-    the runtime. ``todo`` results are the reset
-    signal (upstream clears ``mutationsSinceLastTouch`` on a todo result), and a
-    failed call does not count (upstream counts only successful results).
-    """
+    """Count successful mutation reports since the last successful todo call."""
     last_todo_touch = -1
-    for index, result in enumerate(tool_results):
-        if result.tool_name == TODO_REMINDER_KIND and result.status == "ok":
+    for index, report in enumerate(tool_results):
+        if report.final_tool_name == TODO_REMINDER_KIND and report.result.status == "ok":
             last_todo_touch = index
     return sum(
         1
-        for result in tool_results[last_todo_touch + 1 :]
-        if result.status == "ok" and result.tool_name != TODO_REMINDER_KIND and result.tool_name not in read_only_tool_names
+        for report in tool_results[last_todo_touch + 1 :]
+        if report.result.status == "ok" and report.final_tool_name != TODO_REMINDER_KIND and report.final_tool_name not in read_only_tool_names
     )
 
 

@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from voidcode.agent import LEADER_AGENT_MANIFEST, get_builtin_agent_manifest
+from voidcode.agent import LEADER_AGENT_MANIFEST, AgentPromptMaterialization, get_builtin_agent_manifest
 from voidcode.agent.models import AgentMcpBindingIntent
 from voidcode.formatter import RuntimeFormatterPresetConfig, default_formatter_presets
 from voidcode.provider.config import (
@@ -981,15 +981,15 @@ def test_runtime_config_resolves_custom_primary_manifest(tmp_path: Path) -> None
     assert config.agent.runtime_internal is not None
     internal = config.agent.runtime_internal
     assert internal.prompt_source == "custom_markdown"
-    assert internal.prompt_materialization == {
-        "profile": "local-planner",
-        "version": 1,
-        "source": "custom_markdown",
-        "format": "markdown",
-        "body": "Plan locally from markdown.",
-        "source_scope": "project",
-        "source_path": str(manifest_path),
-    }
+    assert internal.prompt_materialization == AgentPromptMaterialization(
+        profile="local-planner",
+        version=1,
+        source="custom_markdown",
+        format="markdown",
+        body="Plan locally from markdown.",
+        source_scope="project",
+        source_path=str(manifest_path),
+    )
     assert internal.manifest_source_scope == "project"
     assert internal.manifest_source_path == str(manifest_path)
     assert internal.manifest_tool_allowlist == ("read", "grep")
@@ -1002,7 +1002,7 @@ def test_runtime_config_resolves_custom_primary_manifest(tmp_path: Path) -> None
     )
     serialized_agent = serialize_runtime_agent_config(config.agent, include_runtime_internal=True)
     assert serialized_agent is not None
-    assert serialized_agent["runtime_internal"]["prompt_materialization"] == internal.prompt_materialization
+    assert serialized_agent["runtime_internal"]["prompt_materialization"] == internal.prompt_materialization.to_payload()
 
 
 def test_runtime_config_allows_agents_key_for_discovered_custom_manifest(tmp_path: Path) -> None:
@@ -1032,7 +1032,7 @@ def test_runtime_config_allows_agents_key_for_discovered_custom_manifest(tmp_pat
     internal = agent.runtime_internal
     assert internal.prompt_source == "custom_markdown"
     assert internal.prompt_materialization is not None
-    assert internal.prompt_materialization["body"] == "Review from markdown."
+    assert internal.prompt_materialization.body == "Review from markdown."
     assert internal.manifest_tool_allowlist == ("read", "grep")
     assert internal.manifest_skill_refs == ("review",)
     assert internal.manifest_hook_refs == ("role_reminder",)
@@ -1269,8 +1269,8 @@ def test_runtime_agent_payload_applies_explicit_prompt_override() -> None:
     assert agent.runtime_internal is not None
     assert agent.runtime_internal.prompt_source == "custom_markdown"
     assert agent.runtime_internal.prompt_materialization is not None
-    assert agent.runtime_internal.prompt_materialization["body"] == "You are a local reviewer."
-    assert agent.runtime_internal.prompt_materialization["prompt_append"] == "Always include file paths."
+    assert agent.runtime_internal.prompt_materialization.body == "You are a local reviewer."
+    assert agent.runtime_internal.prompt_materialization.prompt_append == "Always include file paths."
 
 
 def test_runtime_agent_payload_appends_to_builtin_prompt() -> None:
@@ -1283,10 +1283,10 @@ def test_runtime_agent_payload_appends_to_builtin_prompt() -> None:
     assert agent.prompt_append == "Prefer concise findings."
     assert agent.runtime_internal is not None
     assert agent.runtime_internal.prompt_materialization is not None
-    body = agent.runtime_internal.prompt_materialization["body"]
-    assert isinstance(body, str)
+    body = agent.runtime_internal.prompt_materialization.body
+    assert body is not None
     assert "Prefer concise findings." not in body
-    assert agent.runtime_internal.prompt_materialization["prompt_append"] == "Prefer concise findings."
+    assert agent.runtime_internal.prompt_materialization.prompt_append == "Prefer concise findings."
 
     with pytest.raises(ValueError, match=r"runtime config field 'agent.prompt_ref' is not supported"):
         _ = parse_runtime_agent_payload(

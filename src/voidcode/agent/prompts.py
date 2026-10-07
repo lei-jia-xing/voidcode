@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from functools import cache
 from pathlib import Path
 
@@ -43,15 +42,6 @@ def render_builtin_prompt_profile(prompt_profile: str) -> str | None:
     return _render_known_builtin_prompt_profile(normalized_prompt_profile)
 
 
-def _select_profile_from_materialization_payload(
-    materialization: Mapping[str, object],
-) -> str | None:
-    profile = materialization.get("profile")
-    if not isinstance(profile, str) or not profile.strip():
-        return None
-    return profile.strip()
-
-
 def compose_prompt_with_user_append(
     generated: str | None,
     user_append: str | None,
@@ -65,63 +55,16 @@ def compose_prompt_with_user_append(
     return user_text
 
 
-def _render_materialization_payload(materialization: Mapping[str, object]) -> str | None:
-    source = materialization.get("source")
-    if source == "custom_markdown":
-        body = materialization.get("body")
-        if isinstance(body, str) and body.strip():
-            prompt_append = materialization.get("prompt_append")
-            if isinstance(prompt_append, str) and prompt_append.strip():
-                return compose_prompt_with_user_append(body, prompt_append)
-            return body.strip()
+def render_agent_prompt(materialization: AgentPromptMaterialization | None) -> str | None:
+    if materialization is None:
         return None
-    return None
-
-
-def render_agent_prompt(
-    agent_preset: Mapping[str, object] | None = None,
-) -> str | None:
-    if agent_preset is None:
-        return None
-    selected_profile: str | None = None
-    materialization = agent_preset.get("prompt_materialization")
-    if not isinstance(materialization, AgentPromptMaterialization | Mapping):
-        raw_internal = agent_preset.get("runtime_internal")
-        if isinstance(raw_internal, Mapping):
-            materialization = raw_internal.get("prompt_materialization")
-    if isinstance(materialization, AgentPromptMaterialization):
-        if materialization.source == "custom_markdown":
-            if materialization.body is None:
-                return None
-            if materialization.prompt_append is not None:
-                return compose_prompt_with_user_append(
-                    materialization.body,
-                    materialization.prompt_append,
-                )
-            return materialization.body.strip()
-        selected_profile = materialization.profile
-    elif isinstance(materialization, Mapping):
-        materialization_payload = materialization
-        rendered_payload = _render_materialization_payload(materialization_payload)
-        if rendered_payload is not None:
-            return rendered_payload
-        selected_profile = _select_profile_from_materialization_payload(
-            materialization_payload,
-        )
-    if selected_profile is None:
-        prompt_profile = agent_preset.get("prompt_profile")
-        if not isinstance(prompt_profile, str) or not prompt_profile.strip():
-            return None
-        selected_profile = prompt_profile.strip()
-    builtin_prompt = render_builtin_prompt_profile(selected_profile)
-    if builtin_prompt is not None:
-        return builtin_prompt
-    return (
-        "Runtime-selected VoidCode agent prompt profile: "
-        f"{selected_profile}. Treat this as the active agent role profile "
-        "for this single-agent turn while still following the runtime-provided tool "
-        "and skill boundaries."
-    )
+    if materialization.source == "custom_markdown":
+        assert materialization.body is not None
+        return compose_prompt_with_user_append(materialization.body, materialization.prompt_append)
+    builtin_prompt = render_builtin_prompt_profile(materialization.profile)
+    if builtin_prompt is None:
+        raise ValueError(f"unknown builtin agent prompt profile: {materialization.profile}")
+    return builtin_prompt
 
 
 __all__ = [

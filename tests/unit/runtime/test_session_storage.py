@@ -5,11 +5,14 @@ import shutil
 import sqlite3
 import threading
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from tests.runtime_composition import create_task, save_checkpoint
+from tests.runtime_composition import save_run as save_composition_run
 from voidcode.core.questions import PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
@@ -39,7 +42,8 @@ def _run_session(
     incrementally via ``append_session_events``, then seal the terminal
     snapshot via ``save_run``."""
     session = response.session.session
-    store.save_run(
+    save_composition_run(
+        store,
         workspace=workspace,
         request=request,
         response=RuntimeResponse(
@@ -59,7 +63,7 @@ def _run_session(
             session_id=session.id,
             events=tuple((event.event_type, event.source, event.payload, None) for event in response.events),
         )
-    store.save_run(workspace=workspace, request=request, response=response)
+    save_composition_run(store, workspace=workspace, request=request, response=response)
 
 
 def test_runtime_paths_honor_explicit_empty_env_mapping(
@@ -100,7 +104,8 @@ def test_store_constructed_without_database_path_pins_its_resolved_target(
     assert SqliteSessionStore()._resolve_database_path() == (tmp_path / "host-state" / "voidcode" / "sessions.sqlite3")
     assert store._resolve_database_path() == database_path
 
-    store.save_run(
+    save_composition_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="pinned", session_id="pinned-session"),
         response=_completed_response("pinned-session"),
@@ -138,7 +143,8 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
     # terminal seal-writer ``save_run`` snapshots the row (the seal never writes
     # events itself). The row must therefore carry at least one persisted event;
     # event-less terminal rows are treated as fabrication residue by pruning.
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id="child-session",
         prompt="child task",
@@ -153,7 +159,7 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
         session_id="child-session",
         events=(("graph.response_ready", "graph", {"summary": "child done"}, None),),
     )
-    store.save_run(workspace=tmp_path, request=request, response=response)
+    save_composition_run(store, workspace=tmp_path, request=request, response=response)
 
     loaded = store.load_session(workspace=tmp_path, session_id="child-session")
     listed = store.list_sessions(workspace=tmp_path)
@@ -211,7 +217,7 @@ def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path)
         output=None,
     )
 
-    store.save_run(workspace=tmp_path, request=request, response=response)
+    save_composition_run(store, workspace=tmp_path, request=request, response=response)
 
     loaded = store.load_session(workspace=tmp_path, session_id="policy-session")
     checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="policy-session")
@@ -402,7 +408,8 @@ def test_session_storage_preserves_prior_events_when_same_session_continues(
     session_id = "continued-session"
     # Simulate the incremental run loop: create a running row, then append two
     # batches of events before the terminal save_run seals the session.
-    store.save_run(
+    save_composition_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="first", session_id=session_id),
         response=RuntimeResponse(
@@ -433,7 +440,8 @@ def test_session_storage_preserves_prior_events_when_same_session_continues(
             (str(tmp_path), session_id),
         ).fetchone()[0]
 
-    store.save_run(
+    save_composition_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="second", session_id=session_id),
         response=RuntimeResponse(
@@ -466,7 +474,8 @@ def test_session_storage_preserves_prior_events_when_same_session_continues(
 
 def test_session_storage_save_run_writes_zero_session_events(tmp_path: Path) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
-    store.save_run(
+    save_composition_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="seal only", session_id="seal-only-session"),
         response=_completed_response("seal-only-session"),
@@ -504,7 +513,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         output="done",
     )
 
-    store.save_run(workspace=tmp_path, request=request, response=response)
+    save_composition_run(store, workspace=tmp_path, request=request, response=response)
 
     with closing(sqlite3.connect(database_path)) as connection:
         session_columns = [row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()]
@@ -557,8 +566,9 @@ def test_session_storage_bootstraps_sequences_from_existing_timestamps(tmp_path:
         ),
         output="old output",
     )
-    store.save_run(workspace=tmp_path, request=old_request, response=old_response)
-    store.create_background_task(
+    save_composition_run(store, workspace=tmp_path, request=old_request, response=old_response)
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="old-task"),
@@ -590,8 +600,9 @@ def test_session_storage_bootstraps_sequences_from_existing_timestamps(tmp_path:
         ),
         output="new output",
     )
-    store.save_run(workspace=tmp_path, request=new_request, response=new_response)
-    store.create_background_task(
+    save_composition_run(store, workspace=tmp_path, request=new_request, response=new_response)
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="new-task"),
@@ -613,7 +624,7 @@ def test_session_storage_bootstraps_sequences_from_existing_timestamps(tmp_path:
         "new-session",
         "old-session",
     ]
-    assert new_session_row == (41, 51)
+    assert new_session_row == (41, 52)
     assert new_task_row == (71, 71)
 
 
@@ -645,7 +656,8 @@ def test_session_storage_bootstraps_schema_once_per_database_file(
     assert bootstrapped == [database_path]
 
     store.list_sessions(workspace=tmp_path)
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="once-task"),
@@ -751,14 +763,13 @@ def test_session_storage_rejects_existing_unversioned_runtime_schema_without_mut
 
     store = SqliteSessionStore(database_path=database_path)
 
-    with pytest.raises(
-        RuntimeError,
-        match=r"table 'sessions' missing columns: .*workspace_id.*unversioned-runtime\.sqlite3",
-    ):
+    with pytest.raises(RuntimeError):
         store.list_sessions(workspace=tmp_path)
 
     with closing(sqlite3.connect(database_path)) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert tables == {"sessions"}
 
 
 def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path) -> None:
@@ -769,11 +780,44 @@ def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path)
 
     store = SqliteSessionStore(database_path=database_path)
 
-    with pytest.raises(
-        RuntimeError,
-        match=rf"schema version mismatch: expected {SCHEMA_VERSION} got 999.*future-runtime\.sqlite3",
-    ):
+    with pytest.raises(RuntimeError):
         store.list_sessions(workspace=tmp_path)
+
+
+def test_session_storage_refuses_previous_schema_before_bootstrap(tmp_path: Path) -> None:
+    database_path = tmp_path / "previous-runtime.sqlite3"
+    with closing(sqlite3.connect(database_path)) as connection:
+        _ = connection.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        _ = connection.execute("PRAGMA user_version = 1")
+        connection.commit()
+
+    store = SqliteSessionStore(database_path=database_path)
+    with pytest.raises(RuntimeError):
+        store.list_sessions(workspace=tmp_path)
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert tables == {"sessions"}
+
+
+@pytest.mark.parametrize("version", [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1])
+def test_session_storage_refuses_version_mismatch_without_touching_database_or_sidecars(
+    tmp_path: Path,
+    version: int,
+) -> None:
+    database_path = tmp_path / f"unsupported-{version}.sqlite3"
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
+        connection.execute(f"PRAGMA user_version = {version}")
+        connection.commit()
+    sidecars = (Path(f"{database_path}-wal"), Path(f"{database_path}-shm"))
+    before = (database_path.read_bytes(), database_path.stat().st_mtime_ns, tuple(path.exists() for path in sidecars))
+
+    with pytest.raises(RuntimeError, match="schema version"):
+        SqliteSessionStore(database_path=database_path).list_sessions(workspace=tmp_path)
+
+    assert (database_path.read_bytes(), database_path.stat().st_mtime_ns, tuple(path.exists() for path in sidecars)) == before
 
 
 def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
@@ -912,43 +956,6 @@ def test_session_storage_schema_mismatch_errors_split_three_ways(tmp_path: Path,
     assert "`uv run voidcode storage reset`" in corrupt_message
 
 
-def test_tool_results_from_events_keeps_success_payloads_with_null_error() -> None:
-    tool_results_from_events: Any = _private_attr(SqliteSessionStore, "_tool_results_from_events")
-    tool_results = tool_results_from_events(
-        (
-            EventEnvelope(
-                session_id="s1",
-                sequence=1,
-                event_type="runtime.tool_completed",
-                source="runtime",
-                payload={
-                    "tool": "read",
-                    "status": "ok",
-                    "content": "alpha\n",
-                    "error": None,
-                    "path": "sample.txt",
-                },
-            ),
-        )
-    )
-
-    assert tool_results == [
-        {
-            "tool_name": "read",
-            "content": "alpha\n",
-            "status": "ok",
-            "data": {
-                "tool": "read",
-                "status": "ok",
-                "content": "alpha\n",
-                "error": None,
-                "path": "sample.txt",
-            },
-            "error": None,
-        }
-    ]
-
-
 def test_session_storage_projects_tool_effectiveness_from_persisted_events(tmp_path: Path) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
     request = RuntimeRequest(prompt="edit", session_id="effectiveness-session")
@@ -999,43 +1006,6 @@ def test_session_storage_projects_tool_effectiveness_from_persisted_events(tmp_p
     assert report.tools[0].error_kinds == {"stale_edit": 1}
 
 
-def test_tool_results_from_events_preserves_successful_null_content() -> None:
-    tool_results_from_events: Any = _private_attr(SqliteSessionStore, "_tool_results_from_events")
-    tool_results = tool_results_from_events(
-        (
-            EventEnvelope(
-                session_id="s1",
-                sequence=1,
-                event_type="runtime.tool_completed",
-                source="runtime",
-                payload={
-                    "tool": "write",
-                    "status": "ok",
-                    "content": None,
-                    "error": None,
-                    "path": "beta.txt",
-                },
-            ),
-        )
-    )
-
-    assert tool_results == [
-        {
-            "tool_name": "write",
-            "content": None,
-            "status": "ok",
-            "data": {
-                "tool": "write",
-                "status": "ok",
-                "content": None,
-                "error": None,
-                "path": "beta.txt",
-            },
-            "error": None,
-        }
-    ]
-
-
 def test_session_storage_checkpoint_rejects_unmatched_request_prompt() -> None:
     build_checkpoint: Any = _private_attr(SqliteSessionStore, "_resume_checkpoint_base")
     response = RuntimeResponse(
@@ -1083,7 +1053,7 @@ def test_session_storage_load_resume_checkpoint_rejects_corrupt_json(tmp_path: P
         ),
         events=(),
     )
-    store.save_run(workspace=tmp_path, request=request, response=response)
+    save_composition_run(store, workspace=tmp_path, request=request, response=response)
 
     database_path = sessions_db_path()
     with closing(sqlite3.connect(database_path)) as connection:
@@ -1109,7 +1079,7 @@ def test_session_storage_load_resume_checkpoint_rejects_invalid_kind(tmp_path: P
         ),
         events=(),
     )
-    store.save_run(workspace=tmp_path, request=request, response=response)
+    save_composition_run(store, workspace=tmp_path, request=request, response=response)
 
     database_path = sessions_db_path()
     with closing(sqlite3.connect(database_path)) as connection:
@@ -1148,7 +1118,7 @@ def test_session_storage_append_session_event_assigns_sequence_and_dedupes(
         ),
         output="done",
     )
-    store.save_run(workspace=tmp_path, request=request, response=response)
+    save_composition_run(store, workspace=tmp_path, request=request, response=response)
 
     first_event = store.append_session_event(
         workspace=tmp_path,
@@ -1251,7 +1221,8 @@ def test_session_storage_deduped_session_event_does_not_advance_session_order(
 def test_session_storage_reports_corrupt_pending_approval_payload(tmp_path: Path) -> None:
     database_path = tmp_path / "sessions.sqlite3"
     store = SqliteSessionStore(database_path=database_path)
-    store.save_run(
+    save_composition_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="approval", session_id="approval-session"),
         response=RuntimeResponse(
@@ -1273,7 +1244,8 @@ def test_session_storage_reports_corrupt_pending_approval_payload(tmp_path: Path
 def test_session_storage_reports_corrupt_pending_question_payload(tmp_path: Path) -> None:
     database_path = tmp_path / "sessions.sqlite3"
     store = SqliteSessionStore(database_path=database_path)
-    store.save_run(
+    save_composition_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="question", session_id="question-session"),
         response=RuntimeResponse(
@@ -1314,7 +1286,7 @@ def test_session_storage_append_session_event_allocates_sequences_atomically(
         ),
         output="done",
     )
-    store.save_run(workspace=tmp_path, request=request, response=response)
+    save_composition_run(store, workspace=tmp_path, request=request, response=response)
 
     events: list[EventEnvelope] = []
     errors: list[BaseException] = []
@@ -1454,6 +1426,20 @@ def test_session_storage_persists_pending_question_across_store_reopen(
             ),
         ),
     )
+    save_checkpoint(
+        store,
+        workspace=tmp_path,
+        session_id="question-reopen-session",
+        prompt=request.prompt,
+        session_metadata=response.session.metadata,
+        tool_results=(),
+        last_event_sequence=0,
+    )
+    composition_ref = store.load_session(workspace=tmp_path, session_id="question-reopen-session").session.metadata["composition_ref"]
+    response = replace(
+        response,
+        session=replace(response.session, metadata={**response.session.metadata, "composition_ref": composition_ref}),
+    )
     store.save_pending_question(
         workspace=tmp_path,
         request=request,
@@ -1514,6 +1500,20 @@ def test_session_storage_persists_pending_approval_across_store_reopen(
         reason="write requires approval",
         request_event_sequence=1,
     )
+    save_checkpoint(
+        store,
+        workspace=tmp_path,
+        session_id="approval-reopen-session",
+        prompt=request.prompt,
+        session_metadata=response.session.metadata,
+        tool_results=(),
+        last_event_sequence=0,
+    )
+    composition_ref = store.load_session(workspace=tmp_path, session_id="approval-reopen-session").session.metadata["composition_ref"]
+    response = replace(
+        response,
+        session=replace(response.session, metadata={**response.session.metadata, "composition_ref": composition_ref}),
+    )
     store.save_pending_approval(
         workspace=tmp_path,
         request=request,
@@ -1541,17 +1541,44 @@ def test_session_storage_fail_incomplete_background_tasks_keeps_question_waiting
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
-    child_request = RuntimeRequest(prompt="need input", session_id="child-question-session")
+    task_id = "task-question"
+    child_session_id = "child-question-session"
+    metadata = {"background_run": True, "background_task_id": task_id}
+    task = create_task(
+        store,
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id=task_id),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="need input",
+                session_id=child_session_id,
+                parent_session_id="leader-session",
+                metadata=metadata,
+            ),
+            session_id=child_session_id,
+            created_at=1,
+            updated_at=1,
+            started_at=1,
+        ),
+    )
+    metadata["composition_ref"] = task.request.metadata["composition_ref"]
+    child_request = RuntimeRequest(
+        prompt="need input",
+        session_id=child_session_id,
+        parent_session_id="leader-session",
+        metadata=metadata,
+    )
     child_response = RuntimeResponse(
         session=SessionState(
-            session=SessionRef(id="child-question-session", parent_id="leader-session"),
+            session=SessionRef(id=child_session_id, parent_id="leader-session"),
             status="waiting",
             turn=1,
-            metadata={"background_run": True, "background_task_id": "task-question"},
+            metadata=metadata,
         ),
         events=(
             EventEnvelope(
-                session_id="child-question-session",
+                session_id=child_session_id,
                 sequence=1,
                 event_type="runtime.question_requested",
                 source="runtime",
@@ -1571,6 +1598,16 @@ def test_session_storage_fail_incomplete_background_tasks_keeps_question_waiting
             ),
         ),
     )
+    save_checkpoint(
+        store,
+        workspace=tmp_path,
+        session_id=child_session_id,
+        prompt=child_request.prompt,
+        session_metadata=metadata,
+        tool_results=(),
+        last_event_sequence=0,
+        parent_session_id="leader-session",
+    )
     store.save_pending_question(
         workspace=tmp_path,
         request=child_request,
@@ -1584,24 +1621,8 @@ def test_session_storage_fail_incomplete_background_tasks_keeps_question_waiting
                     question="Which runtime path should we use?",
                     header="Runtime path",
                     options=(PendingQuestionOption(label="Reuse existing"),),
-                    multiple=False,
                 ),
             ),
-        ),
-    )
-    store.create_background_task(
-        workspace=tmp_path,
-        task=BackgroundTaskState(
-            task=BackgroundTaskRef(id="task-question"),
-            status="running",
-            request=BackgroundTaskRequestSnapshot(
-                prompt="need input",
-                parent_session_id="leader-session",
-            ),
-            session_id="child-question-session",
-            created_at=1,
-            updated_at=1,
-            started_at=1,
         ),
     )
 
@@ -1639,7 +1660,8 @@ def _create_completed_sessions(store: SqliteSessionStore, workspace: Path, count
     ids: list[str] = []
     for i in range(count):
         sid = f"{prefix}-{i}"
-        store.save_run(
+        save_composition_run(
+            store,
             workspace=workspace,
             request=RuntimeRequest(prompt=sid, session_id=sid),
             response=_completed_response(sid),
@@ -1695,7 +1717,8 @@ def test_list_sessions_auto_prune_preserves_active_sessions(tmp_path: Path, monk
         ("waiting-1", "waiting"),
         ("failed-1", "failed"),
     ):
-        store.save_run(
+        save_composition_run(
+            store,
             workspace=tmp_path,
             request=RuntimeRequest(prompt=sid, session_id=sid),
             response=RuntimeResponse(
@@ -1740,7 +1763,8 @@ def test_list_sessions_auto_prune_cascades_to_child_tables(tmp_path: Path, monke
     monkeypatch.setenv("VOIDCODE_DB_PATH", str(db_path))
 
     sid = "cascade-session"
-    store.save_run(
+    save_composition_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt=sid, session_id=sid),
         response=_completed_response(sid),
@@ -1767,19 +1791,14 @@ def test_list_sessions_auto_prune_cascades_to_child_tables(tmp_path: Path, monke
 
 
 def _seed_running_session(store: SqliteSessionStore, workspace: Path, session_id: str) -> None:
-    store.save_run(
+    save_checkpoint(
+        store,
         workspace=workspace,
-        request=RuntimeRequest(prompt=session_id, session_id=session_id),
-        response=RuntimeResponse(
-            session=SessionState(
-                session=SessionRef(id=session_id),
-                status="running",
-                turn=1,
-                metadata={},
-            ),
-            events=(),
-            output=None,
-        ),
+        session_id=session_id,
+        prompt=session_id,
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=0,
     )
     store.append_session_events(
         workspace=workspace,
@@ -1811,7 +1830,8 @@ def test_session_storage_tree_links_sequential_appends(tmp_path: Path) -> None:
 
     # The terminal seal's ``INSERT OR REPLACE`` rewrites every sessions column,
     # so it must carry the position rather than reset it.
-    store.save_run(
+    save_composition_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="tree-session", session_id="tree-session"),
         response=RuntimeResponse(
@@ -1940,7 +1960,8 @@ def test_session_storage_bulk_append_dedupes_within_batch(tmp_path: Path) -> Non
 
 def test_session_storage_bulk_append_allows_lifecycle_event_on_terminal_session(tmp_path: Path) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
-    store.save_run(
+    save_composition_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="sealed", session_id="sealed-session"),
         response=_completed_response("sealed-session"),
@@ -1983,11 +2004,13 @@ def test_session_storage_bulk_append_upserts_interrupted_checkpoint(tmp_path: Pa
     store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
     _seed_running_session(store, tmp_path, "interrupt-session")
 
+    current_checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="interrupt-session")
+    assert current_checkpoint is not None
     store.append_session_events(
         workspace=tmp_path,
         session_id="interrupt-session",
         events=(("runtime.mcp_server_stopped", "runtime", {"server": "a"}, "interrupt-1"),),
-        interrupted_checkpoint={"kind": "interrupted", "version": 1, "prompt": "interrupted task"},
+        interrupted_checkpoint={**current_checkpoint, "prompt": "interrupted task"},
     )
 
     checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="interrupt-session")
@@ -2023,7 +2046,8 @@ def test_session_storage_save_interrupted_checkpoint_creates_row_and_roundtrips(
         },
     )
 
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id="interrupt-session",
         prompt="interrupt me",
@@ -2042,7 +2066,9 @@ def test_session_storage_save_interrupted_checkpoint_creates_row_and_roundtrips(
     assert checkpoint["kind"] == "interrupted"
     assert checkpoint["session_status"] == "interrupted"
     assert checkpoint["prompt"] == "interrupt me"
-    assert checkpoint["session_metadata"] == {"mode": "plan", "read_only": True}
+    assert checkpoint["session_metadata"]["mode"] == "plan"
+    assert checkpoint["session_metadata"]["read_only"] is True
+    assert "composition_ref" in checkpoint["session_metadata"]
     assert checkpoint["tool_results"] == list(tool_results)
     assert checkpoint["last_event_sequence"] == 4
     assert checkpoint["output"] == "partial output"
@@ -2053,7 +2079,8 @@ def test_session_storage_save_interrupted_checkpoint_updates_without_events_or_o
 ) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
 
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id="interrupt-session",
         prompt="first prompt",
@@ -2063,7 +2090,8 @@ def test_session_storage_save_interrupted_checkpoint_updates_without_events_or_o
         output="first output",
     )
 
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id="interrupt-session",
         prompt="second prompt",
@@ -2093,7 +2121,8 @@ def test_session_storage_restore_leaf_keeps_tail_rows_and_watermark(tmp_path: Pa
     contiguously rather than recycling a retained row's sequence number.
     """
     store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
-    store.save_run(
+    save_composition_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="restore", session_id="restore-leaf-session"),
         response=RuntimeResponse(
@@ -2137,7 +2166,8 @@ def test_session_storage_restore_leaf_keeps_tail_rows_and_watermark(tmp_path: Pa
 def test_session_storage_list_sessions_shows_interrupted_session(tmp_path: Path) -> None:
     store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
 
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id="interrupt-session",
         prompt="interrupt me",

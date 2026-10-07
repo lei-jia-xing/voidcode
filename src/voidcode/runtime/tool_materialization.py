@@ -1,32 +1,33 @@
-"""Single entry point for run-scoped tool materialization.
-
-Converges the service-level registry wrapper, scoped materialization, and
-local-tools layering into one composition: layer effective-local tools over
-the current materialization, then apply the agent scope. The policy-denial
-path intentionally reasons over the unscoped registry, so that step stays
-reachable as ``materialize_unscoped``; both share the same local layering.
-"""
+"""Pure run-scoped declaration layering before explicit activated binding."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from ..tools.contracts import Tool
+from ..tools.local_custom import LocalCustomToolManifest, discover_local_custom_tool_manifests
 from .config import RuntimeToolsLocalConfig
 from .config_materializer import EffectiveRuntimeConfig
 from .tool_materializer import RuntimeToolMaterialization, RuntimeToolMaterializer
-from .tool_provider import LocalCustomToolProvider
 from .tool_scope import RuntimeToolScopeResolver
 
-type LocalToolsProviderFactory = Callable[[RuntimeToolsLocalConfig | None], tuple[Tool, ...]]
+type LocalToolManifestsProvider = Callable[[RuntimeToolsLocalConfig | None], tuple[LocalCustomToolManifest, ...]]
 
 
-def workspace_local_tools_factory(workspace: Path) -> LocalToolsProviderFactory:
-    def provide(local_config: RuntimeToolsLocalConfig | None) -> tuple[Tool, ...]:
-        return LocalCustomToolProvider(workspace=workspace, config=local_config).provide_tools()
+def workspace_local_tool_manifests_provider(workspace: Path) -> LocalToolManifestsProvider:
+    def discover(local_config: RuntimeToolsLocalConfig | None) -> tuple[LocalCustomToolManifest, ...]:
+        if local_config is None:
+            return ()
+        if not local_config.path:
+            raise ValueError("local custom tools path must not be empty")
+        relative_path = Path(local_config.path)
+        if relative_path.is_absolute():
+            raise ValueError("local custom tools path must be workspace-relative")
+        if ".." in relative_path.parts:
+            raise ValueError("local custom tools path must not contain '..'")
+        return discover_local_custom_tool_manifests(workspace, enabled=local_config.enabled, relative_path=str(relative_path))
 
-    return provide
+    return discover
 
 
 def materialize_unscoped(
@@ -34,10 +35,10 @@ def materialize_unscoped(
     *,
     materialization: RuntimeToolMaterialization,
     materializer: RuntimeToolMaterializer,
-    local_tools_provider_factory: LocalToolsProviderFactory,
+    local_tool_manifests_provider: LocalToolManifestsProvider,
 ) -> RuntimeToolMaterialization:
     local_config = effective_config.tools.local if effective_config.tools is not None else None
-    return materializer.materialize_local_tools(materialization, local_tools_provider_factory(local_config))
+    return materializer.materialize_local_manifests(materialization, local_tool_manifests_provider(local_config))
 
 
 def materialize(
@@ -45,14 +46,22 @@ def materialize(
     *,
     materialization: RuntimeToolMaterialization,
     materializer: RuntimeToolMaterializer,
-    local_tools_provider_factory: LocalToolsProviderFactory,
+    local_tool_manifests_provider: LocalToolManifestsProvider,
     scope_resolver: RuntimeToolScopeResolver,
     metadata: dict[str, object] | None = None,
+    builtin_mcp_tool_names: Iterable[str] = (),
 ) -> RuntimeToolMaterialization:
     unscoped = materialize_unscoped(
         effective_config,
         materialization=materialization,
         materializer=materializer,
-        local_tools_provider_factory=local_tools_provider_factory,
+        local_tool_manifests_provider=local_tool_manifests_provider,
     )
-    return unscoped.scoped(scope_resolver.scope(unscoped.registry, agent=effective_config.agent, metadata=metadata))
+    return unscoped.scoped(
+        scope_resolver.scope(
+            unscoped.registry,
+            agent=effective_config.agent,
+            metadata=metadata,
+            builtin_mcp_tool_names=tuple(builtin_mcp_tool_names),
+        )
+    )

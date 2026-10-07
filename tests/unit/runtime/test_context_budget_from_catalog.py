@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
+from voidcode.core.transcript import ToolResultView
 from voidcode.provider.model_catalog import static_catalog_metadata
 from voidcode.runtime.config import RuntimeCompactionConfig
 from voidcode.runtime.context.window import ContextWindowPolicy, prepare_provider_context
 from voidcode.runtime.coordinators.stream_prep import StreamPrepCoordinator
-from voidcode.tools.contracts import ToolResult
+from voidcode.tools.contracts import TextOutput
 
 #: No per-result cap and nothing kept recent: every result is prunable.
 _POLICY = ContextWindowPolicy(default_tool_result_chars=None, compaction=RuntimeCompactionConfig(keep_recent_tool_tokens=0))
 
 
-def _tool_results(count: int = 20) -> tuple[ToolResult, ...]:
-    # Sized so the reclaim crosses the production savings floor (20_000 tokens).
-    return tuple(ToolResult(tool_name="read", status="ok", content="x" * 5_000) for _ in range(count))
+def _tool_results(count: int = 20) -> tuple[ToolResultView, ...]:
+    return tuple(ToolResultView(f"fixture-{index}", "read", {}, TextOutput("x" * 5_000), "ok") for index in range(count))
 
 
 class _Selection:
@@ -60,7 +60,7 @@ def test_small_context_model_compacts_earlier_than_a_large_one() -> None:
     assert small.compacted is True
     assert small.dropped_tool_result_count > 0
     assert large.compacted is False
-    assert [view.content for view in large.tool_results] == [result.content for result in results]
+    assert [view.output.text for view in large.tool_results] == [result.output.text for result in results]
 
 
 def test_the_budget_is_the_models_input_cap_from_the_catalog() -> None:

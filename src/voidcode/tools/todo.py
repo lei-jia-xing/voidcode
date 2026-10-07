@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..core.todos import TodoPhase, TodoTask, todo_summary
+from ..core.todos import TodoPhase, TodoSummary, TodoTask, todo_summary
 from ..core.tool_context import ToolContext
+from ..security.json_values import json_wire_object
 from ._pydantic_args import parse_tool_args
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolSuccess
 
 
 class _TodoArgsModel(BaseModel):
@@ -97,7 +99,7 @@ def _init_phases(args: _TodoArgsModel) -> list[TodoPhase]:
                 raise ValueError("init phase name must be non-empty")
             if name.strip() in seen_phases:
                 raise ValueError(f'Duplicate phase "{name.strip()}" in init list')
-            if not isinstance(raw_items, list) or not raw_items:
+            if not isinstance(raw_items, (list, tuple)) or not raw_items:
                 raise ValueError(f'init phase "{name.strip()}" requires items')
             seen_phases.add(name.strip())
             tasks: list[TodoTask] = []
@@ -234,6 +236,26 @@ _TODO_DESCRIPTION = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class TodoResultBody:
+    phases: tuple[TodoPhase, ...]
+    summary: TodoSummary
+    op: Literal["init", "start", "done", "drop", "block", "unblock", "append", "rm", "view"]
+    mutated: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "phases", tuple(deepcopy(phase) for phase in self.phases))
+        object.__setattr__(self, "summary", deepcopy(self.summary))
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "phases": [json_wire_object(phase) for phase in self.phases],
+            "summary": json_wire_object(self.summary),
+            "op": self.op,
+            "mutated": self.mutated,
+        }
+
+
 class TodoTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="todo",
@@ -250,19 +272,18 @@ class TodoTool:
         effects=frozenset({ToolEffect.SESSION}),
     )
 
-    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolSuccess[TodoResultBody]:
         context.require_session_id()
         args = parse_tool_args(_TodoArgsModel, call.arguments, tool_name=self.definition.name)
         phases: list[TodoPhase] = [deepcopy(phase) for phase in context.todo_phases]
         _apply(args, phases)
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.definition.name,
-            status="ok",
-            content=_render(phases, args.op),
-            data={
-                "phases": phases,
-                "summary": todo_summary(phases),
-                "op": args.op,
-                "mutated": args.op != "view",
-            },
+            output=TextOutput(_render(phases, args.op)),
+            body=TodoResultBody(
+                phases=tuple(phases),
+                summary=todo_summary(phases),
+                op=args.op,
+                mutated=args.op != "view",
+            ),
         )

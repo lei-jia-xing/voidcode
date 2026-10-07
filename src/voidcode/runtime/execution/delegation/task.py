@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ....core.tool_context import ToolContext
+from ....security.json_values import json_wire_object, own_json_object
 from ....tools._pydantic_args import NonEmptyPrompt, parse_tool_args
-from ....tools.contracts import ToolCall, ToolResult
+from ....tools.contracts import EmptyOutput, TextOutput, ToolCall, ToolResult, ToolSuccess
 from ....tools.delegation.task import TaskTool
 from ...background.models import BackgroundTaskState
 from ...contracts import (
@@ -17,6 +20,59 @@ from ...contracts import (
     validate_runtime_request_metadata,
 )
 from .task_control import TaskControlRuntime, TaskControlTool
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundTaskStartedBody:
+    task_id: str
+    status: str
+    parent_session_id: str | None
+    child_session_id: str | None
+    delegation: Mapping[str, object]
+    result_available: bool
+    requested_subagent_type: str
+    load_skills: tuple[str, ...]
+    waiting_reason: str | None
+    keep_alive: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "delegation", own_json_object(self.delegation))
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "task_id": self.task_id,
+            "status": self.status,
+            "parent_session_id": self.parent_session_id,
+            "child_session_id": self.child_session_id,
+            "delegation": json_wire_object(self.delegation),
+            "result_available": self.result_available,
+            "requested_subagent_type": self.requested_subagent_type,
+            "load_skills": list(self.load_skills),
+            "waiting_reason": self.waiting_reason,
+            "keep_alive": self.keep_alive,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TaskCompletedBody:
+    session_id: str
+    parent_session_id: str | None
+    status: str
+    requested_subagent_type: str
+    load_skills: tuple[str, ...]
+    output: str | None
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "session_id": self.session_id,
+            "parent_session_id": self.parent_session_id,
+            "status": self.status,
+            "requested_subagent_type": self.requested_subagent_type,
+            "load_skills": list(self.load_skills),
+        }
+        if self.output is not None:
+            payload["output"] = self.output
+        return payload
 
 
 class TaskRuntime(TaskControlRuntime, Protocol):
@@ -180,22 +236,21 @@ class TaskCommand:
                     "reminder or use task(operation=output, block=true) intentionally."
                     f"{keep_alive_guidance}"
                 )
-            return ToolResult(
+            return ToolSuccess(
                 tool_name=TaskTool.definition.name,
-                status="ok",
-                content=content,
-                data={
-                    "task_id": task.task.id,
-                    "status": task.status,
-                    "parent_session_id": context.session_id,
-                    "child_session_id": task.session_id,
-                    "delegation": dict(delegation_payload),
-                    "result_available": task.result_available,
-                    "requested_subagent_type": args.subagent_type,
-                    "load_skills": list(args.load_skills),
-                    "waiting_reason": waiting_reason,
-                    "keep_alive": args.keep_alive,
-                },
+                output=TextOutput(content),
+                body=BackgroundTaskStartedBody(
+                    task_id=task.task.id,
+                    status=task.status,
+                    parent_session_id=context.session_id,
+                    child_session_id=task.session_id,
+                    delegation=delegation_payload,
+                    result_available=task.result_available,
+                    requested_subagent_type=args.subagent_type,
+                    load_skills=tuple(args.load_skills),
+                    waiting_reason=waiting_reason,
+                    keep_alive=args.keep_alive,
+                ),
             )
 
         response = self._runtime.run(request)
@@ -203,16 +258,15 @@ class TaskCommand:
         output = response.output
         status = session.status
         child_session = session.session
-        return ToolResult(
+        return ToolSuccess(
             tool_name=TaskTool.definition.name,
-            status="ok",
-            content=output,
-            data={
-                "session_id": child_session.id,
-                "parent_session_id": context.session_id,
-                "status": status,
-                "requested_subagent_type": args.subagent_type,
-                "load_skills": list(args.load_skills),
-                **({"output": output} if output is not None else {}),
-            },
+            output=TextOutput(output) if output is not None else EmptyOutput(),
+            body=TaskCompletedBody(
+                session_id=child_session.id,
+                parent_session_id=context.session_id,
+                status=status,
+                requested_subagent_type=args.subagent_type,
+                load_skills=tuple(args.load_skills),
+                output=output,
+            ),
         )

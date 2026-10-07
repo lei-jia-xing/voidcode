@@ -7,10 +7,11 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 
 from ....core.tool_context import ToolContext
 from ....tools._pydantic_args import NonEmptyCommand, NonEmptyProcessId, OptionalDescription, format_validation_error
-from ....tools.contracts import ToolCall, ToolResult
+from ....tools.contracts import TextOutput, ToolCall, ToolResult, ToolSuccess
 from ....tools.process.background_process import BackgroundProcessTool
 from ...background.process import BackgroundProcessManager
 from .background_process_logs import BackgroundProcessLogsTool
+from .background_process_results import BackgroundProcessListBody, BackgroundProcessRow
 from .background_process_send import BackgroundProcessSendTool
 from .background_process_start import BackgroundProcessStartTool
 from .background_process_stop import BackgroundProcessStopTool
@@ -110,30 +111,33 @@ class BackgroundProcessCommand:
             enforce_owner=True,
             limit=_MAX_BACKGROUND_PROCESS_ROWS,
         )
-        rows: list[dict[str, object]] = []
+        rows: list[BackgroundProcessRow] = []
         for state in states:
             stale = state.prior_runtime or state.status == "stale"
             running = None if stale else state.process.poll() is None
             rows.append(
-                {
-                    "process_id": state.process_id,
-                    "pid": state.process.pid,
-                    "command": state.command,
-                    "cwd": state.cwd,
-                    "status": "stale" if stale else state.status,
-                    "running": running,
-                    "exit_code": None if stale else state.process.poll(),
-                    "prior_runtime": state.prior_runtime,
-                    "observed_running": state.observed_running,
-                    "identity_match": state.identity_match,
-                    "controllable": not stale,
-                }
+                BackgroundProcessRow(
+                    process_id=state.process_id,
+                    pid=state.process.pid,
+                    command=state.command,
+                    cwd=state.cwd,
+                    status="stale" if stale else state.status,
+                    running=running,
+                    exit_code=None if stale else state.process.poll(),
+                    prior_runtime=state.prior_runtime,
+                    observed_running=state.observed_running,
+                    identity_match=state.identity_match,
+                    controllable=not stale,
+                )
             )
-        return ToolResult(
+        return ToolSuccess(
             tool_name=BackgroundProcessTool.definition.name,
-            status="ok",
-            content=f"Background process list: {len(rows)} process(es).",
-            data={"processes": rows, "count": len(rows), "limit": _MAX_BACKGROUND_PROCESS_ROWS},
+            output=TextOutput(f"Background process list: {len(rows)} process(es)."),
+            body=BackgroundProcessListBody(
+                processes=tuple(rows),
+                count=len(rows),
+                limit=_MAX_BACKGROUND_PROCESS_ROWS,
+            ),
         )
 
     @staticmethod

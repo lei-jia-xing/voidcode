@@ -10,7 +10,7 @@ from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
 
 from ..core.tool_context import LspRequester, LspRequestError, LspResponse, ToolContext
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import OpaqueToolBody, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 
 
 @enum.unique
@@ -285,10 +285,9 @@ class LspTool:
             error_value = response.response.get("error")
             if error_value is not None:
                 raise ValueError(f"LSP error: {error_value}")
-            return ToolResult(
+            return ToolSuccess(
                 tool_name=self.definition.name,
-                status="ok",
-                data={"lsp_response": response.response},
+                body=OpaqueToolBody({"lsp_response": response.response}),
             )
 
         response = self._invoke_requester(
@@ -301,10 +300,9 @@ class LspTool:
         error_value = response.response.get("error")
         if error_value is not None:
             raise ValueError(f"LSP error: {error_value}")
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.definition.name,
-            status="ok",
-            data={"lsp_response": response.response},
+            body=OpaqueToolBody({"lsp_response": response.response}),
         )
 
     def __repr__(self) -> str:

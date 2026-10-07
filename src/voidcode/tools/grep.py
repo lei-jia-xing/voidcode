@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, final
+from typing import ClassVar
 
 from pydantic import BaseModel, field_validator
 
 from ..core.tool_context import ToolContext
+from ..security.json_values import json_wire_object, own_json_object
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._gitignore import GitIgnoreMatcher
 from ._pydantic_args import parse_tool_args, validate_non_empty
 from ._repair import raise_tool_diagnostic
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 
 MAX_MATCHES = 200
 #: Upper bound for an explicit ``limit`` so one call cannot materialize an
@@ -69,16 +71,59 @@ class GrepArgs(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
-class _GrepMatch:
+class GrepResultMatch:
     file: str
     line: int
     text: str
-    columns: list[int]
-    before: list[dict[str, object]]
-    after: list[dict[str, object]]
+    columns: tuple[int, ...]
+    before: tuple[Mapping[str, object], ...]
+    after: tuple[Mapping[str, object], ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "before", tuple(own_json_object(item) for item in self.before))
+        object.__setattr__(self, "after", tuple(own_json_object(item) for item in self.after))
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "file": self.file,
+            "line": self.line,
+            "text": self.text,
+            "columns": list(self.columns),
+            "before": [json_wire_object(item) for item in self.before],
+            "after": [json_wire_object(item) for item in self.after],
+        }
 
 
-@final
+@dataclass(frozen=True, slots=True)
+class GrepResultBody:
+    path: str
+    pattern: str
+    regex: bool
+    ignore_case: bool
+    context: int
+    match_count: int
+    truncated: bool
+    matches: tuple[GrepResultMatch, ...]
+    diagnostics: tuple[Mapping[str, object], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "diagnostics", tuple(own_json_object(item) for item in self.diagnostics))
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "path": self.path,
+            "pattern": self.pattern,
+            "regex": self.regex,
+            "ignore_case": self.ignore_case,
+            "context": self.context,
+            "match_count": self.match_count,
+            "truncated": self.truncated,
+            "partial": self.truncated,
+            "matches": [match.as_payload() for match in self.matches],
+            "diagnostics": [json_wire_object(item) for item in self.diagnostics],
+        }
+
+
 class GrepTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="grep",
@@ -234,7 +279,7 @@ class GrepTool:
             gitignore=gitignore,
         )
 
-        matches: list[_GrepMatch] = []
+        matches: list[GrepResultMatch] = []
         for target in targets:
             lines = self._read_lines(target)
             if lines is None:
@@ -250,13 +295,13 @@ class GrepTool:
                     context=args.context,
                 )
                 matches.append(
-                    _GrepMatch(
+                    GrepResultMatch(
                         file=(str(target.resolve()) if resolution.is_external else target.relative_to(workspace_root).as_posix()),
                         line=line_index + 1,
                         text=line_text,
-                        columns=columns,
-                        before=before,
-                        after=after,
+                        columns=tuple(columns),
+                        before=tuple(before),
+                        after=tuple(after),
                     )
                 )
                 if len(matches) >= args.limit:
@@ -305,35 +350,19 @@ class GrepTool:
                 }
             )
 
-        data: dict[str, object] = {
-            "path": path_display,
-            "pattern": args.pattern,
-            "regex": args.regex,
-            "ignore_case": args.ignore_case,
-            "context": args.context,
-            "match_count": total_occurrences,
-            "truncated": truncated,
-            "partial": truncated,
-            "matches": [
-                {
-                    "file": match.file,
-                    "line": match.line,
-                    "text": match.text,
-                    "columns": match.columns,
-                    "before": match.before,
-                    "after": match.after,
-                }
-                for match in matches
-            ],
-        }
-        if diagnostics:
-            data["diagnostics"] = diagnostics
-
-        return ToolResult(
-            tool_name=self.definition.name,
-            status="ok",
-            content=summary,
-            data=data,
+        body = GrepResultBody(
+            path=path_display,
+            pattern=args.pattern,
+            regex=args.regex,
+            ignore_case=args.ignore_case,
+            context=args.context,
+            match_count=total_occurrences,
             truncated=truncated,
-            partial=truncated,
+            matches=tuple(matches),
+            diagnostics=tuple(diagnostics),
+        )
+        return ToolSuccess(
+            tool_name=self.definition.name,
+            output=TextOutput(summary, bounds=OutputBounds(truncated=truncated, partial=truncated)),
+            body=body,
         )

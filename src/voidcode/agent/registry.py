@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
 
 from ..frontmatter import load_frontmatter_mapping, split_frontmatter
@@ -48,6 +49,12 @@ _REQUIRED_FRONTMATTER_FIELDS = frozenset({"name", "description", "mode"})
 class AgentManifestRegistry:
     builtin: Mapping[str, AgentManifest]
     custom: Mapping[str, AgentManifest]
+
+    def __post_init__(self) -> None:
+        if set(self.builtin) & set(self.custom):
+            raise ValueError("builtin agent manifests cannot be replaced")
+        object.__setattr__(self, "builtin", MappingProxyType(dict(self.builtin)))
+        object.__setattr__(self, "custom", MappingProxyType(dict(self.custom)))
 
     def get(self, agent_id: str) -> AgentManifest | None:
         return self.custom.get(agent_id) or self.builtin.get(agent_id)
@@ -99,6 +106,7 @@ def load_agent_manifest_registry(
     workspace: Path,
     *,
     env: Mapping[str, str] | None = None,
+    installed_manifests: Iterable[AgentManifest] = (),
 ) -> AgentManifestRegistry:
     builtin = {manifest.id: manifest for manifest in list_builtin_agent_manifests()}
     user_manifests = _discover_custom_agent_manifests(
@@ -110,7 +118,15 @@ def load_agent_manifest_registry(
         scope="project",
     )
     custom: dict[str, AgentManifest] = {}
-    for manifest in (*user_manifests, *project_manifests):
+    installed = tuple(installed_manifests)
+    for manifest in installed:
+        if type(manifest) is not AgentManifest:
+            raise ValueError("installed agent manifests must be pure AgentManifest records")
+        if manifest.source_scope != "package" or manifest.source_id is None:
+            raise ValueError("installed agent manifests require actual package origin/source_id")
+        if not is_valid_agent_manifest_id(manifest.id):
+            raise ValueError(f"invalid installed agent manifest id: {manifest.id}")
+    for manifest in (*installed, *user_manifests, *project_manifests):
         if manifest.id in builtin:
             raise ValueError(
                 f"custom agent manifest {manifest.source_path} uses builtin id '{manifest.id}'; builtin agent manifests cannot be replaced"
@@ -122,17 +138,32 @@ def load_agent_manifest_registry(
     return AgentManifestRegistry(builtin=builtin, custom=custom)
 
 
-def manifest_from_markdown_file(path: Path, *, scope: AgentSourceScope) -> AgentManifest:
+def manifest_from_markdown_file(
+    path: Path,
+    *,
+    scope: AgentSourceScope,
+    source_id: str | None = None,
+) -> AgentManifest:
     try:
         content = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"failed to read custom agent manifest {path}: {exc}") from exc
+    return manifest_from_markdown(content, scope=scope, source_path=str(path), source_id=source_id)
+
+
+def manifest_from_markdown(
+    contents: str,
+    *,
+    scope: AgentSourceScope,
+    source_path: str | None = None,
+    source_id: str | None = None,
+) -> AgentManifest:
     try:
-        frontmatter, body = split_frontmatter(content, require_body=True)
+        frontmatter, body = split_frontmatter(contents, require_body=True)
         payload = _validate_frontmatter_fields(load_frontmatter_mapping(frontmatter))
-        return _manifest_from_payload(payload, body=body, path=path, scope=scope)
+        return _manifest_from_payload(payload, body=body, source_path=source_path, scope=scope, source_id=source_id)
     except ValueError as exc:
-        raise ValueError(f"invalid custom agent manifest {path}: {exc}") from exc
+        raise ValueError(f"invalid custom agent manifest {source_path or source_id}: {exc}") from exc
 
 
 def _discover_custom_agent_manifests(
@@ -173,8 +204,9 @@ def _manifest_from_payload(
     payload: Mapping[str, object],
     *,
     body: str,
-    path: Path,
+    source_path: str | None,
     scope: AgentSourceScope,
+    source_id: str | None,
 ) -> AgentManifest:
     name = _required_string(payload, "name")
     manifest_id = _require_optional_string(payload, "id") or agent_manifest_id_from_name(name)
@@ -185,7 +217,7 @@ def _manifest_from_payload(
     skill_refs = _string_list(payload.get("skill_refs"), field="skill_refs")
     preset_hook_refs = validate_hook_preset_refs(
         _string_list(payload.get("preset_hook_refs"), field="preset_hook_refs"),
-        field_path=f"custom agent manifest {path} preset_hook_refs",
+        field_path=f"custom agent manifest {source_path or source_id} preset_hook_refs",
     )
     prompt_append = _require_optional_string(payload, "prompt_append")
     return AgentManifest(
@@ -194,7 +226,8 @@ def _manifest_from_payload(
         mode=mode,
         description=_required_string(payload, "description"),
         source_scope=scope,
-        source_path=str(path),
+        source_path=source_path,
+        source_id=source_id,
         prompt_profile=manifest_id,
         execution_engine="provider",
         model_preference=_require_optional_string(payload, "model"),
@@ -212,7 +245,8 @@ def _manifest_from_payload(
             body=body,
             prompt_append=prompt_append,
             source_scope=scope,
-            source_path=str(path),
+            source_path=source_path,
+            source_id=source_id,
         ),
     )
 

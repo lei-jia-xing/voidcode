@@ -13,7 +13,7 @@ from voidcode.core.memory_host import MemoryHost
 from voidcode.core.provider_turns import ProviderTurnProducer
 from voidcode.core.tool_context import ToolContext
 from voidcode.core.transcript import ContextSegment, tool_result_output
-from voidcode.core.turns import CallSeed, StreamFact, TurnRequest, TurnSessionSnapshot
+from voidcode.core.turns import CallSeed, FinalTurn, StreamFact, ToolTurn, TurnRequest, TurnSessionSnapshot
 from voidcode.provider.protocol import (
     ProviderErrorKind,
     ProviderExecutionError,
@@ -50,7 +50,7 @@ class _StubTurnProvider:
             return ProviderTurnResult(output=tool_result_output(assembled_context.tool_results[-1]) or "")
 
         path = commands[step_index].removeprefix("read ").strip()
-        return ProviderTurnResult(tool_call=ToolCall(tool_name="read", arguments={"path": path}))
+        return ProviderTurnResult(tool_calls=(ToolCall(tool_name="read", arguments={"path": path}),))
 
 
 def _tool_definitions() -> tuple[ToolDefinition, ...]:
@@ -111,10 +111,7 @@ class _MixedNonStreamingTurnProvider:
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
-        return ProviderTurnResult(
-            tool_call=ToolCall(tool_name="read", arguments={"path": "sample.txt"}),
-            output="done",
-        )
+        return ProviderTurnResult(tool_calls=(ToolCall(tool_name="read", arguments={"path": "sample.txt"}),), output="done")
 
 
 class _BatchNonStreamingTurnProvider:
@@ -387,10 +384,8 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
         session=_session(),
     )
 
-    assert step.tool_calls[0] is not None
-    assert step.tool_calls[0].tool_name == "read"
-    assert step.output is None
-    assert step.is_finished is False
+    assert isinstance(step, ToolTurn)
+    assert step.calls[0].tool_name == "read"
 
 
 def test_deterministic_read_preserves_actual_body_whitespace(tmp_path: Path) -> None:
@@ -436,9 +431,8 @@ def test_provider_provider_graph_prefers_nonstream_tool_call_over_text() -> None
         session=_session(),
     )
 
-    assert step.tool_calls[0] is not None
-    assert step.tool_calls[0].tool_name == "read"
-    assert step.output is None
+    assert isinstance(step, ToolTurn)
+    assert step.calls[0].tool_name == "read"
 
 
 def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() -> None:
@@ -504,7 +498,7 @@ def test_provider_graph_treats_unrecognized_nonstream_finish_reason_as_completed
 
     # The upstream declared a terminal outcome; an unrecognized reason token is a
     # completed (stop-equivalent) turn, not a user-visible failure.
-    assert step.is_finished is True
+    assert isinstance(step, FinalTurn)
     assert step.output == "done"
 
 
@@ -545,7 +539,7 @@ def test_provider_graph_treats_unrecognized_stream_finish_reason_as_completed() 
         session=_session(),
     )
 
-    assert step.is_finished is True
+    assert isinstance(step, FinalTurn)
     assert step.output == "done"
 
 
@@ -595,7 +589,7 @@ def test_provider_graph_treats_omitted_finish_reason_as_completed() -> None:
             session=_session(),
         )
 
-        assert step.is_finished is True
+        assert isinstance(step, FinalTurn)
         assert step.output == "done"
 
 
@@ -799,7 +793,7 @@ def test_provider_provider_graph_streams_ordered_events_and_deterministic_output
         session=_session(),
     )
 
-    assert step.is_finished is True
+    assert isinstance(step, FinalTurn)
     assert step.output == "stream-final"
     stream_events = [event for event in step.facts if isinstance(event, StreamFact)]
     assert [event.event.kind for event in stream_events] == ["delta", "delta", "done"]
@@ -832,6 +826,7 @@ def test_provider_graph_preserves_reasoning_stream_metadata() -> None:
     reasoning_event = next(event for event in stream_events if event.event.channel == "reasoning")
     assert reasoning_event.event.text == "private chain"
     assert reasoning_event.event.metadata == {"source": "fixture"}
+    assert isinstance(step, FinalTurn)
     assert step.output == "answer"
 
 
@@ -891,11 +886,9 @@ def test_provider_provider_graph_parses_streamed_tool_call(provider_class: type[
         session=_session(),
     )
 
-    assert step.is_finished is False
-    assert step.output is None
-    assert step.tool_calls[0] is not None
-    assert step.tool_calls[0].tool_name == "read"
-    assert step.tool_calls[0].arguments == {"path": "sample.txt"}
+    assert isinstance(step, ToolTurn)
+    assert step.calls[0].tool_name == "read"
+    assert step.calls[0].arguments == {"path": "sample.txt"}
 
 
 def test_provider_provider_graph_prefers_streamed_tool_call_over_text() -> None:
@@ -921,9 +914,8 @@ def test_provider_provider_graph_prefers_streamed_tool_call_over_text() -> None:
         session=_session(),
     )
 
-    assert step.tool_calls[0] is not None
-    assert step.tool_calls[0].tool_name == "read"
-    assert step.output is None
+    assert isinstance(step, ToolTurn)
+    assert step.calls[0].tool_name == "read"
 
 
 def test_provider_provider_graph_rejects_malformed_streamed_tool_payload() -> None:
@@ -1041,7 +1033,8 @@ def test_provider_graph_maps_tool_call_lifecycle_and_builds_final_call() -> None
         (),
         session=_session(),
     )
-    assert step.tool_calls[0] is not None and step.tool_calls[0].arguments == {"path": "sample.txt"}
+    assert isinstance(step, ToolTurn)
+    assert step.calls[0].arguments == {"path": "sample.txt"}
     assert [event.kind for event in step.facts if event.kind.startswith("tool_call_")] == [
         "tool_call_start",
         "tool_call_delta",
@@ -1168,8 +1161,9 @@ def test_provider_graph_merges_explicit_and_complete_streamed_tool_calls() -> No
         session=_session(),
     )
 
-    assert [call.tool_call_id for call in step.tool_calls] == ["complete", "explicit"]
-    assert [call.tool_name for call in step.tool_calls] == ["read", "write"]
+    assert isinstance(step, ToolTurn)
+    assert [call.tool_call_id for call in step.calls] == ["complete", "explicit"]
+    assert [call.tool_name for call in step.calls] == ["read", "write"]
 
 
 def test_turn_engine_restores_completed_seed_result_without_replaying_it(tmp_path: Path) -> None:

@@ -11,6 +11,7 @@ from ..background.models import (
     StoredBackgroundTaskSummary,
 )
 from ..background.process import BackgroundProcessPersistence
+from ..composition import CompositionRef, FrozenComposition
 from ..contracts import RuntimeRequest, RuntimeResponse, RuntimeSessionResult
 from ..effectiveness import ToolEffectivenessReport
 from ..events import EventEnvelope, EventSource
@@ -81,6 +82,24 @@ class SessionRepository(Protocol):
 
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse: ...
 
+    def export_session_bundle_rows(
+        self,
+        *,
+        workspace: Path,
+        session_ids: tuple[str, ...],
+        task_ids: tuple[str, ...],
+    ) -> dict[str, object]: ...
+
+    def import_session_bundle_rows(
+        self,
+        *,
+        workspace: Path,
+        sessions: tuple[dict[str, object], ...],
+        events: tuple[dict[str, object], ...],
+        tasks: tuple[dict[str, object], ...],
+        deliveries: tuple[dict[str, object], ...],
+    ) -> None: ...
+
     def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None: ...
 
     def enqueue_session_message(
@@ -147,13 +166,16 @@ class SessionRecoveryRepository(Protocol):
         session_metadata: dict[str, object],
         tool_results: tuple[dict[str, object], ...],
         last_event_sequence: int,
+        composition_ref: CompositionRef,
+        composition: FrozenComposition | None = None,
         output: str | None = None,
         create_if_missing: bool = True,
         turn: int = 1,
         parent_session_id: str | None = None,
     ) -> None: ...
-
     def load_resume_checkpoint(self, *, workspace: Path, session_id: str) -> dict[str, object] | None: ...
+
+    def load_execution_composition(self, *, ref: CompositionRef) -> FrozenComposition: ...
 
     def restore_leaf_after_interrupted_resume(self, *, workspace: Path, session_id: str, sequence: int) -> None: ...
 
@@ -189,7 +211,14 @@ class SessionRecoveryRepository(Protocol):
 
 
 class BackgroundTaskRepository(Protocol):
-    def create_background_task(self, *, workspace: Path, task: BackgroundTaskState) -> None: ...
+    def create_background_task(
+        self,
+        *,
+        workspace: Path,
+        task: BackgroundTaskState,
+        composition_ref: CompositionRef,
+        composition: FrozenComposition | None = None,
+    ) -> None: ...
 
     def load_background_task(self, *, workspace: Path, task_id: str) -> BackgroundTaskState: ...
 

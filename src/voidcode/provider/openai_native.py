@@ -11,7 +11,9 @@ import httpx2
 from openai import APIError as OpenAIAPIError
 from openai import OpenAI, omit
 
-from ..tools.contracts import ToolCall
+from ..core.transcript import tool_result_output
+from ..security.json_values import json_wire_object
+from ..tools.contracts import AttachmentOutput, ToolCall
 from ..tools.output import redacted_argument_keys_for_tool, sanitize_tool_arguments, sanitize_tool_result_data, strip_redaction_sentinels_from_mapping
 from ._wire_common import (
     DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS,
@@ -570,25 +572,31 @@ class OpenAIChatCompletionsProvider:
         completed tool results as a single user message instead, with prior-run
         results kept inside the replayed history.
         """
+        replayed_tool_call_ids = {
+            segment.tool_call_id
+            for segment in request.assembled_context.segments
+            if segment.role == "tool" and segment.tool_call_id is not None and (segment.metadata or {}).get("source") == "replayed_conversation"
+        }
         tool_feedback_lines: list[str] = []
         for result in request.assembled_context.tool_results:
-            if result.source == "replayed_conversation":
+            if result.tool_call_id in replayed_tool_call_ids:
                 continue
-            raw_data = result.data
-            sanitized_data = sanitize_tool_result_data(raw_data) if isinstance(raw_data, dict) else {}
-            raw_arguments = sanitized_data.get("arguments")
-            sanitized_arguments = self._visible_arguments(result.tool_name, raw_arguments) if isinstance(raw_arguments, dict) else {}
+            arguments = self._visible_arguments(result.tool_name, dict(result.arguments))
+            output = result.output
+            bounds = output.bounds
             payload = {
                 "tool_name": original_to_provider.get(result.tool_name, result.tool_name),
-                "arguments": sanitized_arguments,
+                "arguments": arguments,
                 "status": result.status,
-                "content": result.content or "",
+                "content": tool_result_output(result) or "",
                 "error": result.error,
-                "data": {key: value for key, value in sanitized_data.items() if key not in {"tool_call_id", "arguments"}},
-                "truncated": result.truncated,
-                "partial": result.partial,
-                "reference": result.reference,
+                "truncated": bounds.truncated or result.clipped or result.pruned,
+                "partial": bounds.partial or result.clipped or result.pruned,
+                "reference": bounds.reference.uri if bounds.reference is not None else None,
             }
+            if isinstance(output, AttachmentOutput):
+                payload["mime"] = output.mime
+                payload["data_uri"] = output.data_uri
             tool_feedback_lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         messages: list[dict[str, object]] = []
         for segment in request.assembled_context.segments:
@@ -625,7 +633,7 @@ class OpenAIChatCompletionsProvider:
         original_to_provider, _ = self._tool_maps(request)
         tools: list[dict[str, object]] = []
         for tool in request.available_tools:
-            schema = tool.input_schema or {}
+            schema = json_wire_object(tool.input_schema)
             if schema.get("type") == "object" or "properties" in schema or "additionalProperties" in schema:
                 parameters = dict(schema)
                 parameters.setdefault("type", "object")

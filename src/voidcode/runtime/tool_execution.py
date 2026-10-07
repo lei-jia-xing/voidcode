@@ -8,7 +8,17 @@ from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from ..core.tool_context import EditSchema, LspDiagnostics, LspRequester, McpRequester, RuleReader, ToolCatalog, ToolCommandHandler
+from ..core.tool_context import (
+    ArtifactRead,
+    EditSchema,
+    LspDiagnostics,
+    LspRequester,
+    McpRequester,
+    RuleReader,
+    ToolCatalog,
+    ToolCommandHandler,
+    TranscriptRead,
+)
 from ..provider.protocol import ProviderAbortSignal
 from ..skills.models import SkillMetadata
 from ..tools.contracts import (
@@ -219,8 +229,8 @@ class RuntimeToolExecutor:
     lsp: LspDiagnostics | None = None
     lsp_diagnostics_on_write: bool = False
     tool_catalog: ToolCatalog | None = None
-    read_artifact: Callable[..., dict[str, object]] | None = None
-    read_transcript: Callable[..., dict[str, object] | None] | None = None
+    read_artifact: Callable[..., ArtifactRead] | None = None
+    read_transcript: Callable[..., TranscriptRead] | None = None
     read_rule: RuleReader | None = None
     resolve_skill: Callable[[str], SkillMetadata] | None = None
     resolve_edit_schema: Callable[[str | None], EditSchema] | None = None

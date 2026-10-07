@@ -1,6 +1,11 @@
 # Agent Core 重构实施计划
 
-状态：P0 治理基线与 P1–P3 contracts / 显式 tool invocation / 单一 turn engine cutover 曾在 P3 工作区完成实现并通过 scoped 行为验证；但旧引用 P3 milestone `9dc84ab` 并非自包含的源码交付（`src/voidcode/core/engine.py` 不在该 commit tree），该 core 源码随 P4 normal-hook milestone `c67b854` 一并提交。P4 当前实现与 scoped 行为验证已由 normal-hook milestone `c67b854` 提交。P5–P6 与已批准但仅计划的新增类型收敛尚未实施。scoped 验证不代表最终十项验收或项目级 gates 已通过。
+状态：P0 治理基线与 P1–P3 contracts / 显式 tool invocation / 单一 turn engine cutover 曾在 P3 工作区完成 scoped 行为验证；旧引用 P3 milestone `9dc84ab` 并非自包含源码交付（`src/voidcode/core/engine.py` 不在该 commit tree），core 源码随 P4 normal-hook milestone `c67b854` 一并提交。P4 scoped 实现与验证已由 `c67b854` 提交。P5 仍在实施，但已完成并有当前 focused evidence 的 slices 包括：严格 capability snapshot v4 / SQLite schema 2 / bundle schema 2 composition owner closure；typed reader/context projection；合法 `ToolTurn`/`FinalTurn` 与 `CallReported`/`CallPaused`/`CallStopped*` caller migration；`ReportedCall`/`ToolResultView` ownership and authoritative report codec；background task owner/reopened-runtime smoke。P5 当前明确阻塞为 external package tool/agent/context/typed-input runtime adapters 与 durable lifecycle phase contract；不得据此声称 P5/P6、all-ten 或 full gates 完成。
+当前接受的窄范围证据仍仅覆盖各条目列出的 focused behavior tests 与 isolated runtime smokes；历史 milestone/审计段落保留为历史，不作为当前完成证明。
+
+## 当前数据格式策略（后续用户要求，覆盖旧迁移条款）
+
+最新用户要求“不要考虑向后兼容”覆盖下文旧的 database/bundle migration、旧版只读 decoder 或转换要求。当前格式为 `agent_capability_snapshot` v4、SQLite `user_version` 2 与 session bundle schema 2；snapshot/bundle 缺失或不支持的版本严格拒绝，SQLite 只允许无应用 schema 的空数据库从 version 0 初始化，并在 bootstrap/configuration 前拒绝旧版或含应用 schema 的 unversioned 数据库。不得添加旧格式 decoder、转换器、migration 或 compatibility path；拒绝时保留原有数据库、bundle 和旧数据不变，不自动删除/覆盖，需从新空数据库路径开始。
 
 依据：[pi × VoidCode 可扩展性审计](../audits/pi-voidcode-extensibility.md)。审计是历史快照，不改写；本计划的当前状态须以源码和实际行为为准。目标覆盖审计 P0-1～P0-6、P1-7～P1-8、§5 的组合问题和 §8 全部十项验收，不把 roadmap 当成增加产品功能的授权。
 
@@ -153,7 +158,7 @@ facade 调用者检查：`uv run pytest -q tests/unit/tools tests/unit/runtime/t
 - 本地 stdio MCP/LSP 实际进程 smoke（独立验证）：真实响应、initialize/shutdown/stopped markers、runtime exit 后 PID 消失；无在线服务依赖。实际 CLI `VOIDCODE_EXECUTION_ENGINE=deterministic uv run voidcode run 'read probe.txt' --workspace <tmp> --json` 完成真实两行 read；`sessions list/entries` 观察到一次 tool completion。P2 未声称 TUI 验证。
 - 最新独立 checks：`uv run pytest -q tests/unit/tools` → **169 passed**；`uv run pytest tests/unit/runtime/test_permission_plan_mode.py tests/unit/runtime/test_tool_execution_ownership.py tests/unit/runtime/test_tool_execution_timeout.py tests/unit/runtime/test_typed_tool_hooks.py -q` → **69 passed**（与工具目录 disjoint，不与历史 78 汇总）。backend contract 残留 package-export fixture 切到真实 defining module 后，`uv run pytest -q tests/unit/runtime/test_backend_contracts.py` → **7 passed**。P2 owned source scoped `ruff check` / `ty check` 均通过；全仓门禁由 integration owner 在 milestone review 后运行。
 - 后续 consumer checks 暴露并修复遗漏的 ReadTool patched wrapper 与 empty-effects 默认误分类；未知 facts 在共享 classifier fail closed（scope/catalog/replay/permission 一致）。真实 resolver regression 不 pin tier 标签：`write` mode 下无 facts 要求 approval、显式 read 自动允许；MCP hint 经实际 `write/ask` admission 验证。`uv run pytest -q tests/unit/runtime/test_approval_mode_tiers.py` → **15 passed**。真实 scope/permission smoke 同时观察到 plan exclusion、replay `never`、`ask` pending 与 plan ceiling 对 `yolo` 的 deny。
-- 历史 SQLite 实测：由 P1 commit `d33e51d` 的真实源码生成 waiting approval 与 snapshot v3，当前 P2 批准后真实 write completion 一次；fresh reopen/replay 仍只有一次且文件 content/mtime 不变。这不是全量旧数据迁移证明；effects 与 declared replay policy 已纳入当前 generation fingerprint，P4/P5 仍负责后续冻结 shape/version 的显式迁移。
+- 历史 SQLite 实测：由 P1 commit `d33e51d` 的真实源码生成 waiting approval 与 snapshot v3，当前 P2 批准后真实 write completion 一次；fresh reopen/replay 仍只有一次且文件 content/mtime 不变。这不是全量旧数据迁移证明；effects 与 declared replay policy 已纳入当前 generation fingerprint。该历史段落记录当时要求 P4/P5 做显式迁移；该要求已被本计划开头的最新严格拒绝/保留旧文件策略取代，不要求转换 legacy data。
 
 
 ### P3：真实 turn engine 与 runtime host 单路径切换
@@ -184,17 +189,17 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 
 按已有 consumers 从 `SessionStore` 拆 event append/read、session identity/branch、approval、task 和 bounded artifact ports。SQLite 实现继续复用已有 owners/mixins、事务、dedupe、terminal seal 和 write gateway；内存 EventStore 实际实现 append/read/branch 需要的语义，供无数据库 host 使用。事务/ownership 只在需要处提供，不为每个 repository 复制完整 mega-port。
 
-优先保持现有 durable rows 和公共 wire。若 codec/snapshot 确需变更，交付显式 database/bundle migration 和旧数据 fixture：先备份/验证、明确版本拒绝、一次 cutover，不隐式双写、不允许 replay 重执行工具；迁移后的 obsolete shape reader 删除。
+格式变更采用严格 clean cutover：旧版本或 shape 不兼容时明确拒绝；不做数据库/bundle 数据转换、旧格式 decoder、双读写或兼容路径，且不得自动删除/覆盖原文件。需要新格式时使用新空数据库与当前 bundle 格式；永久保留旧文件中的原始数据。
 
 **退出：** 同一 core 行为 contract 可以使用内存或 SQLite event adapter；domain facts 与 client delivery payload 有不同 owner；现有 approval/crash/fork/checkout/append-only 行为保持。
 
-**验证：** 真 SQLite 临时库完成 run、关闭/reopen、replay、resume；side-effect counter 不增加；checkout/fork 原事件未改、pair 不拆，fork provenance 与 delegated parent 不混用；夺权后 late append/progress/result 被 write gateway 拒绝；必要 migration fixture 失败不破坏原库。
+**验证：** 真 SQLite 临时库完成 run、关闭/reopen、replay、resume；side-effect counter 不增加；checkout/fork 原事件未改、pair 不拆，fork provenance 与 delegated parent 不混用；夺权后 late append/progress/result 被 write gateway 拒绝；旧版或 unversioned 数据拒绝时原始文件保持不变（不再要求 migration fixture）。
 
 **风险：** ports 拆分破坏原子事务、未经 redaction 的 event 落库、旧 session 不可读、client wire/replay 语义混淆。
 
-**P4 当前已实施与 scoped 证据（待 normal-hook milestone）：**
+**P4 历史实现与 scoped 证据（normal-hook 源码 milestone `c67b854`）：**
 
-- concrete typed facts、sole `core.turns.CallSeed`、实际隔离的 memory append-only event tree 与 bounded SQLite fact adapter 已接入现有 RuntimeHost；projection 使用现有 wire/codec。未新增 SQLite/bundle/checkpoint 格式：P4 均保持 version 1；P5 的 snapshot/outer-format migration 尚未实施。
+- P4 当时没有引入 SQLite/bundle/checkpoint/fact-codec 新格式，物理与编码版本保持 v1；这是历史 P4 状态，不再表示 P5 格式切换尚未实施。当前 cap snapshot v4 / SQLite schema 2 / bundle schema 2 的严格拒绝规则见本计划开头。
 - 原始 native batch 与实际已授权参数分开；completion 预发布校验真实 ID，再由已有 transaction 原子提交实际完成前缀/checkpoint，全部 dedupe-skipped 不改 leaf/watermark/checkpoint。bounded runtime-only 空页继续 cursor；fork/checkout 检查所选 ancestry 的真实 pair，保留原序号/parent edges/fork provenance，不合成 legacy ID。
 - canonical metadata 使用既有 session snapshot projection；修复 whole-checkpoint payload redaction 对 hook `authority` 的 post-hash 变更，未绕过 validation/重算 hash/修改全局 redactor。实际批准 write 的 stream-close 和 terminal-save failure 后由新 owner resume：每场景写入一次，文件 bytes/mtime 不再变化，authentic prefix、当前 frozen hook hash 与 capability snapshot 保持。实际 question-answer stream-close/new-owner resume 保留回答 A、真实 write 一次、durable answer 一次。另有 enabled frozen hook 在新 runtime config 禁用 hook 后仍沿已记录语义执行的 consumer 证明；不扩大任意未来 signed snapshot 的安全声明。
 - shared SessionRepository queue mutation owner 在 transaction 内 enqueue/drain；一般 snapshot 保留 current queue/delivery cursor，包括 consumed absence。实际 SDK follow-up 在保留先前 native pair/output 后处理新 user input，真实 Read/Write 各一次；并发真实 enqueue/drain 顺序与一次 delivery 已验证。corrupt non-object durable metadata 明确拒绝。
@@ -203,23 +208,32 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 
 ### P5：注册与组合收敛，不建立任意权限 plugin bus
 
-**进入：** core、explicit tools、typed facts 和 repository adapters 已切换，恢复输入具有明确 version policy。
+**进入：** core、explicit tools、typed facts 和 repository adapters 已切换；恢复输入采用明确版本策略，当前 capability/SQLite/bundle 格式严格拒绝旧版本且不转换旧数据。
 
 **变更：**
 
 - provider package entry 组合 wire adapter、catalog/model metadata、auth 和 endpoint declaration。迁移 builtin 注册到同一机制；复用当前 normalized boundary。未知 provider 仍拒绝，runtime 保留 retry/fallback policy，metadata 来自 discovery/generator 而非手改生成 JSON。
 - 复用 ToolMaterializer、agent/skill registry、MCP declaration 和 context transform seam，建立 `discover → validate → register → materialize`。已有内置能力成为实际注册消费者；可信进程内 package 能定义声明/生命周期，但不能自行 grant、写 session truth 或绕过 runtime lifecycle。
 - 将 manifest、request overrides、parent binding 等 intent 收敛为 `CapabilityBinding`；policy 单独 materialize authority；最终冻结 `ExecutionPlan`。保留 recovery-critical 值和 provenance，删除重复 feature snapshot/中央 preset 判断；materialized plan 必须在可能发生第一个 side effect 前持久化。
-- 核心 config 只保留 runtime execution/policy/storage 必需规则，extension-specific declaration 由所属 package 验证；中央 loader 只组合已注册 section。保持 env/user/repo/request/persisted/parent precedence，不改变现有 config 输入的权限意义。schema 由 source models 生成；如果格式需要改，按 P4 的显式版本 cutover，不永久保存旧入口。
+- 核心 config 只保留 runtime execution/policy/storage 必需规则，extension-specific declaration 由所属 package 验证；中央 loader 只组合已注册 section。保持 env/user/repo/request/persisted/parent precedence，不改变现有 config 输入的权限意义。schema 由 source models 生成；格式改变即按严格 clean cutover 拒绝旧格式，不永久保存旧入口或迁移旧数据。
 - typed context transforms、tool-input handlers 和已有 typed lifecycle consumers 使用收敛 phase contract，明确 lifecycle/ordering/failure/snapshot/replay；argv hooks 保留外部 command adapter，guidance-only hook preset 不变成可授权插件。`observe/transform/gate/schedule` 只实现有现有消费者的 phase：gate 只缩权，schedule 只提交 runtime command。不顺带新增任意 prompt mutation、compaction strategy 或 provider transform feature。
 
 **退出：** 在单一 extension package 内添加 provider/tool/agent/context extension 的 declaration、validator、materializer 和 phase 语义，只需注册该 package，不修改 `service.py`、`run_loop.py`、`config_models.py`、`events.py`。同一 registry 不意味不同能力拥有同一 authority；MCP/LSP 的资源创建/refresh/shutdown 仍由 runtime owner 处理。
 
-新增类型收敛的步骤 1–3 是 P5 前置实施项，步骤 4 在 P5 明确所有权；P5 退出还须完成对应实际 producer/consumer cutover，并证明 package-owned typed result 不依赖中央 tool-name 分支。具体范围与尚未实施状态见下述追加计划。
+新增类型收敛的步骤 1–3 是 P5 前置实施项，步骤 4 在 P5 明确所有权；当前已完成的 focused slices 与仍阻塞的 external-slot/phase contract 见下方进展记录。P5 退出仍需真实 producer/consumer cutover 与行为证据，不能以本节 progress 取代阶段验收。
 
 **验证：** package fixture 注入新 provider、实际执行的纯工具、agent declaration 和 context transform，完整 runtime run 得到可断言输出；在 config/request precedence、parent policy 限制、ordering/failure、frozen snapshot recovery 中验证行为；恢复时磁盘 declaration 改动不能偷偷替换已冻结执行语义，无法恢复则明确拒绝。argv hook timeout/failure 仍按原配置处理，gate 不可扩权。
 
 **风险：** generic dict section 成为弱校验后门；agent selection 与 policy 混同；复用 snapshot 时丢失 skill scope/force load 或 MCP intent；phase 合并改变 rewrite/resume ordering。
+
+**当前已核实的 P5 进展（focused evidence，不是阶段完成声明）：**
+
+- 严格 composition/storage/bundle ABI 已落地：capability snapshot v4、SQLite schema 2、bundle schema 2，composition owner closure 只保留 canonical reference，旧格式不迁移；reopened-runtime owner activation 与 background task owner/retry 路径已有 isolated SQLite/XDG smoke。
+- reader/context slice 已使用 typed `ReadResultBody`、`ReportedCall` 与 output-only `ToolResultView`；authoritative report codec 已覆盖 completed-call checkpoint/replay 与 output/control alternatives。`ReportedCall` 保留 authorized arguments 与 immutable tool body，provider/model view 不携带 canonical body。
+- legal turn states 已迁移真实测试 callers 至 `ToolTurn`/`FinalTurn` 与 `CallReported`/`CallPaused`/`CallStopped*`；源码无旧 callable `TurnPlan` 构造或 completion flag fallback。ToolResultView ownership 与 projection/context consumers 已有 focused mutation/report/runtime evidence。
+- 当前 blockers：外部 package 的 tool/agent/context/typed-input slots 仍只有 declaration/admission，service 没有既有 runtime adapters/registry registration API；composition `PhaseDeclaration` 仍没有 runtime trigger 与 durable `PhaseRecord` persistence/replay contract。两者需要上游 API/owner，不能在本阶段伪造。
+
+上述证据只表示列出的 focused tests/smokes 已执行；不声称 P5/P6、all-ten 或 full repository gates。
 
 ### P6：任务 substrate / delegation adapter，完成最终切除
 
@@ -236,6 +250,8 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 **验证：** 排队→执行→完成/失败/取消；keep-alive idle 后 steer；owner 被夺走后老 worker 不写状态/结果；yield/result/parent notification 只有一次；shutdown 不留活动 owner。CLI/TUI 人工实际程序 smoke 检查 run、approval、resume、cancel、fork/checkout 及流式 projection；不新增永久 CLI/TUI 自动测试。
 
 **风险：** substrate 抽取意外扩大 preset/topology 权限、通知重复、child session ownership 与 fork lineage 混合；最终 cleanup 不得删除仍有消费者的 contract。
+
+**当前 focused 进展（不代表 P6 完成）：** queued→dispatch→child session→result/retry/steer/reopen、keep-alive ownership seizure/fresh resume、explicit ToolContext parity、typed facts, provider/core parsing, recovery and governance cells have focused behavioral evidence. A concrete direct-task child-session collision was fixed by forcing allocation when a background request lacks an explicit session id. Remaining acceptance blockers are external package all-slot runtime adapters and durable package phase owner; unselected historical tests are not completion evidence.
 
 ## 审计覆盖映射
 
@@ -257,44 +273,44 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 | §5.6 event owner | P4 事实→durable→delivery |
 | §5.7 context pipeline | P1 transcript 前置，P5 已有 phases 收敛；新 transform 功能非本轮要求 |
 
-## §8 十项硬验收：未来必须实际执行的检查
+## §8 十项硬验收：当前 focused evidence matrix
 
-以下是实施验收计划，不是本轮已通过报告。
+以下矩阵只记录当前源码与已执行的 focused behavior/smoke evidence；它不是 P5/P6、all-ten 或 full-gate 完成声明。`BLOCKED` 表示缺少既有 owner/API，不能用 source-text 或 fake fallback 代替。
 
-| # | 完成条件与可观察证明 | 阶段 |
+| # | 当前状态 | 当前证据 / 精确 blocker |
 | --- | --- | --- |
-| 1 | 新 provider/tool/agent/context package 及其 typed result 注册后完整运行产出预期结果，四个中央文件与中央 tool-name cases 无需变更；review diff 是补充，不以 source-text 测试替代运行 | P5/P6 |
-| 2 | 干净进程无 runtime/SQLite/workspace/UI/MCP/LSP，内存 host 完成 multi-tool 两轮会话及 abort；必须运行而非仅 import | P3 |
-| 3 | 插件/core 尝试扩权限无效；approval 阻塞副作用；lease 夺权阻止晚写；所有 durable truth 由 runtime/store owner 写 | P2/P4/P5/P6 |
-| 4 | 同一真实工具使用显式 context 在内存 host 和 runtime host 都执行；身份、abort、progress、capability 不通过 ContextVar 获取；Artifact/Transcript/Rule 同进程 reader 的已知结果按合法 typed alternatives 消费，不重复解析内部 mappings | P2/P5 |
-| 5 | core typed facts 可被内存 host 消费；runtime 同事实先治理/持久化再投影稳定 client wire；live-only delta 不落库 | P4 |
-| 6 | 同一参数化真实 multi-tool 行为 contract 覆盖 Read 的 empty/binary/clipped/error、rewrite、approval/reopen/native prefix，使用 memory/SQLite adapters、scripted producer 和真实 SDK/wire adapter（本地确定性 transport fixture）；有凭据时再做在线 smoke，不以 scripted 替代 real SDK 证据 | P3/P4/P5/P6 |
-| 7 | approval resume、fallback、timeout 的未知完成真相、hard kill/crash resume、late write、fork/checkout 真实副作用/持久化场景不回退；question/yield/progress control 由所属 typed owner 判定，不从任意 JSON body 推断 authority/control；client wire/redaction/version migration 保持明确 | P2/P3/P4/P5/P6 |
-| 8 | reopen/replay/恢复已完成 typed tool result 时原始 native ID 和最终已授权参数保持，实际副作用计数不增加；未确定完成的 in-flight call 不被假报完成或偷偷重放；authoritative raw history 不被模型投影修改 | P3/P4/P5/P6 |
-| 9 | 单 package 定义 phase 生命周期、ordering、failure、snapshot/replay；改变 package 后恢复沿 frozen semantics 或明确拒绝，不修改中央 runtime | P5 |
-| 10 | 真实 provider response 的 parsing/normalized batch continuation 和合法 TurnPlan/CallOutcome alternatives 由 provider/core 完成；runtime host 在 run/stream/resume/fallback 中只选择与治理，保留 abort-before-result 等真实 absence | P3/P5 |
+| 1 | **BLOCKED** | installed provider 有真实 runtime path；tool/agent/context/typed-input package slots 只有 CompositionOwner declaration/admission，service 没有 package registry/materializer adapters。缺少四中央文件不改的可执行 owner/API。 |
+| 2 | **PASS (focused)** | fresh subprocess MemoryHost + TurnEngine 完成两轮 multi-tool，输出 `done:4`；abort run 提交 1 个结果并停止 pending call。 |
+| 3 | **PASS (focused)** | privilege/security refusal 17 passed；approval/read-write side-effect 5 passed；lease seizure/late-write/fresh resume 3 passed；durable writes route through runtime/storage owners in these scenarios。 |
+| 4 | **PASS (focused)** | same CaptureTool in fresh MemoryHost/RuntimeHost subprocess observed explicit session/run/call IDs and abort; RuntimeHost supplied workspace/progress callback and emitted `runtime.tool_progress`; no ContextVar path. |
+| 5 | **PASS (focused)** | typed-facts/live-only matrix 6 passed; MemoryEventStore and isolated SQLite reject durable StreamFact, while RuntimeHost publishes live deltas and persists typed durable facts. |
+| 6 | **PASS (focused)** | parameterized Read→Write matrix: MemoryEventStore 2 cases, SQLiteFactStore 2 cases, deterministic RuntimeHost 1, local OpenAI-compatible wire/runtime 1; total 6 passed. |
+| 7 | **PASS (focused)** | crash/approval/fallback/timeout/fork/checkout selected cells passed; hard-kill suite 5 passed; timeout module 35 passed. The matrix remains focused and is not a claim that every historical test module is migrated. |
+| 8 | **PASS (focused)** | crash/reopen matrix preserves completed native IDs and authorized args; read side-effect count remains 1, crashed in-flight call is never completed, resumed call gets a fresh ID; blocking side-effect count is exactly 2 (crash + fresh resume). |
+| 9 | **BLOCKED** | ActiveComposition has pure `run_phase` only; no runtime trigger consumer or durable PhaseRecord repository/checkpoint owner. A package cannot recover phase semantics end-to-end without an upstream API/owner. |
+| 10 | **PASS (focused)** | provider/core parsing matrix 9 passed: local OpenAI wire, finish/retry/fallback, streamed/native tool IDs and legal ToolTurn/FinalTurn; RuntimeHost governs selection/abort/recovery rather than reparsing. |
 
-## 追加：工具结果与内部协议的类型收敛（新增计划，尚未实施）
+## 追加：工具结果与内部协议的类型收敛（P5 实施中）
 
-用户新增要求：减少真实同进程协议中的匿名结构与非法状态组合，不把所有 `None` / `get` / `isinstance` 或工具 JSON body 都视为应删除的校验。本节仅为计划，尚未实现；P4 已取得的事实存储/恢复证据不能作为这些新增步骤的通过证明。
+用户新增要求：减少真实同进程协议中的匿名结构与非法状态组合，不把所有 `None` / `get` / `isinstance` 或工具 JSON body 都视为应删除的校验。本节记录仍在进行的实施；已有 core/MemoryHost 与 body-ownership scoped 证明仅覆盖下文明确列出的范围，不代表 RuntimeHost、SQLite 或全部调用方已完成。
 
-**当前具体证据：**
+**历史类型基线（非当前状态）；当前分步状态见下表：**
 
-- `src/voidcode/tools/contracts.py:243–277` 已有外层 `ToolResult` 与 typed `ToolDiagnostics`；缺口是 `data: dict[str, object]` 及 success/error 的 nullable 字段组合。`core/turns.py:35–53` 将 native ID、最终已授权 arguments 混入匿名 data；`core/transcript.py:69–74` 按 Read 名称解析 runtime-shaped `raw_content`。
-- `runtime/execution/tool_result_projection.py:44–64,81–88,111–141` 复制/裁剪/脱敏、把 body 合入 public completion、重复读取 native correlation 与 yield/control 形状；`runtime/execution/turn_recovery.py:108–113` 再从 data 读取 completed IDs。需要区分 domain result、实际 completed-call truth、control 与 public/model projection，而不是增加另一套 schema registry。
-- `core/tool_context.py:25–59` 的 Artifact/Transcript/Rule reader 返回 raw mappings；`tools/read.py:125–154,178–183` 再解析同进程 capability 的 status/content/cursor/transcript。文件、外部服务与 SQLite 输入的首次解析仍是必要边界。
-- `core/engine.py:17–23` 的 `CallOutcome` 与 `core/turns.py:143–156` 的 `TurnPlan` 用 discriminator + nullable 字段再拒绝非法组合；`core/transcript.py:12–28,38–39,66` 的 `ToolResultView` 两次 deepcopy 并动态转发，而 frozen `ToolResult` 仍包装可变 dict。
+- `src/voidcode/tools/contracts.py`, `core/turns.py`, `core/transcript.py` own typed success/failure, output/body, `ReportedCall`, legal turn/result alternatives and the explicit model view. Core/MemoryHost and RuntimeHost focused behavior now cover the listed result/reader/replay paths; remaining stale callers are explicitly reported blockers, not silently treated as migrated.
+- `runtime/execution/tool_result_projection.py`, `runtime/execution/turn_recovery.py`, `fact_codec.py`, `fact_store.py` and `run_loop.py` now have focused report/checkpoint/runtime evidence: canonical reports preserve identity/control, typed facts reject live-only deltas, and RuntimeHost persists governed facts before client projection. This is scoped evidence, not a full repository or P6 claim.
+- `core/tool_context.py` typed Artifact/Transcript/Rule readers and `ReadResultBody`/canonical `ReportedCall` consumers are exercised through focused replay/tracker/write-guard/rule/resource smoke; package all-slot adapters and lifecycle phase persistence remain blocked as recorded in the ten-row matrix.
+- `core/engine.py`, provider producer, MemoryHost and RuntimeHost use legal phase/outcome and explicit result-view seams; provider/runtime abort/recovery/governance evidence is listed only where the focused matrix actually ran.
 
 **分步 ownership / 状态：**
 
 | 步骤 | 阶段与 owner | 新增变更与完成边界 | 当前状态 |
 | --- | --- | --- | --- |
-| 1：共同工具结果与已完成调用 | P5 前置：shared tool contracts、实际 producer / host fact / control owner；P6：全部消费者最终切除 | 建立真实 typed success/error/result/output common contract；native correlation 与最终已授权 arguments 由实际 completed-call/host facts 拥有，不藏入任意 body。producer 一次生成 typed presentation/content；question/yield/progress/artifact 与实际消费的 builtin payload 由各自 owner 建模。package/MCP 真正开放的 JSON body 仅是有 scope 的边界数据，不能携带 authority/control；package-owned generic/typed DTO 不要求中央所有 tool-name union。 | 新增计划，未实施 |
-| 2：显式 context reader 协议 | P5：Artifact/Transcript/Rule capability producer、storage/file adapter 与 Read consumer；P6：旧 mapping helpers 切除 | 已知返回值直接 typed，missing/available/error/cursor 按实际合法 alternatives 表达；external/files/SQLite 解析一次，可信同进程消费者访问字段，不重复猜测 shape。 | 新增计划，未实施 |
-| 3：core phase/result 合法状态 | P5：core TurnPlan/CallOutcome 与 provider/runtime host consumers；P6：旧组合式构造/解析切除 | 用明确合法 alternatives 表达阶段/结果；保留 abort before result 等真实 absence，不清除有效 `None` 或仅改名校验。复用 canonical checkpoint → CallSeed parser，persisted raw shape/version/integrity 校验仍保留在 trust boundary。 | 新增计划，未实施 |
-| 4：authoritative result 与 isolated model view | P5：result/transcript ownership；P6：已证明冗余的复制/转发最终切除 | 明确不可被 projection 修改的 authoritative history 与隔离 typed model view；证明 raw history 不会突变后才删除冗余 deepcopy / forwarding，不 blanket 删除 defensive copies。 | 新增计划，未实施 |
+| 1：共同工具结果与已完成调用 | P5 前置：shared tool contracts、实际 producer / host fact / control owner；P6：全部消费者最终切除 | 建立真实 typed success/error/result/output common contract；native correlation 与最终已授权 arguments 由实际 completed-call/host facts 拥有，不藏入任意 body。producer 一次生成 typed presentation/content；question/yield/progress/artifact 与实际消费的 builtin payload 由各自 owner 建模。package/MCP 真正开放的 JSON body 仅是有 scope 的边界数据，不能携带 authority/control；package-owned generic/typed DTO 不要求中央所有 tool-name union。 | 纯 core/MemoryHost 真实 SDK multi-tool、abort/partial-prefix continuation、reasoning 与 history/body isolation（#0DBF）；OpaqueToolBody 与 MemoryEventStore fact-publication 边界（#E35F）；report/checkpoint codec-v2 identity/control isolation及所列受限 parser/replay smoke（#832F）。独立 composition source（#718B）、pure composition（#B43C）与 fatal-once（#D219）是不同范围，不构成本行上述核心/存储证明。真实 RuntimeHost Read→Write、SQLite report replay 通过。provider #D714 限于 neutral static slice（75 定向测试、2 次真实 SDK 请求）；tool #C8E5 限于 21 个纯静态…
+| 2：显式 context reader 协议 | P5：Artifact/Transcript/Rule capability producer、storage/file adapter 与 Read consumer；P6：旧 mapping helpers 切除 | 已知返回值直接 typed，missing/available/error/cursor 按实际合法 alternatives 表达；external/files/SQLite 解析一次，可信同进程消费者访问字段，不重复猜测 shape。 | `ReadResultBody` 是具体 file-page DTO，无 `path` 字段；每行保存 producer-owned `truncated`，canonical path 来自已授权调用 arguments，strict body decoder 拒绝旧 path-bearing/flagless 形状。真实 Read→ReportedCall→JSON→strict replay→tracker→Write guard 与规则读取 smoke 覆盖分页/clip/empty/bytecap，以及 Artifact/Transcript/Rule/archive/PDF 等实际 resource surfaces；相关 targeted tests 32 passed（`local://p5-read-changed-proof.json#EB34`）。仍不代表所有 P5 composition/store/task/fork/bundle 验收已完成。
+| 3：core phase/result 合法状态 | P5：core TurnPlan/CallOutcome 与 provider/runtime host consumers；P6：旧组合式构造/解析切除 | 用明确合法 alternatives 表达阶段/结果；保留 abort before result 等真实 absence，不清除有效 `None` 或仅改名校验。复用 canonical checkpoint → CallSeed parser，persisted raw shape/version/integrity 校验仍保留在 trust boundary。 | core producer/MemoryHost 的真实 SDK multi-tool、partial-prefix continuation、原 reasoning 与合法 typed result 有 scoped 证明；RuntimeHost `ToolTurn`/`FinalTurn` Read→Write、SQLite report replay 及 deterministic actual-program output 有窄范围验证。真实 OpenAI SDK + SQLite reopened-runtime-owner #5623 同批恢复保留原始 reasoning/native call IDs，Read/Write 各执行一次，且 owner/ref/checkpoint 在 activation 前匹配（同进程新 owner，不是进程重启）。其余 provider callers、checkpoint/recovery 矩阵、lifecycle phases、queued task/fork、cold-runtime MCP、bundle/import admission、P6 与十项验收仍未完成。
+| 4：authoritative result 与 isolated model view | P5：result/transcript ownership；P6：已证明冗余的复制/转发最终切除 | 明确不可被 projection 修改的 authoritative history 与隔离 typed model view；证明 raw history 不会突变后才删除冗余 deepcopy / forwarding，不 blanket 删除 defensive copies。 | core history/view、opaque body nested mutation isolation、strict report replay 与 focused SQLite/runtime projections 已通过；未迁移的 stale test fixtures 与 blocked package/phase consumers 仍不计入完成。
 
-复用现有 `ToolInvocation` / `ToolDiagnostics` / `ToolResultView` / `CallSeed`，不新增结果框架，也不以 `TypedDict` / `cast` facade 冒充真实 cutover。迁移全部实际 producers/core/transcript/provider/runtime/codec/recovery/task consumers；不双写，不保留旧 dict helpers、aliases、重复 schema 或双重 data sources。
+复用现有 typed `ToolInvocation` / `ToolDiagnostics` / `ToolResultView` / `CallSeed`，不新增结果框架，也不以 `TypedDict` / `cast` facade 冒充真实 cutover。继续迁移全部实际 producers/core/transcript/provider/runtime/codec/recovery/task consumers；不双写，不保留旧 dict helpers、aliases、重复 schema 或双重 data sources。
 
 **边界与验收：** task output 已从 typed `BackgroundTaskResult` / group result 投影为 model/wire dict，这个实际序列化不是内部 typing debt；event/checkpoint/provider/MCP JSON parsing 属于真实边界，保留验证。以上步骤须执行十项验收中新增的真实结果/reader/control/合法状态场景；新 package 的 typed result 不改四个中央文件或中央 tool-name cases。inventory/removal review 仅补充证据，不新增 source-text、annotation 或 mock-echo tests，不声称新增计划已通过。
 

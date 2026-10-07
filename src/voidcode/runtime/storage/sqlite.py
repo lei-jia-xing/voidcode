@@ -35,11 +35,9 @@ from .rows import (
 )
 from .sessions import _SessionStorageMixin
 
-# The storage schema is a cutover, not a migration: the in-session tree added
-# ``session_events.parent_sequence`` and ``sessions.leaf_sequence``, so the
-# version was reset to 1 and any database written before the change is now an
-# incompatible generation (see ``_raise_schema_mismatch``).
-SCHEMA_VERSION: Final[int] = 1
+# The storage schema is a cutover, not a migration: older database generations
+# are refused before any schema or repository mutation.
+SCHEMA_VERSION: Final[int] = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,10 +204,17 @@ class SqliteSessionStore(
     def _connect(self, workspace: Path) -> Iterator[sqlite3.Connection]:
         _ = workspace
         database_path = self._resolve_database_path()
+        if database_path.exists():
+            probe = sqlite3.connect(f"{database_path.resolve().as_uri()}?mode=ro", uri=True)
+            try:
+                self._assert_supported_version(connection=probe, database_path=database_path)
+            finally:
+                probe.close()
         database_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(database_path, timeout=self._sqlite_policy.busy_timeout_ms / 1_000, isolation_level=None)
         try:
             connection.row_factory = sqlite3.Row
+            self._assert_supported_version(connection=connection, database_path=database_path)
             self._configure_connection(connection=connection)
             self._ensure_schema_once(connection=connection, database_path=database_path)
         except RuntimeError:
@@ -322,15 +327,24 @@ class SqliteSessionStore(
 
     @classmethod
     def _assert_supported_version(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
-        """Fail closed before touching the file when ``user_version`` is not this build's.
+        """Reject unsupported file generations before configuring or bootstrapping SQLite.
 
-        Version 0 is a fresh file and defers to the CREATE path below; the
-        current version is already verified. Anything else is a different
-        generation of the file — there are no migrations, so the version is an
-        exact match, not a floor.
+        Version 0 is fresh only while the database has no application schema.
+        Existing generations are exact matches; there are no migrations.
         """
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version in (0, cls._SCHEMA_VERSION):
+        if version == 0:
+            row = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view', 'trigger') AND name NOT LIKE 'sqlite_%' LIMIT 1"
+            ).fetchone()
+            if row is not None:
+                cls._raise_schema_mismatch(
+                    database_path=database_path,
+                    detail=f"unversioned database contains schema object {row[0]!r}",
+                    reason="needs-upgrade",
+                )
+            return
+        if version == cls._SCHEMA_VERSION:
             return
         cls._raise_schema_mismatch(
             database_path=database_path,

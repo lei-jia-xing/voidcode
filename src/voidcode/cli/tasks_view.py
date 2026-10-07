@@ -236,6 +236,7 @@ def background_task_result_payload(result: BackgroundTaskResult, *, workspace: P
         "routing": _background_task_routing_payload(result.routing),
         "observability": _background_task_observability_payload(result),
         "structured_output": result.structured_output,
+        "handoff": None if result.handoff is None else result.handoff.as_payload(),
         "schema_validation": _background_task_schema_validation_payload(result.schema_validation),
         "next_steps": next_steps,
     }

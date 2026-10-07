@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import ClassVar
 
 from pydantic import BaseModel, field_validator
@@ -7,7 +8,7 @@ from pydantic import BaseModel, field_validator
 from ..core.questions import PendingQuestionOption, PendingQuestionPrompt, QuestionResponse
 from ..core.tool_context import ToolContext
 from ._pydantic_args import parse_tool_args
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import QuestionAnswered, QuestionPrepared, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 
 
 class _QuestionOptionModel(BaseModel):
@@ -71,7 +72,7 @@ class QuestionTool:
     )
 
     @staticmethod
-    def parse_prompts(arguments: dict[str, object]) -> tuple[PendingQuestionPrompt, ...]:
+    def parse_prompts(arguments: Mapping[str, object]) -> tuple[PendingQuestionPrompt, ...]:
         parsed = parse_tool_args(_QuestionArgsModel, arguments, tool_name="question")
         return tuple(
             PendingQuestionPrompt(
@@ -116,34 +117,18 @@ class QuestionTool:
 
     @staticmethod
     def answer_tool_result(responses: tuple[QuestionResponse, ...]) -> ToolResult:
-        lines: list[str] = []
-        payload: list[dict[str, object]] = []
-        for response in responses:
-            lines.append(f"{response.header}: {', '.join(response.answers)}")
-            payload.append({"header": response.header, "answers": list(response.answers)})
-        return ToolResult(
+        lines = [f"{response.header}: {', '.join(response.answers)}" for response in responses]
+        return ToolSuccess(
             tool_name=QuestionTool.definition.name,
-            status="ok",
-            content="\n".join(lines),
-            data={"responses": payload},
+            output=TextOutput("\n".join(lines)),
+            control=QuestionAnswered(responses=responses),
         )
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         _ = context
         prompts = self.parse_prompts(call.arguments)
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.definition.name,
-            status="ok",
-            content=f"Prepared {len(prompts)} question(s)",
-            data={
-                "questions": [
-                    {
-                        "question": prompt.question,
-                        "header": prompt.header,
-                        "options": [{"label": option.label, "description": option.description} for option in prompt.options],
-                        "multiple": prompt.multiple,
-                    }
-                    for prompt in prompts
-                ]
-            },
+            output=TextOutput(f"Prepared {len(prompts)} question(s)"),
+            control=QuestionPrepared(prompts=prompts),
         )

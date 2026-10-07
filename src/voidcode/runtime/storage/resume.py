@@ -72,13 +72,14 @@ class _ResumeStorageMixin(_MixinBase):
             if current_request_sequence is not None
             else ()
         )
+        checkpoint_metadata = {key: value for key, value in response.session.metadata.items() if key != "execution_composition"}
         return {
-            "version": 1,
+            "version": 2,
             "kind": kind,
             "prompt": request.prompt,
             "session_status": response.session.status,
             "session_metadata": session_metadata_for_persistence(
-                response.session.metadata,
+                checkpoint_metadata,
                 events=response.events,
             ),
             "skill_snapshot_hash": snapshot_hash,
@@ -814,13 +815,14 @@ class _ResumeStorageMixin(_MixinBase):
         last_event_sequence: int,
         output: str | None,
     ) -> dict[str, object]:
-        snapshot_hash, snapshot_version, binding_snapshot = cls._checkpoint_skill_snapshot(session_metadata)
+        checkpoint_metadata = {key: value for key, value in session_metadata.items() if key != "execution_composition"}
+        snapshot_hash, snapshot_version, binding_snapshot = cls._checkpoint_skill_snapshot(checkpoint_metadata)
         return {
-            "version": 1,
+            "version": 2,
             "kind": "interrupted",
             "prompt": prompt,
             "session_status": "interrupted",
-            "session_metadata": session_metadata_for_persistence(session_metadata),
+            "session_metadata": session_metadata_for_persistence(checkpoint_metadata),
             "skill_snapshot_hash": snapshot_hash,
             "skill_snapshot_version": snapshot_version,
             "skill_binding_snapshot": binding_snapshot,

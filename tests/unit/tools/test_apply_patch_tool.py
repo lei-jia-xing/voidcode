@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from voidcode.core.tool_context import ToolContext
-from voidcode.tools.apply_patch import ApplyPatchTool
-from voidcode.tools.contracts import ToolCall
+from voidcode.tools.apply_patch import ApplyPatchResultBody, ApplyPatchTool
+from voidcode.tools.contracts import TextOutput, ToolCall
 
 
 def _content_hash(path: Path) -> str:
@@ -56,9 +56,11 @@ def test_apply_patch_updates_file_with_valid_patch(tmp_path: Path) -> None:
 
     assert target.read_text(encoding="utf-8").startswith("patched-1")
     assert result.status == "ok"
-    assert result.data["count"] == 1
-    assert result.data["changes"] == [{"path": "sample.txt", "status": "M"}]
-    assert result.content == "M sample.txt"
+    assert isinstance(result.body, ApplyPatchResultBody)
+    assert result.body.count == 1
+    assert [change.as_payload() for change in result.body.changes] == [{"path": "sample.txt", "status": "M"}]
+    assert isinstance(result.output, TextOutput)
+    assert result.output.text == "M sample.txt"
 
 
 def test_apply_patch_rejects_unified_diff_update_without_prior_read_side_effects(
@@ -101,11 +103,13 @@ def test_apply_patch_accepts_structured_add_file_patch(tmp_path: Path) -> None:
     assert result.status == "ok"
     assert (tmp_path / "src/main.py").read_text(encoding="utf-8") == "print('hello')"
     assert (tmp_path / "README.md").read_text(encoding="utf-8") == "# Demo"
-    assert result.data["changes"] == [
+    assert isinstance(result.body, ApplyPatchResultBody)
+    assert [change.as_payload() for change in result.body.changes] == [
         {"path": "src/main.py", "status": "A"},
         {"path": "README.md", "status": "A"},
     ]
-    assert result.content == "A src/main.py\nA README.md"
+    assert isinstance(result.output, TextOutput)
+    assert result.output.text == "A src/main.py\nA README.md"
 
 
 def test_apply_patch_accepts_structured_update_delete_and_move(tmp_path: Path) -> None:
@@ -153,7 +157,8 @@ def test_apply_patch_accepts_structured_update_delete_and_move(tmp_path: Path) -
     assert not obsolete.exists()
     assert not moved.exists()
     assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "new name\n"
-    assert result.data["changes"] == [
+    assert isinstance(result.body, ApplyPatchResultBody)
+    assert [change.as_payload() for change in result.body.changes] == [
         {"path": "app.py", "status": "M"},
         {"path": "obsolete.txt", "status": "D"},
         {"path": "new.txt", "old_path": "old.txt", "status": "R"},

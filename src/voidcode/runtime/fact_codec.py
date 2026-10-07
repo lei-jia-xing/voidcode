@@ -6,23 +6,23 @@ from typing import Final, cast
 from ..core.turns import (
     LoopStepFact,
     ModelTurnFact,
+    ReportedCall,
     ResponseReadyFact,
     StreamFact,
     ToolCompletedFact,
     ToolRequestedFact,
     TurnFact,
-    normalize_call_result,
 )
 from ..security.redaction import redact_mapping
 from ..tools.contracts import ToolCall
 from ..tools.output import sanitize_tool_arguments
 from .events import EventEnvelope, EventSource
+from .execution.report_codec import parse_report_payload
 from .execution.tool_result_projection import _tool_completed_payload
-from .runtime_debug import prompt_and_tool_results_from_debug_events
 from .session import SessionState
 from .tool_call_preview import WRITE_PREVIEW_TOOLS
 
-FACT_CODEC_VERSION: Final[int] = 1
+FACT_CODEC_VERSION: Final[int] = 2
 DURABLE_FACT_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {
         "graph.loop_step",
@@ -45,6 +45,13 @@ class EncodedFact:
 def require_fact_codec_version(version: int) -> None:
     if isinstance(version, bool) or version != FACT_CODEC_VERSION:
         raise ValueError(f"unsupported execution fact codec version: {version}; migration is required")
+
+
+def reported_call_from_event(event: EventEnvelope) -> ReportedCall | None:
+    if event.event_type != "runtime.tool_completed":
+        return None
+    raw_report = event.payload.get("reported_call")
+    return None if raw_report is None else parse_report_payload(raw_report)
 
 
 def encode_fact(fact: TurnFact, *, version: int = FACT_CODEC_VERSION, session: SessionState | None = None) -> EncodedFact:
@@ -107,17 +114,8 @@ def encode_fact(fact: TurnFact, *, version: int = FACT_CODEC_VERSION, session: S
             payload["diff_preview"] = fact.diff_preview
     else:
         event_type, source = "runtime.tool_completed", "tool"
-        call_id = fact.call.tool_call_id
-        if not call_id:
-            raise ValueError("completed execution fact has no original native call identity")
-        payload.update(
-            _tool_completed_payload(
-                session=session,
-                tool_result=normalize_call_result(fact.call, fact.result),
-                tool_call_id=call_id,
-                sanitized_arguments=sanitize_tool_arguments(fact.call.arguments),
-            )
-        )
+        report = fact.report
+        payload.update(_tool_completed_payload(session=session, report=report))
     return EncodedFact(event_type, source, redact_mapping(payload), persistable)
 
 
@@ -143,7 +141,7 @@ def _boolean(payload: dict[str, object], key: str) -> bool:
 
 
 def decode_fact(event: EventEnvelope, *, version: int = FACT_CODEC_VERSION) -> TurnFact | None:
-    """Read supported v1 facts without executing providers, tools or hooks."""
+    """Decode the current durable fact format; legacy flat tool rows are not executable."""
     require_fact_codec_version(version)
     payload = event.payload
     if event.event_type == "graph.loop_step":
@@ -170,23 +168,23 @@ def decode_fact(event: EventEnvelope, *, version: int = FACT_CODEC_VERSION) -> T
         reason = _text(payload, "finish_reason") if "finish_reason" in payload else None
         reported = _boolean(payload, "finish_reason_reported") if "finish_reason_reported" in payload else None
         return ResponseReadyFact(_text(payload, "output_preview"), reason, reported)
-    if event.event_type in {"graph.tool_request_created", "runtime.tool_completed"}:
+    if event.event_type == "graph.tool_request_created":
         call_id = _text(payload, "tool_call_id")
         if not call_id:
-            raise ValueError("legacy execution fact has no authentic call identity; migration is required")
+            raise ValueError("persisted tool request has no authentic call identity")
         arguments = payload.get("arguments")
         if not isinstance(arguments, dict) or not all(isinstance(key, str) for key in arguments):
             raise ValueError("persisted native arguments must be an object")
         call = ToolCall(tool_name=_text(payload, "tool"), tool_call_id=call_id, arguments=cast(dict[str, object], arguments))
-        if event.event_type == "graph.tool_request_created":
-            preview = payload.get("diff_preview")
-            if preview is not None and not isinstance(preview, dict):
-                raise ValueError("persisted tool preview must be an object")
-            return ToolRequestedFact(call, cast(dict[str, object] | None, preview))
-        if payload.get("status") not in {"ok", "error"}:
-            raise ValueError("persisted native result status is unsupported")
-        _, results = prompt_and_tool_results_from_debug_events((event,))
-        return ToolCompletedFact(call, results[0])
+        preview = payload.get("diff_preview")
+        if preview is not None and not isinstance(preview, dict):
+            raise ValueError("persisted tool preview must be an object")
+        return ToolRequestedFact(call, cast(dict[str, object] | None, preview))
+    if event.event_type == "runtime.tool_completed":
+        report = reported_call_from_event(event)
+        if report is None:
+            raise ValueError("legacy tool completion is read-only; migrate before runtime replay")
+        return ToolCompletedFact(report)
     if event.event_type in {"graph.provider_stream", "graph.tool_call_start", "graph.tool_call_delta", "graph.tool_call_end"}:
         raise ValueError("live-only provider facts do not belong in the durable log")
     # Product governance/capability rows retain their runtime owner, not a fake

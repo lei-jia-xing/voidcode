@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
 
 import pytest
 
 from voidcode.core.tool_context import ToolContext
-from voidcode.tools.contracts import ToolCall
+from voidcode.tools.contracts import TextOutput, ToolCall
 from voidcode.tools.output import MAX_TOOL_OUTPUT_BYTES, cap_tool_result_output
-from voidcode.tools.shell_exec import ShellExecTool
+from voidcode.tools.shell_exec import ShellExecResultBody, ShellExecTool
 
 
 def _cwd_command() -> str:
@@ -27,20 +27,19 @@ def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
 
     assert result.tool_name == "shell_exec"
     assert result.status == "ok"
-    assert isinstance(result.content, str)
-    assert result.content.strip() == str(tmp_path.resolve())
-    assert result.data.get("command") == command
-    assert result.data.get("cwd") == str(tmp_path.resolve())
-    assert result.data.get("exit_code") == 0
-    stdout = result.data.get("stdout")
-    assert isinstance(stdout, str)
-    assert stdout.strip() == str(tmp_path.resolve())
-    assert result.data.get("stderr") == ""
-    assert result.data.get("timeout") == 120
-    assert result.data.get("truncated") is False
-    assert result.data.get("stdout_truncated") is False
-    assert result.data.get("stderr_truncated") is False
-    assert result.data.get("injected_env_keys") == ()
+    assert isinstance(result.output, TextOutput)
+    assert result.output.text.strip() == str(tmp_path.resolve())
+    assert isinstance(result.body, ShellExecResultBody)
+    assert result.body.command == command
+    assert result.body.cwd == str(tmp_path.resolve())
+    assert result.body.exit_code == 0
+    assert result.body.stdout.strip() == str(tmp_path.resolve())
+    assert result.body.stderr == ""
+    assert result.body.timeout == 120
+    assert result.body.truncated is False
+    assert result.body.stdout_truncated is False
+    assert result.body.stderr_truncated is False
+    assert result.body.injected_env_keys == ()
 
 
 def test_shell_exec_tool_rejects_invalid_command_arguments(tmp_path: Path) -> None:
@@ -96,7 +95,8 @@ def test_shell_exec_tool_caps_explicit_timeout_at_production_max(tmp_path: Path)
     )
 
     assert result.status == "ok"
-    assert result.data.get("timeout") == 600
+    assert isinstance(result.body, ShellExecResultBody)
+    assert result.body.timeout == 600
 
 
 def test_shell_exec_large_output_spills_full_payload_via_central_cap(tmp_path: Path) -> None:
@@ -110,19 +110,16 @@ def test_shell_exec_large_output_spills_full_payload_via_central_cap(tmp_path: P
     )
     capped = cap_tool_result_output(result)
 
-    assert capped.truncated is True
-    assert capped.partial is True
-    assert capped.reference is not None
-    assert isinstance(capped.content, str)
-    assert "[Tool output truncated:" in capped.content
-    assert "artifact_id=" in capped.content
-    assert 'read(path="voidcode://artifact/' in capped.content
-    assert capped.reference.startswith("voidcode://artifact/")
-
-    artifact = capped.data["artifact"]
-    assert isinstance(artifact, dict)
-    typed_artifact = cast(dict[str, object], artifact)
-    reference_path = Path(str(typed_artifact["path"]))
+    assert isinstance(capped.output, TextOutput)
+    bounds = capped.output.bounds
+    assert bounds.truncated is True
+    assert bounds.partial is True
+    assert bounds.reference is not None
+    assert bounds.reference.uri in capped.output.text
+    assert bounds.reference.uri.startswith("voidcode://artifact/")
+    artifact = bounds.reference.artifact
+    assert isinstance(artifact, Mapping)
+    reference_path = Path(str(artifact["path"]))
     assert reference_path.exists()
-    assert len(reference_path.read_text(encoding="utf-8")) == payload_size
+    assert reference_path.read_text(encoding="utf-8") == "x" * payload_size
     assert not (tmp_path / ".voidcode" / "tool-output").exists()

@@ -3,7 +3,6 @@ from __future__ import annotations
 from .config import ProviderFallbackConfig
 from .models import (
     ProviderModelSelection,
-    ProviderResolutionMetadata,
     ResolvedProviderChain,
     ResolvedProviderConfig,
     ResolvedProviderModel,
@@ -31,20 +30,16 @@ def resolve_provider_model(
         return ResolvedProviderModel()
 
     provider_name, model_name = split_provider_model_reference(raw_model)
-    provider_resolution = registry.resolve_with_metadata(provider_name)
+    descriptor = registry.resolve_static(provider_name)
     return ResolvedProviderModel(
         selection=ProviderModelSelection(
             raw_model=raw_model,
             # The provider segment is canonicalised; the model segment is the
             # vendor's own wire value and keeps its case.
-            provider=provider_resolution.provider_name,
+            provider=descriptor.provider_name,
             model=model_name,
         ),
-        provider=provider_resolution.provider,
-        resolution=ProviderResolutionMetadata(
-            source=provider_resolution.source,
-            configured=provider_resolution.configured,
-        ),
+        descriptor=descriptor,
         metadata=registry.model_metadata_for_model(provider_name, model_name),
     )
 

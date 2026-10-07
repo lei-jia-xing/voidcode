@@ -11,7 +11,7 @@ A module is core when getting it wrong breaks a user-visible contract of the
 local-first runtime:
 
 - runtime governance, execution lifecycle, approvals, storage and resume
-- the graph step engine
+- the core complete-turn and native tool-batch engine
 - tool contracts plus permission/path safety
 - provider protocol, naming and config precedence
 - transport route/SSE contracts and the HTTP wire shape

@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..core.questions import QuestionResponse
-from ..core.turns import CallSeed, TurnRequest
+from ..core.transcript import project_report
+from ..core.turns import CallSeed, ReportedCall, TurnRequest, report_call
 from ..provider.protocol import ProviderAbortSignal
-from ..tools.contracts import ToolCall, ToolResult
+from ..tools.contracts import ToolCall
 from ..tools.question import QuestionTool
 from .acp import (
     AcpRuntimeEvent,
@@ -19,6 +20,7 @@ from .acp import (
     finalize_run_acp,
 )
 from .active_session import ACTIVE_SESSION_REGISTRY
+from .agent_capability import composition_ref_from_session_metadata
 from .config import RuntimeConfig, serialize_runtime_agent_config
 from .contracts import (
     NoPendingApprovalError,
@@ -326,23 +328,21 @@ class RuntimeResumeCoordinator:
             turn=stored.session.turn,
             metadata=checkpoint_state.session_metadata,
         )
-        tool_results: list[ToolResult] = list(checkpoint_state.tool_results)
+        tool_results: list[ReportedCall] = list(checkpoint_state.tool_results)
         session = session_with_run_id(session, run_id=run_id)
         validate_session_workspace(session, session_id=stored.session.session.id, workspace=self._workspace)
         batch, batch_sequence = self._restored_batch(session=session, tool_results=tool_results)
         question_call_id = self._recorded_pending_tool_call_id(stored_events=stored.events, pending=pending, batch=batch)
-        if len(batch.completed_results) >= len(batch.calls) or batch.calls[len(batch.completed_results)].tool_call_id != question_call_id:
+        if len(batch.completed_reports) >= len(batch.calls) or batch.calls[len(batch.completed_reports)].tool_call_id != question_call_id:
             raise ValueError("pending question does not match the next original batch call identity")
         question_call = ToolCall(tool_name=pending.tool_name, arguments=dict(pending.arguments), tool_call_id=question_call_id)
-        question_answer_result = replace(
+        question_answer_report = report_call(
+            question_call,
             question_answer_result,
-            data={
-                **question_answer_result.data,
-                "tool_call_id": question_call_id,
-                "arguments": dict(pending.arguments),
-            },
+            final_tool_name=question_call.tool_name,
+            final_arguments=pending.arguments,
         )
-        continuation = AnsweredQuestion(pending, question_call, question_answer_result, batch, batch_sequence)
+        continuation = AnsweredQuestion(pending, question_call, question_answer_report, batch, batch_sequence)
 
         effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
         try:
@@ -352,7 +352,44 @@ class RuntimeResumeCoordinator:
             )
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
-        tool_registry = runtime.tool_registry_for_run(session=session, effective_config=effective_config)
+        max_stored_sequence = stored.events[-1].sequence if stored.events else 0
+        mcp_startup_chunks, session, _, mcp_failed_chunk, mcp_descriptors = runtime.materialize_mcp_tools_for_run(
+            session=session,
+            sequence=max_stored_sequence,
+            request_metadata=session.metadata,
+            effective_config=effective_config,
+            failure_kind="mcp_startup_failed",
+        )
+        persisted_mcp_events: list[EventEnvelope] = []
+        for chunk in mcp_startup_chunks:
+            source_event = chunk.require_event()
+            persisted = self._events.append_session_events(
+                workspace=self._workspace,
+                session_id=session.session.id,
+                events=((source_event.event_type, source_event.source, source_event.payload, None),),
+            )
+            persisted_mcp_events.extend(persisted)
+            yield RuntimeStreamChunk(kind="event", session=chunk.session, event=persisted[0])
+        if mcp_failed_chunk is not None:
+            source_event = mcp_failed_chunk.require_event()
+            failed_events = self._events.append_session_events(
+                workspace=self._workspace,
+                session_id=session.session.id,
+                events=((source_event.event_type, source_event.source, source_event.payload, None),),
+            )
+            response = RuntimeResponse(
+                session=mcp_failed_chunk.session,
+                events=stored.events + tuple(persisted_mcp_events) + failed_events,
+                output=None,
+            )
+            _ = self._persist_resumed_response(stored_response=stored, prompt=prompt, response=response)
+            yield RuntimeStreamChunk(kind="event", session=mcp_failed_chunk.session, event=failed_events[0])
+            return
+        tool_registry = runtime.tool_registry_for_run(
+            session=session,
+            effective_config=effective_config,
+            mcp_descriptors=mcp_descriptors,
+        )
         skill_registry = runtime.skill_registry_for_effective_config(effective_config)
         resumed_skill_snapshot = runtime.build_skill_snapshot(
             skill_registry,
@@ -362,7 +399,7 @@ class RuntimeResumeCoordinator:
         )
         assembled_context = runtime.assemble_provider_context(
             prompt=prompt,
-            tool_results=tuple(tool_results),
+            tool_results=tuple(project_report(report) for report in tool_results),
             session_metadata=session.metadata,
             skill_prompt_context=skill_prompt_context_for_assembly(
                 skill_registry=skill_registry,
@@ -385,7 +422,7 @@ class RuntimeResumeCoordinator:
                 context_window=assembled_context.context_window
                 or runtime.prepare_provider_context_window(
                     prompt=prompt,
-                    tool_results=tuple(tool_results),
+                    tool_results=tuple(project_report(report) for report in tool_results),
                     session_metadata=session.metadata,
                 ),
                 assembled_context=assembled_context,
@@ -441,7 +478,7 @@ class RuntimeResumeCoordinator:
                 ),
             ),
         )
-        loop_events: list[EventEnvelope] = list(persisted_answer_events)
+        loop_events: list[EventEnvelope] = [*persisted_mcp_events, *persisted_answer_events]
         for answer_event in persisted_answer_events:
             yield RuntimeStreamChunk(kind="event", session=session, event=answer_event)
         sequence = persisted_answer_events[-1].sequence
@@ -659,13 +696,13 @@ class RuntimeResumeCoordinator:
             turn=stored.session.turn,
             metadata=checkpoint_state.session_metadata,
         )
-        tool_results: list[ToolResult] = list(checkpoint_state.tool_results)
+        tool_results: list[ReportedCall] = list(checkpoint_state.tool_results)
 
         session = session_with_run_id(session, run_id=run_id)
         validate_session_workspace(session, session_id=stored.session.session.id, workspace=self._workspace)
         session = session_with_current_acp_metadata(session, self._acp_adapter.current_state())
         effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
-        mcp_startup_chunks, session, _, mcp_failed_chunk = runtime.materialize_mcp_tools_for_run(
+        mcp_startup_chunks, session, _, mcp_failed_chunk, mcp_descriptors = runtime.materialize_mcp_tools_for_run(
             session=session,
             sequence=max_stored_sequence,
             request_metadata=session.metadata,
@@ -680,7 +717,11 @@ class RuntimeResumeCoordinator:
             )
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
-        tool_registry = runtime.tool_registry_for_run(session=session, effective_config=effective_config)
+        tool_registry = runtime.tool_registry_for_run(
+            session=session,
+            effective_config=effective_config,
+            mcp_descriptors=mcp_descriptors,
+        )
         skill_registry = runtime.skill_registry_for_effective_config(effective_config)
 
         resumed_skill_snapshot = runtime.build_skill_snapshot(
@@ -692,7 +733,7 @@ class RuntimeResumeCoordinator:
 
         assembled_context = runtime.assemble_provider_context(
             prompt=prompt,
-            tool_results=tuple(tool_results),
+            tool_results=tuple(project_report(report) for report in tool_results),
             session_metadata=session.metadata,
             skill_prompt_context=skill_prompt_context_for_assembly(
                 skill_registry=skill_registry,
@@ -715,7 +756,7 @@ class RuntimeResumeCoordinator:
                 context_window=assembled_context.context_window
                 or runtime.prepare_provider_context_window(
                     prompt=prompt,
-                    tool_results=tuple(tool_results),
+                    tool_results=tuple(project_report(report) for report in tool_results),
                     session_metadata=session.metadata,
                 ),
                 assembled_context=assembled_context,
@@ -838,7 +879,7 @@ class RuntimeResumeCoordinator:
 
         batch, batch_sequence = self._restored_batch(session=session, tool_results=tool_results)
         approved_call_id = self._recorded_pending_tool_call_id(stored_events=stored.events, pending=pending, batch=batch)
-        if len(batch.completed_results) >= len(batch.calls) or batch.calls[len(batch.completed_results)].tool_call_id != approved_call_id:
+        if len(batch.completed_reports) >= len(batch.calls) or batch.calls[len(batch.completed_reports)].tool_call_id != approved_call_id:
             raise ValueError("pending approval does not match the next original batch call identity")
         approved_tool_call = ToolCall(tool_name=pending.tool_name, arguments=dict(pending.arguments), tool_call_id=approved_call_id)
         continuation = ApprovedInvocation(pending, approval_decision, approved_tool_call, batch, batch_sequence)
@@ -1234,7 +1275,21 @@ class RuntimeResumeCoordinator:
         ):
             raise ValueError("persisted tool intent has an invalid replay policy or status")
         never_replay = isinstance(intent, dict) and intent.get("status") == "pending" and intent.get("replay_policy") == "never"
-        latest_batch = runtime_state_value(session_metadata if never_replay else stored_row.session.metadata, "turn_batch")
+        checkpoint_batch = runtime_state_value(session_metadata, "turn_batch")
+        stored_batch = runtime_state_value(stored_row.session.metadata, "turn_batch")
+        latest_batch = checkpoint_batch
+        if not never_replay:
+            if checkpoint_batch is None:
+                latest_batch = stored_batch
+            if (
+                checkpoint_last_sequence is not None
+                and isinstance(stored_batch, dict)
+                and isinstance(batch_started := stored_batch.get("started_sequence"), int)
+                and batch_started > checkpoint_last_sequence
+            ):
+                # A newer authentic batch may contain results beyond checkpoint.
+                latest_batch = stored_batch
+                checkpoint_last_sequence = None
         if latest_batch is not None:
             session_metadata = session_metadata_with_runtime_state_updates(session_metadata, updates={"turn_batch": latest_batch})
         if never_replay:
@@ -1258,7 +1313,6 @@ class RuntimeResumeCoordinator:
             )
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
-        tool_registry = runtime.tool_registry_for_run(session=session, effective_config=effective_config)
         skill_registry = runtime.skill_registry_for_effective_config(effective_config)
         resumed_skill_snapshot = runtime.build_skill_snapshot(
             skill_registry,
@@ -1268,24 +1322,14 @@ class RuntimeResumeCoordinator:
         )
 
         continuation: InterruptedTurn | None = None
-        tool_results = list(self.tool_results_from_checkpoint(raw_tool_results))
+        tool_results = list(self.tool_results_from_checkpoint(raw_tool_results, version=checkpoint_envelope.version))
         if latest_batch is not None:
-            if (
-                not never_replay
-                and checkpoint_last_sequence is not None
-                and isinstance(latest_batch, dict)
-                and isinstance(batch_started := latest_batch.get("started_sequence"), int)
-                and batch_started > checkpoint_last_sequence
-            ):
-                # A newer authentic batch may contain durable results not yet
-                # covered by the previous checkpoint; preserve its active path.
-                checkpoint_last_sequence = None
             batch, batch_sequence = self._restored_batch(
                 session=session,
                 tool_results=tool_results,
                 sequence=checkpoint_last_sequence,
             )
-            if never_replay and len(batch.completed_results) != len(batch.calls):
+            if never_replay and len(batch.completed_reports) != len(batch.calls):
                 session_metadata = session_metadata_with_runtime_state_updates(session.metadata, removed=frozenset({"turn_batch"}))
                 session = replace(session, metadata=session_metadata)
             else:
@@ -1304,6 +1348,20 @@ class RuntimeResumeCoordinator:
         # abandoned branch or a dead run's tail), where a later checkout can
         # still restore them.
         stored = self._stored_response_on_path(session_id=session_id)
+        startup_sequence = checkpoint_last_sequence if checkpoint_last_sequence is not None else (stored.events[-1].sequence if stored.events else 0)
+        mcp_startup_chunks, session, _, mcp_failed_chunk, mcp_descriptors = runtime.materialize_mcp_tools_for_run(
+            session=session,
+            sequence=startup_sequence,
+            request_metadata=session.metadata,
+            effective_config=effective_config,
+            failure_kind="mcp_startup_failed",
+        )
+        effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
+        tool_registry = runtime.tool_registry_for_run(
+            session=session,
+            effective_config=effective_config,
+            mcp_descriptors=mcp_descriptors,
+        )
         replayed_conversation_segments = runtime.replayed_conversation_segments_for_existing_session(
             stored=stored,
             parent_session_id=stored.session.session.parent_id,
@@ -1311,7 +1369,7 @@ class RuntimeResumeCoordinator:
         )
         assembled_context = runtime.assemble_provider_context(
             prompt=prompt,
-            tool_results=tuple(tool_results),
+            tool_results=tuple(project_report(report) for report in tool_results),
             session_metadata=session.metadata,
             skill_prompt_context=skill_prompt_context_for_assembly(
                 skill_registry=skill_registry,
@@ -1335,7 +1393,7 @@ class RuntimeResumeCoordinator:
                 context_window=assembled_context.context_window
                 or runtime.prepare_provider_context_window(
                     prompt=prompt,
-                    tool_results=tuple(tool_results),
+                    tool_results=tuple(project_report(report) for report in tool_results),
                     session_metadata=session.metadata,
                 ),
                 assembled_context=assembled_context,
@@ -1365,9 +1423,7 @@ class RuntimeResumeCoordinator:
                     config=effective_config,
                     provider_attempt=provider_attempt,
                 ).producer
-        max_stored_sequence = (
-            checkpoint_last_sequence if checkpoint_last_sequence is not None else (stored.events[-1].sequence if stored.events else 0)
-        )
+        max_stored_sequence = startup_sequence
         loop_events: list[EventEnvelope] = []
         output: str | None = None
         final_session = session
@@ -1384,10 +1440,55 @@ class RuntimeResumeCoordinator:
             session_metadata=session_metadata,
             tool_results=tuple(result for result in raw_tool_results if isinstance(result, dict)),
             last_event_sequence=max_stored_sequence,
+            composition_ref=composition_ref_from_session_metadata(session_metadata),
             output=None,
             create_if_missing=False,
             parent_session_id=session.session.parent_id,
         )
+        resumed_mcp_chunks: list[RuntimeStreamChunk] = []
+        for chunk in mcp_startup_chunks:
+            event = chunk.require_event()
+            persisted = self._events.append_session_events(
+                workspace=self._workspace,
+                session_id=session_id,
+                events=((event.event_type, event.source, event.payload, None),),
+            )
+            loop_events.extend(persisted)
+            max_stored_sequence = persisted[-1].sequence
+            last_sequence = max_stored_sequence
+            resumed_mcp_chunks.append(RuntimeStreamChunk(kind="event", session=chunk.session, event=persisted[0]))
+        persisted_mcp_failure: tuple[EventEnvelope, ...] = ()
+        if mcp_failed_chunk is not None:
+            event = mcp_failed_chunk.require_event()
+            persisted_mcp_failure = self._events.append_session_events(
+                workspace=self._workspace,
+                session_id=session_id,
+                events=((event.event_type, event.source, event.payload, None),),
+            )
+            loop_events.extend(persisted_mcp_failure)
+            max_stored_sequence = persisted_mcp_failure[-1].sequence
+            last_sequence = max_stored_sequence
+        if max_stored_sequence != startup_sequence:
+            self._recovery.save_interrupted_checkpoint(
+                workspace=self._workspace,
+                session_id=session_id,
+                prompt=prompt,
+                session_metadata=session_metadata,
+                tool_results=tuple(result for result in raw_tool_results if isinstance(result, dict)),
+                last_event_sequence=max_stored_sequence,
+                composition_ref=composition_ref_from_session_metadata(session_metadata),
+                output=None,
+                create_if_missing=False,
+                parent_session_id=session.session.parent_id,
+            )
+        for chunk in resumed_mcp_chunks:
+            yield chunk
+        if persisted_mcp_failure and mcp_failed_chunk is not None:
+            failure_event = persisted_mcp_failure[0]
+            response = RuntimeResponse(session=mcp_failed_chunk.session, events=stored.events + tuple(loop_events), output=None)
+            _ = self._persist_resumed_response(stored_response=stored, prompt=prompt, response=response)
+            yield RuntimeStreamChunk(kind="event", session=mcp_failed_chunk.session, event=failure_event)
+            return
         try:
             for chunk in self._run_loop_coordinator.execute_turn_engine(
                 producer=producer,
@@ -1513,10 +1614,10 @@ class RuntimeResumeCoordinator:
             self._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
 
     @staticmethod
-    def tool_results_from_checkpoint(raw_tool_results: list[object]) -> tuple[ToolResult, ...]:
-        return _tool_results_from_checkpoint(raw_tool_results)
+    def tool_results_from_checkpoint(raw_tool_results: list[object], *, version: int) -> tuple[ReportedCall, ...]:
+        return _tool_results_from_checkpoint(raw_tool_results, version=version)
 
-    def _restored_batch(self, *, session: SessionState, tool_results: list[ToolResult], sequence: int | None = None) -> tuple[CallSeed, int]:
+    def _restored_batch(self, *, session: SessionState, tool_results: list[ReportedCall], sequence: int | None = None) -> tuple[CallSeed, int]:
         raw = runtime_state_value(session.metadata, "turn_batch")
         if not isinstance(raw, dict):
             raise ValueError("legacy v3 pending turn has no authentic durable batch; migrate it before resuming")
@@ -1528,11 +1629,11 @@ class RuntimeResumeCoordinator:
         if not path:
             raw_calls = raw.get("calls")
             ids = {call.get("tool_call_id") for call in raw_calls if isinstance(call, dict)} if isinstance(raw_calls, list) else set()
-            durable_results = [result for result in tool_results if result.data.get("tool_call_id") in ids]
+            durable_results = [report for report in tool_results if report.tool_call_id in ids]
         batch, sequence = restored_turn_batch(session.metadata, session_id=session.session.id, tool_results=durable_results)
         ids = {call.tool_call_id for call in batch.calls}
-        tool_results[:] = [result for result in tool_results if result.data.get("tool_call_id") not in ids]
-        tool_results.extend(batch.completed_results)
+        tool_results[:] = [report for report in tool_results if report.tool_call_id not in ids]
+        tool_results.extend(batch.completed_reports)
         return batch, sequence
 
     def _load_pending_approval_context(
@@ -1618,7 +1719,7 @@ class RuntimeResumeCoordinator:
         batch: CallSeed,
     ) -> str:
         event_type = "runtime.approval_requested" if isinstance(pending, PendingApproval) else "runtime.question_requested"
-        prefix = len(batch.completed_results)
+        prefix = len(batch.completed_reports)
         if prefix >= len(batch.calls):
             raise ValueError("pending request has no unfinished original native call")
         original_id = batch.calls[prefix].tool_call_id

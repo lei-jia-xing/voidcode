@@ -4,10 +4,10 @@ import hashlib
 import re
 import subprocess
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import ClassVar
 
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
@@ -15,10 +15,11 @@ from unidiff.errors import UnidiffParseError
 from ..core.tool_context import ToolContext
 from ..formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ..hook.config import RuntimeHooksConfig
+from ..security.json_values import json_wire_object, own_json_object
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._repair import format_text_repair_hints, raise_tool_diagnostic
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolSuccess
 from .guards import enforce_read_before_write, enforce_seen_lines, enforce_seen_whole_file
 
 
@@ -45,6 +46,51 @@ class _PreparedMarkerChange:
     path: str
     content: str = ""
     old_path: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PatchChange:
+    path: str
+    status: str
+    old_path: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"path": self.path, "status": self.status}
+        if self.old_path is not None:
+            payload["old_path"] = self.old_path
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyPatchResultBody:
+    changes: tuple[PatchChange, ...]
+    count: int
+    formatters: tuple[Mapping[str, object], ...] = ()
+    diagnostics: tuple[Mapping[str, object], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "formatters", tuple(own_json_object(item) for item in self.formatters))
+        object.__setattr__(self, "diagnostics", tuple(own_json_object(item) for item in self.diagnostics))
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "changes": [change.as_payload() for change in self.changes],
+            "count": self.count,
+        }
+        if self.formatters:
+            payload["formatters"] = [json_wire_object(item) for item in self.formatters]
+        if self.diagnostics:
+            payload["diagnostics"] = [json_wire_object(item) for item in self.diagnostics]
+        return payload
+
+
+def _patch_change_from_payload(payload: Mapping[str, object]) -> PatchChange:
+    path = payload.get("path")
+    status = payload.get("status")
+    old_path = payload.get("old_path")
+    if not isinstance(path, str) or not isinstance(status, str) or (old_path is not None and not isinstance(old_path, str)):
+        raise TypeError("Invalid internal patch change")
+    return PatchChange(path=path, status=status, old_path=old_path)
 
 
 def _assert_within_workspace(
@@ -361,7 +407,7 @@ def _verify_patch_expected_hashes(
                 error_kind="stale_edit",
                 reason="content_hash_mismatch",
                 retry_guidance=(
-                    "Read the affected file(s) again, use the returned data.content_hash values, "
+                    "Read the affected file(s) again, use the SHA-256 content hashes shown in the read output, "
                     "then retry apply_patch with an updated expectedHashes map."
                 ),
                 details={
@@ -380,7 +426,7 @@ def _verify_patch_expected_hashes(
             error_kind="tool_input_mismatch",
             reason="missing_expected_hash",
             retry_guidance=(
-                "Use read on each affected path, copy data.content_hash from the results into "
+                "Use read on each affected path, copy its SHA-256 content hash from the output into "
                 "expectedHashes (relative path -> hash), then retry apply_patch."
             ),
             details={
@@ -396,7 +442,7 @@ def _apply_marker_patch(
     context: ToolContext,
     workspace: Path,
     expected_hashes: dict[str, str] | None = None,
-) -> ToolResult:
+) -> ToolSuccess[ApplyPatchResultBody]:
     hunks = _parse_marker_patch(patch_text)
     prepared: list[_PreparedMarkerChange] = []
     planned_add_paths: set[str] = set()
@@ -527,21 +573,19 @@ def _apply_marker_patch(
             old_target = workspace / (change.old_path or change.path)
             old_target.unlink()
 
-    changes: list[dict[str, object]] = []
+    changes: list[PatchChange] = []
     summary_lines: list[str] = []
     for change in prepared:
+        changes.append(PatchChange(path=change.path, status=change.status, old_path=change.old_path))
         if change.status == "R":
-            changes.append({"path": change.path, "old_path": change.old_path, "status": "R"})
             summary_lines.append(f"M {change.old_path} -> {change.path}")
         else:
-            changes.append({"path": change.path, "status": change.status})
             summary_lines.append(f"{change.status} {change.path}")
 
-    return ToolResult(
+    return ToolSuccess(
         tool_name="apply_patch",
-        status="ok",
-        content="\n".join(summary_lines),
-        data={"changes": changes, "count": len(changes)},
+        output=TextOutput("\n".join(summary_lines)),
+        body=ApplyPatchResultBody(changes=tuple(changes), count=len(changes)),
     )
 
 
@@ -904,50 +948,42 @@ def _formatter_feedback_for_changes(
 
 
 def _with_formatter_feedback(
-    result: ToolResult,
+    result: ToolSuccess[ApplyPatchResultBody],
     *,
     context: ToolContext,
     workspace: Path,
     hooks_config: RuntimeHooksConfig | None,
-) -> ToolResult:
-    raw_changes = result.data.get("changes")
-    if not isinstance(raw_changes, list):
-        return result
-    changes: list[dict[str, object]] = []
-    for item in raw_changes:
-        if isinstance(item, dict):
-            changes.append(item)
+) -> ToolSuccess[ApplyPatchResultBody]:
+    body = result.body
+    if not isinstance(body, ApplyPatchResultBody):
+        raise TypeError("ApplyPatchTool returned no typed patch result body")
+    changes = [change.as_payload() for change in body.changes]
     formatter_results, diagnostics = _formatter_feedback_for_changes(
         changes,
         workspace=workspace,
         hooks_config=hooks_config,
     )
-    # Boundary: ``changes`` are entries of the tool result's untyped ``data`` payload.
-    changed_paths = [cast(str, change["path"]) for change in changes]
-    # Independent write-path feedback: LSP post-edit diagnostics are collected
-    # regardless of formatter feedback.
     lsp_diagnostics = post_edit_lsp_diagnostics(
         context=context,
         workspace=workspace,
-        paths=changed_paths,
+        paths=[change.path for change in body.changes],
     )
     if not formatter_results and not diagnostics and not lsp_diagnostics:
         return result
-    data = dict(result.data)
-    if formatter_results:
-        data["formatters"] = formatter_results
+    if not isinstance(result.output, TextOutput):
+        raise TypeError("ApplyPatchTool returned no text output")
+    content = result.output.text
     if diagnostics:
-        data["diagnostics"] = diagnostics
-    if lsp_diagnostics:
-        data["diagnostics"] = [*diagnostics, *lsp_diagnostics]
-    content = result.content
-    if content is not None and diagnostics:
         content += f"\nFormatter warning: {diagnostics[0]['message']}"
-    return ToolResult(
-        tool_name=result.tool_name,
-        status=result.status,
-        content=content,
-        data=data,
+    return ToolSuccess(
+        result.tool_name,
+        output=TextOutput(content),
+        body=ApplyPatchResultBody(
+            changes=body.changes,
+            count=body.count,
+            formatters=(*body.formatters, *formatter_results),
+            diagnostics=(*body.diagnostics, *diagnostics, *lsp_diagnostics),
+        ),
     )
 
 
@@ -1252,7 +1288,7 @@ class ApplyPatchTool:
                 "additionalProperties": {"type": "string"},
                 "description": (
                     "Map of path -> SHA-256 hash for every EXISTING file the patch modifies or deletes. "
-                    "Hashes come from data.content_hash of prior read results. Required whenever "
+                    "Hashes come from the SHA-256 content hash shown in the read output. Required whenever "
                     "the patch touches files that already exist; omit only for patches that solely "
                     "add new files."
                 ),
@@ -1265,7 +1301,7 @@ class ApplyPatchTool:
     def __init__(self, *, hooks_config: RuntimeHooksConfig | None = None) -> None:
         self._hooks_config = hooks_config
 
-    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolSuccess[ApplyPatchResultBody]:
         workspace = context.require_workspace()
         patch_text = call.arguments.get("patch")
         if not isinstance(patch_text, str):
@@ -1274,10 +1310,10 @@ class ApplyPatchTool:
         raw_expected_hashes = call.arguments.get("expectedHashes")
         if raw_expected_hashes is None:
             expected_hashes: dict[str, str] | None = None
-        elif isinstance(raw_expected_hashes, dict) and all(
+        elif isinstance(raw_expected_hashes, Mapping) and all(
             isinstance(key, str) and isinstance(value, str) for key, value in raw_expected_hashes.items()
         ):
-            expected_hashes = raw_expected_hashes
+            expected_hashes = dict(raw_expected_hashes)
         else:
             raise ValueError("apply_patch expectedHashes must be an object mapping path strings to SHA-256 hash strings")
 
@@ -1391,11 +1427,13 @@ class ApplyPatchTool:
                 if isinstance(old_path_value, str):
                     _assert_within_workspace(workspace, Path(old_path_value), allow_external_absolute=False)
 
-            result = ToolResult(
+            result = ToolSuccess(
                 tool_name=self.definition.name,
-                status="ok",
-                content=content,
-                data={"changes": changes, "count": len(changes)},
+                output=TextOutput(content),
+                body=ApplyPatchResultBody(
+                    changes=tuple(_patch_change_from_payload(change) for change in changes),
+                    count=len(changes),
+                ),
             )
             return _with_formatter_feedback(result, workspace=workspace.resolve(), hooks_config=self._hooks_config, context=context)
         finally:

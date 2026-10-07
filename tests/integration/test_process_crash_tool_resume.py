@@ -34,6 +34,7 @@ from typing import Any, cast
 
 import pytest
 
+from tests.runtime_composition import save_checkpoint
 from voidcode.runtime.contracts import RuntimeRequestError
 from voidcode.runtime.storage import SqliteSessionStore
 
@@ -54,9 +55,9 @@ from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.tools.read import ReadTool
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import TurnPlan
+from voidcode.core.turns import FinalTurn, ToolTurn
 
 SESSION_ID = "crash-tool-session"
 COUNTING_READ_TOOL = "counting_read"
@@ -100,7 +101,7 @@ class BlockingTool:
         (self._gate / "entered.txt").write_text("entered", encoding="utf-8")
         while not (self._gate / "release.txt").exists():
             time.sleep(POLL_SECONDS)
-        return ToolResult(tool_name=self.definition.name, status="ok", content="released")
+        return ToolSuccess(tool_name=self.definition.name, output=TextOutput("released"))
 
 
 class Producer:
@@ -109,17 +110,17 @@ class Producer:
     def __init__(self, *, read_first: bool = True) -> None:
         self._read_first = read_first
 
-    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> TurnPlan:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> ToolTurn | FinalTurn:
         _ = request, session
         if self._read_first:
             if len(tool_results) == 0:
-                return TurnPlan(tool_calls=(ToolCall(tool_name=COUNTING_READ_TOOL, arguments={"path": "sample.txt"}),))
+                return ToolTurn(calls=(ToolCall(tool_name=COUNTING_READ_TOOL, arguments={"path": "sample.txt"}),))
             if len(tool_results) == 1:
-                return TurnPlan(tool_calls=(ToolCall(tool_name=BLOCKING_TOOL, arguments={}),))
-            return TurnPlan(output="done", is_finished=True)
+                return ToolTurn(calls=(ToolCall(tool_name=BLOCKING_TOOL, arguments={}),))
+            return FinalTurn(output="done")
         if len(tool_results) == 0:
-            return TurnPlan(tool_calls=(ToolCall(tool_name=BLOCKING_TOOL, arguments={}),))
-        return TurnPlan(output="done", is_finished=True)
+            return ToolTurn(calls=(ToolCall(tool_name=BLOCKING_TOOL, arguments={}),))
+        return FinalTurn(output="done")
 
 
 def build_runtime(workspace: Path, gate: Path, *, read_first: bool = True) -> VoidCodeRuntime:
@@ -356,7 +357,8 @@ def test_resume_without_a_recorded_capability_binding_is_refused_by_name_and_rew
     store = SqliteSessionStore()
     metadata = dict(_session(workspace, child.SESSION_ID).session.metadata)
     assert metadata.pop("agent_capability_snapshot", None) is not None
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=workspace,
         session_id=child.SESSION_ID,
         prompt="go",

@@ -22,13 +22,13 @@ from typing import Any, cast
 import pytest
 
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import TurnPlan
+from voidcode.core.turns import FinalTurn, ToolTurn
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeRequestError
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 
 SESSION_ID = "reentry-session"
 _GATED_TOOL = "gated_tool"
@@ -47,7 +47,7 @@ class _GatedTool:
         _ = call, context
         self.started.set()
         assert self.release.wait(timeout=20.0), "the gated tool was never released"
-        return ToolResult(tool_name=self.definition.name, status="ok", content="gated done")
+        return ToolSuccess(tool_name=self.definition.name, output=TextOutput("gated done"))
 
 
 class _SingleToolGraph:
@@ -55,17 +55,17 @@ class _SingleToolGraph:
         self._tool_name = tool_name
         self._output = output
 
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> TurnPlan:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
         _ = request, session
         if not tool_results:
-            return TurnPlan(tool_calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
-        return TurnPlan(output=self._output, is_finished=True)
+            return ToolTurn(calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
+        return FinalTurn(output=self._output)
 
 
 class _ImmediateGraph:
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> TurnPlan:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> FinalTurn:
         _ = request, tool_results, session
-        return TurnPlan(output="second run done", is_finished=True)
+        return FinalTurn(output="second run done")
 
 
 def _runtime(workspace: Path, *, tool: object | None, turn_producer: object) -> VoidCodeRuntime:
@@ -197,13 +197,13 @@ class _PromptRecordingGraph:
         self.prompts: list[str] = []
         self._lock = threading.Lock()
 
-    def produce(self, request: Any, tool_results: tuple[object, ...], *, session: object) -> TurnPlan:
+    def produce(self, request: Any, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
         _ = session
         with self._lock:
             self.prompts.append(cast(str, request.prompt))
         if not tool_results:
-            return TurnPlan(tool_calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
-        return TurnPlan(output="done", is_finished=True)
+            return ToolTurn(calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
+        return FinalTurn(output="done")
 
 
 def test_steering_while_a_run_is_in_flight_is_queued_until_the_next_turn(tmp_path: Path) -> None:

@@ -3,20 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from ...tools.contracts import ToolDiagnostics, ToolResult, ToolResultStatus
-from ...tools.output import sanitize_tool_result_data
+from ...core.turns import ReportedCall
 from ..context.continuity import verified_checkpoint_session_metadata
 from ..contracts import RuntimeResponse
 from ..permission import PendingApproval
 from ..permission_policy import request_event_and_resolution_state
 from ..question import PendingQuestion
+from .report_codec import parse_report_payload
 
 
 @dataclass(frozen=True, slots=True)
 class ApprovalResumeCheckpointState:
     prompt: str
     session_metadata: dict[str, object]
-    tool_results: tuple[ToolResult, ...]
+    tool_results: tuple[ReportedCall, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +116,7 @@ def validate_pending_question_matches_recorded_request(
 
 def checkpoint_state_from_payload(
     *,
+    version: int = 1,
     checkpoint_payload: dict[str, object],
     stored_metadata: dict[str, object],
     resume_label: Literal["approval", "question"],
@@ -139,7 +140,7 @@ def checkpoint_state_from_payload(
     return ApprovalResumeCheckpointState(
         prompt=prompt,
         session_metadata=recovered_metadata,
-        tool_results=tool_results_from_checkpoint(raw_tool_results),
+        tool_results=tool_results_from_checkpoint(raw_tool_results, version=version),
     )
 
 
@@ -162,6 +163,7 @@ def approval_resume_state_from_checkpoint(
     if checkpoint_snapshot_hash is not None and stored_snapshot_hash is not None and checkpoint_snapshot_hash != stored_snapshot_hash:
         raise ValueError("persisted approval resume checkpoint skill snapshot hash does not match session")
     return checkpoint_state_from_payload(
+        version=checkpoint_envelope.version,
         checkpoint_payload=checkpoint_payload,
         stored_metadata=stored_metadata,
         resume_label="approval",
@@ -182,6 +184,7 @@ def question_resume_state_from_checkpoint(
     if checkpoint_payload.get("pending_question_request_id") != pending.request_id:
         raise ValueError("persisted question resume checkpoint request id does not match pending question")
     return checkpoint_state_from_payload(
+        version=checkpoint_envelope.version,
         checkpoint_payload=checkpoint_payload,
         stored_metadata=stored_metadata,
         resume_label="question",
@@ -201,44 +204,20 @@ def validated_resume_checkpoint_envelope(
     if kind != expected_kind:
         raise ValueError(f"persisted resume checkpoint kind mismatch: expected {expected_kind!r}, got {kind!r}")
     version = checkpoint.get("version")
-    if version != 1:
-        raise ValueError(f"persisted resume checkpoint version mismatch: expected 1, got {version!r}")
-    return PersistedResumeCheckpointEnvelope(kind=kind, version=1, payload=checkpoint)
+    if isinstance(version, bool) or not isinstance(version, int) or version != 2:
+        raise ValueError(f"persisted resume checkpoint version is unsupported: {version!r}")
+    return PersistedResumeCheckpointEnvelope(kind=kind, version=version, payload=checkpoint)
 
 
-def tool_results_from_checkpoint(raw_tool_results: list[object]) -> tuple[ToolResult, ...]:
-    parsed: list[ToolResult] = []
-    for raw_tool_result in raw_tool_results:
-        if not isinstance(raw_tool_result, dict):
-            raise ValueError("persisted resume checkpoint tool_results must contain objects")
-        payload: dict[str, object] = raw_tool_result
-        tool_name = payload.get("tool_name")
-        raw_status = payload.get("status")
-        if raw_status == "ok":
-            status: ToolResultStatus = "ok"
-        elif raw_status == "error":
-            status = "error"
-        else:
-            status = None
-        data = payload.get("data")
-        content = payload.get("content")
-        error = payload.get("error")
-        diagnostics = payload.get("diagnostics")
-        if not isinstance(tool_name, str) or status is None or not isinstance(data, dict):
-            raise ValueError("persisted resume checkpoint tool_results are malformed")
-        if content is not None and not isinstance(content, str):
-            raise ValueError("persisted resume checkpoint tool result content must be a string or null")
-        if error is not None and not isinstance(error, str):
-            raise ValueError("persisted resume checkpoint tool result error must be a string or null")
-        parsed.append(
-            ToolResult(
-                tool_name=tool_name,
-                content=content,
-                status=status,
-                data=sanitize_tool_result_data(data),
-                error=error,
-                diagnostics=(ToolDiagnostics.from_payload(diagnostics) if diagnostics is not None else None),
-                source="checkpoint",
-            )
-        )
-    return tuple(parsed)
+def tool_results_from_checkpoint(raw_tool_results: list[object], *, version: int) -> tuple[ReportedCall, ...]:
+    if version == 2:
+        parsed: list[ReportedCall] = []
+        for item in raw_tool_results:
+            if not isinstance(item, dict):
+                raise ValueError("persisted resume checkpoint tool_results must contain objects")
+            report = parse_report_payload(item.get("reported_call"))
+            if item.get("tool_name") != report.final_tool_name or item.get("status") != report.result.status:
+                raise ValueError("persisted checkpoint report disagrees with its client-facing projection")
+            parsed.append(report)
+        return tuple(parsed)
+    raise ValueError(f"persisted resume checkpoint version is unsupported: {version!r}")

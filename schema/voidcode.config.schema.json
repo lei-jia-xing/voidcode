@@ -25,6 +25,16 @@
         }
       ]
     },
+    "components": {
+      "description": "Installed components selected for this runtime.",
+      "items": {
+        "$ref": "#/$defs/installedComponentSelection"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
     "approval_mode": {
       "description": "Default approval policy mode for tool execution: which tool tiers are auto-approved.",
       "anyOf": [
@@ -977,6 +987,40 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "installedComponentSelection": {
+      "additionalProperties": false,
+      "description": "One installed component explicitly selected for runtime composition.",
+      "properties": {
+        "distribution": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "slot": {
+          "enum": [
+            "provider",
+            "tool",
+            "agent",
+            "context",
+            "typed-input"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "configuration": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "required": [
+        "distribution",
+        "slot",
+        "name"
+      ],
       "type": "object"
     },
     "lspConfig": {

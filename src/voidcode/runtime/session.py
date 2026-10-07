@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from .composition import FrozenComposition
 from .events import EventEnvelope
 from .mode import backfill_runtime_policy_mode, runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .policy import runtime_policy_snapshot_from_session_metadata
@@ -227,6 +228,11 @@ def session_metadata_for_persistence(
     """
 
     persisted = _bounded_redacted_mapping(metadata)
+    raw_composition = metadata.get("execution_composition")
+    if raw_composition is not None:
+        # This signed nonsecret owner is already projected by composition's
+        # source validators; generic redaction/size bounds would corrupt its hash.
+        persisted["execution_composition"] = FrozenComposition.from_payload(raw_composition).to_payload()
     mode = runtime_mode_from_metadata(persisted)
     read_only = runtime_read_only_from_metadata(persisted)
     observations = _policy_observations(events)

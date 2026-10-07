@@ -4,9 +4,8 @@ from pathlib import Path
 from typing import cast
 
 from ..core.event_store import FactEntry, FactPage
-from ..core.turns import CallSeed, ToolCompletedFact, TurnFact, normalize_call_result
+from ..core.turns import CallSeed, ReportedCall, ToolCompletedFact, TurnFact
 from ..security.redaction import redact_mapping
-from ..tools.contracts import ToolResult
 from .events import EventEnvelope
 from .execution.resume_checkpoint import tool_results_from_checkpoint, validated_resume_checkpoint_envelope
 from .execution.tool_result_projection import _serialized_tool_results
@@ -77,15 +76,16 @@ class SqliteFactStore:
             return None
         if self._recovery is None:
             raise ValueError("authentic native snapshots require the narrow recovery role")
-        checkpoint = validated_resume_checkpoint_envelope(
+        checkpoint_envelope = validated_resume_checkpoint_envelope(
             checkpoint=self._recovery.load_resume_checkpoint(workspace=self._workspace, session_id=self._session_id),
             expected_kind="interrupted",
-        ).payload
+        )
+        checkpoint = checkpoint_envelope.payload
         metadata = checkpoint.get("session_metadata")
         results = checkpoint.get("tool_results")
         if not isinstance(metadata, dict) or not isinstance(results, list):
             raise ValueError("native snapshot requires the existing interrupted checkpoint metadata/results")
-        tool_results_from_checkpoint(results)
+        tool_results_from_checkpoint(results, version=checkpoint_envelope.version)
         metadata = self._session.metadata if self._session is not None else metadata
         prior_leaf = self._events.read_session_event_page(
             workspace=self._workspace,
@@ -97,8 +97,8 @@ class SqliteFactStore:
         for fact in completions:
             batch = fact.batch
             assert batch is not None
-            if batch.completed_results:
-                raise ValueError("a factual batch snapshot cannot duplicate completed results")
+            if batch.completed_reports:
+                raise ValueError("a factual batch snapshot cannot duplicate completed reports")
             raw = runtime_state_value(metadata, "turn_batch")
             candidate = persisted_turn_batch(
                 batch,
@@ -123,12 +123,11 @@ class SqliteFactStore:
                 candidate = persisted_turn_batch(
                     batch, session_id=self._session_id, run_id=run_id, started_sequence=started, completed_call_ids=completed_ids
                 )
-            result = normalize_call_result(fact.call, fact.result)
-            call_id = fact.call.tool_call_id
-            assert call_id is not None
+            report = fact.report
+            call_id = report.tool_call_id
             if call_id not in completed_ids:
                 completed_ids = (*completed_ids, call_id)
-                serialized.extend(_serialized_tool_results((result,)))
+                serialized.extend(_serialized_tool_results((report,)))
             candidate["completed_call_ids"] = list(completed_ids)
             if completed_ids != tuple(call.tool_call_id for call in batch.calls)[: len(completed_ids)]:
                 raise ValueError("actual native completion is not the next original batch call")
@@ -155,12 +154,12 @@ class SqliteFactStore:
         started = raw.get("started_sequence")
         if not isinstance(started, int) or isinstance(started, bool) or started < 0:
             raise ValueError("native continuation has no authentic start cursor")
-        results: list[ToolResult] = []
+        results: list[ReportedCall] = []
         cursor, leaf = started, None
         while True:
             page = self.read(after_sequence=cursor, limit=100, leaf_sequence=leaf)
             leaf = page.leaf_sequence
-            results.extend(entry.fact.result for entry in page.entries if isinstance(entry.fact, ToolCompletedFact))
+            results.extend(entry.fact.report for entry in page.entries if isinstance(entry.fact, ToolCompletedFact))
             if page.next_after_sequence is None:
                 break
             cursor = page.next_after_sequence

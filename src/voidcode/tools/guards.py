@@ -6,63 +6,70 @@ from pathlib import Path
 from typing import NoReturn
 
 from ..core.tool_context import ToolContext
+from ..core.turns import ReportedCall
 from ..security.path_policy import resolve_workspace_path
 from ._repair import raise_tool_diagnostic
-from .contracts import ToolResult
+from .read import ReadResultBody
 
 
 @dataclass(frozen=True, slots=True)
 class ReadTracking:
-    """Paths revealed by read plus the exact 1-based line numbers seen."""
+    """Read observations grouped by canonical file path and source content hash."""
 
     read_paths: frozenset[str]
-    read_lines: Mapping[str, frozenset[int]]
+    read_lines: Mapping[tuple[str, str], frozenset[int]]
+    read_whole_files: frozenset[tuple[str, str]]
 
 
 def read_tracking_for_tool_results(
     *,
-    tool_results: tuple[ToolResult, ...],
+    tool_results: tuple[ReportedCall, ...],
     workspace: Path,
 ) -> ReadTracking:
     resolved_paths: set[str] = set()
-    lines_by_path: dict[str, set[int]] = {}
-    for result in tool_results:
-        if result.tool_name != "read" or result.status != "ok":
+    lines_by_hash: dict[tuple[str, str], set[int]] = {}
+    line_counts: dict[tuple[str, str], int] = {}
+    inconsistent_counts: set[tuple[str, str]] = set()
+    clipped_files: set[tuple[str, str]] = set()
+    whole_file_observations: set[tuple[str, str]] = set()
+    for report in tool_results:
+        if report.final_tool_name != "read" or report.result.status != "ok":
             continue
         candidate = _resolve_internal_workspace_path(
             workspace=workspace,
-            raw_path=_read_result_path(result),
+            raw_path=_read_result_path(report),
         )
         if candidate is None:
             continue
         resolved = candidate.as_posix()
         resolved_paths.add(resolved)
-        seen_lines = _read_result_lines(result)
-        if seen_lines is not None:
-            lines_by_path.setdefault(resolved, set()).update(seen_lines)
+        body = report.result.body
+        if not isinstance(body, ReadResultBody):
+            continue
+        key = (resolved, body.content_hash)
+        prior_count = line_counts.setdefault(key, body.line_count)
+        if prior_count != body.line_count:
+            inconsistent_counts.add(key)
+        lines_by_hash.setdefault(key, set()).update(line.line for line in body.lines if not line.truncated)
+        if any(line.truncated for line in body.lines):
+            clipped_files.add(key)
+        if body.whole_file:
+            whole_file_observations.add(key)
+
+    whole_files = set(whole_file_observations)
+    for key, seen in lines_by_hash.items():
+        if key in inconsistent_counts or key in clipped_files:
+            whole_files.discard(key)
+            continue
+        line_count = line_counts[key]
+        covers_file = not seen if line_count == 0 else len(seen) == line_count and min(seen) == 1 and max(seen) == line_count
+        if covers_file:
+            whole_files.add(key)
     return ReadTracking(
         read_paths=frozenset(resolved_paths),
-        read_lines={path: frozenset(lines) for path, lines in lines_by_path.items()},
+        read_lines={key: frozenset(lines) for key, lines in lines_by_hash.items()},
+        read_whole_files=frozenset(whole_files),
     )
-
-
-def _read_result_lines(result: ToolResult) -> frozenset[int] | None:
-    """Extract the 1-based line numbers revealed by a read result.
-
-    Returns ``None`` when the result carried no line data at all (e.g. an
-    image/pdf attachment read), and an (possibly empty) frozenset when a text
-    read revealed zero or more lines.
-    """
-    raw_lines = result.data.get("lines")
-    if not isinstance(raw_lines, list):
-        return None
-    line_numbers: set[int] = set()
-    for item in raw_lines:
-        if isinstance(item, dict):
-            line = item.get("line")
-            if isinstance(line, int):
-                line_numbers.add(line)
-    return frozenset(line_numbers)
 
 
 def enforce_read_before_write(
@@ -124,7 +131,7 @@ def enforce_seen_lines(
             retry_guidance=("Use read on the target path first, review the current content, then retry the change."),
             details={"path": display_path, "raw_path": raw_path},
         )
-    seen = context.read_lines.get(resolved)
+    seen = _seen_lines_for_context(context, resolved)
     if seen is None:
         _raise_unseen_range(
             tool_name=tool_name,
@@ -154,9 +161,10 @@ def enforce_seen_whole_file(
     display_path: str,
     is_external: bool,
 ) -> None:
-    """Require every line of an existing file to have been revealed by read."""
-    if is_external or not candidate.exists() or not candidate.is_file():
+    """Require a complete, non-truncated file observation before overwrite."""
+    if context.session_id is None or is_external or not candidate.exists() or not candidate.is_file():
         return
+    context.require_session_id()
     content = candidate.read_text(encoding="utf-8")
     total_lines = len(content.splitlines())
     enforce_seen_lines(
@@ -170,6 +178,17 @@ def enforce_seen_whole_file(
         start_line=1,
         end_line=total_lines,
     )
+    if not _has_whole_file_for_context(context, candidate.resolve().as_posix()):
+        raise_tool_diagnostic(
+            message=f"{tool_name} requires a complete, non-truncated read of {display_path} before replacing it.",
+            error_kind="tool_input_mismatch",
+            reason="incomplete_read",
+            retry_guidance=(
+                "Read the file from its first line until no next offset remains; "
+                "if a line is clipped, use a line-scoped edit instead of replacing the whole file."
+            ),
+            details={"path": display_path, "raw_path": raw_path},
+        )
 
 
 def _unseen_ranges(seen: frozenset[int], start_line: int, end_line: int) -> list[tuple[int, int]]:
@@ -203,7 +222,7 @@ def _raise_unseen_range(
         reason="unseen_range",
         retry_guidance=(
             "Use read on the target path to reveal the missing lines first "
-            "(continue reading with data.next_offset until data.next_offset is None), "
+            "(continue with the next offset shown in the read output until no next offset is returned), "
             "then retry the change against the current content."
         ),
         details={
@@ -214,17 +233,23 @@ def _raise_unseen_range(
     )
 
 
-def _read_result_path(result: ToolResult) -> str | None:
-    raw_arguments = result.data.get("arguments")
-    if isinstance(raw_arguments, dict):
-        arguments = raw_arguments
-        raw_path = arguments.get("path")
-        if isinstance(raw_path, str) and raw_path.strip():
-            return raw_path
-    raw_path = result.data.get("path")
-    if isinstance(raw_path, str) and raw_path.strip():
-        return raw_path
-    return None
+def _seen_lines_for_context(context: ToolContext, path: str) -> frozenset[int] | None:
+    if context.read_hash is not None:
+        return context.read_lines.get((path, context.read_hash))
+    observations = [lines for (observed_path, _), lines in context.read_lines.items() if observed_path == path]
+    return observations[0] if len(observations) == 1 else None
+
+
+def _has_whole_file_for_context(context: ToolContext, path: str) -> bool:
+    if context.read_hash is not None:
+        return (path, context.read_hash) in context.read_whole_files
+    observations = [key for key in context.read_whole_files if key[0] == path]
+    return len(observations) == 1
+
+
+def _read_result_path(report: ReportedCall) -> str | None:
+    raw_path = report.authorized_arguments.get("path")
+    return raw_path if isinstance(raw_path, str) and raw_path.strip() else None
 
 
 def _resolve_internal_workspace_path(*, workspace: Path, raw_path: str | None) -> Path | None:

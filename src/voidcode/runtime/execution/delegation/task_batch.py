@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Literal, Protocol
 from uuid import uuid4
 
@@ -8,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from ....core.tool_context import ToolContext
 from ....tools._pydantic_args import NonEmptyPrompt, parse_tool_args
-from ....tools.contracts import ToolCall, ToolResult
+from ....tools.contracts import TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess
 from ....tools.delegation.task_batch import MAX_BATCH_SIZE, TaskBatchTool
 from ...background.models import BackgroundTaskState
 from ...contracts import (
@@ -17,6 +18,70 @@ from ...contracts import (
     runtime_subagent_route_from_metadata,
     validate_runtime_request_metadata,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class TaskBatchCreated:
+    index: int
+    task_id: str
+    status: str
+    requested_subagent_type: str
+    load_skills: tuple[str, ...]
+    child_session_id: str | None
+    result_available: bool
+    waiting_reason: str | None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "index": self.index,
+            "task_id": self.task_id,
+            "status": self.status,
+            "requested_subagent_type": self.requested_subagent_type,
+            "load_skills": list(self.load_skills),
+            "child_session_id": self.child_session_id,
+            "result_available": self.result_available,
+            "waiting_reason": self.waiting_reason,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TaskBatchFailed:
+    index: int
+    requested_subagent_type: str
+    load_skills: tuple[str, ...]
+    error: str
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "index": self.index,
+            "status": "failed",
+            "requested_subagent_type": self.requested_subagent_type,
+            "load_skills": list(self.load_skills),
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TaskBatchResultBody:
+    parallel_group_id: str
+    parallel_group_size: int
+    task_ids: tuple[str, ...]
+    created: tuple[TaskBatchCreated, ...]
+    failed: tuple[TaskBatchFailed, ...]
+    retrieval_instruction: str
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "parallel_group_id": self.parallel_group_id,
+            "parallel_group_size": self.parallel_group_size,
+            "task_ids": list(self.task_ids),
+            "created_count": len(self.created),
+            "failed_count": len(self.failed),
+            "partial": bool(self.failed),
+            "created": [item.as_payload() for item in self.created],
+            "failed": [item.as_payload() for item in self.failed],
+            "retrieval_instruction": self.retrieval_instruction,
+        }
 
 
 class TaskBatchRuntime(Protocol):
@@ -169,67 +234,63 @@ class TaskBatchCommand:
                 )
             )
 
-        created: list[dict[str, object]] = []
-        failed: list[dict[str, object]] = []
+        created: list[TaskBatchCreated] = []
+        failed: list[TaskBatchFailed] = []
         task_ids: list[str] = []
         for index, item, request in requests:
             try:
                 task = self._runtime.start_background_task(request)
             except Exception as exc:
                 failed.append(
-                    {
-                        "index": index,
-                        "status": "failed",
-                        "requested_subagent_type": item.subagent_type,
-                        "load_skills": list(item.load_skills),
-                        "error": str(exc),
-                    }
+                    TaskBatchFailed(
+                        index=index,
+                        requested_subagent_type=item.subagent_type,
+                        load_skills=tuple(item.load_skills),
+                        error=str(exc),
+                    )
                 )
                 continue
             task_ids.append(task.task.id)
             waiting_reason = task.observability.waiting_reason if task.observability is not None else None
             created.append(
-                {
-                    "index": index,
-                    "task_id": task.task.id,
-                    "status": task.status,
-                    "requested_subagent_type": item.subagent_type,
-                    "load_skills": list(item.load_skills),
-                    "child_session_id": task.session_id,
-                    "result_available": task.result_available,
-                    "waiting_reason": waiting_reason,
-                }
+                TaskBatchCreated(
+                    index=index,
+                    task_id=task.task.id,
+                    status=task.status,
+                    requested_subagent_type=item.subagent_type,
+                    load_skills=tuple(item.load_skills),
+                    child_session_id=task.session_id,
+                    result_available=task.result_available,
+                    waiting_reason=waiting_reason,
+                )
             )
 
         partial = bool(failed)
-        payload: dict[str, object] = {
-            "parallel_group_id": group_id,
-            "parallel_group_size": group_size,
-            "task_ids": task_ids,
-            "created_count": len(created),
-            "failed_count": len(failed),
-            "partial": partial,
-            "created": created,
-            "failed": failed,
-            "retrieval_instruction": (
-                f'task(operation="output", parallel_group_id="{group_id}")'
-                if not partial
-                else "Use the returned task_ids only after the partial batch is reconciled; no automatic retry or cancellation was performed."
-            ),
-        }
+        retrieval_instruction = (
+            f'task(operation="output", parallel_group_id="{group_id}")'
+            if not partial
+            else "Use the returned task_ids only after the partial batch is reconciled; no automatic retry or cancellation was performed."
+        )
+        body = TaskBatchResultBody(
+            parallel_group_id=group_id,
+            parallel_group_size=group_size,
+            task_ids=tuple(task_ids),
+            created=tuple(created),
+            failed=tuple(failed),
+            retrieval_instruction=retrieval_instruction,
+        )
         if not created:
             error = "task_batch could not dispatch any child request"
-            return ToolResult(
+            return ToolFailure(
                 tool_name=TaskBatchTool.definition.name,
-                status="error",
-                content=error,
-                data=payload,
                 error=error,
+                output=TextOutput(error),
+                body=body,
             )
         if partial:
             content = (
                 f"Partially dispatched task batch {group_id}: created {len(created)}/{group_size}; "
-                f"failed item indexes {[item['index'] for item in failed]}. Created tasks remain active; "
+                f"failed item indexes {[item.index for item in failed]}. Created tasks remain active; "
                 "no automatic retry or cancellation was performed."
             )
         else:
@@ -237,9 +298,8 @@ class TaskBatchCommand:
                 f"Started task batch {group_id} with {group_size} background tasks. "
                 f'Read the group with task(operation="output", parallel_group_id="{group_id}").'
             )
-        return ToolResult(
+        return ToolSuccess(
             tool_name=TaskBatchTool.definition.name,
-            status="ok",
-            content=content,
-            data=payload,
+            output=TextOutput(content),
+            body=body,
         )

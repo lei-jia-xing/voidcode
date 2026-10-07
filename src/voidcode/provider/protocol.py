@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
 from ..core.transcript import AssembledContext, ContextWindow, ToolResultView
-from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
+from ..tools.contracts import ToolCall, ToolDefinition
 from .model_catalog import ProviderModelMetadata
 
 type ProviderStreamEventKind = Literal["delta", "content", "tool_call_start", "tool_call_delta", "tool_call_end", "error", "done"]
@@ -49,7 +49,7 @@ class ProviderTurnRequest:
         return self.assembled_context.prompt
 
     @property
-    def tool_results(self) -> tuple[ToolResult | ToolResultView, ...]:
+    def tool_results(self) -> tuple[ToolResultView, ...]:
         return self.assembled_context.tool_results
 
     @property
@@ -79,7 +79,7 @@ class ProviderTurnRequest:
 @dataclass(frozen=True, slots=True)
 class _DerivedContextWindow:
     prompt: str
-    tool_results: tuple[ToolResult | ToolResultView, ...]
+    tool_results: tuple[ToolResultView, ...]
     continuity_state: object | None = None
     compacted: bool = False
     retained_tool_result_count: int = 0
@@ -134,7 +134,6 @@ class ProviderTokenUsage:
 
 @dataclass(frozen=True, slots=True)
 class ProviderTurnResult:
-    tool_call: ToolCall | None = None
     tool_calls: tuple[ToolCall, ...] = ()
     output: str | None = None
     usage: ProviderTokenUsage | None = None
@@ -145,12 +144,6 @@ class ProviderTurnResult:
     done_reason: ProviderDoneReason = "unknown"
     finish_reason_reported: bool = False
     metadata: dict[str, object] | None = None
-
-    def __post_init__(self) -> None:
-        if self.tool_call is not None and not self.tool_calls:
-            object.__setattr__(self, "tool_calls", (self.tool_call,))
-        elif self.tool_call is None and self.tool_calls:
-            object.__setattr__(self, "tool_call", self.tool_calls[0])
 
 
 @runtime_checkable

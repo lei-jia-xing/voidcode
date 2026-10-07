@@ -7,9 +7,8 @@ invalid JSON Schema envelopes or dropped declared properties fail.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import cast
 
 import httpx2
@@ -21,23 +20,13 @@ from voidcode.provider.config import OpenAIProviderConfig
 from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.openai_native import OpenAIChatCompletionsTransport
 from voidcode.provider.protocol import ProviderTurnRequest
-from voidcode.runtime.service import VoidCodeRuntime
-from voidcode.runtime.tool_registry import ToolRegistry
+from voidcode.runtime.tool_provider import builtin_tool_definitions
 from voidcode.tools.contracts import ToolDefinition
 
 
-def _static_definitions(registry: ToolRegistry) -> tuple[ToolDefinition, ...]:
-    """Return the live builtin definitions, excluding runtime-discovered MCP tools."""
-    return tuple(definition for definition in registry.definitions() if not definition.name.startswith("mcp/"))
-
-
-@pytest.fixture
-def runtime(tmp_path: Path) -> Iterator[VoidCodeRuntime]:
-    value = VoidCodeRuntime(workspace=tmp_path)
-    try:
-        yield value
-    finally:
-        value.__exit__(None, None, None)
+def _static_definitions() -> tuple[ToolDefinition, ...]:
+    """Return the supported builtin tool definitions."""
+    return builtin_tool_definitions()
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,13 +93,13 @@ def _declared_property_names(definition: ToolDefinition) -> set[str]:
     """Names the definition declares, whether it uses the envelope or flat map form."""
     schema = definition.input_schema
     properties = schema.get("properties")
-    if isinstance(properties, dict):
-        return set(cast(dict[str, object], properties))
+    if isinstance(properties, Mapping):
+        return set(cast(Mapping[str, object], properties))
     return {key for key in schema if key != "required"}
 
 
-def test_live_builtin_provider_schemas_validate_as_object_envelopes(runtime: VoidCodeRuntime) -> None:
-    definitions = _static_definitions(runtime._base_tool_registry)
+def test_live_builtin_provider_schemas_validate_as_object_envelopes() -> None:
+    definitions = _static_definitions()
     emitted = _provider_tool_parameters(definitions)
 
     assert set(emitted) == {definition.name for definition in definitions}
@@ -134,3 +123,17 @@ def test_live_builtin_provider_schemas_validate_as_object_envelopes(runtime: Voi
         # A definition whose declared properties do not survive the provider projection
         # would silently hand the model a schema missing arguments.
         assert _declared_property_names(definition) <= set(properties), f"{definition.name} lost declared properties in the provider schema"
+
+
+def test_tool_definition_owns_immutable_input_schema() -> None:
+    source = {"type": "object", "properties": {"path": {"type": "string"}}}
+    definition = ToolDefinition(name="read", description="Read", input_schema=source)
+
+    source["properties"]["path"]["type"] = "integer"
+    properties = cast(dict[str, object], definition.input_schema["properties"])
+    path = cast(dict[str, object], properties["path"])
+    assert path["type"] == "string"
+    with pytest.raises(TypeError):
+        definition.input_schema["type"] = "array"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        path["type"] = "integer"

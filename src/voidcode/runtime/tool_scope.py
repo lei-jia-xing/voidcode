@@ -19,9 +19,14 @@ class RuntimeToolScopeResolver:
         *,
         agent: RuntimeAgentConfig | None,
         metadata: dict[str, object] | None,
+        builtin_mcp_tool_names: tuple[str, ...] = (),
     ) -> ToolRegistry:
-        agent_scoped = scoped_tool_registry_for_agent(registry, agent=agent)
-        decisions = tuple(self.decision(tool_name=name, registry=agent_scoped, metadata=metadata) for name in agent_scoped.tools)
+        agent_scoped = scoped_tool_registry_for_agent(
+            registry,
+            agent=agent,
+            builtin_mcp_tool_names=builtin_mcp_tool_names,
+        )
+        decisions = tuple(self.decision(tool_name=name, registry=agent_scoped, metadata=metadata) for name in agent_scoped.declarations)
         return agent_scoped.allowed_by_policy(decisions)
 
     def decision(
@@ -37,8 +42,8 @@ class RuntimeToolScopeResolver:
         mode = runtime_mode_from_metadata(metadata)
         read_only = runtime_read_only_from_metadata(metadata)
 
-        tool = registry.tools.get(tool_name)
-        if read_only and tool is not None and not is_read_tier(tool.definition.effects):
+        definition = registry.definition(tool_name)
+        if read_only and definition is not None and not is_read_tier(definition.effects):
             return ToolPolicyDecision(
                 tool_name=tool_name,
                 allowed=False,
@@ -62,9 +67,14 @@ class RuntimeToolScopeResolver:
         agent: RuntimeAgentConfig | None,
         metadata: dict[str, object] | None,
         tool_name: str,
+        builtin_mcp_tool_names: tuple[str, ...] = (),
     ) -> ToolPolicyDecision | None:
-        agent_scoped = scoped_tool_registry_for_agent(registry, agent=agent)
-        if tool_name not in agent_scoped.tools:
+        agent_scoped = scoped_tool_registry_for_agent(
+            registry,
+            agent=agent,
+            builtin_mcp_tool_names=builtin_mcp_tool_names,
+        )
+        if tool_name not in agent_scoped.declarations:
             return None
         decision = self.decision(
             tool_name=tool_name,
@@ -89,7 +99,7 @@ class RuntimeToolScopeResolver:
             return None
         if any(fnmatchcase(tool_name, pattern) for pattern in manifest_allowlist if pattern):
             return None
-        if tool_name not in base_registry.tools:
+        if tool_name not in base_registry.declarations:
             return None
         return (
             "delegation policy denied tool "

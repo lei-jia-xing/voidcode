@@ -6,11 +6,12 @@ from pydantic import BaseModel
 
 from ....core.tool_context import ToolContext
 from ....tools._pydantic_args import NonEmptyProcessId, parse_tool_args
-from ....tools.contracts import ToolCall, ToolResult
+from ....tools.contracts import OutputBounds, OutputReference, TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess
 from ....tools.output import _artifact_metadata
 
 if TYPE_CHECKING:
     from .background_process import BackgroundProcessRuntime
+from .background_process_results import BackgroundProcessLogsBody, BackgroundProcessStaleBody
 
 
 class _BackgroundProcessLogsArgs(BaseModel):
@@ -56,22 +57,21 @@ class BackgroundProcessLogsTool:
                 "Prior-runtime managed process was observed after restart; it was not reattached "
                 "and is externally managed/unavailable to this runtime."
             )
-            return ToolResult(
+            return ToolFailure(
                 tool_name=self.name,
-                status="error",
-                content=message,
                 error=message,
-                data={
-                    "process_id": state.process_id,
-                    "pid": state.process.pid,
-                    "status": "stale",
-                    "prior_runtime": True,
-                    "reconciliation_reason": message,
-                    "running": None,
-                    "observed_running": state.observed_running,
-                    "identity_match": state.identity_match,
-                    "controllable": False,
-                },
+                output=TextOutput(message),
+                body=BackgroundProcessStaleBody(
+                    process_id=state.process_id,
+                    pid=state.process.pid,
+                    status="stale",
+                    prior_runtime=True,
+                    reconciliation_reason=message,
+                    running=None,
+                    observed_running=state.observed_running,
+                    identity_match=state.identity_match,
+                    controllable=False,
+                ),
             )
         stdout_artifact = state.stdout_artifact
         stderr_artifact = state.stderr_artifact
@@ -112,30 +112,33 @@ class BackgroundProcessLogsTool:
         exit_code = state.process.poll()
         guidance = _background_process_logs_guidance(running=running)
         output = f"{output}\n\nGuidance: {guidance}" if output else f"Guidance: {guidance}"
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.name,
-            status="ok",
-            content=output,
-            data={
-                "process_id": state.process_id,
-                "status": state.status,
-                "prior_runtime": state.prior_runtime,
-                "reconciliation_reason": state.reconciliation_reason,
-                "running": running,
-                "exit_code": exit_code,
-                "stdout": stdout,
-                "stderr": stderr,
-                "stdout_retained_lines": len(state.stdout_chunks),
-                "stderr_retained_lines": len(state.stderr_chunks),
-                "stdout_dropped_lines": state.stdout_dropped_lines,
-                "stderr_dropped_lines": state.stderr_dropped_lines,
-                "stdout_artifact": stdout_artifact,
-                "stderr_artifact": stderr_artifact,
-                "truncated": truncated,
-                "references": references,
-                "guidance": guidance,
-            },
-            truncated=truncated,
-            partial=truncated,
-            reference=references[0] if references else None,
+            output=TextOutput(
+                output,
+                bounds=OutputBounds(
+                    truncated=truncated,
+                    partial=truncated,
+                    reference=OutputReference(references[0]) if references else None,
+                ),
+            ),
+            body=BackgroundProcessLogsBody(
+                process_id=state.process_id,
+                status=state.status,
+                prior_runtime=state.prior_runtime,
+                reconciliation_reason=state.reconciliation_reason,
+                running=running,
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                stdout_retained_lines=len(state.stdout_chunks),
+                stderr_retained_lines=len(state.stderr_chunks),
+                stdout_dropped_lines=state.stdout_dropped_lines,
+                stderr_dropped_lines=state.stderr_dropped_lines,
+                stdout_artifact=stdout_artifact,
+                stderr_artifact=stderr_artifact,
+                truncated=truncated,
+                references=tuple(references),
+                guidance=guidance,
+            ),
         )

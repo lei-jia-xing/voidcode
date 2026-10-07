@@ -6,15 +6,17 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from ...tools.contracts import TerminalYield, ToolSuccess
 from ..contracts import RuntimeResponse
 from ..events import GRAPH_RESPONSE_READY, RUNTIME_TOOL_COMPLETED, EventEnvelope
+from ..fact_codec import reported_call_from_event
 
 
 @dataclass(frozen=True, slots=True)
 class ChildCompletionEvidence:
     """Transcript evidence shared by child finalization and result projection."""
 
-    handoff: dict[str, object] | None = None
+    handoff: TerminalYield | None = None
     response_ready: bool = False
 
     @property
@@ -23,16 +25,18 @@ class ChildCompletionEvidence:
 
 
 def child_completion_evidence(events: Sequence[EventEnvelope]) -> ChildCompletionEvidence:
-    handoff: dict[str, object] | None = None
+    handoff: TerminalYield | None = None
     response_ready = False
     for event in events:
-        if event.event_type == RUNTIME_TOOL_COMPLETED and event.payload.get("tool") == "yield" and event.payload.get("status") == "ok":
-            raw_handoff = event.payload.get("handoff")
-            if isinstance(raw_handoff, dict):
-                summary = raw_handoff.get("summary")
-                if isinstance(summary, str) and summary.strip():
-                    handoff = dict(raw_handoff)
-                    continue
+        if event.event_type == RUNTIME_TOOL_COMPLETED:
+            report = reported_call_from_event(event)
+            if report is None:
+                continue
+            if report.final_tool_name == "yield" and isinstance(report.result, ToolSuccess) and isinstance(report.result.control, TerminalYield):
+                control = report.result.control
+                handoff = control
+                response_ready = False
+                continue
         if handoff is not None and event.event_type == GRAPH_RESPONSE_READY:
             response_ready = True
     return ChildCompletionEvidence(handoff=handoff, response_ready=response_ready)

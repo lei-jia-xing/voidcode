@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolEffect, is_read_tier
@@ -124,7 +124,7 @@ def operation_class_for_tool(
     effects: frozenset[ToolEffect],
     *,
     tool_instance: Tool,
-    arguments: dict[str, object] | None = None,
+    arguments: Mapping[str, object] | None = None,
 ) -> OperationClass:
     """The approval tier for one call.
 

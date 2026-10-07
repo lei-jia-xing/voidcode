@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 from pydantic import BaseModel, field_validator
 
 from ....core.tool_context import ToolContext
 from ....tools._pydantic_args import NonEmptyPrompt, parse_tool_args, validate_non_empty_stripped
-from ....tools.contracts import ToolCall, ToolResult
+from ....tools.contracts import TextOutput, ToolCall, ToolResult, ToolSuccess
 from ...background.models import BackgroundTaskState, is_background_task_terminal
 
 
@@ -16,6 +17,30 @@ class TaskSteerRuntime(Protocol):
     def load_background_task(self, task_id: str) -> BackgroundTaskState: ...
 
     def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState: ...
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSteerResultBody:
+    task_id: str
+    status: str
+    parent_session_id: str | None
+    child_session_id: str | None
+    keep_alive: bool
+    steer_prompt: str | None
+    waiting_reason: str | None
+    terminal: bool
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "task_id": self.task_id,
+            "status": self.status,
+            "parent_session_id": self.parent_session_id,
+            "child_session_id": self.child_session_id,
+            "keep_alive": self.keep_alive,
+            "steer_prompt": self.steer_prompt,
+            "waiting_reason": self.waiting_reason,
+            "terminal": self.terminal,
+        }
 
 
 class _TaskSteerArgs(BaseModel):
@@ -56,20 +81,19 @@ class TaskSteerTool:
             )
         else:
             content = f"Background task {task.task.id} after steer: {task.status}"
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.name,
-            status="ok",
-            content=content,
-            data={
-                "task_id": task.task.id,
-                "status": task.status,
-                "parent_session_id": task.parent_session_id,
-                "child_session_id": task.session_id,
-                "keep_alive": task.keep_alive,
-                "steer_prompt": task.steer_prompt,
-                "waiting_reason": waiting_reason,
-                "terminal": is_background_task_terminal(task.status),
-            },
+            output=TextOutput(content),
+            body=TaskSteerResultBody(
+                task_id=task.task.id,
+                status=task.status,
+                parent_session_id=task.parent_session_id,
+                child_session_id=task.session_id,
+                keep_alive=task.keep_alive,
+                steer_prompt=task.steer_prompt,
+                waiting_reason=waiting_reason,
+                terminal=is_background_task_terminal(task.status),
+            ),
         )
 
 

@@ -6,10 +6,12 @@ from pydantic import BaseModel
 
 from ....core.tool_context import ToolContext
 from ....tools._pydantic_args import NonEmptyCommand, OptionalDescription, parse_tool_args
-from ....tools.contracts import RuntimeToolTimeoutError, ToolCall, ToolResult
+from ....tools.contracts import RuntimeToolTimeoutError, TextOutput, ToolCall, ToolResult, ToolSuccess
 
 if TYPE_CHECKING:
     from .background_process import BackgroundProcessRuntime
+
+from .background_process_results import BackgroundProcessStartBody
 
 
 class _BackgroundProcessStartArgs(BaseModel):
@@ -74,23 +76,23 @@ class BackgroundProcessStartTool:
             reused=reused,
             stale_process_id=stale_process_id,
         )
-        return ToolResult(
+        content = (
+            f"{'Reusing' if reused else 'Started'} background process {state.process_id} "
+            f"(pid={state.process.pid}) for command: {args.command}. Guidance: {guidance}"
+        )
+        return ToolSuccess(
             tool_name=self.name,
-            status="ok",
-            content=(
-                f"{'Reusing' if reused else 'Started'} background process {state.process_id} "
-                f"(pid={state.process.pid}) for command: {args.command}. Guidance: {guidance}"
+            output=TextOutput(content),
+            body=BackgroundProcessStartBody(
+                process_id=state.process_id,
+                pid=state.process.pid,
+                command=args.command,
+                cwd=state.cwd,
+                running=state.process.poll() is None,
+                reused=reused,
+                stale_process_id=stale_process_id,
+                guidance=guidance,
             ),
-            data={
-                "process_id": state.process_id,
-                "pid": state.process.pid,
-                "command": args.command,
-                "cwd": state.cwd,
-                "running": state.process.poll() is None,
-                "reused": reused,
-                "stale_process_id": stale_process_id,
-                "guidance": guidance,
-            },
         )
 
 

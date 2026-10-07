@@ -6,8 +6,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
+from ..agent_capability import validate_agent_capability_snapshot
+from ..composition import CompositionRef, FrozenComposition, SessionCompositionOwner, TaskCompositionOwner
 from ..contracts import (
     RuntimeRequest,
     RuntimeResponse,
@@ -21,6 +23,7 @@ from ..events import (
     EventEnvelope,
     EventSource,
 )
+from ..execution.report_codec import parse_report_payload, report_payload
 from ..interaction_queue import QueuedMessageKind, QueuedRuntimeMessage, drain_runtime_messages, enqueue_runtime_message
 from ..session import (
     SessionEntrySummary,
@@ -317,12 +320,23 @@ class _SessionStorageMixin(_MixinBase):
         return None
 
     @staticmethod
+    def _session_composition_ref(metadata: Mapping[str, object]) -> CompositionRef:
+        ref = CompositionRef.model_validate(metadata.get("composition_ref"))
+        snapshot = metadata.get("agent_capability_snapshot")
+        if isinstance(snapshot, dict):
+            validated = validate_agent_capability_snapshot(snapshot)
+            if CompositionRef.model_validate(validated["composition_ref"]) != ref:
+                raise ValueError("capability snapshot does not match its canonical composition reference")
+        return ref
+
+    @staticmethod
     def _merge_runtime_owned_metadata(
         *,
         connection: sqlite3.Connection,
         workspace: Path,
         session_id: str,
         metadata: dict[str, object],
+        initial: bool = False,
     ) -> dict[str, object]:
         """Preserve the queue owner's current state, including consumed absence.
 
@@ -337,17 +351,28 @@ class _SessionStorageMixin(_MixinBase):
             (str(workspace), session_id),
         )
         if row is None:
+            if not initial:
+                raise ValueError("session must be created by its atomic canonical checkpoint writer")
             return metadata
         stored_metadata = json.loads(decode_row(row, SessionMetadataRow)["metadata_json"])
         if not isinstance(stored_metadata, dict):
             raise ValueError("session metadata must decode to an object")
 
+        stored_ref = _SessionStorageMixin._session_composition_ref(stored_metadata)
+        if _SessionStorageMixin._session_composition_ref(metadata) != stored_ref:
+            raise ValueError("session composition reference is immutable")
         merged = dict(metadata)
         for key in ("pending_messages", "runtime_interaction_delivery_cursor"):
             if key in stored_metadata:
                 merged[key] = stored_metadata[key]
             else:
                 merged.pop(key, None)
+        if "execution_composition" in stored_metadata:
+            if "execution_composition" in metadata and metadata["execution_composition"] != stored_metadata["execution_composition"]:
+                raise ValueError("session execution composition is immutable")
+            merged["execution_composition"] = stored_metadata["execution_composition"]
+        elif "execution_composition" in metadata:
+            raise ValueError("only the initial canonical owner writer may publish a composition body")
         return merged
 
     @staticmethod
@@ -679,14 +704,18 @@ class _SessionStorageMixin(_MixinBase):
                 checkpoint_metadata = interrupted_checkpoint.get("session_metadata")
                 if not isinstance(checkpoint_metadata, dict):
                     raise ValueError("atomic checkpoint requires its canonical session metadata")
+                # The canonical composition is stored on the row, not copied
+                # into replay checkpoints; the shared merge reintroduced it.
+                checkpoint_metadata = self._merge_runtime_owned_metadata(
+                    connection=connection,
+                    workspace=workspace,
+                    session_id=session_id,
+                    metadata=checkpoint_metadata,
+                )
+                checkpoint_metadata.pop("execution_composition", None)
                 interrupted_checkpoint = {
                     **interrupted_checkpoint,
-                    "session_metadata": self._merge_runtime_owned_metadata(
-                        connection=connection,
-                        workspace=workspace,
-                        session_id=session_id,
-                        metadata=checkpoint_metadata,
-                    ),
+                    "session_metadata": checkpoint_metadata,
                 }
                 checkpoint_updated_at = self._next_timestamp(connection=connection)
                 _ = connection.execute(
@@ -714,6 +743,8 @@ class _SessionStorageMixin(_MixinBase):
         session_metadata: dict[str, object],
         tool_results: tuple[dict[str, object], ...],
         last_event_sequence: int,
+        composition_ref: CompositionRef,
+        composition: FrozenComposition | None = None,
         output: str | None = None,
         create_if_missing: bool = True,
         turn: int = 1,
@@ -736,16 +767,26 @@ class _SessionStorageMixin(_MixinBase):
         seal (``_write_session_snapshot`` is the only other writer of
         ``parent_session_id``, and it only runs at seal time).
 
-        ``tool_results`` must be the serialized ``ToolResult`` form produced by
-        ``_tool_results_from_events`` and accepted by
-        ``tool_results_from_checkpoint`` in ``resume.py``: a tuple of dicts, each
-        carrying the identity keys ``tool_name`` (str), ``status`` (``"ok"`` |
-        ``"error"``), ``data`` (dict), ``content`` (str | None), ``error``
-        (str | None), plus the optional ``diagnostics`` object with canonical
-        ``kind``, ``summary``, ``details`` and ``guidance`` fields.
-        Callers hold the durable events at this boundary and may derive these
-        via ``_tool_results_from_events``.
+        ``tool_results`` contains canonical ``ReportedCall`` payloads, serialized
+        by ``_tool_results_from_events`` from the durable ``runtime.tool_completed``
+        events. Each entry carries only ``tool_name``, ``status`` and
+        ``reported_call``; resume decodes that report through the strict codec.
         """
+        if type(composition_ref) is not CompositionRef or composition_ref.workspace != str(workspace):
+            raise ValueError("checkpoint requires its exact workspace composition reference")
+        if "execution_composition" in session_metadata:
+            raise ValueError("canonical body must be supplied through the initial writer")
+        session_metadata = {**session_metadata, "composition_ref": composition_ref.model_dump(mode="json")}
+        if self._session_composition_ref(session_metadata) != composition_ref:
+            raise ValueError("checkpoint composition reference disagrees with its metadata")
+        if composition is not None:
+            if type(composition) is not FrozenComposition:
+                raise ValueError("initial composition must be a frozen canonical value")
+            if composition_ref.owner != SessionCompositionOwner(kind="session", session_id=session_id):
+                raise ValueError("initial session body requires its actual session owner")
+            if composition.reference(workspace=str(workspace), owner=composition_ref.owner) != composition_ref:
+                raise ValueError("initial session composition IDs disagree with its reference")
+            session_metadata["execution_composition"] = composition.to_payload()
         persisted_metadata = session_metadata_for_persistence(session_metadata)
         checkpoint_json: str
         metadata_json: str
@@ -755,11 +796,17 @@ class _SessionStorageMixin(_MixinBase):
                 "SELECT 1 FROM sessions WHERE workspace_id = ? AND session_id = ?",
                 (str(workspace), session_id),
             )
+            if composition is not None:
+                if existing is not None:
+                    raise ValueError("canonical composition body can only be written with its initial row")
+            else:
+                self._load_execution_composition(connection, composition_ref)
             persisted_metadata = self._merge_runtime_owned_metadata(
                 connection=connection,
                 workspace=workspace,
                 session_id=session_id,
                 metadata=persisted_metadata,
+                initial=existing is None,
             )
             checkpoint = self._interrupted_resume_checkpoint(
                 prompt=prompt,
@@ -828,6 +875,174 @@ class _SessionStorageMixin(_MixinBase):
                         str(workspace),
                         session_id,
                     ),
+                )
+            connection.commit()
+
+    @staticmethod
+    def _load_execution_composition(connection: sqlite3.Connection, ref: CompositionRef) -> FrozenComposition:
+        if type(ref) is not CompositionRef:
+            raise ValueError("canonical composition lookup requires a typed reference")
+        if isinstance(ref.owner, SessionCompositionOwner):
+            row = connection.execute(
+                "SELECT metadata_json FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (ref.workspace, ref.owner.session_id),
+            ).fetchone()
+        elif isinstance(ref.owner, TaskCompositionOwner):
+            row = connection.execute(
+                "SELECT request_metadata_json FROM background_tasks WHERE workspace_id = ? AND task_id = ?",
+                (ref.workspace, ref.owner.task_id),
+            ).fetchone()
+        else:
+            raise ValueError("canonical composition owner is unsupported")
+        if row is None:
+            raise ValueError("canonical composition owner does not exist")
+        metadata = json.loads(row[0])
+        if not isinstance(metadata, dict):
+            raise ValueError("canonical owner metadata must be an object")
+        if CompositionRef.model_validate(metadata.get("composition_ref")) != ref:
+            raise ValueError("canonical composition reference does not match its owner")
+        frozen = FrozenComposition.from_payload(metadata.get("execution_composition"))
+        if frozen.reference(workspace=ref.workspace, owner=ref.owner) != ref:
+            raise ValueError("canonical composition IDs do not match their reference")
+        return frozen
+
+    def load_execution_composition(self, *, ref: CompositionRef) -> FrozenComposition:
+        if type(ref) is not CompositionRef:
+            raise ValueError("canonical composition lookup requires a typed reference")
+        with self._connect(Path(ref.workspace)) as connection:
+            return self._load_execution_composition(connection, ref)
+
+    def export_session_bundle_rows(
+        self,
+        *,
+        workspace: Path,
+        session_ids: tuple[str, ...],
+        task_ids: tuple[str, ...],
+    ) -> dict[str, object]:
+        """Read actual current rows, including append-only edges and dedupe truth."""
+        result: dict[str, object] = {}
+        with self._connect(workspace) as connection:
+            for key, table, id_column, ids in (
+                ("sessions", "sessions", "session_id", session_ids),
+                ("events", "session_events", "session_id", session_ids),
+                ("tasks", "background_tasks", "task_id", task_ids),
+                ("deliveries", "session_event_deliveries", "session_id", session_ids),
+            ):
+                rows: list[dict[str, object]] = []
+                if ids:
+                    placeholders = ",".join("?" for _ in ids)
+                    stored = connection.execute(
+                        f"SELECT * FROM {table} WHERE workspace_id = ? AND {id_column} IN ({placeholders}) ORDER BY {id_column}",
+                        (str(workspace), *ids),
+                    ).fetchall()
+                    for raw_row in stored:
+                        row = dict(raw_row)
+                        for column, value in row.items():
+                            if column.endswith("_json") and value is not None:
+                                row[column] = json.loads(value)
+                        rows.append(row)
+                result[key] = tuple(rows)
+        return result
+
+    def import_session_bundle_rows(
+        self,
+        *,
+        workspace: Path,
+        sessions: tuple[dict[str, object], ...],
+        events: tuple[dict[str, object], ...],
+        tasks: tuple[dict[str, object], ...],
+        deliveries: tuple[dict[str, object], ...],
+    ) -> None:
+        """Insert a whole preflighted current closure in one lease-gated transaction."""
+        groups = (
+            ("sessions", sessions),
+            ("background_tasks", tasks),
+            ("session_events", events),
+            ("session_event_deliveries", deliveries),
+        )
+        schema = cast(Any, self)._CANONICAL_SCHEMA
+        encoded: dict[str, list[tuple[object, ...]]] = {}
+        references: list[CompositionRef] = []
+        session_ids = {row.get("session_id") for row in sessions}
+        task_ids = {row.get("task_id") for row in tasks}
+        if len(session_ids) != len(sessions) or len(task_ids) != len(tasks):
+            raise ValueError("bundle contains duplicate owner rows")
+        for table, rows in groups:
+            columns = schema[table]
+            values: list[tuple[object, ...]] = []
+            keys: set[tuple[object, ...]] = set()
+            primary_columns = tuple(column[0] for column in columns if column[4])
+            for row in rows:
+                if set(row) != {column[0] for column in columns} or row["workspace_id"] != str(workspace):
+                    raise ValueError(f"bundle {table} row has an invalid current shape or workspace")
+                primary = tuple(row[column] for column in primary_columns)
+                if primary in keys:
+                    raise ValueError(f"bundle {table} contains duplicate primary identities")
+                keys.add(primary)
+                serialized: list[object] = []
+                for name, kind, required, _default, _primary in columns:
+                    value = row[name]
+                    if value is None:
+                        if required:
+                            raise ValueError(f"bundle {table}.{name} cannot be null")
+                    elif name.endswith("_json"):
+                        value = json.dumps(value, sort_keys=True, allow_nan=False)
+                    elif kind == "TEXT" and type(value) is not str:
+                        raise ValueError(f"bundle {table}.{name} must be text")
+                    elif kind == "INTEGER" and type(value) is not int:
+                        raise ValueError(f"bundle {table}.{name} must be an integer")
+                    serialized.append(value)
+                values.append(tuple(serialized))
+                if table in ("sessions", "background_tasks"):
+                    metadata = row["metadata_json" if table == "sessions" else "request_metadata_json"]
+                    if not isinstance(metadata, dict):
+                        raise ValueError("bundle owner metadata must be an object")
+                    ref = (
+                        self._session_composition_ref(metadata)
+                        if table == "sessions"
+                        else CompositionRef.model_validate(metadata.get("composition_ref"))
+                    )
+                    if ref.workspace != str(workspace):
+                        raise ValueError("bundle owner reference names a different workspace")
+                    body = metadata.get("execution_composition")
+                    if body is not None:
+                        frozen = FrozenComposition.from_payload(body)
+                        actual_owner = (
+                            SessionCompositionOwner(kind="session", session_id=cast(str, row["session_id"]))
+                            if table == "sessions"
+                            else TaskCompositionOwner(kind="task", task_id=cast(str, row["task_id"]))
+                        )
+                        if ref.owner != actual_owner or frozen.reference(workspace=str(workspace), owner=actual_owner) != ref:
+                            raise ValueError("bundle canonical body does not belong to its genuine owner")
+                    references.append(ref)
+                elif row["session_id"] not in session_ids:
+                    raise ValueError("bundle event or delivery names an absent imported session")
+            encoded[table] = values
+        with self._write_connect(workspace) as connection:
+            for table, ids, column in (("sessions", session_ids, "session_id"), ("background_tasks", task_ids, "task_id")):
+                for owner_id in ids:
+                    if (
+                        connection.execute(
+                            f"SELECT 1 FROM {table} WHERE workspace_id = ? AND {column} = ?",
+                            (str(workspace), owner_id),
+                        ).fetchone()
+                        is not None
+                    ):
+                        raise ValueError("bundle destination owner identity collided")
+            for table, _rows in groups:
+                names = tuple(column[0] for column in schema[table])
+                placeholders = ",".join("?" for _ in names)
+                connection.executemany(
+                    f"INSERT INTO {table} ({','.join(names)}) VALUES ({placeholders})",
+                    encoded[table],
+                )
+            for ref in references:
+                self._load_execution_composition(connection, ref)
+            for scope, rows in (("sessions", sessions), ("background_tasks", tasks)):
+                maximum = max((cast(int, row["updated_at"]) for row in rows), default=0)
+                connection.execute(
+                    "INSERT INTO storage_sequences(scope, value) VALUES (?, ?) ON CONFLICT(scope) DO UPDATE SET value = MAX(value, excluded.value)",
+                    (scope, maximum),
                 )
             connection.commit()
 
@@ -918,23 +1133,14 @@ class _SessionStorageMixin(_MixinBase):
         for event in events:
             if event.event_type != "runtime.tool_completed":
                 continue
-            payload = event.payload
-            raw_status = payload.get("status")
-            is_err = raw_status == "error"
-            if raw_status not in {"ok", "error"}:
-                is_err = payload.get("error") is not None
-            raw_content = payload.get("content")
-            raw_error = payload.get("error")
-            tool_result: dict[str, object] = {
-                "tool_name": str(payload["tool"]),
-                "content": str(raw_content) if raw_content is not None and not is_err else None,
-                "status": "error" if is_err else "ok",
-                "data": payload,
-                "error": str(raw_error) if raw_error is not None and is_err else None,
-            }
-            if is_err and isinstance(payload.get("diagnostics"), dict):
-                tool_result["diagnostics"] = cast(dict[str, object], payload["diagnostics"])
-            tool_results.append(tool_result)
+            report = parse_report_payload(event.payload.get("reported_call"))
+            tool_results.append(
+                {
+                    "tool_name": report.final_tool_name,
+                    "status": report.result.status,
+                    "reported_call": report_payload(report),
+                }
+            )
         return tool_results
 
     def _session_tree_entries(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> tuple[SessionTreeEvent, ...]:

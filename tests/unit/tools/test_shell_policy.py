@@ -3,7 +3,12 @@ from typing import Any
 
 import pytest
 
-from voidcode.hook.typed import ToolInputEvent, builtin_tool_input_handler_registry
+from voidcode.hook.typed import (
+    ToolInputEvent,
+    ToolInputHandlerRegistry,
+    builtin_tool_input_handler_declarations,
+    materialize_builtin_tool_input_handler,
+)
 from voidcode.runtime.permission import (
     ExternalDirectoryPermissionConfig,
     PatternPermissionRule,
@@ -14,7 +19,7 @@ from voidcode.runtime.permission import (
 from voidcode.runtime.permission_context import RuntimePermissionContextResolver
 from voidcode.runtime.permission_engine import PermissionEngine
 from voidcode.security.shell_policy import non_interactive_shell_env
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect
+from voidcode.tools.contracts import ToolCall
 from voidcode.tools.process.background_process import BackgroundProcessTool
 from voidcode.tools.shell_exec import ShellExecTool
 
@@ -33,7 +38,7 @@ def _shell_event(command: str) -> ToolInputEvent:
     return ToolInputEvent(
         session_id="test",
         tool_call=ToolCall(tool_name="shell_exec", arguments={"command": command}),
-        tool=ToolDefinition(name="shell_exec", description="shell", input_schema={}, effects=frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN})),
+        tool=ShellExecTool.definition,
         sequence=0,
         session_status="active",
         mode="normal",
@@ -42,13 +47,21 @@ def _shell_event(command: str) -> ToolInputEvent:
 
 
 def test_builtin_registry_announces_non_interactive_env_as_composed_hook() -> None:
-    outcome = builtin_tool_input_handler_registry().apply(event=_shell_event("npm install"))
+    outcome = (
+        ToolInputHandlerRegistry.from_declarations(builtin_tool_input_handler_declarations())
+        .bind(materialize_builtin_tool_input_handler)
+        .apply(event=_shell_event("npm install"))
+    )
     assert outcome.action == "diagnostic"
     assert any("CI" in diagnostic for diagnostic in outcome.diagnostics)
 
 
 def test_builtin_registry_stays_silent_for_plain_commands() -> None:
-    outcome = builtin_tool_input_handler_registry().apply(event=_shell_event("ls"))
+    outcome = (
+        ToolInputHandlerRegistry.from_declarations(builtin_tool_input_handler_declarations())
+        .bind(materialize_builtin_tool_input_handler)
+        .apply(event=_shell_event("ls"))
+    )
     assert outcome.action == "unchanged"
     assert outcome.diagnostics == ()
 

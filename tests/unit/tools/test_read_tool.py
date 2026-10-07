@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import zipfile
 from pathlib import Path
-from typing import cast
 
 import pytest
 
-from voidcode.core.tool_context import ToolContext
-from voidcode.core.transcript import tool_result_output
+from voidcode.core.tool_context import ArtifactMissing, ToolContext
+from voidcode.core.transcript import output_text
+from voidcode.core.turns import report_call
+from voidcode.runtime.context.rules import runtime_file_rule_contexts
+from voidcode.runtime.execution.report_codec import parse_report_payload, report_payload
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.read import ReadTool
 
@@ -22,14 +25,12 @@ def test_read_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) -> None
         context=ToolContext(workspace=tmp_path),
     )
 
-    assert result.tool_name == "read"
     assert result.status == "ok"
-    assert result.data["raw_content"] == "beta\ngamma"
-    assert result.data["path"] == "sample.txt"
-    assert result.data["offset"] == 2
-    assert result.data["limit"] == 2
-    assert result.data["next_offset"] == 4
-    assert "copy_guidance" not in result.data
+    output = output_text(result.output)
+    assert output is not None
+    assert "beta\ngamma" in output
+    assert "alpha" not in output and "delta" not in output
+    assert hashlib.sha256(sample.read_bytes()).hexdigest() in output
 
 
 def test_read_tool_lists_directory_tree_and_marks_empty_directory(tmp_path: Path) -> None:
@@ -43,14 +44,13 @@ def test_read_tool_lists_directory_tree_and_marks_empty_directory(tmp_path: Path
 
     result = tool.invoke(ToolCall(tool_name="read", arguments={"path": "."}), context=ToolContext(workspace=tmp_path))
 
-    assert result.status == "ok"
-    assert result.data["type"] == "directory"
-    rendered = cast(str, result.data["raw_content"])
-    assert "a.txt (1 B," in rendered
-    assert "subdir/" in rendered
-    assert "nested.txt (6 B," in rendered
-    assert "empty/" in rendered
-    assert "(empty directory)" in rendered
+    output = output_text(result.output)
+    assert output is not None
+    assert "a.txt" in output
+    assert "subdir/" in output
+    assert "nested.txt" in output
+    assert "empty/" in output
+    assert "(empty directory)" in output
 
 
 def test_read_tool_rejects_archive_path_traversal(tmp_path: Path) -> None:
@@ -73,14 +73,15 @@ def test_read_tool_lists_and_decodes_archive_members(tmp_path: Path) -> None:
     tool = ReadTool()
 
     listing = tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip"}), context=ToolContext(workspace=tmp_path))
-    rendered = cast(str, listing.data["raw_content"])
-    assert "main.py" not in rendered
-    assert "src/" in rendered
-    assert "notes.txt (5 B)" in rendered
+    listing_output = output_text(listing.output)
+    assert listing_output is not None
+    assert "main.py" not in listing_output
+    assert "src/" in listing_output
+    assert "notes.txt" in listing_output
 
     member = tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip:src/main.py"}), context=ToolContext(workspace=tmp_path))
-    assert member.data["raw_content"] == "line one\nline two"
-    assert member.data["type"] == "archive"
+    member_output = output_text(member.output)
+    assert member_output is not None and "line one\nline two" in member_output
 
 
 def test_read_tool_reports_non_utf8_archive_member_without_raising(tmp_path: Path) -> None:
@@ -93,8 +94,7 @@ def test_read_tool_reports_non_utf8_archive_member_without_raising(tmp_path: Pat
     result = tool.invoke(ToolCall(tool_name="read", arguments={"path": "bundle.zip:blob.bin"}), context=ToolContext(workspace=tmp_path))
 
     assert result.status == "ok"
-    assert result.data["type"] == "archive_binary"
-    output = tool_result_output(result)
+    output = output_text(result.output)
     assert output is not None
     assert "not UTF-8 text" in output
     assert "4 bytes" in output
@@ -110,8 +110,8 @@ def test_read_tool_allows_workspace_escape_path_with_absolute_display(tmp_path: 
         context=ToolContext(workspace=tmp_path),
     )
 
-    assert result.status == "ok"
-    assert result.data["path"] == str(outside.resolve())
+    output = output_text(result.output)
+    assert output is not None and "outside" in output
 
 
 def test_read_tool_reports_missing_file_path(tmp_path: Path) -> None:
@@ -122,12 +122,6 @@ def test_read_tool_reports_missing_file_path(tmp_path: Path) -> None:
 
 
 class _FakeArtifactFacade:
-    """Minimal RuntimeArtifactReadFacade stand-in mirroring bounded read semantics."""
-
-    def __init__(self, artifact_id: str, content: str) -> None:
-        self._artifact_id = artifact_id
-        self._content = content
-
     def read_artifact(
         self,
         *,
@@ -135,35 +129,16 @@ class _FakeArtifactFacade:
         artifact_id: str,
         offset: int | None = None,
         limit: int | None = None,
-    ) -> dict[str, object] | None:
-        _ = caller_session_id
-        if artifact_id != self._artifact_id:
-            return None
-        lines = self._content.splitlines(keepends=True)
-        start = max(0, offset or 0)
-        bounded = max(0, limit or 2000)
-        selected = lines[start : start + bounded]
-        next_offset = start + len(selected) if start + len(selected) < len(lines) else None
-        return {
-            "artifact_id": artifact_id,
-            "status": "available",
-            "artifact_missing": False,
-            "offset": start,
-            "limit": bounded,
-            "line_count": len(lines),
-            "next_offset": next_offset,
-            "content": "".join(selected),
-        }
-
-
-_ARTIFACT_ID = "artifact_0123456789abcdef01234567"
+    ) -> ArtifactMissing:
+        _ = caller_session_id, artifact_id, offset, limit
+        return ArtifactMissing()
 
 
 def test_read_tool_rejects_unknown_artifact_id(tmp_path: Path) -> None:
-    facade = _FakeArtifactFacade(_ARTIFACT_ID, "content")
-    tool = ReadTool()
+    facade = _FakeArtifactFacade()
 
     context = ToolContext(workspace=tmp_path, session_id="session-1", artifact=facade)
+    tool = ReadTool()
     with pytest.raises(ValueError):
         tool.invoke(
             ToolCall(
@@ -172,3 +147,19 @@ def test_read_tool_rejects_unknown_artifact_id(tmp_path: Path) -> None:
             ),
             context=context,
         )
+
+
+def test_replayed_read_selects_only_authorized_path_rule(tmp_path: Path) -> None:
+    for directory, rule in (("first", "First package rule"), ("second", "Second package rule")):
+        package = tmp_path / directory
+        package.mkdir()
+        (package / "AGENTS.md").write_text(rule, encoding="utf-8")
+        (package / "sample.txt").write_text("observed\n", encoding="utf-8")
+    for directory, rule in (("first", "First package rule"), ("second", "Second package rule")):
+        arguments = {"path": f"{directory}/sample.txt"}
+        call = ToolCall(tool_name="read", arguments=arguments, tool_call_id=f"read-{directory}")
+        result = ReadTool().invoke(call, context=ToolContext(workspace=tmp_path))
+        report = report_call(call, result, final_arguments=arguments, final_tool_name="read")
+        restored = parse_report_payload(report_payload(report))
+        contexts = runtime_file_rule_contexts(workspace=tmp_path, tool_results=(restored,), include_workspace_root=False)
+        assert [(context.path, context.content) for context in contexts] == [(f"{directory}/AGENTS.md", rule)]

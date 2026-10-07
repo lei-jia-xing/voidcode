@@ -10,7 +10,7 @@ from pydantic import BaseModel, field_validator
 from ..core.tool_context import ToolContext
 from ..security.path_policy import resolve_workspace_path
 from ._pydantic_args import parse_tool_args, validate_non_empty
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import OpaqueToolBody, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 
 # ── Unified args model for merged AstGrepTool ───────────────────────────────
 
@@ -71,7 +71,7 @@ def _parse_stream_output(stdout: str) -> list[dict[str, Any]]:
     return matches
 
 
-def _run_ast_grep(*, cmd: list[str], workspace: Path, timeout_seconds: int = 30) -> ToolResult | subprocess.CompletedProcess[str]:
+def _run_ast_grep(*, cmd: list[str], workspace: Path, timeout_seconds: int = 30) -> ToolFailure | subprocess.CompletedProcess[str]:
     try:
         completed = subprocess.run(
             cmd,
@@ -81,15 +81,13 @@ def _run_ast_grep(*, cmd: list[str], workspace: Path, timeout_seconds: int = 30)
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
-        return ToolResult(
+        return ToolFailure(
             tool_name=cmd[0].replace("-", "_"),
-            status="error",
             error=f"ast-grep timed out after {timeout_seconds}s",
         )
     except OSError as exc:
-        return ToolResult(
+        return ToolFailure(
             tool_name=cmd[0].replace("-", "_"),
-            status="error",
             error=f"ast-grep not found or failed: {exc}",
         )
     return completed
@@ -112,7 +110,7 @@ def _run_preview_replace(
     lang: str | None,
     workspace: Path,
     timeout_seconds: int = 30,
-) -> ToolResult | tuple[str, list[dict[str, Any]], int]:
+) -> ToolFailure | tuple[str, list[dict[str, Any]], int]:
     _, relative_path = _resolve_candidate(workspace=workspace, path_text=path_text)
     preview_cmd = ["ast-grep", "run", "--json=stream", "-p", pattern, "-r", rewrite]
     if lang:
@@ -120,7 +118,7 @@ def _run_preview_replace(
     preview_cmd.append(relative_path)
 
     completed = _run_ast_grep(cmd=preview_cmd, workspace=workspace, timeout_seconds=timeout_seconds)
-    if isinstance(completed, ToolResult):
+    if isinstance(completed, ToolFailure):
         return completed
 
     if _is_no_match_result(completed):
@@ -192,8 +190,8 @@ class AstGrepTool:
         cmd.append(relative_path)
 
         completed = _run_ast_grep(cmd=cmd, workspace=workspace, timeout_seconds=timeout_seconds)
-        if isinstance(completed, ToolResult):
-            return ToolResult(tool_name=self.definition.name, status=completed.status, error=completed.error)
+        if isinstance(completed, ToolFailure):
+            return ToolFailure(self.definition.name, error=completed.error)
 
         if _is_no_match_result(completed):
             matches: list[dict[str, Any]] = []
@@ -202,19 +200,20 @@ class AstGrepTool:
             matches = _parse_stream_output(completed.stdout)
 
         match_count = len(matches)
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.definition.name,
-            status="ok",
-            content=f"Found {match_count} AST match(es) in {relative_path}",
-            data={
-                "path": relative_path,
-                "pattern": args.pattern,
-                "lang": args.lang,
-                "match_count": match_count,
-                "matches": matches,
-                "mode": "search",
-                "timeout_seconds": timeout_seconds,
-            },
+            output=TextOutput(f"Found {match_count} AST match(es) in {relative_path}"),
+            body=OpaqueToolBody(
+                {
+                    "path": relative_path,
+                    "pattern": args.pattern,
+                    "lang": args.lang,
+                    "match_count": match_count,
+                    "matches": matches,
+                    "mode": "search",
+                    "timeout_seconds": timeout_seconds,
+                }
+            ),
         )
 
     def _invoke_preview_replace(self, args: AstGrepArgs, *, workspace: Path, timeout_seconds: int) -> ToolResult:
@@ -232,26 +231,27 @@ class AstGrepTool:
             workspace=workspace,
             timeout_seconds=timeout_seconds,
         )
-        if isinstance(preview, ToolResult):
-            return ToolResult(tool_name=self.definition.name, status=preview.status, error=preview.error)
+        if isinstance(preview, ToolFailure):
+            return ToolFailure(self.definition.name, error=preview.error)
         relative_path, matches, replacement_count = preview
 
         if args.mode == "preview":
-            return ToolResult(
+            return ToolSuccess(
                 tool_name=self.definition.name,
-                status="ok",
-                content=f"Previewed {replacement_count} AST replacement(s) in {relative_path}",
-                data={
-                    "path": relative_path,
-                    "pattern": args.pattern,
-                    "rewrite": args.rewrite,
-                    "lang": args.lang,
-                    "replacement_count": replacement_count,
-                    "matches": matches,
-                    "applied": False,
-                    "mode": "preview",
-                    "timeout_seconds": timeout_seconds,
-                },
+                output=TextOutput(f"Previewed {replacement_count} AST replacement(s) in {relative_path}"),
+                body=OpaqueToolBody(
+                    {
+                        "path": relative_path,
+                        "pattern": args.pattern,
+                        "rewrite": args.rewrite,
+                        "lang": args.lang,
+                        "replacement_count": replacement_count,
+                        "matches": matches,
+                        "applied": False,
+                        "mode": "preview",
+                        "timeout_seconds": timeout_seconds,
+                    }
+                ),
             )
 
         apply_cmd = ["ast-grep", "run", "-p", args.pattern, "-r", rewrite]
@@ -259,24 +259,25 @@ class AstGrepTool:
             apply_cmd.extend(["--lang", args.lang])
         apply_cmd.extend(["-U", relative_path])
         completed = _run_ast_grep(cmd=apply_cmd, workspace=workspace, timeout_seconds=timeout_seconds)
-        if isinstance(completed, ToolResult):
-            return ToolResult(tool_name=self.definition.name, status=completed.status, error=completed.error)
+        if isinstance(completed, ToolFailure):
+            return ToolFailure(self.definition.name, error=completed.error)
         if not _is_no_match_result(completed):
             _raise_on_process_failure(completed=completed, fallback_message="ast-grep replace failed")
 
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.definition.name,
-            status="ok",
-            content=f"Applied {replacement_count} AST replacement(s) in {relative_path}",
-            data={
-                "path": relative_path,
-                "pattern": args.pattern,
-                "rewrite": args.rewrite,
-                "lang": args.lang,
-                "replacement_count": replacement_count,
-                "matches": matches,
-                "applied": True,
-                "mode": "replace",
-                "timeout_seconds": timeout_seconds,
-            },
+            output=TextOutput(f"Applied {replacement_count} AST replacement(s) in {relative_path}"),
+            body=OpaqueToolBody(
+                {
+                    "path": relative_path,
+                    "pattern": args.pattern,
+                    "rewrite": args.rewrite,
+                    "lang": args.lang,
+                    "replacement_count": replacement_count,
+                    "matches": matches,
+                    "applied": True,
+                    "mode": "replace",
+                    "timeout_seconds": timeout_seconds,
+                }
+            ),
         )

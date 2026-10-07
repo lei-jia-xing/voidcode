@@ -1,77 +1,61 @@
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass, field
-from typing import Literal, Protocol, runtime_checkable
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
-from ..tools.contracts import ToolDiagnostics, ToolResult, ToolResultStatus
+from ..security.json_values import own_json_object
+from ..tools.contracts import AttachmentOutput, EmptyOutput, TextOutput, ToolDiagnostics, ToolFailure, ToolOutput
+
+if TYPE_CHECKING:
+    from .turns import ReportedCall
 
 type MessageRole = Literal["system", "user", "assistant", "tool"]
 
 
 @dataclass(frozen=True, slots=True)
 class ToolResultView:
-    """Isolated model-facing rendering; never mutates the authoritative result."""
+    """An explicit model projection, with no reference to the canonical body."""
 
-    result: ToolResult
-    content: str | None
+    tool_call_id: str
+    tool_name: str
+    arguments: Mapping[str, object]
+    output: ToolOutput
+    status: Literal["ok", "error"]
+    error: str | None = None
+    diagnostics: ToolDiagnostics | None = None
     clipped: bool = False
     original_content_chars: int | None = None
     content_char_limit: int | None = None
     pruned: bool = False
-    _isolated_data: dict[str, object] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        isolated_result = deepcopy(self.result)
-        object.__setattr__(self, "result", isolated_result)
-        object.__setattr__(self, "_isolated_data", deepcopy(isolated_result.data))
-
-    @property
-    def tool_name(self) -> str:
-        return self.result.tool_name
-
-    @property
-    def status(self) -> ToolResultStatus:
-        return self.result.status
-
-    @property
-    def data(self) -> dict[str, object]:
-        return self._isolated_data
-
-    @property
-    def error(self) -> str | None:
-        return self.result.error
-
-    @property
-    def truncated(self) -> bool:
-        return self.pruned or self.clipped or self.result.truncated
-
-    @property
-    def partial(self) -> bool:
-        return True if self.pruned or self.clipped else self.result.partial
-
-    @property
-    def reference(self) -> str | None:
-        return self.result.reference
-
-    @property
-    def source(self) -> str | None:
-        return self.result.source
-
-    @property
-    def diagnostics(self) -> ToolDiagnostics | None:
-        return self.result.diagnostics
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self.result, name)
+        object.__setattr__(self, "arguments", own_json_object(self.arguments))
 
 
-def tool_result_output(result: ToolResult | ToolResultView) -> str | None:
-    if result.tool_name == "read" and result.status == "ok" and not (isinstance(result, ToolResultView) and (result.pruned or result.clipped)):
-        raw_content = result.data.get("raw_content")
-        if isinstance(raw_content, str):
-            return raw_content
-    return result.content
+def project_report(report: ReportedCall) -> ToolResultView:
+    result = report.result
+    return ToolResultView(
+        tool_call_id=report.tool_call_id,
+        tool_name=report.final_tool_name,
+        arguments=report.authorized_arguments,
+        output=result.output,
+        status=result.status,
+        error=result.error if isinstance(result, ToolFailure) else None,
+        diagnostics=result.diagnostics if isinstance(result, ToolFailure) else None,
+    )
+
+
+def output_text(output: ToolOutput) -> str | None:
+    if isinstance(output, TextOutput):
+        return output.text
+    if isinstance(output, (EmptyOutput, AttachmentOutput)):
+        return output.presentation
+    raise TypeError(f"unsupported tool output: {type(output).__name__}")
+
+
+def tool_result_output(result: ToolResultView) -> str | None:
+    return output_text(result.output)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,7 +74,7 @@ class ContextWindow(Protocol):
     def prompt(self) -> str: ...
 
     @property
-    def tool_results(self) -> tuple[ToolResult | ToolResultView, ...]: ...
+    def tool_results(self) -> tuple[ToolResultView, ...]: ...
 
     @property
     def compacted(self) -> bool: ...
@@ -110,7 +94,7 @@ class AssembledContext(Protocol):
     def prompt(self) -> str: ...
 
     @property
-    def tool_results(self) -> tuple[ToolResult | ToolResultView, ...]: ...
+    def tool_results(self) -> tuple[ToolResultView, ...]: ...
 
     @property
     def continuity_state(self) -> object | None: ...

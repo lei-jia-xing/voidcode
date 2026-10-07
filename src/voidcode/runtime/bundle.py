@@ -1,20 +1,7 @@
-"""Portable session bundle schema, redaction, and import/export helpers.
+"""Exact CURRENT bundle2 row snapshots; import never dispatches copied tasks.
 
-The bundle is intentionally an inert artifact:
-
-- Importing it does not auto-resume execution; it only persists the session
-  for ``sessions debug`` / ``sessions resume --dry-run`` style inspection.
-- Default export redacts secrets, raw provider messages, full reasoning text,
-  and oversized tool output. Opt-in flags can include them when the operator
-  knows the destination is private.
-- The schema is versioned (``voidcode.session.bundle.v1``); every other
-  schema fails fast on import.
-- Workspace memory records and vector/index/cache data are intentionally
-  outside the canonical MVP bundle; memory import/export is deferred.
-
-The on-disk format is either a JSON file or a zip archive containing a
-single ``bundle.json`` entry. The zip wrapper exists so future revisions can
-add bounded log files or screenshots without breaking the JSON entry.
+Signed composition bodies stay on their canonical owner rows. JSON and ZIP use
+one closed schema, and every row is checked before the single storage transaction.
 """
 
 from __future__ import annotations
@@ -23,160 +10,72 @@ import hashlib
 import io
 import json
 import platform
-import sys
 import time
 import zipfile
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Final, Literal, TypeIs, cast, final, overload
+from typing import Any, Final, Literal, cast
 
 from .. import __version__ as VOIDCODE_VERSION
-from ..security.redaction import (
-    BUNDLE_TOOL_OUTPUT_PREVIEW_CHARS as _DEFAULT_TOOL_OUTPUT_PREVIEW_CHARS,
-)
-from ..security.redaction import (
-    REDACTED_PLACEHOLDER as SESSION_BUNDLE_REDACTED_PLACEHOLDER,
-)
-from ..security.redaction import (
-    redact_mapping,
-    redact_text,
-    truncate,
-)
-from ..tools.output import read_tool_output_artifact
-from .background.models import StoredBackgroundTaskSummary
-from .contracts import (
-    RuntimeRequest,
-    RuntimeResponse,
-    UnknownSessionError,
-    validate_id,
-)
+from .agent_capability import validate_agent_capability_snapshot
+from .composition import CompositionRef, FrozenComposition, SessionCompositionOwner, TaskCompositionOwner
+from .contracts import validate_id
 from .events import EventEnvelope, EventSource
-from .session import SessionRef, SessionState, SessionStatus, session_metadata_for_persistence
-from .storage import (
-    BackgroundTaskRepository,
-    SessionEventRepository,
-    SessionRecoveryRepository,
-    SessionRepository,
-    SessionRunWriter,
-)
+from .execution.resume_checkpoint import tool_results_from_checkpoint, validated_resume_checkpoint_envelope
+from .fact_codec import decode_fact
+from .permission import PendingApproval
+from .storage import BackgroundTaskRepository, SessionEventRepository, SessionRecoveryRepository, SessionRepository, SessionRunWriter
+from .storage.shared import _pending_operation_class, _pending_path_scope, _pending_permission_decision
 
-SESSION_BUNDLE_SCHEMA_NAME: Final[str] = "voidcode.session.bundle.v1"
-SESSION_BUNDLE_SCHEMA_VERSION: Final[int] = 1
+SESSION_BUNDLE_SCHEMA_NAME: Final[str] = "voidcode.session.bundle.v2"
+SESSION_BUNDLE_SCHEMA_VERSION: Final[int] = 2
 SESSION_BUNDLE_FILE_NAME: Final[str] = "bundle.json"
 SESSION_BUNDLE_DEFAULT_EXTENSION: Final[str] = ".vcsession.zip"
-
 type SessionBundleFormat = Literal["zip", "json"]
 
 
-_RAW_PROVIDER_EVENT_TYPES: Final[frozenset[str]] = frozenset(
-    {
-        "provider.request_payload",
-        "provider.response_payload",
-        "provider.raw_message",
-        "provider.raw_messages",
-    }
-)
-
-
-_REASONING_TEXT_KEYS: Final[frozenset[str]] = frozenset(
-    {
-        "reasoning",
-        "reasoning_text",
-        "reasoning_content",
-        "thinking",
-        "thinking_text",
-        "thoughts",
-    }
-)
-
-
-_TOOL_OUTPUT_KEYS: Final[frozenset[str]] = frozenset(
-    {
-        "content",
-        "output",
-        "stdout",
-        "stderr",
-        "result_text",
-    }
-)
-
-
-_DEFERRED_BUNDLE_DIAGNOSTIC_KEYS: Final[frozenset[str]] = frozenset(
-    {
-        "embedding_cache",
-        "embeddings",
-        "vector_cache",
-        "vector_index",
-        "vector_index_path",
-        "vector_indexes",
-        "vectors",
-    }
-)
-
-_DEFERRED_BUNDLE_DIAGNOSTIC_VALUES: Final[frozenset[str]] = frozenset(
-    {
-        "vector_cache",
-        "vector_index",
-        "vector_indexes",
-    }
-)
-
-
-_BUNDLE_ARTIFACT_READ_LIMIT_LINES: Final[int] = 1_000_000
-
-
 class SessionBundleError(ValueError):
-    """Raised when a session bundle is malformed or incompatible."""
+    """Malformed, incomplete, or unsupported CURRENT bundle."""
 
 
 @dataclass(frozen=True, slots=True)
 class SessionBundleOptions:
-    """Operator-facing knobs that control export verbosity and redaction."""
+    """Exact snapshots cannot be redacted or have transcript rows removed."""
 
     redact: bool = True
     include_tool_output: bool = False
     include_raw_provider_messages: bool = False
     include_reasoning_text: bool = False
     support_mode: bool = False
-    tool_output_preview_chars: int = _DEFAULT_TOOL_OUTPUT_PREVIEW_CHARS
+    tool_output_preview_chars: int = 16_000
 
     @classmethod
     def support_artifact(cls) -> SessionBundleOptions:
-        """Return an options preset tuned for bug-report style support bundles."""
-
-        return cls(
-            redact=True,
-            include_tool_output=False,
-            include_raw_provider_messages=False,
-            include_reasoning_text=False,
-            support_mode=True,
-        )
+        return cls(redact=True, support_mode=True)
 
 
 @dataclass(frozen=True, slots=True)
 class SessionBundleSessionPayload:
-    id: str
-    parent_id: str | None
-    status: str
-    turn: int
-    prompt: str
-    output: str | None
-    metadata: dict[str, object]
-    last_event_sequence: int
+    row: dict[str, object]
     events: tuple[dict[str, object], ...]
+
+    @property
+    def id(self) -> str:
+        return cast(str, self.row["session_id"])
+
+    @property
+    def metadata(self) -> dict[str, object]:
+        return cast(dict[str, object], self.row["metadata_json"])
 
 
 @dataclass(frozen=True, slots=True)
 class SessionBundleBackgroundTaskPayload:
-    task_id: str
-    status: str
-    parent_session_id: str | None
-    child_session_id: str | None
-    prompt: str
-    error: str | None
-    created_at: int
-    updated_at: int
+    row: dict[str, object]
+
+    @property
+    def task_id(self) -> str:
+        return cast(str, self.row["task_id"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,19 +83,6 @@ class SessionBundleDiagnostics:
     storage: dict[str, object] | None = None
     config_summary: dict[str, object] | None = None
     provider_summary: dict[str, object] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SessionBundleArtifactPayload:
-    artifact_id: str
-    session_id: str | None
-    tool_call_id: str | None
-    tool_name: str | None
-    metadata: dict[str, object]
-    content: str | None
-    missing: bool
-    content_truncated: bool = False
-    content_next_offset: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,18 +106,18 @@ class SessionBundle:
     sessions: tuple[SessionBundleSessionPayload, ...]
     background_tasks: tuple[SessionBundleBackgroundTaskPayload, ...]
     diagnostics: SessionBundleDiagnostics
-    artifacts: tuple[SessionBundleArtifactPayload, ...] = ()
+    deliveries: tuple[dict[str, object], ...]
 
     def to_payload(self) -> dict[str, object]:
-        """Return the canonical JSON-serializable bundle payload."""
-
         return {
             "schema": SESSION_BUNDLE_SCHEMA_NAME,
-            "manifest": _manifest_payload(self.manifest),
-            "sessions": [_session_payload(session) for session in self.sessions],
-            "background_tasks": [_task_payload(task) for task in self.background_tasks],
-            "diagnostics": _diagnostics_payload(self.diagnostics),
-            "artifacts": [_artifact_payload(artifact) for artifact in self.artifacts],
+            "manifest": asdict(self.manifest),
+            "sessions": [session.row for session in self.sessions],
+            "events": [event for session in self.sessions for event in session.events],
+            "background_tasks": [task.row for task in self.background_tasks],
+            "deliveries": list(self.deliveries),
+            "diagnostics": asdict(self.diagnostics),
+            "artifacts": [],
         }
 
 
@@ -252,463 +138,372 @@ class SessionBundleImportResult:
     dry_run: bool
 
     def to_payload(self) -> dict[str, object]:
-        return {
-            "schema": self.schema,
-            "schema_version": self.schema_version,
-            "voidcode_version": self.voidcode_version,
-            "created_at": self.created_at,
-            "support_mode": self.support_mode,
-            "redaction": dict(self.redaction),
-            "workspace_hash": self.workspace_hash,
-            "session_count": self.session_count,
-            "event_count": self.event_count,
-            "background_task_count": self.background_task_count,
-            "imported_session_ids": list(self.imported_session_ids),
-            "skipped_background_task_count": self.skipped_background_task_count,
-            "dry_run": self.dry_run,
-        }
+        payload = asdict(self)
+        payload["imported_session_ids"] = list(self.imported_session_ids)
+        return payload
 
 
-def _manifest_payload(manifest: SessionBundleManifest) -> dict[str, object]:
-    return {
-        "schema_version": manifest.schema_version,
-        "voidcode_version": manifest.voidcode_version,
-        "created_at": manifest.created_at,
-        "workspace_hash": manifest.workspace_hash,
-        "platform": dict(manifest.platform),
-        "redaction": dict(manifest.redaction),
-        "support_mode": manifest.support_mode,
-        "session_count": manifest.session_count,
-        "event_count": manifest.event_count,
-        "background_task_count": manifest.background_task_count,
-        "artifact_count": manifest.artifact_count,
+# These are the existing physical2 columns, with JSON columns decoded, not a
+# generic repository/schema adapter. Unknown columns require a format cutover.
+_SESSION_STRINGS = frozenset({"session_id", "workspace_id", "status", "prompt"})
+_SESSION_NULL_STRINGS = frozenset({"parent_session_id", "output", "title", "forked_from_session_id"})
+_SESSION_INTS = frozenset({"turn", "created_at", "updated_at", "last_event_sequence"})
+_SESSION_NULL_INTS = frozenset({"leaf_sequence", "created_at_unix_ms", "forked_at_sequence"})
+_SESSION_JSON = frozenset({"metadata_json"})
+_SESSION_NULL_JSON = frozenset({"pending_approval_json", "pending_question_json", "resume_checkpoint_json"})
+_TASK_STRINGS = frozenset({"task_id", "workspace_id", "status", "prompt", "schema_mode"})
+_TASK_NULL_STRINGS = frozenset(
+    {
+        "request_session_id",
+        "request_parent_session_id",
+        "requested_child_session_id",
+        "routing_mode",
+        "routing_subagent_type",
+        "routing_description",
+        "routing_command",
+        "approval_request_id",
+        "question_request_id",
+        "cancellation_cause",
+        "session_id",
+        "error",
+        "steer_prompt",
     }
+)
+_TASK_INTS = frozenset({"result_available", "allocate_session_id", "created_at", "updated_at", "keep_alive"})
+_TASK_NULL_INTS = frozenset({"cancel_requested_at", "started_at", "finished_at", "created_at_unix_ms", "started_at_unix_ms", "finished_at_unix_ms"})
+_TASK_JSON = frozenset({"request_metadata_json"})
+_TASK_NULL_JSON = frozenset({"delegated_reminder_json", "output_schema_json", "structured_output_json", "schema_validation_json"})
+_EVENT_STRINGS = frozenset({"workspace_id", "session_id", "event_type", "source"})
+_EVENT_INTS = frozenset({"sequence"})
+_DELIVERY_STRINGS = frozenset({"workspace_id", "session_id", "dedupe_key"})
+_DELIVERY_INTS = frozenset({"delivered_at", "event_sequence"})
+_SESSION_STATUSES = frozenset({"idle", "running", "waiting", "completed", "failed", "interrupted"})
+_TASK_STATUSES = frozenset({"queued", "running", "idle", "completed", "failed", "cancelled", "interrupted"})
+_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal", "interrupted"})
 
 
-def _session_payload(session: SessionBundleSessionPayload) -> dict[str, object]:
-    return {
-        "id": session.id,
-        "parent_id": session.parent_id,
-        "status": session.status,
-        "turn": session.turn,
-        "prompt": session.prompt,
-        "output": session.output,
-        "metadata": session.metadata,
-        "last_event_sequence": session.last_event_sequence,
-        "events": [dict(event) for event in session.events],
-    }
+def _object(value: object, where: str) -> dict[str, object]:
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise SessionBundleError(f"{where} must be an object")
+    return cast(dict[str, object], value)
 
 
-def _task_payload(task: SessionBundleBackgroundTaskPayload) -> dict[str, object]:
-    return {
-        "task_id": task.task_id,
-        "status": task.status,
-        "parent_session_id": task.parent_session_id,
-        "child_session_id": task.child_session_id,
-        "prompt": task.prompt,
-        "error": task.error,
-        "created_at": task.created_at,
-        "updated_at": task.updated_at,
-    }
+def _exact(value: dict[str, object], expected: frozenset[str], where: str) -> None:
+    if frozenset(value) != expected:
+        raise SessionBundleError(f"{where} has unsupported fields")
 
 
-def _artifact_payload(artifact: SessionBundleArtifactPayload) -> dict[str, object]:
-    return {
-        "artifact_id": artifact.artifact_id,
-        "session_id": artifact.session_id,
-        "tool_call_id": artifact.tool_call_id,
-        "tool_name": artifact.tool_name,
-        "metadata": artifact.metadata,
-        "content": artifact.content,
-        "missing": artifact.missing,
-        "content_truncated": artifact.content_truncated,
-        "content_next_offset": artifact.content_next_offset,
-    }
+def _rows(value: object, where: str) -> tuple[dict[str, object], ...]:
+    if not isinstance(value, (list, tuple)):
+        raise SessionBundleError(f"{where} must be an array")
+    return tuple(_object(item, where) for item in value)
 
 
-def _diagnostics_payload(diagnostics: SessionBundleDiagnostics) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    if diagnostics.storage is not None:
-        payload["storage"] = dict(diagnostics.storage)
-    if diagnostics.config_summary is not None:
-        payload["config_summary"] = dict(diagnostics.config_summary)
-    if diagnostics.provider_summary is not None:
-        payload["provider_summary"] = dict(diagnostics.provider_summary)
-    return payload
-
-
-def _strip_deferred_bundle_diagnostics(value: object) -> object | None:
-    if isinstance(value, dict):
-        cleaned: dict[str, object] = {}
-        mapping: Mapping[object, object] = value
-        for raw_key, raw_item in mapping.items():
-            key = str(raw_key)
-            if key.casefold() in _DEFERRED_BUNDLE_DIAGNOSTIC_KEYS:
+def _row_types(
+    row: dict[str, object],
+    *,
+    strings: frozenset[str],
+    ints: frozenset[str],
+    objects: frozenset[str] = frozenset(),
+    nullable_strings: frozenset[str] = frozenset(),
+    nullable_ints: frozenset[str] = frozenset(),
+    nullable_objects: frozenset[str] = frozenset(),
+    where: str,
+) -> None:
+    _exact(row, strings | ints | objects | nullable_strings | nullable_ints | nullable_objects, where)
+    for names, kind, nullable in (
+        (strings, str, False),
+        (ints, int, False),
+        (objects, dict, False),
+        (nullable_strings, str, True),
+        (nullable_ints, int, True),
+        (nullable_objects, dict, True),
+    ):
+        for name in names:
+            value = row[name]
+            if nullable and value is None:
                 continue
-            cleaned_item = _strip_deferred_bundle_diagnostics(raw_item)
-            if cleaned_item is not None:
-                cleaned[key] = cleaned_item
-        return cleaned
-    if isinstance(value, list):
-        cleaned_items: list[object] = []
-        for item in value:
-            cleaned_item = _strip_deferred_bundle_diagnostics(item)
-            if cleaned_item is not None:
-                cleaned_items.append(cleaned_item)
-        return cleaned_items
-    if isinstance(value, tuple):
-        return tuple(cleaned_item for item in value if (cleaned_item := _strip_deferred_bundle_diagnostics(item)) is not None)
-    if isinstance(value, str) and value.casefold() in _DEFERRED_BUNDLE_DIAGNOSTIC_VALUES:
-        return None
-    return value
+            if type(value) is not kind:
+                raise SessionBundleError(f"{where}.{name} has invalid type")
 
 
-@overload
-def _sanitize_export_text(value: str, *, options: SessionBundleOptions, truncate_when_tool_output_hidden: bool = False) -> str: ...
-@overload
-def _sanitize_export_text(value: str | None, *, options: SessionBundleOptions, truncate_when_tool_output_hidden: bool = False) -> str | None: ...
-def _sanitize_export_text(
-    value: str | None,
-    *,
-    options: SessionBundleOptions,
-    truncate_when_tool_output_hidden: bool = False,
-) -> str | None:
-    if value is None:
-        return None
-    sanitized = redact_text(value) if options.redact else value
-    if truncate_when_tool_output_hidden and not options.include_tool_output:
-        return truncate(sanitized, options.tool_output_preview_chars)
-    return sanitized
+def _ref(metadata: dict[str, object], *, task: bool = False) -> CompositionRef:
+    _ = task
+    ref = CompositionRef.model_validate(metadata.get("composition_ref"))
+    if "agent_capability_snapshot" in metadata:
+        snapshot = _object(metadata["agent_capability_snapshot"], "agent_capability_snapshot")
+        validate_agent_capability_snapshot(snapshot)
+        if CompositionRef.model_validate(snapshot["composition_ref"]) != ref:
+            raise SessionBundleError("capability snapshot differs from canonical metadata ref")
+    return ref
 
 
-def _strip_reasoning_payload(payload: dict[str, object]) -> dict[str, object]:
-    cleaned: dict[str, object] = {}
-    for key, value in payload.items():
-        if key in _REASONING_TEXT_KEYS and isinstance(value, str):
-            cleaned[key] = SESSION_BUNDLE_REDACTED_PLACEHOLDER
-            continue
-        if isinstance(value, dict):
-            cleaned[key] = _strip_reasoning_payload(value)
-        elif isinstance(value, list):
-            cleaned_items: list[object] = []
-            for item in value:
-                if isinstance(item, dict):
-                    cleaned_items.append(_strip_reasoning_payload(item))
-                else:
-                    cleaned_items.append(item)
-            cleaned[key] = cleaned_items
-        else:
-            cleaned[key] = value
-    return cleaned
-
-
-def _truncate_tool_output_payload(
-    payload: dict[str, object],
-    *,
-    limit: int,
-) -> dict[str, object]:
-    cleaned: dict[str, object] = {}
-    for key, value in payload.items():
-        if key in _TOOL_OUTPUT_KEYS and isinstance(value, str):
-            cleaned[key] = truncate(value, limit)
-            continue
-        if isinstance(value, dict):
-            cleaned[key] = _truncate_tool_output_payload(value, limit=limit)
-        elif isinstance(value, list):
-            cleaned_items: list[object] = []
-            for item in value:
-                if isinstance(item, dict):
-                    cleaned_items.append(_truncate_tool_output_payload(item, limit=limit))
-                else:
-                    cleaned_items.append(item)
-            cleaned[key] = cleaned_items
-        else:
-            cleaned[key] = value
-    return cleaned
-
-
-def _drop_raw_provider_event(event: EventEnvelope) -> bool:
-    return event.event_type in _RAW_PROVIDER_EVENT_TYPES
-
-
-def _apply_payload_options(
-    payload: dict[str, object],
-    *,
-    options: SessionBundleOptions,
-) -> dict[str, object]:
-    cleaned = payload
-    if not options.include_reasoning_text:
-        cleaned = _strip_reasoning_payload(cleaned)
-    if not options.include_tool_output:
-        cleaned = _truncate_tool_output_payload(cleaned, limit=options.tool_output_preview_chars)
-    if options.redact:
-        cleaned = redact_mapping(cleaned)
-    return cleaned
+def _owner_key(ref: CompositionRef) -> tuple[str, str]:
+    if isinstance(ref.owner, SessionCompositionOwner):
+        return ("session", ref.owner.session_id)
+    return ("task", ref.owner.task_id)
 
 
 def _workspace_hash(workspace: Path) -> str:
-    digest = hashlib.sha256(str(workspace.resolve()).encode("utf-8")).hexdigest()
-    return f"sha256:{digest}"
+    return "sha256:" + hashlib.sha256(str(workspace).encode()).hexdigest()
 
 
-def _platform_summary() -> dict[str, object]:
-    return {
-        "python_version": platform.python_version(),
-        "system": platform.system(),
-        "machine": platform.machine(),
-        "implementation": sys.implementation.name,
-    }
+def _validate_pending(row: dict[str, object], event_sequences: set[int]) -> None:
+    metadata = _object(row["metadata_json"], "session metadata")
+    checkpoint = row["resume_checkpoint_json"]
+    if checkpoint is not None:
+        cp = _object(checkpoint, "checkpoint")
+        kind = cp.get("kind")
+        if kind not in _CHECKPOINT_KINDS:
+            raise SessionBundleError("unsupported checkpoint kind")
+        validated_resume_checkpoint_envelope(checkpoint=cp, expected_kind=cast(str, kind))
+        if not isinstance(cp.get("prompt"), str) or not isinstance(cp.get("session_metadata"), dict):
+            raise SessionBundleError("invalid checkpoint metadata/prompt")
+        cp_metadata = _object(cp["session_metadata"], "checkpoint metadata")
+        if "execution_composition" in cp_metadata or _ref(cp_metadata) != _ref(metadata):
+            raise SessionBundleError("checkpoint composition ref differs from session")
+        results = cp.get("tool_results")
+        if not isinstance(results, list):
+            raise SessionBundleError("checkpoint tool_results must be an array")
+        tool_results_from_checkpoint(results, version=2)
+        watermark = cp.get("last_event_sequence")
+        if type(watermark) is not int or watermark < 0 or watermark > cast(int, row["last_event_sequence"]):
+            raise SessionBundleError("checkpoint watermark outside stored events")
+    approval = row["pending_approval_json"]
+    question = row["pending_question_json"]
+    if approval is not None and question is not None:
+        raise SessionBundleError("session has both pending approval and question")
+    if approval is not None:
+        pending = _object(approval, "pending approval")
+        expected = frozenset(field.name for field in fields(PendingApproval))
+        _exact(pending, expected | ({"resolution_claimed"} if "resolution_claimed" in pending else set()), "pending approval")
+        for key in ("request_id", "tool_name", "target_summary", "reason", "policy_mode"):
+            if not isinstance(pending[key], str):
+                raise SessionBundleError("invalid pending approval string")
+        _object(pending["arguments"], "pending approval arguments")
+        _pending_permission_decision(pending["policy_mode"])
+        for name in ("owner_session_id", "owner_parent_session_id", "delegated_task_id", "canonical_path", "matched_rule", "policy_surface"):
+            if pending[name] is not None and not isinstance(pending[name], str):
+                raise SessionBundleError("invalid pending approval owner/policy string")
+        if pending["path_scope"] is not None and _pending_path_scope(pending["path_scope"]) is None:
+            raise SessionBundleError("invalid pending approval path scope")
+        if pending["operation_class"] is not None and _pending_operation_class(pending["operation_class"]) is None:
+            raise SessionBundleError("invalid pending approval operation class")
+        if "resolution_claimed" in pending and type(pending["resolution_claimed"]) is not bool:
+            raise SessionBundleError("invalid approval claim")
+        sequence = pending["request_event_sequence"]
+        if sequence is not None and (type(sequence) is not int or sequence not in event_sequences):
+            raise SessionBundleError("pending approval request edge missing")
+        if checkpoint is not None and _object(checkpoint, "checkpoint").get("pending_approval_request_id") != pending["request_id"]:
+            raise SessionBundleError("pending approval checkpoint request mismatch")
+    if question is not None:
+        pending = _object(question, "pending question")
+        _exact(pending, frozenset({"request_id", "tool_name", "arguments", "prompts"}), "pending question")
+        if not isinstance(pending["request_id"], str) or not isinstance(pending["tool_name"], str):
+            raise SessionBundleError("invalid pending question identity")
+        _object(pending["arguments"], "pending question arguments")
+        prompts = _rows(pending["prompts"], "pending prompts")
+        for prompt in prompts:
+            _exact(prompt, frozenset({"question", "header", "multiple", "options"}), "question prompt")
+            if not isinstance(prompt["question"], str) or not isinstance(prompt["header"], str) or type(prompt["multiple"]) is not bool:
+                raise SessionBundleError("invalid pending prompt")
+            for option in _rows(prompt["options"], "question options"):
+                _exact(option, frozenset({"label", "description"}), "question option")
+                if not all(isinstance(value, str) for value in option.values()):
+                    raise SessionBundleError("invalid question option")
+        if checkpoint is not None and _object(checkpoint, "checkpoint").get("pending_question_request_id") != pending["request_id"]:
+            raise SessionBundleError("pending question checkpoint request mismatch")
 
 
-def _redaction_summary(options: SessionBundleOptions) -> dict[str, object]:
-    notes: list[str] = []
-    if options.redact:
-        notes.append("Secret-looking keys and bearer tokens are masked.")
-    if not options.include_raw_provider_messages:
-        notes.append("Raw provider request/response payloads are dropped.")
-    if not options.include_reasoning_text:
-        notes.append("Reasoning/thinking text is redacted; metadata is kept.")
-    if not options.include_tool_output:
-        notes.append(f"Tool output text is truncated to {options.tool_output_preview_chars} characters.")
-    else:
-        notes.append("Available temp tool output artifacts are embedded in the bundle.")
-    return {
-        "redacted": options.redact,
-        "include_tool_output": options.include_tool_output,
-        "include_raw_provider_messages": options.include_raw_provider_messages,
-        "include_reasoning_text": options.include_reasoning_text,
-        "tool_output_preview_chars": options.tool_output_preview_chars,
-        "notes": notes,
-    }
-
-
-@final
-class _SessionBundleBuilder:
-    def __init__(
-        self,
-        *,
-        sessions: SessionRepository,
-        tasks: BackgroundTaskRepository,
-        workspace: Path,
-        options: SessionBundleOptions,
-        storage_diagnostics: dict[str, object] | None,
-        config_summary: dict[str, object] | None,
-        provider_summary: dict[str, object] | None,
-        clock: Callable[[], int] | None = None,
-    ) -> None:
-        self._sessions = sessions
-        self._tasks = tasks
-        self._workspace = workspace
-        self._options = options
-        self._storage_diagnostics = storage_diagnostics
-        self._config_summary = config_summary
-        self._provider_summary = provider_summary
-        self._clock = clock or (lambda: int(time.time() * 1000))
-
-    def build(self, session_id: str) -> SessionBundle:
-        validate_id(session_id)
-        sessions, event_count = self._collect_sessions(session_id=session_id)
-        background_tasks = self._collect_background_tasks(session_id=session_id)
-        artifacts = self._collect_artifacts(sessions=sessions)
-        manifest = SessionBundleManifest(
-            schema_version=SESSION_BUNDLE_SCHEMA_VERSION,
-            voidcode_version=VOIDCODE_VERSION,
-            created_at=self._clock(),
-            workspace_hash=_workspace_hash(self._workspace),
-            platform=_platform_summary(),
-            redaction=_redaction_summary(self._options),
-            support_mode=self._options.support_mode,
-            session_count=len(sessions),
-            event_count=event_count,
-            background_task_count=len(background_tasks),
-            artifact_count=len(artifacts),
+def _validate_rows(
+    sessions: tuple[dict[str, object], ...],
+    events: tuple[dict[str, object], ...],
+    tasks: tuple[dict[str, object], ...],
+    deliveries: tuple[dict[str, object], ...],
+) -> str:
+    owners: dict[tuple[str, str], tuple[dict[str, object], CompositionRef]] = {}
+    source_workspaces: set[str] = set()
+    for kind, rows in (("session", sessions), ("task", tasks)):
+        for row in rows:
+            if kind == "session":
+                _row_types(
+                    row,
+                    strings=_SESSION_STRINGS,
+                    ints=_SESSION_INTS,
+                    objects=_SESSION_JSON,
+                    nullable_strings=_SESSION_NULL_STRINGS,
+                    nullable_ints=_SESSION_NULL_INTS,
+                    nullable_objects=_SESSION_NULL_JSON,
+                    where="session row",
+                )
+                metadata = _object(row["metadata_json"], "session metadata")
+                statuses = _SESSION_STATUSES
+            else:
+                _row_types(
+                    row,
+                    strings=_TASK_STRINGS,
+                    ints=_TASK_INTS,
+                    objects=_TASK_JSON,
+                    nullable_strings=_TASK_NULL_STRINGS,
+                    nullable_ints=_TASK_NULL_INTS,
+                    nullable_objects=_TASK_NULL_JSON,
+                    where="task row",
+                )
+                metadata = _object(row["request_metadata_json"], "task metadata")
+                statuses = _TASK_STATUSES
+                for name in ("allocate_session_id", "result_available", "keep_alive"):
+                    if row[name] not in (0, 1):
+                        raise SessionBundleError("invalid task boolean column")
+                if row["schema_mode"] not in ("permissive", "strict"):
+                    raise SessionBundleError("unsupported task schema mode")
+            if row["status"] not in statuses:
+                raise SessionBundleError(f"unknown {kind} status")
+            identity = validate_id(cast(str, row[f"{kind}_id"]))
+            key = (kind, identity)
+            if key in owners:
+                raise SessionBundleError(f"duplicate {kind} id")
+            ref = _ref(metadata, task=kind == "task")
+            if ref.workspace != row["workspace_id"]:
+                raise SessionBundleError("composition ref workspace differs from row")
+            source_workspaces.add(ref.workspace)
+            owners[key] = metadata, ref
+    if not sessions or len(source_workspaces) != 1:
+        raise SessionBundleError("bundle requires one source workspace and actual sessions")
+    for key, (metadata, ref) in owners.items():
+        owner = owners.get(_owner_key(ref))
+        if owner is None:
+            raise SessionBundleError("composition owner closure missing")
+        owner_metadata, owner_ref = owner
+        if owner_ref != ref:
+            raise SessionBundleError("composition owner ref mismatch")
+        frozen = FrozenComposition.from_payload(owner_metadata.get("execution_composition"))
+        if frozen.binding.binding_id != ref.binding_id or frozen.plan.plan_id != ref.plan_id:
+            raise SessionBundleError("composition body/ref hash mismatch")
+        if key != _owner_key(ref) and "execution_composition" in metadata:
+            raise SessionBundleError("non-owner contains composition body")
+    session_ids = {cast(str, row["session_id"]) for row in sessions}
+    workspace = next(iter(source_workspaces))
+    by_session: dict[str, dict[int, dict[str, object]]] = {identity: {} for identity in session_ids}
+    for event in events:
+        _row_types(
+            event,
+            strings=_EVENT_STRINGS,
+            ints=_EVENT_INTS,
+            nullable_ints=frozenset({"parent_sequence"}),
+            objects=frozenset({"payload_json"}),
+            where="event row",
         )
-        diagnostics = SessionBundleDiagnostics(
-            storage=self._sanitize_diagnostics_block(self._storage_diagnostics),
-            config_summary=self._sanitize_diagnostics_block(self._config_summary),
-            provider_summary=self._sanitize_diagnostics_block(self._provider_summary),
-        )
-        return SessionBundle(
-            manifest=manifest,
-            sessions=sessions,
-            background_tasks=background_tasks,
-            diagnostics=diagnostics,
-            artifacts=artifacts,
-        )
-
-    def _collect_artifacts(self, *, sessions: tuple[SessionBundleSessionPayload, ...]) -> tuple[SessionBundleArtifactPayload, ...]:
-        if not self._options.include_tool_output:
-            return ()
-        artifacts: list[SessionBundleArtifactPayload] = []
-        seen: set[str] = set()
-        for session in sessions:
-            for event in session.events:
-                payload = event.get("payload")
-                if not isinstance(payload, dict):
-                    continue
-                artifact = payload.get("artifact")
-                if not isinstance(artifact, dict):
-                    continue
-                artifact_payload = self._build_artifact_payload(artifact)
-                if artifact_payload is None or artifact_payload.artifact_id in seen:
-                    continue
-                seen.add(artifact_payload.artifact_id)
-                artifacts.append(artifact_payload)
-        return tuple(artifacts)
-
-    def _build_artifact_payload(self, artifact: dict[str, object]) -> SessionBundleArtifactPayload | None:
-        artifact_id = artifact.get("artifact_id")
-        if not isinstance(artifact_id, str) or artifact_id == "":
-            return None
-        read_result = read_tool_output_artifact(artifact, offset=0, limit=_BUNDLE_ARTIFACT_READ_LIMIT_LINES)
-        if read_result.get("status") == "invalid":
-            return None
-        missing = bool(read_result.get("artifact_missing"))
-        raw_content = read_result.get("content")
-        content = raw_content if isinstance(raw_content, str) and not missing else None
-        sanitized_content = _sanitize_export_text(content, options=self._options)
-        raw_next_offset = read_result.get("next_offset")
-        content_next_offset = raw_next_offset if isinstance(raw_next_offset, int) else None
-        content_truncated = content_next_offset is not None
-        metadata = _apply_payload_options(dict(artifact), options=self._options)
-        session_id = artifact.get("session_id")
-        tool_call_id = artifact.get("tool_call_id")
-        tool_name = artifact.get("tool_name")
-        return SessionBundleArtifactPayload(
-            artifact_id=artifact_id,
-            session_id=session_id if isinstance(session_id, str) else None,
-            tool_call_id=tool_call_id if isinstance(tool_call_id, str) else None,
-            tool_name=tool_name if isinstance(tool_name, str) else None,
-            metadata={
-                **metadata,
-                "status": "missing" if missing else "available",
-                "content_truncated": content_truncated,
-                "content_next_offset": content_next_offset,
-                "bundle_read_limit_lines": _BUNDLE_ARTIFACT_READ_LIMIT_LINES,
-            },
-            content=sanitized_content,
-            missing=missing,
-            content_truncated=content_truncated,
-            content_next_offset=content_next_offset,
-        )
-
-    def _sanitize_diagnostics_block(self, payload: dict[str, object] | None) -> dict[str, object] | None:
-        if payload is None:
-            return None
-        cleaned = _strip_deferred_bundle_diagnostics(payload)
-        if not isinstance(cleaned, dict):
-            return {}
-        if not self._options.redact:
-            return dict(cleaned)
-        return redact_mapping(cleaned)
-
-    def _collect_sessions(self, *, session_id: str) -> tuple[tuple[SessionBundleSessionPayload, ...], int]:
-        primary = self._load_session_response(session_id=session_id)
-        sessions: list[SessionBundleSessionPayload] = [self._build_session_payload(primary)]
-        event_total = len(sessions[0].events)
-        for child_id in self._child_session_ids(parent_session_id=session_id):
-            try:
-                child_response = self._load_session_response(session_id=child_id)
-            except UnknownSessionError:
-                continue
-            child_payload = self._build_session_payload(child_response)
-            sessions.append(child_payload)
-            event_total += len(child_payload.events)
-        return tuple(sessions), event_total
-
-    def _load_session_response(self, *, session_id: str) -> RuntimeResponse:
-        return self._sessions.load_session(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
-
-    def _build_session_payload(self, response: RuntimeResponse) -> SessionBundleSessionPayload:
-        prompt = _sanitize_export_text(
-            self._session_prompt(session_id=response.session.session.id),
-            options=self._options,
-        )
-        raw_events = tuple(self._build_event_payload(event) for event in response.events)
-        events = tuple(payload for payload in raw_events if payload is not None)
-        metadata = _apply_payload_options(
-            session_metadata_for_persistence(response.session.metadata, events=response.events),
-            options=self._options,
-        )
-        output = _sanitize_export_text(
-            response.output,
-            options=self._options,
-            truncate_when_tool_output_hidden=True,
-        )
-        return SessionBundleSessionPayload(
-            id=response.session.session.id,
-            parent_id=response.session.session.parent_id,
-            status=response.session.status,
-            turn=response.session.turn,
-            prompt=prompt,
-            output=output,
-            metadata=metadata,
-            last_event_sequence=(response.events[-1].sequence if response.events else 0),
-            events=events,
-        )
-
-    def _session_prompt(self, *, session_id: str) -> str:
-        result = self._sessions.load_session_result(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
-        return result.prompt
-
-    def _build_event_payload(self, event: EventEnvelope) -> dict[str, object] | None:
-        if not self._options.include_raw_provider_messages and _drop_raw_provider_event(event):
-            return None
-        payload = _apply_payload_options(event.payload, options=self._options)
-        return {
-            "sequence": event.sequence,
-            "event_type": event.event_type,
-            "source": event.source,
-            "payload": payload,
-        }
-
-    def _child_session_ids(self, *, parent_session_id: str) -> tuple[str, ...]:
-        tasks = self._tasks.list_background_tasks_by_parent_session(
-            workspace=self._workspace,
-            parent_session_id=parent_session_id,
-        )
-        seen: set[str] = set()
-        ordered: list[str] = []
-        for task in tasks:
-            child_id = task.session_id
-            if child_id is None or child_id in seen:
-                continue
-            seen.add(child_id)
-            ordered.append(child_id)
-        return tuple(ordered)
-
-    def _collect_background_tasks(self, *, session_id: str) -> tuple[SessionBundleBackgroundTaskPayload, ...]:
-        tasks = self._tasks.list_background_tasks_by_parent_session(
-            workspace=self._workspace,
-            parent_session_id=session_id,
-        )
-        return tuple(self._build_task_payload(task) for task in tasks)
-
-    def _build_task_payload(self, task: StoredBackgroundTaskSummary) -> SessionBundleBackgroundTaskPayload:
-        try:
-            full = self._tasks.load_background_task(
-                workspace=self._workspace,
-                task_id=task.task.id,
+        identity = cast(str, event["session_id"])
+        sequence = cast(int, event["sequence"])
+        if event["workspace_id"] != workspace or identity not in by_session or sequence <= 0 or event["source"] not in ("runtime", "graph", "tool"):
+            raise SessionBundleError("invalid event scope/identity/source")
+        if sequence in by_session[identity]:
+            raise SessionBundleError("duplicate event sequence")
+        decode_fact(
+            EventEnvelope(
+                session_id=identity,
+                sequence=sequence,
+                event_type=cast(str, event["event_type"]),
+                source=cast(EventSource, event["source"]),
+                payload=cast(dict[str, object], event["payload_json"]),
             )
-            parent_session_id: str | None = full.parent_session_id
-        except ValueError, UnknownSessionError:
-            parent_session_id = None
-        return SessionBundleBackgroundTaskPayload(
-            task_id=task.task.id,
-            status=task.status,
-            parent_session_id=parent_session_id,
-            child_session_id=task.session_id,
-            prompt=_sanitize_export_text(task.prompt, options=self._options) or "",
-            error=_sanitize_export_text(task.error, options=self._options),
-            created_at=task.created_at,
-            updated_at=task.updated_at,
         )
+        by_session[identity][sequence] = event
+    for row in sessions:
+        identity = cast(str, row["session_id"])
+        event_map = by_session[identity]
+        for sequence, event in event_map.items():
+            parent = event["parent_sequence"]
+            if parent is not None and (parent not in event_map or cast(int, parent) >= sequence):
+                raise SessionBundleError("event parent edge missing or cyclic")
+        if row["last_event_sequence"] != max(event_map, default=0) or cast(int, row["turn"]) < 0:
+            raise SessionBundleError("session watermark differs from complete event log")
+        if row["leaf_sequence"] is not None and row["leaf_sequence"] not in event_map:
+            raise SessionBundleError("session leaf edge missing")
+        for name in ("parent_session_id", "forked_from_session_id"):
+            if row[name] is not None and row[name] not in session_ids:
+                raise SessionBundleError("session parent/fork closure missing")
+        fork_source = row["forked_from_session_id"]
+        fork_sequence = row["forked_at_sequence"]
+        if (fork_source is None) != (fork_sequence is None):
+            raise SessionBundleError("incomplete fork provenance")
+        if fork_source is not None and fork_sequence != 0 and fork_sequence not in by_session[cast(str, fork_source)]:
+            raise SessionBundleError("fork sequence missing in source")
+        _validate_pending(row, set(event_map))
+    for row in tasks:
+        for name in ("request_session_id", "request_parent_session_id", "requested_child_session_id", "session_id"):
+            # Requested IDs can refer to an as-yet uncreated child; actual
+            # parent and result references must resolve to physical rows.
+            if name in ("request_parent_session_id", "session_id") and row[name] is not None and row[name] not in session_ids:
+                raise SessionBundleError("task parent/result closure missing")
+    seen_deliveries: set[tuple[str, str]] = set()
+    for delivery in deliveries:
+        _row_types(delivery, strings=_DELIVERY_STRINGS, ints=_DELIVERY_INTS, where="delivery row")
+        identity = cast(str, delivery["session_id"])
+        key = identity, cast(str, delivery["dedupe_key"])
+        if (
+            delivery["workspace_id"] != workspace
+            or identity not in by_session
+            or delivery["event_sequence"] not in by_session[identity]
+            or key in seen_deliveries
+        ):
+            raise SessionBundleError("invalid delivery dedupe edge")
+        seen_deliveries.add(key)
+    return workspace
+
+
+def parse_session_bundle(payload: object) -> SessionBundle:
+    try:
+        root = _object(payload, "bundle")
+        json.dumps(root, allow_nan=False)
+        if root.get("schema") != SESSION_BUNDLE_SCHEMA_NAME:
+            raise SessionBundleError("unsupported session bundle schema")
+        _exact(root, frozenset({"schema", "manifest", "sessions", "events", "background_tasks", "deliveries", "diagnostics", "artifacts"}), "bundle")
+        manifest = _object(root["manifest"], "manifest")
+        _exact(manifest, frozenset(field.name for field in fields(SessionBundleManifest)), "manifest")
+        if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 2:
+            raise SessionBundleError("unsupported session bundle schema version")
+        for name in ("created_at", "session_count", "event_count", "background_task_count", "artifact_count"):
+            if type(manifest[name]) is not int or cast(int, manifest[name]) < 0:
+                raise SessionBundleError("invalid manifest count/timestamp")
+        for name in ("voidcode_version", "workspace_hash"):
+            if not isinstance(manifest[name], str):
+                raise SessionBundleError("invalid manifest string")
+        _object(manifest["platform"], "manifest platform")
+        if (
+            manifest["redaction"] != {"exact": True}
+            or manifest["support_mode"] is not False
+            or root["artifacts"] != []
+            or manifest["artifact_count"] != 0
+        ):
+            raise SessionBundleError("unsupported non-exact/artifact bundle scope")
+        sessions = _rows(root["sessions"], "sessions")
+        events = _rows(root["events"], "events")
+        tasks = _rows(root["background_tasks"], "background_tasks")
+        deliveries = _rows(root["deliveries"], "deliveries")
+        source = _validate_rows(sessions, events, tasks, deliveries)
+        if manifest["workspace_hash"] != _workspace_hash(Path(source)):
+            raise SessionBundleError("source workspace hash mismatch")
+        if (manifest["session_count"], manifest["event_count"], manifest["background_task_count"]) != (len(sessions), len(events), len(tasks)):
+            raise SessionBundleError("manifest counts differ from complete rows")
+        diagnostics = _object(root["diagnostics"], "diagnostics")
+        _exact(diagnostics, frozenset({"storage", "config_summary", "provider_summary"}), "diagnostics")
+        for value in diagnostics.values():
+            if value is not None:
+                _object(value, "diagnostic section")
+        return SessionBundle(
+            manifest=SessionBundleManifest(**cast(dict[str, Any], manifest)),
+            sessions=tuple(
+                SessionBundleSessionPayload(row, tuple(event for event in events if event["session_id"] == row["session_id"])) for row in sessions
+            ),
+            background_tasks=tuple(SessionBundleBackgroundTaskPayload(row) for row in tasks),
+            diagnostics=SessionBundleDiagnostics(**cast(dict[str, Any], diagnostics)),
+            deliveries=deliveries,
+        )
+    except (ValueError, TypeError, KeyError) as error:
+        if isinstance(error, SessionBundleError):
+            raise
+        raise SessionBundleError(str(error)) from error
 
 
 def build_session_bundle(
@@ -723,417 +518,92 @@ def build_session_bundle(
     provider_summary: dict[str, object] | None = None,
     clock: Callable[[], int] | None = None,
 ) -> SessionBundle:
-    """Build a redacted, schema-versioned session bundle for ``session_id``."""
-
-    builder = _SessionBundleBuilder(
-        sessions=sessions,
-        tasks=tasks,
-        workspace=workspace,
-        options=options or SessionBundleOptions(),
-        storage_diagnostics=storage_diagnostics,
-        config_summary=config_summary,
-        provider_summary=provider_summary,
-        clock=clock,
-    )
-    return builder.build(session_id)
-
-
-def _ensure_dict(value: object, *, where: str) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise SessionBundleError(f"session bundle {where} must be an object")
-    return value
-
-
-def _ensure_list(value: object, *, where: str) -> list[object]:
-    if not isinstance(value, list):
-        raise SessionBundleError(f"session bundle {where} must be an array")
-    return value
-
-
-def _ensure_str(value: object, *, where: str) -> str:
-    if not isinstance(value, str):
-        raise SessionBundleError(f"session bundle {where} must be a string")
-    return value
-
-
-def _ensure_int(value: object, *, where: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise SessionBundleError(f"session bundle {where} must be an integer")
-    return value
-
-
-def _ensure_bool(value: object, *, where: str) -> bool:
-    if not isinstance(value, bool):
-        raise SessionBundleError(f"session bundle {where} must be a boolean")
-    return value
-
-
-def _required(payload: Mapping[str, object], key: str, *, where: str) -> object:
-    if key not in payload:
-        raise SessionBundleError(f"session bundle {where} is required")
-    return payload[key]
-
-
-def _ensure_optional_str(value: object, *, where: str) -> str | None:
-    if value is None:
-        return None
-    return _ensure_str(value, where=where)
-
-
-def parse_session_bundle(payload: object) -> SessionBundle:
-    """Parse a JSON payload into a :class:`SessionBundle`, fail-fast on incompatible schemas."""
-
-    root = _ensure_dict(payload, where="payload")
-    schema = _ensure_str(root.get("schema"), where="schema")
-    if schema != SESSION_BUNDLE_SCHEMA_NAME:
-        raise SessionBundleError(f"unsupported session bundle schema: {schema!r}; this build supports {SESSION_BUNDLE_SCHEMA_NAME!r}")
-    manifest_payload = _ensure_dict(root.get("manifest"), where="manifest")
-    schema_version = _ensure_int(manifest_payload.get("schema_version"), where="manifest.schema_version")
-    if schema_version != SESSION_BUNDLE_SCHEMA_VERSION:
-        raise SessionBundleError(
-            f"session bundle schema version {schema_version} is not supported; this build supports version {SESSION_BUNDLE_SCHEMA_VERSION}"
-        )
+    options = options or SessionBundleOptions()
+    if (
+        options.redact
+        or options.support_mode
+        or not all((options.include_tool_output, options.include_raw_provider_messages, options.include_reasoning_text))
+    ):
+        raise SessionBundleError("CURRENT bundle2 requires an exact unredacted snapshot; support summaries are not importable")
+    validate_id(session_id)
+    session_ids = {session_id}
+    task_ids: set[str] = set()
+    while True:
+        rows = sessions.export_session_bundle_rows(workspace=workspace, session_ids=tuple(sorted(session_ids)), task_ids=tuple(sorted(task_ids)))
+        session_rows = _rows(rows["sessions"], "export sessions")
+        task_rows = _rows(rows["tasks"], "export tasks")
+        actual_sessions = {cast(str, row["session_id"]) for row in session_rows}
+        actual_tasks = {cast(str, row["task_id"]) for row in task_rows}
+        if not session_ids <= actual_sessions or not task_ids <= actual_tasks:
+            raise SessionBundleError("source owner/parent/fork row is missing")
+        before = (len(session_ids), len(task_ids))
+        for row in session_rows:
+            for name in ("parent_session_id", "forked_from_session_id"):
+                if isinstance(row[name], str):
+                    session_ids.add(cast(str, row[name]))
+            for summary in tasks.list_background_tasks_by_parent_session(workspace=workspace, parent_session_id=cast(str, row["session_id"])):
+                task_ids.add(summary.task.id)
+        for kind, collected in (("session", session_rows), ("task", task_rows)):
+            for row in collected:
+                metadata = _object(row["metadata_json" if kind == "session" else "request_metadata_json"], "owner metadata")
+                ref = _ref(metadata, task=kind == "task")
+                if ref.workspace != str(workspace):
+                    raise SessionBundleError("cross-workspace owner closure is unsupported")
+                owner_kind, identity = _owner_key(ref)
+                (session_ids if owner_kind == "session" else task_ids).add(identity)
+                if kind == "task":
+                    for name in ("request_parent_session_id", "session_id"):
+                        if isinstance(row[name], str):
+                            session_ids.add(cast(str, row[name]))
+        if before == (len(session_ids), len(task_ids)):
+            break
+    events = _rows(rows["events"], "export events")
+    deliveries = _rows(rows["deliveries"], "export deliveries")
     manifest = SessionBundleManifest(
-        schema_version=schema_version,
-        voidcode_version=_ensure_str(
-            manifest_payload.get("voidcode_version"),
-            where="manifest.voidcode_version",
-        ),
-        created_at=_ensure_int(manifest_payload.get("created_at"), where="manifest.created_at"),
-        workspace_hash=_ensure_str(manifest_payload.get("workspace_hash"), where="manifest.workspace_hash"),
-        platform=dict(_ensure_dict(manifest_payload.get("platform"), where="manifest.platform")),
-        redaction=dict(_ensure_dict(manifest_payload.get("redaction"), where="manifest.redaction")),
-        support_mode=_ensure_bool(manifest_payload.get("support_mode"), where="manifest.support_mode"),
-        session_count=_ensure_int(manifest_payload.get("session_count"), where="manifest.session_count"),
-        event_count=_ensure_int(manifest_payload.get("event_count"), where="manifest.event_count"),
-        background_task_count=_ensure_int(
-            manifest_payload.get("background_task_count"),
-            where="manifest.background_task_count",
-        ),
-        artifact_count=_ensure_int(manifest_payload.get("artifact_count"), where="manifest.artifact_count"),
+        2,
+        VOIDCODE_VERSION,
+        (clock or (lambda: int(time.time() * 1000)))(),
+        _workspace_hash(workspace),
+        {"system": platform.system(), "machine": platform.machine()},
+        {"exact": True},
+        False,
+        len(session_rows),
+        len(events),
+        len(task_rows),
     )
-    sessions_raw = _ensure_list(root.get("sessions"), where="sessions")
-    sessions: list[SessionBundleSessionPayload] = []
-    for index, raw in enumerate(sessions_raw):
-        session_dict = _ensure_dict(raw, where=f"sessions[{index}]")
-        sessions.append(_parse_session_payload(session_dict, index=index))
-    tasks_raw = _ensure_list(root.get("background_tasks"), where="background_tasks")
-    tasks: list[SessionBundleBackgroundTaskPayload] = []
-    for index, raw in enumerate(tasks_raw):
-        task_dict = _ensure_dict(raw, where=f"background_tasks[{index}]")
-        tasks.append(_parse_task_payload(task_dict, index=index))
-    diagnostics_payload = _ensure_dict(root.get("diagnostics"), where="diagnostics")
-    diagnostics = SessionBundleDiagnostics(
-        storage=_ensure_optional_dict(diagnostics_payload.get("storage")),
-        config_summary=_ensure_optional_dict(diagnostics_payload.get("config_summary")),
-        provider_summary=_ensure_optional_dict(diagnostics_payload.get("provider_summary")),
-    )
-    artifacts_raw = _ensure_list(root.get("artifacts"), where="artifacts")
-    artifacts: list[SessionBundleArtifactPayload] = []
-    for index, raw in enumerate(artifacts_raw):
-        artifact_dict = _ensure_dict(raw, where=f"artifacts[{index}]")
-        artifacts.append(_parse_artifact_payload(artifact_dict, index=index))
-    return SessionBundle(
-        manifest=manifest,
-        sessions=tuple(sessions),
-        background_tasks=tuple(tasks),
-        diagnostics=diagnostics,
-        artifacts=tuple(artifacts),
+    return parse_session_bundle(
+        {
+            "schema": SESSION_BUNDLE_SCHEMA_NAME,
+            "manifest": asdict(manifest),
+            "sessions": list(session_rows),
+            "events": list(events),
+            "background_tasks": list(task_rows),
+            "deliveries": list(deliveries),
+            "diagnostics": asdict(SessionBundleDiagnostics(storage_diagnostics, config_summary, provider_summary)),
+            "artifacts": [],
+        }
     )
 
 
-def _ensure_optional_dict(value: object) -> dict[str, object] | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        raise SessionBundleError("diagnostics blocks must be objects when present")
-    return dict(value)
+def _relocate_metadata(metadata: dict[str, object], *, workspace: str, session_ids: dict[str, str], task_ids: dict[str, str]) -> None:
+    # Rewrite only recognized outer refs/owner IDs; never walk arbitrary signed
+    # configuration, report arguments, or source-identity strings.
+    if "agent_capability_snapshot" in metadata:
+        snapshot = _object(metadata["agent_capability_snapshot"], "capability snapshot")
+        snapshot["composition_ref"] = _relocate_ref(_ref(metadata), workspace, session_ids, task_ids)
+    if "composition_ref" in metadata:
+        metadata["composition_ref"] = _relocate_ref(CompositionRef.model_validate(metadata["composition_ref"]), workspace, session_ids, task_ids)
+    if "workspace" in metadata:
+        metadata["workspace"] = workspace
 
 
-def _parse_session_payload(payload: dict[str, object], *, index: int) -> SessionBundleSessionPayload:
-    session_id = _validate_bundle_id(
-        _ensure_str(payload.get("id"), where=f"sessions[{index}].id"),
-        where=f"sessions[{index}].id",
+def _relocate_ref(ref: CompositionRef, workspace: str, session_ids: dict[str, str], task_ids: dict[str, str]) -> dict[str, object]:
+    owner = (
+        SessionCompositionOwner(kind="session", session_id=session_ids[ref.owner.session_id])
+        if isinstance(ref.owner, SessionCompositionOwner)
+        else TaskCompositionOwner(kind="task", task_id=task_ids[ref.owner.task_id])
     )
-    parent_raw = _required(payload, "parent_id", where=f"sessions[{index}].parent_id")
-    parent_id = _ensure_optional_str(parent_raw, where=f"sessions[{index}].parent_id")
-    if parent_id is not None:
-        parent_id = _validate_bundle_id(parent_id, where=f"sessions[{index}].parent_id", field_name="parent_id")
-    status = _ensure_str(payload.get("status"), where=f"sessions[{index}].status")
-    turn = _ensure_int(payload.get("turn"), where=f"sessions[{index}].turn")
-    prompt = _ensure_str(payload.get("prompt"), where=f"sessions[{index}].prompt")
-    output = _ensure_optional_str(
-        _required(payload, "output", where=f"sessions[{index}].output"),
-        where=f"sessions[{index}].output",
-    )
-    metadata = dict(_ensure_dict(payload.get("metadata"), where=f"sessions[{index}].metadata"))
-    last_event_sequence = _ensure_int(
-        payload.get("last_event_sequence"),
-        where=f"sessions[{index}].last_event_sequence",
-    )
-    events_raw = _ensure_list(payload.get("events"), where=f"sessions[{index}].events")
-    events: list[dict[str, object]] = []
-    for event_index, raw_event in enumerate(events_raw):
-        event_dict = _ensure_dict(raw_event, where=f"sessions[{index}].events[{event_index}]")
-        events.append(_normalize_event_payload(event_dict, label=f"sessions[{index}].events[{event_index}]"))
-    return SessionBundleSessionPayload(
-        id=session_id,
-        parent_id=parent_id,
-        status=status,
-        turn=turn,
-        prompt=prompt,
-        output=output,
-        metadata=metadata,
-        last_event_sequence=last_event_sequence,
-        events=tuple(events),
-    )
-
-
-def _normalize_event_payload(event: dict[str, object], *, label: str) -> dict[str, object]:
-    sequence = _ensure_int(event.get("sequence"), where=f"{label}.sequence")
-    event_type = _ensure_str(event.get("event_type"), where=f"{label}.event_type")
-    source = _ensure_str(event.get("source"), where=f"{label}.source")
-    payload = dict(_ensure_dict(event.get("payload"), where=f"{label}.payload"))
-    return {
-        "sequence": sequence,
-        "event_type": event_type,
-        "source": source,
-        "payload": payload,
-    }
-
-
-def _validate_bundle_id(value: str, *, where: str, field_name: str = "session_id") -> str:
-    try:
-        return validate_id(value, field_name=field_name)
-    except ValueError as exc:
-        raise SessionBundleError(f"session bundle {where} is invalid: {exc}") from exc
-
-
-def _parse_task_payload(payload: dict[str, object], *, index: int) -> SessionBundleBackgroundTaskPayload:
-    task_id = _ensure_str(payload.get("task_id"), where=f"background_tasks[{index}].task_id")
-    status = _ensure_str(payload.get("status"), where=f"background_tasks[{index}].status")
-    parent_session_id = _ensure_optional_str(
-        _required(
-            payload,
-            "parent_session_id",
-            where=f"background_tasks[{index}].parent_session_id",
-        ),
-        where=f"background_tasks[{index}].parent_session_id",
-    )
-    child_session_id = _ensure_optional_str(
-        _required(payload, "child_session_id", where=f"background_tasks[{index}].child_session_id"),
-        where=f"background_tasks[{index}].child_session_id",
-    )
-    prompt = _ensure_str(payload.get("prompt"), where=f"background_tasks[{index}].prompt")
-    error = _ensure_optional_str(
-        _required(payload, "error", where=f"background_tasks[{index}].error"),
-        where=f"background_tasks[{index}].error",
-    )
-    created_at = _ensure_int(payload.get("created_at"), where=f"background_tasks[{index}].created_at")
-    updated_at = _ensure_int(payload.get("updated_at"), where=f"background_tasks[{index}].updated_at")
-    return SessionBundleBackgroundTaskPayload(
-        task_id=task_id,
-        status=status,
-        parent_session_id=parent_session_id,
-        child_session_id=child_session_id,
-        prompt=prompt,
-        error=error,
-        created_at=created_at,
-        updated_at=updated_at,
-    )
-
-
-def _parse_artifact_payload(payload: dict[str, object], *, index: int) -> SessionBundleArtifactPayload:
-    artifact_id = _ensure_str(payload.get("artifact_id"), where=f"artifacts[{index}].artifact_id")
-    raw_session_id = _required(payload, "session_id", where=f"artifacts[{index}].session_id")
-    raw_tool_call_id = _required(payload, "tool_call_id", where=f"artifacts[{index}].tool_call_id")
-    raw_tool_name = _required(payload, "tool_name", where=f"artifacts[{index}].tool_name")
-    raw_content = _required(payload, "content", where=f"artifacts[{index}].content")
-    raw_content_next_offset = _required(payload, "content_next_offset", where=f"artifacts[{index}].content_next_offset")
-    return SessionBundleArtifactPayload(
-        artifact_id=artifact_id,
-        session_id=_ensure_optional_str(raw_session_id, where=f"artifacts[{index}].session_id"),
-        tool_call_id=_ensure_optional_str(
-            raw_tool_call_id,
-            where=f"artifacts[{index}].tool_call_id",
-        ),
-        tool_name=_ensure_optional_str(raw_tool_name, where=f"artifacts[{index}].tool_name"),
-        metadata=dict(_ensure_dict(payload.get("metadata"), where=f"artifacts[{index}].metadata")),
-        content=_ensure_optional_str(raw_content, where=f"artifacts[{index}].content"),
-        missing=_ensure_bool(payload.get("missing"), where=f"artifacts[{index}].missing"),
-        content_truncated=_ensure_bool(payload.get("content_truncated"), where=f"artifacts[{index}].content_truncated"),
-        content_next_offset=(
-            _ensure_int(raw_content_next_offset, where=f"artifacts[{index}].content_next_offset") if raw_content_next_offset is not None else None
-        ),
-    )
-
-
-def serialize_session_bundle(
-    bundle: SessionBundle,
-    *,
-    fmt: SessionBundleFormat = "zip",
-) -> bytes:
-    """Return canonical bytes for ``bundle`` in either zip or json format."""
-
-    json_bytes = (json.dumps(bundle.to_payload(), sort_keys=True, indent=2) + "\n").encode("utf-8")
-    if fmt == "json":
-        return json_bytes
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(SESSION_BUNDLE_FILE_NAME, json_bytes)
-    return buffer.getvalue()
-
-
-def write_session_bundle(
-    bundle: SessionBundle,
-    *,
-    path: Path,
-    fmt: SessionBundleFormat | None = None,
-) -> Path:
-    """Write ``bundle`` to ``path``, defaulting to zip when extension is ``.zip``."""
-
-    resolved_format = fmt or _infer_bundle_format_from_path(path)
-    payload = serialize_session_bundle(bundle, fmt=resolved_format)
-    parent = path.parent
-    if str(parent) and not parent.exists():
-        parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_bytes(payload)
-    return path
-
-
-def _infer_bundle_format_from_path(path: Path) -> SessionBundleFormat:
-    suffix = path.suffix.lower()
-    if suffix == ".zip":
-        return "zip"
-    if suffix == ".json":
-        return "json"
-    return "zip"
-
-
-def read_session_bundle(path: Path) -> SessionBundle:
-    """Load a bundle from disk, accepting both json and zip artifacts."""
-
-    if not path.exists():
-        raise SessionBundleError(f"session bundle does not exist: {path}")
-    if not path.is_file():
-        raise SessionBundleError(f"session bundle is not a regular file: {path}")
-    raw = path.read_bytes()
-    return read_session_bundle_bytes(raw)
-
-
-def read_session_bundle_bytes(raw: bytes) -> SessionBundle:
-    """Decode a bundle from raw bytes (zip or json)."""
-
-    if raw.startswith(b"PK"):
-        return _decode_zip_bundle(raw)
-    return _decode_json_bundle(raw)
-
-
-def _decode_zip_bundle(raw: bytes) -> SessionBundle:
-    try:
-        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-            try:
-                payload_bytes = archive.read(SESSION_BUNDLE_FILE_NAME)
-            except KeyError as exc:
-                raise SessionBundleError(f"session bundle archive missing entry {SESSION_BUNDLE_FILE_NAME!r}") from exc
-    except zipfile.BadZipFile as exc:
-        raise SessionBundleError("session bundle archive is not a valid zip file") from exc
-    return _decode_json_bundle(payload_bytes)
-
-
-def _decode_json_bundle(raw: bytes) -> SessionBundle:
-    try:
-        decoded = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise SessionBundleError("session bundle JSON payload is not valid UTF-8 JSON") from exc
-    return parse_session_bundle(decoded)
-
-
-_EVENT_SOURCES: frozenset[EventSource] = frozenset({"runtime", "graph", "tool"})
-_SESSION_STATUSES: frozenset[SessionStatus] = frozenset({"idle", "running", "waiting", "completed", "failed", "interrupted"})
-
-
-def is_event_source(value: object) -> TypeIs[EventSource]:
-    """Whether an untrusted ``source`` token names one of the bundle event sources."""
-    return value in _EVENT_SOURCES
-
-
-def is_session_status(value: object) -> TypeIs[SessionStatus]:
-    """Whether an untrusted ``status`` token names one of the session statuses."""
-    return value in _SESSION_STATUSES
-
-
-def _validate_event_source(value: str) -> EventSource:
-    if not is_event_source(value):
-        raise SessionBundleError(f"unknown event source {value!r}; expected one of {sorted(_EVENT_SOURCES)}")
-    return value
-
-
-def _validate_session_status(value: str) -> SessionStatus:
-    if not is_session_status(value):
-        raise SessionBundleError(f"unknown session status {value!r}; expected one of {sorted(_SESSION_STATUSES)}")
-    return value
-
-
-def _events_from_session_payload(
-    session: SessionBundleSessionPayload,
-) -> tuple[EventEnvelope, ...]:
-    events: list[EventEnvelope] = []
-    for raw_event in session.events:
-        sequence = cast(int, raw_event["sequence"])
-        events.append(
-            EventEnvelope(
-                session_id=session.id,
-                sequence=sequence,
-                event_type=cast(str, raw_event["event_type"]),
-                source=_validate_event_source(cast(str, raw_event["source"])),
-                payload=cast(dict[str, object], raw_event["payload"]),
-            )
-        )
-    return tuple(events)
-
-
-def _runtime_response_for_session(
-    session: SessionBundleSessionPayload,
-    *,
-    rebound_id: str,
-    workspace: Path,
-) -> RuntimeResponse:
-    state = SessionState(
-        session=SessionRef(id=rebound_id, parent_id=session.parent_id),
-        status=_validate_session_status(session.status),
-        turn=session.turn,
-        metadata=_session_metadata_with_import_marker(
-            session,
-            rebound_id=rebound_id,
-            workspace=workspace,
-        ),
-    )
-    events = tuple(replace(event, session_id=rebound_id) for event in _events_from_session_payload(session))
-    return RuntimeResponse(session=state, events=events, output=session.output)
-
-
-def _session_metadata_with_import_marker(
-    session: SessionBundleSessionPayload,
-    *,
-    rebound_id: str,
-    workspace: Path,
-) -> dict[str, object]:
-    metadata = session_metadata_for_persistence(dict(session.metadata))
-    original_workspace = metadata.get("workspace")
-    marker: dict[str, object] = {
-        "version": 1,
-        "original_session_id": session.id,
-        "imported_at_session_id": rebound_id,
-    }
-    if isinstance(original_workspace, str):
-        marker["original_workspace"] = original_workspace
-    raw_existing = metadata.get("imported_bundle")
-    if isinstance(raw_existing, dict):
-        marker = {**raw_existing, **marker}
-    metadata["workspace"] = str(workspace)
-    metadata["imported_bundle"] = marker
-    return metadata
+    return CompositionRef(workspace=workspace, owner=owner, binding_id=ref.binding_id, plan_id=ref.plan_id).model_dump(mode="json")
 
 
 def apply_session_bundle(
@@ -1144,194 +614,175 @@ def apply_session_bundle(
     recovery: SessionRecoveryRepository,
     run_writer: SessionRunWriter,
     workspace: Path,
+    admit_composition: Callable[[FrozenComposition], None] | None = None,
     dry_run: bool = False,
     session_id_resolver: Callable[[str], str] | None = None,
+    task_id_resolver: Callable[[str], str] | None = None,
 ) -> SessionBundleImportResult:
-    """Persist ``bundle`` through the session repositories; never overwrites existing ids by default."""
-
-    resolver = session_id_resolver or _default_id_collision_resolver(session_repository, workspace)
-    rebound_id_for = _resolve_import_session_ids(
-        bundle.sessions,
-        session_repository=session_repository,
-        workspace=workspace,
-        resolver=resolver,
-    )
-    imported_ids = tuple(rebound_id_for[session.id] for session in bundle.sessions)
-    for session in bundle.sessions:
-        target_id = rebound_id_for[session.id]
-        if dry_run:
+    _ = (events, recovery, run_writer)
+    # Reparse even in-process objects: nested row dictionaries remain mutable.
+    checked = parse_session_bundle(bundle.to_payload())
+    if admit_composition is None:
+        raise SessionBundleError("bundle import requires destination composition admission before writes")
+    admitted: set[tuple[str, str]] = set()
+    for metadata in [session.metadata for session in checked.sessions] + [
+        cast(dict[str, object], task.row["request_metadata_json"]) for task in checked.background_tasks
+    ]:
+        if "execution_composition" not in metadata:
             continue
-        rebound_session = SessionBundleSessionPayload(
-            id=session.id,
-            parent_id=_remap_parent_id(session.parent_id, rebound_id_for),
-            status=session.status,
-            turn=session.turn,
-            prompt=session.prompt,
-            output=session.output,
-            metadata=session.metadata,
-            last_event_sequence=session.last_event_sequence,
-            events=session.events,
-        )
-        request = RuntimeRequest(
-            prompt=session.prompt,
-            session_id=target_id,
-            parent_session_id=rebound_session.parent_id,
-        )
-        response = _runtime_response_for_session(
-            rebound_session,
-            rebound_id=target_id,
+        frozen = FrozenComposition.from_payload(metadata["execution_composition"])
+        identity = frozen.binding.binding_id, frozen.plan.plan_id
+        if identity not in admitted:
+            admit_composition(frozen)
+            admitted.add(identity)
+    rows = json.loads(json.dumps(checked.to_payload()))
+    source = cast(str, rows["sessions"][0]["workspace_id"])
+    session_ids: dict[str, str] = {}
+    task_ids: dict[str, str] = {}
+    for kind, collection, rebound, resolver in (
+        ("session", rows["sessions"], session_ids, session_id_resolver),
+        ("task", rows["background_tasks"], task_ids, task_id_resolver),
+    ):
+        reserved: set[str] = set()
+        for row in collection:
+            original = cast(str, row[f"{kind}_id"])
+            candidate = original
+
+            def occupied(identity: str, check_kind: str = kind) -> bool:
+                existing = session_repository.export_session_bundle_rows(
+                    workspace=workspace,
+                    session_ids=(identity,) if check_kind == "session" else (),
+                    task_ids=(identity,) if check_kind == "task" else (),
+                )
+                return bool(existing["sessions" if check_kind == "session" else "tasks"])
+
+            if occupied(candidate) or candidate in reserved:
+                if resolver is not None:
+                    candidate = resolver(original)
+                    validate_id(candidate)
+                    if occupied(candidate) or candidate in reserved:
+                        raise SessionBundleError("collision resolver returned an occupied owner identity")
+                else:
+                    candidate = original + "-imported"
+                    attempt = 1
+                    while occupied(candidate) or candidate in reserved:
+                        attempt += 1
+                        candidate = f"{original}-imported-{attempt}"
+            validate_id(candidate)
+            rebound[original] = candidate
+            reserved.add(candidate)
+    for row in rows["sessions"]:
+        original = row["session_id"]
+        row["session_id"] = session_ids[original]
+        row["workspace_id"] = str(workspace)
+        for name in ("parent_session_id", "forked_from_session_id"):
+            if row[name] is not None:
+                row[name] = session_ids[row[name]]
+        metadata = row["metadata_json"]
+        _relocate_metadata(metadata, workspace=str(workspace), session_ids=session_ids, task_ids=task_ids)
+        metadata["bundle_import_provenance"] = {"source_workspace": source, "source_session_id": original, "status": row["status"], "runnable": True}
+        checkpoint = row["resume_checkpoint_json"]
+        if checkpoint is not None:
+            _relocate_metadata(checkpoint["session_metadata"], workspace=str(workspace), session_ids=session_ids, task_ids=task_ids)
+            for name, mapping in (
+                ("pending_approval_owner_session_id", session_ids),
+                ("pending_approval_owner_parent_session_id", session_ids),
+                ("pending_approval_delegated_task_id", task_ids),
+            ):
+                if checkpoint.get(name) in mapping:
+                    checkpoint[name] = mapping[checkpoint[name]]
+        pending = row["pending_approval_json"]
+        if pending is not None:
+            for name, mapping in (("owner_session_id", session_ids), ("owner_parent_session_id", session_ids), ("delegated_task_id", task_ids)):
+                if pending.get(name) in mapping:
+                    pending[name] = mapping[pending[name]]
+    for row in rows["background_tasks"]:
+        original = row["task_id"]
+        row["task_id"] = task_ids[original]
+        row["workspace_id"] = str(workspace)
+        for name in ("request_session_id", "request_parent_session_id", "requested_child_session_id", "session_id"):
+            if row[name] in session_ids:
+                row[name] = session_ids[row[name]]
+        metadata = row["request_metadata_json"]
+        source_ref = metadata["composition_ref"]
+        _relocate_metadata(metadata, workspace=str(workspace), session_ids=session_ids, task_ids=task_ids)
+        metadata["bundle_import_provenance"] = {
+            "source_workspace": source,
+            "source_task_id": original,
+            "status": row["status"],
+            "source_composition_ref": source_ref,
+            "runnable": False,
+        }
+    for row in rows["events"] + rows["deliveries"]:
+        row["workspace_id"] = str(workspace)
+        row["session_id"] = session_ids[row["session_id"]]
+    _validate_rows(tuple(rows["sessions"]), tuple(rows["events"]), tuple(rows["background_tasks"]), tuple(rows["deliveries"]))
+    if not dry_run:
+        session_repository.import_session_bundle_rows(
             workspace=workspace,
+            sessions=tuple(rows["sessions"]),
+            events=tuple(rows["events"]),
+            tasks=tuple(rows["background_tasks"]),
+            deliveries=tuple(rows["deliveries"]),
         )
-        # ``save_run`` is a terminal seal-writer and no longer writes events;
-        # persist the imported event log incrementally before sealing so the
-        # round-tripped session keeps its full transcript. The seal writes the
-        # bundle's terminal status (``completed``/``failed``) or the resumable
-        # ``interrupted``/``waiting`` row, so seal semantics round-trip: a
-        # terminal session imported from a bundle is sealed against late events
-        # exactly like a locally-run one (``append_session_event`` /
-        # ``append_session_events`` reject non-lifecycle appends via
-        # ``_assert_terminal_session_events_allowed``), and replay/resume of a
-        # sealed imported session is read-only and cannot re-activate it.
-        recovery.save_interrupted_checkpoint(
-            workspace=workspace,
-            session_id=target_id,
-            prompt=session.prompt,
-            session_metadata=response.session.metadata,
-            tool_results=(),
-            last_event_sequence=0,
-            create_if_missing=True,
-            turn=session.turn,
-            parent_session_id=rebound_session.parent_id,
-        )
-        assigned_events = events.append_session_events(
-            workspace=workspace,
-            session_id=target_id,
-            events=tuple((event.event_type, event.source, event.payload, None) for event in response.events),
-        )
-        # Seal with the store-assigned envelopes so the row's
-        # ``last_event_sequence`` matches the actual stored event log.
-        run_writer.save_run(
-            workspace=workspace,
-            request=request,
-            response=RuntimeResponse(
-                session=response.session,
-                events=assigned_events,
-                output=response.output,
-            ),
-        )
-    skipped_tasks = sum(1 for task in bundle.background_tasks if task.child_session_id is not None and task.child_session_id not in rebound_id_for)
     return SessionBundleImportResult(
-        schema=SESSION_BUNDLE_SCHEMA_NAME,
-        schema_version=bundle.manifest.schema_version,
-        voidcode_version=bundle.manifest.voidcode_version,
-        created_at=bundle.manifest.created_at,
-        support_mode=bundle.manifest.support_mode,
-        redaction=dict(bundle.manifest.redaction),
-        workspace_hash=bundle.manifest.workspace_hash,
-        session_count=bundle.manifest.session_count,
-        event_count=bundle.manifest.event_count,
-        background_task_count=bundle.manifest.background_task_count,
-        imported_session_ids=imported_ids,
-        skipped_background_task_count=skipped_tasks,
-        dry_run=dry_run,
+        SESSION_BUNDLE_SCHEMA_NAME,
+        2,
+        checked.manifest.voidcode_version,
+        checked.manifest.created_at,
+        False,
+        {"exact": True},
+        checked.manifest.workspace_hash,
+        len(checked.sessions),
+        checked.manifest.event_count,
+        len(checked.background_tasks),
+        tuple(session_ids.values()),
+        0,
+        dry_run,
     )
 
 
-def _remap_parent_id(
-    parent_id: str | None,
-    rebound: Mapping[str, str],
-) -> str | None:
-    if parent_id is None:
-        return None
-    return rebound.get(parent_id, parent_id)
+def serialize_session_bundle(bundle: SessionBundle, *, fmt: SessionBundleFormat = "zip") -> bytes:
+    raw = (json.dumps(bundle.to_payload(), sort_keys=True, indent=2, allow_nan=False) + "\n").encode()
+    if fmt == "json":
+        return raw
+    if fmt != "zip":
+        raise SessionBundleError("unsupported bundle encoding")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(SESSION_BUNDLE_FILE_NAME, raw)
+    return buffer.getvalue()
 
 
-def _default_id_collision_resolver(
-    session_repository: SessionRepository,
-    workspace: Path,
-) -> Callable[[str], str]:
-    def resolve(original: str) -> str:
-        candidate = f"{original}-imported"
-        attempt = 1
-        while session_repository.has_session(workspace=workspace, session_id=candidate):
-            attempt += 1
-            candidate = f"{original}-imported-{attempt}"
-        return candidate
-
-    return resolve
+def write_session_bundle(bundle: SessionBundle, *, path: Path, fmt: SessionBundleFormat | None = None) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(serialize_session_bundle(bundle, fmt=fmt or ("json" if path.suffix.lower() == ".json" else "zip")))
+    return path
 
 
-def _resolve_import_session_ids(
-    bundle_sessions: tuple[SessionBundleSessionPayload, ...],
-    *,
-    session_repository: SessionRepository,
-    workspace: Path,
-    resolver: Callable[[str], str],
-) -> dict[str, str]:
-    rebound: dict[str, str] = {}
-    reserved: set[str] = set()
-    for session in bundle_sessions:
-        if session.id in rebound:
-            raise SessionBundleError(f"duplicate session id in bundle: {session.id!r}")
-        target_id = _resolve_target_id(
-            session_repository=session_repository,
-            workspace=workspace,
-            bundle_session_id=session.id,
-            resolver=resolver,
-            reserved=reserved,
-        )
-        rebound[session.id] = target_id
-        reserved.add(target_id)
-    return rebound
+def read_session_bundle(path: Path) -> SessionBundle:
+    try:
+        return read_session_bundle_bytes(path.read_bytes())
+    except OSError as error:
+        raise SessionBundleError(str(error)) from error
 
 
-def _resolve_target_id(
-    *,
-    session_repository: SessionRepository,
-    workspace: Path,
-    bundle_session_id: str,
-    resolver: Callable[[str], str],
-    reserved: set[str],
-) -> str:
-    validate_id(bundle_session_id)
-    if bundle_session_id not in reserved and not session_repository.has_session(
-        workspace=workspace,
-        session_id=bundle_session_id,
-    ):
-        return bundle_session_id
-    candidate = resolver(bundle_session_id)
-    attempt = 1
-    while candidate in reserved or session_repository.has_session(
-        workspace=workspace,
-        session_id=candidate,
-    ):
-        attempt += 1
-        candidate = f"{bundle_session_id}-imported-{attempt}"
-    validate_id(candidate)
-    return candidate
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise SessionBundleError("duplicate JSON object key")
+        result[key] = value
+    return result
 
 
-__all__ = [
-    "SESSION_BUNDLE_DEFAULT_EXTENSION",
-    "SESSION_BUNDLE_FILE_NAME",
-    "SESSION_BUNDLE_REDACTED_PLACEHOLDER",
-    "SESSION_BUNDLE_SCHEMA_NAME",
-    "SESSION_BUNDLE_SCHEMA_VERSION",
-    "SessionBundle",
-    "SessionBundleArtifactPayload",
-    "SessionBundleBackgroundTaskPayload",
-    "SessionBundleDiagnostics",
-    "SessionBundleError",
-    "SessionBundleFormat",
-    "SessionBundleImportResult",
-    "SessionBundleManifest",
-    "SessionBundleOptions",
-    "SessionBundleSessionPayload",
-    "apply_session_bundle",
-    "build_session_bundle",
-    "parse_session_bundle",
-    "read_session_bundle",
-    "read_session_bundle_bytes",
-    "serialize_session_bundle",
-    "write_session_bundle",
-]
+def read_session_bundle_bytes(raw: bytes) -> SessionBundle:
+    try:
+        if raw.startswith(b"PK"):
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                if archive.namelist() != [SESSION_BUNDLE_FILE_NAME]:
+                    raise SessionBundleError("bundle archive must contain exactly bundle.json")
+                raw = archive.read(SESSION_BUNDLE_FILE_NAME)
+        return parse_session_bundle(json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object))
+    except (UnicodeDecodeError, json.JSONDecodeError, zipfile.BadZipFile) as error:
+        raise SessionBundleError("invalid bundle encoding") from error

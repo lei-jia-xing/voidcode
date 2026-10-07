@@ -14,7 +14,9 @@ from typing import Any, Protocol, cast
 
 import pytest
 
-from voidcode.core.turns import TurnPlan, TurnSession
+from tests.runtime_composition import create_task
+from voidcode.core.transcript import ToolResultView, tool_result_output
+from voidcode.core.turns import FinalTurn, ToolTurn, TurnSession
 from voidcode.runtime.paths import sessions_db_path
 from voidcode.runtime.storage import RuntimeRepositories, SqliteSessionStore
 
@@ -199,13 +201,6 @@ class ToolCallFactory(Protocol):
     def __call__(self, *, tool_name: str, arguments: dict[str, object]) -> object: ...
 
 
-class ToolResultLike(Protocol):
-    tool_name: str
-    content: str
-    data: dict[str, object]
-    reference: str | None
-
-
 class ContextSegmentLike(Protocol):
     role: str
     content: object
@@ -215,7 +210,7 @@ class ContextSegmentLike(Protocol):
 class AssembledContextLike(Protocol):
     prompt: str
     segments: tuple[ContextSegmentLike, ...]
-    tool_results: tuple[ToolResultLike, ...]
+    tool_results: tuple[ToolResultView, ...]
     metadata: dict[str, object]
 
 
@@ -225,6 +220,17 @@ class ProviderRequestLike(Protocol):
 
 def _assembled_context(request: object) -> AssembledContextLike:
     return cast(ProviderRequestLike, request).assembled_context
+
+
+def _background_task_id(result: ToolResultView) -> str:
+    output = tool_result_output(result)
+    prefix = "Started background task "
+    if output is None or not output.startswith(prefix):
+        raise AssertionError("background task result has no task-start presentation")
+    task_id = output[len(prefix) :].split(maxsplit=1)[0].rstrip(".")
+    if not task_id:
+        raise AssertionError("background task result presentation has no task id")
+    return task_id
 
 
 class EventEnvelopeFactory(Protocol):
@@ -313,9 +319,9 @@ class _AstGrepPreviewGraph:
     def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
         _ = request, session
         if not tool_results:
-            return TurnPlan(
+            return ToolTurn(
                 facts=(),
-                tool_calls=(
+                calls=(
                     cast(
                         ToolCallFactory,
                         importlib.import_module("voidcode.tools.contracts").ToolCall,
@@ -331,16 +337,16 @@ class _AstGrepPreviewGraph:
                     ),
                 ),
             )
-        return TurnPlan(facts=(), tool_calls=(), output="previewed", is_finished=True)
+        return FinalTurn(facts=(), output="previewed")
 
 
 class _AstGrepReplaceGraph:
     def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
         _ = request, session
         if not tool_results:
-            return TurnPlan(
+            return ToolTurn(
                 facts=(),
-                tool_calls=(
+                calls=(
                     cast(
                         ToolCallFactory,
                         importlib.import_module("voidcode.tools.contracts").ToolCall,
@@ -357,7 +363,7 @@ class _AstGrepReplaceGraph:
                     ),
                 ),
             )
-        return TurnPlan(facts=(), tool_calls=(), output="applied", is_finished=True)
+        return FinalTurn(facts=(), output="applied")
 
 
 class _SingleToolGraph:
@@ -368,9 +374,9 @@ class _SingleToolGraph:
     def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
         _ = request, session
         if not tool_results:
-            return TurnPlan(
+            return ToolTurn(
                 facts=(),
-                tool_calls=(
+                calls=(
                     cast(
                         ToolCallFactory,
                         importlib.import_module("voidcode.tools.contracts").ToolCall,
@@ -380,7 +386,7 @@ class _SingleToolGraph:
                     ),
                 ),
             )
-        return TurnPlan(facts=(), tool_calls=(), output="done", is_finished=True)
+        return FinalTurn(facts=(), output="done")
 
 
 class _SequentialToolGraph:
@@ -391,9 +397,9 @@ class _SequentialToolGraph:
         _ = request, session
         if len(tool_results) < len(self._calls):
             tool_name, arguments = self._calls[len(tool_results)]
-            return TurnPlan(
+            return ToolTurn(
                 facts=(),
-                tool_calls=(
+                calls=(
                     cast(
                         ToolCallFactory,
                         importlib.import_module("voidcode.tools.contracts").ToolCall,
@@ -403,7 +409,7 @@ class _SequentialToolGraph:
                     ),
                 ),
             )
-        return TurnPlan(facts=(), tool_calls=(), output="done", is_finished=True)
+        return FinalTurn(facts=(), output="done")
 
 
 class _SequentialSafeBoundaryGraph(_SequentialToolGraph):
@@ -505,10 +511,12 @@ class _ReadFileParityModelProvider:
                 tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
                 if not _assembled_context(request).tool_results:
                     return provider_protocol_module.ProviderTurnResult(
-                        tool_call=tool_contracts_module.ToolCall(
-                            tool_name="read",
-                            arguments={"path": "sample.txt"},
-                            tool_call_id="read-1",
+                        tool_calls=(
+                            tool_contracts_module.ToolCall(
+                                tool_name="read",
+                                arguments={"path": "sample.txt"},
+                                tool_call_id="read-1",
+                            ),
                         )
                     )
                 return provider_protocol_module.ProviderTurnResult(output="done")
@@ -535,10 +543,12 @@ class _SingleThenBatchTurnProvider:
         self.propose_turn_tool_result_counts.append(len(tool_results))
         if not tool_results:
             return provider_protocol_module.ProviderTurnResult(
-                tool_call=tool_contracts_module.ToolCall(
-                    tool_name="read",
-                    arguments={"path": "a.txt"},
-                    tool_call_id="call-a",
+                tool_calls=(
+                    tool_contracts_module.ToolCall(
+                        tool_name="read",
+                        arguments={"path": "a.txt"},
+                        tool_call_id="call-a",
+                    ),
                 )
             )
         if len(tool_results) == 1:
@@ -577,22 +587,26 @@ class _DelegationE2EModelProvider:
                 tool_results = assembled_context.tool_results
                 if _is_delegated_child_request(request):
                     return provider_protocol_module.ProviderTurnResult(
-                        tool_call=tool_contracts_module.ToolCall(
-                            tool_name="yield",
-                            arguments={"summary": "child final", "data": {"completed_work": ["returned delegated result"]}},
+                        tool_calls=(
+                            tool_contracts_module.ToolCall(
+                                tool_name="yield",
+                                arguments={"summary": "child final", "data": {"completed_work": ["returned delegated result"]}},
+                            ),
                         )
                     )
                 if not tool_results:
                     return provider_protocol_module.ProviderTurnResult(
-                        tool_call=tool_contracts_module.ToolCall(
-                            tool_name="task",
-                            arguments={
-                                "prompt": "return the child final",
-                                "run_in_background": False,
-                                "load_skills": [],
-                                "subagent_type": "explore",
-                                "description": "Sync subagent E2E child",
-                            },
+                        tool_calls=(
+                            tool_contracts_module.ToolCall(
+                                tool_name="task",
+                                arguments={
+                                    "prompt": "return the child final",
+                                    "run_in_background": False,
+                                    "load_skills": [],
+                                    "subagent_type": "explore",
+                                    "description": "Sync subagent E2E child",
+                                },
+                            ),
                         )
                     )
                 return provider_protocol_module.ProviderTurnResult(output="parent continued after child final")
@@ -621,29 +635,35 @@ class _ParentToolResultGuardrailProvider:
                 tool_results = assembled_context.tool_results
                 if _is_delegated_child_request(request):
                     return provider_protocol_module.ProviderTurnResult(
-                        tool_call=tool_contracts_module.ToolCall(
-                            tool_name="yield",
-                            arguments={"summary": "child clean"},
+                        tool_calls=(
+                            tool_contracts_module.ToolCall(
+                                tool_name="yield",
+                                arguments={"summary": "child clean"},
+                            ),
                         )
                     )
                 if not tool_results:
                     return provider_protocol_module.ProviderTurnResult(
-                        tool_call=tool_contracts_module.ToolCall(
-                            tool_name="read",
-                            arguments={"path": "parent-secret.txt"},
+                        tool_calls=(
+                            tool_contracts_module.ToolCall(
+                                tool_name="read",
+                                arguments={"path": "parent-secret.txt"},
+                            ),
                         )
                     )
                 if len(tool_results) == 1:
                     return provider_protocol_module.ProviderTurnResult(
-                        tool_call=tool_contracts_module.ToolCall(
-                            tool_name="task",
-                            arguments={
-                                "prompt": "check child isolation",
-                                "run_in_background": False,
-                                "load_skills": [],
-                                "subagent_type": "explore",
-                                "description": "Context isolation child",
-                            },
+                        tool_calls=(
+                            tool_contracts_module.ToolCall(
+                                tool_name="task",
+                                arguments={
+                                    "prompt": "check child isolation",
+                                    "run_in_background": False,
+                                    "load_skills": [],
+                                    "subagent_type": "explore",
+                                    "description": "Context isolation child",
+                                },
+                            ),
                         )
                     )
                 return provider_protocol_module.ProviderTurnResult(output="parent done")
@@ -672,37 +692,43 @@ class _BackgroundOutputGuardrailProvider:
                 tool_results = assembled_context.tool_results
                 if _is_delegated_child_request(request):
                     return provider_protocol_module.ProviderTurnResult(
-                        tool_call=tool_contracts_module.ToolCall(
-                            tool_name="yield",
-                            arguments={"summary": "child transcript sentinel"},
+                        tool_calls=(
+                            tool_contracts_module.ToolCall(
+                                tool_name="yield",
+                                arguments={"summary": "child transcript sentinel"},
+                            ),
                         )
                     )
                 if not tool_results:
                     return provider_protocol_module.ProviderTurnResult(
-                        tool_call=tool_contracts_module.ToolCall(
-                            tool_name="task",
-                            arguments={
-                                "prompt": "produce child transcript sentinel",
-                                "run_in_background": True,
-                                "load_skills": [],
-                                "subagent_type": "explore",
-                                "description": "Background transcript child",
-                            },
+                        tool_calls=(
+                            tool_contracts_module.ToolCall(
+                                tool_name="task",
+                                arguments={
+                                    "prompt": "produce child transcript sentinel",
+                                    "run_in_background": True,
+                                    "load_skills": [],
+                                    "subagent_type": "explore",
+                                    "description": "Background transcript child",
+                                },
+                            ),
                         )
                     )
                 if len(tool_results) == 1:
-                    task_id = cast(str, tool_results[0].data["task_id"])
+                    task_id = _background_task_id(tool_results[0])
                     return provider_protocol_module.ProviderTurnResult(
-                        tool_call=tool_contracts_module.ToolCall(
-                            tool_name="task",
-                            arguments={
-                                "operation": "output",
-                                "task_id": task_id,
-                                "block": True,
-                                "timeout": 3000,
-                                "full_session": True,
-                                "message_limit": 10,
-                            },
+                        tool_calls=(
+                            tool_contracts_module.ToolCall(
+                                tool_name="task",
+                                arguments={
+                                    "operation": "output",
+                                    "task_id": task_id,
+                                    "block": True,
+                                    "timeout": 3000,
+                                    "full_session": True,
+                                    "message_limit": 10,
+                                },
+                            ),
                         )
                     )
                 return provider_protocol_module.ProviderTurnResult(output="parent collected transcript")
@@ -758,12 +784,12 @@ def _write_demo_skill(skill_dir: Path, *, content: str) -> None:
 
 
 class _ParentBackgroundOutputGraph:
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: TurnSession) -> object:
+    def produce(self, request: object, tool_results: tuple[ToolResultView, ...], *, session: TurnSession) -> object:
         _ = request
         if session.metadata.get("parent_session_id") is not None:
-            return TurnPlan(
+            return ToolTurn(
                 facts=(),
-                tool_calls=(
+                calls=(
                     cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
                         tool_name="yield",
                         arguments={"summary": "child background final"},
@@ -775,9 +801,9 @@ class _ParentBackgroundOutputGraph:
             importlib.import_module("voidcode.tools.contracts").ToolCall,
         )
         if not tool_results:
-            return TurnPlan(
+            return ToolTurn(
                 facts=(),
-                tool_calls=(
+                calls=(
                     tool_call_factory(
                         tool_name="task",
                         arguments={
@@ -790,17 +816,16 @@ class _ParentBackgroundOutputGraph:
                     ),
                 ),
             )
-        first_result = cast(ToolResultLike, tool_results[0])
-        first_data = first_result.data
+        task_id = _background_task_id(tool_results[0])
         if len(tool_results) == 1:
-            return TurnPlan(
+            return ToolTurn(
                 facts=(),
-                tool_calls=(
+                calls=(
                     tool_call_factory(
                         tool_name="task",
                         arguments={
                             "operation": "output",
-                            "task_id": first_data["task_id"],
+                            "task_id": task_id,
                             "block": True,
                             "timeout": 3000,
                             "full_session": True,
@@ -808,8 +833,10 @@ class _ParentBackgroundOutputGraph:
                     ),
                 ),
             )
-        final_result = cast(ToolResultLike, tool_results[1])
-        return TurnPlan(facts=(), tool_calls=(), output=final_result.content, is_finished=True)
+        final_output = tool_result_output(tool_results[1])
+        if final_output is None:
+            raise AssertionError("final delegated tool result has no text presentation")
+        return FinalTurn(facts=(), output=final_output)
 
 
 class _FailingBackgroundChildGraph:
@@ -817,16 +844,16 @@ class _FailingBackgroundChildGraph:
         _ = request, tool_results
         if session.metadata.get("parent_session_id") is not None:
             raise RuntimeError("delegated child failed twice")
-        return TurnPlan(facts=(), tool_calls=(), output="leader ready", is_finished=True)
+        return FinalTurn(facts=(), output="leader ready")
 
 
 class _McpEchoGraph:
     def produce(self, request: object, tool_results: tuple[object, ...], *, session: TurnSession) -> object:
         _ = request, session
         if not tool_results:
-            return TurnPlan(
+            return ToolTurn(
                 facts=(),
-                tool_calls=(
+                calls=(
                     cast(
                         ToolCallFactory,
                         importlib.import_module("voidcode.tools.contracts").ToolCall,
@@ -837,16 +864,16 @@ class _McpEchoGraph:
                 ),
             )
         if session.metadata.get("parent_session_id") is not None:
-            return TurnPlan(
+            return ToolTurn(
                 facts=(),
-                tool_calls=(
+                calls=(
                     cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
                         tool_name="yield",
                         arguments={"summary": "mcp child done", "data": {"completed_work": ["called delegated MCP"]}},
                     ),
                 ),
             )
-        return TurnPlan(facts=(), tool_calls=(), output="mcp parent done", is_finished=True)
+        return FinalTurn(facts=(), output="mcp parent done")
 
 
 def test_runtime_background_restart_reconcile_reloads_terminal_delegated_result(
@@ -1023,7 +1050,8 @@ def test_runtime_background_task_cancel_reconciles_orphaned_task_from_fresh_runt
     first_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
     _ = first_runtime
     store = cast(SqliteSessionStore, storage_module.SqliteSessionStore())
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=task_module.BackgroundTaskState(
             task=task_module.BackgroundTaskRef(id="task-fresh-cancel"),
@@ -1169,9 +1197,9 @@ class _DivergentWriteFileGraph:
         self._call_count += 1
         if not tool_results:
             suffix = "first" if self._call_count == 1 else "second"
-            return TurnPlan(
+            return ToolTurn(
                 facts=(),
-                tool_calls=(
+                calls=(
                     cast(
                         ToolCallFactory,
                         importlib.import_module("voidcode.tools.contracts").ToolCall,
@@ -1184,7 +1212,7 @@ class _DivergentWriteFileGraph:
                     ),
                 ),
             )
-        return TurnPlan(facts=(), tool_calls=(), output="written", is_finished=True)
+        return FinalTurn(facts=(), output="written")
 
 
 def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_overrides(
@@ -1247,7 +1275,15 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "applied_skills",
         "skill_snapshot",
         "resolved_hook_plan",
+        "composition_ref",
+        "execution_composition",
     }
+    composition_ref = cast(dict[str, object], replay.session.metadata["composition_ref"])
+    execution_composition = cast(dict[str, object], replay.session.metadata["execution_composition"])
+    binding = cast(dict[str, object], execution_composition["binding"])
+    plan = cast(dict[str, object], execution_composition["plan"])
+    assert composition_ref["binding_id"] == binding["binding_id"]
+    assert composition_ref["plan_id"] == plan["plan_id"]
     assert replay.session.metadata["runtime_config"] == {
         "approval_mode": "yolo",
         "config_schema_version": 1,
@@ -1264,6 +1300,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "permission": _DEFAULT_PERMISSION_METADATA,
         "reminders": {"enabled": True, "todo": {"max_per_cycle": 3}},
         "resolved_provider": {
+            "schema_version": 2,
             "active_target": {
                 "raw_model": "session/model",
                 "provider": "session",
@@ -1304,9 +1341,9 @@ def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path
     class FailingFinalizeGraph:
         def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
             if not tool_results:
-                return TurnPlan(
+                return ToolTurn(
                     facts=(),
-                    tool_calls=(
+                    calls=(
                         cast(
                             ToolCallFactory,
                             importlib.import_module("voidcode.tools.contracts").ToolCall,

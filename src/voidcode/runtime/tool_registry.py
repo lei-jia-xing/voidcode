@@ -3,17 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
+from types import MappingProxyType
 from typing import Literal
 
-from ..tools.contracts import Tool, ToolDefinition, is_read_tier
-from .config import RuntimeAgentConfig, RuntimeHooksConfig
-from .tool_provider import BuiltinToolProvider
-
-#: Consulted only when a lookup misses: the runtime-owned source for tools that
-#: are materialized on demand (today: MCP servers, whose tool surface is only
-#: known once something actually needs it). It returns everything it can now
-#: provide and MUST NOT raise; an unusable source simply provides nothing.
-type DeferredToolSource = Callable[[str], Mapping[str, Tool]]
+from ..tools.contracts import Tool, ToolDefinition, ToolEffect, is_read_tier
+from .config import RuntimeAgentConfig
 
 #: Tools always shown top-level in the provider tools array when the
 #: essential/discoverable split is enabled. Everything not in this set is
@@ -76,7 +70,7 @@ def agent_required_tool_patterns(agent: RuntimeAgentConfig | None) -> tuple[str,
 
 @dataclass(frozen=True, slots=True)
 class ToolCatalogEntry:
-    """Deterministic, fact-only projection of a live registry tool."""
+    """Deterministic, fact-only projection of a declared registry tool."""
 
     name: str
     visibility: Literal["essential", "discoverable"]
@@ -108,70 +102,60 @@ class ToolPolicyDecision:
 
 @dataclass(slots=True)
 class ToolRegistry:
-    """Small in-memory registry used by the runtime boundary."""
+    """Declared metadata and genuine dispatch instances, with explicit binding."""
 
+    declarations: Mapping[str, ToolDefinition] = field(default_factory=lambda: MappingProxyType({}))
     tools: dict[str, Tool] = field(default_factory=dict)
-    deferred_tools: DeferredToolSource | None = None
+
+    @classmethod
+    def from_definitions(cls, definitions: Iterable[ToolDefinition]) -> ToolRegistry:
+        declarations: dict[str, ToolDefinition] = {}
+        for definition in definitions:
+            owned = _validated_definition(definition)
+            if owned.name in declarations:
+                raise ValueError(f"duplicate tool definition: {owned.name}")
+            declarations[owned.name] = owned
+        return cls(declarations=MappingProxyType(declarations))
 
     @classmethod
     def from_tools(cls, tools: Iterable[Tool]) -> ToolRegistry:
-        registry: dict[str, Tool] = {}
-        for tool in tools:
-            name = tool.definition.name
-            if name in registry:
-                raise ValueError(f"duplicate tool definition: {name}")
-            registry[name] = tool
-        return cls(tools=registry)
+        """Register genuine already-constructed tools at an explicit consumer boundary."""
+        instances = tuple(tools)
+        registry = cls.from_definitions(tool.definition for tool in instances)
+        return cls(declarations=registry.declarations, tools=dict(zip(registry.declarations, instances, strict=True)))
 
-    def with_deferred_tools(self, source: DeferredToolSource | None) -> ToolRegistry:
-        """Return a copy of this registry that resolves misses through ``source``."""
-        if source is None:
-            return self
-        return ToolRegistry(tools=dict(self.tools), deferred_tools=source)
+    def definition(self, name: str) -> ToolDefinition | None:
+        """Passively inspect one declaration; never resolve or activate a tool."""
+        return self.declarations.get(name)
 
-    @classmethod
-    def with_defaults(
-        cls,
-        *,
-        lsp_tool: Tool | None = None,
-        mcp_tools: tuple[Tool, ...] = (),
-        hooks_config: RuntimeHooksConfig | None = None,
-        skill_tool: Tool | None = None,
-        task_tool: Tool | None = None,
-        task_batch_tool: Tool | None = None,
-        question_tool: Tool | None = None,
-        background_process_tool: Tool | None = None,
-    ) -> ToolRegistry:
-        return cls.from_tools(
-            BuiltinToolProvider(
-                lsp_tool=lsp_tool,
-                mcp_tools=mcp_tools,
-                hooks_config=hooks_config,
-                skill_tool=skill_tool,
-                task_tool=task_tool,
-                task_batch_tool=task_batch_tool,
-                question_tool=question_tool,
-                background_process_tool=background_process_tool,
-            ).provide_tools()
-        )
+    def bind(self, materialize: Callable[[ToolDefinition], Tool]) -> ToolRegistry:
+        """Bind missing instances through the caller's captured activated factory."""
+        tools = dict(self.tools)
+        for name, definition in self.declarations.items():
+            if name in tools:
+                continue
+            tool = materialize(definition)
+            if not callable(getattr(tool, "invoke", None)) or _validated_definition(tool.definition) != definition:
+                raise ValueError(f"materialized tool does not match declaration: {name}")
+            tools[name] = tool
+        return ToolRegistry(declarations=self.declarations, tools=tools)
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
-        return tuple(tool.definition for tool in self.tools.values())
+        return tuple(self.declarations.values())
 
-    def _provider_tools(
+    def _provider_definitions(
         self,
         *,
         essential_only: bool,
         allowlist_patterns: Iterable[str] = (),
-    ) -> tuple[Tool, ...]:
-        """Return the live registry tools visible in a provider projection."""
+    ) -> tuple[ToolDefinition, ...]:
         if not essential_only:
-            return tuple(self.tools.values())
+            return self.definitions()
         patterns = tuple(allowlist_patterns)
         return tuple(
-            tool
-            for tool in self.tools.values()
-            if tool.definition.name in ESSENTIAL_TOOL_NAMES or tool_required_by_allowlist_patterns(tool.definition.name, patterns)
+            definition
+            for definition in self.declarations.values()
+            if definition.name in ESSENTIAL_TOOL_NAMES or tool_required_by_allowlist_patterns(definition.name, patterns)
         )
 
     def provider_definitions(
@@ -185,13 +169,7 @@ class ToolRegistry:
         allowlist pattern) are exposed top-level; the rest remain registered
         and dispatchable via ``invoke_tool``.
         """
-        return tuple(
-            tool.definition
-            for tool in self._provider_tools(
-                essential_only=True,
-                allowlist_patterns=allowlist_patterns,
-            )
-        )
+        return self._provider_definitions(essential_only=True, allowlist_patterns=allowlist_patterns)
 
     def capability_catalog(
         self,
@@ -199,16 +177,16 @@ class ToolRegistry:
         essential_only: bool = False,
         allowlist_patterns: Iterable[str] = (),
     ) -> tuple[ToolCatalogEntry, ...]:
-        """Project the same live provider scope into deterministic catalog rows."""
+        """Project the same declared provider scope into deterministic catalog rows."""
         entries = tuple(
             ToolCatalogEntry(
-                name=tool.definition.name,
-                visibility=("essential" if tool.definition.name in ESSENTIAL_TOOL_NAMES else "discoverable"),
-                read_only=is_read_tier(tool.definition.effects),
-                documentation_uri=f"voidcode://tool/{tool.definition.name}",
-                replay_policy=tool.definition.effective_replay_policy,
+                name=definition.name,
+                visibility=("essential" if definition.name in ESSENTIAL_TOOL_NAMES else "discoverable"),
+                read_only=is_read_tier(definition.effects),
+                documentation_uri=f"voidcode://tool/{definition.name}",
+                replay_policy=definition.effective_replay_policy,
             )
-            for tool in self._provider_tools(
+            for definition in self._provider_definitions(
                 essential_only=essential_only,
                 allowlist_patterns=allowlist_patterns,
             )
@@ -240,34 +218,45 @@ class ToolRegistry:
         return "\n".join(lines)
 
     def resolve(self, tool_name: str) -> Tool:
-        tool = self.tools.get(tool_name)
-        if tool is None and self.deferred_tools is not None:
-            # Lazy materialization: the source provides the tools it can now
-            # resolve, and the ones it provides join this registry for the rest
-            # of the run.
-            self.tools.update(self.deferred_tools(tool_name))
-            tool = self.tools.get(tool_name)
-        if tool is None:
+        if tool_name not in self.declarations:
             raise ValueError(f"unknown tool: {tool_name}")
+        tool = self.tools.get(tool_name)
+        if tool is None:
+            raise ValueError(f"tool is not bound: {tool_name}")
         return tool
+
+    def _selected(self, names: Iterable[str]) -> ToolRegistry:
+        selected = frozenset(names)
+        return ToolRegistry(
+            declarations=MappingProxyType({name: definition for name, definition in self.declarations.items() if name in selected}),
+            tools={name: tool for name, tool in self.tools.items() if name in selected},
+        )
 
     def filtered(self, patterns: Iterable[str]) -> ToolRegistry:
         normalized_patterns = tuple(pattern for pattern in patterns if pattern)
-        return ToolRegistry(
-            tools={name: tool for name, tool in self.tools.items() if any(fnmatchcase(name, pattern) for pattern in normalized_patterns)},
-            deferred_tools=self.deferred_tools,
-        )
+        return self._selected(name for name in self.declarations if any(fnmatchcase(name, pattern) for pattern in normalized_patterns))
 
     def excluding(self, tool_names: Iterable[str]) -> ToolRegistry:
         excluded = frozenset(tool_names)
-        return ToolRegistry(
-            tools={name: tool for name, tool in self.tools.items() if name not in excluded},
-            deferred_tools=self.deferred_tools,
-        )
+        return self._selected(name for name in self.declarations if name not in excluded)
 
     def allowed_by_policy(self, policy: Iterable[ToolPolicyDecision]) -> ToolRegistry:
-        allowed_names = frozenset(decision.tool_name for decision in policy if decision.allowed)
-        return ToolRegistry(
-            tools={name: tool for name, tool in self.tools.items() if name in allowed_names},
-            deferred_tools=self.deferred_tools,
-        )
+        return self._selected(decision.tool_name for decision in policy if decision.allowed)
+
+
+def _validated_definition(definition: ToolDefinition) -> ToolDefinition:
+    if not isinstance(definition, ToolDefinition):
+        raise ValueError("tool declaration must be a ToolDefinition")
+    if not isinstance(definition.name, str) or not definition.name:
+        raise ValueError("tool declaration name must be a non-empty string")
+    if not isinstance(definition.description, str):
+        raise ValueError("tool declaration description must be a string")
+    if not isinstance(definition.input_schema, Mapping):
+        raise ValueError("tool declaration input_schema must be an object")
+    if not isinstance(definition.effects, frozenset) or any(not isinstance(effect, ToolEffect) for effect in definition.effects):
+        raise ValueError("tool declaration effects must be ToolEffect values")
+    if not isinstance(definition.path_argument_keys, tuple) or any(not isinstance(key, str) for key in definition.path_argument_keys):
+        raise ValueError("tool declaration path_argument_keys must be strings")
+    if definition.replay_policy not in (None, "safe", "never"):
+        raise ValueError("tool declaration replay_policy must be safe or never")
+    return definition

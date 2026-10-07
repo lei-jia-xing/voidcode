@@ -14,7 +14,7 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
-from voidcode.core.turns import TurnPlan
+from voidcode.core.turns import FinalTurn, ToolTurn
 from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
 from voidcode.provider.protocol import ProviderTurnRequest, ProviderTurnResult
@@ -122,7 +122,6 @@ def test_data_payload_counts_toward_the_budget_and_is_replaced() -> None:
     assert window.compacted is True
     assert window.dropped_tool_result_count > 0
     pruned_view = window.tool_results[0]
-    assert pruned_view.pruned is True
     assert pruned_view.data["context_pruned"] is True
     assert "lines" not in pruned_view.data
     assert pruned_view.data["path"] == "file-0.txt"  # small scalars stay readable
@@ -446,14 +445,14 @@ class _ReadThenDoneGraph:
         self._reads = reads
         self.summary_segments: list[str | None] = []
 
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> TurnPlan:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
         _ = session
         assembled = request.assembled_context  # type: ignore[attr-defined]
         projection = [segment.content for segment in assembled.segments if (segment.metadata or {}).get("source") == "context_projection"]
         self.summary_segments.append(projection[0] if projection else None)
         if len(tool_results) < self._reads:
-            return TurnPlan(tool_calls=(ToolCall(tool_name="read", arguments={"path": f"big-{len(tool_results)}.txt"}),))
-        return TurnPlan(output="done", is_finished=True)
+            return ToolTurn(calls=(ToolCall(tool_name="read", arguments={"path": f"big-{len(tool_results)}.txt"}),))
+        return FinalTurn(output="done")
 
 
 def _summary_runtime(

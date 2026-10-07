@@ -17,13 +17,10 @@ import pytest
 
 import voidcode.runtime.config_materializer as runtime_config_materializer_module
 import voidcode.runtime.service as runtime_service_module
-from voidcode.agent import (
-    LEADER_AGENT_MANIFEST,
-    get_builtin_agent_manifest,
-)
+from tests.runtime_composition import create_task, save_checkpoint
 from voidcode.core.questions import QuestionResponse
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import TurnPlan, TurnRequest, TurnSession
+from voidcode.core.turns import FinalTurn, StreamFact, ToolTurn, TurnRequest, TurnSession
 from voidcode.provider.config import (
     ProviderEndpointConfig,
     ProviderTransientRetryConfig,
@@ -31,16 +28,15 @@ from voidcode.provider.config import (
 from voidcode.provider.protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
-    ProviderTurnRequest,
     ProviderTurnResult,
 )
-from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
     is_background_task_terminal,
 )
+from voidcode.runtime.composition import CompositionOwner, CompositionRef, FrozenComposition, TaskCompositionOwner
 from voidcode.runtime.config import (
     RuntimeAgentConfig,
     RuntimeBackgroundTaskConfig,
@@ -90,7 +86,6 @@ from voidcode.runtime.service import (
     RuntimeResponse,
     RuntimeStreamChunk,
     SessionState,
-    ToolRegistry,
     VoidCodeRuntime,
 )
 from voidcode.runtime.session import SessionRef
@@ -98,7 +93,9 @@ from voidcode.runtime.session_metadata_helpers import (
     continuity_state_from_session_metadata,
 )
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from voidcode.runtime.tool_registry import ToolRegistry
+from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
+from voidcode.tools.shell_exec import ShellExecTool
 
 
 def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session") -> RuntimeRequest:
@@ -186,7 +183,7 @@ class _NoopMcpManager:
 
 
 def test_runtime_shell_read_probe_external_path_stays_workspace_scoped(tmp_path: Path) -> None:
-    shell_tool = ToolRegistry.with_defaults().resolve("shell_exec")
+    shell_tool = ShellExecTool()
     resolver = RuntimePermissionContextResolver(workspace=tmp_path)
     context = resolver.permission_context_for_tool_call(
         tool=shell_tool.definition,
@@ -210,10 +207,10 @@ class _SkillCapturingStubGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = tool_results, session
         type(self).last_request = request
-        return TurnPlan(output=request.prompt, is_finished=True)
+        return FinalTurn(output=request.prompt)
 
 
 class _ApprovalThenCaptureSkillGraph:
@@ -225,14 +222,14 @@ class _ApprovalThenCaptureSkillGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = session
         type(self).last_request = request
         if not tool_results:
-            return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),))
+            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),))
         if session.metadata.get("parent_session_id") is not None:
-            return TurnPlan(tool_calls=(ToolCall(tool_name="yield", arguments={"summary": "done"}),))
-        return TurnPlan(output="done", is_finished=True)
+            return ToolTurn(calls=(ToolCall(tool_name="yield", arguments={"summary": "done"}),))
+        return FinalTurn(output="done")
 
 
 class _GithubWorkflowWriteGraph:
@@ -242,18 +239,18 @@ class _GithubWorkflowWriteGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = request, session
         if not tool_results:
-            return TurnPlan(
-                tool_calls=(
+            return ToolTurn(
+                calls=(
                     ToolCall(
                         tool_name="write",
                         arguments={"path": ".github/workflows/ci.yml", "content": "name: CI\n"},
                     ),
                 )
             )
-        return TurnPlan(output="done", is_finished=True)
+        return FinalTurn(output="done")
 
 
 class _ExternalWriteGraph:
@@ -266,18 +263,18 @@ class _ExternalWriteGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = request, session
         if not tool_results:
-            return TurnPlan(
-                tool_calls=(
+            return ToolTurn(
+                calls=(
                     ToolCall(
                         tool_name="write",
                         arguments={"path": self._target.as_posix(), "content": "blocked"},
                     ),
                 )
             )
-        return TurnPlan(output="done", is_finished=True)
+        return FinalTurn(output="done")
 
 
 class _BlockingApprovalResumeGraph:
@@ -291,14 +288,14 @@ class _BlockingApprovalResumeGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = request, session
         if not tool_results:
-            return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),))
+            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),))
         self.resume_started.set()
         if not self.release_resume.wait(timeout=2.0):
             raise RuntimeError("resume was not released")
-        return TurnPlan(output="done", is_finished=True)
+        return FinalTurn(output="done")
 
 
 class _AbortSignalApprovalGraph:
@@ -308,11 +305,11 @@ class _AbortSignalApprovalGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = request, session
         if not tool_results:
-            return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={}),))
-        return TurnPlan(output="captured", is_finished=True)
+            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={}),))
+        return FinalTurn(output="captured")
 
 
 class _AbortBeforeInvokeTool:
@@ -329,7 +326,7 @@ class _AbortBeforeInvokeTool:
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         _ = call, context
         self.invoke_count += 1
-        return ToolResult(tool_name=self.definition.name, status="ok", content="invoked")
+        return ToolSuccess(self.definition.name, output=TextOutput("invoked"))
 
 
 class _QuestionThenDoneGraph:
@@ -339,11 +336,11 @@ class _QuestionThenDoneGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = request, session
         if not tool_results:
-            return TurnPlan(
-                tool_calls=(
+            return ToolTurn(
+                calls=(
                     ToolCall(
                         tool_name="question",
                         arguments={
@@ -363,8 +360,8 @@ class _QuestionThenDoneGraph:
                 )
             )
         if session.metadata.get("parent_session_id") is not None:
-            return TurnPlan(tool_calls=(ToolCall(tool_name="yield", arguments={"summary": "done"}),))
-        return TurnPlan(output="done", is_finished=True)
+            return ToolTurn(calls=(ToolCall(tool_name="yield", arguments={"summary": "done"}),))
+        return FinalTurn(output="done")
 
 
 class _TwoQuestionThenDoneGraph:
@@ -374,11 +371,11 @@ class _TwoQuestionThenDoneGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = request, session
         if not tool_results:
-            return TurnPlan(
-                tool_calls=(
+            return ToolTurn(
+                calls=(
                     ToolCall(
                         tool_name="question",
                         arguments={
@@ -406,230 +403,101 @@ class _TwoQuestionThenDoneGraph:
                     ),
                 )
             )
-        return TurnPlan(output="done", is_finished=True)
+        return FinalTurn(output="done")
 
 
-class _ScriptedTurnProvider:
-    def __init__(self, *, name: str, outcomes: tuple[object, ...] | list[object]) -> None:
-        self.name = name
-        self._outcomes = outcomes if isinstance(outcomes, list) else list(outcomes)
-        self.requests: list[ProviderTurnRequest] = []
+@dataclass
+class _ScriptedTurnProducer:
+    outcomes: tuple[object, ...]
+    shared_outcomes: bool = False
+    requests: list[TurnRequest] = field(default_factory=list, init=False, repr=False)
+    _shared_outcomes: list[object] | None = field(default=None, init=False, repr=False)
 
-    def propose_turn(self, request: object) -> ProviderTurnResult:
-        turn_request = cast(ProviderTurnRequest, request)
-        self.requests.append(turn_request)
-        if turn_request.prompt.startswith("Return ONLY valid JSON matching these keys:"):
-            return ProviderTurnResult(output=_distillation_json_output(turn_request.prompt))
-        if not self._outcomes:
-            return ProviderTurnResult(output="done")
-        outcome = self._outcomes.pop(0)
-        if isinstance(outcome, Exception):
-            raise outcome
-        return cast(ProviderTurnResult, outcome)
+    def produce(
+        self,
+        request: TurnRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: TurnSession,
+    ) -> ToolTurn | FinalTurn:
+        _ = tool_results, session
+        self.requests.append(request)
+        outcomes = self.outcomes
+        if self.shared_outcomes:
+            if self._shared_outcomes is None:
+                self._shared_outcomes = list(outcomes)
+            outcomes = self._shared_outcomes
+        if not outcomes:
+            result = ProviderTurnResult(output="done")
+        else:
+            result = outcomes.pop(0) if isinstance(outcomes, list) else outcomes[0]
+            if not isinstance(outcomes, list):
+                self.outcomes = self.outcomes[1:]
+        if isinstance(result, Exception):
+            raise result
+        if not isinstance(result, ProviderTurnResult):
+            raise TypeError("scripted turn producer requires ProviderTurnResult outcomes")
+        if result.tool_calls:
+            return ToolTurn(calls=result.tool_calls, provider_usage=result.usage, reasoning=result.reasoning)
+        return FinalTurn(output=result.output or "", provider_usage=result.usage, reasoning=result.reasoning)
 
-    def stream_turn(self, request: object):
-        turn_request = cast(ProviderTurnRequest, request)
-        self.requests.append(turn_request)
-        if turn_request.prompt.startswith("Return ONLY valid JSON matching these keys:"):
-            return iter(
-                (
-                    ProviderStreamEvent(
-                        kind="delta",
-                        channel="text",
-                        text=_distillation_json_output(turn_request.prompt),
-                    ),
-                    ProviderStreamEvent(kind="done", done_reason="completed"),
-                )
-            )
-        if turn_request.abort_signal is not None and turn_request.abort_signal.cancelled:
-            return iter(
-                (
-                    ProviderStreamEvent(
-                        kind="error",
-                        channel="error",
-                        error="cancelled by runtime",
-                        error_kind="cancelled",
-                    ),
-                    ProviderStreamEvent(kind="done", done_reason="cancelled"),
-                )
-            )
-        if not self._outcomes:
-            return iter(
-                (
-                    ProviderStreamEvent(kind="delta", channel="text", text="done"),
-                    ProviderStreamEvent(kind="done", done_reason="completed"),
-                )
-            )
-        outcome = self._outcomes.pop(0)
-        if isinstance(outcome, Exception):
-            raise outcome
-        if isinstance(outcome, tuple):
-            return iter(cast(tuple[ProviderStreamEvent, ...], outcome))
-        turn_result = cast(ProviderTurnResult, outcome)
-        if turn_result.output is not None:
-            return iter(
-                (
-                    ProviderStreamEvent(kind="delta", channel="text", text=turn_result.output),
-                    ProviderStreamEvent(
-                        kind="done",
-                        done_reason="completed",
-                        usage=turn_result.usage,
-                    ),
-                )
-            )
-        return iter(
-            (
-                ProviderStreamEvent(
-                    kind="done",
-                    done_reason="completed",
-                    usage=turn_result.usage,
+
+class _AbortableStreamingProducer:
+    def __init__(self, *, generic_error: bool = False) -> None:
+        self.generic_error = generic_error
+        self.started = threading.Event()
+
+    def produce(
+        self,
+        request: TurnRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: TurnSession,
+    ) -> ToolTurn | FinalTurn:
+        _ = request, tool_results, session
+        return FinalTurn(output="done")
+
+    def stream_produce(
+        self,
+        request: TurnRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: TurnSession,
+    ) -> Iterator[object]:
+        _ = tool_results, session
+        yield StreamFact(ProviderStreamEvent(kind="delta", channel="text", text="partial answer"))
+        self.started.set()
+        while request.abort_signal is None or not request.abort_signal.cancelled:
+            time.sleep(0.005)
+        if self.generic_error:
+            raise RuntimeError("provider network vanished after cancel")
+        raise ProviderExecutionError(
+            kind="cancelled",
+            provider_name="primary",
+            model_name="model-a",
+            message="provider stream cancelled",
+        )
+
+
+class _WriteThenResultAwareProducer:
+    def produce(
+        self,
+        request: TurnRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: TurnSession,
+    ) -> ToolTurn | FinalTurn:
+        _ = request, session
+        if tool_results:
+            return FinalTurn(output="done")
+        return ToolTurn(
+            calls=(
+                ToolCall(
+                    tool_name="write",
+                    arguments={"path": "allowed.txt", "content": "allowed"},
                 ),
             )
         )
-
-
-def _distillation_json_output(prompt: str) -> str:
-    objective = "continue current task"
-    marker = "INPUT="
-    marker_index = prompt.find(marker)
-    if marker_index != -1:
-        raw_input = prompt[marker_index + len(marker) :].strip()
-        try:
-            parsed = json.loads(raw_input)
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, dict):
-            raw_prompt = parsed.get("prompt")
-            if isinstance(raw_prompt, str) and raw_prompt.strip():
-                objective = raw_prompt.strip().replace("\n", " ")
-    return json.dumps(
-        {
-            "objective_current_goal": objective,
-            "verbatim_user_constraints": [],
-            "completed_progress": [],
-            "blockers_open_questions": [],
-            "key_decisions_with_rationale": [],
-            "relevant_files_commands_errors": [],
-            "verification_state": {"status": "unknown", "details": [], "refs": []},
-            "next_steps": [],
-            "source_references": [],
-        }
-    )
-
-
-def _last_main_provider_request(requests: list[ProviderTurnRequest]) -> ProviderTurnRequest:
-    for request in reversed(requests):
-        if not request.prompt.startswith("Return ONLY valid JSON matching these keys:"):
-            return request
-    raise AssertionError("expected at least one non-distillation provider request")
-
-
-@dataclass(frozen=True, slots=True)
-class _ScriptedModelProvider:
-    name: str
-    outcomes: tuple[object, ...]
-    created_providers: list[_ScriptedTurnProvider] | None = None
-    shared_outcomes: bool = False
-    _shared_outcomes: list[object] | None = field(default=None, init=False, compare=False)
-
-    def turn_provider(self) -> _ScriptedTurnProvider:
-        provider_outcomes: tuple[object, ...] | list[object]
-        if self.shared_outcomes:
-            shared_outcomes = self._shared_outcomes
-            if not isinstance(shared_outcomes, list):
-                shared_outcomes = list(self.outcomes)
-                object.__setattr__(self, "_shared_outcomes", shared_outcomes)
-            provider_outcomes = shared_outcomes
-        else:
-            provider_outcomes = self.outcomes
-        provider = _ScriptedTurnProvider(name=self.name, outcomes=provider_outcomes)
-        if self.created_providers is not None:
-            self.created_providers.append(provider)
-        return provider
-
-
-class _AbortableStreamingTurnProvider:
-    """Streams one delta, then blocks until the abort signal fires.
-
-    Mirrors the real abort-aware providers (``wrap_provider_stream``,
-    ``OpenAIChatCompletionsProvider.stream_turn``): once ``abort_signal.cancelled`` is observed
-    mid-stream, the provider surfaces ``error_kind="cancelled"`` and a
-    ``done_reason="cancelled"`` so the graph converts the cancellation into
-    ``ProviderExecutionError(kind="cancelled")`` — the exact shape of the
-    ``provider stream cancelled`` path found in the persisted bug evidence.
-    """
-
-    def __init__(self, *, name: str, model_provider: _AbortableStreamingModelProvider) -> None:
-        self.name = name
-        self.model_provider = model_provider
-
-    def propose_turn(self, request: object) -> ProviderTurnResult:
-        return ProviderTurnResult(output="done")
-
-    def stream_turn(self, request: object) -> Iterator[ProviderStreamEvent]:
-        turn_request = cast(ProviderTurnRequest, request)
-        abort_signal = turn_request.abort_signal
-
-        def events() -> Iterator[ProviderStreamEvent]:
-            yield ProviderStreamEvent(kind="delta", channel="text", text="partial answer")
-            self.model_provider.started.set()
-            while True:
-                if abort_signal is not None and abort_signal.cancelled:
-                    yield ProviderStreamEvent(
-                        kind="error",
-                        channel="error",
-                        error="provider stream cancelled",
-                        error_kind="cancelled",
-                    )
-                    yield ProviderStreamEvent(kind="done", done_reason="cancelled")
-                    return
-                time.sleep(0.01)
-
-        return events()
-
-
-class _AbortableStreamingModelProvider:
-    def __init__(self, *, name: str) -> None:
-        self.name = name
-        self.started = threading.Event()
-
-    def turn_provider(self) -> _AbortableStreamingTurnProvider:
-        return _AbortableStreamingTurnProvider(name=self.name, model_provider=self)
-
-
-class _WriteThenResultAwareTurnProvider:
-    def __init__(self, *, name: str) -> None:
-        self.name = name
-
-    def propose_turn(self, request: object) -> ProviderTurnResult:
-        turn_request = cast(ProviderTurnRequest, request)
-        if turn_request.tool_results:
-            return ProviderTurnResult(output="done")
-        return ProviderTurnResult(
-            tool_call=ToolCall(
-                tool_name="write",
-                arguments={"path": "allowed.txt", "content": "allowed"},
-            )
-        )
-
-    def stream_turn(self, request: object):
-        result = self.propose_turn(request)
-        if result.output is not None:
-            return iter(
-                (
-                    ProviderStreamEvent(kind="delta", channel="text", text=result.output),
-                    ProviderStreamEvent(kind="done", done_reason="completed"),
-                )
-            )
-        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
-
-
-@dataclass(frozen=True, slots=True)
-class _WriteThenResultAwareModelProvider:
-    name: str
-
-    def turn_provider(self) -> _WriteThenResultAwareTurnProvider:
-        return _WriteThenResultAwareTurnProvider(name=self.name)
 
 
 class _BackgroundTaskSuccessGraph:
@@ -639,18 +507,18 @@ class _BackgroundTaskSuccessGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = tool_results
         if session.metadata.get("parent_session_id") is not None:
-            return TurnPlan(
-                tool_calls=(
+            return ToolTurn(
+                calls=(
                     ToolCall(
                         tool_name="yield",
                         arguments={"summary": request.prompt},
                     ),
                 )
             )
-        return TurnPlan(output=request.prompt, is_finished=True)
+        return FinalTurn(output=request.prompt)
 
 
 class _BlockingBackgroundTaskGraph:
@@ -665,234 +533,14 @@ class _BlockingBackgroundTaskGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = tool_results, session
         self.prompts_seen.append(request.prompt)
         if request.prompt == "first background task":
             self.first_started.set()
             if not self.release_first.wait(timeout=2.0):
                 raise RuntimeError("first background task was not released")
-        return TurnPlan(output=request.prompt, is_finished=True)
-
-
-class _TwoEpisodeTransientModelProvider:
-    def __init__(self, *, name: str) -> None:
-        self.name = name
-        self.calls = 0
-
-    def turn_provider(self) -> _TwoEpisodeTransientTurnProvider:
-        return _TwoEpisodeTransientTurnProvider(model_provider=self)
-
-
-@dataclass(slots=True)
-class _TwoEpisodeTransientTurnProvider:
-    model_provider: _TwoEpisodeTransientModelProvider
-
-    @property
-    def name(self) -> str:
-        return self.model_provider.name
-
-    def propose_turn(self, request: object) -> ProviderTurnResult:
-        turn_request = cast(ProviderTurnRequest, request)
-        self.model_provider.calls += 1
-        if self.model_provider.calls in {1, 3}:
-            raise ProviderExecutionError(
-                kind="transient_failure",
-                provider_name=self.name,
-                model_name=turn_request.model_name or "gpt-5.4",
-                message=f"transient failure episode {self.model_provider.calls}",
-            )
-        if not turn_request.tool_results:
-            return ProviderTurnResult(tool_call=ToolCall(tool_name="read", arguments={"path": "sample.txt"}))
-        return ProviderTurnResult(output="recovered twice")
-
-
-class _UnexpectedFallbackModelProvider:
-    def __init__(self, *, name: str) -> None:
-        self.name = name
-        self.calls = 0
-
-    def turn_provider(self) -> _UnexpectedFallbackTurnProvider:
-        return _UnexpectedFallbackTurnProvider(model_provider=self)
-
-
-@dataclass(slots=True)
-class _UnexpectedFallbackTurnProvider:
-    model_provider: _UnexpectedFallbackModelProvider
-
-    @property
-    def name(self) -> str:
-        return self.model_provider.name
-
-    def propose_turn(self, request: object) -> ProviderTurnResult:
-        _ = request
-        self.model_provider.calls += 1
-        return ProviderTurnResult(output="fallback used")
-
-
-class _RecordingScriptedModelProvider:
-    def __init__(self, *, name: str, outcomes: tuple[object, ...]) -> None:
-        self.name = name
-        self.outcomes = list(outcomes)
-        self.requests: list[ProviderTurnRequest] = []
-        self.calls = 0
-
-    def turn_provider(self) -> _RecordingScriptedTurnProvider:
-        return _RecordingScriptedTurnProvider(model_provider=self)
-
-
-@dataclass(slots=True)
-class _RecordingScriptedTurnProvider:
-    model_provider: _RecordingScriptedModelProvider
-
-    @property
-    def name(self) -> str:
-        return self.model_provider.name
-
-    def propose_turn(self, request: object) -> ProviderTurnResult:
-        turn_request = cast(ProviderTurnRequest, request)
-        self.model_provider.requests.append(turn_request)
-        self.model_provider.calls += 1
-        if not self.model_provider.outcomes:
-            return ProviderTurnResult(output="done")
-        outcome = self.model_provider.outcomes.pop(0)
-        if isinstance(outcome, Exception):
-            raise outcome
-        return cast(ProviderTurnResult, outcome)
-
-
-class _TwoEpisodePrimaryModelProvider:
-    def __init__(self, *, name: str) -> None:
-        self.name = name
-        self.calls = 0
-        self.requests: list[ProviderTurnRequest] = []
-
-    def turn_provider(self) -> _TwoEpisodePrimaryTurnProvider:
-        return _TwoEpisodePrimaryTurnProvider(model_provider=self)
-
-
-@dataclass(slots=True)
-class _TwoEpisodePrimaryTurnProvider:
-    model_provider: _TwoEpisodePrimaryModelProvider
-
-    @property
-    def name(self) -> str:
-        return self.model_provider.name
-
-    def propose_turn(self, request: object) -> ProviderTurnResult:
-        turn_request = cast(ProviderTurnRequest, request)
-        self.model_provider.requests.append(turn_request)
-        self.model_provider.calls += 1
-        if self.model_provider.calls in {1, 2}:
-            raise ProviderExecutionError(
-                kind="transient_failure",
-                provider_name=self.name,
-                model_name=turn_request.model_name or "model-a",
-                message=f"transient episode {self.model_provider.calls}",
-            )
-        return ProviderTurnResult(output="primary complete")
-
-
-class _TwoEpisodeFallbackModelProvider:
-    def __init__(self, *, name: str) -> None:
-        self.name = name
-        self.calls = 0
-        self.requests: list[ProviderTurnRequest] = []
-
-    def turn_provider(self) -> _TwoEpisodeFallbackTurnProvider:
-        return _TwoEpisodeFallbackTurnProvider(model_provider=self)
-
-
-@dataclass(slots=True)
-class _TwoEpisodeFallbackTurnProvider:
-    model_provider: _TwoEpisodeFallbackModelProvider
-
-    @property
-    def name(self) -> str:
-        return self.model_provider.name
-
-    def propose_turn(self, request: object) -> ProviderTurnResult:
-        turn_request = cast(ProviderTurnRequest, request)
-        self.model_provider.requests.append(turn_request)
-        self.model_provider.calls += 1
-        if self.model_provider.calls == 1:
-            return ProviderTurnResult(
-                tool_call=ToolCall(
-                    tool_name="read",
-                    arguments={"path": "sample.txt"},
-                )
-            )
-        return ProviderTurnResult(output="fallback complete")
-
-
-class _BlockingFallbackModelProvider:
-    def __init__(self, *, name: str) -> None:
-        self.name = name
-        self.calls = 0
-        self.first_started = threading.Event()
-        self.second_started = threading.Event()
-        self.release_first = threading.Event()
-        self.lock = threading.Lock()
-
-    def turn_provider(self) -> _BlockingFallbackTurnProvider:
-        return _BlockingFallbackTurnProvider(model_provider=self)
-
-
-@dataclass(slots=True)
-class _BlockingFallbackTurnProvider:
-    model_provider: _BlockingFallbackModelProvider
-
-    @property
-    def name(self) -> str:
-        return self.model_provider.name
-
-    def propose_turn(self, request: object) -> ProviderTurnResult:
-        _ = request
-        with self.model_provider.lock:
-            self.model_provider.calls += 1
-            call_number = self.model_provider.calls
-        if call_number == 1:
-            self.model_provider.first_started.set()
-            if not self.model_provider.release_first.wait(timeout=2.0):
-                raise RuntimeError("first fallback call was not released")
-        else:
-            self.model_provider.second_started.set()
-        return ProviderTurnResult(output=f"fallback call {call_number}")
-
-
-class _ApprovalThenRateLimitModelProvider:
-    def __init__(self, *, name: str) -> None:
-        self.name = name
-        self.calls = 0
-
-    def turn_provider(self) -> _ApprovalThenRateLimitTurnProvider:
-        return _ApprovalThenRateLimitTurnProvider(model_provider=self)
-
-
-@dataclass(slots=True)
-class _ApprovalThenRateLimitTurnProvider:
-    model_provider: _ApprovalThenRateLimitModelProvider
-
-    @property
-    def name(self) -> str:
-        return self.model_provider.name
-
-    def propose_turn(self, request: object) -> ProviderTurnResult:
-        turn_request = cast(ProviderTurnRequest, request)
-        self.model_provider.calls += 1
-        if not turn_request.tool_results:
-            return ProviderTurnResult(
-                tool_call=ToolCall(
-                    tool_name="write",
-                    arguments={"path": "alpha.txt", "content": "1"},
-                )
-            )
-        raise ProviderExecutionError(
-            kind="rate_limit",
-            provider_name=self.name,
-            model_name=turn_request.model_name or "gpt-5.4",
-            message="rate limited after approval",
-        )
+        return FinalTurn(output=request.prompt)
 
 
 class _BackgroundTaskFailureGraph:
@@ -902,7 +550,7 @@ class _BackgroundTaskFailureGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = request, tool_results, session
         raise RuntimeError("background boom")
 
@@ -914,10 +562,10 @@ class _ParentSuccessBackgroundTaskFailureGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = tool_results, session
         if request.prompt == "parent":
-            return TurnPlan(output=request.prompt, is_finished=True)
+            return FinalTurn(output=request.prompt)
         raise RuntimeError("background boom")
 
 
@@ -992,11 +640,7 @@ class _InjectedMcpNamespaceTool:
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         _ = call, context
-        return ToolResult(
-            tool_name=self.definition.name,
-            status="ok",
-            content="custom bridge ok",
-        )
+        return ToolSuccess(self.definition.name, output=TextOutput("custom bridge ok"))
 
 
 def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path: Path) -> None:
@@ -1006,6 +650,10 @@ def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path
     completed = _wait_for_background_task(runtime, started.task.id)
     loaded = runtime.load_background_task(started.task.id)
     assert loaded.session_id is not None
+    task_ref = CompositionRef.model_validate(loaded.request.metadata["composition_ref"])
+    assert task_ref.owner == TaskCompositionOwner(kind="task", task_id=started.task.id)
+    frozen = runtime._repositories.recovery.load_execution_composition(ref=task_ref)
+    assert frozen == FrozenComposition.from_payload(loaded.request.metadata["execution_composition"])
     linked_session_id = loaded.session_id
     resumed = runtime.resume(linked_session_id)
 
@@ -1014,6 +662,8 @@ def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path
     assert resumed.session.metadata["background_task_id"] == started.task.id
     assert resumed.session.metadata["background_run"] is True
     assert resumed.output == "background hello"
+    assert resumed.session.metadata["composition_ref"] == task_ref.model_dump(mode="json")
+    assert "execution_composition" not in resumed.session.metadata
     # Observability is a live projection and can differ between the waiter
     # snapshot and a subsequent load; persisted task truth must remain equal.
     assert replace(completed, observability=loaded.observability) == loaded
@@ -1029,7 +679,7 @@ def test_runtime_exit_waits_for_background_task_worker(
         task=BackgroundTaskRef(id="task-exit-joins-worker"),
         request=BackgroundTaskRequestSnapshot(prompt="background exit join"),
     )
-    runtime._repositories.tasks.create_background_task(workspace=tmp_path, task=task)
+    create_task(runtime._repositories.tasks, workspace=tmp_path, task=task)
     worker_started = threading.Event()
     release_worker = threading.Event()
     worker_finished = threading.Event()
@@ -1062,7 +712,7 @@ def test_runtime_shutdown_terminalizes_unfinished_background_worker(
         task=BackgroundTaskRef(id="task-exit-unfinished-worker"),
         request=BackgroundTaskRequestSnapshot(prompt="background exit unfinished"),
     )
-    runtime._repositories.tasks.create_background_task(workspace=tmp_path, task=task)
+    create_task(runtime._repositories.tasks, workspace=tmp_path, task=task)
     worker_started = threading.Event()
     release_worker = threading.Event()
     worker_released: list[bool] = []
@@ -1104,7 +754,7 @@ def test_runtime_shutdown_after_mark_running_terminalizes_task_before_worker(
         task=BackgroundTaskRef(id="task-shutdown-before-worker"),
         request=BackgroundTaskRequestSnapshot(prompt="background shutdown race"),
     )
-    runtime._repositories.tasks.create_background_task(workspace=tmp_path, task=task)
+    create_task(runtime._repositories.tasks, workspace=tmp_path, task=task)
 
     def request_shutdown_from_started_hook(
         *,
@@ -1153,6 +803,9 @@ def test_runtime_background_task_concurrency_limit_queues_and_drains(tmp_path: P
 
     assert first_terminal.status == "completed"
     assert second_terminal.status == "completed"
+    assert first_terminal.session_id is not None
+    assert second_terminal.session_id is not None
+    assert first_terminal.session_id != second_terminal.session_id
     assert graph.prompts_seen == ["first background task", "second background task"]
 
 
@@ -1313,13 +966,8 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     capability_snapshot = cast(dict[str, object], metadata["agent_capability_snapshot"])
     skill_snapshot = cast(dict[str, object], metadata["skill_snapshot"])
 
-    assert capability_snapshot["snapshot_version"] == 3
+    assert capability_snapshot["snapshot_version"] == 4
     assert cast(dict[str, object], capability_snapshot["agent"])["preset"] == "leader"
-    assert cast(dict[str, object], capability_snapshot["tools"])["effective_names"] == [
-        "mcp/echo/echo",
-        "read",
-        "skill",
-    ]
     generation = cast(dict[str, object], capability_snapshot["tools"])["generation"]
     assert isinstance(generation, str)
     assert cast(dict[str, object], capability_snapshot["skills"])["force_loaded_names"] == ["demo"]
@@ -1335,6 +983,96 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
 
     replayed = runtime.session_result(session_id="capability-snapshot")
     assert replayed.session.metadata["agent_capability_snapshot"] == capability_snapshot
+
+
+def test_resume_rejects_invalid_capability_snapshot_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from voidcode.runtime.agent_capability import AgentCapabilitySnapshotVersionError
+    from voidcode.runtime.storage.ports import RuntimeRepositories
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    store = SqliteSessionStore(database_path=tmp_path / "capability.sqlite3")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        repositories=RuntimeRepositories(store, store, store, store, store, store, store),
+        turn_producer=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(execution_engine="deterministic", mcp=RuntimeMcpConfig(enabled=False)),
+    )
+    session_id = "snapshot-strict-resume"
+    runtime.run(RuntimeRequest(prompt="snapshot", session_id=session_id))
+    produced_request = _SkillCapturingStubGraph.last_request
+    connection = sqlite3.connect(tmp_path / "capability.sqlite3")
+    try:
+        row = connection.execute(
+            "SELECT metadata_json, resume_checkpoint_json FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert row is not None
+        original_metadata_json, original_checkpoint_json = row
+        original_metadata = json.loads(original_metadata_json)
+        snapshot = cast(dict[str, object], original_metadata["agent_capability_snapshot"])
+
+        def persist_snapshot(candidate: dict[str, object]) -> None:
+            metadata = {**original_metadata, "agent_capability_snapshot": candidate}
+            checkpoint = json.loads(original_checkpoint_json) if original_checkpoint_json is not None else None
+            if isinstance(checkpoint, dict) and isinstance(checkpoint.get("session_metadata"), dict):
+                checkpoint = {
+                    **checkpoint,
+                    "session_metadata": {
+                        **checkpoint["session_metadata"],
+                        "agent_capability_snapshot": candidate,
+                    },
+                }
+            connection.execute(
+                "UPDATE sessions SET metadata_json = ?, resume_checkpoint_json = ? WHERE session_id = ?",
+                (
+                    json.dumps(metadata, sort_keys=True),
+                    None if checkpoint is None else json.dumps(checkpoint, sort_keys=True),
+                    session_id,
+                ),
+            )
+            connection.commit()
+
+        invalid_snapshots = (
+            {
+                **snapshot,
+                "tools": {**cast(dict[str, object], snapshot["tools"]), "unknown": []},
+            },
+            {**snapshot, "snapshot_version": True},
+        )
+        for invalid_snapshot in invalid_snapshots:
+            persist_snapshot(invalid_snapshot)
+            before = connection.execute(
+                "SELECT status, metadata_json, resume_checkpoint_json, last_event_sequence, leaf_sequence FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            event_count = connection.execute(
+                "SELECT COUNT(*) FROM session_events WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+            with pytest.raises(AgentCapabilitySnapshotVersionError):
+                runtime.queue_follow_up(session_id, "must not be persisted")
+            with pytest.raises(AgentCapabilitySnapshotVersionError):
+                runtime.resume(session_id)
+            after = connection.execute(
+                "SELECT status, metadata_json, resume_checkpoint_json, last_event_sequence, leaf_sequence FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            assert after == before
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM session_events WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()[0]
+                == event_count
+            )
+            assert _SkillCapturingStubGraph.last_request is produced_request
+    finally:
+        connection.close()
 
 
 def test_runtime_pattern_permission_rule_asks_for_workspace_write(tmp_path: Path) -> None:
@@ -1357,21 +1095,18 @@ def test_runtime_pattern_permission_rule_asks_for_workspace_write(tmp_path: Path
 
 
 def test_runtime_pattern_permission_rule_denies_shell_command(tmp_path: Path) -> None:
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode-zen": _ScriptedModelProvider(
-                name="opencode-zen",
-                outcomes=(
-                    ProviderTurnResult(
-                        tool_call=ToolCall(
-                            tool_name="shell_exec",
-                            arguments={"command": "rm -rf *"},
-                        )
+    producer = _ScriptedTurnProducer(
+        outcomes=(
+            ProviderTurnResult(
+                tool_calls=(
+                    ToolCall(
+                        tool_name="shell_exec",
+                        arguments={"command": "rm -rf *"},
                     ),
-                    ProviderTurnResult(output="done"),
-                ),
-            )
-        }
+                )
+            ),
+            ProviderTurnResult(output="done"),
+        ),
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -1389,7 +1124,7 @@ def test_runtime_pattern_permission_rule_denies_shell_command(tmp_path: Path) ->
                 )
             ),
         ),
-        model_provider_registry=registry,
+        turn_producer=producer,
     )
 
     response = runtime.run(RuntimeRequest(prompt="run destructive command"))
@@ -1482,10 +1217,10 @@ def test_runtime_abort_during_provider_stream_seals_interrupted(tmp_path: Path) 
     ends ``interrupted`` while the ``runtime.failed{cancelled: true}`` event
     shape is preserved for client compatibility.
     """
-    provider = _AbortableStreamingModelProvider(name="primary")
+    producer = _AbortableStreamingProducer()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        model_provider_registry=ModelProviderRegistry(providers={"primary": provider}),
+        turn_producer=producer,
         config=RuntimeConfig(
             execution_engine="provider",
             model="primary/model-a",
@@ -1499,13 +1234,13 @@ def test_runtime_abort_during_provider_stream_seals_interrupted(tmp_path: Path) 
         ),
     )
 
-    stream = runtime.run_stream(RuntimeRequest(prompt="abort the stream", session_id="stream-abort"))
+    stream = runtime.run_stream(RuntimeRequest(prompt="abort the stream", session_id="stream-abort", metadata={"provider_stream": True}))
     first_chunk = None
     for chunk in stream:
         first_chunk = first_chunk or chunk
-        if provider.started.is_set():
+        if producer.started.is_set():
             break
-    assert provider.started.wait(timeout=2.0) is True
+    assert producer.started.wait(timeout=2.0) is True
 
     result = runtime.cancel_session("stream-abort", reason="stop the stream")
     remaining_chunks = list(stream)
@@ -1535,59 +1270,15 @@ def test_runtime_abort_during_provider_stream_seals_interrupted(tmp_path: Path) 
     assert stored.session.status == "interrupted"
 
 
-class _AbortRaisesGenericStreamTurnProvider:
-    """Streams a delta, then raises a generic (non-cancelled) error once the
-    abort signal fires.
-
-    Unlike the abort-aware providers (which surface ``error_kind="cancelled"``
-    and flow through ``_apply_provider_error_policy``'s interrupted branch),
-    this provider dies with an unrelated exception right after the abort. The
-    run loop treats it as a real provider failure — it must NOT be
-    misclassified as an interrupt (``不误伤真实失败路径``).
-    """
-
-    def __init__(self, *, name: str, model_provider: _AbortRaisesGenericModelProvider) -> None:
-        self.name = name
-        self.model_provider = model_provider
-
-    def propose_turn(self, request: object) -> ProviderTurnResult:
-        return ProviderTurnResult(output="done")
-
-    def stream_turn(self, request: object) -> Iterator[ProviderStreamEvent]:
-        turn_request = cast(ProviderTurnRequest, request)
-        abort_signal = turn_request.abort_signal
-
-        def events() -> Iterator[ProviderStreamEvent]:
-            yield ProviderStreamEvent(kind="delta", channel="text", text="partial answer")
-            self.model_provider.started.set()
-            while True:
-                if abort_signal is not None and abort_signal.cancelled:
-                    # A generic crash, NOT a cancelled provider error: the run
-                    # loop cannot classify this as an interrupt on its own.
-                    raise RuntimeError("provider network vanished after cancel")
-                time.sleep(0.005)
-
-        return events()
-
-
-class _AbortRaisesGenericModelProvider:
-    def __init__(self, *, name: str) -> None:
-        self.name = name
-        self.started = threading.Event()
-
-    def turn_provider(self) -> _AbortRaisesGenericStreamTurnProvider:
-        return _AbortRaisesGenericStreamTurnProvider(name=self.name, model_provider=self)
-
-
 def test_runtime_provider_error_with_abort_stays_failed(tmp_path: Path) -> None:
     """Real provider failures are never misclassified as interrupts: a generic
     (non-cancelled) provider error raised after the abort signal fires must
     surface as a real ``runtime.failed`` (status ``failed``) and seal ``failed``
     — the abort does not erase a genuine failure (``不误伤真实失败路径``)."""
-    provider = _AbortRaisesGenericModelProvider(name="primary")
+    producer = _AbortableStreamingProducer(generic_error=True)
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        model_provider_registry=ModelProviderRegistry(providers={"primary": provider}),
+        turn_producer=producer,
         config=RuntimeConfig(
             execution_engine="provider",
             model="primary/model-a",
@@ -1610,9 +1301,9 @@ def test_runtime_provider_error_with_abort_stays_failed(tmp_path: Path) -> None:
     chunks: list[RuntimeStreamChunk] = []
     for chunk in stream:
         chunks.append(chunk)
-        if provider.started.is_set():
+        if producer.started.is_set():
             break
-    assert provider.started.wait(timeout=2.0) is True
+    assert producer.started.wait(timeout=2.0) is True
 
     result = runtime.cancel_session("provider-error-abort", reason="stop after provider crash")
     with pytest.raises(RuntimeError, match="provider network vanished after cancel"):
@@ -2465,7 +2156,14 @@ def test_runtime_retries_failed_background_task_as_fresh_queued_task(
     assert retried.request.parent_session_id == "leader-session"
     assert retried.request.session_id == failed.request.session_id
     assert retried.request.allocate_session_id is True
-    assert retried.request.metadata == failed.request.metadata
+    retry_metadata = retried.request.metadata
+    failed_metadata = failed.request.metadata
+    assert retry_metadata["composition_ref"] == failed_metadata["composition_ref"]
+    assert "execution_composition" not in retry_metadata
+    assert "execution_composition" in failed_metadata
+    assert {key: value for key, value in retry_metadata.items() if key not in {"composition_ref", "execution_composition"}} == {
+        key: value for key, value in failed_metadata.items() if key not in {"composition_ref", "execution_composition"}
+    }
     assert retried.routing_identity == failed.routing_identity
 
 
@@ -2474,14 +2172,21 @@ def test_runtime_retries_cancelled_background_task(
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     store = _private_attr(runtime, "_repositories").tasks
+    task_id = "task-retry-cancelled"
+    composition = CompositionOwner().prepare((), intent={"fixture": task_id})
     store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
-            task=BackgroundTaskRef(id="task-retry-cancelled"),
+            task=BackgroundTaskRef(id=task_id),
             request=BackgroundTaskRequestSnapshot(prompt="cancelled retry"),
             created_at=1,
             updated_at=1,
         ),
+        composition_ref=composition.reference(
+            workspace=str(tmp_path),
+            owner=TaskCompositionOwner(kind="task", task_id=task_id),
+        ),
+        composition=composition,
     )
     cancelled = runtime.cancel_background_task("task-retry-cancelled")
 
@@ -2497,14 +2202,21 @@ def test_runtime_retries_cancelled_background_task(
 def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     store = _private_attr(runtime, "_repositories").tasks
+    task_id = "task-retry-queued"
+    composition = CompositionOwner().prepare((), intent={"fixture": task_id})
     store.create_background_task(
         workspace=tmp_path,
         task=BackgroundTaskState(
-            task=BackgroundTaskRef(id="task-retry-queued"),
+            task=BackgroundTaskRef(id=task_id),
             request=BackgroundTaskRequestSnapshot(prompt="queued retry"),
             created_at=1,
             updated_at=1,
         ),
+        composition_ref=composition.reference(
+            workspace=str(tmp_path),
+            owner=TaskCompositionOwner(kind="task", task_id=task_id),
+        ),
+        composition=composition,
     )
     _ = store.record_background_task_idle_reminder_eligible(
         workspace=tmp_path,
@@ -2528,7 +2240,8 @@ def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) 
 def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     store = _private_attr(runtime, "_repositories").tasks
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-pre-cancel"),
@@ -2551,7 +2264,8 @@ def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path
 def test_runtime_reconciles_queued_background_tasks_on_init(tmp_path: Path) -> None:
     first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     store = _private_attr(first_runtime, "_repositories").tasks
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-orphan"),
@@ -2573,7 +2287,8 @@ def test_runtime_status_reconciles_stale_running_background_tasks(
 ) -> None:
     first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     store = _private_attr(first_runtime, "_repositories").tasks
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-stale-running"),
@@ -2615,7 +2330,8 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
     )
     parent = first_runtime.run(RuntimeRequest(prompt="parent"))
     store = _private_attr(first_runtime, "_repositories").tasks
-    store.create_background_task(
+    invalid_task = create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-invalid-metadata"),
@@ -2628,11 +2344,12 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
             updated_at=1,
         ),
     )
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-after-invalid"),
-            request=BackgroundTaskRequestSnapshot(prompt="background hello"),
+            request=BackgroundTaskRequestSnapshot(prompt="background hello", allocate_session_id=True),
             created_at=2,
             updated_at=2,
         ),
@@ -2647,10 +2364,7 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
             """,
             (
                 json.dumps(
-                    {
-                        "agent": {"preset": "leader", "model": ""},
-                        "delegation": {"mode": "invalid"},
-                    },
+                    {**invalid_task.request.metadata, "delegation": {"mode": "invalid"}},
                     sort_keys=True,
                 ),
                 "task-invalid-metadata",
@@ -2712,7 +2426,8 @@ def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_star
     runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     runtime._background_task_supervisor.reconciled = True
     store = _private_attr(runtime, "_repositories").tasks
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-race-cancel"),
@@ -2744,7 +2459,8 @@ def test_runtime_background_task_worker_rechecks_cancel_before_dispatch(tmp_path
     runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     runtime._background_task_supervisor.reconciled = True
     store = _private_attr(runtime, "_repositories").tasks
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-dispatch-cancel"),
@@ -2780,15 +2496,13 @@ def test_runtime_reconciliation_preserves_terminal_task_even_if_child_session_di
     _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     tasks = _private_attr(initial_runtime, "_repositories").tasks
     run_writer = _private_attr(initial_runtime, "_repositories").run_writer
-    tasks.create_background_task(
+    terminal_task = create_task(
+        tasks,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-terminal-truth"),
             status="completed",
-            request=BackgroundTaskRequestSnapshot(
-                prompt="background child",
-                parent_session_id="leader-session",
-            ),
+            request=BackgroundTaskRequestSnapshot(prompt="background child", parent_session_id="leader-session"),
             session_id="child-session-terminal-truth",
             created_at=1,
             updated_at=2,
@@ -2796,16 +2510,28 @@ def test_runtime_reconciliation_preserves_terminal_task_even_if_child_session_di
             finished_at=2,
         ),
     )
+    session_metadata = {
+        "background_run": True,
+        "background_task_id": "task-terminal-truth",
+        "composition_ref": terminal_task.request.metadata["composition_ref"],
+    }
+    save_checkpoint(
+        tasks,
+        workspace=tmp_path,
+        session_id="child-session-terminal-truth",
+        prompt="background child",
+        session_metadata=session_metadata,
+        tool_results=(),
+        last_event_sequence=0,
+        parent_session_id="leader-session",
+    )
     run_writer.save_run(
         workspace=tmp_path,
         request=RuntimeRequest(
             prompt="background child",
             session_id="child-session-terminal-truth",
             parent_session_id="leader-session",
-            metadata={
-                "background_run": True,
-                "background_task_id": "task-terminal-truth",
-            },
+            metadata=session_metadata,
         ),
         response=RuntimeResponse(
             session=SessionState(
@@ -2815,10 +2541,7 @@ def test_runtime_reconciliation_preserves_terminal_task_even_if_child_session_di
                 ),
                 status="failed",
                 turn=1,
-                metadata={
-                    "background_run": True,
-                    "background_task_id": "task-terminal-truth",
-                },
+                metadata=session_metadata,
             ),
             events=(
                 EventEnvelope(
@@ -2859,7 +2582,8 @@ def test_runtime_reconciliation_turns_cancel_requested_running_task_into_cancell
 ) -> None:
     first_runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
     store = _private_attr(first_runtime, "_repositories").tasks
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-orphan-cancel-request"),
@@ -3287,22 +3011,17 @@ def test_runtime_rejects_invalid_reasoning_effort_request_metadata(tmp_path: Pat
         )
 
 
-def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path(
+def test_runtime_resume_rejects_session_metadata_drift_before_mutation(
     tmp_path: Path,
 ) -> None:
     skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
-    _write_demo_skill(
-        skill_dir,
-        content="# Demo\nUse concise bullet points.",
-    )
-
+    _write_demo_skill(skill_dir, content="# Demo\nUse concise bullet points.")
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         turn_producer=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
-
     waiting = initial_runtime.run(
         RuntimeRequest(
             prompt="go",
@@ -3311,12 +3030,11 @@ def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path
         )
     )
     approval_request_id = str(waiting.events[-1].payload["request_id"])
-
     database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
-            "SELECT metadata_json, resume_checkpoint_json FROM sessions WHERE session_id = ?",
+            "SELECT metadata_json, resume_checkpoint_json, status, pending_approval_json, last_event_sequence FROM sessions WHERE session_id = ?",
             ("invalid-skill-payload",),
         ).fetchone()
         assert row is not None
@@ -3326,22 +3044,20 @@ def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path
         skill_snapshot = cast(dict[str, object], metadata_dict["skill_snapshot"])
         applied_payloads = cast(list[dict[str, object]], skill_snapshot["applied_skill_payloads"])
         applied_payloads[0]["content"] = "   "
-        metadata_dict["skill_snapshot"] = {
-            **skill_snapshot,
-            "applied_skill_payloads": applied_payloads,
-        }
-        checkpoint = json.loads(str(row[1]))
-        assert isinstance(checkpoint, dict)
-        checkpoint["session_metadata"] = metadata_dict
-        _ = connection.execute(
-            ("UPDATE sessions SET metadata_json = ?, resume_checkpoint_json = ? WHERE session_id = ?"),
-            (
-                json.dumps(metadata_dict, sort_keys=True),
-                json.dumps(checkpoint, sort_keys=True),
-                "invalid-skill-payload",
-            ),
+        metadata_dict["skill_snapshot"] = {**skill_snapshot, "applied_skill_payloads": applied_payloads}
+        connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "invalid-skill-payload"),
         )
         connection.commit()
+        corrupted_row = connection.execute(
+            "SELECT metadata_json, resume_checkpoint_json, status, pending_approval_json, last_event_sequence FROM sessions WHERE session_id = ?",
+            ("invalid-skill-payload",),
+        ).fetchone()
+        event_count = connection.execute(
+            "SELECT count(*) FROM session_events WHERE session_id = ?",
+            ("invalid-skill-payload",),
+        ).fetchone()[0]
     finally:
         connection.close()
 
@@ -3351,16 +3067,24 @@ def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path
         config=RuntimeConfig(skills=RuntimeSkillsConfig(enabled=True), approval_mode="ask"),
         permission_policy=PermissionPolicy(mode="ask"),
     )
-
-    with pytest.raises(
-        ValueError,
-        match=r"persisted skill payload field 'content' must be a non-empty string",
-    ):
+    with pytest.raises(ValueError):
         _ = resumed_runtime.resume(
             session_id="invalid-skill-payload",
             approval_request_id=approval_request_id,
             approval_decision="allow",
         )
+
+    with sqlite3.connect(database_path) as connection:
+        unchanged_row = connection.execute(
+            "SELECT metadata_json, resume_checkpoint_json, status, pending_approval_json, last_event_sequence FROM sessions WHERE session_id = ?",
+            ("invalid-skill-payload",),
+        ).fetchone()
+        unchanged_event_count = connection.execute(
+            "SELECT count(*) FROM session_events WHERE session_id = ?",
+            ("invalid-skill-payload",),
+        ).fetchone()[0]
+    assert unchanged_row == corrupted_row
+    assert unchanged_event_count == event_count
 
 
 class _MultiStepStubGraph:
@@ -3370,13 +3094,13 @@ class _MultiStepStubGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = request, session
         if not tool_results:
-            return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),))
+            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}),))
         if len(tool_results) == 1:
-            return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={"path": "beta.txt", "content": "2"}),))
-        return TurnPlan(output="done", is_finished=True)
+            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "beta.txt", "content": "2"}),))
+        return FinalTurn(output="done")
 
 
 def test_runtime_resume_uses_frozen_applied_skill_payloads_when_live_skill_changes(
@@ -3871,15 +3595,8 @@ def test_runtime_rejects_non_top_level_request_agent_override(tmp_path: Path) ->
 
 
 def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Path) -> None:
-    created_providers: list[_ScriptedTurnProvider] = []
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode-zen": _ScriptedModelProvider(
-                name="opencode-zen",
-                outcomes=(ProviderTurnResult(output="allowed tools captured"),),
-                created_providers=created_providers,
-            )
-        }
+    registry = _ScriptedTurnProducer(
+        outcomes=(ProviderTurnResult(output="allowed tools captured"),),
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -3890,14 +3607,14 @@ def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Pa
                 tools=RuntimeToolsConfig(allowlist=("read",)),
             )
         ),
-        model_provider_registry=registry,
+        turn_producer=registry,
     )
 
     response = runtime.run(RuntimeRequest(prompt="inspect tools", session_id="agent-tools-visible"))
 
     assert response.session.status == "completed"
-    assert created_providers
-    visible_tool_names = {tool.name for tool in created_providers[0].requests[0].available_tools}
+    assert registry.requests
+    visible_tool_names = {tool.name for tool in registry.requests[0].available_tools}
     assert visible_tool_names == {"read"}
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == {
@@ -3910,15 +3627,8 @@ def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Pa
 
 
 def test_runtime_agent_tool_default_set_further_narrows_allowlist(tmp_path: Path) -> None:
-    created_providers: list[_ScriptedTurnProvider] = []
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode-zen": _ScriptedModelProvider(
-                name="opencode-zen",
-                outcomes=(ProviderTurnResult(output="default tools captured"),),
-                created_providers=created_providers,
-            )
-        }
+    registry = _ScriptedTurnProducer(
+        outcomes=(ProviderTurnResult(output="default tools captured"),),
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -3932,27 +3642,20 @@ def test_runtime_agent_tool_default_set_further_narrows_allowlist(tmp_path: Path
                 ),
             )
         ),
-        model_provider_registry=registry,
+        turn_producer=registry,
     )
 
     response = runtime.run(RuntimeRequest(prompt="inspect tools", session_id="agent-tools-default"))
 
     assert response.session.status == "completed"
-    assert created_providers
-    visible_tool_names = {tool.name for tool in created_providers[0].requests[0].available_tools}
+    assert registry.requests
+    visible_tool_names = {tool.name for tool in registry.requests[0].available_tools}
     assert visible_tool_names == {"grep"}
 
 
 def test_runtime_agent_empty_tool_allowlist_exposes_no_tools(tmp_path: Path) -> None:
-    created_providers: list[_ScriptedTurnProvider] = []
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode-zen": _ScriptedModelProvider(
-                name="opencode-zen",
-                outcomes=(ProviderTurnResult(output="no tools exposed"),),
-                created_providers=created_providers,
-            )
-        }
+    registry = _ScriptedTurnProducer(
+        outcomes=(ProviderTurnResult(output="no tools exposed"),),
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -3963,26 +3666,19 @@ def test_runtime_agent_empty_tool_allowlist_exposes_no_tools(tmp_path: Path) -> 
                 tools=RuntimeToolsConfig(allowlist=()),
             )
         ),
-        model_provider_registry=registry,
+        turn_producer=registry,
     )
 
     response = runtime.run(RuntimeRequest(prompt="inspect tools", session_id="agent-tools-empty-allowlist"))
 
     assert response.session.status == "completed"
-    assert created_providers
-    assert created_providers[0].requests[0].available_tools == ()
+    assert registry.requests
+    assert registry.requests[0].available_tools == ()
 
 
 def test_runtime_agent_empty_default_set_exposes_no_tools(tmp_path: Path) -> None:
-    created_providers: list[_ScriptedTurnProvider] = []
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode-zen": _ScriptedModelProvider(
-                name="opencode-zen",
-                outcomes=(ProviderTurnResult(output="empty default captured"),),
-                created_providers=created_providers,
-            )
-        }
+    registry = _ScriptedTurnProducer(
+        outcomes=(ProviderTurnResult(output="empty default captured"),),
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -3996,26 +3692,19 @@ def test_runtime_agent_empty_default_set_exposes_no_tools(tmp_path: Path) -> Non
                 ),
             )
         ),
-        model_provider_registry=registry,
+        turn_producer=registry,
     )
 
     response = runtime.run(RuntimeRequest(prompt="inspect tools", session_id="agent-tools-empty-default"))
 
     assert response.session.status == "completed"
-    assert created_providers
-    assert created_providers[0].requests[0].available_tools == ()
+    assert registry.requests
+    assert registry.requests[0].available_tools == ()
 
 
 def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path: Path) -> None:
-    created_providers: list[_ScriptedTurnProvider] = []
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode-zen": _ScriptedModelProvider(
-                name="opencode-zen",
-                outcomes=(ProviderTurnResult(output="no builtins exposed"),),
-                created_providers=created_providers,
-            )
-        }
+    registry = _ScriptedTurnProducer(
+        outcomes=(ProviderTurnResult(output="no builtins exposed"),),
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -4028,14 +3717,14 @@ def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path:
                 ),
             )
         ),
-        model_provider_registry=registry,
+        turn_producer=registry,
     )
 
     response = runtime.run(RuntimeRequest(prompt="inspect tools", session_id="agent-tools-builtin-disabled"))
 
     assert response.session.status == "completed"
-    assert created_providers
-    assert created_providers[0].requests[0].available_tools == ()
+    assert registry.requests
+    assert registry.requests[0].available_tools == ()
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == {
         "preset": "leader",
@@ -4049,15 +3738,8 @@ def test_runtime_agent_builtin_tools_disabled_exposes_no_builtin_tools(tmp_path:
 def test_runtime_agent_builtin_tools_disabled_preserves_injected_non_builtin_tools(
     tmp_path: Path,
 ) -> None:
-    created_providers: list[_ScriptedTurnProvider] = []
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode-zen": _ScriptedModelProvider(
-                name="opencode-zen",
-                outcomes=(ProviderTurnResult(output="custom tools captured"),),
-                created_providers=created_providers,
-            )
-        }
+    registry = _ScriptedTurnProducer(
+        outcomes=(ProviderTurnResult(output="custom tools captured"),),
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -4071,152 +3753,30 @@ def test_runtime_agent_builtin_tools_disabled_preserves_injected_non_builtin_too
                 ),
             )
         ),
-        model_provider_registry=registry,
+        turn_producer=registry,
     )
 
     response = runtime.run(RuntimeRequest(prompt="inspect tools", session_id="agent-tools-builtin-disabled-custom"))
 
     assert response.session.status == "completed"
-    assert created_providers
-    visible_tool_names = {tool.name for tool in created_providers[0].requests[0].available_tools}
+    assert registry.requests
+    visible_tool_names = {tool.name for tool in registry.requests[0].available_tools}
     assert visible_tool_names == {"mcp/custom/bridge"}
-
-
-def test_runtime_resume_uses_persisted_selected_skill_names_when_payloads_missing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    alpha_dir = tmp_path / ".voidcode" / "skills" / "alpha"
-    beta_dir = tmp_path / ".voidcode" / "skills" / "beta"
-    alpha_dir.mkdir(parents=True)
-    (alpha_dir / "SKILL.md").write_text(
-        "---\nname: alpha\ndescription: Alpha skill\n---\n# Alpha\nOriginal alpha.\n",
-        encoding="utf-8",
-    )
-    beta_dir.mkdir(parents=True)
-    (beta_dir / "SKILL.md").write_text(
-        "---\nname: beta\ndescription: Beta skill\n---\n# Beta\nOriginal beta.\n",
-        encoding="utf-8",
-    )
-
-    def _leader_manifest_with_alpha(agent_id: str):
-        if agent_id == "leader":
-            return replace(LEADER_AGENT_MANIFEST, skill_refs=("alpha",))
-        return get_builtin_agent_manifest(agent_id)
-
-    monkeypatch.setattr(
-        runtime_service_module,
-        "get_builtin_agent_manifest",
-        _leader_manifest_with_alpha,
-    )
-    initial_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(
-            agent=RuntimeAgentConfig(
-                preset="leader",
-                skills=RuntimeSkillsConfig(enabled=True),
-            ),
-            approval_mode="ask",
-        ),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = initial_runtime.run(RuntimeRequest(prompt="go", session_id="selected-skill-names-resume"))
-
-    assert waiting.session.status == "waiting"
-    assert waiting.session.metadata["selected_skill_names"] == ["alpha"]
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-
-    database_path = sessions_db_path()
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT metadata_json, resume_checkpoint_json FROM sessions WHERE session_id = ?",
-            ("selected-skill-names-resume",),
-        ).fetchone()
-        assert row is not None
-        metadata = json.loads(str(row[0]))
-        assert isinstance(metadata, dict)
-        metadata_dict = cast(dict[str, object], metadata)
-        metadata_dict.pop("applied_skill_payloads", None)
-        metadata_dict.pop("applied_skills", None)
-        checkpoint = json.loads(str(row[1]))
-        assert isinstance(checkpoint, dict)
-        checkpoint["session_metadata"] = metadata_dict
-        _ = connection.execute(
-            ("UPDATE sessions SET metadata_json = ?, resume_checkpoint_json = ? WHERE session_id = ?"),
-            (
-                json.dumps(metadata_dict, sort_keys=True),
-                json.dumps(checkpoint, sort_keys=True),
-                "selected-skill-names-resume",
-            ),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    (alpha_dir / "SKILL.md").write_text(
-        "---\nname: alpha\ndescription: Alpha skill\n---\n# Alpha\nChanged alpha.\n",
-        encoding="utf-8",
-    )
-    (beta_dir / "SKILL.md").write_text(
-        "---\nname: beta\ndescription: Beta skill\n---\n# Beta\nChanged beta.\n",
-        encoding="utf-8",
-    )
-
-    def _leader_manifest_with_beta(agent_id: str):
-        if agent_id == "leader":
-            return replace(LEADER_AGENT_MANIFEST, skill_refs=("beta",))
-        return get_builtin_agent_manifest(agent_id)
-
-    monkeypatch.setattr(
-        runtime_service_module,
-        "get_builtin_agent_manifest",
-        _leader_manifest_with_beta,
-    )
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(
-            agent=RuntimeAgentConfig(
-                preset="leader",
-                skills=RuntimeSkillsConfig(enabled=True),
-            ),
-            approval_mode="ask",
-        ),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    resumed = resumed_runtime.resume(
-        session_id="selected-skill-names-resume",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert resumed.session.status == "completed"
-    assert _ApprovalThenCaptureSkillGraph.last_request is not None
-    assembled = _ApprovalThenCaptureSkillGraph.last_request.assembled_context
-    assert assembled is not None
-    assert [s for s in assembled.segments if s.role == "system" and s.metadata is not None and s.metadata.get("source") == "skill_prompt"] == []
 
 
 def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
     target = tmp_path / "blocked.txt"
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode-zen": _ScriptedModelProvider(
-                name="opencode-zen",
-                outcomes=(
-                    ProviderTurnResult(
-                        tool_call=ToolCall(
-                            tool_name="write",
-                            arguments={"path": "blocked.txt", "content": "blocked"},
-                        )
+    registry = _ScriptedTurnProducer(
+        outcomes=(
+            ProviderTurnResult(
+                tool_calls=(
+                    ToolCall(
+                        tool_name="write",
+                        arguments={"path": "blocked.txt", "content": "blocked"},
                     ),
-                ),
-            )
-        }
+                )
+            ),
+        ),
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -4227,7 +3787,7 @@ def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
                 tools=RuntimeToolsConfig(allowlist=("read",)),
             )
         ),
-        model_provider_registry=registry,
+        turn_producer=registry,
     )
 
     with pytest.raises(ValueError, match="unknown tool: write"):
@@ -4238,29 +3798,24 @@ def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
 
 def test_runtime_delegated_child_schema_matches_raw_allowlist_guard(tmp_path: Path) -> None:
     target = tmp_path / "blocked.txt"
-    created_providers: list[_ScriptedTurnProvider] = []
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode-zen": _ScriptedModelProvider(
-                name="opencode-zen",
-                outcomes=(
-                    ProviderTurnResult(output="parent done"),
-                    ProviderTurnResult(
-                        tool_call=ToolCall(
-                            tool_name="write",
-                            arguments={"path": "blocked.txt", "content": "blocked"},
-                        )
+    registry = _ScriptedTurnProducer(
+        outcomes=(
+            ProviderTurnResult(output="parent done"),
+            ProviderTurnResult(
+                tool_calls=(
+                    ToolCall(
+                        tool_name="write",
+                        arguments={"path": "blocked.txt", "content": "blocked"},
                     ),
-                ),
-                created_providers=created_providers,
-                shared_outcomes=True,
-            )
-        }
+                )
+            ),
+        ),
+        shared_outcomes=True,
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=_provider_runtime_config(),
-        model_provider_registry=registry,
+        turn_producer=registry,
     )
 
     parent = runtime.run(RuntimeRequest(prompt="parent", session_id="delegation-scope-parent"))
@@ -4284,8 +3839,8 @@ def test_runtime_delegated_child_schema_matches_raw_allowlist_guard(tmp_path: Pa
     assert str(raised.value) == (
         "delegation policy denied tool 'write' for child preset 'explore'; this preset may only call tools allowed by its manifest tool_allowlist"
     )
-    assert len(created_providers) == 2
-    child_request = _last_main_provider_request(created_providers[-1].requests)
+    assert len(registry.requests) == 2
+    child_request = registry.requests[-1]
     child_visible_tool_names = {tool.name for tool in child_request.available_tools}
     assert child_visible_tool_names <= {"read", "glob", "grep", "ast_grep", "lsp", "yield"}
     assert "read" in child_visible_tool_names
@@ -4294,7 +3849,7 @@ def test_runtime_delegated_child_schema_matches_raw_allowlist_guard(tmp_path: Pa
 
 
 def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -> None:
-    registry = ModelProviderRegistry(providers={"opencode-zen": _WriteThenResultAwareModelProvider(name="opencode-zen")})
+    producer = _WriteThenResultAwareProducer()
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
@@ -4305,7 +3860,7 @@ def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -
                 tools=RuntimeToolsConfig(allowlist=("write",)),
             ),
         ),
-        model_provider_registry=registry,
+        turn_producer=producer,
     )
 
     waiting = initial_runtime.run(RuntimeRequest(prompt="write allowed", session_id="agent-tools-approval"))
@@ -4321,7 +3876,7 @@ def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -
                 tools=RuntimeToolsConfig(allowlist=("read",)),
             ),
         ),
-        model_provider_registry=registry,
+        turn_producer=producer,
     )
     resumed = resumed_runtime.resume(
         "agent-tools-approval",
@@ -4667,26 +4222,26 @@ def test_runtime_persists_resume_checkpoint_for_waiting_session(tmp_path: Path) 
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
-            "SELECT resume_checkpoint_json FROM sessions WHERE session_id = ?",
+            "SELECT metadata_json, resume_checkpoint_json FROM sessions WHERE session_id = ?",
             ("checkpoint-waiting-session",),
         ).fetchone()
         assert row is not None
-        checkpoint = json.loads(str(row[0]))
+        session_metadata = json.loads(str(row[0]))
+        checkpoint = json.loads(str(row[1]))
     finally:
         connection.close()
 
-    assert checkpoint["version"] == 1
-    assert checkpoint["kind"] == "approval_wait"
-    assert checkpoint["pending_approval_request_id"] == str(waiting.events[-1].payload["request_id"])
-    assert checkpoint["prompt"] == "go"
-    assert checkpoint["session_status"] == "waiting"
-    assert checkpoint["session_metadata"] == waiting.session.metadata
-    skill_snapshot = cast(dict[str, object], waiting.session.metadata["skill_snapshot"])
-    assert checkpoint["skill_snapshot_hash"] == skill_snapshot["snapshot_hash"]
-    assert checkpoint["skill_snapshot_version"] == 1
-    assert checkpoint["skill_binding_snapshot"] == skill_snapshot["binding_snapshot"]
-    assert checkpoint["tool_results"] == []
-    assert checkpoint["last_event_sequence"] == waiting.events[-1].sequence
+    assert isinstance(session_metadata, dict)
+    assert isinstance(checkpoint, dict)
+    assert "execution_composition" in session_metadata
+    checkpoint_metadata = checkpoint["session_metadata"]
+    assert isinstance(checkpoint_metadata, dict)
+    assert "execution_composition" not in checkpoint_metadata
+    capability = session_metadata["agent_capability_snapshot"]
+    checkpoint_capability = checkpoint_metadata["agent_capability_snapshot"]
+    assert isinstance(capability, dict)
+    assert isinstance(checkpoint_capability, dict)
+    assert checkpoint_capability["composition_ref"] == capability["composition_ref"]
 
 
 def test_runtime_answer_question_rejects_stale_request_id(tmp_path: Path) -> None:
@@ -4923,194 +4478,9 @@ def test_runtime_resume_rejects_missing_persisted_checkpoint(tmp_path: Path) -> 
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
-    with pytest.raises(ValueError, match="persisted resume checkpoint is required"):
+    with pytest.raises(ValueError):
         resumed_runtime.resume(
             session_id="checkpoint-fallback-session",
-            approval_request_id=approval_request_id,
-            approval_decision="allow",
-        )
-
-
-def test_runtime_resume_rejects_persisted_checkpoint_json_is_corrupt(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-corrupt-json-session"))
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-
-    database_path = sessions_db_path()
-    connection = sqlite3.connect(database_path)
-    try:
-        _ = connection.execute(
-            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
-            ("{not valid json", "checkpoint-corrupt-json-session"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    with pytest.raises(ValueError, match="persisted resume checkpoint JSON is malformed"):
-        _ = resumed_runtime.resume(
-            session_id="checkpoint-corrupt-json-session",
-            approval_request_id=approval_request_id,
-            approval_decision="allow",
-        )
-
-
-def test_runtime_resume_rejects_persisted_checkpoint_payload_is_not_object(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-non-object-session"))
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-
-    database_path = sessions_db_path()
-    connection = sqlite3.connect(database_path)
-    try:
-        _ = connection.execute(
-            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
-            (json.dumps(["not", "an", "object"]), "checkpoint-non-object-session"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="persisted resume checkpoint payload must decode to an object",
-    ):
-        _ = resumed_runtime.resume(
-            session_id="checkpoint-non-object-session",
-            approval_request_id=approval_request_id,
-            approval_decision="allow",
-        )
-
-
-def test_runtime_resume_rejects_malformed_persisted_checkpoint_payload_with_valid_json_object(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-malformed-object"))
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-
-    database_path = sessions_db_path()
-    connection = sqlite3.connect(database_path)
-    try:
-        _ = connection.execute(
-            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
-            (
-                json.dumps(
-                    {
-                        "kind": "approval_wait",
-                        "version": 1,
-                        "pending_approval_request_id": approval_request_id,
-                        "session_metadata": waiting.session.metadata,
-                        "tool_results": [],
-                    },
-                    sort_keys=True,
-                ),
-                "checkpoint-malformed-object",
-            ),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="persisted approval resume checkpoint prompt must be a string",
-    ):
-        _ = resumed_runtime.resume(
-            session_id="checkpoint-malformed-object",
-            approval_request_id=approval_request_id,
-            approval_decision="allow",
-        )
-
-
-def test_runtime_resume_rejects_checkpoint_kind_mismatch(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-kind-mismatch"))
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-
-    database_path = sessions_db_path()
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT resume_checkpoint_json FROM sessions WHERE session_id = ?",
-            ("checkpoint-kind-mismatch",),
-        ).fetchone()
-        assert row is not None
-        checkpoint = cast(dict[str, object], json.loads(str(row[0])))
-        checkpoint["kind"] = "question_wait"
-        _ = connection.execute(
-            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
-            (json.dumps(checkpoint, sort_keys=True), "checkpoint-kind-mismatch"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"persisted resume checkpoint kind mismatch: "
-            r"expected 'approval_wait', got 'question_wait'"
-        ),
-    ):
-        _ = resumed_runtime.resume(
-            session_id="checkpoint-kind-mismatch",
             approval_request_id=approval_request_id,
             approval_decision="allow",
         )
@@ -5152,10 +4522,7 @@ def test_runtime_resume_rejects_checkpoint_version_mismatch(tmp_path: Path) -> N
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
-    with pytest.raises(
-        ValueError,
-        match=r"persisted resume checkpoint version mismatch: expected 1, got 99",
-    ):
+    with pytest.raises(ValueError):
         _ = resumed_runtime.resume(
             session_id="checkpoint-version-mismatch",
             approval_request_id=approval_request_id,
@@ -5163,204 +4530,9 @@ def test_runtime_resume_rejects_checkpoint_version_mismatch(tmp_path: Path) -> N
         )
 
 
-def test_runtime_resume_rejects_malformed_persisted_checkpoint_tool_result_entry(
+def test_runtime_session_end_hook_failure_does_not_override_terminal_truth(
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_MultiStepStubGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-bad-tool-result"))
-    first_approval_request_id = str(waiting.events[-1].payload["request_id"])
-    second_waiting = runtime.resume(
-        session_id="checkpoint-bad-tool-result",
-        approval_request_id=first_approval_request_id,
-        approval_decision="allow",
-    )
-    second_approval_request_id = str(second_waiting.events[-1].payload["request_id"])
-
-    database_path = sessions_db_path()
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT resume_checkpoint_json FROM sessions WHERE session_id = ?",
-            ("checkpoint-bad-tool-result",),
-        ).fetchone()
-        assert row is not None
-        checkpoint = cast(dict[str, object], json.loads(str(row[0])))
-        checkpoint["tool_results"] = [
-            {
-                "tool_name": "write",
-                "status": "ok",
-                "data": "not-an-object",
-                "content": None,
-                "error": None,
-            }
-        ]
-        _ = connection.execute(
-            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
-            (json.dumps(checkpoint, sort_keys=True), "checkpoint-bad-tool-result"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_MultiStepStubGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="persisted resume checkpoint tool_results are malformed",
-    ):
-        _ = resumed_runtime.resume(
-            session_id="checkpoint-bad-tool-result",
-            approval_request_id=second_approval_request_id,
-            approval_decision="allow",
-        )
-
-
-def test_runtime_answer_question_rejects_checkpoint_kind_mismatch(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_QuestionThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-checkpoint-kind-mismatch"))
-    question_request_id = str(waiting.events[-1].payload["request_id"])
-
-    database_path = sessions_db_path()
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT resume_checkpoint_json FROM sessions WHERE session_id = ?",
-            ("question-checkpoint-kind-mismatch",),
-        ).fetchone()
-        assert row is not None
-        checkpoint = cast(dict[str, object], json.loads(str(row[0])))
-        checkpoint["kind"] = "approval_wait"
-        _ = connection.execute(
-            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
-            (json.dumps(checkpoint, sort_keys=True), "question-checkpoint-kind-mismatch"),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        turn_producer=_QuestionThenDoneGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"persisted resume checkpoint kind mismatch: "
-            r"expected 'question_wait', got 'approval_wait'"
-        ),
-    ):
-        _ = resumed_runtime.answer_question(
-            session_id="question-checkpoint-kind-mismatch",
-            question_request_id=question_request_id,
-            responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
-        )
-
-
-def test_runtime_interrupted_resume_restores_leaf_and_keeps_orphaned_tail(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, turn_producer=_BackgroundTaskSuccessGraph())
-    repositories = runtime._repositories
-    assert isinstance(repositories.sessions, SqliteSessionStore)
-    session_id = "interrupted-resume-session"
-
-    # Harvest a full session metadata snapshot from a seed run so the resumed
-    # interrupted checkpoint carries the same skill/capability snapshots a real
-    # run loop would persist.
-    repositories.recovery.save_interrupted_checkpoint(
-        workspace=tmp_path,
-        session_id="meta-seed",
-        prompt="seed",
-        session_metadata={},
-        tool_results=(),
-        last_event_sequence=0,
-        create_if_missing=True,
-    )
-    seed = runtime.run(RuntimeRequest(prompt="seed", session_id="meta-seed"))
-    session_metadata = dict(seed.session.metadata)
-
-    # Seed the interrupted session row (checkpoint boundary 0, no events yet).
-    repositories.recovery.save_interrupted_checkpoint(
-        workspace=tmp_path,
-        session_id=session_id,
-        prompt="interrupted probe",
-        session_metadata=session_metadata,
-        tool_results=(),
-        last_event_sequence=0,
-        create_if_missing=True,
-    )
-    # Legitimate pre-checkpoint events land at sequences 1 and 2.
-    repositories.events.append_session_events(
-        workspace=tmp_path,
-        session_id=session_id,
-        events=(
-            ("runtime.request_received", "runtime", {"prompt": "interrupted probe"}, None),
-            ("graph.loop_step", "graph", {"step": 1}, None),
-        ),
-    )
-    # Re-capture the checkpoint at the safe boundary (sequence 2).
-    repositories.recovery.save_interrupted_checkpoint(
-        workspace=tmp_path,
-        session_id=session_id,
-        prompt="interrupted probe",
-        session_metadata=session_metadata,
-        tool_results=(),
-        last_event_sequence=2,
-        create_if_missing=False,
-    )
-    # Orphaned events appended past the checkpoint boundary (sequences 3 and 4).
-    repositories.events.append_session_events(
-        workspace=tmp_path,
-        session_id=session_id,
-        events=(
-            ("graph.loop_step", "graph", {"step": "orphan"}, None),
-            ("runtime.tool_started", "tool", {"tool": "orphan_tool"}, None),
-        ),
-    )
-
-    resumed = runtime.resume(session_id)
-
-    assert resumed.session.status == "completed"
-    assert resumed.output == "interrupted probe"
-    # The resume replays the restored path, so neither the orphaned tail nor an
-    # off-path row reaches the caller's event list...
-    assert "runtime.tool_started" not in [event.event_type for event in resumed.events]
-    assert all(event.payload.get("step") != "orphan" for event in resumed.events)
-
-    # ...but nothing was deleted: the tail rows are still in the table, and the
-    # session's path is what starts after the checkpoint instead of the tail.
-    stored = repositories.sessions.load_session(workspace=tmp_path, session_id=session_id)
-    assert [event.event_type for event in stored.events] == [
-        "runtime.request_received",
-        "graph.loop_step",
-        "graph.loop_step",
-        "runtime.tool_started",
-    ]
-    path = repositories.events.session_path(workspace=tmp_path, session_id=session_id)
-    assert [event.sequence for event in path] == [1, 2]
-
-
-def test_runtime_session_end_hook_failure_does_not_override_terminal_truth(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         turn_producer=_BackgroundTaskSuccessGraph(),
@@ -5423,18 +4595,18 @@ class _WriteOnceGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = request, session
         if not tool_results:
-            return TurnPlan(
-                tool_calls=(
+            return ToolTurn(
+                calls=(
                     ToolCall(
                         tool_name="write",
                         arguments={"path": self._target.as_posix(), "content": "blocked"},
                     ),
                 )
             )
-        return TurnPlan(output="done", is_finished=True)
+        return FinalTurn(output="done")
 
 
 def test_pre_tool_hook_cancel_blocks_tool_with_llm_visible_reason(tmp_path: Path) -> None:

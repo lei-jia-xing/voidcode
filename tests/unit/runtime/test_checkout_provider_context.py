@@ -12,10 +12,14 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from tests.runtime_composition import save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
-from voidcode.core.turns import TurnPlan, TurnRequest, TurnSession
+from voidcode.core.transcript import output_text, project_report
+from voidcode.core.turns import FinalTurn, ReportedCall, TurnRequest, TurnSession
+from voidcode.runtime.execution.report_codec import report_payload
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
+from voidcode.tools.contracts import TextOutput, ToolSuccess
 
 _SESSION_ID = "checkout-context"
 
@@ -23,13 +27,14 @@ _SESSION_ID = "checkout-context"
 class _FinishingTurnProducer:
     """A producer that finishes on the first turn, only used to persist a real metadata snapshot."""
 
-    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> TurnPlan:
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> FinalTurn:
         _ = request, tool_results, session
-        return TurnPlan(output="done", is_finished=True)
+        return FinalTurn(output="done")
 
 
 def _seed_session(store: SqliteSessionStore, *, workspace: Path) -> None:
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=workspace,
         session_id=_SESSION_ID,
         prompt="seed",
@@ -111,10 +116,20 @@ def _append_tool_turn(
         session_id=_SESSION_ID,
         events=(
             ("runtime.request_received", "runtime", {"prompt": prompt}, None),
+            ("runtime.tool_started", "runtime", {"tool": "read", "tool_call_id": f"read-call-{sequence}", "arguments": {}}, None),
             (
                 "runtime.tool_completed",
                 "runtime",
-                {"tool": "read", "content": tool_content, "status": "ok", "sequence": sequence},
+                {
+                    "tool": "read",
+                    "tool_call_id": f"read-call-{sequence}",
+                    "content": tool_content,
+                    "status": "ok",
+                    "sequence": sequence,
+                    "reported_call": report_payload(
+                        ReportedCall(f"read-call-{sequence}", "read", {}, ToolSuccess("read", output=TextOutput(tool_content)))
+                    ),
+                },
                 None,
             ),
         ),
@@ -127,7 +142,7 @@ def _rehydrated_tool_contents(runtime: VoidCodeRuntime, *, store: SqliteSessionS
         stored=stored,
         parent_session_id=None,
     )
-    return [str(result.content) for result in results]
+    return [output_text(project_report(result).output) or "" for result in results]
 
 
 def test_rehydrated_tool_results_follow_the_checked_out_leaf(tmp_path: Path) -> None:
@@ -140,10 +155,10 @@ def test_rehydrated_tool_results_follow_the_checked_out_leaf(tmp_path: Path) -> 
     _append_tool_turn(store, workspace=tmp_path, prompt="prompt B", tool_content="B result", sequence=3)
     before = _rehydrated_tool_contents(runtime, store=store, workspace=tmp_path)
     assert before == ["A result", "B result"]
-    assert _stored_sequences(database_path) == [1, 2, 3, 4]
+    assert _stored_sequences(database_path) == [1, 2, 3, 4, 5, 6]
 
     # Check out to A's tool completion — B's turn is abandoned off the path.
-    assert store.checkout_session(workspace=tmp_path, session_id=_SESSION_ID, sequence=2) == 2
+    assert store.checkout_session(workspace=tmp_path, session_id=_SESSION_ID, sequence=3) == 3
     after = _rehydrated_tool_contents(runtime, store=store, workspace=tmp_path)
     assert after == ["A result"]
 
@@ -160,7 +175,8 @@ def test_debug_provider_context_follows_the_checked_out_leaf(tmp_path: Path) -> 
 
     # Harvest the full metadata snapshot a real run persists (runtime_config +
     # agent_capability_snapshot) so the debug read passes its boundary checks.
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id="meta-seed",
         prompt="seed",
@@ -171,7 +187,8 @@ def test_debug_provider_context_follows_the_checked_out_leaf(tmp_path: Path) -> 
     )
     seed = runtime.run(RuntimeRequest(prompt="seed", session_id="meta-seed"))
 
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id=_SESSION_ID,
         prompt="seed",

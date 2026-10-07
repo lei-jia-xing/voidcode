@@ -4,8 +4,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from ..provider.errors import format_invalid_provider_config_error
-from ..provider.models import ResolvedProviderConfig
+from ..provider.models import BoundProviderConfig, ResolvedProviderConfig
 from ..provider.reasoning_effort import normalize_reasoning_effort
+from .composition import ComponentSelection
 from .config import (
     ExecutionEngineName,
     ExternalDirectoryPermissionConfig,
@@ -63,6 +64,8 @@ class EffectiveRuntimeConfig:
     tools: RuntimeToolsConfig | None = None
     policy: RuntimePolicyConfig | None = None
     reminders: RuntimeRemindersConfig = field(default_factory=RuntimeRemindersConfig)
+    components: tuple[ComponentSelection, ...] = ()
+    bound_provider: BoundProviderConfig | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,6 +314,7 @@ def apply_request_runtime_config_overrides(
             tools=resolved.tools,
             policy=resolved.policy,
             reminders=resolved.reminders,
+            components=resolved.components,
         )
     if context_transform_refs is not None:
         resolved = EffectiveRuntimeConfig(
@@ -346,6 +350,7 @@ def apply_request_runtime_config_overrides(
             tools=resolved.tools,
             policy=resolved.policy,
             reminders=resolved.reminders,
+            components=resolved.components,
         )
     return resolved
 

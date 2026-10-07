@@ -1,14 +1,39 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 from pydantic import BaseModel, field_validator
 
 from ....core.tool_context import ToolContext
 from ....tools._pydantic_args import parse_tool_args, validate_non_empty_stripped
-from ....tools.contracts import ToolCall, ToolResult
+from ....tools.contracts import TextOutput, ToolCall, ToolResult, ToolSuccess
 from ...background.models import BackgroundTaskState, is_background_task_terminal
 from ...contracts import UnknownBackgroundTaskError
+
+
+@dataclass(frozen=True, slots=True)
+class TaskCancelResultBody:
+    task_id: str
+    status: str
+    session_id: str | None
+    parent_session_id: str | None
+    error: str | None
+    cancellation_cause: str | None
+    cancel_requested: bool
+    terminal: bool
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "task_id": self.task_id,
+            "status": self.status,
+            "session_id": self.session_id,
+            "parent_session_id": self.parent_session_id,
+            "error": self.error,
+            "cancellation_cause": self.cancellation_cause,
+            "cancel_requested": self.cancel_requested,
+            "terminal": self.terminal,
+        }
 
 
 class TaskCancelRuntime(Protocol):
@@ -18,20 +43,19 @@ class TaskCancelRuntime(Protocol):
 
 
 def _unknown_task_result(task_id: str, message: str) -> ToolResult:
-    return ToolResult(
+    return ToolSuccess(
         tool_name="task_cancel",
-        status="ok",
-        content=f"Background task {task_id}: unknown ({message})",
-        data={
-            "task_id": task_id,
-            "status": "unknown",
-            "session_id": None,
-            "parent_session_id": None,
-            "error": message,
-            "cancellation_cause": "unknown background task",
-            "cancel_requested": False,
-            "terminal": True,
-        },
+        output=TextOutput(f"Background task {task_id}: unknown ({message})"),
+        body=TaskCancelResultBody(
+            task_id=task_id,
+            status="unknown",
+            session_id=None,
+            parent_session_id=None,
+            error=message,
+            cancellation_cause="unknown background task",
+            cancel_requested=False,
+            terminal=True,
+        ),
     )
 
 
@@ -70,20 +94,19 @@ class TaskCancelTool:
             content = f"Background task {task.task.id} is already {task.status}"
         else:
             content = f"Background task {task.task.id}: {task.status}"
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.name,
-            status="ok",
-            content=content,
-            data={
-                "task_id": task.task.id,
-                "status": task.status,
-                "session_id": task.session_id,
-                "parent_session_id": task.parent_session_id,
-                "error": task.error,
-                "cancellation_cause": cause,
-                "cancel_requested": task.cancel_requested_at is not None,
-                "terminal": is_background_task_terminal(task.status),
-            },
+            output=TextOutput(content),
+            body=TaskCancelResultBody(
+                task_id=task.task.id,
+                status=task.status,
+                session_id=task.session_id,
+                parent_session_id=task.parent_session_id,
+                error=task.error,
+                cancellation_cause=cause,
+                cancel_requested=task.cancel_requested_at is not None,
+                terminal=is_background_task_terminal(task.status),
+            ),
         )
 
 

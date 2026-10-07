@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 import pytest
 
 from voidcode.core.tool_context import ToolContext
-from voidcode.tools.contracts import ToolCall
-from voidcode.tools.grep import GrepTool
+from voidcode.tools.contracts import TextOutput, ToolCall
+from voidcode.tools.grep import GrepResultBody, GrepTool
 
 
 def test_grep_tool_searches_utf8_file_inside_workspace(tmp_path: Path) -> None:
@@ -22,34 +21,21 @@ def test_grep_tool_searches_utf8_file_inside_workspace(tmp_path: Path) -> None:
 
     assert result.tool_name == "grep"
     assert result.status == "ok"
-    assert result.data == {
-        "path": "sample.txt",
-        "pattern": "alpha",
-        "regex": False,
-        "ignore_case": False,
-        "context": 0,
-        "match_count": 2,
-        "truncated": False,
-        "partial": False,
-        "matches": [
-            {
-                "file": "sample.txt",
-                "line": 1,
-                "text": "alpha beta",
-                "columns": [1],
-                "before": [],
-                "after": [],
-            },
-            {
-                "file": "sample.txt",
-                "line": 3,
-                "text": "alpha",
-                "columns": [1],
-                "before": [],
-                "after": [],
-            },
-        ],
-    }
+    assert isinstance(result.body, GrepResultBody)
+    body = result.body
+    assert result.tool_name == "grep"
+    assert result.status == "ok"
+    assert body.path == "sample.txt"
+    assert body.pattern == "alpha"
+    assert body.regex is False
+    assert body.ignore_case is False
+    assert body.context == 0
+    assert body.match_count == 2
+    assert body.truncated is False
+    assert [(match.file, match.line, match.text, match.columns, match.before, match.after) for match in body.matches] == [
+        ("sample.txt", 1, "alpha beta", (1,), (), ()),
+        ("sample.txt", 3, "alpha", (1,), (), ()),
+    ]
 
 
 def test_grep_tool_supports_regex_context_and_include_exclude(tmp_path: Path) -> None:
@@ -76,29 +62,17 @@ def test_grep_tool_supports_regex_context_and_include_exclude(tmp_path: Path) ->
         context=ToolContext(workspace=tmp_path),
     )
 
-    assert result.status == "ok"
-    assert result.data["regex"] is True
-    assert result.data["context"] == 1
-    assert result.data["match_count"] == 2
-    assert result.data["matches"] == [
-        {
-            "file": "src/sample.py",
-            "line": 1,
-            "text": "alpha",
-            "columns": [1],
-            "before": [],
-            "after": [{"line": 2, "text": "beta"}],
-        },
-        {
-            "file": "src/sample.py",
-            "line": 3,
-            "text": "alpha",
-            "columns": [1],
-            "before": [{"line": 2, "text": "beta"}],
-            "after": [],
-        },
+    assert isinstance(result.body, GrepResultBody)
+    body = result.body
+    assert body.regex is True
+    assert body.context == 1
+    assert body.match_count == 2
+    assert [(match.file, match.line, match.text, match.columns, match.before, match.after) for match in body.matches] == [
+        ("src/sample.py", 1, "alpha", (1,), (), ({"line": 2, "text": "beta"},)),
+        ("src/sample.py", 3, "alpha", (1,), ({"line": 2, "text": "beta"},), ()),
     ]
-    assert "ignored.txt" not in (result.content or "")
+    assert isinstance(result.output, TextOutput)
+    assert "ignored.txt" not in result.output.text
 
 
 def test_grep_tool_ignores_common_directories_by_default(tmp_path: Path) -> None:
@@ -118,11 +92,11 @@ def test_grep_tool_ignores_common_directories_by_default(tmp_path: Path) -> None
         context=ToolContext(workspace=tmp_path),
     )
 
-    assert result.status == "ok"
-    matches = cast(list[dict[str, object]], result.data["matches"])
-    assert [match["file"] for match in matches] == ["src/keep.py"]
-    assert ".git/ignored.py" not in (result.content or "")
-    assert "node_modules/ignored.py" not in (result.content or "")
+    assert isinstance(result.body, GrepResultBody)
+    assert [match.file for match in result.body.matches] == ["src/keep.py"]
+    assert isinstance(result.output, TextOutput)
+    assert ".git/ignored.py" not in result.output.text
+    assert "node_modules/ignored.py" not in result.output.text
 
 
 def test_grep_tool_returns_zero_matches_summary(tmp_path: Path) -> None:
@@ -135,21 +109,17 @@ def test_grep_tool_returns_zero_matches_summary(tmp_path: Path) -> None:
         context=ToolContext(workspace=tmp_path),
     )
 
-    data = dict(result.data)
-    diagnostics = cast(list[dict[str, object]], data.pop("diagnostics"))
-    assert data == {
-        "path": "sample.txt",
-        "pattern": "missing",
-        "regex": False,
-        "ignore_case": False,
-        "context": 0,
-        "match_count": 0,
-        "truncated": False,
-        "partial": False,
-        "matches": [],
+    assert isinstance(result.body, GrepResultBody)
+    assert result.body.path == "sample.txt"
+    assert result.body.pattern == "missing"
+    assert result.body.match_count == 0
+    assert result.body.matches == ()
+    assert len(result.body.diagnostics) == 1
+    assert {key: result.body.diagnostics[0][key] for key in ("source", "severity", "reason")} == {
+        "source": "grep",
+        "severity": "info",
+        "reason": "no_matches",
     }
-    assert len(diagnostics) == 1
-    assert {key: diagnostics[0][key] for key in ("source", "severity", "reason")} == {"source": "grep", "severity": "info", "reason": "no_matches"}
 
 
 def test_grep_tool_rejects_invalid_arguments_and_non_utf8_files(tmp_path: Path) -> None:
@@ -181,15 +151,15 @@ def test_grep_tool_rejects_invalid_arguments_and_non_utf8_files(tmp_path: Path) 
         ToolCall(tool_name="grep", arguments={"pattern": "alpha", "path": str(outside)}),
         context=ToolContext(workspace=tmp_path),
     )
-    assert external.status == "ok"
-    assert external.data["path"] == str(outside.resolve())
+    assert isinstance(external.body, GrepResultBody)
+    assert external.body.path == str(outside.resolve())
 
     result = tool.invoke(
         ToolCall(tool_name="grep", arguments={"pattern": "x", "path": "sample.bin"}),
         context=ToolContext(workspace=tmp_path),
     )
-    assert result.status == "ok"
-    assert result.data["match_count"] == 0
+    assert isinstance(result.body, GrepResultBody)
+    assert result.body.match_count == 0
 
 
 def test_grep_tool_supports_case_insensitive_and_gitignore_skip(tmp_path: Path) -> None:
@@ -206,11 +176,12 @@ def test_grep_tool_supports_case_insensitive_and_gitignore_skip(tmp_path: Path) 
         context=ToolContext(workspace=tmp_path),
     )
 
-    assert result.status == "ok"
-    assert [cast(dict[str, object], match)["file"] for match in cast(list[object], result.data["matches"])] == ["sample.py"]
+    assert isinstance(result.body, GrepResultBody)
+    assert [match.file for match in result.body.matches] == ["sample.py"]
 
     case_sensitive = tool.invoke(
         ToolCall(tool_name="grep", arguments={"pattern": "alpha", "path": "sample.py"}),
         context=ToolContext(workspace=tmp_path),
     )
-    assert case_sensitive.data["match_count"] == 0
+    assert isinstance(case_sensitive.body, GrepResultBody)
+    assert case_sensitive.body.match_count == 0

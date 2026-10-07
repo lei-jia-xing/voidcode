@@ -29,14 +29,14 @@ from typing import Any
 import pytest
 
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import TurnPlan
+from voidcode.core.turns import FinalTurn, ToolTurn
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.execution_ownership import EXECUTION_OWNERSHIP, ExecutionOwnershipRevokedError
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 
 TOOL_TASK_ID = "task-tool-late-write"
 BOUNDARY_TASK_ID = "task-boundary-late-write"
@@ -65,11 +65,11 @@ class _SingleToolGraph:
     def __init__(self, tool_name: str) -> None:
         self._tool_name = tool_name
 
-    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> TurnPlan:
+    def produce(self, request: object, tool_results: tuple[object, ...], *, session: object) -> FinalTurn | ToolTurn:
         _ = request, session
         if not tool_results:
-            return TurnPlan(tool_calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
-        return TurnPlan(output="done", is_finished=True)
+            return ToolTurn(calls=(ToolCall(tool_name=self._tool_name, arguments={}),))
+        return FinalTurn(output="done")
 
 
 class _Gate:
@@ -111,7 +111,7 @@ class _TruthWritingTool:
         self.outcomes["thread"] = threading.current_thread().name
         self.gate.wait_for_entry()
         self.outcomes["tool_commit"] = self._write("tool_commit")
-        return ToolResult(tool_name=self.definition.name, status="ok", content="done")
+        return ToolSuccess(tool_name=self.definition.name, output=TextOutput("done"))
 
 
 class _BoundaryTool(_TruthWritingTool):
@@ -130,7 +130,7 @@ class _BoundaryTool(_TruthWritingTool):
         writer.start()
         writer.join(timeout=20.0)
         assert not writer.is_alive()
-        return ToolResult(tool_name=self.definition.name, status="ok", content="done")
+        return ToolSuccess(tool_name=self.definition.name, output=TextOutput("done"))
 
 
 def _seize_execution(tmp_path: Path, tool: _TruthWritingTool, *, task_id: str) -> dict[str, Any]:

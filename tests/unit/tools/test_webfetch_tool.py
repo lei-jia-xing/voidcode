@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 from unittest.mock import patch
 
 import httpx
 import pytest
 
 from voidcode.core.tool_context import ToolContext
-from voidcode.tools.contracts import ToolCall
+from voidcode.tools.contracts import AttachmentOutput, TextOutput, ToolCall
 from voidcode.tools.web_fetch import WebFetchTool
 
 
@@ -42,9 +41,8 @@ def test_webfetch_markdown_uses_markdown_conversion_for_html() -> None:
             context=ToolContext(workspace=Path("/tmp")),
         )
 
-    assert result.status == "ok"
-    assert result.content is not None
-    assert result.data["content"] == "# TITLE\n\nHello"
+    assert isinstance(result.output, TextOutput)
+    assert result.output.text == "# TITLE\n\nHello"
 
 
 def test_webfetch_returns_attachment_for_image() -> None:
@@ -62,15 +60,11 @@ def test_webfetch_returns_attachment_for_image() -> None:
             context=ToolContext(workspace=Path("/tmp")),
         )
 
-    assert result.status == "ok"
-    attachment_raw = result.data.get("attachment")
-    assert isinstance(attachment_raw, dict)
-    attachment = cast(dict[str, object], attachment_raw)
-    assert attachment.get("mime") == "image/png"
-    data_uri = attachment.get("data_uri")
-    assert isinstance(data_uri, str)
-    assert data_uri.startswith("data:image/png;base64,")
-    assert not hasattr(result, "attachment")
+    assert isinstance(result.output, AttachmentOutput)
+    assert result.output.mime == "image/png"
+    assert result.output.data_uri.startswith("data:image/png;base64,")
+    assert result.body is not None
+    assert result.body.as_payload()["byte_count"] == len(image_bytes)
 
 
 def test_webfetch_rejects_localhost_targets() -> None:

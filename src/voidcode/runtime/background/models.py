@@ -91,11 +91,12 @@ class BackgroundTaskRequestSnapshot:
     def as_runtime_request(self) -> RuntimeRequest:
         from ..contracts import RuntimeRequest
 
+        request_metadata = {key: value for key, value in self.metadata.items() if key != "execution_composition"}
         return RuntimeRequest(
             prompt=self.prompt,
             session_id=self.session_id,
             parent_session_id=self.parent_session_id,
-            metadata=self.metadata,
+            metadata=request_metadata,
             allocate_session_id=self.allocate_session_id,
         )
 

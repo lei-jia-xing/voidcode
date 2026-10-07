@@ -6,8 +6,23 @@ from typing import ClassVar
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..core.tool_context import ToolContext
+from ..security.json_values import json_wire_object
 from ._pydantic_args import parse_tool_args
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import (
+    EmptyOutput,
+    OutputBounds,
+    OutputReference,
+    ProgressYield,
+    TerminalYield,
+    TerminalYieldFailure,
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolEffect,
+    ToolFailure,
+    ToolResult,
+    ToolSuccess,
+)
 
 YIELD_PROGRESS_MAX_SECTIONS = 100
 YIELD_PROGRESS_MAX_SECTION_CHARS = 4_096
@@ -114,21 +129,28 @@ class YieldArgs(BaseModel):
     def is_terminal_error(self) -> bool:
         return self.error is not None or self.type == "error" or self.type == ["error"]
 
-    def progress_payload(self) -> dict[str, object]:
+    def progress_control(self) -> ProgressYield:
         if self.is_terminal():
-            raise ValueError("terminal yield has no progress payload")
+            raise ValueError("terminal yield has no progress section")
+        if isinstance(self.type, list):
+            types = tuple(self.type)
+        elif isinstance(self.type, str):
+            types = (self.type,)
+        else:
+            raise ValueError("progress yield requires a type")
+        data = _bounded_progress_data(self.data)
         payload: dict[str, object] = {"type": self.type}
         if self.result is not None:
             payload["result"] = self.result
-        if self.data:
-            payload["data"] = _bounded_progress_data(self.data)
+        if data:
+            payload["data"] = data
         try:
             encoded_size = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str))
         except (TypeError, ValueError) as exc:
             raise ValueError("progress payload must be JSON serializable") from exc
         if encoded_size > YIELD_PROGRESS_MAX_SECTION_CHARS:
             raise ValueError(f"progress section must be at most {YIELD_PROGRESS_MAX_SECTION_CHARS} characters")
-        return payload
+        return ProgressYield(types, self.result, data)
 
 
 class YieldTool:
@@ -262,35 +284,34 @@ class YieldTool:
             raise ValueError("yield is only available to delegated child sessions")
         args = parse_tool_args(YieldArgs, call.arguments, tool_name=self.definition.name)
         if not args.is_terminal():
-            progress = args.progress_payload()
-            content = args.result or json.dumps(progress["data"], ensure_ascii=False, default=str)
-            return ToolResult(
+            progress = args.progress_control()
+            content = args.result if args.result is not None else json.dumps(json_wire_object(progress.data), ensure_ascii=False)
+            return ToolSuccess(
                 tool_name=self.definition.name,
-                status="ok",
-                content=content,
-                data={"yield_kind": "progress", "progress": progress},
-                reference=f"child-yield-progress:{context.session_id}",
+                output=TextOutput(
+                    content,
+                    presentation=content,
+                    bounds=OutputBounds(reference=OutputReference(f"child-yield-progress:{context.session_id}")),
+                ),
+                control=progress,
             )
         if args.is_terminal_error():
             assert args.error is not None
-            return ToolResult(
+            return ToolFailure(
                 tool_name=self.definition.name,
-                status="error",
-                content=None,
                 error=args.error,
-                data={
-                    "yield_kind": "terminal_error",
-                    "handoff": {"summary": args.error, "data": args.data, "error": args.error},
-                },
-                reference=f"child-yield-error:{context.session_id}",
+                output=EmptyOutput(bounds=OutputBounds(reference=OutputReference(f"child-yield-error:{context.session_id}"))),
+                control=TerminalYieldFailure(args.data),
             )
         assert args.summary is not None
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.definition.name,
-            status="ok",
-            content=args.summary,
-            data={"yield_kind": "terminal", "handoff": {"summary": args.summary, "data": args.data}},
-            reference=f"child-yield:{context.session_id}",
+            output=TextOutput(
+                args.summary,
+                presentation=args.summary,
+                bounds=OutputBounds(reference=OutputReference(f"child-yield:{context.session_id}")),
+            ),
+            control=TerminalYield(args.summary, args.data),
         )
 
 

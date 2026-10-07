@@ -9,26 +9,65 @@ from typing import cast
 
 import pytest
 
+from tests.runtime_composition import save_checkpoint
 from voidcode.core.engine import TurnEngine
 from voidcode.core.event_store import FactStore, MemoryEventStore
 from voidcode.core.memory_host import MemoryAbortSignal, MemoryContext, MemoryHost
+from voidcode.core.questions import PendingQuestionOption, PendingQuestionPrompt, QuestionResponse
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.transcript import ToolResultView, tool_result_output
-from voidcode.core.turns import CallSeed, LoopStepFact, StreamFact, ToolCompletedFact, ToolRequestedFact, TurnPlan, TurnRequest, TurnSession
+from voidcode.core.transcript import ToolResultView, project_report, tool_result_output
+from voidcode.core.turns import (
+    CallSeed,
+    FinalTurn,
+    LoopStepFact,
+    ReportedCall,
+    StreamFact,
+    ToolCompletedFact,
+    ToolRequestedFact,
+    ToolTurn,
+    TurnRequest,
+    TurnSession,
+)
 from voidcode.provider.protocol import ProviderStreamEvent
 from voidcode.runtime.bundle import (
+    SESSION_BUNDLE_SCHEMA_VERSION,
     SessionBundleError,
+    SessionBundleOptions,
     apply_session_bundle,
     build_session_bundle,
     read_session_bundle_bytes,
     serialize_session_bundle,
 )
 from voidcode.runtime.contracts import RuntimeSessionCheckoutBoundaryError, RuntimeSessionForkBoundaryError
+from voidcode.runtime.events import EventEnvelope
+from voidcode.runtime.execution.report_codec import parse_report_payload, report_payload
+from voidcode.runtime.execution.resume_checkpoint import tool_results_from_checkpoint
+from voidcode.runtime.execution.tool_result_projection import _serialized_tool_results
 from voidcode.runtime.execution.turn_recovery import persisted_turn_batch
+from voidcode.runtime.fact_codec import decode_fact, encode_fact
 from voidcode.runtime.fact_store import SqliteFactStore
 from voidcode.runtime.session_metadata_helpers import session_metadata_with_runtime_state_updates
-from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import ToolCall, ToolResult
+from voidcode.runtime.storage import SCHEMA_VERSION, SqliteSessionStore
+from voidcode.security.json_values import json_wire_object
+from voidcode.tools.contracts import (
+    AttachmentOutput,
+    EmptyOutput,
+    OpaqueToolBody,
+    OutputBounds,
+    OutputReference,
+    ProgressYield,
+    QuestionAnswered,
+    QuestionPrepared,
+    TerminalYield,
+    TerminalYieldFailure,
+    TextOutput,
+    ToolCall,
+    ToolDiagnostics,
+    ToolFailure,
+    ToolResult,
+    ToolSuccess,
+    UnconfirmedStop,
+)
 from voidcode.tools.read import ReadTool
 
 
@@ -37,7 +76,8 @@ def facts(request: pytest.FixtureRequest, tmp_path: Path) -> MemoryEventStore | 
     if request.param == "memory":
         return MemoryEventStore()
     owner = SqliteSessionStore(database_path=tmp_path / "facts.sqlite3")
-    owner.save_interrupted_checkpoint(
+    save_checkpoint(
+        owner,
         workspace=tmp_path,
         session_id="facts",
         prompt="fact tree",
@@ -82,30 +122,48 @@ def test_memory_snapshots_keep_original_nested_arguments_and_isolate_readers() -
     arguments["nested"] = {"items": ["changed"]}
     first = facts.read(limit=1).entries[0].fact
     assert isinstance(first, ToolRequestedFact)
-    assert first.call.arguments == {"nested": {"items": ["original"]}}
-    first.call.arguments["nested"] = {"items": ["reader mutation"]}
+    assert json_wire_object(first.call.arguments) == {"nested": {"items": ["original"]}}
+    with pytest.raises(TypeError):
+        first.call.arguments["nested"] = {"items": ["reader mutation"]}
     second = facts.read(limit=1).entries[0].fact
     assert isinstance(second, ToolRequestedFact)
-    assert second.call.arguments == {"nested": {"items": ["original"]}}
+    assert json_wire_object(second.call.arguments) == {"nested": {"items": ["original"]}}
+
+
+def test_model_result_view_owns_nested_arguments() -> None:
+    arguments: dict[str, object] = {"nested": {"items": ["original"]}}
+    view = ToolResultView(
+        tool_call_id="call-view",
+        tool_name="read",
+        arguments=arguments,
+        output=TextOutput("visible"),
+        status="ok",
+    )
+    arguments["nested"] = {"items": ["changed"]}
+    assert json_wire_object(view.arguments) == {"nested": {"items": ["original"]}}
+    with pytest.raises(TypeError):
+        view.arguments["nested"] = {"items": ["reader mutation"]}
 
 
 def test_checkout_cannot_split_real_native_request_result_pair(facts: FactStore) -> None:
     call = ToolCall("read", {"path": "a.txt"}, tool_call_id="native-a")
-    facts.append((LoopStepFact(1, "plan"), ToolRequestedFact(call), ToolCompletedFact(call, ToolResult("read", "ok", content="actual body"))))
+    report = ReportedCall("native-a", "read", call.arguments, ToolSuccess("read", output=TextOutput("actual body")))
+    facts.append((LoopStepFact(1, "plan"), ToolRequestedFact(call), ToolCompletedFact(report)))
     with pytest.raises((ValueError, RuntimeError)):
         facts.checkout(2)
     assert facts.read(limit=4).leaf_sequence == 3
     facts.checkout(3)
     completed = facts.read(limit=4).entries[-1].fact
     assert isinstance(completed, ToolCompletedFact)
-    assert completed.call.tool_call_id == "native-a" and completed.result.content == "actual body"
+    assert completed.report.tool_call_id == "native-a" and completed.report.result.output == TextOutput("actual body")
     facts.append((ToolRequestedFact(call),))
     with pytest.raises((ValueError, RuntimeError)):
         facts.checkout(4)
     with pytest.raises((ValueError, RuntimeError)):
         facts.fork(4)
     assert facts.read(limit=8).leaf_sequence == 4
-    facts.append((ToolCompletedFact(call, ToolResult("read", "ok", content="second actual body")),))
+    second_report = ReportedCall("native-a", "read", call.arguments, ToolSuccess("read", output=TextOutput("second actual body")))
+    facts.append((ToolCompletedFact(second_report),))
     assert facts.fork(5).read(limit=8).leaf_sequence == 5
 
 
@@ -129,7 +187,8 @@ def test_fork_preserves_gapped_active_edges_watermark_and_fresh_delivery_scope(f
 def test_unsupported_generation_cannot_mutate_existing_log(tmp_path: Path, generation: str) -> None:
     database = tmp_path / "facts.sqlite3"
     owner = SqliteSessionStore(database_path=database)
-    owner.save_interrupted_checkpoint(
+    save_checkpoint(
+        owner,
         workspace=tmp_path,
         session_id="facts",
         prompt="original request",
@@ -144,18 +203,29 @@ def test_unsupported_generation_cannot_mutate_existing_log(tmp_path: Path, gener
     checkpoint = owner.load_resume_checkpoint(workspace=tmp_path, session_id="facts")
     if generation == "codec":
         with pytest.raises(ValueError):
-            SqliteFactStore(events=owner, workspace=tmp_path, session_id="facts", codec_version=2).append((LoopStepFact(2, "plan"),))
+            SqliteFactStore(events=owner, workspace=tmp_path, session_id="facts", codec_version=1).append((LoopStepFact(2, "plan"),))
     elif generation == "sqlite":
         with sqlite3.connect(database) as connection:
-            connection.execute("PRAGMA user_version = 2")
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION - 1}")
         with pytest.raises(RuntimeError):
             facts.append((LoopStepFact(2, "plan"),))
         with sqlite3.connect(database) as connection:
-            connection.execute("PRAGMA user_version = 1")
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     else:
-        bundle = build_session_bundle(sessions=owner, tasks=owner, workspace=tmp_path, session_id="facts")
+        bundle = build_session_bundle(
+            sessions=owner,
+            tasks=owner,
+            workspace=tmp_path,
+            session_id="facts",
+            options=SessionBundleOptions(
+                redact=False,
+                include_tool_output=True,
+                include_raw_provider_messages=True,
+                include_reasoning_text=True,
+            ),
+        )
         payload = json.loads(serialize_session_bundle(bundle, fmt="json"))
-        payload["manifest"]["schema_version"] = 2
+        payload["manifest"]["schema_version"] = SESSION_BUNDLE_SCHEMA_VERSION - 1
         with pytest.raises(SessionBundleError):
             apply_session_bundle(
                 read_session_bundle_bytes(json.dumps(payload).encode()),
@@ -174,7 +244,8 @@ def test_unsupported_generation_cannot_mutate_existing_log(tmp_path: Path, gener
 
 def test_deduped_atomic_checkpoint_cannot_resume_retained_orphan_branch(tmp_path: Path) -> None:
     owner = SqliteSessionStore(database_path=tmp_path / "facts.sqlite3")
-    owner.save_interrupted_checkpoint(
+    save_checkpoint(
+        owner,
         workspace=tmp_path,
         session_id="facts",
         prompt="original branch",
@@ -221,7 +292,8 @@ def test_fork_pair_guard_uses_selected_path_not_retained_abandoned_request(facts
 
 def test_governed_runtime_start_closes_original_native_identity_without_name_matching(tmp_path: Path) -> None:
     owner = SqliteSessionStore(database_path=tmp_path / "facts.sqlite3")
-    owner.save_interrupted_checkpoint(
+    save_checkpoint(
+        owner,
         workspace=tmp_path,
         session_id="facts",
         prompt="rewritten native call",
@@ -245,14 +317,13 @@ def test_governed_runtime_start_closes_original_native_identity_without_name_mat
             ),
         ),
     )
-    facts.append(
-        (
-            ToolCompletedFact(
-                ToolCall("rewritten", {"path": "authorized.txt"}, original.tool_call_id),
-                ToolResult("rewritten", "ok", content="authorized result"),
-            ),
-        )
+    rewritten_result = ReportedCall(
+        original.tool_call_id or "",
+        "rewritten",
+        {"path": "authorized.txt"},
+        ToolSuccess("rewritten", output=TextOutput("authorized result")),
     )
+    facts.append((ToolCompletedFact(rewritten_result),))
     for split in (1, 2):
         with pytest.raises(RuntimeSessionCheckoutBoundaryError):
             facts.checkout(split)
@@ -264,7 +335,8 @@ def test_governed_runtime_start_closes_original_native_identity_without_name_mat
 
 def test_legacy_missing_native_identity_refuses_branch_continuation_without_mutation(tmp_path: Path) -> None:
     owner = SqliteSessionStore(database_path=tmp_path / "facts.sqlite3")
-    owner.save_interrupted_checkpoint(
+    save_checkpoint(
+        owner,
         workspace=tmp_path,
         session_id="facts",
         prompt="legacy history",
@@ -317,16 +389,16 @@ def test_recorded_real_reader_prefix_restores_without_repeating_completed_io(
             result = self.delegate.invoke(call, context=replace(context, workspace=tmp_path))
             if len(self.call_ids) == 1:
                 abort.set_cancelled(True)
-                if spoof_result_id:
-                    return replace(result, data={**result.data, "tool_call_id": "different-native-result"})
+                if spoof_result_id and isinstance(result, ToolSuccess):
+                    return replace(result, body=OpaqueToolBody({"tool_call_id": "different-native-result"}))
             return result
 
     class Producer:
         replayed_reasoning: str | None = None
 
-        def produce(self, request: TurnRequest, tool_results: tuple[ToolResult | ToolResultView, ...], *, session: TurnSession) -> TurnPlan:
+        def produce(self, request: TurnRequest, tool_results: tuple[ToolResultView, ...], *, session: TurnSession) -> ToolTurn | FinalTurn:
             if not tool_results:
-                return TurnPlan(tool_calls=calls, reasoning=reasoning)
+                return ToolTurn(calls, reasoning=reasoning)
             context = request.assembled_context
             assert isinstance(context, MemoryContext)
             metadata = next(segment.metadata for segment in context.segments if segment.role == "tool")
@@ -336,20 +408,12 @@ def test_recorded_real_reader_prefix_restores_without_repeating_completed_io(
             replayed_reasoning = data["reasoning_content"]
             assert isinstance(replayed_reasoning, str)
             self.replayed_reasoning = replayed_reasoning
-            return TurnPlan(output=tool_result_output(tool_results[-1]) or "", is_finished=True)
+            return FinalTurn(tool_result_output(tool_results[-1]) or "")
 
     reader = Reader()
     producer = Producer()
     host = MemoryHost(tools=(reader,), abort_signal=abort, event_store=facts)
     engine = TurnEngine(producer)
-    if spoof_result_id:
-        with pytest.raises(ValueError):
-            list(engine.run(host.request("read both real files"), host=host))
-        assert reader.call_ids == ["native-first-read"]
-        assert not any(isinstance(entry.fact, ToolCompletedFact) for entry in facts.read(limit=100).entries)
-        with pytest.raises(ValueError):
-            facts.restore_batch()
-        return
     list(engine.run(host.request("read both real files"), host=host))
     assert reader.call_ids == ["native-first-read"]
     if isinstance(facts, SqliteFactStore):
@@ -357,14 +421,21 @@ def test_recorded_real_reader_prefix_restores_without_repeating_completed_io(
         facts = SqliteFactStore(events=reopened, recovery=reopened, workspace=tmp_path, session_id="facts")
     seed = facts.restore_batch()
     assert [call.tool_call_id for call in seed.calls] == ["native-first-read", "native-second-read"]
-    assert seed.reasoning == reasoning and len(seed.completed_results) == 1
-    assert tool_result_output(seed.completed_results[0]) == "first real file body"
+    assert seed.reasoning == reasoning and len(seed.completed_reports) == 1
+    assert seed.completed_reports[0].tool_call_id == "native-first-read"
+    recovered_output = tool_result_output(project_report(seed.completed_reports[0]))
+    assert recovered_output is not None and "first real file body" in recovered_output
     resumed = MemoryHost(tools=(reader,), event_store=facts)
     list(engine.run(resumed.request("read both real files"), host=resumed, seed=seed))
     assert reader.call_ids == ["native-first-read", "native-second-read"]
     assert producer.replayed_reasoning == reasoning
     restored = facts.restore_batch()
-    assert [tool_result_output(result) for result in restored.completed_results] == ["first real file body", "second real file body"]
+    recovered_outputs = tuple(tool_result_output(project_report(report)) for report in restored.completed_reports)
+    assert len(recovered_outputs) == 2
+    assert all(
+        output is not None and expected in output
+        for output, expected in zip(recovered_outputs, ("first real file body", "second real file body"), strict=True)
+    )
 
 
 def test_runtime_only_page_does_not_erase_authentic_completed_prefix(tmp_path: Path) -> None:
@@ -379,7 +450,8 @@ def test_runtime_only_page_does_not_erase_authentic_completed_prefix(tmp_path: P
     )
     database = tmp_path / "facts.sqlite3"
     owner = SqliteSessionStore(database_path=database)
-    owner.save_interrupted_checkpoint(
+    save_checkpoint(
+        owner,
         workspace=tmp_path,
         session_id="facts",
         prompt="read beyond runtime-only page",
@@ -395,7 +467,8 @@ def test_runtime_only_page_does_not_erase_authentic_completed_prefix(tmp_path: P
     )
     actual = ReadTool().invoke(call, context=ToolContext(workspace=tmp_path, session_id="facts", invocation_id=call.tool_call_id))
     facts = SqliteFactStore(events=owner, recovery=owner, workspace=tmp_path, session_id="facts")
-    facts.append((ToolRequestedFact(call), ToolCompletedFact(call, actual, batch=batch)))
+    report = ReportedCall(call.tool_call_id or "", call.tool_name, call.arguments, actual)
+    facts.append((ToolRequestedFact(call), ToolCompletedFact(report, batch=batch)))
     reopened = SqliteSessionStore(database_path=database)
     restored_store = SqliteFactStore(events=reopened, recovery=reopened, workspace=tmp_path, session_id="facts")
     empty = restored_store.read(limit=100)
@@ -404,13 +477,15 @@ def test_runtime_only_page_does_not_erase_authentic_completed_prefix(tmp_path: P
     assert [(entry.sequence, entry.parent_sequence) for entry in tail.entries] == [(101, 100), (102, 101)]
     restored = restored_store.restore_batch()
     assert restored.reasoning == batch.reasoning
-    assert [result.data["tool_call_id"] for result in restored.completed_results] == [call.tool_call_id]
-    assert tool_result_output(restored.completed_results[0]) == "real body beyond the empty typed page"
+    assert [report.tool_call_id for report in restored.completed_reports] == [call.tool_call_id]
+    recovered_output = tool_result_output(project_report(restored.completed_reports[0]))
+    assert recovered_output is not None and "real body beyond the empty typed page" in recovered_output
 
 
 def test_stale_metadata_and_checkpoint_cannot_drop_or_resurrect_consumed_input(tmp_path: Path) -> None:
     owner = SqliteSessionStore(database_path=tmp_path / "queue.sqlite3")
-    owner.save_interrupted_checkpoint(
+    save_checkpoint(
+        owner,
         workspace=tmp_path,
         session_id="queue",
         prompt="original",
@@ -437,7 +512,8 @@ def test_stale_metadata_and_checkpoint_cannot_drop_or_resurrect_consumed_input(t
     assert [message.content for message in delivered] == ["new real input"]
     owner.update_session_metadata(workspace=tmp_path, session_id="queue", metadata=queued)
     facts.append_for_publication((LoopStepFact(2, "plan"),), interrupted_checkpoint={**original, "session_metadata": queued})
-    owner.save_interrupted_checkpoint(
+    save_checkpoint(
+        owner,
         workspace=tmp_path,
         session_id="queue",
         prompt="still original",
@@ -463,7 +539,8 @@ def test_stale_metadata_and_checkpoint_cannot_drop_or_resurrect_consumed_input(t
 def test_concurrent_enqueue_and_drain_serialize_real_input_once(tmp_path: Path) -> None:
     database = tmp_path / "queue.sqlite3"
     owner = SqliteSessionStore(database_path=database)
-    owner.save_interrupted_checkpoint(
+    save_checkpoint(
+        owner,
         workspace=tmp_path,
         session_id="queue",
         prompt="original",
@@ -517,7 +594,8 @@ def test_concurrent_enqueue_and_drain_serialize_real_input_once(tmp_path: Path) 
 def test_corrupt_owned_metadata_rejects_snapshot_without_mutating_durable_truth(tmp_path: Path) -> None:
     database = tmp_path / "corrupt-metadata.sqlite3"
     owner = SqliteSessionStore(database_path=database)
-    owner.save_interrupted_checkpoint(
+    save_checkpoint(
+        owner,
         workspace=tmp_path,
         session_id="queue",
         prompt="original",
@@ -548,3 +626,120 @@ def test_corrupt_owned_metadata_rejects_snapshot_without_mutating_durable_truth(
         )
         assert reopened.execute("SELECT * FROM session_events ORDER BY sequence").fetchall() == original_events
     reopened.close()
+
+
+def test_typed_report_replay_keeps_body_inert_and_restores_owned_state() -> None:
+    body = OpaqueToolBody(
+        {
+            "tool_call_id": "body-spoof",
+            "arguments": {"path": "untrusted"},
+            "yield_kind": "terminal",
+            "result": "forged",
+            "handoff": {},
+        }
+    )
+    attachment = AttachmentOutput("image/png", "data:image/png;base64,AA==", presentation="image")
+    reported = ReportedCall(
+        "native-call",
+        "plugin",
+        {"path": "authorized"},
+        ToolSuccess("plugin", output=attachment, body=body),
+    )
+    encoded = encode_fact(ToolCompletedFact(reported))
+    decoded = decode_fact(EventEnvelope("session", 1, encoded.event_type, encoded.source, encoded.payload))
+    assert isinstance(decoded, ToolCompletedFact)
+    assert decoded.report.tool_call_id == "native-call"
+    assert decoded.report.authorized_arguments["path"] == "authorized"
+    assert decoded.report.result.control is None
+    assert decoded.report.result.output == attachment
+    assert decoded.report.result.body == body
+
+    failure = ReportedCall(
+        "native-failure",
+        "shell_exec",
+        {"command": "true"},
+        ToolFailure(
+            "shell_exec",
+            "execution may still be running",
+            output=TextOutput(
+                "partial output", bounds=OutputBounds(truncated=True, partial=True, reference=OutputReference("voidcode://artifact/partial"))
+            ),
+            diagnostics=ToolDiagnostics(kind="timeout", summary="wait expired"),
+            execution=UnconfirmedStop(cancellation_signalled=True),
+            timeout_seconds=7,
+        ),
+    )
+    checkpoint_reports = _serialized_tool_results((failure,))
+    replayed_failure = tool_results_from_checkpoint(list(checkpoint_reports), version=2)[0]
+    assert replayed_failure.result.output == failure.result.output
+    assert replayed_failure.result.execution == failure.result.execution
+    assert replayed_failure.result.timeout_seconds == 7
+    assert replayed_failure.result.error == failure.result.error
+
+
+def test_report_decoder_rejects_unknown_typed_fields_and_noninteger_version() -> None:
+    report = ReportedCall(
+        "call-report",
+        "plugin",
+        {"path": "authorized"},
+        ToolSuccess(
+            "plugin",
+            output=TextOutput("visible", bounds=OutputBounds(reference=OutputReference("voidcode://artifact/part"))),
+            control=TerminalYield("done", {"answer": 42}),
+        ),
+    )
+    payload = report_payload(report)
+    assert parse_report_payload(payload) == report
+
+    for path in (
+        (),
+        ("result",),
+        ("result", "output"),
+        ("result", "output", "bounds"),
+        ("result", "output", "bounds", "reference"),
+        ("result", "control"),
+    ):
+        candidate = json.loads(json.dumps(payload))
+        target = candidate
+        for key in path:
+            target = target[key]
+        target["unowned_field"] = True
+        with pytest.raises(ValueError, match="invalid field set"):
+            _ = parse_report_payload(candidate)
+
+    for version in (True, 1.0):
+        candidate = json.loads(json.dumps(payload))
+        candidate["version"] = version
+        with pytest.raises(ValueError, match="report version is unsupported"):
+            _ = parse_report_payload(candidate)
+
+
+def test_report_codec_preserves_current_control_and_output_alternatives() -> None:
+    question = QuestionPrepared((PendingQuestionPrompt("Select a path", "Path", (PendingQuestionOption("A"),), multiple=True),))
+    reports = (
+        ReportedCall(
+            "question-call",
+            "question",
+            {},
+            ToolSuccess("question", output=TextOutput("question"), control=question),
+        ),
+        ReportedCall(
+            "answer-call",
+            "question",
+            {},
+            ToolSuccess("question", output=EmptyOutput(), control=QuestionAnswered((QuestionResponse("Path", ("A",)),))),
+        ),
+        ReportedCall(
+            "progress-call",
+            "yield",
+            {},
+            ToolSuccess(
+                "yield", output=AttachmentOutput("image/png", "data:image/png;base64,AA=="), control=ProgressYield(("progress",), None, {"step": 1})
+            ),
+        ),
+        ReportedCall("terminal-call", "yield", {}, ToolSuccess("yield", control=TerminalYield("done", {"answer": 42}))),
+        ReportedCall("failure-call", "yield", {}, ToolFailure("yield", "invalid", control=TerminalYieldFailure({"reason": "invalid"}))),
+    )
+
+    for report in reports:
+        assert parse_report_payload(report_payload(report)) == report

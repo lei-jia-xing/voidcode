@@ -19,11 +19,12 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from tests.runtime_composition import save_checkpoint
 from voidcode.core.tool_context import ToolContext
 from voidcode.runtime.execution_ownership import EXECUTION_OWNERSHIP, ExecutionOwnershipRevokedError
 from voidcode.runtime.storage.sqlite import SqliteSessionStore
 from voidcode.runtime.tool_execution import RuntimeToolExecutor
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolInvocation, ToolResult
+from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolInvocation, ToolResult, ToolSuccess
 
 TASK_ID = "task-tool-thread-ownership"
 #: Distinct task id for the control case: the refusal registry is process-global
@@ -64,14 +65,15 @@ class _GatedRuntimeWriteTool:
         except BaseException as exc:  # noqa: BLE001 - the test asserts on the exact refusal
             self.error = exc
             raise
-        return ToolResult(tool_name=call.tool_name, status="ok", content="wrote runtime truth")
+        return ToolSuccess(tool_name=call.tool_name, output=TextOutput("wrote runtime truth"))
 
 
 def _store(tmp_path: Path, monkeypatch: Any) -> SqliteSessionStore:
     database_path = tmp_path / "state" / "voidcode" / "sessions.sqlite3"
     monkeypatch.setenv("VOIDCODE_DB_PATH", str(database_path))
     store = SqliteSessionStore()
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id=SESSION_ID,
         prompt="tool-thread ownership",

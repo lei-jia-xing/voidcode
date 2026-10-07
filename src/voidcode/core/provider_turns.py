@@ -20,14 +20,16 @@ from ..provider.protocol import (
     StreamableTurnProvider,
     TurnProvider,
 )
-from ..tools.contracts import ToolCall, ToolResult
+from ..tools.contracts import ToolCall
 from .transcript import ToolResultView
 from .turns import (
+    FinalTurn,
     LoopStepFact,
     ModelTurnFact,
     ResponseReadyFact,
     StreamFact,
     ToolCallPreviewBuilder,
+    ToolTurn,
     TurnFact,
     TurnPlan,
     TurnRequest,
@@ -159,7 +161,7 @@ class ProviderTurnProducer:
     def stream_produce(
         self,
         request: TurnRequest,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ToolResultView, ...],
         *,
         session: TurnSession,
     ) -> Iterator[TurnStreamItem]:
@@ -194,7 +196,7 @@ class ProviderTurnProducer:
     def produce(
         self,
         request: TurnRequest,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ToolResultView, ...],
         *,
         session: TurnSession,
     ) -> TurnPlan:
@@ -264,14 +266,14 @@ class ProviderTurnProducer:
                 raw_finish_reason=raw_finish_reason if isinstance(raw_finish_reason, str) else None,
             )
         if turn_result.tool_calls:
-            return TurnPlan(
+            return ToolTurn(
                 facts=planning_events,
-                tool_calls=turn_result.tool_calls,
+                calls=turn_result.tool_calls,
                 provider_usage=self._priced_usage(turn_result.usage),
                 reasoning=turn_result.reasoning,
             )
 
-        if turn_result.output is not None and turn_result.output.strip():
+        if turn_result.output is not None:
             finalize_events = planning_events + (
                 LoopStepFact(current_turn + 1, "finalize"),
                 ResponseReadyFact(
@@ -280,10 +282,9 @@ class ProviderTurnProducer:
                     turn_result.done_reason != "unknown" or turn_result.finish_reason_reported,
                 ),
             )
-            return TurnPlan(
+            return FinalTurn(
                 facts=finalize_events,
                 output=turn_result.output,
-                is_finished=True,
                 provider_usage=self._priced_usage(turn_result.usage),
                 reasoning=turn_result.reasoning,
             )
@@ -551,22 +552,11 @@ class ProviderTurnProducer:
         output = "".join(output_parts)
 
         if streamed_tool_calls:
-            return TurnPlan(
+            return ToolTurn(
                 facts=planning_events + tuple(stream_events),
-                tool_calls=streamed_tool_calls,
+                calls=streamed_tool_calls,
                 provider_usage=self._priced_usage(provider_usage),
                 reasoning="".join(reasoning_parts) or None,
-            )
-
-        if not output.strip():
-            raise self._provider_execution_error(
-                kind="transient_failure",
-                model_name=turn_request.model_name,
-                message="provider stream produced neither output nor tool calls (output was empty)",
-                details={
-                    "source": "graph_stream",
-                    "reason": "missing_terminal_outcome",
-                },
             )
 
         finalize_events = (
@@ -577,10 +567,9 @@ class ProviderTurnProducer:
                 ResponseReadyFact(output, done_reason, done_reason != "unknown" or raw_finish_reason is not None),
             )
         )
-        return TurnPlan(
+        return FinalTurn(
             facts=finalize_events,
             output=output,
-            is_finished=True,
             provider_usage=self._priced_usage(provider_usage),
             reasoning="".join(reasoning_parts) or None,
         )

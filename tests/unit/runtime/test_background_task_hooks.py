@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from tests.runtime_composition import create_task, save_run
 from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.hook.plan import (
     HookPlanValidationError,
@@ -29,7 +30,8 @@ from voidcode.runtime.storage import SqliteSessionStore
 
 
 def _session(store: SqliteSessionStore, workspace: Path, session_id: str, *, status: str = "running") -> None:
-    store.save_run(
+    save_run(
+        store,
         workspace=workspace,
         request=RuntimeRequest(prompt="session", session_id=session_id),
         response=RuntimeResponse(
@@ -129,7 +131,8 @@ def test_resolved_hook_plan_survives_session_reload_without_forged_execution(tmp
         agent_hook_refs=("role_reminder",),
     )
     store = SqliteSessionStore(database_path=database_path)
-    store.save_run(
+    save_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="child", session_id="child"),
         response=RuntimeResponse(
@@ -172,7 +175,8 @@ def test_resolved_hook_plan_survives_session_reload_without_forged_execution(tmp
         **plan_payload,
         "bindings": [{**binding, "command": list(forged_command), "argv": list(forged_command)}],
     }
-    restarted_store.save_run(
+    save_run(
+        restarted_store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="forged child", session_id="forged-child"),
         response=RuntimeResponse(
@@ -207,7 +211,7 @@ def test_background_lifecycle_failure_is_observable_without_changing_truth(
     store = SqliteSessionStore(database_path=tmp_path / f"hooks-{failure_mode}.sqlite3")
     _session(store, tmp_path, "child", status="completed")
     task = _task()
-    store.create_background_task(workspace=tmp_path, task=task)
+    create_task(store, workspace=tmp_path, task=task)
     store.mark_background_task_terminal(workspace=tmp_path, task_id=task.task.id, status="completed")
     supervisor = _supervisor(
         tmp_path,
@@ -283,7 +287,8 @@ def test_background_lifecycle_targets_parent_and_handles_sealed_or_unknown_paren
 
     # A notification observer can race parent sealing; dropping its event is
     # safe and must not mutate the sealed parent or throw from the worker path.
-    store.save_run(
+    save_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="leader", session_id="leader"),
         response=RuntimeResponse(

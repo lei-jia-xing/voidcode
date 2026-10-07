@@ -2,20 +2,22 @@
 
 ## 状态
 
-这是 VoidCode 首期 typed tool-input hook 的实现契约。当前 runtime 通过
-`builtin_tool_input_handler_registry()` 提供默认 builtin registry，其中注册了唯一一个
-binding `shell-non-interactive-env`（`_shell_non_interactive_env_handler`）：它只对
-`shell_exec` 命令的 non-interactive env 注入发出 bounded diagnostic，不改写参数。显式
-注入的 `ToolInputHandlerRegistry` 可以通过同一 stable composition seam 提供额外
-handlers。当前没有安全、通用且经过工具语义验证的 production canonicalizer，因此默认
-registry 不伪造 path/arguments rewrite，也不通过 `.voidcode.json` 或 `ResolvedHookPlan`
+这是 VoidCode 首期 typed tool-input hook 的实现契约。runtime 默认从
+`builtin_tool_input_handler_declarations()` 构建纯声明目录，目前仅含
+`shell-non-interactive-env`（version `1`，`_shell_non_interactive_env_handler`）：
+它只对 `shell_exec` 命令的 non-interactive env 注入发出 bounded diagnostic，不改写
+参数。声明目录在 runtime composition 时绑定真实 handler；显式注入也遵循相同的
+declaration → materialize seam。输入处理事件 metadata 使用 version `2`。
+
+当前没有安全、通用且经过工具语义验证的 production canonicalizer，因此默认 registry
+不伪造 path/arguments rewrite，也不通过 `.voidcode.json` 或 `ResolvedHookPlan`
 声明 handler。现有 argv hooks 保持不变。
 
 实现锚点：
 
 - `src/voidcode/hook/typed.py`：`ToolInputEvent`、`ToolInputDecision`、
-  `ToolInputHandlerBinding`、`ToolInputHandlerRegistry`、builtin composition helpers
-- `src/voidcode/runtime/service.py`：默认 builtin registry 与显式 runtime 注入
+  `ToolInputHandlerDeclaration`、`ToolInputHandlerBinding`、`ToolInputHandlerRegistry`
+- `src/voidcode/runtime/service.py`：builtin declaration catalog、binding materializer 与显式 runtime 注入
 - `src/voidcode/runtime/run_loop.py`：native tool 与 `invoke_tool` inner target 接入
 - `tests/unit/runtime/test_typed_tool_hooks.py`
 
@@ -183,15 +185,12 @@ authority。`runtime.tool_input_processed` 是 typed 专用事件，不复用 ar
 
 ## 稳定组合
 
-`ToolInputHandlerBinding` 提供：
-
-- 唯一的 handler name；
-- 显式 integer priority；
-- handler callable。
-
-Registry 先按 priority 升序排序；相同 priority 保持注册顺序。每个 handler 看到
-前一个 handler 成功 rewrite 后的当前参数 snapshot，因此组合是确定的。第一个
-block 短路；diagnostic 累积；多个 rewrite 按稳定顺序依次应用。
+`ToolInputHandlerDeclaration` 提供唯一 handler name、版本与 integer priority；纯声明
+目录不包含 callable。`ToolInputHandlerBinding` 将已声明条目与 handler callable 配对。
+`ToolInputHandlerRegistry.from_declarations()` 建立目录，`bind(materialize)` 要求每个
+materialized binding 与声明完全匹配。已绑定 handlers 按 priority 升序执行；相同
+priority 保持声明注册顺序。每个 handler 看到前一个成功 rewrite 后的当前参数 snapshot，
+因此组合是确定的。第一个 block 短路；diagnostic 累积；多个 rewrite 按稳定顺序依次应用。
 
 ## 与现有 runtime 治理的关系
 
@@ -211,5 +210,6 @@ Typed handler 不能放宽 agent tool allowlist、read-only policy、shell polic
 path policy、approval mode 或 delegation budget。Background lifecycle hooks 的
 post-truth observer 语义也不因 typed input hook 改变。
 
-本契约只覆盖 ToolInputHandler；context transform、provider
-request transform、extension registration 和 plan v3 不属于首期实现。
+本契约只定义 ToolInputHandler 的 invocation semantics；context transform、provider
+request transform 与 package composition 属于其他 extension family，不因此进入该
+input-hook executor。

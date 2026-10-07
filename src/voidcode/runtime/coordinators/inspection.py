@@ -24,6 +24,17 @@ from typing import TYPE_CHECKING
 from ...agent import AgentManifestRegistry
 from ...command import load_command_registry
 from ...command.models import CommandDefinition
+from ...core.tool_context import (
+    ArtifactInvalid,
+    ArtifactMissing,
+    ArtifactPage,
+    ArtifactRead,
+    ArtifactUnavailable,
+    TranscriptEntry,
+    TranscriptInaccessible,
+    TranscriptPage,
+    TranscriptRead,
+)
 from ...core.transcript import AssembledContext
 from ...mcp.redaction import redact_mcp_command
 from ...provider.auth import ProviderAuthResolver
@@ -623,7 +634,7 @@ class InspectionCoordinator:
         caller_session_id: str,
         session_id: str,
         limit: int | None = None,
-    ) -> dict[str, object] | None:
+    ) -> TranscriptRead:
         """Read bounded event identities for the caller or its delegated child."""
         validate_id(caller_session_id)
         self._load_stored_response(session_id=caller_session_id)
@@ -635,7 +646,7 @@ class InspectionCoordinator:
             try:
                 stored = self._load_stored_response(session_id=session_id)
             except UnknownSessionError, ValueError:
-                return None
+                return TranscriptInaccessible()
             session_state = stored.session
             events = stored.events
             status = stored.session.status
@@ -654,18 +665,17 @@ class InspectionCoordinator:
                 )
                 lineage_ok = task is not None and task.parent_session_id == caller_session_id
             if not lineage_ok:
-                return None
+                return TranscriptInaccessible()
         selected = events[:bounded_limit]
-        return {
-            "session_id": session_id,
-            "status": status,
-            "summary": summary,
-            "last_event_sequence": events[-1].sequence if events else 0,
-            "message_limit": bounded_limit,
-            "transcript_count": len(selected),
-            "transcript_truncated": len(events) > len(selected),
-            "transcript": [{"sequence": event.sequence, "event_type": event.event_type, "source": event.source} for event in selected],
-        }
+        return TranscriptPage(
+            session_id=session_id,
+            status=status,
+            summary=summary,
+            last_event_sequence=events[-1].sequence if events else 0,
+            message_limit=bounded_limit,
+            entries=tuple(TranscriptEntry(sequence=event.sequence, event_type=event.event_type, source=event.source) for event in selected),
+            truncated=len(events) > len(selected),
+        )
 
     def _events_with_runtime_policy_projection(
         self,
@@ -776,6 +786,25 @@ class InspectionCoordinator:
             raise ValueError(f"session {session_id} has no user turn to undo")
         return self.revert_session(session_id=session_id, sequence=latest_request)
 
+    def _resolve_tool_output_artifact_metadata(
+        self,
+        *,
+        session_id: str,
+        artifact_id: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> dict[str, object] | None:
+        validate_id(session_id)
+        result = self._sessions.load_session_result(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
+        validate_session_workspace(result.session, session_id=session_id, workspace=self._workspace)
+        return resolve_tool_output_artifact_metadata(
+            result.transcript,
+            artifact_id=artifact_id,
+            tool_call_id=tool_call_id,
+        )
+
     def resolve_tool_output_artifact(
         self,
         *,
@@ -784,14 +813,8 @@ class InspectionCoordinator:
         tool_call_id: str | None = None,
     ) -> dict[str, object]:
         """Resolve spilled tool output artifact metadata for a session."""
-        validate_id(session_id)
-        result = self._sessions.load_session_result(
-            workspace=self._workspace,
+        artifact = self._resolve_tool_output_artifact_metadata(
             session_id=session_id,
-        )
-        validate_session_workspace(result.session, session_id=session_id, workspace=self._workspace)
-        artifact = resolve_tool_output_artifact_metadata(
-            result.transcript,
             artifact_id=artifact_id,
             tool_call_id=tool_call_id,
         )
@@ -804,11 +827,19 @@ class InspectionCoordinator:
                 "session_id": session_id,
             }
         read_result = read_tool_output_artifact(artifact, offset=0, limit=0)
-        return {
-            **artifact,
-            "status": read_result["status"],
-            "artifact_missing": bool(read_result.get("artifact_missing")),
-        }
+        if isinstance(read_result, ArtifactPage):
+            status = "available"
+            artifact_missing = False
+        elif isinstance(read_result, ArtifactUnavailable):
+            status = "missing"
+            artifact_missing = True
+        elif isinstance(read_result, ArtifactInvalid):
+            status = "invalid"
+            artifact_missing = True
+        else:
+            status = "artifact_not_found"
+            artifact_missing = True
+        return {**artifact, "status": status, "artifact_missing": artifact_missing}
 
     def read_tool_output_artifact(
         self,
@@ -818,15 +849,15 @@ class InspectionCoordinator:
         tool_call_id: str | None = None,
         offset: int = 0,
         limit: int = 2000,
-    ) -> dict[str, object]:
+    ) -> ArtifactRead:
         """Read a bounded slice from a spilled tool output artifact."""
-        artifact = self.resolve_tool_output_artifact(
+        artifact = self._resolve_tool_output_artifact_metadata(
             session_id=session_id,
             artifact_id=artifact_id,
             tool_call_id=tool_call_id,
         )
-        if artifact.get("status") == "artifact_not_found":
-            return artifact
+        if artifact is None:
+            return ArtifactMissing()
         return read_tool_output_artifact(artifact, offset=offset, limit=limit)
 
     def search_tool_output_artifact(
@@ -1265,7 +1296,7 @@ class InspectionCoordinator:
         """Canonical id for a provider this runtime knows, or a loud error."""
         if not provider_name or "/" in provider_name:
             raise ValueError("provider_name must be a non-empty provider id without '/'")
-        return self._model_provider_registry.resolve_with_metadata(provider_name).provider_name
+        return self._model_provider_registry.resolve_static(provider_name).provider_name
 
     def refresh_provider_models(self, provider_name: str) -> tuple[str, ...]:
         canonical_name = self._canonical_known_provider_name(provider_name)
@@ -1301,7 +1332,7 @@ class InspectionCoordinator:
 
     def list_provider_summaries(self) -> tuple[ProviderSummary, ...]:
         return self._provider_summary_projector.project_all(
-            self._model_provider_registry.providers,
+            self._model_provider_registry.descriptors.keys(),
             current_provider=self._current_provider_name(),
             label_for=provider_label,
             is_configured=self._provider_is_configured,

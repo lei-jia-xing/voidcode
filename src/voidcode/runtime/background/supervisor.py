@@ -15,8 +15,10 @@ from ...hook.config import RuntimeHookSurface
 from ...hook.executor import LifecycleHookExecutionRequest, run_lifecycle_hooks
 from ...hook.plan import hook_plan_from_session_metadata
 from ...provider.models import ResolvedProviderConfig
+from ...tools.contracts import ProgressYield, TerminalYield
 from ..acp import append_parent_acp_delegated_lifecycle_event, publish_delegated_acp_event
 from ..active_session import ACTIVE_SESSION_REGISTRY
+from ..composition import CompositionRef, FrozenComposition, TaskCompositionOwner
 from ..config import RuntimeConfig
 from ..contracts import (
     BackgroundTaskGroupResult,
@@ -45,6 +47,7 @@ from ..events import (
 )
 from ..execution.seams import resolve_runtime_session_routing
 from ..execution_ownership import EXECUTION_OWNERSHIP, ExecutionLease, ExecutionOwnershipRevokedError
+from ..fact_codec import reported_call_from_event
 from ..hook_runtime import HOOK_RECURSION_ENV_VAR, hook_execution_policy_from_metadata
 from ..permission_policy import approval_request_id_from_waiting_response
 from ..runtime_debug import prompt_from_events
@@ -679,9 +682,33 @@ class RuntimeBackgroundTaskSupervisor:
             return "question_blocked"
         return task.status
 
-    def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
+    def start_background_task(
+        self,
+        request: RuntimeRequest,
+        *,
+        composition: FrozenComposition | None = None,
+    ) -> BackgroundTaskState:
+        raw_ref = request.metadata.get("composition_ref")
+        if raw_ref is None:
+            if composition is None:
+                raise ValueError("new background tasks require a frozen composition")
+            composition.verify()
+            composition_ref = None
+        else:
+            if composition is not None:
+                raise ValueError("background task retries must reuse their existing composition owner")
+            composition_ref = CompositionRef.model_validate(raw_ref)
+            if composition_ref.workspace != str(self._workspace):
+                raise ValueError("background task composition reference names a different workspace")
+            _ = self._recovery.load_execution_composition(ref=composition_ref)
         self.reconcile_background_tasks_if_needed()
         task_id = f"task-{uuid4().hex}"
+        if composition is not None:
+            composition_ref = composition.reference(
+                workspace=str(self._workspace),
+                owner=TaskCompositionOwner(kind="task", task_id=task_id),
+            )
+        assert composition_ref is not None
         initial_state = BackgroundTaskState(
             task=BackgroundTaskRef(id=task_id),
             status="queued",
@@ -690,10 +717,18 @@ class RuntimeBackgroundTaskSupervisor:
                 session_id=request.session_id,
                 parent_session_id=request.parent_session_id,
                 metadata={key: value for key, value in request.metadata.items()},
-                allocate_session_id=request.allocate_session_id,
+                # A direct runtime task without an explicit child id must never
+                # fall back to the shared local-cli session: each task owns a
+                # distinct composition reference and child transcript.
+                allocate_session_id=request.allocate_session_id or request.session_id is None,
             ),
         )
-        self._tasks.create_background_task(workspace=self._workspace, task=initial_state)
+        self._tasks.create_background_task(
+            workspace=self._workspace,
+            task=initial_state,
+            composition_ref=composition_ref,
+            composition=composition,
+        )
         registered_task = self._tasks.load_background_task(
             workspace=self._workspace,
             task_id=task_id,
@@ -1661,12 +1696,10 @@ class RuntimeBackgroundTaskSupervisor:
         result_available = task.result_available
         if not result_available and task.status != "cancelled" and child_result is not None:
             result_available = True
-        routing_error: str | None = None
         try:
             routing = task.routing_identity
-        except ValueError as exc:
+        except ValueError:
             routing = None
-            routing_error = str(exc)
         duration_seconds = self._duration_seconds(task=task)
         tool_call_count = self._tool_call_count(child_result=child_result)
         hook_reminder = self._hook_reminder_payload(task=task, child_result=child_result)
@@ -1681,8 +1714,9 @@ class RuntimeBackgroundTaskSupervisor:
             approval_request_id=task.approval_request_id,
             question_request_id=task.question_request_id,
             approval_blocked=approval_blocked,
+            handoff=self._child_handoff(child_result) if child_result is not None else None,
             summary_output=summary_output,
-            error=error or routing_error,
+            error=error,
             result_available=result_available,
             cancellation_cause=task.cancellation_cause,
             duration_seconds=duration_seconds,
@@ -1743,25 +1777,25 @@ class RuntimeBackgroundTaskSupervisor:
     def _child_progress(*, child_result: RuntimeSessionResult | None) -> tuple[dict[str, object], ...]:
         if child_result is None:
             return ()
+        from ...tools.yield_tool import (
+            YIELD_PROGRESS_MAX_RETAINED_CHARS,
+            YIELD_PROGRESS_MAX_SECTION_CHARS,
+            YIELD_PROGRESS_MAX_SECTIONS,
+        )
+
         retained: list[dict[str, object]] = []
         retained_chars = 0
         for event in child_result.transcript:
-            if event.event_type != RUNTIME_TOOL_COMPLETED or event.payload.get("tool") != "yield":
+            report = reported_call_from_event(event)
+            if report is None or report.final_tool_name != "yield" or not isinstance(report.result.control, ProgressYield):
                 continue
-            if event.payload.get("yield_kind") != "progress":
-                continue
-            progress = event.payload.get("progress")
-            if not isinstance(progress, dict):
-                continue
-            try:
-                encoded = json.dumps(progress, ensure_ascii=False, separators=(",", ":"), default=str)
-            except TypeError, ValueError:
-                continue
-            if len(encoded) > 4_096 or retained_chars + len(encoded) > 65_536:
+            progress = report.result.control.as_payload()
+            encoded = json.dumps(progress, ensure_ascii=False, separators=(",", ":"))
+            if len(encoded) > YIELD_PROGRESS_MAX_SECTION_CHARS or retained_chars + len(encoded) > YIELD_PROGRESS_MAX_RETAINED_CHARS:
                 break
-            retained.append(dict(progress))
+            retained.append(progress)
             retained_chars += len(encoded)
-            if len(retained) >= 100:
+            if len(retained) >= YIELD_PROGRESS_MAX_SECTIONS:
                 break
         return tuple(retained)
 
@@ -1785,21 +1819,19 @@ class RuntimeBackgroundTaskSupervisor:
         return f"Background child session {child_session_id}: {child_result.status}"
 
     @staticmethod
-    def _handoff_from_events(events: tuple[EventEnvelope, ...] | list[EventEnvelope]) -> dict[str, object] | None:
-        """Return the handoff identified by the shared child protocol."""
-        evidence = child_completion_evidence(events)
-        return None if evidence.handoff is None else dict(evidence.handoff)
+    def _handoff_from_events(events: tuple[EventEnvelope, ...] | list[EventEnvelope]) -> TerminalYield | None:
+        """Return the typed handoff identified by the shared child protocol."""
+        return child_completion_evidence(events).handoff
 
     @classmethod
-    def _child_handoff(cls, child_result: RuntimeSessionResult) -> dict[str, object] | None:
+    def _child_handoff(cls, child_result: RuntimeSessionResult) -> TerminalYield | None:
         return cls._handoff_from_events(child_result.transcript)
 
     @staticmethod
-    def _render_child_handoff(handoff: dict[str, object]) -> str:
-        lines = [str(handoff["summary"]).strip()]
-        data = handoff.get("data")
-        if isinstance(data, dict) and data:
-            lines.append("Structured output: " + json.dumps(data, sort_keys=True))
+    def _render_child_handoff(handoff: TerminalYield) -> str:
+        lines = [handoff.summary.strip()]
+        if handoff.data:
+            lines.append("Structured output: " + json.dumps(dict(handoff.data), sort_keys=True))
         return "\n".join(lines)
 
     def _delegated_lifecycle_payloads(
@@ -2520,8 +2552,7 @@ class RuntimeBackgroundTaskSupervisor:
         if current_task.output_schema is not None:
             handoff = self._handoff_from_events(session_response.events)
             if handoff is not None:
-                raw_data = handoff.get("data")
-                data = raw_data if isinstance(raw_data, dict) else {}
+                data = dict(handoff.data)
                 schema_validation = validate_structured_output(
                     data=data,
                     schema=current_task.output_schema,
@@ -3050,7 +3081,7 @@ class RuntimeBackgroundTaskSupervisor:
                     session_id=session_id,
                     parent_session_id=dispatch_task.request.parent_session_id,
                     metadata={
-                        **dispatch_task.request.metadata,
+                        **dispatch_task.request.as_runtime_request().metadata,
                         **({"background_rate_limit_retry": True} if retry_count < _BACKGROUND_TASK_RATE_LIMIT_RETRIES else {}),
                         "background_task_id": task_id,
                         "background_run": True,

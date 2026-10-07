@@ -5,7 +5,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from typing import Literal
 
-from ...core.transcript import AssembledContext, ContextSegment, ToolResultView
+from ...core.transcript import AssembledContext, ContextSegment, ToolResultView, output_text
 from ...provider.model_catalog import ToolFeedbackMode
 from ...security.redaction import (
     DEBUG_CONTENT_CHARS as _MAX_DEBUG_CONTENT_CHARS,
@@ -15,7 +15,7 @@ from ...security.redaction import (
     redact_text,
     truncate,
 )
-from ...tools.contracts import ToolResult
+from ...tools.contracts import ToolFailure, ToolResult
 from ...tools.output import (
     redacted_argument_keys_for_tool,
     sanitize_tool_arguments,
@@ -193,7 +193,7 @@ def _transform_diagnostics(
     if not isinstance(raw_transforms, dict):
         return ()
     transform_payload = raw_transforms
-    failure_policy = transform_payload.get("failure_policy")
+    request_failure_policy = transform_payload.get("failure_policy")
     applied = transform_payload.get("applied")
     if not isinstance(applied, list):
         return ()
@@ -210,8 +210,8 @@ def _transform_diagnostics(
             continue
         severity: Literal["info", "warning", "error"] = "info"
         if status == "error":
-            severity = "info" if failure_policy == "ignore" else "warning"
-            if failure_policy == "block":
+            severity = "info" if request_failure_policy == "ignore" else "warning"
+            if request_failure_policy == "block":
                 severity = "error"
         elif trace.get("diagnostics"):
             severity = "warning"
@@ -221,7 +221,10 @@ def _transform_diagnostics(
         details: dict[str, object] = {
             "status": status,
             "sources": trace.get("sources", []),
-            "failure_policy": failure_policy,
+            "provider_version": trace.get("provider_version"),
+            "scope": trace.get("scope"),
+            "failure_policy": trace.get("failure_policy"),
+            "request_failure_policy": request_failure_policy,
         }
         if isinstance(execution_index, int):
             details["execution_index"] = execution_index
@@ -454,28 +457,25 @@ def _tool_payload_json(segment: ContextSegment) -> str:
 
 
 def _tool_result_payload_json(result: ToolResult | ToolResultView) -> str:
-    sanitized_data = _sanitize_debug_data(result.data)
-    raw_arguments = sanitized_data.get("arguments")
-    sanitized_arguments = (
-        _provider_visible_debug_arguments(
-            result.tool_name,
-            raw_arguments,
-        )
-        if isinstance(raw_arguments, dict)
-        else {}
-    )
-    diagnostics = result.diagnostics
+    raw_arguments = dict(result.arguments) if isinstance(result, ToolResultView) else {}
+    arguments = _provider_visible_debug_arguments(result.tool_name, raw_arguments)
+    bounds = result.output.bounds
+    if isinstance(result, ToolResultView):
+        diagnostics = result.diagnostics
+        clipped = result.clipped or result.pruned
+    else:
+        diagnostics = result.diagnostics if isinstance(result, ToolFailure) else None
+        clipped = False
     payload = {
         "tool_name": result.tool_name,
-        "arguments": sanitized_arguments,
+        "arguments": arguments,
         "status": result.status,
-        "content": _redact_debug_text(result.content or ""),
-        "error": _safe_payload(result.error),
-        "data": {key: value for key, value in sanitized_data.items() if key not in {"tool_call_id", "arguments"}},
+        "content": _redact_debug_text(output_text(result.output) or ""),
+        "error": _safe_payload(result.error if isinstance(result, (ToolFailure, ToolResultView)) else None),
         "diagnostics": _safe_payload(diagnostics.as_payload()) if diagnostics is not None else None,
-        "truncated": result.truncated,
-        "partial": result.partial,
-        "reference": result.reference,
+        "truncated": bounds.truncated or clipped,
+        "partial": bounds.partial or clipped,
+        "reference": bounds.reference.uri if bounds.reference is not None else None,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 

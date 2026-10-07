@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import ClassVar, final
 
 from pydantic import BaseModel
@@ -9,12 +11,39 @@ from pydantic import BaseModel
 from ..core.tool_context import ToolContext
 from ..formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ..hook.config import RuntimeHooksConfig
+from ..security.json_values import json_wire_object, own_json_object
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._pydantic_args import parse_tool_args
 from ._repair import raise_tool_diagnostic
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 from .guards import enforce_read_before_write, enforce_seen_whole_file
+
+
+@dataclass(frozen=True, slots=True)
+class WriteResultBody:
+    path: str
+    byte_count: int
+    diff: str
+    formatter: Mapping[str, object] | None = None
+    diagnostics: tuple[Mapping[str, object], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.formatter is not None:
+            object.__setattr__(self, "formatter", own_json_object(self.formatter))
+        object.__setattr__(self, "diagnostics", tuple(own_json_object(item) for item in self.diagnostics))
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "path": self.path,
+            "byte_count": self.byte_count,
+            "diff": self.diff,
+        }
+        if self.formatter is not None:
+            payload["formatter"] = json_wire_object(self.formatter)
+        if self.diagnostics:
+            payload["diagnostics"] = [json_wire_object(item) for item in self.diagnostics]
+        return payload
 
 
 class WriteArgs(BaseModel):
@@ -40,7 +69,7 @@ class WriteTool:
                 "type": "string",
                 "description": (
                     "Required when the target file already exists: SHA-256 hash of the current file "
-                    "content, taken from data.content_hash of a prior read result. Rejects stale "
+                    "content, taken from the SHA-256 content hash shown in read output. Rejects stale "
                     "overwrites when the file changed since that read. Omit for brand-new files."
                 ),
             },
@@ -91,7 +120,9 @@ class WriteTool:
                     message="write requires an expectedHash argument when overwriting an existing file.",
                     error_kind="tool_input_mismatch",
                     reason="missing_expected_hash",
-                    retry_guidance=("Use read on the target path, copy data.content_hash from the result, then retry write with that expectedHash."),
+                    retry_guidance=(
+                        "Use read on the target path, copy its SHA-256 content hash from the output, then retry write with that expectedHash."
+                    ),
                     details={"path": display_path, "raw_path": args.path},
                 )
             actual_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
@@ -100,7 +131,7 @@ class WriteTool:
                     message="write rejected because the file changed since it was read (stale write).",
                     error_kind="stale_edit",
                     reason="content_hash_mismatch",
-                    retry_guidance="Read the file again, use the returned data.content_hash, then retry write.",
+                    retry_guidance="Read the file again, use the SHA-256 content hash shown in read output, then retry write.",
                     details={"expected_hash": expected_hash, "actual_hash": actual_hash, "path": display_path},
                 )
             enforce_seen_whole_file(
@@ -137,27 +168,24 @@ class WriteTool:
             )
         )
 
-        data: dict[str, object] = {
-            "path": display_path,
-            "byte_count": candidate.stat().st_size,
-            "diff": diff,
-        }
+        byte_count = candidate.stat().st_size
+        formatter = None
         if formatter_result is not None and formatter_result.status != "not_configured":
-            data["formatter"] = formatter_payload(formatter_result)
-            data["byte_count"] = len(candidate.read_text(encoding="utf-8").encode("utf-8"))
-        if diagnostics:
-            data["diagnostics"] = diagnostics
+            formatter = formatter_payload(formatter_result)
+            byte_count = len(candidate.read_text(encoding="utf-8").encode("utf-8"))
         lsp_diagnostics = post_edit_lsp_diagnostics(
             context=context,
             workspace=workspace_root,
             paths=[display_path],
         )
-        if lsp_diagnostics:
-            data["diagnostics"] = [*diagnostics, *lsp_diagnostics]
-
-        return ToolResult(
-            tool_name=self.definition.name,
-            status="ok",
-            content=content,
-            data=data,
+        return ToolSuccess(
+            self.definition.name,
+            output=TextOutput(content),
+            body=WriteResultBody(
+                path=display_path,
+                byte_count=byte_count,
+                diff=diff,
+                formatter=formatter,
+                diagnostics=tuple([*diagnostics, *lsp_diagnostics]),
+            ),
         )

@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from voidcode.core.turns import TurnPlan
+from voidcode.core.turns import FinalTurn, ToolTurn
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig, ProviderFallbackConfig
 from voidcode.provider.protocol import ProviderExecutionError
 from voidcode.runtime.config import RuntimeCompactionConfig, RuntimeConfig, RuntimeContextWindowConfig, RuntimeMcpConfig
@@ -35,7 +35,7 @@ class _OverflowScript:
 
     def __init__(
         self,
-        script: list[TurnPlan | str],
+        script: list[ToolTurn | FinalTurn | str],
         *,
         repeat_last: bool = False,
         provider: str = "session",
@@ -47,7 +47,7 @@ class _OverflowScript:
         self._provider = provider
         self._model = model
 
-    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> TurnPlan:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> ToolTurn | FinalTurn:
         _ = session
         self.calls.append(request.assembled_context)
         if not self._script:
@@ -75,8 +75,8 @@ def _workspace(tmp_path: Path) -> None:
         (tmp_path / f"big-{index}.txt").write_text(body, encoding="utf-8")
 
 
-def _reads() -> list[TurnPlan]:
-    return [TurnPlan(tool_calls=(ToolCall(tool_name="read", arguments={"path": f"big-{index}.txt"}),)) for index in range(READ_COUNT)]
+def _reads() -> list[ToolTurn]:
+    return [ToolTurn(calls=(ToolCall(tool_name="read", arguments={"path": f"big-{index}.txt"}),)) for index in range(READ_COUNT)]
 
 
 def _runtime(tmp_path: Path, graph: _OverflowScript, *, threshold: int = 2_000) -> VoidCodeRuntime:
@@ -230,7 +230,7 @@ def test_context_limit_prunes_and_retries_the_same_call(tmp_path: Path) -> None:
         [
             *_reads(),
             "overflow",
-            TurnPlan(output="recovered", is_finished=True),
+            FinalTurn(output="recovered"),
         ]
     )
 
@@ -258,12 +258,12 @@ def test_recovery_flag_tracks_the_max_winner_not_a_constant(tmp_path: Path) -> N
     _workspace(tmp_path)
     graph = _OverflowScript(
         [
-            TurnPlan(
-                tool_calls=(ToolCall(tool_name="read", arguments={"path": "big-0.txt"}),),
+            ToolTurn(
+                calls=(ToolCall(tool_name="read", arguments={"path": "big-0.txt"}),),
                 provider_usage=ProviderTokenUsage(input_tokens=90_000, output_tokens=100),
             ),
             "overflow",
-            TurnPlan(output="recovered", is_finished=True),
+            FinalTurn(output="recovered"),
         ]
     )
 
@@ -281,9 +281,9 @@ def test_a_small_overshoot_is_still_pruned_by_recovery(tmp_path: Path) -> None:
     _workspace(tmp_path)
     graph = _OverflowScript(
         [
-            TurnPlan(tool_calls=(ToolCall(tool_name="read", arguments={"path": "big-0.txt"}),)),
+            ToolTurn(calls=(ToolCall(tool_name="read", arguments={"path": "big-0.txt"}),)),
             "overflow",
-            TurnPlan(output="recovered", is_finished=True),
+            FinalTurn(output="recovered"),
         ]
     )
 
@@ -327,7 +327,7 @@ def test_repeated_context_limit_recovers_once_then_fails_resumably(tmp_path: Pat
     checkpoint = SqliteSessionStore().load_resume_checkpoint(workspace=tmp_path, session_id=SESSION_ID)
     assert checkpoint is not None
 
-    resumed_graph = _OverflowScript([TurnPlan(output="resumed after shrinking", is_finished=True)])
+    resumed_graph = _OverflowScript([FinalTurn(output="resumed after shrinking")])
     resumed = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ReadTool()]),

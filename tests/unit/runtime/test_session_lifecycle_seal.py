@@ -23,10 +23,11 @@ from typing import cast
 
 import pytest
 
+from tests.runtime_composition import create_task, save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.questions import PendingQuestionOption, PendingQuestionPrompt
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.turns import StreamFact, TurnPlan, TurnRequest, TurnSession
+from voidcode.core.turns import FinalTurn, ReportedCall, StreamFact, ToolTurn, TurnRequest, TurnSession
 from voidcode.provider.protocol import ProviderStreamEvent
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
@@ -42,17 +43,18 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     EventEnvelope,
 )
+from voidcode.runtime.execution.report_codec import report_payload
 from voidcode.runtime.permission import PendingApproval, PermissionPolicy
 from voidcode.runtime.question import PendingQuestion
 from voidcode.runtime.service import (
     RuntimeStreamChunk,
     SessionState,
-    ToolRegistry,
     VoidCodeRuntime,
 )
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SessionSealedError, SqliteSessionStore
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from voidcode.runtime.tool_registry import ToolRegistry
+from voidcode.tools.contracts import TerminalYield, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 from voidcode.tools.read import ReadTool
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
@@ -94,11 +96,11 @@ class _SuccessGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = tool_results
         if session.metadata.get("parent_session_id") is not None:
-            return TurnPlan(tool_calls=(ToolCall(tool_name="yield", arguments={"summary": request.prompt}),))
-        return TurnPlan(output=request.prompt, is_finished=True)
+            return ToolTurn(calls=(ToolCall(tool_name="yield", arguments={"summary": request.prompt}),))
+        return FinalTurn(output=request.prompt)
 
 
 def _seed_child_session_and_task(
@@ -110,14 +112,27 @@ def _seed_child_session_and_task(
     child_session_id: str,
     capability_snapshot: dict[str, object] | None = None,
 ) -> None:
-    """Persist a completed child session + running task row the way a worker would."""
-    metadata: dict[str, object] = {
-        "background_run": True,
-        "background_task_id": task_id,
-    }
+    """Persist a completed child session linked to its actual task owner."""
+    metadata: dict[str, object] = {"background_run": True, "background_task_id": task_id}
     if capability_snapshot is not None:
         metadata["agent_capability_snapshot"] = capability_snapshot
-    store.save_interrupted_checkpoint(
+        metadata["composition_ref"] = capability_snapshot["composition_ref"]
+    task = create_task(
+        store,
+        workspace=workspace,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id=task_id),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(prompt="child probe", parent_session_id=parent_session_id, metadata=metadata),
+            session_id=child_session_id,
+            created_at=1,
+            updated_at=1,
+            started_at=1,
+        ),
+    )
+    metadata["composition_ref"] = task.request.metadata["composition_ref"]
+    save_checkpoint(
+        store,
         workspace=workspace,
         session_id=child_session_id,
         prompt="child probe",
@@ -126,80 +141,37 @@ def _seed_child_session_and_task(
         last_event_sequence=0,
         create_if_missing=True,
     )
-    store.append_session_events(
-        workspace=workspace,
-        session_id=child_session_id,
-        events=(
-            ("runtime.request_received", "runtime", {"prompt": "child probe"}, None),
-            (
-                "runtime.tool_completed",
-                "tool",
-                {"tool": "yield", "status": "ok", "handoff": {"summary": "child done"}},
-                None,
-            ),
-            ("graph.response_ready", "graph", {"summary": "child done"}, None),
+    events = (
+        ("runtime.request_received", "runtime", {"prompt": "child probe"}, None),
+        (
+            "runtime.tool_completed",
+            "tool",
+            {
+                "tool": "yield",
+                "tool_call_id": "yield-call",
+                "status": "ok",
+                "handoff": {"summary": "child done", "data": {}},
+                "reported_call": report_payload(
+                    ReportedCall(
+                        "yield-call", "yield", {}, ToolSuccess("yield", output=TextOutput("child done"), control=TerminalYield("child done", {}))
+                    )
+                ),
+            },
+            None,
         ),
+        ("graph.response_ready", "graph", {"summary": "child done"}, None),
     )
+    store.append_session_events(workspace=workspace, session_id=child_session_id, events=events)
     store.save_run(
         workspace=workspace,
-        request=RuntimeRequest(
-            prompt="child probe",
-            session_id=child_session_id,
-            parent_session_id=parent_session_id,
-            metadata=metadata,
-        ),
+        request=RuntimeRequest(prompt="child probe", session_id=child_session_id, parent_session_id=parent_session_id, metadata=metadata),
         response=RuntimeResponse(
-            session=SessionState(
-                session=SessionRef(id=child_session_id, parent_id=parent_session_id),
-                status="completed",
-                turn=1,
-                metadata=metadata,
-            ),
-            events=(
-                EventEnvelope(
-                    session_id=child_session_id,
-                    sequence=1,
-                    event_type="runtime.request_received",
-                    source="runtime",
-                    payload={"prompt": "child probe"},
-                ),
-                EventEnvelope(
-                    session_id=child_session_id,
-                    sequence=2,
-                    event_type="runtime.tool_completed",
-                    source="tool",
-                    payload={
-                        "tool": "yield",
-                        "status": "ok",
-                        "handoff": {"summary": "child done"},
-                    },
-                ),
-                EventEnvelope(
-                    session_id=child_session_id,
-                    sequence=3,
-                    event_type="graph.response_ready",
-                    source="graph",
-                    payload={"summary": "child done"},
-                ),
+            session=SessionState(session=SessionRef(id=child_session_id, parent_id=parent_session_id), status="completed", turn=1, metadata=metadata),
+            events=tuple(
+                EventEnvelope(session_id=child_session_id, sequence=index, event_type=event_type, source=source, payload=payload)
+                for index, (event_type, source, payload, _) in enumerate(events, start=1)
             ),
             output="child done",
-        ),
-    )
-
-    store.create_background_task(
-        workspace=workspace,
-        task=BackgroundTaskState(
-            task=BackgroundTaskRef(id=task_id),
-            status="running",
-            request=BackgroundTaskRequestSnapshot(
-                prompt="child probe",
-                parent_session_id=parent_session_id,
-                metadata=metadata,
-            ),
-            session_id=child_session_id,
-            created_at=1,
-            updated_at=1,
-            started_at=1,
         ),
     )
 
@@ -214,8 +186,8 @@ def _seed_waiting_child_and_task(
     wait_kind: str,
     capability_snapshot: dict[str, object] | None = None,
 ) -> None:
-    """Persist a running task whose child is durably blocked on approval/question."""
-    metadata = {
+    """Persist a running task and blocked child with a canonical task owner."""
+    metadata: dict[str, object] = {
         "background_run": True,
         "background_task_id": task_id,
         "delegation": {
@@ -227,20 +199,42 @@ def _seed_waiting_child_and_task(
     }
     if capability_snapshot is not None:
         metadata["agent_capability_snapshot"] = capability_snapshot
+        metadata["composition_ref"] = capability_snapshot["composition_ref"]
+    request_id = f"{wait_kind}-request"
+    task = create_task(
+        store,
+        workspace=workspace,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id=task_id),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="waiting child",
+                session_id=child_session_id,
+                parent_session_id=parent_session_id,
+                metadata=metadata,
+            ),
+            session_id=child_session_id,
+            approval_request_id=request_id if wait_kind == "approval" else None,
+            question_request_id=request_id if wait_kind == "question" else None,
+            created_at=1,
+            updated_at=1,
+            started_at=1,
+        ),
+    )
+    metadata["composition_ref"] = task.request.metadata["composition_ref"]
     request = RuntimeRequest(
         prompt="waiting child",
         session_id=child_session_id,
         parent_session_id=parent_session_id,
         metadata=metadata,
     )
-    request_id = f"{wait_kind}-request"
     event_type = "runtime.approval_requested" if wait_kind == "approval" else "runtime.question_requested"
     event_payload: dict[str, object] = {"request_id": request_id}
     if wait_kind == "approval":
         event_payload.update({"tool": "write"})
     else:
         event_payload.update({"tool": "question", "question_count": 1, "questions": [{"header": "Proceed", "question": "Proceed?"}]})
-    waiting_response = RuntimeResponse(
+    response = RuntimeResponse(
         session=SessionState(
             session=SessionRef(id=child_session_id, parent_id=parent_session_id),
             status="waiting",
@@ -264,7 +258,8 @@ def _seed_waiting_child_and_task(
             ),
         ),
     )
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=workspace,
         session_id=child_session_id,
         prompt=request.prompt,
@@ -276,32 +271,13 @@ def _seed_waiting_child_and_task(
     store.append_session_events(
         workspace=workspace,
         session_id=child_session_id,
-        events=tuple((event.event_type, event.source, event.payload, None) for event in waiting_response.events),
-    )
-    store.create_background_task(
-        workspace=workspace,
-        task=BackgroundTaskState(
-            task=BackgroundTaskRef(id=task_id),
-            status="running",
-            request=BackgroundTaskRequestSnapshot(
-                prompt=request.prompt,
-                session_id=child_session_id,
-                parent_session_id=parent_session_id,
-                metadata=metadata,
-            ),
-            session_id=child_session_id,
-            approval_request_id=request_id if wait_kind == "approval" else None,
-            question_request_id=request_id if wait_kind == "question" else None,
-            created_at=1,
-            updated_at=1,
-            started_at=1,
-        ),
+        events=tuple((event.event_type, event.source, event.payload, None) for event in response.events),
     )
     if wait_kind == "approval":
         store.save_pending_approval(
             workspace=workspace,
             request=request,
-            response=waiting_response,
+            response=response,
             pending_approval=PendingApproval(
                 request_id=request_id,
                 tool_name="write",
@@ -320,7 +296,7 @@ def _seed_waiting_child_and_task(
         store.save_pending_question(
             workspace=workspace,
             request=request,
-            response=waiting_response,
+            response=response,
             pending_question=PendingQuestion(
                 request_id=request_id,
                 tool_name="question",
@@ -337,17 +313,10 @@ def _seed_waiting_child_and_task(
 
 
 # ---------------------------------------------------------------------------
-# Race 1: cancel vs tool-result arriving simultaneously
-# ---------------------------------------------------------------------------
-
-
 class _BlockingThenResultTool:
-    """Tool that blocks until released, then returns a real result."""
-
     definition = ToolDefinition(
         name="write",
         description="Probe that blocks until released and then returns a real result",
-        input_schema={"type": "object"},
         effects=frozenset({ToolEffect.WRITE}),
     )
 
@@ -362,12 +331,7 @@ class _BlockingThenResultTool:
         self.started.set()
         if not self.release.wait(timeout=5.0):
             raise RuntimeError("blocking tool was not released")
-        return ToolResult(
-            tool_name=self.definition.name,
-            status="ok",
-            content="real late result",
-            data={"tool_call_id": "late-call", "arguments": {}},
-        )
+        return ToolSuccess(tool_name=self.definition.name, output=TextOutput("real late result"))
 
 
 class _ToolThenNothingGraph:
@@ -376,10 +340,12 @@ class _ToolThenNothingGraph:
         request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
-    ) -> TurnPlan:
-        _ = request, tool_results, session
-        return TurnPlan(tool_calls=(ToolCall(tool_name="write", arguments={}),))
+        session: TurnSession,
+    ) -> ToolTurn | FinalTurn:
+        _ = request, session
+        if not tool_results:
+            return ToolTurn(calls=(ToolCall(tool_name="write", arguments={}),))
+        return FinalTurn(output="done")
 
 
 def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Path) -> None:
@@ -441,7 +407,19 @@ def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Pa
     assert events.append_session_events(
         workspace=tmp_path,
         session_id="race-1",
-        events=(("runtime.tool_completed", "tool", {"tool": "write", "status": "ok", "content": "late"}, None),),
+        events=(
+            (
+                "runtime.tool_completed",
+                "tool",
+                {
+                    "tool": "write",
+                    "status": "ok",
+                    "content": "late",
+                    "reported_call": report_payload(ReportedCall("write-call", "write", {}, ToolSuccess("write", output=TextOutput("late")))),
+                },
+                None,
+            ),
+        ),
     )
     assert (
         events.append_session_event(
@@ -475,9 +453,9 @@ def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> No
                 raise RuntimeError("streaming graph was not released")
             for index in range(3, 10):
                 yield StreamFact(ProviderStreamEvent(kind="delta", channel="text", text=f"delta-{index}"))
-            yield TurnPlan(output="done", is_finished=True)
+            yield FinalTurn(output="done")
 
-        def produce(self, request: TurnRequest, tool_results: tuple, *, session: TurnSession) -> TurnPlan:
+        def produce(self, request: TurnRequest, tool_results: tuple, *, session: TurnSession) -> ToolTurn | FinalTurn:
             raise AssertionError("streaming graph must not call step")
 
     graph = _StreamingGraph()
@@ -529,18 +507,18 @@ class _ApprovalThenDoneGraph:
         tool_results: tuple[object, ...],
         *,
         session: SessionState,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = session
         if not tool_results and "pre-seal steer" not in request.prompt:
-            return TurnPlan(
-                tool_calls=(
+            return ToolTurn(
+                calls=(
                     ToolCall(
                         tool_name="write",
                         arguments={"path": "alpha.txt", "content": "1"},
                     ),
                 )
             )
-        return TurnPlan(output="done", is_finished=True)
+        return FinalTurn(output="done")
 
 
 def _waiting_approval_request_id(response: RuntimeResponse) -> str:
@@ -587,9 +565,9 @@ def test_steer_queued_while_run_active_is_accepted(tmp_path: Path) -> None:
             tool_results: tuple[object, ...],
             *,
             session: TurnSession,
-        ) -> TurnPlan:
+        ) -> ToolTurn | FinalTurn:
             _ = request, tool_results, session
-            return TurnPlan(output="done", is_finished=True)
+            return FinalTurn(output="done")
 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -645,19 +623,22 @@ def test_same_run_followup_executes_each_real_read_once_in_input_order(tmp_path:
 
 def test_steer_rejected_on_interrupted_session_without_active_run(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.save_interrupted_checkpoint(
-        workspace=tmp_path,
-        session_id="interrupted-steer",
-        prompt="interrupted probe",
-        session_metadata={},
-        tool_results=(),
-        last_event_sequence=0,
-        create_if_missing=True,
-    )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         repositories=repositories_for_test_store(store),
+        turn_producer=_SuccessGraph(),
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
+    )
+    response = runtime.run(RuntimeRequest(prompt="interrupted probe", session_id="interrupted-steer"))
+    save_checkpoint(
+        store,
+        workspace=tmp_path,
+        session_id="interrupted-steer",
+        prompt="interrupted probe",
+        session_metadata=response.session.metadata,
+        tool_results=(),
+        last_event_sequence=len(response.events),
+        create_if_missing=False,
     )
 
     # An ``interrupted`` row with no active run is sealed: the run that left it
@@ -743,7 +724,19 @@ def test_child_background_completion_cannot_mutate_sealed_parent(tmp_path: Path)
         store.append_session_events(
             workspace=tmp_path,
             session_id="leader-session",
-            events=(("runtime.tool_completed", "tool", {"tool": "write", "status": "ok", "content": "late"}, None),),
+            events=(
+                (
+                    "runtime.tool_completed",
+                    "tool",
+                    {
+                        "tool": "write",
+                        "status": "ok",
+                        "content": "late",
+                        "reported_call": report_payload(ReportedCall("write-call", "write", {}, ToolSuccess("write", output=TextOutput("late")))),
+                    },
+                    None,
+                ),
+            ),
         )
     with pytest.raises(SessionSealedError):
         store.append_session_event(

@@ -1,22 +1,20 @@
 """before_compact seam: cancel skips compaction, non-cancel input is inert."""
 
-from __future__ import annotations
-
+from voidcode.core.transcript import ToolResultView, output_text
 from voidcode.runtime.config import RuntimeCompactionConfig
 from voidcode.runtime.context.window import (
     BeforeCompactInput,
     ContextWindowPolicy,
     prepare_provider_context,
 )
-from voidcode.tools.contracts import ToolResult
+from voidcode.tools.contracts import TextOutput
 
 
-def _result(content: str, tool_name: str = "read") -> ToolResult:
-    return ToolResult(tool_name=tool_name, status="ok", content=content)
+def _result(content: str, tool_name: str = "read") -> ToolResultView:
+    return ToolResultView("fixture-call", tool_name, {}, TextOutput(content), "ok")
 
 
-def _over_budget_results() -> tuple[ToolResult, ToolResult]:
-    # Sized so the reclaim crosses the production savings floor (20_000 tokens).
+def _over_budget_results() -> tuple[ToolResultView, ToolResultView]:
     return (_result("x" * 60_000), _result("y" * 60_000))
 
 
@@ -65,6 +63,8 @@ def test_compaction_never_splits_tool_result_boundary() -> None:
     assert window.dropped_tool_result_count == len(results)
     assert len(window.tool_results) == len(results)
     for rendered, original in zip(window.tool_results, results, strict=True):
-        assert rendered.result == original
-        assert (rendered.content or "").startswith("[Runtime context pruning:")
-        assert f"omitted_bytes={len(original.content or '')}" in (rendered.content or "")
+        assert rendered.tool_call_id == original.tool_call_id
+        rendered_content = output_text(rendered.output) or ""
+        original_content = output_text(original.output) or ""
+        assert rendered_content.startswith("[Runtime context pruning:")
+        assert f"omitted_bytes={len(original_content)}" in rendered_content

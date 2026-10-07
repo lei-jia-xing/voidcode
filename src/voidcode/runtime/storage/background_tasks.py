@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ..background.models import (
     BackgroundTaskRef,
@@ -19,6 +19,7 @@ from ..background.models import (
     is_delegated_reminder_stop_condition,
     validate_background_task_id,
 )
+from ..composition import CompositionRef, FrozenComposition, TaskCompositionOwner
 from ..contracts import (
     RoutingSchemaMode,
     RuntimeRequest,
@@ -31,7 +32,6 @@ from ..events import (
     RUNTIME_APPROVAL_REQUESTED,
     RUNTIME_QUESTION_REQUESTED,
 )
-from ..session import normalize_persisted_session_metadata
 from .rows import (
     BackgroundTaskReconcileRow,
     BackgroundTaskRow,
@@ -271,6 +271,10 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     inferred_approval_request_id = request_id
                 if event.event_type == RUNTIME_QUESTION_REQUESTED and inferred_question_request_id is None:
                     inferred_question_request_id = request_id
+        try:
+            self._background_task_runtime_row(connection=connection, workspace=workspace, task_id=background_task_id)
+        except UnknownBackgroundTaskError:
+            return
         updated_at = self._next_background_task_timestamp(connection=connection)
         _ = connection.execute(
             """
@@ -358,10 +362,39 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         *,
         workspace: Path,
         task: BackgroundTaskState,
+        composition_ref: CompositionRef,
+        composition: FrozenComposition | None = None,
     ) -> None:
         task_id = validate_background_task_id(task.task.id)
+        if not isinstance(composition_ref, CompositionRef):
+            raise TypeError("background task composition_ref must be a CompositionRef")
+        if composition_ref.workspace != str(workspace):
+            raise ValueError("background task composition reference workspace does not match")
+        metadata = dict(task.request.metadata)
+        if "bundle_import_provenance" in metadata:
+            raise ValueError("imported background task observations cannot be created for execution")
+        existing_ref = metadata.get("composition_ref")
+        if existing_ref is not None and CompositionRef.model_validate(existing_ref) != composition_ref:
+            raise ValueError("background task composition reference is immutable")
+        if "execution_composition" in metadata:
+            raise ValueError("background task request cannot supply an execution composition body")
+        metadata["composition_ref"] = composition_ref.model_dump(mode="json")
+        cast(Any, self)._session_composition_ref(metadata)
+        if composition is not None:
+            if not isinstance(composition, FrozenComposition):
+                raise TypeError("background task composition must be a FrozenComposition")
+            composition.verify()
+            if composition_ref.owner != TaskCompositionOwner(kind="task", task_id=task_id):
+                raise ValueError("initial background task composition must belong to the new task")
+            if composition_ref != composition.reference(workspace=str(workspace), owner=composition_ref.owner):
+                raise ValueError("background task composition reference does not match its frozen pair")
+            if task.status != "queued":
+                raise ValueError("initial background task composition requires a queued task")
+            metadata["execution_composition"] = composition.to_payload()
         routing = task.routing_identity
         with self._write_connect(workspace) as connection:
+            if composition is None:
+                cast(Any, self)._load_execution_composition(connection, composition_ref)
             linked_session_id = task.session_id or task.request.session_id
             initial_runtime_state = self._linked_session_background_task_runtime_state(
                 connection=connection,
@@ -397,7 +430,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     task.request.prompt,
                     task.request.session_id,
                     task.request.parent_session_id,
-                    json.dumps(task.request.metadata, sort_keys=True),
+                    json.dumps(metadata, sort_keys=True),
                     task.request.session_id,
                     routing.mode if routing is not None else None,
                     routing.subagent_type if routing is not None else None,
@@ -439,6 +472,8 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     """,
                 (str(workspace), task_id),
             )
+            if row is not None:
+                self._validate_background_task_composition(connection, decode_row(row, BackgroundTaskRow))
         if row is None:
             raise UnknownBackgroundTaskError(f"unknown background task: {task_id}")
         return self._background_task_state_from_row(decode_row(row, BackgroundTaskRow))
@@ -477,7 +512,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
     def list_queued_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]:
         return self._list_task_summaries(
             workspace=workspace,
-            where_sql=" AND status = 'queued'",
+            where_sql=" AND status = 'queued' AND json_type(request_metadata_json, '$.bundle_import_provenance') IS NULL",
             params=(),
             order_sql="created_at ASC, task_id ASC",
         )
@@ -491,7 +526,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         """
         return self._list_task_summaries(
             workspace=workspace,
-            where_sql=" AND status = 'running'",
+            where_sql=" AND status = 'running' AND json_type(request_metadata_json, '$.bundle_import_provenance') IS NULL",
             params=(),
             order_sql="updated_at ASC, task_id ASC",
         )
@@ -539,6 +574,8 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     """,
                 (str(workspace), child_session_id),
             )
+            if row is not None:
+                self._validate_background_task_composition(connection, decode_row(row, BackgroundTaskRow))
         if row is None:
             return None
         return self._background_task_state_from_row(decode_row(row, BackgroundTaskRow))
@@ -1001,6 +1038,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                      AND sessions.session_id = background_tasks.session_id
                     WHERE background_tasks.workspace_id = ?
                       AND {incomplete_status_predicate}
+                      AND json_type(background_tasks.request_metadata_json, '$.bundle_import_provenance') IS NULL
                       AND NOT (
                           background_tasks.status = 'running'
                           AND background_tasks.session_id IS NOT NULL
@@ -1020,6 +1058,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             for row in rows:
                 task_data = decode_row(row, BackgroundTaskReconcileRow)
                 task_id = task_data["task_id"]
+                self._background_task_runtime_row(connection=connection, workspace=workspace, task_id=task_id)
                 cancel_requested_at = task_data["cancel_requested_at"]
                 updated_at = self._next_background_task_timestamp(connection=connection)
                 if cancel_requested_at is not None:
@@ -1148,6 +1187,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         """
         task_id = validate_background_task_id(task_id)
         with self._write_connect(workspace) as connection:
+            self._background_task_runtime_row(connection=connection, workspace=workspace, task_id=task_id)
             _ = connection.execute(
                 """
                 UPDATE background_tasks
@@ -1170,7 +1210,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         metadata = json.loads(row["request_metadata_json"])
         if not isinstance(metadata, dict):
             raise ValueError("background task metadata must decode to an object")
-        metadata = normalize_persisted_session_metadata(metadata)
+        self._background_task_metadata_ref(row, metadata)
         return BackgroundTaskState(
             task=BackgroundTaskRef(id=row["task_id"]),
             status=self._parse_background_task_status(row["status"]),
@@ -1204,6 +1244,28 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             schema_validation=self._schema_validation_from_json(row["schema_validation_json"]),
         )
 
+    def _background_task_metadata_ref(self, row: BackgroundTaskRow, metadata: dict[str, object]) -> CompositionRef:
+        ref = cast(Any, self)._session_composition_ref(metadata)
+        if ref.workspace != row["workspace_id"]:
+            raise ValueError("background task composition reference workspace does not match")
+        if "execution_composition" in metadata:
+            frozen = FrozenComposition.from_payload(metadata["execution_composition"])
+            if ref.owner != TaskCompositionOwner(kind="task", task_id=row["task_id"]):
+                raise ValueError("background task composition body must belong to its task owner")
+            if ref != frozen.reference(workspace=row["workspace_id"], owner=ref.owner):
+                raise ValueError("background task composition reference does not match its frozen pair")
+        elif ref.owner == TaskCompositionOwner(kind="task", task_id=row["task_id"]):
+            raise ValueError("background task owner is missing its frozen composition")
+        return ref
+
+    def _validate_background_task_composition(self, connection: sqlite3.Connection, row: BackgroundTaskRow) -> dict[str, object]:
+        metadata = json.loads(row["request_metadata_json"])
+        if not isinstance(metadata, dict):
+            raise ValueError("background task metadata must decode to an object")
+        ref = self._background_task_metadata_ref(row, metadata)
+        cast(Any, self)._load_execution_composition(connection, ref)
+        return metadata
+
     def _background_task_runtime_row(
         self,
         *,
@@ -1221,7 +1283,11 @@ class _BackgroundTaskStorageMixin(_MixinBase):
         )
         if row is None:
             raise UnknownBackgroundTaskError(f"unknown background task: {task_id}")
-        return decode_row(row, BackgroundTaskRow)
+        decoded = decode_row(row, BackgroundTaskRow)
+        metadata = self._validate_background_task_composition(connection, decoded)
+        if "bundle_import_provenance" in metadata:
+            raise ValueError("imported background task observations are not executable")
+        return decoded
 
     def _next_background_task_timestamp(self, *, connection: sqlite3.Connection) -> int:
         return self._next_sequence_value(connection=connection, scope="background_tasks")

@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import pytest
 
-from voidcode.tools.contracts import ToolDiagnostics, ToolResult
+from voidcode.tools.contracts import TextOutput, ToolDiagnostics, ToolFailure, ToolSuccess
 
 
 def _runtime_module() -> ModuleType:
@@ -41,11 +41,10 @@ def test_contracts_are_frozen_and_isolate_default_state() -> None:
 
 
 def test_tool_result_validates_status_consistently() -> None:
-    with pytest.raises(ValueError):
-        ToolResult(tool_name="bash", status="error")
-
-    with pytest.raises(ValueError):
-        ToolResult(tool_name="bash", status="ok", error="unexpected")
+    success = ToolSuccess(tool_name="bash", output=TextOutput("ok"))
+    failure = ToolFailure(tool_name="bash", error="failed")
+    assert success.status == "ok"
+    assert failure.status == "error"
 
 
 def test_tool_result_diagnostics_is_redacted_and_json_safe() -> None:
@@ -58,8 +57,8 @@ def test_tool_result_diagnostics_is_redacted_and_json_safe() -> None:
     payload = diagnostics.as_payload()
     assert "secret-token" not in json.dumps(payload)
     assert ToolDiagnostics.from_payload(payload) == diagnostics
-    with pytest.raises(ValueError):
-        ToolResult(tool_name="read", status="ok", diagnostics=diagnostics)
+    failure = ToolFailure(tool_name="read", error="timed out", diagnostics=diagnostics)
+    assert failure.diagnostics == diagnostics
 
 
 def test_runtime_and_graph_protocols_are_runtime_checkable() -> None:

@@ -22,8 +22,130 @@ class EditSchema(StrEnum):
     STRICT = "strict"
 
 
+@dataclass(frozen=True, slots=True)
+class PageEnd:
+    """The requested page has no following line page."""
+
+
+@dataclass(frozen=True, slots=True)
+class NextPage:
+    offset: int
+
+
+type PagePosition = PageEnd | NextPage
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactMissing:
+    """No artifact is visible to the caller."""
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactInvalid:
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactUnavailable:
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactPage:
+    artifact_id: str
+    text: str
+    line_count: int
+    offset: int
+    limit: int
+    page: PagePosition
+
+    def as_payload(self) -> dict[str, object]:
+        next_offset = self.page.offset if isinstance(self.page, NextPage) else None
+        return {
+            "artifact_id": self.artifact_id,
+            "status": "available",
+            "offset": self.offset,
+            "limit": self.limit,
+            "line_count": self.line_count,
+            "next_offset": next_offset,
+        }
+
+
+type ArtifactRead = ArtifactMissing | ArtifactInvalid | ArtifactUnavailable | ArtifactPage
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptInaccessible:
+    """The target does not exist or is outside the caller's admitted lineage."""
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptEntry:
+    sequence: int
+    event_type: str
+    source: str
+
+    def as_payload(self) -> dict[str, object]:
+        return {"sequence": self.sequence, "event_type": self.event_type, "source": self.source}
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptPage:
+    session_id: str
+    status: str
+    summary: str | None
+    last_event_sequence: int
+    message_limit: int
+    entries: tuple[TranscriptEntry, ...]
+    truncated: bool
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "status": self.status,
+            "summary": self.summary,
+            "last_event_sequence": self.last_event_sequence,
+            "message_limit": self.message_limit,
+            "transcript_count": len(self.entries),
+            "transcript_truncated": self.truncated,
+            "transcript": [entry.as_payload() for entry in self.entries],
+        }
+
+
+type TranscriptRead = TranscriptInaccessible | TranscriptPage
+
+
+@dataclass(frozen=True, slots=True)
+class RulePage:
+    rule: str
+    path: str
+    scope: str
+    precedence: int
+    application: str
+    content_hash: str
+    text: str
+    offset: int
+    limit: int
+    page: PagePosition
+    byte_truncated: bool
+
+    def as_payload(self) -> dict[str, object]:
+        next_offset = self.page.offset if isinstance(self.page, NextPage) else None
+        return {
+            "rule": self.rule,
+            "path": self.path,
+            "scope": self.scope,
+            "precedence": self.precedence,
+            "application": self.application,
+            "content_hash": self.content_hash,
+            "offset": self.offset,
+            "limit": self.limit,
+            "next_offset": next_offset,
+        }
+
+
 class RuleReader(Protocol):
-    def __call__(self, path: str, *, workspace: Path, offset: int, limit: int) -> dict[str, object]: ...
+    def __call__(self, path: str, *, workspace: Path, offset: int, limit: int) -> RulePage: ...
 
 
 class ToolCommandHandler(Protocol):
@@ -42,7 +164,7 @@ class ArtifactReader(Protocol):
         artifact_id: str,
         offset: int | None = None,
         limit: int | None = None,
-    ) -> dict[str, object] | None: ...
+    ) -> ArtifactRead: ...
 
 
 class TranscriptReader(Protocol):
@@ -52,7 +174,7 @@ class TranscriptReader(Protocol):
         caller_session_id: str,
         session_id: str,
         limit: int | None = None,
-    ) -> dict[str, object] | None: ...
+    ) -> TranscriptRead: ...
 
 
 class LspDiagnostics(Protocol):
@@ -110,7 +232,9 @@ class ToolContext:
     delegation_depth: int = 0
     remaining_spawn_budget: int | None = None
     read_paths: frozenset[str] = frozenset()
-    read_lines: Mapping[str, frozenset[int]] = MappingProxyType({})
+    read_lines: Mapping[tuple[str, str], frozenset[int]] = MappingProxyType({})
+    read_whole_files: frozenset[tuple[str, str]] = frozenset()
+    read_hash: str | None = None
     model: str | None = None
     edit_schema: EditSchema = EditSchema.FLEXIBLE
     todo_phases: tuple[TodoPhase, ...] = ()

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 import pytest
 
 from voidcode.core.tool_context import ToolContext
-from voidcode.tools.contracts import ToolCall
-from voidcode.tools.glob import GlobTool
+from voidcode.tools.contracts import TextOutput, ToolCall
+from voidcode.tools.glob import GlobResultBody, GlobTool
 
 
 def test_glob_tool_finds_matching_files(tmp_path: Path) -> None:
@@ -22,7 +21,8 @@ def test_glob_tool_finds_matching_files(tmp_path: Path) -> None:
         ToolCall(tool_name="glob", arguments={"pattern": "*.py"}),
         context=ToolContext(workspace=tmp_path),
     )
-    content = cast(list[str], result.data["matches"])
+    assert isinstance(result.body, GlobResultBody)
+    content = result.body.matches
 
     assert result.tool_name == "glob"
     assert result.status == "ok"
@@ -30,8 +30,8 @@ def test_glob_tool_finds_matching_files(tmp_path: Path) -> None:
     assert "main.py" in content
     assert "README.md" not in content
     assert "data.txt" not in content
-    assert result.data["pattern"] == "*.py"
-    assert result.data["count"] == 2
+    assert result.body.pattern == "*.py"
+    assert result.body.count == 2
 
 
 def test_glob_tool_returns_no_files_when_none_match(tmp_path: Path) -> None:
@@ -44,7 +44,8 @@ def test_glob_tool_returns_no_files_when_none_match(tmp_path: Path) -> None:
         context=ToolContext(workspace=tmp_path),
     )
 
-    assert result.data["count"] == 0
+    assert isinstance(result.body, GlobResultBody)
+    assert result.body.count == 0
 
 
 def test_glob_tool_rejects_empty_pattern(tmp_path: Path) -> None:
@@ -69,7 +70,8 @@ def test_glob_tool_respects_path_argument(tmp_path: Path) -> None:
         ToolCall(tool_name="glob", arguments={"pattern": "*.txt", "path": "subdir"}),
         context=ToolContext(workspace=tmp_path),
     )
-    content = cast(list[str], result.data["matches"])
+    assert isinstance(result.body, GlobResultBody)
+    content = result.body.matches
 
     assert "subdir/nested.txt" in content
     assert "root.txt" not in content
@@ -87,7 +89,8 @@ def test_glob_tool_ignores_common_directories(tmp_path: Path) -> None:
         ToolCall(tool_name="glob", arguments={"pattern": "**/*.js"}),
         context=ToolContext(workspace=tmp_path),
     )
-    content = cast(str, result.content)
+    assert isinstance(result.output, TextOutput)
+    content = result.output.text
 
     assert "dep.js" not in content
 
@@ -108,7 +111,8 @@ def test_glob_tool_applies_hidden_gitignore_and_limit_filters(tmp_path: Path) ->
         ),
         context=ToolContext(workspace=tmp_path),
     )
-    visible = cast(list[str], filtered.data["matches"])
+    assert isinstance(filtered.body, GlobResultBody)
+    visible = filtered.body.matches
     assert ".hidden.py" not in visible
     assert "generated.py" not in visible
     assert "keep.py" in visible
@@ -117,5 +121,6 @@ def test_glob_tool_applies_hidden_gitignore_and_limit_filters(tmp_path: Path) ->
         ToolCall(tool_name="glob", arguments={"pattern": "*.py", "include_hidden": False, "limit": 1}),
         context=ToolContext(workspace=tmp_path),
     )
-    assert bounded.data["count"] == 1
-    assert bounded.data["truncated"] is True
+    assert isinstance(bounded.body, GlobResultBody)
+    assert bounded.body.count == 1
+    assert bounded.body.truncated is True

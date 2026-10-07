@@ -14,16 +14,17 @@ module never pierces runtime privates and adds no new storage write paths.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...core.transcript import ToolResultView
+from ...core.turns import ReportedCall
 from ...mcp import McpCachedToolSurface, McpToolDescriptor
 from ...provider.model_catalog import static_catalog_metadata
 from ...provider.protocol import ProviderAbortSignal
 from ...skills import SkillRegistry, skill_registry_with_builtins
-from ...tools.contracts import Tool, ToolResult
+from ...tools.contracts import Tool
 from ..config import RuntimeSkillsConfig
 from ..config_materializer import (
     EffectiveRuntimeConfig,
@@ -121,7 +122,7 @@ class StreamPrepCoordinator:
         self,
         *,
         prompt: str,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall | ToolResultView, ...],
         session_metadata: dict[str, object],
         policy: ContextWindowPolicy | None = None,
         abort_signal: ProviderAbortSignal | None = None,  # noqa: ARG002 — retained by RuntimeSurface protocol for abort-aware callers.
@@ -211,28 +212,10 @@ class StreamPrepCoordinator:
             return self._skill_registry
         return self.build_skill_registry(self.skills_config_for_effective_config(effective_config))
 
-    @staticmethod
-    def mcp_tools_from_descriptors(
-        descriptors: Iterable[McpToolDescriptor],
-    ) -> tuple[Tool, ...]:
-        from ...tools.mcp import McpTool
-
-        return tuple(
-            McpTool(
-                server_name=tool.server_name,
-                tool_name=tool.tool_name,
-                description=tool.description,
-                input_schema=tool.input_schema,
-                safety=tool.safety,
-            )
-            for tool in descriptors
-            if tool.enabled
-        )
-
-    def build_mcp_tools(self) -> tuple[Tool, ...]:
+    def list_mcp_descriptors(self) -> tuple[McpToolDescriptor, ...]:
         if self._mcp_manager is None or self._mcp_manager.current_state().mode != "managed":
             return ()
-        return self.mcp_tools_from_descriptors(self._mcp_manager.list_tools(workspace=self._workspace))
+        return self._mcp_manager.list_tools(workspace=self._workspace)
 
     def mcp_cached_surface(self) -> McpCachedToolSurface:
         """Passively remembered MCP surface for the configured servers."""

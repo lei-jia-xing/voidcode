@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
 from ..core.tool_context import ToolContext
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._gitignore import GitIgnoreMatcher
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 
 DEFAULT_IGNORE_PATTERNS = frozenset(
     [
@@ -34,6 +35,28 @@ LIMIT = 100
 #: Upper bound for an explicit ``limit`` so one call cannot materialize an
 #: unbounded match list.
 MAX_RESULT_LIMIT = 5000
+
+
+@dataclass(frozen=True, slots=True)
+class GlobResultBody:
+    pattern: str
+    path: str
+    count: int
+    truncated: bool
+    matches: tuple[str, ...]
+    search_error: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "pattern": self.pattern,
+            "path": self.path,
+            "count": self.count,
+            "truncated": self.truncated,
+            "matches": list(self.matches),
+        }
+        if self.search_error is not None:
+            payload["search_error"] = self.search_error
+        return payload
 
 
 class GlobTool:
@@ -171,34 +194,27 @@ class GlobTool:
 
         output = f"Found {len(relative_matches)} file(s)" + ("; results are truncated." if truncated else ".")
 
-        data: dict[str, object] = {
-            "pattern": pattern_value,
-            "path": path_display,
-            "count": len(relative_matches),
-            "truncated": truncated,
-            "matches": relative_matches,
-        }
-
+        body = GlobResultBody(
+            pattern=pattern_value,
+            path=path_display,
+            count=len(relative_matches),
+            truncated=truncated,
+            matches=tuple(relative_matches),
+            search_error=search_error,
+        )
         if search_error is not None:
             error_message = f"glob search failed: {search_error}"
-            data["search_error"] = search_error
-            return ToolResult(
+            return ToolFailure(
                 tool_name=self.definition.name,
-                status="error",
-                content=error_message,
-                data=data,
                 error=error_message,
-                truncated=truncated,
-                partial=True,
+                output=TextOutput(error_message, bounds=OutputBounds(truncated=truncated, partial=True)),
+                body=body,
             )
 
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.definition.name,
-            status="ok",
-            content=output,
-            data=data,
-            truncated=truncated,
-            partial=truncated,
+            output=TextOutput(output, bounds=OutputBounds(truncated=truncated, partial=truncated)),
+            body=body,
         )
 
 

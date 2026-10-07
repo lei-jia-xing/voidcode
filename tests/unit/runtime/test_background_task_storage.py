@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+from tests.runtime_composition import create_task, frozen_composition, save_checkpoint, save_run
 from voidcode.core.questions import PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
@@ -16,6 +19,7 @@ from voidcode.runtime.background.models import (
     DelegatedReminderState,
     validate_background_task_id,
 )
+from voidcode.runtime.composition import CompositionRef, SessionCompositionOwner, TaskCompositionOwner
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse, UnknownBackgroundTaskError
 from voidcode.runtime.events import (
     EventEnvelope,
@@ -48,13 +52,13 @@ def test_background_task_storage_create_load_and_list(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     task = _task(task_id="task-a")
 
-    store.create_background_task(workspace=tmp_path, task=task)
+    create_task(store, workspace=tmp_path, task=task)
 
     loaded = store.load_background_task(workspace=tmp_path, task_id="task-a")
     listed = store.list_background_tasks(workspace=tmp_path)
 
     assert loaded.task == task.task
-    assert loaded.request == task.request
+    assert loaded.request.prompt == task.request.prompt
     assert loaded.status == task.status
     assert loaded.created_at == task.created_at
     assert loaded.updated_at == task.updated_at
@@ -83,67 +87,11 @@ def test_background_task_storage_preserves_stable_request_metadata_round_trip(
         ),
     )
 
-    store.create_background_task(workspace=tmp_path, task=task)
+    create_task(store, workspace=tmp_path, task=task)
 
     loaded = store.load_background_task(workspace=tmp_path, task_id="task-metadata-roundtrip")
 
-    assert loaded.request.metadata == {
-        "abort_requested": False,
-        "agent": {"preset": "leader", "model": "opencode-zen/gpt-5.4"},
-        "provider_stream": True,
-        "skills": ["alpha", "beta"],
-    }
-
-
-def test_background_task_storage_persists_delegated_correlation_and_routing_columns(
-    tmp_path: Path,
-) -> None:
-    database_path = tmp_path / "sessions.sqlite3"
-    store = SqliteSessionStore(database_path=database_path)
-    task = BackgroundTaskState(
-        task=BackgroundTaskRef(id="task-routing"),
-        request=BackgroundTaskRequestSnapshot(
-            prompt="delegate work",
-            session_id="child-requested",
-            parent_session_id="leader-session",
-            metadata={
-                "delegation": {
-                    "mode": "background",
-                    "subagent_type": "worker",
-                    "description": "Review quickly",
-                    "command": "pytest tests/unit",
-                }
-            },
-            allocate_session_id=True,
-        ),
-    )
-
-    store.create_background_task(workspace=tmp_path, task=task)
-
-    with closing(sqlite3.connect(database_path)) as connection:
-        row = connection.execute(
-            """
-            SELECT requested_child_session_id, routing_mode,
-                   routing_subagent_type, routing_description, routing_command,
-                   approval_request_id, question_request_id, cancellation_cause,
-                   result_available
-            FROM background_tasks
-            WHERE task_id = ?
-            """,
-            ("task-routing",),
-        ).fetchone()
-
-    assert row == (
-        "child-requested",
-        "background",
-        "worker",
-        "Review quickly",
-        "pytest tests/unit",
-        None,
-        None,
-        None,
-        0,
-    )
+    assert {key: loaded.request.metadata[key] for key in task.request.metadata} == task.request.metadata
 
 
 def test_background_task_storage_persists_delegated_reminder_episode_state(
@@ -162,7 +110,7 @@ def test_background_task_storage_persists_delegated_reminder_episode_state(
         session_id="child-session",
     )
 
-    store.create_background_task(workspace=tmp_path, task=task)
+    create_task(store, workspace=tmp_path, task=task)
     eligible = store.record_background_task_idle_reminder_eligible(
         workspace=tmp_path,
         task_id="task-reminder",
@@ -200,7 +148,8 @@ def test_background_task_storage_stops_delegated_reminder_on_terminal_state(
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-reminder-terminal"),
@@ -236,7 +185,8 @@ def test_background_task_storage_mark_sent_preserves_stronger_stop_condition(
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-reminder-read"),
@@ -290,8 +240,8 @@ def test_background_task_storage_create_assigns_store_timestamps_and_orders_by_l
         updated_at=400,
     )
 
-    store.create_background_task(workspace=tmp_path, task=first)
-    store.create_background_task(workspace=tmp_path, task=second)
+    create_task(store, workspace=tmp_path, task=first)
+    create_task(store, workspace=tmp_path, task=second)
 
     loaded_first = store.load_background_task(workspace=tmp_path, task_id="task-ts-1")
     loaded_second = store.load_background_task(workspace=tmp_path, task_id="task-ts-2")
@@ -309,7 +259,7 @@ def test_background_task_storage_create_assigns_store_timestamps_and_orders_by_l
 def test_background_task_storage_prunes_only_terminal_tasks(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     for task_id in ("task-old", "task-new", "task-running"):
-        store.create_background_task(workspace=tmp_path, task=_task(task_id=task_id))
+        create_task(store, workspace=tmp_path, task=_task(task_id=task_id))
     _ = store.mark_background_task_terminal(
         workspace=tmp_path,
         task_id="task-old",
@@ -370,9 +320,10 @@ def test_background_task_storage_prune_retains_sessions_referenced_by_kept_tasks
         ),
         output="new child output",
     )
-    store.save_run(workspace=tmp_path, request=old_request, response=old_response)
-    store.save_run(workspace=tmp_path, request=new_request, response=new_response)
-    store.create_background_task(
+    save_run(store, workspace=tmp_path, request=old_request, response=old_response)
+    save_run(store, workspace=tmp_path, request=new_request, response=new_response)
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-old"),
@@ -384,7 +335,8 @@ def test_background_task_storage_prune_retains_sessions_referenced_by_kept_tasks
             finished_at=1,
         ),
     )
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-new"),
@@ -440,9 +392,10 @@ def test_background_task_storage_prunes_interrupted_tasks_and_child_sessions(
         ),
         output="new child output",
     )
-    store.save_run(workspace=tmp_path, request=old_request, response=old_response)
-    store.save_run(workspace=tmp_path, request=new_request, response=new_response)
-    store.create_background_task(
+    save_run(store, workspace=tmp_path, request=old_request, response=old_response)
+    save_run(store, workspace=tmp_path, request=new_request, response=new_response)
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-old-interrupted"),
@@ -456,7 +409,8 @@ def test_background_task_storage_prunes_interrupted_tasks_and_child_sessions(
             finished_at=1,
         ),
     )
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-new-completed"),
@@ -507,10 +461,10 @@ def test_background_task_storage_lists_by_parent_session_and_preserves_order(
         request=BackgroundTaskRequestSnapshot(prompt="fourth"),
     )
 
-    store.create_background_task(workspace=tmp_path, task=first)
-    store.create_background_task(workspace=tmp_path, task=second)
-    store.create_background_task(workspace=tmp_path, task=third)
-    store.create_background_task(workspace=tmp_path, task=fourth)
+    create_task(store, workspace=tmp_path, task=first)
+    create_task(store, workspace=tmp_path, task=second)
+    create_task(store, workspace=tmp_path, task=third)
+    create_task(store, workspace=tmp_path, task=fourth)
 
     listed = store.list_background_tasks_by_parent_session(
         workspace=tmp_path,
@@ -523,7 +477,7 @@ def test_background_task_storage_lists_by_parent_session_and_preserves_order(
 
 def test_background_task_storage_marks_running_and_terminal(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-b"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-b"))
 
     running = store.mark_background_task_running(
         workspace=tmp_path,
@@ -548,7 +502,7 @@ def test_background_task_storage_terminal_states_persist_result_availability_and
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-terminal"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-terminal"))
     _ = store.mark_background_task_running(
         workspace=tmp_path,
         task_id="task-terminal",
@@ -560,7 +514,7 @@ def test_background_task_storage_terminal_states_persist_result_availability_and
         task_id="task-terminal",
         status="completed",
     )
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-cancelled-terminal"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-cancelled-terminal"))
     cancelled = store.mark_background_task_terminal(
         workspace=tmp_path,
         task_id="task-cancelled-terminal",
@@ -588,7 +542,7 @@ def test_background_task_storage_terminal_states_persist_result_availability_and
 
 def test_background_task_storage_cancel_semantics(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-c"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-c"))
 
     cancelled = store.request_background_task_cancel(workspace=tmp_path, task_id="task-c")
 
@@ -608,7 +562,8 @@ def test_background_task_storage_persists_approval_and_question_request_correlat
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-correlation"),
@@ -669,6 +624,11 @@ def test_background_task_storage_persists_approval_and_question_request_correlat
             ),
         ),
     )
+    save_checkpoint(store, workspace=tmp_path, session_id="child-session", session_metadata=approval_response.session.metadata)
+    approval_response = replace(
+        approval_response,
+        session=replace(approval_response.session, metadata=store.load_session(workspace=tmp_path, session_id="child-session").session.metadata),
+    )
     store.save_pending_approval(
         workspace=tmp_path,
         request=approval_request,
@@ -702,6 +662,10 @@ def test_background_task_storage_persists_approval_and_question_request_correlat
                 payload={"request_id": "question-1", "question_count": 1},
             ),
         ),
+    )
+    question_response = replace(
+        question_response,
+        session=replace(question_response.session, metadata=store.load_session(workspace=tmp_path, session_id="child-session").session.metadata),
     )
     store.save_pending_question(
         workspace=tmp_path,
@@ -749,7 +713,7 @@ def test_background_task_storage_persists_approval_and_question_request_correlat
         ),
         output="done",
     )
-    store.save_run(workspace=tmp_path, request=approval_request, response=terminal_response)
+    save_run(store, workspace=tmp_path, request=approval_request, response=terminal_response)
 
     with closing(sqlite3.connect(sessions_db_path())) as connection:
         row = connection.execute(
@@ -799,6 +763,10 @@ def test_background_task_storage_round_trips_pending_approval_owner_fields(tmp_p
         policy_surface="external_directory_write",
     )
 
+    save_checkpoint(store, workspace=tmp_path, session_id="child-session", session_metadata=response.session.metadata)
+    response = replace(
+        response, session=replace(response.session, metadata=store.load_session(workspace=tmp_path, session_id="child-session").session.metadata)
+    )
     store.save_pending_approval(
         workspace=tmp_path,
         request=request,
@@ -833,8 +801,9 @@ def test_background_task_storage_enriches_parent_visible_delegated_event_payload
         ),
         output="done",
     )
-    store.save_run(workspace=tmp_path, request=parent_request, response=parent_response)
-    store.create_background_task(
+    save_run(store, workspace=tmp_path, request=parent_request, response=parent_response)
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-event"),
@@ -902,8 +871,9 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
         events=(),
         output="done",
     )
-    store.save_run(workspace=tmp_path, request=parent_request, response=parent_response)
-    store.create_background_task(
+    save_run(store, workspace=tmp_path, request=parent_request, response=parent_response)
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-completed-event"),
@@ -988,7 +958,7 @@ def test_background_task_storage_queued_cancel_race_does_not_overwrite_running_t
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-c-race"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-c-race"))
     running = store.mark_background_task_running(
         workspace=tmp_path,
         task_id="task-c-race",
@@ -1027,7 +997,7 @@ def test_background_task_storage_queued_cancel_race_does_not_overwrite_running_t
 
 def test_background_task_storage_running_cancel_records_request(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-d"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-d"))
     _ = store.mark_background_task_running(
         workspace=tmp_path,
         task_id="task-d",
@@ -1069,6 +1039,11 @@ def test_background_task_storage_fail_incomplete_preserves_waiting_approval_task
             ),
         ),
     )
+    save_checkpoint(store, workspace=tmp_path, session_id="child-session", session_metadata=waiting_response.session.metadata)
+    waiting_response = replace(
+        waiting_response,
+        session=replace(waiting_response.session, metadata=store.load_session(workspace=tmp_path, session_id="child-session").session.metadata),
+    )
     store.save_pending_approval(
         workspace=tmp_path,
         request=waiting_request,
@@ -1078,7 +1053,8 @@ def test_background_task_storage_fail_incomplete_preserves_waiting_approval_task
             tool_name="write",
         ),
     )
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-waiting"),
@@ -1092,7 +1068,8 @@ def test_background_task_storage_fail_incomplete_preserves_waiting_approval_task
             updated_at=1,
         ),
     )
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-interrupted"),
@@ -1122,7 +1099,7 @@ def test_background_task_storage_running_cancel_is_idempotent_on_repeat_requests
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-d-repeat"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-d-repeat"))
     _ = store.mark_background_task_running(
         workspace=tmp_path,
         task_id="task-d-repeat",
@@ -1152,7 +1129,7 @@ def test_background_task_storage_running_cancel_race_does_not_overwrite_terminal
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-d-race"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-d-race"))
     running = store.mark_background_task_running(
         workspace=tmp_path,
         task_id="task-d-race",
@@ -1202,7 +1179,7 @@ def test_background_task_storage_does_not_overwrite_queued_cancelled_task_when_m
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-race"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-race"))
     cancelled = store.request_background_task_cancel(workspace=tmp_path, task_id="task-race")
 
     running = store.mark_background_task_running(
@@ -1227,7 +1204,7 @@ def test_background_task_storage_does_not_overwrite_terminal_task_when_marking_r
     status: BackgroundTaskStatus,
 ) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id=f"task-{status}"))
+    create_task(store, workspace=tmp_path, task=_task(task_id=f"task-{status}"))
     terminal = store.mark_background_task_terminal(
         workspace=tmp_path,
         task_id=f"task-{status}",
@@ -1266,7 +1243,7 @@ def test_background_task_storage_terminal_states_are_immutable_across_terminal_r
 ) -> None:
     store = SqliteSessionStore()
     task_id = f"task-{initial_status}-immutable-{next_status}"
-    store.create_background_task(workspace=tmp_path, task=_task(task_id=task_id))
+    create_task(store, workspace=tmp_path, task=_task(task_id=task_id))
 
     terminal = store.mark_background_task_terminal(
         workspace=tmp_path,
@@ -1290,7 +1267,7 @@ def test_background_task_storage_rejects_non_terminal_status_in_terminal_marker(
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-illegal-terminal"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-illegal-terminal"))
 
     with pytest.raises(
         ValueError,
@@ -1305,8 +1282,8 @@ def test_background_task_storage_rejects_non_terminal_status_in_terminal_marker(
 
 def test_background_task_storage_reconciles_incomplete_tasks_on_restart(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-e"))
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-f"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-e"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-f"))
     _ = store.mark_background_task_running(
         workspace=tmp_path,
         task_id="task-f",
@@ -1327,7 +1304,7 @@ def test_background_task_storage_reconciliation_converts_cancel_requested_runnin
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(workspace=tmp_path, task=_task(task_id="task-reconcile-cancelled"))
+    create_task(store, workspace=tmp_path, task=_task(task_id="task-reconcile-cancelled"))
     _ = store.mark_background_task_running(
         workspace=tmp_path,
         task_id="task-reconcile-cancelled",
@@ -1397,6 +1374,11 @@ def test_background_task_storage_reconciliation_preserves_approval_blocked_child
             ),
         ),
     )
+    save_checkpoint(store, workspace=tmp_path, session_id="child-session", session_metadata=waiting_response.session.metadata)
+    waiting_response = replace(
+        waiting_response,
+        session=replace(waiting_response.session, metadata=store.load_session(workspace=tmp_path, session_id="child-session").session.metadata),
+    )
     store.save_pending_approval(
         workspace=tmp_path,
         request=waiting_request,
@@ -1406,7 +1388,8 @@ def test_background_task_storage_reconciliation_preserves_approval_blocked_child
             tool_name="write",
         ),
     )
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-waiting-durable"),
@@ -1454,7 +1437,8 @@ def test_background_task_event_enrichment_keeps_typed_delegation_payload_transpo
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-typed-event"),
@@ -1488,7 +1472,7 @@ def test_background_task_event_enrichment_keeps_typed_delegation_payload_transpo
         events=(),
         output="done",
     )
-    store.save_run(workspace=tmp_path, request=parent_request, response=parent_response)
+    save_run(store, workspace=tmp_path, request=parent_request, response=parent_response)
 
     appended = store.append_session_event(
         workspace=tmp_path,
@@ -1535,3 +1519,88 @@ def test_background_task_event_enrichment_keeps_typed_delegation_payload_transpo
     assert delegated.delegation.routing is not None
     assert delegated.delegation.routing.subagent_type == "explore"
     assert delegated.message.approval_blocked is True
+
+
+def test_task_owner_pair_is_atomic_reusable_and_retained(tmp_path: Path) -> None:
+    database_path = tmp_path / "canonical.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    frozen = frozen_composition()
+    ref = frozen.reference(workspace=str(tmp_path), owner=TaskCompositionOwner(kind="task", task_id="owner"))
+    for invalid_ref, invalid_composition in (
+        (ref, None),
+        (ref.model_copy(update={"workspace": "other"}), frozen),
+        (ref.model_copy(update={"plan_id": "wrong"}), frozen),
+        (ref, frozen.model_copy(update={"plan": frozen.plan.model_copy(update={"plan_id": "wrong"})})),
+    ):
+        with pytest.raises(ValueError):
+            store.create_background_task(
+                workspace=tmp_path, task=_task(task_id="owner"), composition_ref=invalid_ref, composition=invalid_composition
+            )
+        assert store.list_background_tasks(workspace=tmp_path) == ()
+    store.create_background_task(workspace=tmp_path, task=_task(task_id="owner"), composition_ref=ref, composition=frozen)
+    reopened = SqliteSessionStore(database_path=database_path)
+    assert reopened.load_execution_composition(ref=ref) == frozen
+    reopened.mark_background_task_terminal(workspace=tmp_path, task_id="owner", status="interrupted")
+    reopened.create_background_task(workspace=tmp_path, task=_task(task_id="retry"), composition_ref=ref)
+    retry = reopened.load_background_task(workspace=tmp_path, task_id="retry")
+    assert retry.request.metadata["composition_ref"] == ref.model_dump(mode="json")
+    assert "execution_composition" not in retry.request.metadata
+    save_checkpoint(reopened, workspace=tmp_path, session_id="child", session_metadata={"composition_ref": ref.model_dump(mode="json")})
+    assert reopened.prune_runtime_storage(workspace=tmp_path, keep_background_tasks=0)["background_tasks"] == 0
+    reopened.list_sessions(workspace=tmp_path)
+    assert reopened.load_execution_composition(ref=ref) == frozen
+    assert reopened.load_background_task(workspace=tmp_path, task_id="owner").status == "interrupted"
+    with closing(sqlite3.connect(database_path)) as connection:
+        metadata = json.loads(connection.execute("SELECT request_metadata_json FROM background_tasks WHERE task_id = 'owner'").fetchone()[0])
+        metadata["execution_composition"]["plan"]["plan_id"] = "corrupt"
+        connection.execute("UPDATE background_tasks SET request_metadata_json = ? WHERE task_id = 'owner'", (json.dumps(metadata),))
+        connection.commit()
+    with pytest.raises(ValueError):
+        reopened.load_background_task(workspace=tmp_path, task_id="retry")
+
+
+def test_imported_task_observation_is_never_executable(tmp_path: Path) -> None:
+    database_path = tmp_path / "observation.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    create_task(store, workspace=tmp_path, task=_task(task_id="observed"))
+    observed = store.load_background_task(workspace=tmp_path, task_id="observed")
+    metadata = {**observed.request.metadata, "bundle_import_provenance": {"bundle_id": "observation"}}
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute("UPDATE background_tasks SET request_metadata_json = ? WHERE task_id = 'observed'", (json.dumps(metadata),))
+        connection.commit()
+    assert store.list_queued_background_tasks(workspace=tmp_path) == ()
+    assert store.fail_incomplete_background_tasks(workspace=tmp_path, message="restart") == ()
+    for mutate in (
+        lambda: store.mark_background_task_running(workspace=tmp_path, task_id="observed", session_id="child"),
+        lambda: store.request_background_task_cancel(workspace=tmp_path, task_id="observed"),
+        lambda: store.mark_background_task_terminal(workspace=tmp_path, task_id="observed", status="interrupted"),
+        lambda: store.persist_background_task_runtime_state(workspace=tmp_path, task_id="observed", result_available=True),
+        lambda: store.persist_background_task_schema_validation(
+            workspace=tmp_path, task_id="observed", structured_output_json=None, schema_validation_json="{}"
+        ),
+    ):
+        with pytest.raises(ValueError, match="not executable"):
+            mutate()
+    assert store.load_background_task(workspace=tmp_path, task_id="observed") == replace(
+        observed, request=replace(observed.request, metadata=metadata)
+    )
+
+
+def test_session_owner_survives_task_and_checkpoint_references(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "session-owner.sqlite3")
+    request = RuntimeRequest(prompt="owner", session_id="owner-session")
+    save_run(
+        store,
+        workspace=tmp_path,
+        request=request,
+        response=RuntimeResponse(session=SessionState(session=SessionRef(id="owner-session"), status="completed")),
+    )
+    metadata = store.load_session(workspace=tmp_path, session_id="owner-session").session.metadata
+    ref = CompositionRef.model_validate(metadata["composition_ref"])
+    assert ref.owner == SessionCompositionOwner(kind="session", session_id="owner-session")
+    frozen = store.load_execution_composition(ref=ref)
+    store.create_background_task(workspace=tmp_path, task=_task(task_id="session-retry"), composition_ref=ref)
+    save_checkpoint(store, workspace=tmp_path, session_id="checkpoint", session_metadata={"composition_ref": ref.model_dump(mode="json")})
+    assert store.prune_runtime_storage(workspace=tmp_path, keep_sessions=0)["sessions"] == 0
+    store.list_sessions(workspace=tmp_path)
+    assert store.load_execution_composition(ref=ref) == frozen

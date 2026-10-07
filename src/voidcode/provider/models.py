@@ -1,21 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
-from .config import ProviderFallbackConfig
-from .model_catalog import ProviderModelMetadata
+from .config import ProviderEndpointConfig, ProviderFallbackConfig
+from .model_catalog import ProviderModelCatalog, ProviderModelMetadata
 from .protocol import ModelTurnProvider
-
-# ``source``/``configured`` are read only by the provider-resolution tests; the
-# registry still records them so those tests can pin which branch resolved an id.
-type ProviderResolutionSource = Literal["builtin", "custom"]
 
 
 @dataclass(frozen=True, slots=True)
-class ProviderResolutionMetadata:
-    source: ProviderResolutionSource | None = None
-    configured: bool = False
+class ProviderDescriptor:
+    """Pure declaration with its owner's actual typed configuration and catalog."""
+
+    provider_name: str
+    configuration: object = None
+    endpoint_config: ProviderEndpointConfig | None = None
+    catalog: ProviderModelCatalog | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,8 +27,7 @@ class ProviderModelSelection:
 @dataclass(frozen=True, slots=True)
 class ResolvedProviderModel:
     selection: ProviderModelSelection = ProviderModelSelection()
-    provider: ModelTurnProvider | None = None
-    resolution: ProviderResolutionMetadata = ProviderResolutionMetadata()
+    descriptor: ProviderDescriptor | None = None
     metadata: ProviderModelMetadata | None = None
 
 
@@ -50,3 +48,29 @@ class ResolvedProviderConfig:
     provider_fallback: ProviderFallbackConfig | None = None
     active_target: ResolvedProviderModel = ResolvedProviderModel()
     target_chain: ResolvedProviderChain = ResolvedProviderChain()
+
+
+@dataclass(frozen=True, slots=True)
+class BoundProviderModel:
+    selection: ProviderModelSelection
+    provider: ModelTurnProvider
+    metadata: ProviderModelMetadata | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BoundProviderChain:
+    preferred: BoundProviderModel | None = None
+    all_targets: tuple[BoundProviderModel, ...] = ()
+
+    def target_at(self, index: int) -> BoundProviderModel | None:
+        if index < 0 or index >= len(self.all_targets):
+            return None
+        return self.all_targets[index]
+
+
+@dataclass(frozen=True, slots=True)
+class BoundProviderConfig:
+    model: str | None = None
+    provider_fallback: ProviderFallbackConfig | None = None
+    active_target: BoundProviderModel | None = None
+    target_chain: BoundProviderChain = BoundProviderChain()

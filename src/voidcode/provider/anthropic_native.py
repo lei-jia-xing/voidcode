@@ -12,6 +12,7 @@ from anthropic import Anthropic
 from anthropic import APIError as AnthropicAPIError
 from anthropic import Omit as AnthropicAPIKeyOmit
 
+from ..security.json_values import json_wire_object
 from ..tools.contracts import ToolCall
 from ..tools.output import (
     redacted_argument_keys_for_tool,
@@ -344,7 +345,7 @@ class AnthropicMessagesProvider:
         return original, reverse
 
     @staticmethod
-    def _visible_arguments(tool_name: str | None, arguments: dict[str, object]) -> dict[str, object]:
+    def _visible_arguments(tool_name: str | None, arguments: Mapping[str, object]) -> dict[str, object]:
         sanitized = sanitize_tool_arguments(arguments)
         return strip_redaction_sentinels_from_mapping(sanitized, redacted_keys=redacted_argument_keys_for_tool(tool_name))
 
@@ -418,7 +419,7 @@ class AnthropicMessagesProvider:
         original_to_provider, _ = self._tool_maps(request)
         tools: list[dict[str, object]] = []
         for tool in request.available_tools:
-            schema = dict(tool.input_schema or {})
+            schema = json_wire_object(tool.input_schema)
             schema.setdefault("type", "object")
             tools.append({"name": original_to_provider.get(tool.name, tool.name), "description": tool.description, "input_schema": schema})
         stable_messages = messages[:]

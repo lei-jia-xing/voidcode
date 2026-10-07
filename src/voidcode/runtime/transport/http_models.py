@@ -723,6 +723,7 @@ class BackgroundTaskResultBody(ResponseModel):
     delegation: DelegatedExecutionBody
     message: DelegatedLifecycleMessageBody
     structured_output: dict[str, object] | None = None
+    handoff: dict[str, object] | None = None
     schema_validation: SchemaValidationBody | None = None
 
 

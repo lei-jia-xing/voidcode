@@ -8,13 +8,8 @@ from ...core.deterministic_turns import DeterministicTurnProducer
 from ...core.provider_turns import ProviderTurnProducer
 from ...core.turns import TurnProducer
 from ...provider.errors import ProviderExecutionError
-from ...provider.models import ResolvedProviderChain, ResolvedProviderModel
-from ..config import (
-    MODEL_ENV_VAR,
-    RUNTIME_CONFIG_FILE_NAME,
-    ExecutionEngineName,
-    serialize_runtime_agent_config,
-)
+from ...provider.models import BoundProviderModel, ResolvedProviderChain, ResolvedProviderModel
+from ..config import MODEL_ENV_VAR, RUNTIME_CONFIG_FILE_NAME, ExecutionEngineName, serialize_runtime_agent_config
 from .provider_fallback import fallback_allowed
 
 if TYPE_CHECKING:
@@ -56,13 +51,14 @@ def build_runtime_turn_producer(
     *,
     engine_name: ExecutionEngineName,
     provider_model: ResolvedProviderModel,
+    bound_provider_model: BoundProviderModel | None = None,
 ) -> TurnProducer:
     if engine_name == "deterministic":
         return DeterministicTurnProducer()
-    if provider_model.provider is None:
+    if bound_provider_model is None:
         raise ValueError(provider_model_required_message())
     return ProviderTurnProducer(
-        provider=provider_model.provider.turn_provider(),
+        provider=bound_provider_model.provider.turn_provider(),
         provider_model=provider_model,
     )
 
@@ -110,21 +106,28 @@ def select_turn_producer_for_effective_config(
     if provider_target is None:
         provider_target = config.resolved_provider.active_target
         provider_attempt = 0
-    # Key on the effective attempt after clamping, so a clamped request can
-    # never collide with a genuinely different attempt.
+    bound_target: BoundProviderModel | None = None
+    if config.execution_engine == "provider":
+        bound_config = config.bound_provider
+        if bound_config is None:
+            raise ValueError("provider execution has no activated composition binding")
+        bound_target = bound_config.target_chain.target_at(provider_attempt)
+        if bound_target is None or bound_target.selection != provider_target.selection:
+            raise ValueError("bound provider target does not match its frozen selection")
     cache_key = cache_key_for_effective_config(config, provider_attempt=provider_attempt)
-    if cache is not None and not force_rebuild and cache_key in cache:
+    if config.execution_engine != "provider" and cache is not None and not force_rebuild and cache_key in cache:
         cached = cache[cache_key]
         return RuntimeTurnProducerSelection(producer=cached, provider_attempt=provider_attempt, provider_target=provider_target)
     selection = RuntimeTurnProducerSelection(
         producer=build_runtime_turn_producer(
             engine_name=config.execution_engine,
             provider_model=provider_target,
+            bound_provider_model=bound_target,
         ),
         provider_attempt=provider_attempt,
         provider_target=provider_target,
     )
-    if cache is not None and not force_rebuild:
+    if config.execution_engine != "provider" and cache is not None and not force_rebuild:
         cache[cache_key] = selection.producer
     return selection
 
@@ -228,10 +231,19 @@ def fallback_turn_producer_for_provider_error(
         return None
     if next_target is None:
         return None
+    bound_target: BoundProviderModel | None = None
+    if config.execution_engine == "provider":
+        bound_config = config.bound_provider
+        if bound_config is None:
+            raise ValueError("provider execution has no activated composition binding")
+        bound_target = bound_config.target_chain.target_at(next_attempt)
+        if bound_target is None or bound_target.selection != next_target.selection:
+            raise ValueError("bound provider target does not match its frozen fallback selection")
     return RuntimeTurnProducerSelection(
         producer=build_runtime_turn_producer(
             engine_name=config.execution_engine,
             provider_model=next_target,
+            bound_provider_model=bound_target,
         ),
         provider_attempt=next_attempt,
         provider_target=next_target,

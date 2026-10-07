@@ -9,20 +9,21 @@ excess over the anchor (0 when the anchor wins).
 
 from __future__ import annotations
 
+from voidcode.core.transcript import ToolResultView
 from voidcode.runtime.config import RuntimeCompactionConfig
 from voidcode.runtime.context.window import (
     ContextWindowPolicy,
     prepare_provider_context,
     provider_usage_anchor_tokens,
 )
-from voidcode.tools.contracts import ToolResult
+from voidcode.tools.contracts import TextOutput
 
 PROMPT = "summarize the workspace"
 PAYLOAD_BYTES = 4_000
 
 
-def _result(content: str) -> ToolResult:
-    return ToolResult(tool_name="read", status="ok", content=content)
+def _result(content: str) -> ToolResultView:
+    return ToolResultView("fixture-call", "read", {}, TextOutput(content), "ok")
 
 
 def _policy() -> ContextWindowPolicy:

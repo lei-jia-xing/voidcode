@@ -6,11 +6,14 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Literal
 
-from ..tools.contracts import Tool, is_read_tier
-from ..tools.local_custom import LocalCustomTool
+from ..mcp import McpToolDescriptor
+from ..security.json_values import json_wire_value, own_json_value
+from ..tools.contracts import ToolDefinition, is_read_tier
+from ..tools.local_custom import LocalCustomToolManifest, local_custom_tool_definition, local_custom_tool_source_fingerprint
+from ..tools.mcp import mcp_tool_definition
 from .tool_registry import ToolRegistry
 
-type RuntimeToolSourceKind = Literal["base", "mcp", "local"]
+type RuntimeToolSourceKind = Literal["base", "mcp", "local", "package"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +43,7 @@ class RuntimeToolMaterialization:
         return _fingerprint(payload)
 
     def scoped(self, registry: ToolRegistry) -> RuntimeToolMaterialization:
-        names = frozenset(registry.tools)
+        names = frozenset(registry.declarations)
         return RuntimeToolMaterialization(
             registry=registry,
             provenance=tuple(item for item in self.provenance if item.tool_name in names),
@@ -49,48 +52,86 @@ class RuntimeToolMaterialization:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeToolMaterializer:
-    """Compose runtime-owned tool sources without owning their lifecycle."""
+    """Compose declared runtime-owned sources without constructing dispatch tools."""
 
     base_registry: ToolRegistry
+    base_provenance: tuple[RuntimeToolProvenance, ...]
+
+    def __post_init__(self) -> None:
+        names = tuple(item.tool_name for item in self.base_provenance)
+        if len(names) != len(set(names)) or set(names) != set(self.base_registry.declarations):
+            raise ValueError("base tool provenance must cover each declaration exactly once")
 
     def base(self) -> RuntimeToolMaterialization:
         return RuntimeToolMaterialization(
-            registry=ToolRegistry(tools=dict(self.base_registry.tools)),
-            provenance=tuple(_provenance(tool, source_kind="base") for _, tool in sorted(self.base_registry.tools.items())),
+            registry=ToolRegistry(declarations=self.base_registry.declarations, tools=dict(self.base_registry.tools)),
+            provenance=tuple(sorted(self.base_provenance, key=lambda item: item.tool_name)),
         )
 
-    def materialize_mcp_tools(self, tools: Iterable[Tool]) -> RuntimeToolMaterialization:
+    def materialize_mcp_descriptors(self, descriptors: Iterable[McpToolDescriptor]) -> RuntimeToolMaterialization:
+        """Layer enabled actual observations admitted by the root's frozen ceiling."""
         materialized = self.base()
-        merged = dict(materialized.registry.tools)
+        merged = dict(materialized.registry.declarations)
         provenance = {item.tool_name: item for item in materialized.provenance}
-        for tool in tools:
-            name = tool.definition.name
-            merged[name] = tool
-            provenance[name] = _provenance(tool, source_kind="mcp")
+        observed_names: set[str] = set()
+        for descriptor in descriptors:
+            if not descriptor.enabled:
+                continue
+            definition = mcp_tool_definition(descriptor)
+            name = definition.name
+            if name in observed_names or (name in provenance and provenance[name].source_kind != "mcp"):
+                raise ValueError(f"duplicate tool definition: {name}")
+            observed_names.add(name)
+            merged[name] = definition
+            provenance[name] = tool_provenance(definition, source_kind="mcp", source_id=f"mcp:{name}")
+        registry = ToolRegistry.from_definitions(merged.values())
+        registry.tools.update({name: tool for name, tool in materialized.registry.tools.items() if name not in observed_names})
         return RuntimeToolMaterialization(
-            registry=ToolRegistry(tools=merged),
+            registry=registry,
             provenance=tuple(provenance[name] for name in sorted(provenance)),
         )
 
     @staticmethod
-    def materialize_local_tools(
+    def materialize_local_manifests(
         materialization: RuntimeToolMaterialization,
-        tools: Iterable[Tool],
+        manifests: Iterable[LocalCustomToolManifest],
     ) -> RuntimeToolMaterialization:
-        local_tools = tuple(tools)
-        if not local_tools:
+        local_manifests = tuple(manifests)
+        if not local_manifests:
             return materialization
-        registry = ToolRegistry.from_tools((*materialization.registry.tools.values(), *local_tools))
+        local_definitions = tuple(local_custom_tool_definition(manifest) for manifest in local_manifests)
+        registry = ToolRegistry.from_definitions((*materialization.registry.definitions(), *local_definitions))
+        registry.tools.update(materialization.registry.tools)
         provenance = {item.tool_name: item for item in materialization.provenance}
-        provenance.update((tool.definition.name, _provenance(tool, source_kind="local")) for tool in local_tools)
+        for manifest, definition in zip(local_manifests, local_definitions, strict=True):
+            provenance[definition.name] = tool_provenance(
+                definition,
+                source_kind="local",
+                source_id=f"local:{definition.name}",
+                source_fingerprint=local_custom_tool_source_fingerprint(manifest),
+            )
         return RuntimeToolMaterialization(
             registry=registry,
             provenance=tuple(provenance[name] for name in sorted(provenance)),
         )
 
 
-def _provenance(tool: Tool, *, source_kind: RuntimeToolSourceKind) -> RuntimeToolProvenance:
-    definition = tool.definition
+def tool_provenance(
+    definition: ToolDefinition,
+    *,
+    source_kind: RuntimeToolSourceKind,
+    source_id: str,
+    source_fingerprint: str | None = None,
+) -> RuntimeToolProvenance:
+    """Hash one actual source-owned declaration, never a constructed tool."""
+    if source_kind not in ("base", "mcp", "local", "package"):
+        raise ValueError("unsupported tool provenance source kind")
+    if not isinstance(source_id, str) or not source_id:
+        raise ValueError("tool provenance requires an actual non-empty source ID")
+    if source_kind == "local" and not source_fingerprint:
+        raise ValueError("local tool provenance requires its manifest source fingerprint")
+    if source_fingerprint is not None and not isinstance(source_fingerprint, str):
+        raise ValueError("tool source fingerprint must be a string")
     capability_payload: dict[str, object] = {
         "description": definition.description,
         "effects": sorted(effect.value for effect in definition.effects),
@@ -100,21 +141,22 @@ def _provenance(tool: Tool, *, source_kind: RuntimeToolSourceKind) -> RuntimeToo
         "read_only": is_read_tier(definition.effects),
         "replay_policy": definition.replay_policy,
     }
-    if source_kind == "local" and isinstance(tool, LocalCustomTool):
-        capability_payload["source_fingerprint"] = tool.source_fingerprint
+    if source_fingerprint is not None:
+        capability_payload["source_fingerprint"] = source_fingerprint
     return RuntimeToolProvenance(
         tool_name=definition.name,
         source_kind=source_kind,
-        source_id=f"{source_kind}:{definition.name}",
+        source_id=source_id,
         fingerprint=_fingerprint(capability_payload),
     )
 
 
 def _fingerprint(payload: object) -> str:
     encoded = json.dumps(
-        payload,
+        json_wire_value(own_json_value(payload)),
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
+        allow_nan=False,
     ).encode("utf-8")
     return sha256(encoded).hexdigest()

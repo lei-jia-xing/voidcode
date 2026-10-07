@@ -1719,6 +1719,32 @@ class PersistedAgentPayload(AgentPayload):
 # ---------------------------------------------------------------------------
 
 
+class InstalledComponentSelectionPayload(_PayloadModel):
+    """One installed component explicitly selected for runtime composition."""
+
+    distribution: str = Field(min_length=1)
+    slot: Literal["provider", "tool", "agent", "context", "typed-input"]
+    name: str = Field(min_length=1)
+    configuration: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("distribution", "name", mode="before")
+    @classmethod
+    def _strict_component_identity(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("component distribution and name must be non-empty strings")
+        return value
+
+
+def _validate_component_selections(value: object) -> tuple[InstalledComponentSelectionPayload, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("runtime config field 'components' must be a list when provided")
+    return tuple(
+        validate_config_section(InstalledComponentSelectionPayload, entry, field_path=f"components[{index}]") for index, entry in enumerate(value)
+    )
+
+
 #: Object-valued sections of the workspace config file.
 SECTION_FIELDS: tuple[str, ...] = (
     "permission",
@@ -1748,6 +1774,10 @@ class RuntimeConfigPayload(_PayloadModel):
     config_schema_version: Literal[1] | None = Field(
         default=CONFIG_SCHEMA_VERSION,
         description="Top-level config schema version. Currently only 1 is supported; omit to default to 1.",
+    )
+    components: tuple[InstalledComponentSelectionPayload, ...] | None = Field(
+        default=None,
+        description="Installed components selected for this runtime.",
     )
     approval_mode: ApprovalMode | None = Field(
         default=None,
@@ -1826,6 +1856,11 @@ class RuntimeConfigPayload(_PayloadModel):
         # ``$schema`` is an editor hint the loader never reads; HEAD ignored any
         # value here, so a non-string is ignored rather than rejected.
         return value if isinstance(value, str) else None
+
+    @field_validator("components", mode="before")
+    @classmethod
+    def _validate_components(cls, value: object) -> tuple[InstalledComponentSelectionPayload, ...] | None:
+        return _validate_component_selections(value)
 
     @field_validator(*SECTION_FIELDS, mode="before")
     @classmethod
@@ -1921,6 +1956,7 @@ class UserConfigPayload(_PayloadModel):
     """The user-level ``config.json`` input surface."""
 
     schema_ref: str | None = Field(default=None, alias="$schema")
+    components: tuple[InstalledComponentSelectionPayload, ...] | None = None
     #: Machine-wide baseline for the same resolution chain as the workspace file:
     #: ``explicit > repo-local > environment > user > default`` (see
     #: ``runtime/config.py``). The user layer is the least specific, so a project
@@ -1940,6 +1976,11 @@ class UserConfigPayload(_PayloadModel):
     providers: ProviderConfigsPayload | None = None
     #: User-global hook commands, concatenated before repo-local commands per surface.
     hooks: HooksPayload | None = None
+
+    @field_validator("components", mode="before")
+    @classmethod
+    def _validate_components(cls, value: object) -> tuple[InstalledComponentSelectionPayload, ...] | None:
+        return _validate_component_selections(value)
 
     @field_validator("approval_mode", mode="before")
     @classmethod
@@ -2033,6 +2074,7 @@ SCHEMA_DEFINITION_NAMES: Mapping[str, str] = {
     "TodoRemindersPayload": "todoRemindersConfig",
     "AgentPayload": "agentConfig",
     "AgentMcpBindingPayload": "agentMcpBindingConfig",
+    "InstalledComponentSelectionPayload": "installedComponentSelection",
     "ProviderConfigsPayload": "providersConfig",
     "_ProviderTransientRetryConfigPayload": "providerTransientRetryConfig",
     "_OpenAIProviderConfigPayload": "openaiProviderConfig",

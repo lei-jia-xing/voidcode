@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import subprocess
+import zipfile
+from importlib import metadata
 from pathlib import Path
 
 import pytest
 
 from voidcode.agent import (
+    AgentPromptMaterialization,
     load_agent_manifest_registry,
     manifest_from_markdown_file,
+    render_agent_prompt,
 )
 
 
@@ -48,7 +53,6 @@ def test_manifest_from_markdown_file_parses_frontmatter_and_body(tmp_path: Path)
     assert manifest.prompt_materialization is not None
     assert manifest.prompt_materialization.source == "custom_markdown"
     assert manifest.prompt_materialization.body == "Stay read-only and summarize risks."
-    assert not hasattr(manifest, "routing_hints")
 
 
 def test_manifest_from_markdown_file_rejects_missing_required_fields(tmp_path: Path) -> None:
@@ -111,3 +115,68 @@ def test_registry_rejects_custom_builtin_id(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="builtin id 'leader'.*cannot be replaced"):
         _ = load_agent_manifest_registry(workspace, env={})
+
+
+def test_actual_installed_markdown_layer_and_reserved_collisions(tmp_path: Path) -> None:
+    package_name = "p5-agent-consumer-fixture"
+    dist_info = "p5_agent_consumer_fixture-1.0.0.dist-info"
+    body = "---\nid: helper\nname: Package Helper\ndescription: Package persona\nmode: subagent\nprompt_append: package append\n---\npackage body\n"
+    contents = {
+        "agent_consumer_fixture/__init__.py": "",
+        "agent_consumer_fixture/agent.md": body,
+        "agent_consumer_fixture/collision.md": body.replace("id: helper", "id: leader"),
+        f"{dist_info}/METADATA": f"Metadata-Version: 2.1\nName: {package_name}\nVersion: 1.0.0\n",
+        f"{dist_info}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    }
+    wheel = tmp_path / "p5_agent_consumer_fixture-1.0.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, content in contents.items():
+            archive.writestr(name, content)
+        archive.writestr(f"{dist_info}/RECORD", "".join(f"{name},,\n" for name in contents) + f"{dist_info}/RECORD,,\n")
+    site = tmp_path / "installed"
+    subprocess.run(["uv", "pip", "install", "--no-deps", "--target", str(site), str(wheel)], check=True, capture_output=True)
+    distribution = next(item for item in metadata.distributions(path=[str(site)]) if item.metadata["Name"] == package_name)
+    installed = manifest_from_markdown_file(
+        site / "agent_consumer_fixture" / "agent.md",
+        scope="package",
+        source_id=f"{distribution.metadata['Name']}/agent/helper",
+    )
+    workspace = tmp_path / "workspace"
+    config_home = tmp_path / "config"
+    env = {"XDG_CONFIG_HOME": str(config_home)}
+    registry = load_agent_manifest_registry(workspace, env=env, installed_manifests=(installed,))
+    selected = registry.get("helper")
+    assert selected is not None and selected.prompt_materialization is not None
+    rendered = render_agent_prompt(selected.prompt_materialization)
+    assert rendered is not None and rendered.index("package body") < rendered.index("package append")
+    assert selected.source_scope == "package"
+    assert selected.source_id == f"{distribution.metadata['Name']}/agent/helper"
+    assert selected.prompt_materialization.source_id == selected.source_id
+    _write_agent(config_home / "voidcode" / "agents" / "helper.md", "id: helper\nname: User Helper\ndescription: user\nmode: subagent", "user body")
+    user = load_agent_manifest_registry(workspace, env=env, installed_manifests=(installed,)).get("helper")
+    assert user is not None and user.source_scope == "user" and user.source_id is None
+    _write_agent(
+        workspace / ".voidcode" / "agents" / "helper.md",
+        "id: helper\nname: Workspace Helper\ndescription: project\nmode: subagent",
+        "workspace body",
+    )
+    project = load_agent_manifest_registry(workspace, env=env, installed_manifests=(installed,)).get("helper")
+    assert project is not None and project.prompt_materialization is not None
+    assert render_agent_prompt(project.prompt_materialization) == "workspace body"
+    with pytest.raises(ValueError):
+        load_agent_manifest_registry(workspace, env=env, installed_manifests=(installed, installed))
+    collision = manifest_from_markdown_file(
+        site / "agent_consumer_fixture" / "collision.md",
+        scope="package",
+        source_id=f"{distribution.metadata['Name']}/agent/leader",
+    )
+    with pytest.raises(ValueError):
+        load_agent_manifest_registry(workspace, env=env, installed_manifests=(collision,))
+
+
+@pytest.mark.parametrize("version", [True, 1.0, 0, "", None])
+def test_prompt_payload_refuses_noninteger_or_missing_version(version: object) -> None:
+    with pytest.raises(ValueError):
+        AgentPromptMaterialization.from_payload({"profile": "leader", "source": "builtin", "format": "text", "version": version})
+    with pytest.raises(ValueError):
+        AgentPromptMaterialization.from_payload({"profile": "leader", "source": "builtin", "format": "text"})

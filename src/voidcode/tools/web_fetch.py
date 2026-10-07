@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
+from dataclasses import dataclass
 from typing import ClassVar
 
 import httpx
@@ -11,12 +12,31 @@ from markdownify import MarkdownConverter
 
 from ..core.tool_context import ToolContext
 from ..security.url_policy import validate_redirect_target, validate_url
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import AttachmentOutput, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
 
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024
 DEFAULT_TIMEOUT = 30
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class WebFetchResultBody:
+    url: str
+    content_type: str
+    format: str
+    byte_count: int
+    timeout_seconds: int
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "url": self.url,
+            "content_type": self.content_type,
+            "format": self.format,
+            "byte_count": self.byte_count,
+            "timeout_seconds": self.timeout_seconds,
+        }
+
 
 # Non-content tags removed before any text or markdown extraction. This tool is a
 # fetcher, not a readability extractor: no boilerplate/nav heuristics live here.
@@ -238,40 +258,33 @@ class WebFetchTool:
             if mime and mime.startswith("image/"):
                 b64 = base64.b64encode(data).decode("ascii")
                 data_uri = f"data:{mime};base64,{b64}"
-                return ToolResult(
+                return ToolSuccess(
                     tool_name=self.definition.name,
-                    status="ok",
-                    content="",
-                    data={
-                        "url": url_value,
-                        "content_type": mime,
-                        "format": format_value,
-                        "byte_count": len(data),
-                        "timeout_seconds": timeout,
-                        "attachment": {"mime": mime, "data_uri": data_uri},
-                    },
-                    truncated=False,
-                    partial=False,
-                    timeout_seconds=timeout,
+                    output=AttachmentOutput(mime=mime, data_uri=data_uri),
+                    body=WebFetchResultBody(
+                        url=url_value,
+                        content_type=mime,
+                        format=format_value,
+                        byte_count=len(data),
+                        timeout_seconds=timeout,
+                    ),
                 )
             if "text/html" in mime:
                 output = _html_to_markdown_or_text(content, url=url_value)
             else:
                 output = content
 
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.definition.name,
-            status="ok",
-            content=f"Fetched {len(output)} characters from {url_value} as {format_value}.",
-            data={
-                "url": url_value,
-                "content_type": mime,
-                "format": format_value,
-                "byte_count": len(data),
-                "timeout_seconds": timeout,
-                "content": output,
-            },
-            truncated=False,
-            partial=False,
-            timeout_seconds=timeout,
+            output=TextOutput(
+                output,
+                presentation=f"Fetched {len(output)} characters from {url_value} as {format_value}.",
+            ),
+            body=WebFetchResultBody(
+                url=url_value,
+                content_type=mime,
+                format=format_value,
+                byte_count=len(data),
+                timeout_seconds=timeout,
+            ),
         )

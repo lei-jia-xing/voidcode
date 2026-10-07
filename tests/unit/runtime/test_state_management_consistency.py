@@ -27,8 +27,9 @@ from typing import Any
 
 import pytest
 
+from tests.runtime_composition import create_task, save_checkpoint, save_run
 from tests.runtime_storage import repositories_for_test_store
-from voidcode.core.turns import TurnPlan, TurnSession
+from voidcode.core.turns import FinalTurn, ReportedCall, ToolTurn, TurnSession
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -42,11 +43,12 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_INTERRUPTED,
     EventEnvelope,
 )
+from voidcode.runtime.execution.report_codec import report_payload
 from voidcode.runtime.permission import PendingApproval
 from voidcode.runtime.service import SessionState, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import ToolCall
+from voidcode.tools.contracts import TerminalYield, TextOutput, ToolCall, ToolSuccess
 
 
 def _completed_response(session_id: str) -> RuntimeResponse:
@@ -90,8 +92,8 @@ class _BlockingTaskGraph:
             if not self.started.is_set():
                 self.started.set()
                 assert self.release.wait(timeout=5)
-            return TurnPlan(output=f"{request.prompt} done", is_finished=True)
-        return TurnPlan(output=request.prompt, is_finished=True)
+            return FinalTurn(output=f"{request.prompt} done")
+        return FinalTurn(output=request.prompt)
 
 
 def _wait_for_terminal(runtime: VoidCodeRuntime, task_id: str, *, timeout: float = 5.0) -> BackgroundTaskState:
@@ -168,14 +170,16 @@ def test_list_sessions_prunes_orphaned_terminal_tasks_with_terminal_parent(
     monkeypatch.setenv("VOIDCODE_DB_PATH", str(db_path))
 
     # A terminal parent session.
-    store.save_run(
+    save_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="leader", session_id="leader-session"),
         response=_completed_response("leader-session"),
     )
     # Shutdown-terminalized queued tasks: terminal, no child session, terminal parent.
     for task_id in ("task-orphan-1", "task-orphan-2"):
-        store.create_background_task(
+        create_task(
+            store,
             workspace=tmp_path,
             task=BackgroundTaskState(
                 task=BackgroundTaskRef(id=task_id),
@@ -185,7 +189,8 @@ def test_list_sessions_prunes_orphaned_terminal_tasks_with_terminal_parent(
             ),
         )
     # A terminal task with a LIVE child session must survive (result linkage).
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-with-child"),
@@ -194,13 +199,15 @@ def test_list_sessions_prunes_orphaned_terminal_tasks_with_terminal_parent(
             session_id="child-session",
         ),
     )
-    store.save_run(
+    save_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="child task", session_id="child-session", parent_session_id="leader-session"),
         response=_completed_response("child-session"),
     )
     # A terminal task under a non-terminal parent must survive.
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-live-parent"),
@@ -208,7 +215,8 @@ def test_list_sessions_prunes_orphaned_terminal_tasks_with_terminal_parent(
             request=BackgroundTaskRequestSnapshot(prompt="x", parent_session_id="running-parent"),
         ),
     )
-    store.save_run(
+    save_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="running", session_id="running-parent"),
         response=RuntimeResponse(
@@ -241,7 +249,8 @@ def test_list_sessions_prunes_eventless_dangling_child_but_keeps_real_children(
     monkeypatch.setenv("VOIDCODE_DB_PATH", str(db_path))
 
     # Fabricated residue: terminal, parent row missing, NO persisted events.
-    store.save_run(
+    save_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="ghost", session_id="ghost-child", parent_session_id="gone-parent"),
         response=RuntimeResponse(
@@ -251,7 +260,8 @@ def test_list_sessions_prunes_eventless_dangling_child_but_keeps_real_children(
         ),
     )
     # Real child: terminal, parent missing, but has a persisted event log.
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id="real-child",
         prompt="real",
@@ -266,7 +276,8 @@ def test_list_sessions_prunes_eventless_dangling_child_but_keeps_real_children(
         session_id="real-child",
         events=(("runtime.request_received", "runtime", {"prompt": "real"}, None),),
     )
-    store.save_run(
+    save_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="real", session_id="real-child", parent_session_id="gone-parent"),
         response=RuntimeResponse(
@@ -294,7 +305,8 @@ def test_save_run_never_inflates_last_event_sequence_beyond_persisted_events(
     monkeypatch.setenv("VOIDCODE_DB_PATH", str(db_path))
 
     session_id = "clamp-session"
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id=session_id,
         prompt="clamp",
@@ -326,7 +338,8 @@ def test_save_run_never_inflates_last_event_sequence_beyond_persisted_events(
             payload={"error": "boom"},
         ),
     )
-    store.save_run(
+    save_run(
+        store,
         workspace=tmp_path,
         request=RuntimeRequest(prompt="clamp", session_id=session_id),
         response=RuntimeResponse(
@@ -353,7 +366,8 @@ def test_save_interrupted_checkpoint_persists_parent_session_id(tmp_path: Path) 
     store = SqliteSessionStore()
 
     # Insert path (create_if_missing): the first un-sealed row carries the parent.
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id="child-new",
         prompt="child",
@@ -367,7 +381,8 @@ def test_save_interrupted_checkpoint_persists_parent_session_id(tmp_path: Path) 
     assert loaded.session.session.parent_id == "parent-session"
 
     # Update path preserves an existing parent when the caller omits it.
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id="child-new",
         prompt="child again",
@@ -449,7 +464,8 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
 
     # A running task whose child session is waiting on a pending approval must
     # survive (approval/question waiting state is preserved across restarts).
-    tasks.create_background_task(
+    create_task(
+        tasks,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-waiting"),
@@ -458,7 +474,8 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
             session_id="child-waiting",
         ),
     )
-    recovery.save_interrupted_checkpoint(
+    save_checkpoint(
+        recovery,
         workspace=tmp_path,
         session_id="child-waiting",
         prompt="waiting child",
@@ -479,7 +496,12 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
         workspace=tmp_path,
         request=RuntimeRequest(prompt="waiting child", session_id="child-waiting"),
         response=RuntimeResponse(
-            session=SessionState(session=SessionRef(id="child-waiting"), status="waiting", turn=1, metadata={}),
+            session=SessionState(
+                session=SessionRef(id="child-waiting"),
+                status="waiting",
+                turn=1,
+                metadata=runtime._repositories.sessions.load_session(workspace=tmp_path, session_id="child-waiting").session.metadata,
+            ),
             events=(),
             output=None,
         ),
@@ -495,7 +517,8 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
     # In-process worker death AFTER reconcile: a running task whose worker
     # thread no longer exists must be terminalized by the next drain instead of
     # staying ``running`` forever.
-    tasks.create_background_task(
+    create_task(
+        tasks,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id="task-dead-worker"),
@@ -504,7 +527,8 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
             session_id="child-dead",
         ),
     )
-    recovery.save_interrupted_checkpoint(
+    save_checkpoint(
+        recovery,
         workspace=tmp_path,
         session_id="child-dead",
         prompt="dead worker",
@@ -538,8 +562,8 @@ class _YieldChildGraph:
     ) -> Any:
         _ = request, tool_results
         if session.metadata.get("parent_session_id") is not None:
-            return TurnPlan(tool_calls=(ToolCall(tool_name="yield", arguments={"summary": request.prompt}),))
-        return TurnPlan(output=request.prompt, is_finished=True)
+            return ToolTurn(calls=(ToolCall(tool_name="yield", arguments={"summary": request.prompt}),))
+        return FinalTurn(output=request.prompt)
 
 
 def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session") -> RuntimeRequest:
@@ -568,7 +592,8 @@ def _seed_unsealed_completed_child(
     """Seed a task + child whose ROW is ``interrupted`` but whose transcript
     proves a successful ``yield`` handoff (the unsealed-seal state the run
     loop can leave behind when its generator-driven seal is skipped)."""
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=workspace,
         session_id=child_session_id,
         prompt="child probe",
@@ -589,17 +614,22 @@ def _seed_unsealed_completed_child(
                 "runtime.tool_completed",
                 "tool",
                 {
-                    "tool": "yield",
-                    "status": "ok",
-                    "arguments": {"summary": "done"},
-                    "handoff": {"summary": "done", "data": {"completed_work": ["completed the probe"]}},
+                    "reported_call": report_payload(
+                        ReportedCall(
+                            "yield-call",
+                            "yield",
+                            {"summary": "done"},
+                            ToolSuccess("yield", control=TerminalYield("done", {"completed_work": ["completed the probe"]})),
+                        )
+                    )
                 },
                 None,
             ),
             ("graph.response_ready", "graph", {"output_preview": "done", "source": "yield"}, None),
         ),
     )
-    store.create_background_task(
+    create_task(
+        store,
         workspace=workspace,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id=task_id),
@@ -757,7 +787,8 @@ def test_interrupted_child_without_handoff_stays_resumable(
     task_id = "task-resumable"
     child_session_id = "child-resumable"
 
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id=child_session_id,
         prompt="child probe",
@@ -776,10 +807,21 @@ def test_interrupted_child_without_handoff_stays_resumable(
         session_id=child_session_id,
         events=(
             ("runtime.request_received", "runtime", {"prompt": "child probe"}, None),
-            ("runtime.tool_completed", "tool", {"tool": "read", "status": "ok", "content": "probe"}, None),
+            (
+                "runtime.tool_completed",
+                "tool",
+                {
+                    "tool": "read",
+                    "status": "ok",
+                    "content": "probe",
+                    "reported_call": report_payload(ReportedCall("read-call", "read", {}, ToolSuccess("read", output=TextOutput("probe")))),
+                },
+                None,
+            ),
         ),
     )
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=BackgroundTaskState(
             task=BackgroundTaskRef(id=task_id),

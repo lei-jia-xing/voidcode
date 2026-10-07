@@ -7,8 +7,8 @@ import pytest
 
 from voidcode.core.tool_context import ToolContext
 from voidcode.tools._repair import ToolDiagnosticError
-from voidcode.tools.contracts import ToolCall
-from voidcode.tools.write import WriteTool
+from voidcode.tools.contracts import TextOutput, ToolCall
+from voidcode.tools.write import WriteResultBody, WriteTool
 
 
 def _content_hash(path: Path) -> str:
@@ -29,12 +29,12 @@ def test_write_tool_writes_utf8_content_inside_workspace(tmp_path: Path) -> None
     assert (tmp_path / "nested" / "output.txt").read_text(encoding="utf-8") == "hello utf8 π"
     assert result.tool_name == "write"
     assert result.status == "ok"
-    assert result.content == "Wrote file successfully: nested/output.txt"
-    assert result.data == {
-        "path": "nested/output.txt",
-        "byte_count": len("hello utf8 π".encode()),
-        "diff": "--- a/nested/output.txt\n+++ b/nested/output.txt\n@@ -0,0 +1 @@\n+hello utf8 π",
-    }
+    assert isinstance(result.output, TextOutput)
+    assert result.output.text == "Wrote file successfully: nested/output.txt"
+    assert isinstance(result.body, WriteResultBody)
+    assert result.body.path == "nested/output.txt"
+    assert result.body.byte_count == len("hello utf8 π".encode())
+    assert result.body.diff == "--- a/nested/output.txt\n+++ b/nested/output.txt\n@@ -0,0 +1 @@\n+hello utf8 π"
 
 
 def test_write_tool_returns_diff_for_rewrite(tmp_path: Path) -> None:
@@ -54,7 +54,8 @@ def test_write_tool_returns_diff_for_rewrite(tmp_path: Path) -> None:
         context=ToolContext(workspace=tmp_path),
     )
 
-    assert result.data["diff"] == ("--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-old\n+new\n")
+    assert isinstance(result.body, WriteResultBody)
+    assert result.body.diff == ("--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-old\n+new\n")
 
 
 def test_write_tool_rejects_non_string_arguments(tmp_path: Path) -> None:
@@ -98,19 +99,21 @@ def test_write_tool_rejects_overwrite_without_expected_hash(tmp_path: Path) -> N
 def test_write_tool_allows_full_overwrite_after_full_file_read(tmp_path: Path) -> None:
     target = tmp_path / "note.txt"
     target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
-    tool = WriteTool()
     resolved = target.resolve().as_posix()
-
+    read_hash = _content_hash(target)
+    tool = WriteTool()
     result = tool.invoke(
         ToolCall(
             tool_name="write",
-            arguments={"path": "note.txt", "content": "replacement", "expectedHash": _content_hash(target)},
+            arguments={"path": "note.txt", "content": "replacement", "expectedHash": read_hash},
         ),
         context=ToolContext(
             workspace=tmp_path,
             session_id="test",
             read_paths=frozenset({resolved}),
-            read_lines={resolved: frozenset({1, 2, 3})},
+            read_lines={(resolved, read_hash): frozenset({1, 2, 3})},
+            read_whole_files=frozenset({(resolved, read_hash)}),
+            read_hash=read_hash,
         ),
     )
 

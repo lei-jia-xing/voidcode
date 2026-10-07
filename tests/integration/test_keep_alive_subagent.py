@@ -39,7 +39,8 @@ from typing import Any, Protocol, cast
 
 import pytest
 
-from voidcode.core.turns import TurnPlan, TurnSession
+from voidcode.core.transcript import ToolResultView, tool_result_output
+from voidcode.core.turns import FinalTurn, ToolTurn, TurnSession
 from voidcode.runtime.execution_ownership import EXECUTION_OWNERSHIP
 from voidcode.runtime.storage import SessionRepository
 
@@ -149,12 +150,6 @@ class ToolCallFactory(Protocol):
     def __call__(self, *, tool_name: str, arguments: dict[str, object]) -> object: ...
 
 
-class ToolResultLike(Protocol):
-    tool_name: str
-    content: str
-    status: str
-
-
 class ContextSegmentLike(Protocol):
     role: str
     content: object
@@ -164,7 +159,7 @@ class ContextSegmentLike(Protocol):
 class AssembledContextLike(Protocol):
     prompt: str
     segments: tuple[ContextSegmentLike, ...]
-    tool_results: tuple[ToolResultLike, ...]
+    tool_results: tuple[ToolResultView, ...]
     metadata: dict[str, object]
 
 
@@ -175,6 +170,13 @@ class ProviderRequestLike(Protocol):
 
 def _assembled_context(request: object) -> AssembledContextLike:
     return cast(ProviderRequestLike, request).assembled_context
+
+
+def _last_tool_output(tool_results: tuple[object, ...]) -> str:
+    output = tool_result_output(cast(ToolResultView, tool_results[-1]))
+    if output is None:
+        raise AssertionError("the final delegated tool result has no text presentation")
+    return output
 
 
 def _load_runtime_types() -> tuple[RuntimeRequestFactory, RuntimeFactory]:
@@ -214,12 +216,12 @@ class _KeepAliveChildGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         prompt = _assembled_context(request).prompt
         if session.metadata.get("parent_session_id") is None:
             if not tool_results:
-                return TurnPlan(
-                    tool_calls=(
+                return ToolTurn(
+                    calls=(
                         _tool_call(
                             tool_name="task",
                             arguments={
@@ -233,15 +235,12 @@ class _KeepAliveChildGraph:
                         ),
                     ),
                 )
-            return TurnPlan(
-                output=cast(ToolResultLike, tool_results[-1]).content,
-                is_finished=True,
-            )
+            return FinalTurn(output=_last_tool_output(tool_results))
         self._child_requests.append(request)
-        tool_names = [cast(ToolResultLike, result).tool_name for result in tool_results]
+        tool_names = [cast(ToolResultView, result).tool_name for result in tool_results]
         if "yield" in prompt and "yield" not in tool_names:
-            return TurnPlan(
-                tool_calls=(
+            return ToolTurn(
+                calls=(
                     _tool_call(
                         tool_name="yield",
                         arguments={
@@ -252,8 +251,8 @@ class _KeepAliveChildGraph:
                 ),
             )
         if "write second.txt" in prompt and "write" not in tool_names:
-            return TurnPlan(
-                tool_calls=(
+            return ToolTurn(
+                calls=(
                     _tool_call(
                         tool_name="write",
                         arguments={"path": "second.txt", "content": "second marker"},
@@ -261,18 +260,15 @@ class _KeepAliveChildGraph:
                 ),
             )
         if "read sample.txt" in prompt and "read" not in tool_names:
-            return TurnPlan(
-                tool_calls=(
+            return ToolTurn(
+                calls=(
                     _tool_call(
                         tool_name="read",
                         arguments={"path": "sample.txt"},
                     ),
                 ),
             )
-        return TurnPlan(
-            output=cast(ToolResultLike, tool_results[-1]).content,
-            is_finished=True,
-        )
+        return FinalTurn(output=_last_tool_output(tool_results))
 
 
 class _ImmediateFinishGraph:
@@ -284,11 +280,11 @@ class _ImmediateFinishGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         _ = request, tool_results
         if session.metadata.get("parent_session_id") is not None:
-            return TurnPlan(output="child done without handoff", is_finished=True)
-        return TurnPlan(output="leader done", is_finished=True)
+            return FinalTurn(output="child done without handoff")
+        return FinalTurn(output="leader done")
 
 
 class _BlockingKeepAliveChildGraph:
@@ -311,11 +307,11 @@ class _BlockingKeepAliveChildGraph:
         tool_results: tuple[object, ...],
         *,
         session: TurnSession,
-    ) -> TurnPlan:
+    ) -> ToolTurn | FinalTurn:
         if session.metadata.get("parent_session_id") is None:
             if not tool_results:
-                return TurnPlan(
-                    tool_calls=(
+                return ToolTurn(
+                    calls=(
                         _tool_call(
                             tool_name="task",
                             arguments={
@@ -329,19 +325,16 @@ class _BlockingKeepAliveChildGraph:
                         ),
                     ),
                 )
-            return TurnPlan(
-                output=cast(ToolResultLike, tool_results[-1]).content,
-                is_finished=True,
-            )
-        if any(cast(ToolResultLike, result).tool_name == "yield" for result in tool_results):
-            return TurnPlan(output="child finished", is_finished=True)
+            return FinalTurn(output=_last_tool_output(tool_results))
+        if any(cast(ToolResultView, result).tool_name == "yield" for result in tool_results):
+            return FinalTurn(output="child finished")
         self._turn_index += 1
         if self._turn_index <= len(self.blocks):
             entered, gate = self.blocks[self._turn_index - 1]
             entered.set()
             gate.wait(timeout=15.0)
-        return TurnPlan(
-            tool_calls=(
+        return ToolTurn(
+            calls=(
                 _tool_call(
                     tool_name="yield",
                     arguments={"summary": "keep-alive handoff", "data": {"completed_work": ["child turn"]}},
@@ -597,7 +590,7 @@ def _context_text(request: object) -> str:
         if isinstance(content, str):
             parts.append(content)
     for result in assembled.tool_results:
-        parts.append(result.content or "")
+        parts.append(tool_result_output(result) or "")
     return "\n".join(parts)
 
 

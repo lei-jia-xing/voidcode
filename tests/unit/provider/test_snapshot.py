@@ -1,168 +1,75 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
-from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
+from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig, ProviderFallbackConfig
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_config
 from voidcode.provider.snapshot import parse_resolved_provider_snapshot, resolved_provider_snapshot
-from voidcode.runtime.config import RuntimeProviderFallbackConfig
-
-_CUSTOM_CONFIG = ProviderEndpointConfig(base_url="http://localhost:11434/v1")
 
 
-def test_resolved_provider_snapshot_round_trip_with_fallback_chain() -> None:
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(custom={"llama-local": _CUSTOM_CONFIG}))
+def test_resolved_provider_snapshot_round_trip_preserves_active_fallback_and_model_case() -> None:
+    from dataclasses import replace
+
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(custom={"local": ProviderEndpointConfig(base_url="http://127.0.0.1:11434/v1")})
+    )
     resolved = resolve_provider_config(
-        model="opencode-zen/gpt-5.4",
-        provider_fallback=RuntimeProviderFallbackConfig(
-            preferred_model="opencode-zen/gpt-5.4",
-            fallback_models=("llama-local/demo",),
-        ),
+        "OpenAI/GPT-5.4",
+        ProviderFallbackConfig(preferred_model="OpenAI/GPT-5.4", fallback_models=("local/VendorCase",)),
         registry=registry,
     )
-
+    resolved = replace(resolved, active_target=resolved.target_chain.all_targets[1])
     snapshot = resolved_provider_snapshot(resolved)
-
-    assert snapshot is not None
-    reparsed = parse_resolved_provider_snapshot(
-        snapshot,
-        source="persisted runtime_config.resolved_provider",
-        registry=registry,
-    )
+    reparsed = parse_resolved_provider_snapshot(snapshot, source="recorded provider", registry=registry)
     assert reparsed == resolved
+    assert tuple(target.selection.model for target in reparsed.target_chain.all_targets) == ("GPT-5.4", "VendorCase")
+    assert reparsed.active_target.selection.provider == "local"
 
 
-def test_parse_resolved_provider_snapshot_rejects_active_target_outside_target_chain() -> None:
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(custom={"llama-local": _CUSTOM_CONFIG}))
-
-    with pytest.raises(ValueError, match="must reference one of the resolved provider targets"):
-        _ = parse_resolved_provider_snapshot(
-            {
-                "active_target": {
-                    "raw_model": "llama-local/other",
-                    "provider": "llama-local",
-                    "model": "other",
-                },
-                "targets": [
-                    {
-                        "raw_model": "opencode-zen/gpt-5.4",
-                        "provider": "opencode-zen",
-                        "model": "gpt-5.4",
-                    },
-                    {
-                        "raw_model": "llama-local/demo",
-                        "provider": "llama-local",
-                        "model": "demo",
-                    },
-                ],
-            },
-            source="persisted runtime_config.resolved_provider",
-            registry=registry,
-        )
+@pytest.mark.parametrize("version", [None, True, False, 1, 3, 2.0, "2"])
+def test_provider_snapshot_refuses_unsupported_or_noninteger_version(version: object) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    snapshot = resolved_provider_snapshot(resolve_provider_config("openai/gpt-5.4", None, registry=registry))
+    assert snapshot is not None
+    snapshot["schema_version"] = version
+    with pytest.raises(ValueError):
+        parse_resolved_provider_snapshot(snapshot, source="recorded provider", registry=registry)
 
 
-def test_parse_resolved_provider_snapshot_rejects_undeclared_provider_target() -> None:
-    # A session persisted with an id nothing declares fails loudly on resume
-    # instead of silently resolving to the generic endpoint provider.
-    with pytest.raises(ValueError, match=r"providers\.custom\.ghost"):
-        _ = parse_resolved_provider_snapshot(
-            {
-                "active_target": {
-                    "raw_model": "ghost/model",
-                    "provider": "ghost",
-                    "model": "model",
-                },
-                "targets": [
-                    {
-                        "raw_model": "ghost/model",
-                        "provider": "ghost",
-                        "model": "model",
-                    }
-                ],
-            },
-            source="persisted runtime_config.resolved_provider",
-            registry=ModelProviderRegistry.with_defaults(),
-        )
+@pytest.mark.parametrize("damage", ["missing-version", "unknown-root", "unknown-target", "empty-chain", "wrong-model", "outside-chain", "duplicate"])
+def test_provider_snapshot_refuses_noncanonical_closed_target_state(damage: str) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    snapshot = resolved_provider_snapshot(resolve_provider_config("OpenAI/GPT-5.4", None, registry=registry))
+    assert snapshot is not None
+    payload = deepcopy(snapshot)
+    target = {"raw_model": "OpenAI/GPT-5.4", "provider": "openai", "model": "GPT-5.4"}
+    match damage:
+        case "missing-version":
+            del payload["schema_version"]
+        case "unknown-root":
+            payload["current_provider"] = "openai"
+        case "unknown-target":
+            payload["targets"] = [{**target, "configured": True}]
+        case "empty-chain":
+            payload["targets"] = []
+        case "wrong-model":
+            payload["targets"] = [{**target, "model": "different"}]
+        case "outside-chain":
+            payload["active_target"] = {"raw_model": "openai/other", "provider": "openai", "model": "other"}
+        case "duplicate":
+            payload["targets"] = [target, {"raw_model": "openai/gpt-5.4", "provider": "openai", "model": "gpt-5.4"}]
+    with pytest.raises(ValueError):
+        parse_resolved_provider_snapshot(payload, source="recorded provider", registry=registry)
 
 
-def test_parse_resolved_provider_snapshot_rejects_non_object_snapshot() -> None:
-    with pytest.raises(
-        ValueError,
-        match=("invalid provider config: persisted runtime_config.resolved_provider must be an object"),
-    ):
-        _ = parse_resolved_provider_snapshot(
-            "not-an-object",
-            source="persisted runtime_config.resolved_provider",
-            registry=ModelProviderRegistry.with_defaults(),
-        )
-
-
-def test_parse_resolved_provider_snapshot_rejects_non_object_active_target() -> None:
-    with pytest.raises(
-        ValueError,
-        match=("invalid provider config: persisted runtime_config.resolved_provider.active_target must be an object"),
-    ):
-        _ = parse_resolved_provider_snapshot(
-            {
-                "active_target": "nope",
-                "targets": [
-                    {
-                        "raw_model": "opencode-zen/gpt-5.4",
-                        "provider": "opencode-zen",
-                        "model": "gpt-5.4",
-                    }
-                ],
-            },
-            source="persisted runtime_config.resolved_provider",
-            registry=ModelProviderRegistry.with_defaults(),
-        )
-
-
-def test_parse_resolved_provider_snapshot_rejects_empty_targets() -> None:
-    with pytest.raises(
-        ValueError,
-        match=("invalid provider config: persisted runtime_config.resolved_provider.targets must not be empty"),
-    ):
-        _ = parse_resolved_provider_snapshot(
-            {
-                "active_target": {
-                    "raw_model": "opencode-zen/gpt-5.4",
-                    "provider": "opencode-zen",
-                    "model": "gpt-5.4",
-                },
-                "targets": [],
-            },
-            source="persisted runtime_config.resolved_provider",
-            registry=ModelProviderRegistry.with_defaults(),
-        )
-
-
-def test_parse_resolved_provider_snapshot_rejects_duplicate_targets() -> None:
-    with pytest.raises(
-        ValueError,
-        match=("invalid provider config: persisted runtime_config.resolved_provider.targets must not contain duplicate provider targets"),
-    ):
-        _ = parse_resolved_provider_snapshot(
-            {
-                "active_target": {
-                    "raw_model": "opencode-zen/gpt-5.4",
-                    "provider": "opencode-zen",
-                    "model": "gpt-5.4",
-                },
-                "targets": [
-                    {
-                        "raw_model": "opencode-zen/gpt-5.4",
-                        "provider": "opencode-zen",
-                        "model": "gpt-5.4",
-                    },
-                    {
-                        "raw_model": "opencode-zen/gpt-5.4",
-                        "provider": "opencode-zen",
-                        "model": "gpt-5.4",
-                    },
-                ],
-            },
-            source="persisted runtime_config.resolved_provider",
+def test_provider_snapshot_refuses_undeclared_provider_without_endpoint_fallback() -> None:
+    target = {"raw_model": "ghost/model", "provider": "ghost", "model": "model"}
+    with pytest.raises(ValueError):
+        parse_resolved_provider_snapshot(
+            {"schema_version": 2, "active_target": target, "targets": [target]},
+            source="recorded provider",
             registry=ModelProviderRegistry.with_defaults(),
         )

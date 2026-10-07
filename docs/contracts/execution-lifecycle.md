@@ -55,6 +55,7 @@ dispatch 前拒绝已取消的调用，调用者换一个 context 或清掉 abor
 10. **metadata 的 projection owner**：checkpoint session metadata 沿用 `session_metadata_for_persistence` 的既有 snapshot projection；native calls/reasoning/results 独立按 payload owner 脱敏/限制。不得对整个 canonical checkpoint 再套通用 payload redactor、修改 frozen hook 的 signed structural metadata 或重算 hash 掩盖语义变化。native 原始 calls/reasoning 若已脱敏/截断则标为不可恢复并明确拒绝，而非当作原始输入重放；这不声称任意未来 signed snapshot 都适用当前 metadata bounds。
 11. **输入队列的唯一 mutation owner**：SessionRepository enqueue/drain 在 guarded write transaction 内读取当前 metadata 并执行已有纯 queue codec；一般 metadata、native checkpoint 和终态 snapshot writer 保留当前 pending input / delivery cursor，包括已消费后的 absence，不丢输入或复活旧消息。已有 durable metadata 不是 JSON object 时明确拒绝写入，不能以 incoming snapshot 覆盖损坏真相。
 12. **分页与分支**：bounded pages 固定所选 root→leaf ancestry，保留原 parent edges；runtime-only 行可能产生没有 typed entries 但仍有 next cursor 的页，不能当 EOF。fork/checkout 在所选 ancestry 检查实际 tool/approval/question pair；同 native ID 的 graph request 与 governed start 属于同一未结算调用，完成后再次使用该 ID 会重新打开 pair。缺失真实 legacy native identity 时拒绝 continuation，不合成 ID。
+13. **checkpoint owner split**：session row owns immutable `execution_composition`; a checkpoint retains the exact `agent_capability_snapshot.composition_ref`, never a duplicate owner payload. An atomic native-prefix update may be ahead of row metadata; resume uses the checkpoint prefix and validates it against the durable event path. This projection preserves the native batch, tool-execution intent, queued input/delivery cursor, and frozen hook snapshot.
 
 执行点：
 

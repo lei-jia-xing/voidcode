@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from typing import cast
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from .config import ProviderFallbackConfig
 from .errors import format_invalid_provider_config_error, validation_reason_from_error
-from .models import ResolvedProviderChain, ResolvedProviderConfig, ResolvedProviderModel
+from .models import BoundProviderConfig, BoundProviderModel, ResolvedProviderChain, ResolvedProviderConfig, ResolvedProviderModel
+from .naming import split_provider_model_reference
 from .registry import ModelProviderRegistry
 from .resolution import resolve_provider_model
 
 
 class _ResolvedProviderTargetSnapshotPayload(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     raw_model: str
     provider: str
@@ -21,16 +22,24 @@ class _ResolvedProviderTargetSnapshotPayload(BaseModel):
     @field_validator("raw_model", "provider", "model", mode="before")
     @classmethod
     def _validate_required_string(cls, value: object) -> str:
-        if not isinstance(value, str):
-            raise ValueError("must be a string")
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("must be a nonempty string")
         return value
 
 
 class _ResolvedProviderSnapshotPayload(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
+    schema_version: Literal[2]
     active_target: _ResolvedProviderTargetSnapshotPayload
     targets: tuple[_ResolvedProviderTargetSnapshotPayload, ...]
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def _validate_version(cls, value: object) -> int:
+        if type(value) is not int or value != 2:
+            raise ValueError("must be integer 2")
+        return value
 
     @field_validator("targets", mode="before")
     @classmethod
@@ -64,23 +73,23 @@ def _format_snapshot_validation_error(*, source: str, error: dict[str, object]) 
     return format_invalid_provider_config_error(field_path, validation_reason_from_error(error))
 
 
-def resolved_provider_snapshot(resolved_provider: ResolvedProviderConfig | None) -> dict[str, object] | None:
+def resolved_provider_snapshot(resolved_provider: ResolvedProviderConfig | BoundProviderConfig | None) -> dict[str, object] | None:
     if resolved_provider is None:
         return None
-    targets: list[dict[str, str]] = []
-    for target in resolved_provider.target_chain.all_targets:
-        snapshot = _resolved_provider_target_snapshot(target)
-        if snapshot is not None:
-            targets.append(snapshot)
-    if not targets:
+    active_target = resolved_provider.active_target
+    if not resolved_provider.target_chain.all_targets:
+        if resolved_provider.model is not None or resolved_provider.provider_fallback is not None:
+            raise ValueError("provider configuration has no target chain")
+        if active_target is not None and active_target.selection.raw_model is not None:
+            raise ValueError("active provider target has no target chain")
         return None
-    active_target = _resolved_provider_target_snapshot(resolved_provider.active_target)
     if active_target is None:
-        return None
-    return {
-        "active_target": active_target,
-        "targets": targets,
-    }
+        raise ValueError("provider target chain has no active target")
+    targets = [_resolved_provider_target_snapshot(target) for target in resolved_provider.target_chain.all_targets]
+    active_snapshot = _resolved_provider_target_snapshot(active_target)
+    if active_snapshot not in targets:
+        raise ValueError("active provider target must belong to its selected chain")
+    return {"schema_version": 2, "active_target": active_snapshot, "targets": targets}
 
 
 def parse_resolved_provider_snapshot(
@@ -94,114 +103,37 @@ def parse_resolved_provider_snapshot(
     except ValidationError as exc:
         error = cast(dict[str, object], exc.errors(include_url=False)[0])
         raise ValueError(_format_snapshot_validation_error(source=source, error=error)) from exc
-
-    resolved_targets_list = [
-        _resolved_provider_model_from_snapshot(
-            item,
-            source=f"{source}.targets[{index}]",
-            registry=registry,
-        )
-        for index, item in enumerate(snapshot.targets)
-    ]
-    if not resolved_targets_list:
-        raise ValueError(format_invalid_provider_config_error(f"{source}.targets", "must not be empty"))
-    resolved_target_raw_models = [target.selection.raw_model for target in resolved_targets_list if target.selection.raw_model]
-    if len(set(resolved_target_raw_models)) != len(resolved_target_raw_models):
-        raise ValueError(
-            format_invalid_provider_config_error(
-                f"{source}.targets",
-                "must not contain duplicate provider targets",
-            )
-        )
-    first_target = resolved_targets_list[0]
-    resolved_targets: tuple[ResolvedProviderModel, ...] = tuple(resolved_targets_list)
-
-    resolved_active_target = _resolved_provider_model_from_snapshot(
-        snapshot.active_target,
-        source=f"{source}.active_target",
-        registry=registry,
+    identities: set[tuple[str, str]] = set()
+    active_index: int | None = None
+    for index, target in enumerate(snapshot.targets):
+        provider, model = split_provider_model_reference(target.raw_model)
+        if provider != target.provider or model != target.model:
+            raise ValueError(format_invalid_provider_config_error(f"{source}.targets[{index}]", "must match its provider/model reference"))
+        identity = (provider.casefold(), model.casefold())
+        if identity in identities:
+            raise ValueError(format_invalid_provider_config_error(f"{source}.targets", "must not contain duplicate provider targets"))
+        identities.add(identity)
+        if target == snapshot.active_target:
+            active_index = index
+    if active_index is None:
+        raise ValueError(format_invalid_provider_config_error(f"{source}.active_target", "must reference one of the resolved provider targets"))
+    targets = tuple(resolve_provider_model(target.raw_model, registry=registry) for target in snapshot.targets)
+    first_raw_model = snapshot.targets[0].raw_model
+    provider_fallback = (
+        ProviderFallbackConfig(preferred_model=first_raw_model, fallback_models=tuple(target.raw_model for target in snapshot.targets[1:]))
+        if len(targets) > 1
+        else None
     )
-    resolved_target_raw_model_set = {target.selection.raw_model for target in resolved_targets if target.selection.raw_model is not None}
-    if resolved_active_target.selection.raw_model not in resolved_target_raw_model_set:
-        raise ValueError(
-            format_invalid_provider_config_error(
-                f"{source}.active_target",
-                "must reference one of the resolved provider targets",
-            )
-        )
-
-    provider_fallback: ProviderFallbackConfig | None = None
-    if len(resolved_targets) > 1:
-        first_raw_model = first_target.selection.raw_model
-        if first_raw_model is None:
-            raise ValueError(
-                format_invalid_provider_config_error(
-                    f"{source}.targets[0]",
-                    "must include a raw_model",
-                )
-            )
-        provider_fallback = ProviderFallbackConfig(
-            preferred_model=first_raw_model,
-            fallback_models=tuple(
-                _require_raw_model(target=target, source=f"{source}.targets[{index}]") for index, target in enumerate(resolved_targets[1:], start=1)
-            ),
-        )
-
-    first_raw_model = first_target.selection.raw_model
-    if first_raw_model is None:
-        raise ValueError(
-            format_invalid_provider_config_error(
-                f"{source}.targets[0]",
-                "must include a raw_model",
-            )
-        )
-
     return ResolvedProviderConfig(
         model=first_raw_model,
         provider_fallback=provider_fallback,
-        active_target=resolved_active_target,
-        target_chain=ResolvedProviderChain(
-            preferred=first_target,
-            all_targets=resolved_targets,
-        ),
+        active_target=targets[active_index],
+        target_chain=ResolvedProviderChain(preferred=targets[0], all_targets=targets),
     )
 
 
-def _resolved_provider_target_snapshot(target: ResolvedProviderModel) -> dict[str, str] | None:
-    if target.selection.raw_model is None or target.selection.provider is None or target.selection.model is None:
-        return None
-    return {
-        "raw_model": target.selection.raw_model,
-        "provider": target.selection.provider,
-        "model": target.selection.model,
-    }
-
-
-def _resolved_provider_model_from_snapshot(
-    raw_value: object,
-    *,
-    source: str,
-    registry: ModelProviderRegistry,
-) -> ResolvedProviderModel:
-    try:
-        payload = _ResolvedProviderTargetSnapshotPayload.model_validate(raw_value)
-    except ValidationError as exc:
-        error = cast(dict[str, object], exc.errors(include_url=False)[0])
-        raise ValueError(_format_snapshot_validation_error(source=source, error=error)) from exc
-
-    resolved = resolve_provider_model(payload.raw_model, registry=registry)
-    if resolved.selection.provider != payload.provider or resolved.selection.model != payload.model:
-        raise ValueError(
-            format_invalid_provider_config_error(
-                source,
-                "must match the parsed provider/model reference",
-            )
-        )
-    return resolved
-
-
-def _require_raw_model(*, target: ResolvedProviderModel, source: str) -> str:
-    raw_model = target.selection.raw_model
-    if raw_model is None:
-        raise ValueError(format_invalid_provider_config_error(source, "must include a raw_model"))
-    return raw_model
+def _resolved_provider_target_snapshot(target: ResolvedProviderModel | BoundProviderModel) -> dict[str, str]:
+    selection = target.selection
+    if selection.raw_model is None or selection.provider is None or selection.model is None:
+        raise ValueError("selected provider target must include its raw reference, provider and model")
+    return {"raw_model": selection.raw_model, "provider": selection.provider, "model": selection.model}

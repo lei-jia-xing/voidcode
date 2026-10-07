@@ -42,11 +42,7 @@ task/process 的真实算法与生命周期位于 `runtime/execution/delegation`
 和 cancellation 绑定的窄 callback；native、resume、inner invoke 共用
 runtime canonical executor。runtime 的 execution-ownership lease 保持独立。
 
-`read` 的 `content` 是显示摘要；实际已限界文本位于 `data.raw_content`，
-文件和 archive 文本也有 `data.lines`。`raw_content` 只在真实文本正文存在时提供，
-空文本可为 `""`；image/PDF 与未解码的二进制 archive member 没有该字段。
-确定性最终输出与 continuity preview 共用中立结构化正文选择器，不解析显示文本；
-已 clipped/pruned 的 `ToolResultView` 继续使用投影后的 `content`。
+`read` 返回 provider 可见的 typed text output，其中包含限界正文，适用时也包含 SHA-256 与下一页 offset。内部 `ReadResultBody` 为可信消费者保留结构化信息，不再作为模型读取文件内容的来源。
 
 
 ## 当前状态

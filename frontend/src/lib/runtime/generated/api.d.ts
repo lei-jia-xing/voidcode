@@ -722,6 +722,10 @@ export interface components {
             duration_seconds?: number | null;
             /** Error */
             error?: string | null;
+            /** Handoff */
+            handoff?: {
+                [key: string]: unknown;
+            } | null;
             /** Hook Reminder */
             hook_reminder?: {
                 [key: string]: unknown;

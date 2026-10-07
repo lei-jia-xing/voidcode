@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Protocol
 
 from pydantic import BaseModel, field_validator, model_validator
 
 from ....core.tool_context import ToolContext
+from ....security.json_values import json_wire_object, own_json_object
 from ....tools._pydantic_args import MessageLimit, TimeoutMs, parse_tool_args
-from ....tools.contracts import ToolCall, ToolResult
+from ....tools.contracts import OutputBounds, OutputReference, TerminalYield, TextOutput, ToolCall, ToolResult, ToolSuccess
 from ...background.models import BackgroundTaskState, is_background_task_terminal
 from ...contracts import (
     BackgroundTaskGroupResult,
@@ -109,6 +112,139 @@ class _TaskOutputArgs(BaseModel):
         return normalized
 
 
+@dataclass(frozen=True, slots=True)
+class TaskOutputBody:
+    task_id: str
+    status: str
+    parent_session_id: str | None
+    child_session_id: str | None
+    duration_seconds: float | None
+    tool_call_count: int
+    retrieval_instruction: str
+    approval_blocked: bool
+    summary_output: str | None
+    error: str | None
+    result_available: bool
+    delegation: Mapping[str, object]
+    message: Mapping[str, object]
+    handoff_summary: Mapping[str, object]
+    structured_output: Mapping[str, object] | None
+    schema_validation: Mapping[str, object] | None
+    progress: tuple[Mapping[str, object], ...]
+    block_timed_out: bool
+    empty_child_output: bool
+    session: Mapping[str, object] | None = None
+    provider_failure: Mapping[str, object] | None = None
+    guidance: str | None = None
+    handoff: TerminalYield | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("delegation", "message", "handoff_summary"):
+            object.__setattr__(self, name, own_json_object(getattr(self, name)))
+        for name in ("structured_output", "schema_validation", "session", "provider_failure"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, own_json_object(value))
+        object.__setattr__(self, "progress", tuple(own_json_object(item) for item in self.progress))
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "task_id": self.task_id,
+            "status": self.status,
+            "parent_session_id": self.parent_session_id,
+            "child_session_id": self.child_session_id,
+            "duration_seconds": self.duration_seconds,
+            "tool_call_count": self.tool_call_count,
+            "retrieval_instruction": self.retrieval_instruction,
+            "approval_blocked": self.approval_blocked,
+            "summary_output": self.summary_output,
+            "error": self.error,
+            "result_available": self.result_available,
+            "delegation": json_wire_object(self.delegation),
+            "message": json_wire_object(self.message),
+            "handoff_summary": json_wire_object(self.handoff_summary),
+            "structured_output": None if self.structured_output is None else json_wire_object(self.structured_output),
+            "schema_validation": None if self.schema_validation is None else json_wire_object(self.schema_validation),
+            "progress": [json_wire_object(item) for item in self.progress],
+            "block_timed_out": self.block_timed_out,
+            "empty_child_output": self.empty_child_output,
+        }
+        if self.session is not None:
+            payload["session"] = json_wire_object(self.session)
+        if self.provider_failure is not None:
+            payload["provider_failure"] = json_wire_object(self.provider_failure)
+        if self.handoff is not None:
+            payload["handoff"] = {
+                "summary": self.handoff.summary,
+                "data": json_wire_object(self.handoff.data),
+            }
+        if self.guidance is not None:
+            payload["guidance"] = self.guidance
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class TaskOutputGroupItem:
+    task_id: str
+    status: str
+    summary: str | None
+    error: str | None
+    structured_output: Mapping[str, object] | None
+    progress: Mapping[str, object] | None
+    result_available: bool
+    approval_blocked: bool
+    child_session_id: str | None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "task_id": self.task_id,
+            "status": self.status,
+            "summary": self.summary,
+            "error": self.error,
+            "structured_output": None if self.structured_output is None else json_wire_object(self.structured_output),
+            "progress": None if self.progress is None else json_wire_object(self.progress),
+            "result_available": self.result_available,
+            "approval_blocked": self.approval_blocked,
+            "child_session_id": self.child_session_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TaskOutputGroupBody:
+    parallel_group_id: str | None
+    task_ids: tuple[str, ...]
+    expected_task_count: int | None
+    status: str
+    complete: bool
+    timed_out: bool
+    counts: Mapping[str, int]
+    summary: str | None
+    error: str | None
+    results: tuple[TaskOutputGroupItem, ...]
+    retrieval_instruction: str
+    block_timed_out: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "counts", own_json_object(self.counts))
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "parallel_group_id": self.parallel_group_id,
+            "task_ids": list(self.task_ids),
+            "expected_task_count": self.expected_task_count,
+            "status": self.status,
+            "complete": self.complete,
+            "timed_out": self.timed_out,
+            "counts": json_wire_object(self.counts),
+            "summary": self.summary,
+            "error": self.error,
+            "structured_output": [json_wire_object(item.structured_output) for item in self.results if item.structured_output is not None],
+            "results": [item.as_payload() for item in self.results],
+            "retrieval_instruction": self.retrieval_instruction,
+            "block_timed_out": self.block_timed_out,
+        }
+
+
 class TaskOutputTool:
     name = "task_output"
 
@@ -176,31 +312,15 @@ class TaskOutputTool:
             if block_timed_out and is_background_task_terminal(result.status):
                 block_timed_out = False
         safe_summary = _background_result_safe_summary(result)
-        message_payload = {
+        delegation = result.delegated_execution.as_payload()
+        message = {
             **result.delegated_message.as_payload(),
             "summary_output": safe_summary,
         }
-
-        payload: dict[str, object] = {
-            "task_id": result.task_id,
-            "status": result.status,
-            "parent_session_id": result.parent_session_id,
-            "child_session_id": result.child_session_id,
-            "duration_seconds": result.duration_seconds,
-            "tool_call_count": result.tool_call_count,
-            "retrieval_instruction": f'task(operation="output", task_id="{result.task_id}")',
-            "approval_blocked": result.approval_blocked,
-            "summary_output": safe_summary,
-            "error": result.error,
-            "result_available": result.result_available,
-            "delegation": result.delegated_execution.as_payload(),
-            "message": message_payload,
-            "handoff_summary": _background_task_handoff_summary(result=result),
-            "structured_output": result.structured_output,
-            "schema_validation": (None if result.schema_validation is None else result.schema_validation.as_payload()),
-            "progress": [dict(section) for section in result.progress],
-            "block_timed_out": block_timed_out,
-        }
+        handoff_summary = _background_task_handoff_summary(result=result)
+        schema_validation = None if result.schema_validation is None else result.schema_validation.as_payload()
+        progress = tuple(result.progress)
+        session_payload: dict[str, object] | None = None
         content = safe_summary or result.error or f"Background task {result.task_id}: {result.status}"
         empty_child_output = False
 
@@ -226,7 +346,7 @@ class TaskOutputTool:
                 ]
                 output_available = session_result.output is not None
                 full_session_reference = f"session:{session_result.session.session.id}"
-                payload["session"] = {
+                session_payload = {
                     "session_id": session_result.session.session.id,
                     "child_session_id": session_result.session.session.id,
                     "status": session_result.status,
@@ -247,14 +367,10 @@ class TaskOutputTool:
                         "full_session=true) from an operator context to inspect full child output."
                     ),
                 }
-                payload["summary_output"] = safe_summary
-                payload["message"] = {
+                message = {
                     **result.delegated_message.as_payload(),
                     "summary_output": safe_summary,
                 }
-                provider_failure_details = _provider_failure_details_from_session_result(session_result)
-                if provider_failure_details is not None:
-                    payload["provider_failure"] = provider_failure_details
                 content = _background_session_digest(
                     result=result,
                     session_result=session_result,
@@ -272,17 +388,37 @@ class TaskOutputTool:
             empty_child_output=empty_child_output,
             block_timed_out=block_timed_out,
         )
-        payload["empty_child_output"] = empty_child_output
-        if guidance is not None:
-            payload["guidance"] = guidance
-            content = f"{content}\n\nGuidance: {guidance}"
-
-        return ToolResult(
+        reference = _background_result_reference(result)
+        bounds = OutputBounds(
+            reference=OutputReference(reference) if reference is not None else None,
+        )
+        return ToolSuccess(
             tool_name=self.name,
-            status="ok",
-            content=content,
-            data=payload,
-            reference=_background_result_reference(result),
+            output=TextOutput(content, bounds=bounds),
+            body=TaskOutputBody(
+                task_id=result.task_id,
+                status=result.status,
+                parent_session_id=result.parent_session_id,
+                child_session_id=result.child_session_id,
+                duration_seconds=result.duration_seconds,
+                tool_call_count=result.tool_call_count,
+                retrieval_instruction=f'task(operation="output", task_id="{result.task_id}")',
+                approval_blocked=result.approval_blocked,
+                summary_output=safe_summary,
+                error=result.error,
+                result_available=result.result_available,
+                delegation=delegation,
+                message=message,
+                handoff_summary=handoff_summary,
+                structured_output=result.structured_output,
+                schema_validation=schema_validation,
+                progress=progress,
+                block_timed_out=block_timed_out,
+                empty_child_output=empty_child_output,
+                session=session_payload,
+                handoff=result.handoff,
+                guidance=guidance,
+            ),
         )
 
 
@@ -313,7 +449,7 @@ def _background_group_tool_result(group: BackgroundTaskGroupResult) -> ToolResul
     status = "completed" if group.complete else "running"
     failures = [result for result in group.results if result.status in {"failed", "cancelled", "interrupted"}]
     error = "; ".join(f"{result.task_id}: {_bounded_text(result.error or result.cancellation_cause or result.status)}" for result in failures) or None
-    results: list[dict[str, object]] = []
+    results: list[TaskOutputGroupItem] = []
     lines = [
         f"Background task group result: {group.parallel_group_id or 'explicit task ids'}",
         f"- status: {status}",
@@ -323,41 +459,44 @@ def _background_group_tool_result(group: BackgroundTaskGroupResult) -> ToolResul
         lines.append("- wait: timed out; returned current task states")
     for result in group.results:
         summary = _background_result_safe_summary(result)
-        item: dict[str, object] = {
-            "task_id": result.task_id,
-            "status": result.status,
-            "summary": _bounded_text(summary),
-            "error": _bounded_text(result.error or result.cancellation_cause),
-            "structured_output": _bounded_structured_output(result.structured_output),
-            "progress": _bounded_structured_output({"sections": list(result.progress)}),
-            "result_available": result.result_available,
-            "approval_blocked": result.approval_blocked,
-            "child_session_id": result.child_session_id,
-        }
-        results.append(item)
+        results.append(
+            TaskOutputGroupItem(
+                task_id=result.task_id,
+                status=result.status,
+                summary=_bounded_text(summary),
+                error=_bounded_text(result.error or result.cancellation_cause),
+                structured_output=_bounded_structured_output(result.structured_output),
+                progress=_bounded_structured_output({"sections": list(result.progress)}),
+                result_available=result.result_available,
+                approval_blocked=result.approval_blocked,
+                child_session_id=result.child_session_id,
+            )
+        )
         lines.append(f"- {result.task_id}: {result.status}; summary={summary or 'none'}")
-    content = "\n".join(lines)
-    content = _bounded_text(content, limit=_MAX_GROUP_CONTENT_CHARS)
-    payload: dict[str, object] = {
-        "parallel_group_id": group.parallel_group_id,
-        "task_ids": list(group.task_ids),
-        "expected_task_count": group.expected_task_count,
-        "status": status,
-        "complete": group.complete,
-        "timed_out": group.timed_out,
-        "counts": group.counts,
-        "summary": _bounded_text(content),
-        "error": error,
-        "structured_output": [item["structured_output"] for item in results if item["structured_output"] is not None],
-        "results": results,
-        "retrieval_instruction": (
+    content = _bounded_text("\n".join(lines), limit=_MAX_GROUP_CONTENT_CHARS) or ""
+    body = TaskOutputGroupBody(
+        parallel_group_id=group.parallel_group_id,
+        task_ids=group.task_ids,
+        expected_task_count=group.expected_task_count,
+        status=status,
+        complete=group.complete,
+        timed_out=group.timed_out,
+        counts=group.counts,
+        summary=content,
+        error=error,
+        results=tuple(results),
+        retrieval_instruction=(
             f'task(operation="output", parallel_group_id="{group.parallel_group_id}")'
             if group.parallel_group_id is not None
             else 'task(operation="output", task_ids=[...])'
         ),
-        "block_timed_out": group.timed_out,
-    }
-    return ToolResult(tool_name="task_output", status="ok", content=content, data=payload)
+        block_timed_out=group.timed_out,
+    )
+    return ToolSuccess(
+        tool_name="task_output",
+        output=TextOutput(content),
+        body=body,
+    )
 
 
 def _background_output_guidance(

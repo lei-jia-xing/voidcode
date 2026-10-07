@@ -7,13 +7,14 @@ from typing import Literal
 from uuid import uuid4
 
 from ..provider.protocol import ProviderAbortSignal
-from ..tools.contracts import Tool, ToolCall, ToolResult
-from .engine import CallOutcome, EngineState, TurnBatch
+from ..tools.contracts import Tool, ToolCall, ToolFailure
+from .engine import CallOutcome, CallReported, EngineState, TurnBatch
 from .event_store import FactStore, MemoryEventStore
 from .tool_context import ToolContext
-from .transcript import ContextSegment, ToolResultView
+from .transcript import ContextSegment, ToolResultView, project_report
 from .turns import (
     CallSeed,
+    FinalTurn,
     StreamFact,
     StreamingTurnProducer,
     ToolCompletedFact,
@@ -23,7 +24,7 @@ from .turns import (
     TurnProducer,
     TurnRequest,
     TurnSessionSnapshot,
-    normalize_call_result,
+    report_call,
 )
 
 
@@ -90,19 +91,22 @@ class MemoryHost:
         return messages
 
     def prepare(self, state: EngineState) -> Generator[TurnFact, None, TurnRequest]:
+        views = tuple(project_report(report) for report in state.results)
         context = MemoryContext(
             state.request.prompt,
-            tuple(ToolResultView(result=result, content=result.content) for result in state.results),
-            state.transcript_segments(),
+            views,
+            state.transcript_segments(views),
         )
         yield from ()
         return replace(state.request, assembled_context=context, abort_signal=self.abort_signal)
 
     def invoke(self, producer: TurnProducer, state: EngineState) -> Generator[TurnFact, None, TurnPlan]:
         request = state.request
+        context = request.assembled_context
+        assert context is not None
         if request.metadata.get("provider_stream") is True and isinstance(producer, StreamingTurnProducer):
             plan: TurnPlan | None = None
-            for item in producer.stream_produce(request, tuple(state.results), session=request.session):
+            for item in producer.stream_produce(request, context.tool_results, session=request.session):
                 if isinstance(item, TurnFact):
                     self._record(item)
                     yield item
@@ -111,7 +115,7 @@ class MemoryHost:
             if plan is None:
                 raise RuntimeError("provider stream ended without a complete turn")
             return plan
-        return producer.produce(request, tuple(state.results), session=request.session)
+        return producer.produce(request, context.tool_results, session=request.session)
 
     def observe(self, plan: TurnPlan, state: EngineState) -> Generator[TurnFact, None, bool]:
         if state.batches and self._current_batch is not state.batches[-1]:
@@ -128,7 +132,7 @@ class MemoryHost:
         yield requested
         tool = self._tools.get(call.tool_name)
         if tool is None:
-            result = ToolResult(tool_name=call.tool_name, status="error", error=f"unknown tool: {call.tool_name}")
+            result = ToolFailure(tool_name=call.tool_name, error=f"unknown tool: {call.tool_name}")
         else:
             result = tool.invoke(
                 call,
@@ -139,12 +143,17 @@ class MemoryHost:
                     abort_signal=self.abort_signal,
                 ),
             )
-        result = normalize_call_result(call, result, final_arguments=call.arguments)
-        completed = ToolCompletedFact(call, result, batch=self._batch_seed)
+        report = report_call(
+            call,
+            result,
+            final_arguments=call.arguments,
+            final_tool_name=tool.definition.name if tool is not None else call.tool_name,
+        )
+        completed = ToolCompletedFact(report, batch=self._batch_seed)
         self._record(completed)
         yield completed
-        return CallOutcome("result", result)
+        return CallReported(report)
 
-    def finish(self, _plan: TurnPlan, _state: EngineState) -> Generator[TurnFact, None, str | None]:
+    def finish(self, _plan: FinalTurn, _state: EngineState) -> Generator[TurnFact, None, str | None]:
         yield from ()
         return None

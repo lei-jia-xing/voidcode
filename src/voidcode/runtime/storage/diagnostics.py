@@ -76,6 +76,8 @@ class _DiagnosticsStorageMixin(_MixinBase):
                 keep_background_tasks=keep_background_tasks,
                 older_than=older_than,
             )
+            referenced_session_ids, referenced_task_ids = self._referenced_composition_owner_ids(connection=connection, workspace=workspace)
+            task_ids = tuple(task_id for task_id in task_ids if task_id not in referenced_task_ids)
             retained_background_task_session_ids = self._retained_background_task_session_ids(
                 connection=connection,
                 workspace=workspace,
@@ -88,6 +90,7 @@ class _DiagnosticsStorageMixin(_MixinBase):
                 older_than=older_than,
                 protected_session_ids=retained_background_task_session_ids,
             )
+            session_ids = tuple(session_id for session_id in session_ids if session_id not in referenced_session_ids)
             counts = {
                 "session_events": self._delete_for_ids(
                     connection=connection,
@@ -377,6 +380,54 @@ class _DiagnosticsStorageMixin(_MixinBase):
         )
         return tuple(decode_row(row, TaskIdRow)["task_id"] for row in rows)
 
+    @staticmethod
+    def _referenced_composition_owner_ids(
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        rows = connection.execute(
+            """
+            WITH refs AS (
+                SELECT 'session' AS source_kind, session_id AS source_id,
+                       json_extract(metadata_json, '$.agent_capability_snapshot.composition_ref') AS ref
+                FROM sessions WHERE workspace_id = ?
+                UNION ALL
+                SELECT 'session', session_id,
+                       json_extract(resume_checkpoint_json, '$.session_metadata.agent_capability_snapshot.composition_ref')
+                FROM sessions WHERE workspace_id = ?
+                UNION ALL
+                SELECT 'session', session_id, json_extract(metadata_json, '$.composition_ref')
+                FROM sessions WHERE workspace_id = ?
+                UNION ALL
+                SELECT 'session', session_id, json_extract(resume_checkpoint_json, '$.session_metadata.composition_ref')
+                FROM sessions WHERE workspace_id = ?
+                UNION ALL
+                SELECT 'task', task_id, json_extract(request_metadata_json, '$.composition_ref')
+                FROM background_tasks WHERE workspace_id = ?
+            )
+            SELECT DISTINCT json_extract(ref, '$.owner.kind') AS owner_kind,
+                            CASE json_extract(ref, '$.owner.kind')
+                                WHEN 'session' THEN json_extract(ref, '$.owner.session_id')
+                                WHEN 'task' THEN json_extract(ref, '$.owner.task_id')
+                            END AS owner_id
+            FROM refs
+            WHERE json_extract(ref, '$.workspace') = ?
+              AND NOT (
+                  source_kind = json_extract(ref, '$.owner.kind')
+                  AND source_id = CASE source_kind
+                      WHEN 'session' THEN json_extract(ref, '$.owner.session_id')
+                      WHEN 'task' THEN json_extract(ref, '$.owner.task_id')
+                  END
+              )
+            """,
+            (str(workspace),) * 6,
+        ).fetchall()
+        return (
+            tuple(row["owner_id"] for row in rows if row["owner_kind"] == "session"),
+            tuple(row["owner_id"] for row in rows if row["owner_kind"] == "task"),
+        )
+
     def _auto_prune_sessions(
         self,
         *,
@@ -439,6 +490,9 @@ class _DiagnosticsStorageMixin(_MixinBase):
             connection=connection,
             workspace=workspace,
         )
+        referenced_session_ids, referenced_task_ids = self._referenced_composition_owner_ids(connection=connection, workspace=workspace)
+        pruned_ids = tuple(session_id for session_id in pruned_ids if session_id not in referenced_session_ids)
+        orphaned_task_ids = tuple(task_id for task_id in orphaned_task_ids if task_id not in referenced_task_ids)
         if not pruned_ids and not orphaned_task_ids:
             return 0
         for table in (

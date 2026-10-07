@@ -19,7 +19,62 @@ from ..security.shell_policy import (
     resolve_shell_execution_policy,
 )
 from ._pydantic_args import NonEmptyCommand, OptionalDescription, parse_tool_args
-from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import (
+    OutputBounds,
+    RuntimeToolTimeoutError,
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolEffect,
+    ToolFailure,
+    ToolResult,
+    ToolSuccess,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ShellExecResultBody:
+    command: str
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    timeout: int
+    injected_env_keys: tuple[str, ...]
+    truncated: bool = False
+    cwd: str | None = None
+    stdout_truncated: bool | None = None
+    stderr_truncated: bool | None = None
+    output_char_count: int | None = None
+    interrupted: bool = False
+    timed_out: bool = False
+    cancelled: bool = False
+    reason: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "command": self.command,
+            "exit_code": self.exit_code,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "timeout": self.timeout,
+            "truncated": self.truncated,
+            "injected_env_keys": list(self.injected_env_keys),
+        }
+        if self.cwd is not None:
+            payload["cwd"] = self.cwd
+        if self.stdout_truncated is not None:
+            payload["stdout_truncated"] = self.stdout_truncated
+        if self.stderr_truncated is not None:
+            payload["stderr_truncated"] = self.stderr_truncated
+        if self.output_char_count is not None:
+            payload["output_char_count"] = self.output_char_count
+        if self.interrupted:
+            payload["interrupted"] = True
+        if self.timed_out:
+            payload["timed_out"] = True
+        if self.cancelled:
+            payload.update(cancelled=True, reason=self.reason)
+        return payload
 
 
 class ShellExecArgs(BaseModel):
@@ -390,24 +445,20 @@ class ShellExecTool:
         if timed_out:
             if runtime_timeout_selected:
                 content = f"tool '{self.definition.name}' exceeded runtime timeout of {timeout_seconds}s"
-                partial_result = ToolResult(
+                partial_result = ToolFailure(
                     tool_name=self.definition.name,
-                    status="error",
-                    content=output,
                     error=content,
-                    data={
-                        "command": command_text,
-                        "exit_code": process.returncode,
-                        "stdout": stdout,
-                        "stderr": stderr,
-                        "timeout": timeout_seconds,
-                        "truncated": False,
-                        "interrupted": True,
-                        "timed_out": True,
-                        "injected_env_keys": injected_env_keys,
-                    },
-                    truncated=False,
-                    partial=True,
+                    output=TextOutput(output, bounds=OutputBounds(partial=True)),
+                    body=ShellExecResultBody(
+                        command=command_text,
+                        exit_code=process.returncode,
+                        stdout=stdout,
+                        stderr=stderr,
+                        timeout=timeout_seconds,
+                        injected_env_keys=tuple(injected_env_keys),
+                        interrupted=True,
+                        timed_out=True,
+                    ),
                     timeout_seconds=timeout_seconds,
                 )
                 raise RuntimeToolTimeoutError(
@@ -419,46 +470,37 @@ class ShellExecTool:
         if aborted:
             reason = abort_signal.reason if abort_signal is not None else None
             content = "User aborted the command."
-            return ToolResult(
+            return ToolFailure(
                 tool_name=self.definition.name,
-                status="error",
-                content=content,
                 error=content,
-                data={
-                    "command": command_text,
-                    "exit_code": process.returncode,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "timeout": timeout_seconds,
-                    "truncated": False,
-                    "interrupted": True,
-                    "cancelled": True,
-                    "reason": reason,
-                    "injected_env_keys": injected_env_keys,
-                },
-                truncated=False,
-                partial=False,
+                output=TextOutput(content),
+                body=ShellExecResultBody(
+                    command=command_text,
+                    exit_code=process.returncode,
+                    stdout=stdout,
+                    stderr=stderr,
+                    timeout=timeout_seconds,
+                    injected_env_keys=tuple(injected_env_keys),
+                    interrupted=True,
+                    cancelled=True,
+                    reason=reason,
+                ),
                 timeout_seconds=timeout_seconds,
             )
 
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.definition.name,
-            status="ok",
-            content=output,
-            data={
-                "command": command_text,
-                "cwd": str(exec_policy.workspace_root),
-                "exit_code": process.returncode,
-                "stdout": stdout,
-                "stderr": stderr,
-                "timeout": timeout_seconds,
-                "stdout_truncated": False,
-                "stderr_truncated": False,
-                "truncated": False,
-                "output_char_count": len(output),
-                "injected_env_keys": injected_env_keys,
-            },
-            truncated=False,
-            partial=False,
-            timeout_seconds=timeout_seconds,
+            output=TextOutput(output),
+            body=ShellExecResultBody(
+                command=command_text,
+                exit_code=process.returncode,
+                stdout=stdout,
+                stderr=stderr,
+                timeout=timeout_seconds,
+                injected_env_keys=tuple(injected_env_keys),
+                cwd=str(exec_policy.workspace_root),
+                stdout_truncated=False,
+                stderr_truncated=False,
+                output_char_count=len(output),
+            ),
         )

@@ -6,6 +6,7 @@ import signal
 import subprocess
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -13,7 +14,20 @@ from string import Template
 from typing import BinaryIO, final
 
 from ..core.tool_context import ToolContext
-from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolDiagnostics, ToolEffect, ToolResult
+from ..security.json_values import json_wire_object, own_json_object
+from .contracts import (
+    EmptyOutput,
+    OutputBounds,
+    RuntimeToolTimeoutError,
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolDiagnostics,
+    ToolEffect,
+    ToolFailure,
+    ToolResult,
+    ToolSuccess,
+)
 
 LOCAL_CUSTOM_TOOL_SOURCE = "local_custom_tool"
 LOCAL_CUSTOM_TOOL_DEFAULT_PATH = ".voidcode/tools"
@@ -24,14 +38,43 @@ _VALID_TOOL_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQR
 
 
 @dataclass(frozen=True, slots=True)
+class LocalCustomResultBody:
+    exit_code: int
+    elapsed_ms: int
+    manifest: str
+    stderr: str | None = None
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "exit_code": self.exit_code,
+            "elapsed_ms": self.elapsed_ms,
+            "manifest": self.manifest,
+        }
+        if self.stderr:
+            payload["stderr"] = self.stderr
+        if self.stdout_truncated or self.stderr_truncated:
+            payload.update(
+                truncated=True,
+                stdout_truncated=self.stdout_truncated,
+                stderr_truncated=self.stderr_truncated,
+            )
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class LocalCustomToolManifest:
     name: str
     description: str
-    input_schema: dict[str, object]
+    input_schema: Mapping[str, object]
     command: tuple[str, ...]
     read_only: bool
     manifest_path: Path
     path_argument_keys: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "input_schema", own_json_object(self.input_schema))
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,12 +105,12 @@ class _OutputCollector:
         )
 
 
-def discover_local_custom_tools(
+def discover_local_custom_tool_manifests(
     workspace: Path,
     *,
     enabled: bool | None,
     relative_path: str = LOCAL_CUSTOM_TOOL_DEFAULT_PATH,
-) -> tuple[LocalCustomTool, ...]:
+) -> tuple[LocalCustomToolManifest, ...]:
     if enabled is not True:
         return ()
     workspace_root = workspace.resolve()
@@ -81,12 +124,11 @@ def discover_local_custom_tools(
     if not root.is_dir():
         raise ValueError(f"local custom tools path is not a directory: {relative_path}")
 
-    manifests = tuple(
+    return tuple(
         _load_local_custom_tool_manifest(path, workspace=workspace_root)
         for path in sorted(root.glob(f"*{LOCAL_CUSTOM_TOOL_MANIFEST_SUFFIX}"))
         if path.is_file()
     )
-    return tuple(LocalCustomTool(manifest) for manifest in manifests)
 
 
 def _load_local_custom_tool_manifest(path: Path, *, workspace: Path) -> LocalCustomToolManifest:
@@ -161,14 +203,10 @@ def _parse_path_argument_keys(value: object, *, manifest_path: Path) -> tuple[st
     return tuple(path_argument_keys)
 
 
-def _parse_input_schema(value: object, *, manifest_path: Path) -> dict[str, object]:
+def _parse_input_schema(value: object, *, manifest_path: Path) -> Mapping[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"local custom tool manifest {manifest_path} input_schema must be an object")
     schema = value
-    try:
-        json.dumps(schema)
-    except TypeError as exc:
-        raise ValueError(f"local custom tool manifest {manifest_path} input_schema must be JSON serializable") from exc
     if schema.get("type") != "object":
         raise ValueError(f"local custom tool manifest {manifest_path} input_schema.type must be 'object'")
     if not all(isinstance(key, str) for key in schema):
@@ -181,7 +219,7 @@ def _parse_input_schema(value: object, *, manifest_path: Path) -> dict[str, obje
     required = schema.get("required")
     if required is not None and (not isinstance(required, list) or not all(isinstance(item, str) for item in required)):
         raise ValueError(f"local custom tool manifest {manifest_path} input_schema.required must be strings")
-    return dict(schema)
+    return schema
 
 
 def _validate_command_entrypoint(command: tuple[str, ...], *, manifest_path: Path, workspace: Path) -> None:
@@ -223,33 +261,41 @@ def _validate_rendered_manifest_dir_command_parts(
             rendered_cursor = rendered_token_start + len(manifest_dir)
 
 
+def local_custom_tool_definition(manifest: LocalCustomToolManifest) -> ToolDefinition:
+    return ToolDefinition(
+        name=manifest.name,
+        description=manifest.description,
+        input_schema=manifest.input_schema,
+        effects=frozenset({ToolEffect.READ, ToolEffect.EXECUTE, ToolEffect.SPAWN})
+        if manifest.read_only
+        else frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN}),
+        replay_policy="safe" if manifest.read_only else "never",
+        path_argument_keys=manifest.path_argument_keys,
+    )
+
+
+def local_custom_tool_source_fingerprint(manifest: LocalCustomToolManifest) -> str:
+    payload = {
+        "command": list(manifest.command),
+        "description": manifest.description,
+        "input_schema": json_wire_object(manifest.input_schema),
+        "name": manifest.name,
+        "path_argument_keys": list(manifest.path_argument_keys),
+        "read_only": manifest.read_only,
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True, allow_nan=False).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
 @final
 class LocalCustomTool:
     def __init__(self, manifest: LocalCustomToolManifest) -> None:
         self._manifest = manifest
-        self.definition = ToolDefinition(
-            name=manifest.name,
-            description=manifest.description,
-            input_schema=manifest.input_schema,
-            effects=frozenset({ToolEffect.READ, ToolEffect.EXECUTE, ToolEffect.SPAWN})
-            if manifest.read_only
-            else frozenset({ToolEffect.EXECUTE, ToolEffect.SPAWN}),
-            replay_policy="safe" if manifest.read_only else "never",
-            path_argument_keys=manifest.path_argument_keys,
-        )
+        self.definition = local_custom_tool_definition(manifest)
 
     @property
     def source_fingerprint(self) -> str:
-        payload = {
-            "command": list(self._manifest.command),
-            "description": self._manifest.description,
-            "input_schema": self._manifest.input_schema,
-            "name": self._manifest.name,
-            "path_argument_keys": list(self._manifest.path_argument_keys),
-            "read_only": self._manifest.read_only,
-        }
-        encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("utf-8")
-        return sha256(encoded).hexdigest()
+        return local_custom_tool_source_fingerprint(self._manifest)
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         return self._invoke(call, context=context, timeout_seconds=None)
@@ -274,44 +320,39 @@ class LocalCustomTool:
             context=context,
             workspace=resolved_workspace,
             env=env,
-            input_text=json.dumps(call.arguments),
+            input_text=json.dumps(json_wire_object(call.arguments), allow_nan=False),
             timeout_seconds=timeout_seconds,
         )
         elapsed_ms = round((time.monotonic() - start) * 1000)
         output_truncated = stdout.truncated or stderr.truncated
-        data: dict[str, object] = {
-            "exit_code": completed.returncode,
-            "elapsed_ms": elapsed_ms,
-            "manifest": str(self._manifest.manifest_path),
-        }
-        if stderr.text:
-            data["stderr"] = stderr.text
-        if output_truncated:
-            data["truncated"] = True
-            data["stdout_truncated"] = stdout.truncated
-            data["stderr_truncated"] = stderr.truncated
-        if completed.returncode != 0:
-            message = stderr.text.strip() or stdout.text.strip() or f"command exited with {completed.returncode}"
-            return ToolResult(
-                tool_name=self._manifest.name,
-                status="error",
-                content=stdout.text or None,
-                data=data,
-                error=message,
-                diagnostics=ToolDiagnostics(kind="local_custom_tool_failed", summary=message, details={"tool_name": self._manifest.name}),
-                truncated=output_truncated,
-                partial=output_truncated,
-                source=LOCAL_CUSTOM_TOOL_SOURCE,
-            )
-        return ToolResult(
-            tool_name=self._manifest.name,
-            status="ok",
-            content=stdout.text or None,
-            data=data,
-            source=LOCAL_CUSTOM_TOOL_SOURCE,
+        body = LocalCustomResultBody(
+            exit_code=completed.returncode,
+            elapsed_ms=elapsed_ms,
+            manifest=str(self._manifest.manifest_path),
+            stderr=stderr.text or None,
+            stdout_truncated=stdout.truncated,
+            stderr_truncated=stderr.truncated,
+        )
+        bounds = OutputBounds(
             truncated=output_truncated,
             partial=output_truncated,
+            source=LOCAL_CUSTOM_TOOL_SOURCE,
         )
+        output = TextOutput(stdout.text, bounds=bounds) if stdout.text else EmptyOutput(bounds=bounds)
+        if completed.returncode != 0:
+            message = stderr.text.strip() or stdout.text.strip() or f"command exited with {completed.returncode}"
+            return ToolFailure(
+                tool_name=self._manifest.name,
+                error=message,
+                output=output,
+                body=body,
+                diagnostics=ToolDiagnostics(
+                    kind="local_custom_tool_failed",
+                    summary=message,
+                    details={"tool_name": self._manifest.name},
+                ),
+            )
+        return ToolSuccess(tool_name=self._manifest.name, output=output, body=body)
 
     def _run_command(
         self,
@@ -425,4 +466,10 @@ def _kill_local_custom_process(process: subprocess.Popen[bytes]) -> None:
         pass
 
 
-__all__ = ["LocalCustomTool", "LocalCustomToolManifest", "discover_local_custom_tools"]
+__all__ = [
+    "LocalCustomTool",
+    "LocalCustomToolManifest",
+    "discover_local_custom_tool_manifests",
+    "local_custom_tool_definition",
+    "local_custom_tool_source_fingerprint",
+]

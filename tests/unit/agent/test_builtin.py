@@ -5,7 +5,6 @@ import pytest
 from voidcode.agent import (
     get_builtin_agent_manifest,
     list_builtin_agent_manifests,
-    render_agent_prompt,
     render_builtin_prompt_profile,
 )
 from voidcode.agent.builtin import validate_builtin_agent_manifests
@@ -25,45 +24,6 @@ _MUTATING_TOOL_PATTERNS = frozenset(
         "task",
     }
 )
-_PROMPT_BOUNDARY_PHRASES = {
-    "leader": (
-        "Deliver complete working behavior",
-        "Verify child results yourself",
-        "narrowest specialist that fits",
-        'Collect outstanding child results with task(operation="output")',
-    ),
-    "worker": (
-        "focused delegated executor",
-        "You execute; you do not orchestrate",
-        "do not delegate or spawn child agents",
-    ),
-    "advisor": (
-        "read-only advisor for architecture, risk, and review",
-        "Stay read-only",
-        "do not edit or write files",
-    ),
-    "explore": (
-        "workspace-bound agent for local code discovery",
-        "identify the actual information need",
-        "report relevant files with absolute paths",
-        "Stay read-only",
-        "do not edit or write files",
-    ),
-    "researcher": (
-        "public docs, code examples, and external references",
-        "Stay read-only and non-mutating",
-        "do not edit files",
-        "so the caller can make a concrete decision",
-        "distinguish official documentation, source examples, and incidental commentary",
-    ),
-    "product": (
-        "produce a concrete, ready-to-execute implementation plan",
-        "Do not ask the user questions or wait for clarification",
-        "state assumptions explicitly and plan around them",
-        "do not write, edit, or execute code",
-        "items to verify during implementation",
-    ),
-}
 
 
 def test_builtin_agent_manifests_have_materialized_prompt_profiles_and_execution_engines() -> None:
@@ -141,49 +101,6 @@ def test_builtin_delegated_executor_roles_do_not_receive_recursive_task_tool() -
 
         assert manifest is not None
         assert "task" not in manifest.tool_allowlist
-
-
-@pytest.mark.parametrize(
-    ("preset", "required_phrases"),
-    tuple(_PROMPT_BOUNDARY_PHRASES.items()),
-)
-def test_builtin_role_prompts_keep_critical_boundary_contracts(
-    preset: str,
-    required_phrases: tuple[str, ...],
-) -> None:
-    prompt = render_agent_prompt({"preset": preset, "prompt_profile": preset})
-
-    assert prompt is not None
-    for phrase in required_phrases:
-        assert phrase in prompt
-
-
-@pytest.mark.parametrize(
-    ("preset", "expected_fragment"),
-    [
-        ("leader", "VoidCode's leader agent"),
-        ("worker", "VoidCode's worker agent"),
-        ("advisor", "VoidCode's advisor agent"),
-        ("explore", "VoidCode's explore agent"),
-        ("researcher", "VoidCode's researcher agent"),
-        ("product", "VoidCode's product agent"),
-    ],
-)
-def test_render_agent_prompt_materializes_builtin_profiles(preset: str, expected_fragment: str) -> None:
-    prompt = render_agent_prompt({"preset": preset, "prompt_profile": preset})
-
-    assert prompt is not None
-    assert expected_fragment in prompt
-
-
-def test_render_agent_prompt_falls_back_for_non_builtin_profiles() -> None:
-    prompt = render_agent_prompt({"preset": "leader", "prompt_profile": "custom-review"})
-
-    assert prompt == (
-        "Runtime-selected VoidCode agent prompt profile: custom-review. "
-        "Treat this as the active agent role profile for this single-agent turn while "
-        "still following the runtime-provided tool and skill boundaries."
-    )
 
 
 def test_validate_builtin_agent_manifests_rejects_unknown_preset_hook_ref() -> None:

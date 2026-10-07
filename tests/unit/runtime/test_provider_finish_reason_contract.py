@@ -21,6 +21,10 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
+import pytest
+
+import voidcode.runtime.service as runtime_service_module
+from tests.runtime_composition import save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.provider_turns import ProviderTurnProducer
 from voidcode.core.turns import TurnRequest
@@ -48,7 +52,8 @@ from voidcode.runtime.storage import SqliteSessionStore
 
 
 def _create_session_row(store: SqliteSessionStore, *, workspace: Path, session_id: str) -> None:
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=workspace,
         session_id=session_id,
         prompt="hi",
@@ -298,7 +303,26 @@ class _StreamingScriptedRegistryProvider:
         return cast(TurnProvider, _Provider())
 
 
-def test_transient_failure_after_streamed_text_falls_back_and_announces_the_discard(tmp_path: Path) -> None:
+def test_transient_failure_after_streamed_text_falls_back_and_announces_the_discard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    provider_configs = RuntimeProvidersConfig(
+        custom={
+            "primary": ProviderEndpointConfig(
+                transient_retry=ProviderTransientRetryConfig(max_retries=0, base_delay_ms=0, max_delay_ms=0, jitter=False)
+            ),
+            "secondary": ProviderEndpointConfig(
+                transient_retry=ProviderTransientRetryConfig(max_retries=0, base_delay_ms=0, max_delay_ms=0, jitter=False)
+            ),
+        }
+    )
+    scripted_providers = {
+        "primary": _StreamingScriptedRegistryProvider(name="primary", fail_on_attempt=1),
+        "secondary": _StreamingScriptedRegistryProvider(name="secondary", fail_on_attempt=None),
+    }
+    monkeypatch.setattr(
+        runtime_service_module,
+        "materialize_builtin_provider",
+        lambda descriptor: scripted_providers[descriptor.provider_name],
+    )
     with tempfile.TemporaryDirectory() as state_dir:
         with VoidCodeRuntime(
             workspace=tmp_path,
@@ -311,23 +335,9 @@ def test_transient_failure_after_streamed_text_falls_back_and_announces_the_disc
                     preferred_model="primary/m1",
                     fallback_models=("secondary/m2",),
                 ),
-                providers=RuntimeProvidersConfig(
-                    custom={
-                        "primary": ProviderEndpointConfig(
-                            transient_retry=ProviderTransientRetryConfig(max_retries=0, base_delay_ms=0, max_delay_ms=0, jitter=False)
-                        ),
-                        "secondary": ProviderEndpointConfig(
-                            transient_retry=ProviderTransientRetryConfig(max_retries=0, base_delay_ms=0, max_delay_ms=0, jitter=False)
-                        ),
-                    }
-                ),
+                providers=provider_configs,
             ),
-            model_provider_registry=ModelProviderRegistry(
-                providers={
-                    "primary": _StreamingScriptedRegistryProvider(name="primary", fail_on_attempt=1),
-                    "secondary": _StreamingScriptedRegistryProvider(name="secondary", fail_on_attempt=None),
-                }
-            ),
+            model_provider_registry=ModelProviderRegistry.with_defaults(provider_configs=provider_configs),
         ) as runtime:
             _ = state_dir
             chunks = list(

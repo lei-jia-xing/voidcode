@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.runtime_composition import create_task
 from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -63,6 +64,7 @@ def _supervisor(workspace: Path, store: SqliteSessionStore) -> RuntimeBackground
     supervisor = object.__new__(RuntimeBackgroundTaskSupervisor)
     supervisor._workspace = workspace
     supervisor._tasks = store
+    supervisor._sessions = store
     supervisor._events = store
     supervisor._surface = _Surface()
     supervisor.backfill_parent_background_task_event = lambda *, task: None
@@ -80,7 +82,8 @@ def _seed_group(
     store = SqliteSessionStore(database_path=workspace / "background.sqlite3")
     for index, status in enumerate(statuses):
         task_id = f"task-{index}"
-        store.create_background_task(
+        create_task(
+            store,
             workspace=workspace,
             task=_task(task_id, parent=parent, group=group, size=len(statuses), status=status),
         )
@@ -156,7 +159,8 @@ def test_group_rejects_parent_mismatch_duplicate_ids_and_size_mismatch(tmp_path:
     with pytest.raises(ValueError, match="duplicates"):
         supervisor.load_background_task_group_result(task_ids=("task-0", "task-0"), emit_result_read_hook=False)
 
-    store.create_background_task(
+    create_task(
+        store,
         workspace=tmp_path,
         task=_task("task-extra", parent="owner-a", group="size-mismatch", size=3),
     )
@@ -220,7 +224,7 @@ def test_group_result_summary_and_structured_output_are_bounded_and_not_transcri
         prompt=transcript_secret,
         structured_output={"answer": "structured value"},
     )
-    store.create_background_task(workspace=tmp_path, task=task)
+    create_task(store, workspace=tmp_path, task=task)
     store.mark_background_task_terminal(
         workspace=tmp_path,
         task_id="task-safe",

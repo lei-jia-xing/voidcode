@@ -4,7 +4,7 @@ import pytest
 
 from voidcode.core.tool_context import ToolContext
 from voidcode.hook.typed import validate_tool_input_schema
-from voidcode.tools.contracts import ToolCall
+from voidcode.tools.contracts import ProgressYield, TerminalYieldFailure, ToolCall, ToolFailure, ToolSuccess
 from voidcode.tools.yield_tool import YieldTool
 
 
@@ -68,9 +68,10 @@ def test_yield_invokes_error_only_terminal_payload() -> None:
         context=ToolContext(workspace=Path("."), session_id="child", parent_session_id="parent"),
     )
 
-    assert result.status == "error"
+    assert isinstance(result, ToolFailure)
     assert result.error == "child failed"
-    assert result.data["yield_kind"] == "terminal_error"
+    assert isinstance(result.control, TerminalYieldFailure)
+    assert result.control.data == {}
 
 
 def test_yield_is_rejected_for_top_level_session() -> None:
@@ -90,10 +91,5 @@ def test_yield_progress_is_nonterminal_and_supports_bounded_type_list() -> None:
         context=ToolContext(workspace=Path("."), session_id="child", parent_session_id="parent"),
     )
 
-    assert result.status == "ok"
-    assert result.data["yield_kind"] == "progress"
-    assert result.data["progress"] == {
-        "type": ["progress", "checkpoint"],
-        "result": "Read the storage boundary.",
-    }
-    assert "handoff" not in result.data
+    assert isinstance(result, ToolSuccess)
+    assert result.control == ProgressYield(("progress", "checkpoint"), "Read the storage boundary.", {})

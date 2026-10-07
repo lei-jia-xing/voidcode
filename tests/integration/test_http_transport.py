@@ -14,6 +14,8 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.runtime_composition import save_checkpoint
+
 pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
 
 
@@ -525,7 +527,9 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
     payload = cast(dict[str, object], response.json())
 
     assert response.status == 200
-    assert payload["output"] == "http replay"
+    replay_output = cast(str, payload["output"])
+    assert replay_output.startswith("Read 1 line(s) from sample.txt.")
+    assert "http replay" in replay_output
     request_event = _event_by_type(
         cast(list[dict[str, object]], payload["events"]),
         "runtime.request_received",
@@ -579,12 +583,12 @@ def test_transport_get_session_replay_is_read_only_for_interrupted_session(tmp_p
     original_events = cast(Any, stored).events
     original_count = len(original_events)
     sessions = runtime._repositories.sessions
-    recovery = runtime._repositories.recovery
     loaded = sessions.load_session(workspace=tmp_path, session_id="interrupted-replay-session")
     # Un-seal the terminal row into the mid-run "interrupted" state (the same
     # state every session row has while it is running) with an interrupted
     # checkpoint at the end of the persisted transcript.
-    recovery.save_interrupted_checkpoint(
+    save_checkpoint(
+        sessions,
         workspace=tmp_path,
         session_id="interrupted-replay-session",
         prompt="read sample.txt",
@@ -622,9 +626,9 @@ def test_transport_post_session_resume_reexecutes_interrupted_session(tmp_path: 
     stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="resume-session"))
     original_count = len(cast(Any, stored).events)
     sessions = runtime._repositories.sessions
-    recovery = runtime._repositories.recovery
     loaded = sessions.load_session(workspace=tmp_path, session_id="resume-session")
-    recovery.save_interrupted_checkpoint(
+    save_checkpoint(
+        sessions,
         workspace=tmp_path,
         session_id="resume-session",
         prompt="read sample.txt",
@@ -1868,7 +1872,9 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(
         cast(dict[str, object], replay_payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert replay_payload["output"] == "stream replay"
+    replay_output = cast(str, replay_payload["output"])
+    assert replay_output.startswith("Read 1 line(s) from sample.txt.")
+    assert "stream replay" in replay_output
     _assert_ordered_event_types(
         _event_types_from_payload_events(replay_payload),
         [

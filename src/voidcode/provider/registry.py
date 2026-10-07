@@ -1,46 +1,38 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
+from types import MappingProxyType
+from typing import cast
 
-from .anthropic_native import AnthropicMessagesProvider
-from .auth import ANTHROPIC_COMPATIBLE_BUILTIN_FIELDS, OPENAI_COMPATIBLE_BUILTIN_FIELDS
 from .config import (
+    PROVIDER_WIRES,
     AnthropicProviderConfig,
+    CopilotProviderConfig,
+    GoogleProviderConfig,
     OpenAICompatibleProviderConfig,
+    OpenAIProviderConfig,
     ProviderConfigs,
     ProviderEndpointConfig,
     openai_compatible_endpoint_config,
 )
-from .copilot import GithubCopilotModelProvider
-from .endpoint import OpenAIEndpointProvider
-from .google import GoogleModelProvider
-from .model_catalog import (
-    ProviderModelCatalog,
-    ProviderModelMetadata,
-    discover_available_models,
-    static_catalog_metadata,
+from .model_catalog import ProviderModelCatalog, ProviderModelMetadata, discover_available_models, static_catalog_metadata
+from .models import (
+    BoundProviderChain,
+    BoundProviderConfig,
+    BoundProviderModel,
+    ProviderDescriptor,
+    ProviderModelSelection,
+    ResolvedProviderConfig,
 )
-from .models import ProviderResolutionSource
 from .naming import UnknownProviderIdError, canonical_provider_id
-from .openai import OpenAIModelProvider
-from .openai_native import OpenAIChatCompletionsProvider
-from .opencode import OpenCodeZenModelProvider
-from .opencode_go import OpenCodeGoModelProvider
-from .openrouter import OpenRouterModelProvider
 from .protocol import ModelTurnProvider, TurnProvider
-from .provider_config import anthropic_compatible_endpoint_config
+from .provider_config import anthropic_compatible_endpoint_config, resolved_provider_endpoint_config
 
 
 @dataclass(frozen=True, slots=True)
 class OpenAICompatibleModelProvider:
-    """A named vendor whose wire is the OpenAI chat-completions protocol.
-
-    A vendor is a table entry, not a module: ``name`` selects its endpoint
-    defaults -- base URL, discovery URL and credential environment variable --
-    inside ``openai_compatible_endpoint_config``, which owns the vendor table and
-    rejects a name that is not in it.
-    """
+    """A named vendor whose wire is the OpenAI chat-completions protocol."""
 
     name: str
     config: OpenAICompatibleProviderConfig | None = None
@@ -49,17 +41,14 @@ class OpenAICompatibleModelProvider:
         return openai_compatible_endpoint_config(self.name, self.config)
 
     def turn_provider(self) -> TurnProvider:
+        from .openai_native import OpenAIChatCompletionsProvider
+
         return OpenAIChatCompletionsProvider(name=self.name, config=self.provider_config())
 
 
 @dataclass(frozen=True, slots=True)
 class AnthropicCompatibleModelProvider:
-    """A named vendor whose wire is the Anthropic Messages protocol.
-
-    Same contract as the OpenAI-compatible adapter: ``name`` selects the vendor's
-    endpoint defaults inside ``anthropic_compatible_endpoint_config``, which owns
-    the Anthropic-wire vendor table and rejects a name that is not in it.
-    """
+    """A named vendor whose wire is the Anthropic Messages protocol."""
 
     name: str
     config: AnthropicProviderConfig | None = None
@@ -68,155 +57,215 @@ class AnthropicCompatibleModelProvider:
         return anthropic_compatible_endpoint_config(self.name, self.config)
 
     def turn_provider(self) -> TurnProvider:
+        from .anthropic_native import AnthropicMessagesProvider
+
         return AnthropicMessagesProvider(name=self.name, config=self.config)
 
 
-@dataclass(frozen=True, slots=True)
-class ProviderResolution:
-    provider_name: str
-    provider: ModelTurnProvider
-    source: ProviderResolutionSource
-    configured: bool
+def materialize_builtin_provider(descriptor: ProviderDescriptor) -> ModelTurnProvider:
+    """Construct a genuine native adapter only when the admitted caller asks."""
+    name, config = descriptor.provider_name, descriptor.configuration
+    match name:
+        case "opencode-zen":
+            from .opencode import OpenCodeZenModelProvider
+
+            return OpenCodeZenModelProvider(config=cast(ProviderEndpointConfig | None, config))
+        case "openai":
+            from .openai import OpenAIModelProvider
+
+            return OpenAIModelProvider(config=cast(OpenAIProviderConfig | None, config))
+        case "google":
+            from .google import GoogleModelProvider
+
+            return GoogleModelProvider(config=cast(GoogleProviderConfig | None, config))
+        case "github-copilot":
+            from .copilot import GithubCopilotModelProvider
+
+            return GithubCopilotModelProvider(config=cast(CopilotProviderConfig | None, config))
+        case "endpoint":
+            from .endpoint import OpenAIEndpointProvider
+
+            return OpenAIEndpointProvider(name=name, config=cast(ProviderEndpointConfig | None, config))
+        case "openrouter":
+            from .openrouter import OpenRouterModelProvider
+
+            return OpenRouterModelProvider(config=cast(ProviderEndpointConfig | None, config))
+        case "opencode-go":
+            from .opencode_go import OpenCodeGoModelProvider
+
+            return OpenCodeGoModelProvider(config=cast(OpenAICompatibleProviderConfig | None, config))
+    wire = PROVIDER_WIRES.get(name)
+    if wire is not None:
+        if wire.shape == "anthropic":
+            return AnthropicCompatibleModelProvider(name=name, config=cast(AnthropicProviderConfig | None, config))
+        if wire.shape == "openai_compatible":
+            return OpenAICompatibleModelProvider(name=name, config=cast(OpenAICompatibleProviderConfig | None, config))
+    elif isinstance(config, ProviderEndpointConfig):
+        from .endpoint import OpenAIEndpointProvider
+
+        return OpenAIEndpointProvider(name=name, config=config)
+    raise UnknownProviderIdError(name)
 
 
 @dataclass(slots=True)
 class ModelProviderRegistry:
-    providers: dict[str, ModelTurnProvider]
-    custom_provider_configs: Mapping[str, ProviderEndpointConfig] | None = None
-    model_catalog: dict[str, ProviderModelCatalog] | None = None
+    descriptors: Mapping[str, ProviderDescriptor]
+    model_catalog: dict[str, ProviderModelCatalog] = field(default_factory=dict)
+    _declarations: dict[str, ProviderDescriptor] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        declarations = self.descriptors
+        self._declarations = {}
+        self.descriptors = MappingProxyType(self._declarations)
+        for name, descriptor in declarations.items():
+            if canonical_provider_id(name) != descriptor.provider_name:
+                raise ValueError("provider declaration key must match its canonical id")
+            self.register(descriptor)
+
+    def register(self, descriptor: ProviderDescriptor) -> None:
+        """Register an actual static declaration; never overwrite another owner."""
+        name = descriptor.provider_name
+        if not name or "/" in name or canonical_provider_id(name) != name:
+            raise ValueError("provider declaration must have a canonical nonempty id without '/'")
+        if name in self._declarations:
+            raise ValueError(f"provider id is already declared: {name}")
+        if descriptor.catalog is not None and descriptor.catalog.provider != name:
+            raise ValueError("provider catalog must belong to its declaring provider")
+        self._declarations[name] = descriptor
 
     @classmethod
     def with_defaults(cls, *, provider_configs: ProviderConfigs | None = None) -> ModelProviderRegistry:
         configs = provider_configs or ProviderConfigs()
-        # Adapters that are not shared per-wire ones: a gateway that routes per
-        # model, a credential flow of its own, or a wire of its own.
-        providers: dict[str, ModelTurnProvider] = {
-            "opencode-zen": OpenCodeZenModelProvider(config=configs.opencode_zen),
-            "openai": OpenAIModelProvider(config=configs.openai),
-            "google": GoogleModelProvider(config=configs.google),
-            "github-copilot": GithubCopilotModelProvider(config=configs.github_copilot),
-            "endpoint": OpenAIEndpointProvider(name="endpoint", config=configs.endpoint),
-            "openrouter": OpenRouterModelProvider(config=configs.openrouter),
-            "opencode-go": OpenCodeGoModelProvider(config=configs.opencode_go),
-        }
-        # Every remaining built-in id is a vendor on one shared wire adapter. The
-        # ids and their ``ProviderConfigs`` fields both come from the payload
-        # schema, so a new vendor is a table entry plus a config field, never a
-        # module; an id already registered above keeps its own adapter.
-        shared_wire_vendors = (
-            (AnthropicCompatibleModelProvider, ANTHROPIC_COMPATIBLE_BUILTIN_FIELDS),
-            (OpenAICompatibleModelProvider, OPENAI_COMPATIBLE_BUILTIN_FIELDS),
-        )
-        for adapter, vendor_fields in shared_wire_vendors:
-            for provider_name, field_name in vendor_fields.items():
-                if provider_name in providers:
-                    continue
-                providers[provider_name] = adapter(name=provider_name, config=getattr(configs, field_name))
-        return cls(
-            providers=providers,
-            custom_provider_configs=configs.custom,
-            model_catalog={},
-        )
-
-    def resolve_with_metadata(self, provider_name: str) -> ProviderResolution:
-        """Resolve one provider id, rejecting ids nothing declares.
-
-        The id is canonicalised first, so ``MiniMax`` resolves exactly like
-        ``minimax``. An id that is neither a built-in nor declared under
-        ``providers.custom`` raises instead of borrowing the generic endpoint
-        provider: an undeclared prefix must not silently reach a host the user
-        did not name.
-        """
-        canonical_name = canonical_provider_id(provider_name)
-        provider = self.providers.get(canonical_name)
-        if provider is not None:
-            return ProviderResolution(
-                provider_name=canonical_name,
-                provider=provider,
-                source="builtin",
-                configured=True,
+        descriptors: dict[str, ProviderDescriptor] = {}
+        for name in PROVIDER_WIRES:
+            config = configs.entry(name)
+            descriptors[name] = ProviderDescriptor(
+                provider_name=name,
+                configuration=config,
+                endpoint_config=resolved_provider_endpoint_config(name, config),
             )
-        if self.custom_provider_configs is not None:
-            custom_config = self.custom_provider_configs.get(canonical_name)
-            if custom_config is not None:
-                return ProviderResolution(
-                    provider_name=canonical_name,
-                    provider=OpenAIEndpointProvider(name=canonical_name, config=custom_config),
-                    source="custom",
-                    configured=True,
+        registry = cls(descriptors=descriptors)
+        for name, config in configs.custom.items():
+            registry.register(
+                ProviderDescriptor(
+                    provider_name=name,
+                    configuration=config,
+                    endpoint_config=resolved_provider_endpoint_config(name, config),
                 )
-        raise UnknownProviderIdError(canonical_name)
+            )
+        return registry
 
-    def resolve(self, provider_name: str) -> ModelTurnProvider:
-        return self.resolve_with_metadata(provider_name).provider
+    def resolve_static(self, provider_name: str) -> ProviderDescriptor:
+        canonical_name = canonical_provider_id(provider_name)
+        descriptor = self.descriptors.get(canonical_name)
+        if descriptor is None:
+            raise UnknownProviderIdError(canonical_name)
+        return descriptor
+
+    @staticmethod
+    def bind(
+        resolved_config: ResolvedProviderConfig,
+        *,
+        materialize: Callable[[ProviderDescriptor], ModelTurnProvider],
+    ) -> BoundProviderConfig:
+        """Bind captured declarations, never re-resolve against current config."""
+        targets = resolved_config.target_chain.all_targets
+        if not targets:
+            if (
+                resolved_config.model is not None
+                or resolved_config.provider_fallback is not None
+                or resolved_config.active_target.selection != ProviderModelSelection()
+            ):
+                raise ValueError("provider configuration has no selected target chain")
+            return BoundProviderConfig()
+        active_index: int | None = None
+        declarations: dict[str, ProviderDescriptor] = {}
+        for index, target in enumerate(targets):
+            descriptor = target.descriptor
+            selection = target.selection
+            if descriptor is None or selection.provider != descriptor.provider_name or selection.raw_model is None or selection.model is None:
+                raise ValueError("provider target is missing its static declaration")
+            previous = declarations.setdefault(descriptor.provider_name, descriptor)
+            if previous != descriptor:
+                raise ValueError("one provider id cannot have conflicting selected declarations")
+            if target == resolved_config.active_target:
+                active_index = index
+        if active_index is None:
+            raise ValueError("active provider target must belong to its selected chain")
+        providers: dict[str, ModelTurnProvider] = {}
+        bound_targets: list[BoundProviderModel] = []
+        for target in targets:
+            descriptor = target.descriptor
+            assert descriptor is not None
+            provider = providers.get(descriptor.provider_name)
+            if provider is None:
+                provider = materialize(descriptor)
+                if not isinstance(provider, ModelTurnProvider):
+                    raise TypeError("provider materializer must return a genuine ModelTurnProvider")
+                providers[descriptor.provider_name] = provider
+            bound_targets.append(BoundProviderModel(selection=target.selection, provider=provider, metadata=target.metadata))
+        bound_chain = tuple(bound_targets)
+        return BoundProviderConfig(
+            model=resolved_config.model,
+            provider_fallback=resolved_config.provider_fallback,
+            active_target=bound_chain[active_index],
+            target_chain=BoundProviderChain(preferred=bound_chain[0], all_targets=bound_chain),
+        )
 
     def provider_config(self, provider_name: str) -> ProviderEndpointConfig | None:
-        canonical_name = canonical_provider_id(provider_name)
-        provider = self.providers.get(canonical_name)
-        if provider is not None:
-            # Optional capability, not a contract field: only the wire adapters expose a
-            # config, so one without it falls through to the registry's own map below.
-            provider_config = getattr(provider, "provider_config", None)
-            if callable(provider_config):
-                return provider_config()
-        if self.custom_provider_configs is not None:
-            return self.custom_provider_configs.get(canonical_name)
-        return None
+        return self.resolve_static(provider_name).endpoint_config
 
     def available_models(self, provider_name: str) -> tuple[str, ...]:
-        if self.model_catalog is None:
-            return ()
-        entry = self.model_catalog.get(canonical_provider_id(provider_name))
-        if entry is None:
-            return ()
-        return entry.models
+        catalog = self.provider_catalog(provider_name)
+        return () if catalog is None else catalog.models
 
     def refresh_available_models(self, provider_name: str) -> tuple[str, ...]:
-        canonical_name = canonical_provider_id(provider_name)
-        discovery = discover_available_models(canonical_name, self.provider_config(canonical_name))
-        if self.model_catalog is not None:
-            self.model_catalog[canonical_name] = ProviderModelCatalog(
-                provider=canonical_name,
-                models=discovery.models,
-                refreshed=True,
-                model_metadata=discovery.model_metadata,
-                source=discovery.source,
-                last_refresh_status=discovery.last_refresh_status,
-                last_error=discovery.last_error,
-                discovery_mode=discovery.discovery_mode,
-            )
+        descriptor = self.resolve_static(provider_name)
+        if descriptor.endpoint_config is None:
+            raise ValueError(f"provider {descriptor.provider_name!r} does not declare native endpoint model discovery")
+        discovery = discover_available_models(descriptor.provider_name, descriptor.endpoint_config)
+        self.model_catalog[descriptor.provider_name] = ProviderModelCatalog(
+            provider=descriptor.provider_name,
+            models=discovery.models,
+            refreshed=True,
+            model_metadata=discovery.model_metadata,
+            source=discovery.source,
+            last_refresh_status=discovery.last_refresh_status,
+            last_error=discovery.last_error,
+            discovery_mode=discovery.discovery_mode,
+        )
         return discovery.models
 
     def model_metadata_for_model(self, provider_name: str, model_name: str) -> ProviderModelMetadata | None:
-        canonical_name = canonical_provider_id(provider_name)
-        catalog = self.model_catalog.get(canonical_name) if self.model_catalog is not None else None
+        descriptor = self.resolve_static(provider_name)
+        declared = descriptor.catalog.model_metadata.get(model_name) if descriptor.catalog is not None else None
+        shipped = _merge_model_metadata(declared, static_catalog_metadata(descriptor.provider_name, model_name))
+        catalog = self.model_catalog.get(descriptor.provider_name)
         discovered = catalog.model_metadata.get(model_name) if catalog is not None else None
-        shipped = static_catalog_metadata(canonical_name, model_name)
-        if discovered is None or shipped is None:
-            return discovered if discovered is not None else shipped
-        # A discovered entry - including one hydrated from a catalog cache written
-        # by an older build - owns model sizes and costs, but it may predate the
-        # shipped reasoning-effort, wire and display facts. Fill only the fields it
-        # leaves unset instead of letting a stale cache hide them: the runtime gate
-        # and the effort clamp read the effort fields, and wire dispatch reads
-        # ``api``.
-        return replace(
-            discovered,
-            supports_reasoning_effort=(
-                discovered.supports_reasoning_effort if discovered.supports_reasoning_effort is not None else shipped.supports_reasoning_effort
-            ),
-            default_reasoning_effort=(
-                discovered.default_reasoning_effort if discovered.default_reasoning_effort is not None else shipped.default_reasoning_effort
-            ),
-            supported_effort_levels=(
-                discovered.supported_effort_levels if discovered.supported_effort_levels is not None else shipped.supported_effort_levels
-            ),
-            api=discovered.api if discovered.api is not None else shipped.api,
-            display_name=discovered.display_name if discovered.display_name is not None else shipped.display_name,
-            modalities_output=(discovered.modalities_output if discovered.modalities_output is not None else shipped.modalities_output),
-        )
+        return _merge_model_metadata(discovered, shipped)
 
     def provider_catalog(self, provider_name: str) -> ProviderModelCatalog | None:
-        if self.model_catalog is None:
-            return None
-        return self.model_catalog.get(canonical_provider_id(provider_name))
+        descriptor = self.resolve_static(provider_name)
+        return self.model_catalog.get(descriptor.provider_name, descriptor.catalog)
+
+
+def _merge_model_metadata(
+    primary: ProviderModelMetadata | None,
+    fallback: ProviderModelMetadata | None,
+) -> ProviderModelMetadata | None:
+    if primary is None or fallback is None:
+        return primary if primary is not None else fallback
+    # The actual discovered row owns sizes/costs; fill only absent optional facts.
+    return replace(
+        primary,
+        supports_reasoning_effort=(
+            primary.supports_reasoning_effort if primary.supports_reasoning_effort is not None else fallback.supports_reasoning_effort
+        ),
+        default_reasoning_effort=(
+            primary.default_reasoning_effort if primary.default_reasoning_effort is not None else fallback.default_reasoning_effort
+        ),
+        supported_effort_levels=primary.supported_effort_levels if primary.supported_effort_levels is not None else fallback.supported_effort_levels,
+        api=primary.api if primary.api is not None else fallback.api,
+        display_name=primary.display_name if primary.display_name is not None else fallback.display_name,
+        modalities_output=primary.modalities_output if primary.modalities_output is not None else fallback.modalities_output,
+    )

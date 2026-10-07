@@ -4,8 +4,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Protocol
 
-from ..tools.contracts import ToolResult
-from .turns import CallSeed, ModelTurnFact, StreamFact, ToolCompletedFact, ToolRequestedFact, TurnFact
+from .turns import CallSeed, ModelTurnFact, ReportedCall, StreamFact, ToolCompletedFact, ToolRequestedFact, TurnFact
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +40,7 @@ def require_complete_tool_pairs(entries: tuple[FactEntry, ...]) -> None:
         fact = entry.fact
         if not isinstance(fact, (ToolRequestedFact, ToolCompletedFact)):
             continue
-        call_id = fact.call.tool_call_id
+        call_id = fact.call.tool_call_id if isinstance(fact, ToolRequestedFact) else fact.report.tool_call_id
         if call_id is None or not call_id:
             raise ValueError("execution facts require an original normalized call identity")
         if isinstance(fact, ToolRequestedFact):
@@ -74,8 +73,10 @@ class MemoryEventStore:
         for index, fact in enumerate(snapshots):
             if isinstance(fact, StreamFact):
                 raise ValueError("provider stream and tool-call deltas are live-only facts")
-            if isinstance(fact, (ToolRequestedFact, ToolCompletedFact)) and not fact.call.tool_call_id:
-                raise ValueError("execution facts require an original normalized call identity")
+            if isinstance(fact, (ToolRequestedFact, ToolCompletedFact)):
+                call_id = fact.call.tool_call_id if isinstance(fact, ToolRequestedFact) else fact.report.tool_call_id
+                if not call_id:
+                    raise ValueError("execution facts require an original normalized call identity")
             key = dedupe_keys[index] if dedupe_keys else None
             if key is not None and (key in self._dedupe or key in seen):
                 continue
@@ -128,19 +129,19 @@ class MemoryEventStore:
         latest = completed[-1]
         assert isinstance(latest.fact, ToolCompletedFact)
         batch = latest.fact.batch
-        if batch is None or batch.completed_results:
+        if batch is None or batch.completed_reports:
             raise ValueError("recorded completion has no independent authentic batch snapshot")
-        current: list[ToolResult] = []
+        current: list[ReportedCall] = []
         for entry in reversed(completed):
             assert isinstance(entry.fact, ToolCompletedFact)
             if entry.fact.batch != batch:
                 break
-            current.append(entry.fact.result)
+            current.append(entry.fact.report)
         current.reverse()
         ids = tuple(call.tool_call_id for call in batch.calls)
         if not ids or any(not call_id for call_id in ids) or len(set(ids)) != len(ids):
             raise ValueError("recorded native batch has missing or duplicate original identities")
-        if tuple(result.data.get("tool_call_id") for result in current) != ids[: len(current)]:
+        if tuple(report.tool_call_id for report in current) != ids[: len(current)]:
             raise ValueError("recorded native results are not the actual completed prefix")
         trailing = tuple(entry.fact for entry in path if entry.sequence > latest.sequence)
         if any(isinstance(fact, ToolRequestedFact) for fact in trailing):
@@ -148,7 +149,14 @@ class MemoryEventStore:
                 isinstance(fact, ToolRequestedFact) and fact.call.tool_call_id not in ids[len(current) :] for fact in trailing
             ):
                 raise ValueError("the newer requested batch has no authentic completion snapshot")
-        return deepcopy(CallSeed(batch.calls, batch.reasoning, tuple(current), batch.run_step))
+        return deepcopy(
+            CallSeed(
+                calls=batch.calls,
+                reasoning=batch.reasoning,
+                completed_reports=tuple(current),
+                run_step=batch.run_step,
+            )
+        )
 
     def fork(self, sequence: int | None = None) -> MemoryEventStore:
         if sequence is not None and sequence < 1:

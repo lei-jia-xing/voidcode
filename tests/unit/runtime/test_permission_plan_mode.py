@@ -5,6 +5,7 @@ from typing import Any, cast
 
 import pytest
 
+from voidcode.runtime.composition import CompositionRef, TaskCompositionOwner
 from voidcode.runtime.contracts import (
     RuntimeRequestError,
     validate_runtime_request_metadata,
@@ -196,6 +197,24 @@ def test_request_metadata_rejects_invalid_mode_and_read_only(
 ) -> None:
     with pytest.raises(RuntimeRequestError, match=match):
         _ = helper(metadata)
+
+
+def test_internal_request_metadata_preserves_discriminated_composition_owner(tmp_path: Path) -> None:
+    ref = CompositionRef(
+        workspace=str(tmp_path),
+        owner=TaskCompositionOwner(kind="task", task_id="task-1"),
+        binding_id="binding-1",
+        plan_id="plan-1",
+    )
+    payload = ref.model_dump(mode="json")
+
+    with pytest.raises(RuntimeRequestError, match="unsupported request metadata field.*composition_ref"):
+        validate_runtime_request_metadata({"composition_ref": payload})
+
+    normalized = validate_runtime_request_metadata({"composition_ref": payload}, allow_internal_fields=True)
+
+    assert normalized["composition_ref"] == payload
+    assert CompositionRef.model_validate(normalized["composition_ref"]) == ref
 
 
 @pytest.mark.parametrize("read_only", [True, False])

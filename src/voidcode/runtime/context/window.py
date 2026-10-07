@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
-from ...core.transcript import ContextSegment, ToolResultView, tool_result_output
+from ...core.transcript import ContextSegment, ToolResultView, output_text, project_report
+from ...core.turns import ReportedCall
 from ...provider.model_catalog import static_catalog_metadata
 from ...provider.tokenizer import count_tokens
-from ...tools.contracts import ToolResult
+from ...tools.contracts import TextOutput
 from ..todos import render_provider_todo_state
 from .prompt_assembly import (
     PromptAssemblyPlan,
@@ -203,7 +203,7 @@ ContinuitySummaryKind = Literal["deterministic", "model", "fallback"]
 @dataclass(frozen=True, slots=True)
 class RuntimeContextWindow:
     prompt: str
-    tool_results: tuple[ToolResult | ToolResultView, ...] = ()
+    tool_results: tuple[ToolResultView, ...] = ()
     compacted: bool = False
     compaction_reason: str | None = None
     original_tool_result_count: int = 0
@@ -290,7 +290,7 @@ class ToolResultProjection:
 @dataclass(frozen=True, slots=True)
 class RuntimeAssembledContext:
     prompt: str
-    tool_results: tuple[ToolResult | ToolResultView, ...]
+    tool_results: tuple[ToolResultView, ...]
     continuity_state: ContextProjection | None
     segments: tuple[ContextSegment, ...]
     metadata: dict[str, object]
@@ -322,15 +322,11 @@ def _context_tier_metadata(
     }
 
 
-def _tool_result_preview(result: ToolResult | ToolResultView, *, max_preview_chars: int) -> str:
+def _tool_result_preview(result: ToolResultView, *, max_preview_chars: int) -> str:
     parts = [result.tool_name, result.status]
     artifact_id = _artifact_metadata_string(result, "artifact_id")
     if artifact_id is not None:
-        parts.append(f"artifact_id={artifact_id}")
-        parts.append(f"uri=voidcode://artifact/{artifact_id}")
-        tool_call_id = _optional_tool_string_or_none(result, "tool_call_id")
-        if tool_call_id is not None:
-            parts.append(f"tool_call_id={tool_call_id}")
+        parts.extend((f"artifact_id={artifact_id}", f"uri=voidcode://artifact/{artifact_id}"))
         byte_count = _artifact_metadata_int(result, "byte_count")
         if byte_count is not None:
             parts.append(f"byte_count={byte_count}")
@@ -338,25 +334,18 @@ def _tool_result_preview(result: ToolResult | ToolResultView, *, max_preview_cha
         if line_count is not None:
             parts.append(f"line_count={line_count}")
         return " ".join(parts)
-    path = result.data.get("path")
-    if isinstance(path, str) and path:
-        parts.append(f"path={path}")
-    pattern = result.data.get("pattern")
-    if isinstance(pattern, str) and pattern:
-        parts.append(f"pattern={pattern}")
-    command = result.data.get("command")
-    if isinstance(command, str) and command:
-        parts.append(f"command={command}")
-
-    content = tool_result_output(result)
+    for key in ("path", "pattern", "command"):
+        value = _optional_tool_string_or_none(result, key)
+        if value is not None:
+            parts.append(f"{key}={value}")
+    content = output_text(result.output)
     error = result.error.strip() if result.error else ""
     preview_source = content or error
     if preview_source:
         clipped = preview_source[:max_preview_chars]
         if len(preview_source) > max_preview_chars:
             clipped = f"{clipped}..."
-        preview_label = "content_preview" if content else "error_preview"
-        parts.append(f'{preview_label}="{clipped}"')
+        parts.append(f'{"content_preview" if content else "error_preview"}="{clipped}"')
     return " ".join(parts)
 
 
@@ -531,7 +520,7 @@ def _constraint_lines(prompt: str) -> tuple[str, ...]:
 
 
 def _facts_from_tool_results(
-    results: tuple[ToolResult | ToolResultView, ...], *, preview_item_limit: int, preview_char_limit: int
+    results: tuple[ToolResultView, ...], *, preview_item_limit: int, preview_char_limit: int
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     progress: list[str] = []
     blockers: list[str] = []
@@ -545,24 +534,14 @@ def _facts_from_tool_results(
             progress.append(f"Tool result compacted: {preview}")
         else:
             blockers.append(f"Tool error compacted: {preview}")
-        path = result.data.get("path")
-        if isinstance(path, str) and path:
+        path = _optional_tool_string_or_none(result, "path")
+        command = _optional_tool_string_or_none(result, "command")
+        if path is not None:
             refs.append(f"file:{path}")
-        command = result.data.get("command")
-        if isinstance(command, str) and command:
+        if command is not None:
             refs.append(f"command:{command}")
         if result.tool_name in {"task", "background_task"}:
-            task_id = result.data.get("task_id")
-            child_session_id = result.data.get("child_session_id")
-            summary_output = result.data.get("summary_output")
-            parts = [f"tool={result.tool_name}"]
-            if isinstance(task_id, str):
-                parts.append(f"task_id={task_id}")
-            if isinstance(child_session_id, str):
-                parts.append(f"child_session_id={child_session_id}")
-            if isinstance(summary_output, str) and summary_output:
-                parts.append(f"summary={_line_preview(summary_output, limit=preview_char_limit)}")
-            delegated.append(" ".join(parts))
+            delegated.append(preview)
     return tuple(progress), tuple(blockers), tuple(refs), tuple(delegated)
 
 
@@ -626,65 +605,69 @@ def _provider_continuity_summary(summary_text: str, *, prompt: str) -> str:
     return "\n\n".join(retained).strip()
 
 
-def _optional_tool_string_or_none(result: ToolResult | ToolResultView, key: str) -> str | None:
-    value = result.data.get(key)
+def _optional_tool_string_or_none(result: ToolResultView, key: str) -> str | None:
+    value = result.arguments.get(key)
     return value if isinstance(value, str) and value else None
 
 
-def _optional_tool_int_or_none(result: ToolResult | ToolResultView, key: str) -> int | None:
-    value = result.data.get(key)
+def _optional_tool_int_or_none(result: ToolResultView, key: str) -> int | None:
+    value = _artifact_metadata_value(result, key)
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _artifact_metadata_value(result: ToolResult | ToolResultView, key: str) -> object:
-    artifact = result.data.get("artifact")
-    if isinstance(artifact, Mapping):
-        value = artifact.get(key)
-        if value is not None:
-            return value
-    return result.data.get(key)
+def _artifact_metadata_value(result: ToolResultView, key: str) -> object:
+    reference = result.output.bounds.reference
+    metadata = reference.artifact if reference is not None else None
+    if not isinstance(metadata, Mapping):
+        return None
+    artifact = metadata.get("artifact")
+    if isinstance(artifact, Mapping) and artifact.get(key) is not None:
+        return artifact[key]
+    return metadata.get(key)
 
 
-def _artifact_metadata_string(result: ToolResult | ToolResultView, key: str) -> str | None:
+def _artifact_metadata_string(result: ToolResultView, key: str) -> str | None:
     value = _artifact_metadata_value(result, key)
     return value if isinstance(value, str) and value else None
 
 
-def _artifact_metadata_int(result: ToolResult | ToolResultView, key: str) -> int | None:
+def _artifact_metadata_int(result: ToolResultView, key: str) -> int | None:
     value = _artifact_metadata_value(result, key)
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _dropped_tool_diagnostics(
-    results: tuple[ToolResult | ToolResultView, ...],
+    results: tuple[ToolResultView, ...],
     *,
     original_indexes: tuple[int, ...] | None = None,
 ) -> tuple[DroppedToolResultDiagnostic, ...]:
     diagnostics: list[DroppedToolResultDiagnostic] = []
     for position, result in enumerate(results):
         index = original_indexes[position] + 1 if original_indexes is not None else position + 1
+        bounds = result.output.bounds
+        reference = bounds.reference.uri if bounds.reference is not None else None
         diagnostics.append(
             DroppedToolResultDiagnostic(
                 tool_name=result.tool_name,
                 status=result.status,
                 index=index,
-                tool_call_id=_optional_tool_string_or_none(result, "tool_call_id"),
+                tool_call_id=result.tool_call_id,
                 artifact_id=_artifact_metadata_string(result, "artifact_id"),
-                artifact_status=_artifact_metadata_string(result, "status") or _optional_tool_string_or_none(result, "artifact_status"),
-                artifact_byte_count=_artifact_metadata_int(result, "byte_count") or _optional_tool_int_or_none(result, "original_byte_count"),
-                artifact_line_count=_artifact_metadata_int(result, "line_count") or _optional_tool_int_or_none(result, "original_line_count"),
-                reference=result.reference,
+                artifact_status=_artifact_metadata_string(result, "status") or _artifact_metadata_string(result, "artifact_status"),
+                artifact_byte_count=_artifact_metadata_int(result, "byte_count") or _artifact_metadata_int(result, "original_byte_count"),
+                artifact_line_count=_artifact_metadata_int(result, "line_count") or _artifact_metadata_int(result, "original_line_count"),
+                reference=reference,
                 path=_optional_tool_string_or_none(result, "path"),
                 command=_optional_tool_string_or_none(result, "command"),
-                diagnostics=(result.diagnostics.as_payload() if result.diagnostics is not None else None),
-                truncated=result.truncated,
-                partial=result.partial,
+                diagnostics=result.diagnostics.as_payload() if result.diagnostics is not None else None,
+                truncated=bounds.truncated or result.clipped,
+                partial=bounds.partial,
             )
         )
     return tuple(diagnostics)
 
 
-def _tool_limit_for_result(result: ToolResult | ToolResultView, policy: ContextWindowPolicy) -> int | None:
+def _tool_limit_for_result(result: ToolResultView, policy: ContextWindowPolicy) -> int | None:
     return policy.per_tool_result_chars.get(result.tool_name, policy.default_tool_result_chars)
 
 
@@ -725,23 +708,21 @@ def _bounded_replayed_conversation_segments(
 
 
 def _truncated_view_for_result(
-    result: ToolResult | ToolResultView,
+    result: ToolResultView,
     *,
     limit: int | None,
 ) -> tuple[ToolResultView, bool]:
-    if isinstance(result, ToolResultView):
+    output = result.output
+    if limit is None or not isinstance(output, TextOutput) or len(output.text) <= limit:
         return result, False
-    if limit is None or result.content is None:
-        return ToolResultView(result=result, content=result.content), False
-    if len(result.content) <= limit:
-        return ToolResultView(result=result, content=result.content), False
-    clipped = _clip_text_to_char_limit(result.content, limit=limit)
+    clipped = _clip_text_to_char_limit(output.text, limit=limit)
+    bounds = replace(output.bounds, truncated=True, partial=True)
     return (
-        ToolResultView(
-            result=result,
-            content=clipped,
+        replace(
+            result,
+            output=replace(output, text=clipped, bounds=bounds),
             clipped=True,
-            original_content_chars=len(result.content),
+            original_content_chars=len(output.text),
             content_char_limit=limit,
         ),
         True,
@@ -752,9 +733,9 @@ def _build_continuity_state(
     *,
     prompt: str,
     session_metadata: Mapping[str, object],
-    dropped_results: tuple[ToolResult | ToolResultView, ...],
+    dropped_results: tuple[ToolResultView, ...],
     dropped_result_indexes: tuple[int, ...],
-    retained_results: tuple[ToolResult | ToolResultView, ...],
+    retained_results: tuple[ToolResultView, ...],
     retained_count: int,
     preview_item_limit: int,
     preview_char_limit: int,
@@ -927,84 +908,36 @@ def _pending_state_segment(session_metadata: Mapping[str, object]) -> ContextSeg
     )
 
 
-def _result_data_bytes(result: ToolResult | ToolResultView) -> int:
-    """UTF-8 bytes of the result's ``data`` payload the provider receives.
-
-    Tool results carry their body in ``data`` (a read result's ``lines`` /
-    ``raw_content``), so a content-only estimate under-counts the real request.
-    ``json.dumps`` mirrors the adapters' wire encoding.
-    """
-    data = result.data
-    if not data:
-        return 0
-    try:
-        encoded = json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
-    except TypeError, ValueError:
-        return 0
-    return len(encoded.encode("utf-8"))
+def result_payload_text(result: ToolResultView) -> str:
+    """Text visible to the provider; canonical body fields stay private."""
+    output = output_text(result.output) or ""
+    return f"{output}\n{result.error}" if result.error else output
 
 
-def result_payload_text(result: ToolResult | ToolResultView) -> str:
-    """Provider-visible text of one tool result (content plus its JSON ``data``).
-
-    The text twin of :func:`_result_payload_bytes`: the counting paths need the
-    real characters to run a tokenizer, the pruning paths only need the size.
-    """
-    data = result.data
-    if not data:
-        return result.content or ""
-    try:
-        encoded = json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
-    except TypeError, ValueError:
-        return result.content or ""
-    return (result.content or "") + encoded
-
-
-def _result_payload_bytes(result: ToolResult | ToolResultView) -> int:
-    """Provider-visible UTF-8 bytes of one tool result (content plus its data payload)."""
+def _result_payload_bytes(result: ToolResultView) -> int:
     return len(result_payload_text(result).encode("utf-8"))
-
-
-def pruning_data_payload(result: ToolResult | ToolResultView, *, omitted_bytes: int) -> dict[str, object]:
-    """Bounded replacement for a pruned result's ``data``.
-
-    Scalars survive (path/status/line counts stay readable); containers and long
-    bodies are dropped, so the placeholder costs dozens of chars instead of the
-    whole payload while the value stays a JSON object (adapter wire shape
-    unchanged).
-    """
-    payload: dict[str, object] = {"context_pruned": True, "omitted_payload_bytes": omitted_bytes}
-    for key, value in result.data.items():
-        if isinstance(value, (dict, list, tuple, set)):
-            continue
-        if isinstance(value, str) and len(value) > _PRUNE_SCALAR_DATA_CHARS:
-            continue
-        payload[key] = value
-    return payload
 
 
 def _positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
-def _pruned_view_count(results: Sequence[ToolResult | ToolResultView]) -> int:
+def _pruned_view_count(results: Sequence[ToolResultView]) -> int:
     """How many views in a provider view already carry a pruning placeholder."""
-    return sum(1 for result in results if isinstance(result, ToolResultView) and result.pruned)
+    return sum(1 for result in results if result.pruned)
 
 
-def _is_prune_protected(result: ToolResult | ToolResultView) -> bool:
+def _is_prune_protected(result: ToolResultView) -> bool:
     """Whether a result's content must survive pruning verbatim."""
     if result.tool_name in _PRUNE_PROTECTED_TOOL_NAMES:
         return True
-    raw_path = result.data.get("path")
-    if not isinstance(raw_path, str) or not raw_path:
+    raw_path = _optional_tool_string_or_none(result, "path")
+    if not raw_path:
         return False
-    if raw_path.startswith(_PRUNE_PROTECTED_PATH_PREFIXES):
-        return True
-    return any(part in raw_path for part in _PRUNE_PROTECTED_PATH_PARTS)
+    return raw_path.startswith(_PRUNE_PROTECTED_PATH_PREFIXES) or any(part in raw_path for part in _PRUNE_PROTECTED_PATH_PARTS)
 
 
-def pruning_placeholder(result: ToolResult | ToolResultView, *, omitted_bytes: int, omitted_tokens: int) -> str:
+def pruning_placeholder(result: ToolResultView, *, omitted_bytes: int, omitted_tokens: int) -> str:
     """Bounded placeholder that states the omitted scale (and how to recover it)."""
     artifact_id = _artifact_metadata_string(result, "artifact_id")
     parts = [
@@ -1064,21 +997,25 @@ def prune_tool_results_for_budget(
     for index, view in enumerate(results):
         if remaining <= target_tokens:
             break
-        content = view.content or ""
+        if not isinstance(view.output, TextOutput):
+            continue
+        content = view.output.text
         payload_bytes = _result_payload_bytes(view)
         payload_tokens = count_tokens(result_payload_text(view), tokenizer)
         if payload_tokens < min_prune_tokens or _is_prune_protected(view):
             continue
         placeholder = pruning_placeholder(view, omitted_bytes=payload_bytes, omitted_tokens=payload_tokens)
-        pruned_data = pruning_data_payload(view, omitted_bytes=_result_data_bytes(view)) if view.data else view.data
-        pruned_data_text = json.dumps(pruned_data, ensure_ascii=False, sort_keys=True, default=str)
-        reclaimed = payload_tokens - count_tokens(placeholder + pruned_data_text, tokenizer)
+        reclaimed = payload_tokens - count_tokens(placeholder, tokenizer)
         if reclaimed <= 0:
             continue
+        output = replace(
+            view.output,
+            text=placeholder,
+            bounds=replace(view.output.bounds, truncated=True, partial=True),
+        )
         rendered[index] = replace(
             view,
-            result=replace(view.result, data=pruned_data),
-            content=placeholder,
+            output=output,
             pruned=True,
             original_content_chars=len(content),
             content_char_limit=None,
@@ -1169,7 +1106,7 @@ def _provider_payload_bytes(
 
 def project_tool_results_for_context_window(
     *,
-    tool_results: tuple[ToolResult | ToolResultView, ...],
+    tool_results: tuple[ReportedCall | ToolResultView, ...],
     policy: ContextWindowPolicy,
 ) -> ToolResultProjection:
     """Char-cap every result into its provider-facing view (no pruning decision).
@@ -1180,8 +1117,12 @@ def project_tool_results_for_context_window(
     """
     prepared_results: list[ToolResultView] = []
     truncated_count = 0
-    for result in tool_results:
-        prepared_result, was_truncated = _truncated_view_for_result(result, limit=_tool_limit_for_result(result, policy))
+    for report in tool_results:
+        result = project_report(report) if isinstance(report, ReportedCall) else report
+        prepared_result, was_truncated = _truncated_view_for_result(
+            result,
+            limit=_tool_limit_for_result(result, policy),
+        )
         prepared_results.append(prepared_result)
         truncated_count += int(was_truncated)
     return ToolResultProjection(
@@ -1193,7 +1134,7 @@ def project_tool_results_for_context_window(
 def prepare_provider_context(
     *,
     prompt: str,
-    tool_results: tuple[ToolResult | ToolResultView, ...],
+    tool_results: tuple[ReportedCall | ToolResultView, ...],
     session_metadata: dict[str, object],
     policy: ContextWindowPolicy | None = None,
     context_window: int | None = None,
@@ -1400,7 +1341,7 @@ def prepare_provider_context(
 def assemble_provider_context(
     *,
     prompt: str,
-    tool_results: tuple[ToolResult | ToolResultView, ...],
+    tool_results: tuple[ReportedCall | ToolResultView, ...],
     session_metadata: dict[str, object],
     policy: ContextWindowPolicy | None = None,
     skill_prompt_context: str = "",
@@ -1579,54 +1520,46 @@ def assemble_provider_context(
     if not replayed_conversation_inserted:
         raise RuntimeError("prompt assembly plan missing current_user_prompt section")
     if replay_retained_tool_messages:
-        for index, result in enumerate(context_window.tool_results, start=1):
+        replayed_tool_call_ids = {
+            segment.tool_call_id for segment in replayed_conversation_segments if segment.role == "tool" and segment.tool_call_id is not None
+        }
+        for result in context_window.tool_results:
             if todo_prompt_context is not None and result.tool_name == "todo":
                 continue
-            # Prior-run results are already rendered inside the replayed
-            # conversation history (before the current user prompt). Appending
-            # them here would place previous-run tool messages after the new
-            # prompt, making the model believe it is mid-turn and continue the
-            # previous task instead of answering the new request.
-            if result.source == "replayed_conversation":
+            # Older results are already rendered before the current prompt.
+            if result.tool_call_id in replayed_tool_call_ids:
                 continue
-            raw_tool_call_id = result.data.get("tool_call_id")
-            tool_call_id = raw_tool_call_id if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip() else f"voidcode_tool_{index}"
-            raw_arguments = result.data.get("arguments")
-            tool_arguments: dict[str, object]
-            if isinstance(raw_arguments, dict):
-                tool_arguments = dict(raw_arguments)
-            else:
-                tool_arguments = {}
+            bounds = result.output.bounds
+            reference = bounds.reference
             segments.append(
                 ContextSegment(
                     role="assistant",
                     content=None,
-                    tool_call_id=tool_call_id,
+                    tool_call_id=result.tool_call_id,
                     tool_name=result.tool_name,
-                    tool_arguments=tool_arguments,
+                    tool_arguments=dict(result.arguments),
                     metadata={"source": "retained_tool_result", "tier": "recent"},
                 )
             )
             pruned_metadata: dict[str, object] = {}
-            if isinstance(result, ToolResultView) and result.pruned:
+            if result.pruned:
                 pruned_metadata["pruned"] = True
                 if result.original_content_chars is not None:
                     pruned_metadata["original_content_chars"] = result.original_content_chars
             segments.append(
                 ContextSegment(
                     role="tool",
-                    content=result.content or "",
-                    tool_call_id=tool_call_id,
+                    content=output_text(result.output) or "",
+                    tool_call_id=result.tool_call_id,
                     tool_name=result.tool_name,
                     metadata={
                         "source": "retained_tool_result",
                         "tier": "recent",
                         "status": result.status,
                         "error": result.error,
-                        "data": result.data,
-                        "truncated": result.truncated,
-                        "partial": result.partial,
-                        "reference": result.reference,
+                        "truncated": bounds.truncated or result.clipped,
+                        "partial": bounds.partial,
+                        "reference": None if reference is None else reference.uri,
                         **pruned_metadata,
                     },
                 )

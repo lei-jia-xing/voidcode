@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, field, replace
+from copy import deepcopy
+from dataclasses import dataclass, field, fields, is_dataclass, replace
+from types import MappingProxyType
 from typing import ClassVar, Literal, Protocol, runtime_checkable
 
 from ..provider.protocol import ProviderAbortSignal, ProviderStreamEvent, ProviderTokenUsage
-from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
+from ..security.json_values import own_json_object
+from ..tools.contracts import ToolBody, ToolCall, ToolDefinition, ToolResult
 from .transcript import AssembledContext, ContextWindow, ToolResultView
 
 type TurnFactKind = Literal[
@@ -22,33 +25,78 @@ type TurnFactKind = Literal[
 type ToolCallPreviewBuilder = Callable[[str, tuple[str, ...], dict[str, object] | None], dict[str, object] | None]
 
 
+def _deepcopy_tool_body[BodyT: ToolBody](body: BodyT) -> BodyT:
+    # own_json_object creates detached immutable mapping proxies, which deepcopy cannot pickle.
+    memo: dict[int, object] = {}
+    seen: set[int] = set()
+    pending = [body]
+    while pending:
+        value = pending.pop()
+        identity = id(value)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if isinstance(value, MappingProxyType):
+            memo[identity] = value
+            pending.extend(value.values())
+        elif isinstance(value, Mapping):
+            pending.extend(value.values())
+        elif isinstance(value, tuple | list | set | frozenset):
+            pending.extend(value)
+        elif is_dataclass(value) and not isinstance(value, type):
+            pending.extend(getattr(value, item.name) for item in fields(value))
+        elif hasattr(value, "__dict__"):
+            pending.extend(vars(value).values())
+        else:
+            slots = getattr(type(value), "__slots__", ())
+            if isinstance(slots, str):
+                slots = (slots,)
+            pending.extend(getattr(value, name) for name in slots if hasattr(value, name))
+    return deepcopy(body, memo)
+
+
+@dataclass(frozen=True, slots=True)
+class ReportedCall:
+    """Host-owned pairing and authorized arguments for one genuine native call."""
+
+    tool_call_id: str
+    final_tool_name: str
+    authorized_arguments: Mapping[str, object]
+    result: ToolResult
+
+    def __post_init__(self) -> None:
+        if not self.tool_call_id:
+            raise ValueError("reported call requires the original native identity")
+        if self.result.tool_name != self.final_tool_name:
+            raise ValueError("reported result does not match the authorized tool")
+        object.__setattr__(self, "authorized_arguments", own_json_object(self.authorized_arguments))
+        if self.result.body is not None:
+            object.__setattr__(self, "result", replace(self.result, body=_deepcopy_tool_body(self.result.body)))
+
+    def __deepcopy__(self, memo: dict[int, object]) -> ReportedCall:
+        return replace(self)
+
+
 @dataclass(frozen=True, slots=True)
 class CallSeed:
     """An authentic host-supplied continuation, not an authorization grant."""
 
     calls: tuple[ToolCall, ...]
     reasoning: str | None = None
-    completed_results: tuple[ToolResult, ...] = ()
+    completed_reports: tuple[ReportedCall, ...] = ()
     run_step: int | None = None
 
 
-def normalize_call_result(call: ToolCall, result: ToolResult, *, final_arguments: Mapping[str, object] | None = None) -> ToolResult:
-    """Validate native identity before publication; retain authorized arguments on advancement."""
-    call_id = call.tool_call_id
-    if not call_id:
+def report_call(
+    call: ToolCall,
+    result: ToolResult,
+    *,
+    final_arguments: Mapping[str, object],
+    final_tool_name: str,
+) -> ReportedCall:
+    if call.tool_call_id is None:
         raise ValueError("tool outcome has no original normalized call identity")
-    result_id = result.data.get("tool_call_id")
-    if result_id is not None and result_id != call_id:
-        raise ValueError("tool result does not match the active call identity")
-    arguments = result.data.get("arguments") if final_arguments is None else final_arguments
-    if arguments is None:
-        arguments = call.arguments
-    if not isinstance(arguments, Mapping):
-        raise ValueError("tool outcome arguments must be an object")
-    recorded_arguments = result.data.get("arguments")
-    if result_id == call_id and (recorded_arguments is arguments or recorded_arguments == arguments):
-        return result
-    return replace(result, data={**result.data, "tool_call_id": call_id, "arguments": dict(arguments)})
+    return ReportedCall(call.tool_call_id, final_tool_name, final_arguments, result)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,8 +146,7 @@ class ToolRequestedFact:
 
 @dataclass(frozen=True, slots=True)
 class ToolCompletedFact:
-    call: ToolCall
-    result: ToolResult
+    report: ReportedCall
     batch: CallSeed | None = None
     kind: ClassVar[Literal["tool_completed"]] = "tool_completed"
 
@@ -138,20 +185,26 @@ class TurnRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class TurnPlan:
+class ToolTurn:
+    calls: tuple[ToolCall, ...]
     facts: tuple[TurnFact, ...] = ()
-    tool_calls: tuple[ToolCall, ...] = ()
-    output: str | None = None
-    is_finished: bool = False
     provider_usage: ProviderTokenUsage | None = None
     reasoning: str | None = None
 
     def __post_init__(self) -> None:
-        if self.is_finished:
-            if self.tool_calls or self.output is None:
-                raise ValueError("finished turns require output and no tool calls")
-        elif not self.tool_calls or self.output is not None:
-            raise ValueError("continuing turns require tool calls and no final output")
+        if not self.calls:
+            raise ValueError("tool turns require at least one call")
+
+
+@dataclass(frozen=True, slots=True)
+class FinalTurn:
+    output: str
+    facts: tuple[TurnFact, ...] = ()
+    provider_usage: ProviderTokenUsage | None = None
+    reasoning: str | None = None
+
+
+type TurnPlan = ToolTurn | FinalTurn
 
 
 type TurnStreamItem = TurnFact | TurnPlan
@@ -162,7 +215,7 @@ class TurnProducer(Protocol):
     def produce(
         self,
         request: TurnRequest,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ToolResultView, ...],
         *,
         session: TurnSession,
     ) -> TurnPlan: ...
@@ -173,7 +226,7 @@ class StreamingTurnProducer(Protocol):
     def stream_produce(
         self,
         request: TurnRequest,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ToolResultView, ...],
         *,
         session: TurnSession,
     ) -> Iterator[TurnStreamItem]: ...

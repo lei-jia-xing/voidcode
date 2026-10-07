@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from ..contracts import (
@@ -203,6 +203,18 @@ class _ForkStorageMixin(_MixinBase):
         question request from its resolution, is refused: the fork would replay
         an interaction the log never closes.
         """
+        with self._connect(workspace) as connection:
+            raw_source = connection.execute(
+                "SELECT metadata_json FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            ).fetchone()
+            if raw_source is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            self_any = cast(Any, self)
+            source_ref = self_any._session_composition_ref(json.loads(raw_source[0]))
+            if source_ref.workspace != str(workspace):
+                raise ValueError("fork source reference names a different workspace")
+            self_any._load_execution_composition(connection, source_ref)
         with self._write_connect(workspace) as connection:
             source = fetch_rows(
                 connection,
@@ -216,6 +228,10 @@ class _ForkStorageMixin(_MixinBase):
             )
             if not source:
                 raise UnknownSessionError(f"unknown session: {session_id}")
+            current_ref = self_any._session_composition_ref(json.loads(source[0]["metadata_json"]))
+            if current_ref != source_ref:
+                raise ValueError("fork source composition reference changed")
+            self_any._load_execution_composition(connection, current_ref)
             source_row = decode_row(source[0], SessionForkSourceRow)
             watermark = int(source_row["last_event_sequence"])
             if at_sequence is None:
@@ -290,7 +306,7 @@ class _ForkStorageMixin(_MixinBase):
                         source_row["prompt"],
                         source_row["title"],
                         json.dumps(forked_metadata, sort_keys=True),
-                        json.dumps(_fork_resume_checkpoint(boundary), sort_keys=True),
+                        json.dumps(_fork_resume_checkpoint(boundary, forked_metadata, str(source_row["prompt"])), sort_keys=True),
                         created_at,
                         updated_at,
                         boundary,
@@ -420,34 +436,24 @@ class _ForkStorageMixin(_MixinBase):
         return forest_from_lineage_entries(self.session_lineage(workspace=workspace))
 
 
-def _fork_metadata(
-    *,
-    raw_metadata_json: str,
-    workspace: str,
-) -> dict[str, object]:
-    """Metadata for the fork: identity carried over, run position dropped.
-
-    No ``conversation_revert`` key is carried: that marker is gone with the
-    linear revert mechanism (position now lives in ``leaf_sequence``), so a
-    fork inherits a position by copying the prefix, not a marker.
-    """
+def _fork_metadata(*, raw_metadata_json: str, workspace: str) -> dict[str, object]:
+    """Preserve the original canonical owner while dropping run-position state."""
     source_metadata = normalize_persisted_session_metadata(cast(dict[str, object], json.loads(raw_metadata_json)))
-    forked = {key: value for key, value in source_metadata.items() if key not in _NON_TRANSFERABLE_METADATA_KEYS}
+    forked = {key: value for key, value in source_metadata.items() if key not in (*_NON_TRANSFERABLE_METADATA_KEYS, "execution_composition")}
     forked["workspace"] = workspace
     return forked
 
 
-def _fork_resume_checkpoint(boundary: int) -> dict[str, object]:
-    """Replay-only checkpoint for the fork's own watermark.
+def _fork_resume_checkpoint(boundary: int, session_metadata: dict[str, object], prompt: str) -> dict[str, object]:
+    """Replay-only checkpoint for the fork's own watermark and canonical ref."""
 
-    ``kind="terminal"`` makes ``resume`` take the stored-replay path instead of
-    truncating and re-running, so the inherited ``last_event_sequence`` can never
-    contradict the fork's event log.
-    """
     return {
+        "version": 2,
         "kind": "terminal",
         "last_event_sequence": boundary,
+        "prompt": prompt,
         "session_status": "interrupted",
+        "session_metadata": session_metadata,
         "output": None,
         "tool_results": [],
     }

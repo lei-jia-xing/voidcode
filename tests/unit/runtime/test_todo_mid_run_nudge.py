@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from voidcode.core.turns import TurnPlan
+from voidcode.core.turns import FinalTurn, ToolTurn
 from voidcode.runtime.config import RuntimeRemindersConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.events import RUNTIME_REMINDER_INJECTED
@@ -45,9 +45,9 @@ from .test_todo_reminder import (
 MUTATING_TOOL = "write"
 
 
-def _mutations(start: int, count: int = TODO_MID_RUN_MUTATION_THRESHOLD) -> list[TurnPlan]:
+def _mutations(start: int, count: int = TODO_MID_RUN_MUTATION_THRESHOLD) -> list[ToolTurn]:
     return [
-        TurnPlan(tool_calls=(ToolCall(tool_name=MUTATING_TOOL, arguments={"path": f"probe-{index}.txt", "content": f"x{index}"}),))
+        ToolTurn((ToolCall(tool_name=MUTATING_TOOL, arguments={"path": f"probe-{index}.txt", "content": f"x{index}"}),))
         for index in range(start, start + count)
     ]
 
@@ -63,7 +63,7 @@ class _NudgeGraph(_ScriptedGraph):
 
 
 def _run(
-    tmp_path: Path, script: list[TurnPlan], *, tools: tuple[Any, ...] = (TodoTool(), GlobTool(), WriteTool())
+    tmp_path: Path, script: list[ToolTurn | FinalTurn], *, tools: tuple[Any, ...] = (TodoTool(), GlobTool(), WriteTool())
 ) -> tuple[list[Any], _ScriptedGraph]:
     graph = _NudgeGraph(script)
     runtime = VoidCodeRuntime(
@@ -89,8 +89,8 @@ def _nudge_segments(context: Any) -> list[Any]:
     return [segment for segment in _reminder_segments(context) if (segment.metadata or {}).get("reminder_type") == TODO_MID_RUN_KIND]
 
 
-def _mutation_script(mutations: int, *, tail: list[TurnPlan]) -> list[TurnPlan]:
-    return [TurnPlan(tool_calls=(_TODO_INIT_CALL,)), *_mutations(0, mutations), *tail]
+def _mutation_script(mutations: int, *, tail: list[ToolTurn | FinalTurn]) -> list[ToolTurn | FinalTurn]:
+    return [ToolTurn((_TODO_INIT_CALL,)), *_mutations(0, mutations), *tail]
 
 
 def _stored_state(tmp_path: Path) -> TodoMidRunState:
@@ -104,7 +104,7 @@ def _stored_state(tmp_path: Path) -> TodoMidRunState:
 def test_stale_todos_earn_one_mid_run_nudge_without_ending_the_turn(tmp_path: Path) -> None:
     chunks, graph = _run(
         tmp_path,
-        _mutation_script(TODO_MID_RUN_MUTATION_THRESHOLD, tail=[TurnPlan(output="done", is_finished=True)]),
+        _mutation_script(TODO_MID_RUN_MUTATION_THRESHOLD, tail=[FinalTurn("done")]),
     )
 
     nudges = _nudges(chunks)
@@ -130,7 +130,7 @@ def test_stale_todos_earn_one_mid_run_nudge_without_ending_the_turn(tmp_path: Pa
 def test_below_the_threshold_no_nudge(tmp_path: Path) -> None:
     chunks, _graph = _run(
         tmp_path,
-        _mutation_script(TODO_MID_RUN_MUTATION_THRESHOLD - 1, tail=[TurnPlan(output="done", is_finished=True)]),
+        _mutation_script(TODO_MID_RUN_MUTATION_THRESHOLD - 1, tail=[FinalTurn("done")]),
     )
 
     assert _nudges(chunks) == []
@@ -140,7 +140,7 @@ def test_the_nudge_is_budgeted_per_cycle(tmp_path: Path) -> None:
     """Two windows of 12 mutations earn two nudges; the third window earns none."""
     chunks, _graph = _run(
         tmp_path,
-        [TurnPlan(tool_calls=(_TODO_INIT_CALL,)), *_mutations(0), *_mutations(12), *_mutations(24), TurnPlan(output="done", is_finished=True)],
+        [ToolTurn((_TODO_INIT_CALL,)), *_mutations(0), *_mutations(12), *_mutations(24), FinalTurn("done")],
     )
 
     assert [event.payload["attempt"] for event in _nudges(chunks)] == [1, 2]
@@ -152,11 +152,11 @@ def test_a_todo_touch_resets_the_mutation_counter(tmp_path: Path) -> None:
     chunks, _graph = _run(
         tmp_path,
         [
-            TurnPlan(tool_calls=(_TODO_INIT_CALL,)),
+            ToolTurn((_TODO_INIT_CALL,)),
             *_mutations(0),
-            TurnPlan(tool_calls=(ToolCall(tool_name="todo", arguments={"op": "view"}),)),
+            ToolTurn((ToolCall(tool_name="todo", arguments={"op": "view"}),)),
             *_mutations(12),
-            TurnPlan(output="done", is_finished=True),
+            FinalTurn("done"),
         ],
     )
 
@@ -184,7 +184,7 @@ def test_no_active_todo_tool_means_no_nudge() -> None:
 def test_plan_mode_means_no_nudge(tmp_path: Path) -> None:
     """Plan mode suppresses the nudge (upstream ``planModeEnabled``)."""
 
-    graph = _NudgeGraph([TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="planned", is_finished=True)])
+    graph = _NudgeGraph([ToolTurn((_TODO_INIT_CALL,)), FinalTurn("planned")])
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([TodoTool(), GlobTool()]),
@@ -204,7 +204,7 @@ def test_plan_mode_means_no_nudge(tmp_path: Path) -> None:
 def test_nudge_text_stays_out_of_the_persisted_transcript(tmp_path: Path) -> None:
     chunks, _graph = _run(
         tmp_path,
-        _mutation_script(TODO_MID_RUN_MUTATION_THRESHOLD, tail=[TurnPlan(output="done", is_finished=True)]),
+        _mutation_script(TODO_MID_RUN_MUTATION_THRESHOLD, tail=[FinalTurn("done")]),
     )
 
     stored = SqliteSessionStore().load_session(workspace=tmp_path, session_id=SESSION_ID)
@@ -221,9 +221,7 @@ def test_both_reminder_kinds_count_independently(tmp_path: Path) -> None:
     """One run: the mid-run nudge and the terminal completion reminder each keep their own budget."""
     chunks, _graph = _run(
         tmp_path,
-        _mutation_script(
-            TODO_MID_RUN_MUTATION_THRESHOLD, tail=[TurnPlan(output="stopping", is_finished=True), TurnPlan(output="done", is_finished=True)]
-        ),
+        _mutation_script(TODO_MID_RUN_MUTATION_THRESHOLD, tail=[FinalTurn("stopping"), FinalTurn("done")]),
     )
 
     kinds = [event.payload["reminder_type"] for event in _events(chunks, RUNTIME_REMINDER_INJECTED)]

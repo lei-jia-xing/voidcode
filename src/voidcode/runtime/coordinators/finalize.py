@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from ...provider.protocol import ProviderAbortSignal
 from ..acp import AcpAdapter, disconnect_acp_for_session_state, finalize_run_acp
+from ..agent_capability import composition_ref_from_session_metadata
 from ..contracts import RuntimeRequest, RuntimeResponse, RuntimeStreamChunk, UnknownSessionError
 from ..event_envelopes import resequence_event
 from ..events import EventEnvelope, EventSource
@@ -164,6 +165,7 @@ class FinalizeCoordinator:
             session_metadata=session_metadata,
             tool_results=normalized_results,
             last_event_sequence=last_event_sequence,
+            composition_ref=composition_ref_from_session_metadata(session_metadata),
             output=output,
             create_if_missing=create_if_missing,
             turn=turn if turn is not None else 1,
@@ -310,6 +312,7 @@ class FinalizeCoordinator:
             session_metadata=final_session.metadata,
             tool_results=tool_results,
             last_event_sequence=persisted_event.sequence,
+            composition_ref=composition_ref_from_session_metadata(final_session.metadata),
             output=None,
             create_if_missing=False,
             turn=final_session.turn,

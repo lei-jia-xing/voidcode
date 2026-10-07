@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from ..command.resolver import resolve_tool_instruction
-from ..tools.contracts import ToolResult
 from .transcript import ToolResultView, tool_result_output
-from .turns import LoopStepFact, ModelTurnFact, ResponseReadyFact, TurnPlan, TurnRequest, TurnSession
+from .turns import FinalTurn, LoopStepFact, ModelTurnFact, ResponseReadyFact, ToolTurn, TurnPlan, TurnRequest, TurnSession
 
 
 class DeterministicTurnProducer:
@@ -12,7 +11,7 @@ class DeterministicTurnProducer:
     def produce(
         self,
         request: TurnRequest,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ToolResultView, ...],
         *,
         session: TurnSession,
     ) -> TurnPlan:
@@ -24,25 +23,23 @@ class DeterministicTurnProducer:
             ModelTurnFact(request.run_step, "deterministic", request.prompt),
         )
         if request.run_step == 1 and isinstance(request.metadata.get("command"), dict):
-            return TurnPlan(
+            return FinalTurn(
                 facts=(*facts, ResponseReadyFact(request.prompt[:200])),
                 output=request.prompt,
-                is_finished=True,
             )
         commands = [line.strip() for line in request.prompt.splitlines() if line.strip()]
         if not commands:
             raise ValueError("request must not be empty")
-        step_index = sum(result.source != "replayed_conversation" for result in tool_results)
+        step_index = request.run_step - 1
         if step_index < len(commands):
             call = resolve_tool_instruction(commands[step_index], request.available_tools, unavailable_message_suffix="turn execution")
-            return TurnPlan(facts=facts, tool_calls=(call,))
+            return ToolTurn(calls=(call,), facts=facts)
         output = tool_result_output(tool_results[-1]) or ""
-        return TurnPlan(
+        return FinalTurn(
             facts=(
                 *facts,
                 LoopStepFact(request.run_step + 1, "finalize"),
                 ResponseReadyFact(output),
             ),
             output=output,
-            is_finished=True,
         )

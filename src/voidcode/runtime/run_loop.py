@@ -10,21 +10,24 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from ..core.engine import CallOutcome, EngineState, TurnBatch, TurnEngine
+from ..core.engine import CallOutcome, CallPaused, CallReported, CallStoppedAfterReport, CallStoppedBeforeReport, EngineState, TurnBatch, TurnEngine
 from ..core.todos import TodoPhase
 from ..core.tool_context import ToolContext
-from ..core.transcript import AssembledContext, ContextSegment, ToolResultView
+from ..core.transcript import AssembledContext, ContextSegment, ToolResultView, project_report
 from ..core.turns import (
     CallSeed,
+    FinalTurn,
+    ReportedCall,
     StreamFact,
     StreamingTurnProducer,
     ToolCompletedFact,
     ToolRequestedFact,
+    ToolTurn,
     TurnFact,
     TurnPlan,
     TurnProducer,
     TurnRequest,
-    normalize_call_result,
+    report_call,
 )
 from ..hook.config import RuntimeHookSurface
 from ..hook.typed import (
@@ -47,13 +50,23 @@ from ..security.redaction import redact_text
 from ..tools._pydantic_args import format_validation_error
 from ..tools._repair import ToolDiagnosticError
 from ..tools.contracts import (
+    ConfirmedStop,
+    EmptyOutput,
+    ProgressYield,
+    QuestionPrepared,
     RuntimeToolTimeoutError,
+    TerminalYield,
+    TerminalYieldFailure,
+    TextOutput,
     Tool,
     ToolCall,
     ToolDefinition,
     ToolDiagnostics,
+    ToolFailure,
     ToolInvocation,
     ToolResult,
+    ToolSuccess,
+    UnconfirmedStop,
     is_read_tier,
 )
 from ..tools.guards import read_tracking_for_tool_results
@@ -61,9 +74,11 @@ from ..tools.invoke_tool import InvokeToolArgs
 from ..tools.output import (
     cap_tool_result_output,
     sanitize_tool_arguments,
-    sanitize_tool_result_data,
 )
 from ..tools.question import QuestionTool
+from ..tools.skill import SkillResultBody
+from ..tools.todo import TodoResultBody
+from .agent_capability import composition_ref_from_session_metadata
 from .config import RuntimeConfig
 from .config_materializer import EffectiveRuntimeConfig
 from .context.continuity import replayed_conversation_segments_from_segments
@@ -129,7 +144,6 @@ from .execution.tool_replay import ToolExecutionIntent
 from .execution.tool_result_projection import (
     _fit_numbered_progress_payload,
     _is_terminal_yield_result,
-    _normalized_tool_result,
     _progress_payload_size,
     _serialized_tool_results,
     _tool_error_details,
@@ -139,7 +153,7 @@ from .execution.tool_result_projection import (
 )
 from .execution.turn_adapter import turn_request_for_session, turn_session_snapshot
 from .execution.turn_recovery import AnsweredQuestion, ApprovedInvocation, RuntimeContinuation, persisted_turn_batch
-from .fact_codec import encode_fact
+from .fact_codec import encode_fact, reported_call_from_event
 from .fact_store import SqliteFactStore
 from .hook_runtime import (
     HOOK_RECURSION_ENV_VAR,
@@ -449,6 +463,34 @@ class _ResolvedToolCall:
     tool_call_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class PermissionDenialBody:
+    approval_request_id: str | None = None
+    path_scope: str | None = None
+    operation_class: str | None = None
+    canonical_path: str | None = None
+    matched_rule: str | None = None
+    policy_surface: str | None = None
+    denied_by: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"permission_denied": True}
+        for key in (
+            "approval_request_id",
+            "path_scope",
+            "operation_class",
+            "canonical_path",
+            "matched_rule",
+            "policy_surface",
+            "denied_by",
+        ):
+            if (value := getattr(self, key)) is not None:
+                payload[key] = value
+        if self.approval_request_id is not None:
+            payload["approval_decision"] = "deny"
+        return payload
+
+
 def _is_tool_timeout_like_exception(exc: Exception) -> bool:
     if isinstance(exc, TimeoutError):
         return True
@@ -620,8 +662,6 @@ class RuntimeRunLoopCoordinator:
         )
 
     def _persist_fact(self, *, session: SessionState, fact: TurnFact) -> EventEnvelope:
-        if isinstance(fact, ToolCompletedFact):
-            fact = replace(fact, result=normalize_call_result(fact.call, fact.result, final_arguments=fact.call.arguments))
         return self._fact_store(session).append_for_publication((fact,))[0]
 
     def _persist_chunk(self, chunk: RuntimeStreamChunk) -> tuple[RuntimeStreamChunk, int]:
@@ -658,55 +698,62 @@ class RuntimeRunLoopCoordinator:
         return sequence
 
     def _number_yield_progress(self, *, session: SessionState, tool_result: ToolResult) -> ToolResult:
-        if tool_result.tool_name != "yield" or tool_result.status != "ok" or tool_result.data.get("yield_kind") != "progress":
+        if tool_result.tool_name != "yield" or not isinstance(tool_result, ToolSuccess) or not isinstance(tool_result.control, ProgressYield):
             return tool_result
-        raw_progress = tool_result.data.get("progress")
-        if not isinstance(raw_progress, Mapping):
-            raise ValueError("yield progress payload is missing its bounded progress object")
+        control = tool_result.control
         # The event log is the sole ordinal/retention authority. Storage
         # failures must propagate rather than silently restarting at ordinal 1.
         stored = self._sessions.load_session(workspace=self._workspace, session_id=session.session.id)
-        prior_progress = [
-            event
-            for event in stored.events
-            if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "yield" and event.payload.get("yield_kind") == "progress"
-        ]
+        prior_progress: list[ProgressYield] = []
+        for event in stored.events:
+            report = reported_call_from_event(event)
+            if (
+                report is not None
+                and report.final_tool_name == "yield"
+                and isinstance(report.result, ToolSuccess)
+                and isinstance(report.result.control, ProgressYield)
+            ):
+                prior_progress.append(report.result.control)
         prior_count = len(prior_progress)
-        prior_bytes = 0
-        for event in prior_progress:
-            prior_progress_payload = event.payload.get("progress")
-            if isinstance(prior_progress_payload, Mapping):
-                prior_bytes += _progress_payload_size(prior_progress_payload)
+        prior_bytes = sum(_progress_payload_size(item.as_payload()) for item in prior_progress)
         from ..tools.yield_tool import YIELD_PROGRESS_MAX_RETAINED_CHARS, YIELD_PROGRESS_MAX_SECTION_CHARS, YIELD_PROGRESS_MAX_SECTIONS
 
         if prior_count >= YIELD_PROGRESS_MAX_SECTIONS:
             raise ValueError(f"yield progress limit exceeded: at most {YIELD_PROGRESS_MAX_SECTIONS} sections")
-        raw_size = _progress_payload_size(raw_progress)
-        progress = dict(raw_progress)
-        progress["ordinal"] = prior_count + 1
-        progress["retained_chars"] = prior_bytes + raw_size
+        raw_size = _progress_payload_size(control.as_payload())
+        progress = control.as_payload()
+        progress["data"] = {**control.data, "ordinal": prior_count + 1, "retained_chars": prior_bytes + raw_size}
         for _ in range(3):
             progress = _fit_numbered_progress_payload(progress, max_chars=YIELD_PROGRESS_MAX_SECTION_CHARS)
             final_size = _progress_payload_size(progress)
             if prior_bytes + final_size > YIELD_PROGRESS_MAX_RETAINED_CHARS:
                 raise ValueError(f"yield progress limit exceeded: retained sections are capped at {YIELD_PROGRESS_MAX_RETAINED_CHARS} characters")
             updated_retained = prior_bytes + final_size
-            if progress.get("retained_chars") == updated_retained:
+            data = cast(dict[str, object], progress["data"])
+            if data.get("retained_chars") == updated_retained:
                 break
-            progress["retained_chars"] = updated_retained
+            progress["data"] = {**data, "retained_chars": updated_retained}
         if _progress_payload_size(progress) > YIELD_PROGRESS_MAX_SECTION_CHARS:
             raise ValueError(f"yield progress section must be at most {YIELD_PROGRESS_MAX_SECTION_CHARS} characters")
-        return replace(tool_result, data={**tool_result.data, "progress": progress})
+        return replace(
+            tool_result,
+            control=replace(
+                control,
+                types=tuple(cast(list[str], progress["type"])),
+                result=cast(str | None, progress["result"]),
+                data=cast(dict[str, object], progress["data"]),
+            ),
+        )
 
     def _capture_interrupted_checkpoint(
         self,
         *,
         session: SessionState,
         prompt: str,
-        tool_results: list[ToolResult],
+        tool_results: list[ReportedCall],
         last_event_sequence: int,
     ) -> None:
-        current_turn_results = [result for result in tool_results if result.source != "replayed_conversation"]
+        current_turn_results = tool_results
         self._recovery.save_interrupted_checkpoint(
             workspace=self._workspace,
             session_id=session.session.id,
@@ -714,6 +761,7 @@ class RuntimeRunLoopCoordinator:
             session_metadata=session.metadata,
             tool_results=_serialized_tool_results(current_turn_results),
             last_event_sequence=last_event_sequence,
+            composition_ref=composition_ref_from_session_metadata(session.metadata),
             output=None,
             create_if_missing=False,
             parent_session_id=session.session.parent_id,
@@ -728,8 +776,14 @@ class RuntimeRunLoopCoordinator:
         tool_call_id: str,
         abort_signal: ProviderAbortSignal | None,
     ) -> tuple[RuntimeStreamChunk, RuntimeStreamChunk]:
-        result = ToolResult(tool_name=tool_call.tool_name, status="error", error="run interrupted")
-        completion = self._persist_fact(session=session, fact=ToolCompletedFact(replace(tool_call, tool_call_id=tool_call_id), result))
+        result = ToolFailure(tool_name=tool_call.tool_name, error="run interrupted")
+        report = report_call(
+            replace(tool_call, tool_call_id=tool_call_id),
+            result,
+            final_tool_name=tool_call.tool_name,
+            final_arguments=tool_call.arguments,
+        )
+        completion = self._persist_fact(session=session, fact=ToolCompletedFact(report))
         completed_chunk = RuntimeStreamChunk(kind="event", session=session, event=completion)
         failed_chunk, _ = self._persist_chunk(
             chunk_builders.failed_chunk(
@@ -750,7 +804,8 @@ class RuntimeRunLoopCoordinator:
         *,
         resolved_call: _ResolvedToolCall,
         read_paths: frozenset[str],
-        read_lines: Mapping[str, frozenset[int]],
+        read_lines: Mapping[tuple[str, str], frozenset[int]],
+        read_whole_files: frozenset[tuple[str, str]],
         tool_timeout: int | None,
         session: SessionState,
         start_sequence: int,
@@ -783,6 +838,12 @@ class RuntimeRunLoopCoordinator:
                 remaining_spawn_budget=remaining_spawn_budget,
                 read_paths=read_paths,
                 read_lines=read_lines,
+                read_whole_files=read_whole_files,
+                read_hash=(
+                    cast(str | None, resolved_call.tool_call.arguments.get("expectedHash"))
+                    if isinstance(resolved_call.tool_call.arguments.get("expectedHash"), str)
+                    else None
+                ),
                 todo_phases=todo_phases,
                 tool_timeout_seconds=tool_timeout,
                 model=model,
@@ -877,7 +938,7 @@ class RuntimeRunLoopCoordinator:
         session: SessionState,
         sequence: int,
         turn_request: TurnRequest,
-        tool_results: list[ToolResult],
+        tool_results: list[ReportedCall],
         permission_policy: PermissionPolicy | None = None,
         preserved_continuity_state: ContextProjection | None = None,
         continuation: RuntimeContinuation | None = None,
@@ -920,7 +981,7 @@ class RuntimeRunLoopCoordinator:
         at_safe_boundary: bool,
         session: SessionState,
         turn_request: TurnRequest,
-        tool_results: list[ToolResult],
+        tool_results: list[ReportedCall],
         sequence: int,
         checkpoint_tool_result_count: int,
     ) -> int:
@@ -933,24 +994,27 @@ class RuntimeRunLoopCoordinator:
         self,
         *,
         session: SessionState,
-        tool_results: list[ToolResult],
+        tool_results: list[ReportedCall],
         sequence: int,  # noqa: ARG002 — retained for terminalization call-shape symmetry; persisted envelope owns sequence.
     ) -> Generator[RuntimeStreamChunk, None, int]:
-        terminal_result = tool_results[-1]
-        terminal_output = (terminal_result.content or terminal_result.error or "").strip()
-        if not terminal_output:
-            raise ValueError("yield completed without a non-empty summary")
-        if terminal_result.data.get("yield_kind") == "terminal_error":
+        terminal_report = tool_results[-1]
+        terminal_result = terminal_report.result
+        control = terminal_result.control
+        if isinstance(control, TerminalYieldFailure):
+            assert isinstance(terminal_result, ToolFailure)
             failed_chunk, _ = self._persist_chunk(
                 chunk_builders.failed_chunk(
                     session=session,
                     sequence=sequence + 1,
-                    error=terminal_result.error or terminal_output or "delegated yield failed",
+                    error=terminal_result.error,
                     payload={"kind": "delegated_yield_error", "terminal": True},
                 )
             )
             yield failed_chunk
             return failed_chunk.event.sequence if failed_chunk.event is not None else sequence
+        if not isinstance(control, TerminalYield) or not control.summary.strip():
+            raise ValueError("yield completed without a non-empty terminal summary")
+        terminal_output = control.summary
         completed_session = session_with_plan_state(
             SessionState(
                 session=session.session,
@@ -1030,7 +1094,7 @@ class RuntimeRunLoopCoordinator:
         *,
         runtime: RuntimeSurface,
         session: SessionState,
-        turn_plan: TurnPlan,
+        turn_plan: FinalTurn,
         reasoning_capture_state: ReasoningCaptureState,
     ) -> Generator[RuntimeStreamChunk]:
         reasoning_diagnostic = _reasoning_output_diagnostic(
@@ -1047,12 +1111,7 @@ class RuntimeRunLoopCoordinator:
                 payload=reasoning_diagnostic,
             )
             yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-        if turn_plan.output is not None:
-            yield RuntimeStreamChunk(
-                kind="output",
-                session=session,
-                output=turn_plan.output,
-            )
+        yield RuntimeStreamChunk(kind="output", session=session, output=turn_plan.output)
 
     def _emit_interrupted_failure(
         self,
@@ -1128,7 +1187,7 @@ class RuntimeRunLoopCoordinator:
         *,
         session: SessionState,
         sequence: int,
-        tool_results: list[ToolResult],
+        tool_results: list[ReportedCall],
         turn_index: int,
         provider_attempt: int,
         provider_retry_attempt: int,
@@ -1156,7 +1215,7 @@ class RuntimeRunLoopCoordinator:
         ):
             stuck_payload: dict[str, object] = {
                 **turn_progress_payload,
-                "distinct_tool_count": len({result.tool_name for result in tool_results}),
+                "distinct_tool_count": len({result.final_tool_name for result in tool_results}),
                 "reason": "repeated_tool_loop",
             }
             stuck_detected_emitted = True
@@ -1177,7 +1236,7 @@ class RuntimeRunLoopCoordinator:
         *,
         session: SessionState,
         sequence: int,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall, ...],
     ) -> Generator[RuntimeStreamChunk, None, tuple[int, BeforeCompactInput | None]]:
         try:
             hook = run_lifecycle_hooks_for_session(
@@ -1188,7 +1247,7 @@ class RuntimeRunLoopCoordinator:
                 surface="before_compact",
                 payload={
                     "tool_result_count": len(tool_results),
-                    "tool_names": sorted({result.tool_name for result in tool_results}),
+                    "tool_names": sorted({result.final_tool_name for result in tool_results}),
                 },
                 recursion_env_var=HOOK_RECURSION_ENV_VAR,
                 policy=hook_execution_policy_from_metadata(session.metadata),
@@ -1206,7 +1265,7 @@ class RuntimeRunLoopCoordinator:
         self,
         *,
         active_turn_request: TurnRequest,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall | ToolResultView, ...],
         session: SessionState,
         continuity_to_reinject: ContextProjection | None,
         first_iteration: bool,
@@ -1433,10 +1492,10 @@ class RuntimeRunLoopCoordinator:
         active_turn_request: TurnRequest,
         turn_plan: TurnPlan,
         provider_attempt: int,
-        tool_results: list[ToolResult],
+        tool_results: list[ReportedCall],
         complete: bool = True,
     ) -> Generator[RuntimeStreamChunk, None, tuple[bool, SessionState, SessionState, int, bool]]:
-        is_final_step = complete and turn_plan.is_finished
+        is_final_step = complete and isinstance(turn_plan, FinalTurn)
         if is_final_step and session.session.parent_id is not None and (session.metadata.get("keep_alive_turn") is not True):
             if not tool_results or not _is_terminal_yield_result(tool_results[-1]):
                 raise ValueError("delegated child must call yield before completing")
@@ -1479,7 +1538,7 @@ class RuntimeRunLoopCoordinator:
         *,
         session: SessionState,
         sequence: int,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall, ...],
         active_turn_request: TurnRequest,
         tool_registry: ToolRegistry,
         effective_runtime_config: EffectiveRuntimeConfig,
@@ -1530,7 +1589,7 @@ class RuntimeRunLoopCoordinator:
         *,
         session: SessionState,
         sequence: int,
-        tool_results: list[ToolResult],
+        tool_results: list[ReportedCall],
         available_tools: tuple[ToolDefinition, ...],
         effective_runtime_config: EffectiveRuntimeConfig,
     ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, ContextSegment | None]]:
@@ -1581,7 +1640,7 @@ class RuntimeRunLoopCoordinator:
         self,
         *,
         active_turn_request: TurnRequest,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall, ...],
         session: SessionState,
         sequence: int,
         reasoning_capture_state: ReasoningCaptureState,
@@ -1647,7 +1706,7 @@ class RuntimeRunLoopCoordinator:
             )
             for streamed_item in producer.stream_produce(
                 stream_request,
-                tuple(tool_results),
+                tuple(project_report(report) for report in tool_results),
                 session=turn_request.session,
             ):
                 if _is_abort_requested(active_turn_request):
@@ -1704,7 +1763,7 @@ class RuntimeRunLoopCoordinator:
         else:
             turn_plan = producer.produce(
                 turn_request,
-                tool_results=tuple(tool_results),
+                tool_results=tuple(project_report(report) for report in tool_results),
                 session=turn_request.session,
             )
             # Non-streaming turns (background children) carry the turn's
@@ -1727,7 +1786,7 @@ class RuntimeRunLoopCoordinator:
         provider_error: ProviderExecutionError,
         active_turn_request: TurnRequest,
         context_window: RuntimeContextWindow,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall | ToolResultView, ...],
         context_limit_recovery: _ContextLimitRecoveryState,
         producer: TurnProducer,
     ) -> Generator[RuntimeStreamChunk, None, _ProviderErrorPolicyVerdict | None]:
@@ -1809,7 +1868,7 @@ class RuntimeRunLoopCoordinator:
         *,
         exc: Exception,
         session: SessionState,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall | ToolResultView, ...],
         context_limit_recovery: _ContextLimitRecoveryState,
         sequence: int,
         active_turn_request: TurnRequest,
@@ -2175,7 +2234,8 @@ class RuntimeRunLoopCoordinator:
                     tool_call=outcome.tool_call,
                     action="block",
                     diagnostics=outcome.diagnostics,
-                    handler_names=outcome.handler_names,
+                    handlers=outcome.handlers,
+                    omitted_handler_count=outcome.omitted_handler_count,
                     blocked_reason=str(exc),
                 ),
             )
@@ -2190,7 +2250,8 @@ class RuntimeRunLoopCoordinator:
                     tool_call=final_call,
                     action="block",
                     diagnostics=outcome.diagnostics,
-                    handler_names=outcome.handler_names,
+                    handlers=outcome.handlers,
+                    omitted_handler_count=outcome.omitted_handler_count,
                     blocked_reason=f"rewritten tool lookup failed: {exc}",
                 ),
             )
@@ -2202,12 +2263,12 @@ class RuntimeRunLoopCoordinator:
         session: SessionState,
         sequence: int,
         tool_registry: ToolRegistry,
-        turn_plan: TurnPlan,
+        turn_plan: ToolTurn,
         is_resume: bool = False,
         approved: ApprovedInvocation | None = None,
     ) -> Generator[RuntimeStreamChunk, None, tuple[ToolCall, Tool, str, int, ToolInputHookOutcome]]:
         runtime = self._surface
-        plan_tool_call = turn_plan.tool_calls[0]
+        plan_tool_call = turn_plan.calls[0]
         original_tool_call = plan_tool_call
         if approved is not None:
             if plan_tool_call.tool_call_id != approved.call.tool_call_id:
@@ -2278,14 +2339,10 @@ class RuntimeRunLoopCoordinator:
                 "tool_name": original_tool_call.tool_name,
                 "hook_status": "blocked" if input_hook_outcome.action == "block" else "ok",
                 "policy": {"mode": policy.mode, "read_only": policy.read_only},
-                "action": input_hook_outcome.action,
-                "handler_names": list(input_hook_outcome.handler_names),
-                "diagnostics": list(input_hook_outcome.diagnostics),
             }
+            trace_payload.update(input_hook_outcome.metadata_payload())
             if input_hook_outcome.action == "rewrite":
                 trace_payload["rewrite"] = tool_input_rewrite_metadata(original=original_tool_call, outcome=input_hook_outcome)
-            if input_hook_outcome.blocked_reason is not None:
-                trace_payload["reason"] = input_hook_outcome.blocked_reason
             trace_event = self._persist_event(
                 session_id=session.session.id, event_type=RUNTIME_TOOL_INPUT_PROCESSED, source="runtime", payload=trace_payload
             )
@@ -2307,7 +2364,7 @@ class RuntimeRunLoopCoordinator:
         active_permission_policy: PermissionPolicy,
         effective_runtime_config: EffectiveRuntimeConfig,
         continue_after_denial: bool = True,
-    ) -> Generator[RuntimeStreamChunk, None, tuple[str, SessionState, int, ToolResult | None]]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[str, SessionState, int, ReportedCall | None]]:
         runtime = self._surface
         if approved is not None:
             if plan_tool_call != approved.call or tool_call_id != approved.call.tool_call_id:
@@ -2395,7 +2452,7 @@ class RuntimeRunLoopCoordinator:
         tool: Tool,
         tool_call_id: str,
         tool_timeout: int | None,
-        tool_results: list[ToolResult],
+        tool_results: list[ReportedCall],
         active_turn_request: TurnRequest,
         tool_exception_recovery_enabled: bool,
     ) -> Generator[RuntimeStreamChunk, None, tuple[str, ToolResult | None, SessionState, int]]:
@@ -2426,6 +2483,7 @@ class RuntimeRunLoopCoordinator:
                 ),
                 read_paths=read_tracking.read_paths,
                 read_lines=read_tracking.read_lines,
+                read_whole_files=read_tracking.read_whole_files,
                 tool_timeout=tool_timeout,
                 session=session,
                 start_sequence=sequence + 1,
@@ -2445,23 +2503,17 @@ class RuntimeRunLoopCoordinator:
             )
             yield from drained_chunks
             if isinstance(exc, RuntimeToolTimeoutError):
-                partial_timeout_payload: dict[str, object] = {}
-                partial_timeout_content: str | None = None
-                partial_timeout_error: str | None = None
+                partial_timeout_output = EmptyOutput()
+                partial_timeout_body = None
                 partial_result = exc.partial_result
-                if isinstance(partial_result, ToolResult):
+                if isinstance(partial_result, (ToolSuccess, ToolFailure)):
                     capped_partial = cap_tool_result_output(
                         partial_result,
                         session_id=session.session.id,
                         tool_call_id=tool_call_id,
                     )
-                    capped_partial = replace(
-                        capped_partial,
-                        data=sanitize_tool_result_data(capped_partial.data),
-                    )
-                    partial_timeout_payload.update(capped_partial.data)
-                    partial_timeout_content = capped_partial.content
-                    partial_timeout_error = capped_partial.error
+                    partial_timeout_output = capped_partial.output
+                    partial_timeout_body = capped_partial.body
                 timeout_facts = _tool_timeout_execution_facts(exc)
                 envelope = self._persist_event(
                     session_id=session.session.id,
@@ -2474,22 +2526,35 @@ class RuntimeRunLoopCoordinator:
                     },
                 )
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-                timeout_error = partial_timeout_error or exc.error_message
-                timeout_result = ToolResult(
+                timeout_error = exc.error_message
+                timeout_result = ToolFailure(
                     tool_name=plan_tool_call.tool_name,
-                    status="error",
-                    content=partial_timeout_content,
                     error=timeout_error,
-                    data={**partial_timeout_payload, **timeout_facts},
+                    output=partial_timeout_output,
+                    body=partial_timeout_body,
                     diagnostics=_tool_error_diagnostics(
                         tool_name=plan_tool_call.tool_name,
                         error=timeout_error,
                         error_kind="tool_timeout",
                         extra_details={"timed_out": True, "timeout_seconds": tool_timeout, **timeout_facts},
                     ),
+                    execution=(
+                        ConfirmedStop(cancellation_signalled=exc.cancellation_signalled)
+                        if exc.execution_stopped
+                        else UnconfirmedStop(cancellation_signalled=exc.cancellation_signalled)
+                    ),
+                    timeout_seconds=tool_timeout,
                 )
                 envelope = self._persist_fact(
-                    session=session, fact=ToolCompletedFact(replace(plan_tool_call, tool_call_id=tool_call_id), timeout_result)
+                    session=session,
+                    fact=ToolCompletedFact(
+                        report_call(
+                            replace(plan_tool_call, tool_call_id=tool_call_id),
+                            timeout_result,
+                            final_tool_name=plan_tool_call.tool_name,
+                            final_arguments=plan_tool_call.arguments,
+                        )
+                    ),
                 )
                 sequence = envelope.sequence
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
@@ -2509,15 +2574,22 @@ class RuntimeRunLoopCoordinator:
                 yield failed_chunk
                 return "returned", None, session, sequence
             if not tool_exception_recovery_enabled and not _is_tool_timeout_like_exception(exc):
-                error_result = ToolResult(
+                error_result = ToolFailure(
                     tool_name=plan_tool_call.tool_name,
-                    status="error",
-                    content=_tool_error_content(plan_tool_call.tool_name, str(exc)),
                     error=str(exc),
+                    output=TextOutput(_tool_error_content(plan_tool_call.tool_name, str(exc))),
                     diagnostics=_tool_error_diagnostics(tool_name=plan_tool_call.tool_name, error=str(exc)),
                 )
                 envelope = self._persist_fact(
-                    session=session, fact=ToolCompletedFact(replace(plan_tool_call, tool_call_id=tool_call_id), error_result)
+                    session=session,
+                    fact=ToolCompletedFact(
+                        report_call(
+                            replace(plan_tool_call, tool_call_id=tool_call_id),
+                            error_result,
+                            final_tool_name=plan_tool_call.tool_name,
+                            final_arguments=plan_tool_call.arguments,
+                        )
+                    ),
                 )
                 sequence = envelope.sequence
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
@@ -2532,15 +2604,10 @@ class RuntimeRunLoopCoordinator:
                 error_details = dict(exc.error_details)
                 retry_guidance = exc.retry_guidance
 
-            tool_result = ToolResult(
+            tool_result = ToolFailure(
                 tool_name=plan_tool_call.tool_name,
-                status="error",
-                content=_tool_error_content(plan_tool_call.tool_name, str(exc)),
                 error=str(exc),
-                data={
-                    "tool_call_id": tool_call_id,
-                    "arguments": dict(plan_tool_call.arguments),
-                },
+                output=TextOutput(_tool_error_content(plan_tool_call.tool_name, str(exc))),
                 diagnostics=ToolDiagnostics(
                     kind=error_kind,
                     summary=_tool_error_summary(str(exc)),
@@ -2555,19 +2622,15 @@ class RuntimeRunLoopCoordinator:
         *,
         session: SessionState,
         sequence: int,
-        plan_tool_call: ToolCall,
         tool_call_id: str,
         tool_result: ToolResult,
         active_turn_request: TurnRequest,
-    ) -> Generator[RuntimeStreamChunk, None, tuple[ToolResult, bool, dict[str, object], SessionState, int, bool]]:
-        tool_result, runtime_tool_result_data = _normalized_tool_result(
-            tool_result=tool_result,
-            session=session,
-            plan_tool_call=plan_tool_call,
-            sequence=sequence,
+    ) -> Generator[RuntimeStreamChunk, None, tuple[ToolResult, SessionState, int, bool]]:
+        tool_result = cap_tool_result_output(
+            tool_result,
+            session_id=session.session.id,
             tool_call_id=tool_call_id,
         )
-        todo_mutated = plan_tool_call.tool_name == "todo" and tool_result.status == "ok" and runtime_tool_result_data.get("mutated") is True
         tool_result = self._number_yield_progress(session=session, tool_result=tool_result)
         drained_chunks, session, _ = self._drain_runtime_events(
             session=session,
@@ -2589,8 +2652,8 @@ class RuntimeRunLoopCoordinator:
                 sequence=sequence,
                 active_turn_request=active_turn_request,
             )
-            return tool_result, todo_mutated, runtime_tool_result_data, session, sequence, True
-        return tool_result, todo_mutated, runtime_tool_result_data, session, sequence, False
+            return tool_result, session, sequence, True
+        return tool_result, session, sequence, False
 
     def _handle_question_outcome(
         self,
@@ -2599,12 +2662,16 @@ class RuntimeRunLoopCoordinator:
         plan_tool_call: ToolCall,
         tool_result: ToolResult,
     ) -> Generator[RuntimeStreamChunk, None, bool]:
-        if plan_tool_call.tool_name == QuestionTool.definition.name and tool_result.status == "ok":
+        if (
+            plan_tool_call.tool_name == QuestionTool.definition.name
+            and isinstance(tool_result, ToolSuccess)
+            and isinstance(tool_result.control, QuestionPrepared)
+        ):
             pending_question = PendingQuestion(
                 request_id=f"question-{uuid4().hex}",
                 tool_name=plan_tool_call.tool_name,
                 arguments=dict(plan_tool_call.arguments),
-                prompts=QuestionTool.parse_prompts(plan_tool_call.arguments),
+                prompts=tool_result.control.prompts,
             )
             waiting_session = session_with_plan_state(
                 SessionState(
@@ -2681,44 +2748,44 @@ class RuntimeRunLoopCoordinator:
         plan_tool_call: ToolCall,
         tool_call_id: str,
         tool_result: ToolResult,
-        runtime_tool_result_data: dict[str, object],
-        todo_mutated: bool,
         batch: CallSeed | None = None,
     ) -> Generator[RuntimeStreamChunk, None, tuple[int, SessionState]]:
         envelope = self._persist_fact(
-            session=session, fact=ToolCompletedFact(replace(plan_tool_call, tool_call_id=tool_call_id), tool_result, batch=batch)
+            session=session,
+            fact=ToolCompletedFact(
+                report_call(
+                    replace(plan_tool_call, tool_call_id=tool_call_id),
+                    tool_result,
+                    final_tool_name=plan_tool_call.tool_name,
+                    final_arguments=plan_tool_call.arguments,
+                ),
+                batch=batch,
+            ),
         )
-        completed_payload = envelope.payload
         sequence = envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
         session = clear_tool_execution_intent(self._sessions, self._workspace, session)
 
-        if plan_tool_call.tool_name == "skill" and tool_result.status == "ok":
-            skill_payload = completed_payload.get("skill")
-            if isinstance(skill_payload, dict):
-                typed_skill_payload = skill_payload
-                skill_name: object | None = typed_skill_payload.get("name")
-                skill_source_path: object | None = typed_skill_payload.get("source_path")
-                envelope = self._persist_event(
-                    session_id=session.session.id,
-                    event_type=RUNTIME_SKILL_LOADED,
-                    source="runtime",
-                    payload={
-                        "name": skill_name if isinstance(skill_name, str) else None,
-                        "source": "tool",
-                        "source_path": (skill_source_path if isinstance(skill_source_path, str) else None),
-                    },
-                )
-                sequence = envelope.sequence
-                yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+        if plan_tool_call.tool_name == "skill" and isinstance(tool_result, ToolSuccess) and isinstance(tool_result.body, SkillResultBody):
+            envelope = self._persist_event(
+                session_id=session.session.id,
+                event_type=RUNTIME_SKILL_LOADED,
+                source="runtime",
+                payload={"name": tool_result.body.name, "source": "tool", "source_path": tool_result.body.source_path},
+            )
+            sequence = envelope.sequence
+            yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
 
-        if plan_tool_call.tool_name == "todo" and todo_mutated:
-            revision = sequence + 1
-            raw_phases = runtime_tool_result_data.get("phases")
+        if (
+            plan_tool_call.tool_name == "todo"
+            and isinstance(tool_result, ToolSuccess)
+            and isinstance(tool_result.body, TodoResultBody)
+            and tool_result.body.mutated
+        ):
             session, todo_payload = session_with_todo_state(
                 session,
-                raw_phases=raw_phases,
-                revision=revision,
+                raw_phases=list(tool_result.body.phases),
+                revision=sequence + 1,
             )
             envelope = self._persist_event(
                 session_id=session.session.id,
@@ -2740,15 +2807,12 @@ class RuntimeRunLoopCoordinator:
         error: str,
         error_kind: str,
         extra_details: dict[str, object] | None = None,
-    ) -> Generator[RuntimeStreamChunk, None, tuple[int, ToolResult]]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[int, ReportedCall]]:
         """Persist failed tool feedback and return the result for core advancement."""
-        sanitized_arguments = sanitize_tool_arguments(dict(arguments))
-        tool_result = ToolResult(
+        tool_result = ToolFailure(
             tool_name=tool_name,
-            status="error",
-            content=_tool_error_content(tool_name, error),
             error=error,
-            data={"tool_call_id": tool_call_id, "arguments": sanitized_arguments, **dict(extra_details or {})},
+            output=TextOutput(_tool_error_content(tool_name, error)),
             diagnostics=ToolDiagnostics(
                 kind=error_kind,
                 summary=_tool_error_summary(error),
@@ -2756,11 +2820,11 @@ class RuntimeRunLoopCoordinator:
                 guidance="Check the tool name and arguments, then retry.",
             ),
         )
-        envelope = self._persist_fact(
-            session=session, fact=ToolCompletedFact(ToolCall(tool_name=tool_name, arguments=arguments, tool_call_id=tool_call_id), tool_result)
-        )
+        call = ToolCall(tool_name=tool_name, arguments=arguments, tool_call_id=tool_call_id)
+        report = report_call(call, tool_result, final_tool_name=tool_name, final_arguments=arguments)
+        envelope = self._persist_fact(session=session, fact=ToolCompletedFact(report))
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-        return (envelope.sequence, replace(tool_result, data={**tool_result.data, "tool_call_id": tool_call_id, "arguments": sanitized_arguments}))
+        return (envelope.sequence, report)
 
     def _execute_invoked_tool(
         self,
@@ -2770,7 +2834,7 @@ class RuntimeRunLoopCoordinator:
         sequence: int,
         outer_call: ToolCall,
         outer_call_id: str,
-        tool_results: list[ToolResult],
+        tool_results: list[ReportedCall],
         permission_policy: PermissionPolicy | None,
         abort_signal: ProviderAbortSignal | None,
         is_resume: bool = False,
@@ -2799,7 +2863,7 @@ class RuntimeRunLoopCoordinator:
                 error=format_validation_error("invoke_tool", exc),
                 error_kind="invalid_arguments",
             )
-            return (session, sequence, CallOutcome("result", published_result))
+            return (session, sequence, CallReported(published_result))
         inner_name = parsed.name
         inner_arguments = dict(parsed.arguments or {})
         original_inner_call = ToolCall(tool_name=inner_name, arguments=dict(inner_arguments), tool_call_id=outer_call_id)
@@ -2825,7 +2889,7 @@ class RuntimeRunLoopCoordinator:
                 error=delegation_policy_error,
                 error_kind="delegation_policy_denied",
             )
-            return (session, sequence, CallOutcome("result", published_result))
+            return (session, sequence, CallReported(published_result))
         tool_policy_denial = runtime.tool_policy_denial(session=session, tool_name=inner_name)
         if tool_policy_denial is not None:
             sequence, published_result = yield from self._dispatch_error_feedback_chunks(
@@ -2836,7 +2900,7 @@ class RuntimeRunLoopCoordinator:
                 error=tool_policy_error(tool_policy_denial),
                 error_kind="runtime_tool_policy_denied",
             )
-            return (session, sequence, CallOutcome("result", published_result))
+            return (session, sequence, CallReported(published_result))
         try:
             tool = tool_registry.resolve(inner_name)
         except Exception as exc:
@@ -2848,7 +2912,7 @@ class RuntimeRunLoopCoordinator:
                 error=f"unknown tool: {inner_name} ({exc})",
                 error_kind="unknown_tool",
             )
-            return (session, sequence, CallOutcome("result", published_result))
+            return (session, sequence, CallReported(published_result))
         lookup_envelope = self._persist_event(
             session_id=session.session.id, event_type="runtime.tool_lookup_succeeded", source="runtime", payload={"tool": inner_name}
         )
@@ -2865,14 +2929,10 @@ class RuntimeRunLoopCoordinator:
                 "tool_name": inner_name,
                 "hook_status": "blocked" if input_hook_outcome.action == "block" else "ok",
                 "policy": {"mode": policy.mode, "read_only": policy.read_only},
-                "action": input_hook_outcome.action,
-                "handler_names": list(input_hook_outcome.handler_names),
-                "diagnostics": list(input_hook_outcome.diagnostics),
             }
+            trace_payload.update(input_hook_outcome.metadata_payload())
             if input_hook_outcome.action == "rewrite":
                 trace_payload["rewrite"] = tool_input_rewrite_metadata(original=original_inner_call, outcome=input_hook_outcome)
-            if input_hook_outcome.blocked_reason is not None:
-                trace_payload["reason"] = input_hook_outcome.blocked_reason
             trace_event = self._persist_event(
                 session_id=session.session.id, event_type=RUNTIME_TOOL_INPUT_PROCESSED, source="runtime", payload=trace_payload
             )
@@ -2887,7 +2947,7 @@ class RuntimeRunLoopCoordinator:
                 error=input_hook_outcome.blocked_reason or "tool input handler blocked the call",
                 error_kind="tool_input_handler_blocked",
             )
-            return (session, sequence, CallOutcome("result", published_result))
+            return (session, sequence, CallReported(published_result))
         permission_action, session, sequence, permission_result = yield from self._resolve_permission_for_tool(
             session=session,
             sequence=sequence,
@@ -2900,13 +2960,13 @@ class RuntimeRunLoopCoordinator:
             continue_after_denial=False,
         )
         if permission_action != "ok":
-            return (
-                session,
-                sequence,
-                CallOutcome(
-                    "result" if permission_result is not None else ("paused" if permission_action == "paused" else "stopped"), permission_result
-                ),
-            )
+            if permission_result is not None:
+                return (
+                    session,
+                    sequence,
+                    CallStoppedAfterReport(permission_result) if permission_action == "stopped" else CallReported(permission_result),
+                )
+            return (session, sequence, CallPaused() if permission_action == "paused" else CallStoppedBeforeReport())
         inner_call, outer_call_id, _intent_payload, session = self._persist_resolved_tool_intent(
             session=session, tool=tool, tool_call=inner_call, tool_call_id=outer_call_id
         )
@@ -2938,7 +2998,7 @@ class RuntimeRunLoopCoordinator:
                 error=pre_hook_outcome.failed_error,
                 error_kind="hook_failed",
             )
-            return (session, sequence, CallOutcome("result", published_result))
+            return (session, sequence, CallReported(published_result))
         self._note_hook_guidance(pre_hook_outcome.guidance)
         if pre_hook_outcome.action == "cancel":
             sequence, published_result = yield from self._dispatch_error_feedback_chunks(
@@ -2949,20 +3009,24 @@ class RuntimeRunLoopCoordinator:
                 error=hook_blocked_reason(pre_hook_outcome, tool_name=inner_name),
                 error_kind="hook_cancelled",
             )
-            return (session, sequence, CallOutcome("result", published_result))
+            return (session, sequence, CallReported(published_result))
         tool_timeout = runtime.effective_runtime_config_from_metadata(session.metadata).tool_timeout_seconds
         sequence = yield from self._emit_started_tool_event(session=session, tool_call=inner_call, tool_call_id=outer_call_id)
         if _is_abort_signal_requested(abort_signal):
             yield from self._started_tool_abort_chunks(
                 session=session, sequence=sequence, tool_call=inner_call, tool_call_id=outer_call_id, abort_signal=abort_signal
             )
-            return (session, sequence, CallOutcome("stopped"))
+            return (session, sequence, CallStoppedBeforeReport())
         try:
-            read_tracking = read_tracking_for_tool_results(tool_results=tuple(tool_results), workspace=self._workspace)
+            read_tracking = read_tracking_for_tool_results(
+                tool_results=tuple(tool_results),
+                workspace=self._workspace,
+            )
             tool_outcome, sequence = yield from self._execute_resolved_tool_call(
                 resolved_call=_ResolvedToolCall(tool=tool, tool_call=inner_call, tool_call_id=outer_call_id),
                 read_paths=read_tracking.read_paths,
                 read_lines=read_tracking.read_lines,
+                read_whole_files=read_tracking.read_whole_files,
                 tool_timeout=tool_timeout,
                 session=session,
                 start_sequence=sequence + 1,
@@ -2994,7 +3058,7 @@ class RuntimeRunLoopCoordinator:
                 error_kind="tool_timeout",
                 extra_details=timeout_facts,
             )
-            return (session, sequence, CallOutcome("result", published_result))
+            return (session, sequence, CallReported(published_result))
         except Exception as exc:
             sequence, published_result = yield from self._dispatch_error_feedback_chunks(
                 session=session,
@@ -3004,11 +3068,12 @@ class RuntimeRunLoopCoordinator:
                 error=str(exc),
                 error_kind="tool_error",
             )
-            return (session, sequence, CallOutcome("result", published_result))
-        runtime_tool_result_data = dict(tool_result.data)
-        sanitized_arguments = sanitize_tool_arguments(dict(inner_call.arguments))
-        tool_result = cap_tool_result_output(tool_result, session_id=session.session.id, tool_call_id=outer_call_id)
-        tool_result = replace(tool_result, data=sanitize_tool_result_data(tool_result.data))
+            return (session, sequence, CallReported(published_result))
+        tool_result = cap_tool_result_output(
+            tool_result,
+            session_id=session.session.id,
+            tool_call_id=outer_call_id,
+        )
         tool_result = self._number_yield_progress(session=session, tool_result=tool_result)
         drained_chunks, session, _ = self._drain_runtime_events(session=session, start_sequence=sequence + 1)
         yield from drained_chunks
@@ -3025,8 +3090,13 @@ class RuntimeRunLoopCoordinator:
                 )
             )
             yield failed_chunk
-            return (session, sequence, CallOutcome("stopped"))
-        envelope = self._persist_fact(session=session, fact=ToolCompletedFact(replace(inner_call, tool_call_id=outer_call_id), tool_result))
+        report = report_call(
+            replace(inner_call, tool_call_id=outer_call_id),
+            tool_result,
+            final_tool_name=inner_name,
+            final_arguments=inner_call.arguments,
+        )
+        envelope = self._persist_fact(session=session, fact=ToolCompletedFact(report))
         sequence = envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
         session = clear_tool_execution_intent(self._sessions, self._workspace, session)
@@ -3043,8 +3113,8 @@ class RuntimeRunLoopCoordinator:
                 )
             )
             yield failed_chunk
-            return (session, sequence, CallOutcome("stopped"))
-        if tool_result.status == "ok":
+            return (session, sequence, CallStoppedAfterReport(report))
+        if isinstance(tool_result, ToolSuccess):
             post_hook_outcome = run_tool_hooks_for_session(
                 hooks=self._config.hooks,
                 workspace=self._workspace,
@@ -3077,49 +3147,49 @@ class RuntimeRunLoopCoordinator:
                 return (
                     session,
                     sequence,
-                    CallOutcome(
-                        "stopped", replace(tool_result, data={**tool_result.data, "tool_call_id": outer_call_id, "arguments": sanitized_arguments})
-                    ),
+                    CallStoppedAfterReport(report),
                 )
             self._note_hook_guidance(post_hook_outcome.guidance)
-        published_result = replace(tool_result, data={**tool_result.data, "tool_call_id": outer_call_id, "arguments": sanitized_arguments})
-        if inner_name == "todo" and tool_result.status == "ok" and (runtime_tool_result_data.get("mutated") is True):
-            session, todo_payload = session_with_todo_state(session, raw_phases=runtime_tool_result_data.get("phases"), revision=sequence + 1)
-            todo_event = self._persist_event(session_id=session.session.id, event_type=RUNTIME_TODO_UPDATED, source="runtime", payload=todo_payload)
+        if (
+            inner_name == "todo"
+            and isinstance(tool_result, ToolSuccess)
+            and isinstance(tool_result.body, TodoResultBody)
+            and tool_result.body.mutated
+        ):
+            session, todo_payload = session_with_todo_state(
+                session,
+                raw_phases=tool_result.body.phases,
+                revision=sequence + 1,
+            )
+            todo_event = self._persist_event(
+                session_id=session.session.id,
+                event_type=RUNTIME_TODO_UPDATED,
+                source="runtime",
+                payload=todo_payload,
+            )
             sequence = todo_event.sequence
             yield RuntimeStreamChunk(kind="event", session=session, event=todo_event)
-        return (session, sequence, CallOutcome("result", published_result))
+        return (session, sequence, CallReported(report))
 
     def _permission_denied_tool_feedback_chunks(
         self, *, session: SessionState, tool_call: ToolCall, pending: PendingApproval | None, tool_call_id: str | None = None
-    ) -> Generator[RuntimeStreamChunk, None, tuple[int, ToolResult]]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[int, ReportedCall]]:
         tool_feedback_id = tool_call_id or tool_call.tool_call_id or f"runtime-tool-{uuid4().hex}"
-        sanitized_arguments = sanitize_tool_arguments(dict(tool_call.arguments))
         error = f"permission denied for tool: {tool_call.tool_name}"
-        result_data: dict[str, object] = {"tool_call_id": tool_feedback_id, "arguments": sanitized_arguments, "permission_denied": True}
-        if pending is not None:
-            result_data["approval_request_id"] = pending.request_id
-            result_data["approval_decision"] = "deny"
-            if pending.path_scope is not None:
-                result_data["path_scope"] = pending.path_scope
-            if pending.operation_class is not None:
-                result_data["operation_class"] = pending.operation_class
-            if pending.canonical_path is not None:
-                result_data["canonical_path"] = pending.canonical_path
-            if pending.matched_rule is not None:
-                result_data["matched_rule"] = pending.matched_rule
-            if pending.policy_surface is not None:
-                result_data["policy_surface"] = pending.policy_surface
-        denied_by: str | None = None
-        if pending is not None and pending.policy_mode == "ask":
-            denied_by = "user"
-            result_data["denied_by"] = denied_by
-        tool_result = ToolResult(
+        denied_by = "user" if pending is not None and pending.policy_mode == "ask" else None
+        result = ToolFailure(
             tool_name=tool_call.tool_name,
-            status="error",
-            content=_tool_error_content(tool_call.tool_name, error),
             error=error,
-            data=sanitize_tool_result_data(result_data),
+            output=TextOutput(_tool_error_content(tool_call.tool_name, error)),
+            body=PermissionDenialBody(
+                approval_request_id=pending.request_id if pending is not None else None,
+                path_scope=pending.path_scope if pending is not None else None,
+                operation_class=pending.operation_class if pending is not None else None,
+                canonical_path=pending.canonical_path if pending is not None else None,
+                matched_rule=pending.matched_rule if pending is not None else None,
+                policy_surface=pending.policy_surface if pending is not None else None,
+                denied_by=denied_by,
+            ),
             diagnostics=ToolDiagnostics(
                 kind="permission_denied",
                 summary=_tool_error_summary(error),
@@ -3129,12 +3199,11 @@ class RuntimeRunLoopCoordinator:
                 guidance="Adjust the request or approval settings, then retry.",
             ),
         )
-        envelope = self._persist_fact(session=session, fact=ToolCompletedFact(replace(tool_call, tool_call_id=tool_feedback_id), tool_result))
+        call = replace(tool_call, tool_call_id=tool_feedback_id)
+        report = report_call(call, result, final_tool_name=tool_call.tool_name, final_arguments=tool_call.arguments)
+        envelope = self._persist_fact(session=session, fact=ToolCompletedFact(report))
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-        return (
-            envelope.sequence,
-            replace(tool_result, data={**tool_result.data, "tool_call_id": tool_feedback_id, "arguments": sanitized_arguments}),
-        )
+        return envelope.sequence, report
 
     @staticmethod
     def _build_context_compacted_payload(
@@ -3184,12 +3253,12 @@ class RuntimeRunLoopCoordinator:
         )
 
     @staticmethod
-    def _is_stuck_tool_loop(*, turn: int, tool_results: list[ToolResult]) -> bool:
+    def _is_stuck_tool_loop(*, turn: int, tool_results: list[ReportedCall]) -> bool:
         if turn < _STUCK_DETECTED_MIN_TURN:
             return False
         if len(tool_results) < _STUCK_DETECTED_MIN_TOOL_RESULTS:
             return False
-        return len({result.tool_name for result in tool_results}) <= 2
+        return len({result.final_tool_name for result in tool_results}) <= 2
 
     def _drain_runtime_events(
         self,
@@ -3255,7 +3324,7 @@ class RuntimeHost:
         session: SessionState,
         sequence: int,
         turn_request: TurnRequest,
-        tool_results: list[ToolResult],
+        tool_results: list[ReportedCall],
         permission_policy: PermissionPolicy | None,
         preserved_continuity_state: ContextProjection | None,
         continuation: RuntimeContinuation | None,
@@ -3306,7 +3375,7 @@ class RuntimeHost:
                         session_id=self.session.session.id,
                         run_id=state.request.run_id,
                         started_sequence=self.batch_started_sequence,
-                        completed_call_ids=tuple(cast(str, result.data["tool_call_id"]) for result in batch.results),
+                        completed_call_ids=tuple(result.tool_call_id for result in batch.results),
                     )
                 },
             ),
@@ -3510,7 +3579,7 @@ class RuntimeHost:
                 state.request = prepared
 
     def observe(self, plan: TurnPlan, state: EngineState) -> Generator[RuntimeStreamChunk, None, bool]:
-        if plan.tool_calls:
+        if isinstance(plan, ToolTurn):
             self._save_batch(state)
         _, self.session, self.current_chunk_session, self.provider_attempt, terminated = yield from self.coordinator._finalize_step_state(
             session=self.session,
@@ -3543,11 +3612,11 @@ class RuntimeHost:
         if answered is not None:
             if call.tool_call_id != answered.call.tool_call_id:
                 raise ValueError("answered question does not match the original call identity")
-            final_call, tool_result = answered.call, answered.result
+            final_call, tool_result = answered.call, answered.result.result
             call_id = final_call.tool_call_id
             assert call_id is not None
         else:
-            assert state.plan is not None
+            assert isinstance(state.plan, ToolTurn)
             final_call, tool, call_id, self.sequence, input_outcome = yield from self.coordinator._plan_tool_step(
                 session=self.session,
                 sequence=self.sequence,
@@ -3565,7 +3634,7 @@ class RuntimeHost:
                     error=input_outcome.blocked_reason or "tool input handler blocked the call",
                     error_kind="tool_input_handler_blocked",
                 )
-                return CallOutcome("result", result)
+                return CallReported(result)
             if final_call.tool_name == "invoke_tool":
                 self.session, self.sequence, outcome = yield from self.coordinator._execute_invoked_tool(
                     tool_registry=self.tool_registry,
@@ -3590,12 +3659,13 @@ class RuntimeHost:
                 effective_runtime_config=self.effective_runtime_config,
             )
             if action == "paused":
-                return CallOutcome("paused")
+                return CallPaused()
             if action == "stopped":
-                return CallOutcome("stopped", denied)
+                assert denied is not None
+                return CallStoppedAfterReport(denied)
             if action == "result":
                 assert denied is not None
-                return CallOutcome("result", denied)
+                return CallReported(denied)
             final_call, call_id, _, self.session = self.coordinator._persist_resolved_tool_intent(
                 session=self.session,
                 tool=tool,
@@ -3609,7 +3679,7 @@ class RuntimeHost:
                 phase="pre",
             )
             if verdict == "cancel":
-                return CallOutcome("stopped")
+                return CallStoppedBeforeReport()
             action, tool_result, self.session, self.sequence = yield from self.coordinator._execute_tool_and_recover(
                 session=self.session,
                 sequence=self.sequence,
@@ -3622,7 +3692,7 @@ class RuntimeHost:
                 tool_exception_recovery_enabled=self.effective_runtime_config.execution_engine == "provider",
             )
             if action == "returned":
-                return CallOutcome("stopped")
+                return CallStoppedBeforeReport()
             assert tool_result is not None
         if approved is not None or answered is not None:
             self.coordinator._capture_interrupted_checkpoint(
@@ -3632,16 +3702,15 @@ class RuntimeHost:
                 last_event_sequence=self.sequence,
             )
         self.continuation = None
-        tool_result, todo_mutated, runtime_data, self.session, self.sequence, terminated = yield from self.coordinator._finalize_tool_result(
+        tool_result, self.session, self.sequence, terminated = yield from self.coordinator._finalize_tool_result(
             session=self.session,
             sequence=self.sequence,
-            plan_tool_call=final_call,
             tool_call_id=call_id,
             tool_result=tool_result,
             active_turn_request=state.request,
         )
         if terminated:
-            return CallOutcome("stopped")
+            return CallStoppedBeforeReport()
         if answered is None and (
             yield from self.coordinator._handle_question_outcome(
                 session=self.session,
@@ -3649,23 +3718,25 @@ class RuntimeHost:
                 tool_result=tool_result,
             )
         ):
-            return CallOutcome("paused")
-        arguments = sanitize_tool_arguments(dict(final_call.arguments))
+            return CallPaused()
         self.sequence, self.session = yield from self.coordinator._emit_tool_completed_events(
             session=self.session,
             sequence=self.sequence,
             plan_tool_call=final_call,
             tool_call_id=call_id,
             tool_result=tool_result,
-            runtime_tool_result_data=runtime_data,
-            todo_mutated=todo_mutated,
             batch=self.batch_snapshot,
         )
-        completed = replace(tool_result, data={**tool_result.data, "tool_call_id": call_id, "arguments": arguments})
+        report = report_call(
+            final_call,
+            tool_result,
+            final_tool_name=final_call.tool_name,
+            final_arguments=final_call.arguments,
+        )
         if _is_abort_requested(state.request):
             yield from self.coordinator._emit_interrupted_failure(session=self.session, sequence=self.sequence, active_turn_request=state.request)
-            return CallOutcome("stopped", completed)
-        if tool_result.status == "ok":
+            return CallStoppedAfterReport(report)
+        if isinstance(tool_result, ToolSuccess):
             self.sequence, verdict = yield from self.coordinator._run_tool_hook_phase(
                 session=self.session,
                 sequence=self.sequence,
@@ -3673,10 +3744,10 @@ class RuntimeHost:
                 phase="post",
             )
             if verdict == "cancel":
-                return CallOutcome("stopped", completed)
-        return CallOutcome("result", completed)
+                return CallStoppedAfterReport(report)
+        return CallReported(report)
 
-    def finish(self, plan: TurnPlan, state: EngineState) -> Generator[RuntimeStreamChunk, None, str | None]:
+    def finish(self, plan: FinalTurn, state: EngineState) -> Generator[RuntimeStreamChunk, None, str | None]:
         self.session, self.sequence, self.pending_reminder_segment = yield from self.coordinator._todo_reminder_step(
             session=self.session,
             sequence=self.sequence,

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Final, Literal, Protocol, TypedDict, TypeIs, cast, runtime_checkable
 
 from ..provider.reasoning_effort import normalize_reasoning_effort
+from ..tools.contracts import TerminalYield
 from . import mode as runtime_mode
 from .background.execution import (
     SubagentExecutionContract,
@@ -20,6 +21,7 @@ from .background.routing import (
     parse_subagent_routing_identity,
     resolve_subagent_route,
 )
+from .composition import CompositionRef
 from .events import (
     DelegatedExecutionPayload,
     DelegatedLifecycleEventPayload,
@@ -145,6 +147,7 @@ class InternalRuntimeRequestMetadata(RuntimeRequestMetadata, total=False):
     background_run: bool
     background_rate_limit_retry: bool
     background_task_id: str
+    composition_ref: dict[str, object]
     keep_alive_turn: bool
 
 
@@ -602,6 +605,13 @@ def validate_runtime_request_metadata(
         if not isinstance(background_task_id, str) or not background_task_id:
             raise RuntimeRequestError("request metadata 'background_task_id' must be a non-empty string")
         normalized["background_task_id"] = background_task_id
+
+    if allow_internal_fields and "composition_ref" in metadata:
+        try:
+            composition_ref = CompositionRef.model_validate(metadata["composition_ref"])
+        except Exception as error:
+            raise RuntimeRequestError("request metadata 'composition_ref' must be a canonical CompositionRef") from error
+        normalized["composition_ref"] = composition_ref.model_dump(mode="json")
 
     if allow_internal_fields and "keep_alive_turn" in metadata:
         keep_alive_turn = metadata["keep_alive_turn"]
@@ -1094,6 +1104,7 @@ class BackgroundTaskResult:
     approval_request_id: str | None = None
     question_request_id: str | None = None
     approval_blocked: bool = False
+    handoff: TerminalYield | None = None
     summary_output: str | None = None
     error: str | None = None
     result_available: bool = False

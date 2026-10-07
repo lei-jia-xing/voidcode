@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from ..tools.contracts import ToolDiagnostics, ToolResult
-from ..tools.output import read_tool_output_artifact, sanitize_tool_result_data
+from ..core.tool_context import ArtifactInvalid, ArtifactMissing, ArtifactPage, ArtifactUnavailable
+from ..core.turns import ReportedCall
+from ..tools.output import read_tool_output_artifact
 from .contracts import (
     RuntimeSessionDebugEvent,
     RuntimeSessionDebugFailure,
@@ -9,6 +10,7 @@ from .contracts import (
     RuntimeSessionResult,
 )
 from .events import EventEnvelope
+from .fact_codec import reported_call_from_event
 from .permission import PendingApproval
 from .question import PendingQuestion
 
@@ -130,26 +132,20 @@ def artifact_debug_metadata(payload: dict[str, object]) -> dict[str, object]:
         return {}
     artifact_metadata = dict(artifact)
     read_result = read_tool_output_artifact(artifact_metadata, offset=0, limit=0)
-    status = read_result.get("status")
-    if isinstance(status, str):
-        artifact_metadata["status"] = status
-    artifact_metadata["artifact_missing"] = bool(read_result.get("artifact_missing"))
-    if "content" in artifact_metadata:
-        artifact_metadata.pop("content")
+    if isinstance(read_result, ArtifactPage):
+        artifact_metadata["status"] = "available"
+        artifact_metadata["artifact_missing"] = False
+    elif isinstance(read_result, ArtifactInvalid):
+        artifact_metadata["status"] = "invalid"
+        artifact_metadata["artifact_missing"] = True
+    elif isinstance(read_result, ArtifactUnavailable):
+        artifact_metadata["status"] = "missing"
+        artifact_metadata["artifact_missing"] = True
+    elif isinstance(read_result, ArtifactMissing):
+        artifact_metadata["status"] = "artifact_not_found"
+        artifact_metadata["artifact_missing"] = True
+    artifact_metadata.pop("content", None)
     return artifact_metadata
-
-
-def payload_with_artifact_status(payload: dict[str, object]) -> dict[str, object]:
-    artifact = payload.get("artifact")
-    if not isinstance(artifact, dict):
-        return dict(payload)
-    artifact_metadata = artifact_debug_metadata(payload)
-    return {
-        **payload,
-        "artifact": artifact_metadata,
-        "artifact_status": artifact_metadata.get("status", payload.get("artifact_status")),
-        "artifact_missing": artifact_metadata.get("artifact_missing", payload.get("artifact_missing")),
-    }
 
 
 def last_tool_summary(
@@ -197,52 +193,19 @@ def prompt_from_events(events: tuple[EventEnvelope, ...]) -> str:
     return ""
 
 
-def provider_visible_tool_result_data(payload: dict[str, object]) -> dict[str, object]:
-    runtime_envelope_keys = {
-        "content",
-        "diagnostics",
-        "display",
-        "error",
-        "model",
-        "provider",
-        "status",
-        "tool",
-        "tool_status",
-    }
-    payload = payload_with_artifact_status(payload)
-    return sanitize_tool_result_data({key: value for key, value in payload.items() if key not in runtime_envelope_keys})
-
-
 def prompt_and_tool_results_from_debug_events(
     events: tuple[EventEnvelope, ...],
-) -> tuple[str, list[ToolResult]]:
+) -> tuple[str, list[ReportedCall]]:
     prompt = prompt_from_events(events)
-    tool_results: list[ToolResult] = []
+    reports: list[ReportedCall] = []
     for event in events:
-        if event.event_type != "runtime.tool_completed":
+        report = reported_call_from_event(event)
+        if report is None:
+            if event.event_type == "runtime.tool_completed":
+                raise ValueError("runtime.tool_completed event has no canonical report")
             continue
-        error_value = event.payload.get("error")
-        raw_content = event.payload.get("content")
-        raw_reference = event.payload.get("reference")
-        is_error = error_value is not None
-        tool_results.append(
-            ToolResult(
-                tool_name=str(event.payload["tool"]),
-                status="error" if is_error else "ok",
-                content=str(raw_content) if raw_content is not None and not is_error else None,
-                data=provider_visible_tool_result_data(event.payload),
-                error=str(error_value) if is_error else None,
-                truncated=event.payload.get("truncated") is True,
-                partial=event.payload.get("partial") is True,
-                reference=raw_reference if isinstance(raw_reference, str) else None,
-                diagnostics=(
-                    ToolDiagnostics.from_payload(event.payload["diagnostics"])
-                    if isinstance(event.payload.get("diagnostics"), dict) and is_error
-                    else None
-                ),
-            )
-        )
-    return prompt, tool_results
+        reports.append(report)
+    return prompt, reports
 
 
 def operator_guidance(
@@ -302,8 +265,6 @@ __all__ = [
     "debug_session_state_inconsistency",
     "last_tool_summary",
     "operator_guidance",
-    "payload_with_artifact_status",
     "prompt_and_tool_results_from_debug_events",
     "prompt_from_events",
-    "provider_visible_tool_result_data",
 ]

@@ -7,8 +7,8 @@ import pytest
 
 from voidcode.core.tool_context import ToolContext
 from voidcode.tools._repair import ToolDiagnosticError
-from voidcode.tools.contracts import ToolCall
-from voidcode.tools.multi_edit import MultiEditTool
+from voidcode.tools.contracts import TextOutput, ToolCall
+from voidcode.tools.multi_edit import MultiEditResultBody, MultiEditTool
 
 
 def _content_hash(path: Path) -> str:
@@ -39,7 +39,9 @@ def test_multi_edit_applies_multiple_edits_in_order(tmp_path: Path) -> None:
     assert "ALPHA" in content
     assert "BETA" in content
     assert result.status == "ok"
-    assert result.data["applied"] == 2
+    assert isinstance(result.output, TextOutput)
+    assert isinstance(result.body, MultiEditResultBody)
+    assert result.body.applied == 2
 
 
 def test_multi_edit_rejects_empty_edits(tmp_path: Path) -> None:
@@ -111,7 +113,6 @@ def test_multi_edit_rejects_stale_expected_hash_before_any_edit(tmp_path: Path) 
     assert diagnostic.error_details["expected_hash"] == "0" * 64
     assert diagnostic.error_details["actual_hash"] == _content_hash(target)
     assert diagnostic.error_details["path"] == "sample.txt"
-    assert "data.content_hash" in (diagnostic.retry_guidance or "")
     assert target.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
 
@@ -121,11 +122,13 @@ def test_multi_edit_rejects_edit_of_line_outside_read_window(tmp_path: Path) -> 
     tool = MultiEditTool()
     resolved = target.resolve().as_posix()
 
+    read_hash = _content_hash(target)
     context = ToolContext(
         workspace=tmp_path,
         session_id="test",
         read_paths=frozenset({resolved}),
-        read_lines={resolved: frozenset({1})},
+        read_lines={(resolved, read_hash): frozenset({1})},
+        read_hash=read_hash,
     )
     with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
         tool.invoke(

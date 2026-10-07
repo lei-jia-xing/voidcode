@@ -82,9 +82,7 @@ read(path="voidcode://tool/<name>")
 `input_schema`、`effects` 和派生的 `read_only` 观察元数据。因此它也适用于 essential/discoverable split
 下未列在 provider 顶层的工具。读取文档不会授权或执行工具；需要调用时仍
 使用顶层工具或 `invoke_tool`，并由 runtime 重新执行 allowlist、permission、
-approval 和 replay policy 检查。动态 MCP/local tool 的事实以当前 registry、
-`ToolResult.data` 和 runtime metadata/events 为准，不以 provider description
-或过期文档文本推断。
+approval 和 replay policy 检查。动态 MCP/local tool 的事实以当前 declaration registry、canonical `ReportedCall.result.body` 和 runtime metadata/events 为准。`ToolResultView` 不携带 body；provider-visible output 不是结构化工具 body。
 
 ### Rulebook resources
 
@@ -128,35 +126,11 @@ Agent 发起工具调用时只提交工具名与参数对象：
 
 ### Tool result
 
-工具实现返回统一 `ToolResult`：
+工具实现返回封闭的 `ToolSuccess` / `ToolFailure` alternative。Runtime 将实际报告包装为 `ReportedCall`：保留原始 tool-call ID、最终工具名、已授权 arguments 与 canonical result。严格 version-1 persisted report codec 位于 `runtime/execution/report_codec.py`；它没有通用 `data` facade。
 
-```json
-{
-  "tool_name": "read",
-  "status": "ok",
-  "content": "file contents or human-readable summary",
-  "data": {
-    "path": "README.md",
-    "line_count": 12,
-    "truncated": false,
-    "partial": false,
-    "attachment": null
-  },
-  "error": null,
-  "truncated": false,
-  "partial": false
-}
-```
+`ToolSuccess` / `ToolFailure` 的 `output` 是 typed `TextOutput`、`EmptyOutput` 或 `AttachmentOutput`，带真实 `OutputBounds`。可选 `body` 是工具 owner 的 typed DTO，或仅限 external/package data 的 scoped `OpaqueToolBody`；它不提供 identity、permission、control 或 provider authority。控制语义由有限的 typed control alternatives 表达。
 
-字段含义：
-
-- `status`：`ok` 或 `error`；
-- `content`：适合 agent 直接阅读的文本内容或摘要，可为 `null`；
-- `data`：结构化 metadata，按工具不同而不同；图片、PDF 等非纯文本结果的附件数据位于 `data.attachment`；
-- `error`：失败信息；`status="error"` 时必须存在，`status="ok"` 时必须为 `null`。
-- `truncated` / `partial`：结果是否被截断或部分返回。
-
-`attachment` 不再是 `ToolResult` 顶层字段；runtime event 会展开合并工具的 `data` 字段，因此附件仍会持久化并可供 provider/frontend 消费。
+Model-facing `ToolResultView` 是隔离投影，包含调用 ID、最终工具名、已授权 arguments、typed output/status，以及 failure 时的 error/diagnostics；它不引用 canonical body 或 control。Provider 只看到 output presentation，不读取内部结构化 body。Attachment 通过 typed `AttachmentOutput` 表达，不从任意 metadata 反推。
 
 
 在 runtime event 流中，工具相关的稳定执行边界当前至少包括：
@@ -208,7 +182,7 @@ read-tier 筛选，但每次 argv 调用仍是 `execute`，在 effective read-on
 
 此表不覆盖更高优先级的 agent/tool allowlist、plan/read-only ceiling、
 外部目录规则或显式 permission rules。`allow/deny/ask` 是单次 decision，
-不是 approval-mode 词表；拒绝以 `ToolResult(status="error")` 与
+不是 approval-mode 词表；拒绝以 `ToolFailure(status="error")` 与
 `permission_denied` 诊断返回给模型。详见 [审批契约](approval-flow.md)。
 
 ### Approval request shape
@@ -301,31 +275,27 @@ describes a non-essential tool; it is not an authorization decision.
 
 `path` 为必填；`offset` 与 `limit` 可省略，默认分别为 1 和 2000。其他路径字段名无效。
 
-- 成功返回：
+- canonical successful file `ReportedCall.result.body`:
 
 ```json
 {
-  "content": "Read 10 line(s) from relative/path.txt.",
-  "data": {
-    "path": "relative/path.txt",
-    "type": "file",
-    "line_count": 10,
-    "offset": 1,
-    "limit": 2000,
-    "next_offset": null,
-    "truncated": false,
-    "partial": false,
-    "byte_count": 123,
-    "content_hash": "sha256 hex digest",
-    "lines": [{"line": 1, "text": "first line"}],
-    "raw_content": "first line\n..."
-  }
+  "type": "file",
+  "line_count": 10,
+  "offset": 1,
+  "limit": 2000,
+  "next_offset": null,
+  "truncated": false,
+  "partial": false,
+  "byte_count": 123,
+  "content_hash": "sha256 hex digest",
+  "lines": [{"line": 1, "text": "first line", "truncated": false}],
+  "raw_content": "first line\n..."
 }
 ```
 
-`content` 是人类可读摘要（"Read N line(s) from ..."），行内容通过 `data.lines` / `data.raw_content` 获取；超出 `limit` 或字节上限时 `truncated` / `partial` 为 `true`，`next_offset` 给出续读位置。`content_hash` 是文件内容 sha256。
+`ReadResultBody` 是内部 frozen file-page DTO；它不保存路径。Canonical path 位于 `ReportedCall.authorized_arguments["path"]`，read tracking 与规则发现只能使用这份最终已授权身份。`ReadLine.truncated` 是 producer 记录的真实裁剪事实，不能从后缀或文本长度推导。Provider-facing `TextOutput` 提供有界正文、SHA-256 与适用的 `Next offset`，`OutputBounds` 保留实际 clipped/partial/reference 信息。
 
-图片或 PDF 会把 `data.type` 设为 `attachment`，并通过 `data.attachment` 返回 base64 data URI。目录路径会失败；目录探索应使用 `glob`。
+图片或 PDF 使用 typed `AttachmentOutput` 返回 MIME 与 data URI；目录、archive、Rule、Artifact、Transcript 与 tool-document bodies 保持各自 scoped DTO/Opaque contracts，不折叠为 file body。目录探索应使用 `glob`。
 
 - 选择原则：已知文件路径且需要完整内容时使用；不要用它做目录发现或全仓搜索。
 
@@ -852,7 +822,7 @@ runtime 在成功的 mutation 后更新 session metadata 中的 runtime todo sta
 }
 ```
 
-图片响应可能以 `data.attachment` 形式返回 base64 data URI。
+图片响应使用 typed `AttachmentOutput` 携带 MIME 与 data URI。
 
 - 选择原则：有具体 URL 且需要正文时使用；不要用它探测 localhost 或内部网络。
 
@@ -872,8 +842,8 @@ provider-visible `ToolDefinition` 中，provider 会收到这份 canonical schem
 与短 description；如果它是 discoverable，则先通过
 `read(path="voidcode://tool/mcp/<server>/<tool>")` 读取当前 schema 和完整
 guidance，再用 `invoke_tool` 调用。不要把 MCP 动态事实写死在 provider
-prompt 或 sidecar 文档中；server 返回的事实以 `ToolResult.data` 与 runtime
-metadata/events 为准。
+prompt 或 sidecar 文档中；server 返回的事实属于 canonical `ReportedCall.result.body` 与 runtime
+metadata/events，不能作为授权依据。
 ```json
 {
   "tool_name": "mcp/github/search_issues",
@@ -921,7 +891,7 @@ metadata/events 为准。
 3. **预期 approval pause。** 按实际 operation class、模式与规则决定审批，不从目录中的派生 `read_only` 推断执行许可。
 4. **把外部资料与本地事实分开。** `web_search` / `web_fetch` 给的是外部证据；本仓库状态仍以 workspace 工具和 runtime events 为准。
 5. **不要绕过 runtime。** UI、agent preset、core turn engine 都不应直接执行工具或自行处理审批。
-6. **读取 `ToolResult.data`，不要只读 `content`。** `content` 用于人类/agent 摘要，`data` 才是稳定结构化 metadata。
+6. **Provider 只读取 `ToolResultView.output`。** 可信 host consumer 按需读取 `ReportedCall.result.body`；body 不是 provider authority，也不改变 runtime policy。
 7. **错误是可恢复信号。** 参数错误、路径越界、approval denial、tool error 都应让 agent 收缩下一步，而不是重复同一调用。
 
 ## 最小示例：读取文件后小范围编辑

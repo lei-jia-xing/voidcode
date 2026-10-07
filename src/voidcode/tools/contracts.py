@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
 
+from ..security.json_values import json_wire_object, own_json_object, own_json_value
 from ..security.redaction import (
     DIAGNOSTIC_DEPTH as _MAX_DIAGNOSTIC_DEPTH,
 )
@@ -23,10 +24,12 @@ from ..security.redaction import (
 )
 
 if TYPE_CHECKING:
+    from ..core.questions import PendingQuestionPrompt, QuestionResponse
     from ..core.tool_context import ToolContext
 
-type ToolResultStatus = Literal["ok", "error"]
-type ToolDiagnosticsDetails = dict[str, object]
+
+type SideEffectState = Literal["settled", "unknown"]
+type ToolDiagnosticsDetails = Mapping[str, object]
 type ToolReplayPolicy = Literal["safe", "never"]
 
 
@@ -84,7 +87,7 @@ def _sanitize_diagnostic_value(value: object, *, depth: int = 0, key: str | None
         if not math.isfinite(value):
             raise ValueError("diagnostics details must contain finite JSON numbers")
         return value
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         if len(value) > _MAX_DIAGNOSTIC_ITEMS:
             raise ValueError("diagnostics details contain too many entries")
         return {
@@ -113,10 +116,10 @@ class ToolDiagnostics:
                 raise ValueError(f"diagnostics {name} must be a string or null")
             if isinstance(value, str):
                 object.__setattr__(self, name, _redact_diagnostic_text(value))
-        if not isinstance(self.details, dict):
+        if not isinstance(self.details, Mapping):
             raise ValueError("diagnostics details must be an object")
         sanitized = _sanitize_diagnostic_value(self.details)
-        object.__setattr__(self, "details", sanitized)
+        object.__setattr__(self, "details", own_json_value(sanitized))
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {}
@@ -125,7 +128,7 @@ class ToolDiagnostics:
         if self.summary is not None:
             payload["summary"] = self.summary
         if self.details:
-            payload["details"] = dict(self.details)
+            payload["details"] = json_wire_object(self.details)
         if self.guidance is not None:
             payload["guidance"] = self.guidance
         return payload
@@ -197,12 +200,15 @@ class RuntimeToolTimeoutError(TimeoutError):
 class ToolDefinition:
     name: str
     description: str
-    input_schema: dict[str, object] = field(default_factory=dict)
+    input_schema: Mapping[str, object] = field(default_factory=dict)
     effects: frozenset[ToolEffect] = frozenset({ToolEffect.READ})
     path_argument_keys: tuple[str, ...] = ()
     # Safe read/query tools may be replayed after a process crash. Mutating
     # tools default to never replay unless they explicitly opt in.
     replay_policy: ToolReplayPolicy | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "input_schema", own_json_object(self.input_schema))
 
     def effective_replay_policy_for(self, arguments: Mapping[str, object] | None = None) -> ToolReplayPolicy:
         if self.name == "ast_grep" and arguments is not None and arguments.get("mode") in {"search", "preview"}:
@@ -217,8 +223,14 @@ class ToolDefinition:
 @dataclass(frozen=True, slots=True)
 class ToolCall:
     tool_name: str
-    arguments: dict[str, object] = field(default_factory=dict)
+    arguments: Mapping[str, object] = field(default_factory=dict)
     tool_call_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "arguments", own_json_object(self.arguments))
+
+    def __deepcopy__(self, memo: dict[int, object]) -> ToolCall:
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,41 +252,157 @@ class ToolInvocation:
 
 
 @dataclass(frozen=True, slots=True)
-class ToolResult:
-    tool_name: str
-    status: ToolResultStatus
-    content: str | None = None
-    data: dict[str, object] = field(default_factory=dict)
-    error: str | None = None
-    diagnostics: ToolDiagnostics | None = None
-    truncated: bool = False
-    partial: bool = False
-    timeout_seconds: int | None = None
-    source: str | None = None
-    fallback_reason: str | None = None
-    reference: str | None = None
+class OutputReference:
+    uri: str
+    artifact: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
-        if not self.tool_name:
-            raise ValueError("tool results must include a tool name")
-        if not isinstance(self.data, dict):
-            raise ValueError("tool result data must be an object")
-        if self.status == "error" and not isinstance(self.error, str):
-            raise ValueError("error results must include an error message")
-        if self.status == "ok" and self.error is not None:
-            raise ValueError("successful results cannot include an error message")
-        if self.status == "ok" and self.diagnostics is not None:
-            raise ValueError("successful results cannot include diagnostics")
-        if isinstance(self.diagnostics, dict):
-            object.__setattr__(self, "diagnostics", ToolDiagnostics.from_payload(self.diagnostics))
-        if self.diagnostics is not None and not isinstance(self.diagnostics, ToolDiagnostics):
-            raise ValueError("tool result diagnostics must be ToolDiagnostics or null")
-        if not isinstance(self.truncated, bool) or not isinstance(self.partial, bool):
-            raise ValueError("tool result truncated and partial must be booleans")
-        if self.timeout_seconds is not None and (
-            not isinstance(self.timeout_seconds, int) or isinstance(self.timeout_seconds, bool) or self.timeout_seconds < 0
-        ):
-            raise ValueError("tool result timeout_seconds must be a non-negative integer or null")
+        if self.artifact is not None:
+            object.__setattr__(self, "artifact", own_json_object(self.artifact))
+
+
+@dataclass(frozen=True, slots=True)
+class OutputBounds:
+    truncated: bool = False
+    partial: bool = False
+    reference: OutputReference | None = None
+    source: str | None = None
+    fallback_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TextOutput:
+    text: str
+    presentation: str | None = None
+    bounds: OutputBounds = OutputBounds()
+
+
+@dataclass(frozen=True, slots=True)
+class EmptyOutput:
+    presentation: str | None = None
+    bounds: OutputBounds = OutputBounds()
+
+
+@dataclass(frozen=True, slots=True)
+class AttachmentOutput:
+    mime: str
+    data_uri: str
+    presentation: str | None = None
+    bounds: OutputBounds = OutputBounds()
+
+
+type ToolOutput = TextOutput | EmptyOutput | AttachmentOutput
+
+
+class ToolBody(Protocol):
+    """A tool owner's typed payload; not a source of control or call authority."""
+
+    def as_payload(self) -> dict[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class OpaqueToolBody:
+    """JSON returned by an externally shaped MCP or installed-tool endpoint."""
+
+    structured_content: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "structured_content", own_json_object(self.structured_content))
+
+    def as_payload(self) -> dict[str, object]:
+        return json_wire_object(self.structured_content)
+
+    def __deepcopy__(self, memo: dict[int, object]) -> OpaqueToolBody:
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionPrepared:
+    prompts: tuple[PendingQuestionPrompt, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionAnswered:
+    responses: tuple[QuestionResponse, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressYield:
+    types: tuple[str, ...]
+    result: str | None
+    data: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "data", own_json_object(self.data))
+
+    def as_payload(self) -> dict[str, object]:
+        return {"type": list(self.types), "result": self.result, "data": json_wire_object(self.data)}
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalYield:
+    summary: str
+    data: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "data", own_json_object(self.data))
+
+    def as_payload(self) -> dict[str, object]:
+        return {"summary": self.summary, "data": json_wire_object(self.data)}
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalYieldFailure:
+    data: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "data", own_json_object(self.data))
+
+
+type SuccessControl = QuestionPrepared | QuestionAnswered | ProgressYield | TerminalYield
+type ToolControl = SuccessControl | TerminalYieldFailure
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmedStop:
+    cancellation_signalled: bool
+    side_effect_state: ClassVar[Literal["settled"]] = "settled"
+    execution_stopped: ClassVar[Literal[True]] = True
+
+
+@dataclass(frozen=True, slots=True)
+class UnconfirmedStop:
+    cancellation_signalled: bool
+    side_effect_state: ClassVar[Literal["unknown"]] = "unknown"
+    execution_stopped: ClassVar[Literal[False]] = False
+
+
+type ExecutionObservation = ConfirmedStop | UnconfirmedStop
+
+
+@dataclass(frozen=True, slots=True)
+class ToolSuccess[Body: ToolBody]:
+    tool_name: str
+    output: ToolOutput = EmptyOutput()
+    body: Body | None = None
+    control: SuccessControl | None = None
+    status: ClassVar[Literal["ok"]] = "ok"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolFailure[Body: ToolBody]:
+    tool_name: str
+    error: str
+    output: ToolOutput = EmptyOutput()
+    body: Body | None = None
+    control: TerminalYieldFailure | None = None
+    diagnostics: ToolDiagnostics | None = None
+    execution: ExecutionObservation | None = None
+    timeout_seconds: int | None = None
+    status: ClassVar[Literal["error"]] = "error"
+
+
+type ToolResult = ToolSuccess[Any] | ToolFailure[Any]
 
 
 @runtime_checkable

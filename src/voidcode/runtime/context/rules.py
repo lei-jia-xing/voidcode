@@ -5,10 +5,19 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal
 from urllib.parse import unquote
 
-from ...core.tool_context import RULE_URI_PREFIX
+from ...core.tool_context import RULE_URI_PREFIX, NextPage, PageEnd, RulePage
+from ...core.transcript import ToolResultView
+from ...core.turns import ReportedCall
+from ...tools.apply_patch import ApplyPatchResultBody
+from ...tools.apply_workspace_edit import ApplyWorkspaceEditResultBody
+from ...tools.edit import EditResultBody
+from ...tools.glob import GlobResultBody
+from ...tools.grep import GrepResultBody
+from ...tools.multi_edit import MultiEditResultBody
+from ...tools.write import WriteResultBody
 
 RULE_FILE_NAME = "AGENTS.md"
 MAX_RULE_FILES = 8
@@ -29,9 +38,7 @@ RuleApplication = Literal["always_apply", "discoverable"]
 RuleScope = Literal["workspace", "repo"]
 
 
-class _ToolResultLike(Protocol):
-    @property
-    def data(self) -> dict[str, object]: ...
+_ToolResultLike = ReportedCall | ToolResultView
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,27 +104,28 @@ def _touched_paths_from_tool_results(tool_results: tuple[_ToolResultLike, ...]) 
                 paths.add(stripped)
 
     for result in tool_results:
-        add(result.data.get("path"))
-        add(result.data.get("output_path"))
-        raw_arguments = result.data.get("arguments")
-        if isinstance(raw_arguments, dict):
-            arguments = raw_arguments
-            add(arguments.get("path"))
-        raw_matches = result.data.get("matches")
-        if isinstance(raw_matches, list | tuple):
-            for raw_match in raw_matches:
-                if not isinstance(raw_match, dict):
-                    continue
-                match = raw_match
-                add(match.get("file"))
-                add(match.get("path"))
-        raw_changes = result.data.get("changes")
-        if isinstance(raw_changes, list | tuple):
-            for raw_change in raw_changes:
-                if not isinstance(raw_change, dict):
-                    continue
-                change = raw_change
-                add(change.get("path"))
+        if isinstance(result, ToolResultView):
+            add(result.arguments.get("path"))
+            continue
+        if result.final_tool_name == "read":
+            add(result.authorized_arguments.get("path"))
+            continue
+        body = result.result.body
+        if isinstance(body, (WriteResultBody, EditResultBody, MultiEditResultBody)):
+            add(body.path)
+        elif isinstance(body, ApplyPatchResultBody):
+            for change in body.changes:
+                add(change.path)
+                add(change.old_path)
+        elif isinstance(body, ApplyWorkspaceEditResultBody):
+            paths.update(body.paths)
+        elif isinstance(body, GlobResultBody):
+            add(body.path)
+            paths.update(body.matches)
+        elif isinstance(body, GrepResultBody):
+            add(body.path)
+            for match in body.matches:
+                add(match.file)
     return tuple(sorted(paths))
 
 
@@ -437,7 +445,7 @@ def rule_uri_name(path: str) -> str:
     return decoded
 
 
-def read_rule_uri(path: str, *, workspace: Path, offset: int = 1, limit: int = MAX_RULE_URI_LINES) -> dict[str, object]:
+def read_rule_uri(path: str, *, workspace: Path, offset: int = 1, limit: int = MAX_RULE_URI_LINES) -> RulePage:
     name = rule_uri_name(path)
     if offset < 1 or limit < 1:
         raise ValueError("rule URI offset and limit must be positive")
@@ -451,21 +459,20 @@ def read_rule_uri(path: str, *, workspace: Path, offset: int = 1, limit: int = M
     if truncated_bytes:
         raw_content = encoded[:MAX_RULE_URI_BYTES].decode("utf-8", errors="ignore")
     next_offset = offset + len(selected) if offset - 1 + len(selected) < len(lines) else None
-    return {
-        "path": path,
-        "type": "rule",
-        "rule": name,
-        "scope": entry.metadata.scope,
-        "precedence": entry.metadata.precedence,
-        "application": entry.metadata.application,
-        "content_hash": entry.metadata.content_hash,
-        "offset": offset,
-        "limit": bounded_limit,
-        "next_offset": next_offset,
-        "truncated": next_offset is not None or truncated_bytes,
-        "partial": next_offset is not None or truncated_bytes,
-        "raw_content": raw_content,
-    }
+    page = PageEnd() if truncated_bytes or next_offset is None else NextPage(next_offset)
+    return RulePage(
+        rule=name,
+        path=path,
+        scope=entry.metadata.scope,
+        precedence=entry.metadata.precedence,
+        application=entry.metadata.application,
+        content_hash=entry.metadata.content_hash,
+        text=raw_content,
+        offset=offset,
+        limit=bounded_limit,
+        page=page,
+        byte_truncated=truncated_bytes,
+    )
 
 
 __all__ = [

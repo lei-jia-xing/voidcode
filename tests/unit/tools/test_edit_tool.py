@@ -8,8 +8,8 @@ import pytest
 
 from voidcode.core.tool_context import ToolContext
 from voidcode.tools._repair import ToolDiagnosticError
-from voidcode.tools.contracts import ToolCall
-from voidcode.tools.edit import EditTool
+from voidcode.tools.contracts import TextOutput, ToolCall
+from voidcode.tools.edit import EditResultBody, EditTool
 
 
 def _content_hash(path: Path) -> str:
@@ -37,10 +37,12 @@ def test_edit_tool_replaces_exact_text(tmp_path: Path) -> None:
 
     assert result.tool_name == "edit"
     assert result.status == "ok"
-    assert result.content == "Edit applied successfully."
+    assert isinstance(result.output, TextOutput)
+    assert result.output.text == "Edit applied successfully."
+    assert isinstance(result.body, EditResultBody)
     assert file_path.read_text(encoding="utf-8") == "hello voidcode"
-    assert result.data["additions"] == 1
-    assert result.data["deletions"] == 1
+    assert result.body.additions == 1
+    assert result.body.deletions == 1
 
 
 def test_edit_tool_replaces_all_occurrences(tmp_path: Path) -> None:
@@ -64,8 +66,8 @@ def test_edit_tool_replaces_all_occurrences(tmp_path: Path) -> None:
     )
 
     assert file_path.read_text(encoding="utf-8") == "qux bar qux baz qux"
-    assert result.content is not None
-    assert "3 occurrences replaced" in result.content
+    assert isinstance(result.output, TextOutput)
+    assert "3 occurrences replaced" in result.output.text
 
 
 def test_edit_tool_rejects_multiple_exact_matches_without_replace_all(tmp_path: Path) -> None:
@@ -136,11 +138,13 @@ def test_edit_tool_rejects_when_old_string_not_found(tmp_path: Path) -> None:
 
 def _read_lines_context(path: Path, lines: set[int], *, workspace: Path) -> ToolContext:
     resolved = path.resolve().as_posix()
+    content_hash = _content_hash(path)
     return ToolContext(
         workspace=workspace,
         session_id="test",
         read_paths=frozenset({resolved}),
-        read_lines={resolved: frozenset(lines)},
+        read_lines={(resolved, content_hash): frozenset(lines)},
+        read_hash=content_hash,
     )
 
 

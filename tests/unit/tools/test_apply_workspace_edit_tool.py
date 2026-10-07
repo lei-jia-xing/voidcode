@@ -85,7 +85,6 @@ def test_rejects_stale_edit_without_writing_any_file(tmp_path: Path) -> None:
     assert diagnostic.error_details["path"] == "second.txt"
     assert diagnostic.error_details["expected_hash"] == "stale"
     assert diagnostic.error_details["actual_hash"] == hashlib.sha256(b"second").hexdigest()
-    assert "data.content_hash" in (diagnostic.retry_guidance or "")
     assert first.read_text(encoding="utf-8") == "first"
     assert second.read_text(encoding="utf-8") == "second"
 
@@ -136,11 +135,13 @@ def test_rejects_edit_on_line_outside_read_window(tmp_path: Path) -> None:
         "expectedHash": _content_hash(path),
     }
 
+    read_hash = _content_hash(path)
     context = ToolContext(
         workspace=tmp_path,
         session_id="test",
         read_paths=frozenset({resolved}),
-        read_lines={resolved: frozenset({1})},
+        read_lines={(resolved, read_hash): frozenset({1})},
+        read_hash=read_hash,
     )
     with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
         ApplyWorkspaceEditTool().invoke(_call([edit]), context=context)

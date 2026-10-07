@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.runtime_composition import save_checkpoint
+from tests.runtime_composition import save_run as save_composition_run
 from voidcode.runtime.contracts import (
     RuntimeSessionForkBoundaryError,
     SessionLineageCycleError,
@@ -37,8 +39,9 @@ def _seed_session(
     prompt: str,
     events: tuple[tuple[str, str, dict[str, object], None], ...],
 ) -> None:
-    """Write a session row plus its events the way the run loop would."""
-    store.save_interrupted_checkpoint(
+    """Persist a canonical checkpoint and append the event prefix under test."""
+    save_checkpoint(
+        store,
         workspace=workspace,
         session_id=session_id,
         prompt=prompt,
@@ -51,11 +54,6 @@ def _seed_session(
         workspace=workspace,
         session_id=session_id,
         events=events,
-    )
-    store.save_run(
-        workspace=workspace,
-        request=_request(session_id=session_id, prompt=prompt),
-        response=_response(session_id=session_id, events=events),
     )
 
 
@@ -217,7 +215,8 @@ def test_fork_provenance_survives_a_later_run_seal(tmp_path: Path) -> None:
     _seed_session(store, workspace=tmp_path, session_id="source-run", prompt="hi", events=events)
     forked = store.fork_session(workspace=tmp_path, session_id="source-run", at_sequence=1)
 
-    store.save_run(
+    save_composition_run(
+        store,
         workspace=tmp_path,
         request=_request(session_id=forked.session.id, prompt="continued"),
         response=_response(session_id=forked.session.id, events=events),
@@ -242,7 +241,8 @@ def test_session_forest_keeps_the_parent_above_a_continued_fork(tmp_path: Path) 
     first_fork = store.fork_session(workspace=tmp_path, session_id="root")
     second_fork = store.fork_session(workspace=tmp_path, session_id="root")
     # Continue the original parent so its row is now the most recently updated.
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id="root",
         prompt="root continued",
@@ -319,7 +319,8 @@ def test_session_forest_excludes_delegated_children(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
     _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id="delegated-child",
         prompt="child work",
@@ -348,7 +349,8 @@ def test_session_forest_keeps_a_fork_of_a_delegated_child_as_a_root(tmp_path: Pa
     store = SqliteSessionStore()
     events = _event_tuple(("graph.response_ready", "graph", {"summary": "root"}))
     _seed_session(store, workspace=tmp_path, session_id="root", prompt="root", events=events)
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id="delegated-child",
         prompt="child work",
@@ -410,7 +412,8 @@ def test_session_forest_orders_roots_by_recency_but_children_by_provenance(tmp_p
     second_fork = store.fork_session(workspace=tmp_path, session_id="second")
     # Continue both forks, the second one last, so it is the newest row overall.
     for session_id in (first_fork.session.id, second_fork.session.id):
-        store.save_interrupted_checkpoint(
+        save_checkpoint(
+            store,
             workspace=tmp_path,
             session_id=session_id,
             prompt="continued",
@@ -444,7 +447,8 @@ def test_session_forest_keeps_a_grandchild_under_a_continued_fork(tmp_path: Path
     fork = store.fork_session(workspace=tmp_path, session_id="root", at_sequence=1)
     grandchild = store.fork_session(workspace=tmp_path, session_id=fork.session.id, at_sequence=1)
     # Continue the middle fork after forking it: it is now newer than its child.
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=tmp_path,
         session_id=fork.session.id,
         prompt="fork continued",

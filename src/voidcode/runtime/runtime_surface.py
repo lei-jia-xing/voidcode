@@ -17,10 +17,11 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from ..core.transcript import ContextSegment, ToolResultView
-from ..core.turns import TurnProducer, TurnRequest
+from ..core.turns import ReportedCall, TurnProducer, TurnRequest
+from ..mcp import McpToolDescriptor
 from ..provider.protocol import ProviderAbortSignal
 from ..skills.registry import SkillRegistry
-from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
+from ..tools.contracts import Tool, ToolCall, ToolDefinition
 from .config import RuntimeAgentConfig
 from .config_materializer import EffectiveRuntimeConfig
 from .context.window import (
@@ -107,7 +108,7 @@ class RuntimeSurface(Protocol):
         self,
         *,
         prompt: str,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall | ToolResultView, ...],
         session_metadata: dict[str, object],
         policy: ContextWindowPolicy | None = None,
         abort_signal: ProviderAbortSignal | None = None,
@@ -118,7 +119,7 @@ class RuntimeSurface(Protocol):
         self,
         *,
         prompt: str,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall | ToolResultView, ...],
         session_metadata: dict[str, object],
         skill_prompt_context: str = "",
         replayed_conversation_segments: tuple[ContextSegment, ...] = (),
@@ -135,14 +136,14 @@ class RuntimeSurface(Protocol):
     def summarize_continuity(
         self,
         *,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall | ToolResultView, ...],
         session_metadata: dict[str, object],
     ) -> str | None: ...
     def reassemble_provider_context_for_overflow(
         self,
         *,
         prompt: str,
-        tool_results: tuple[ToolResult | ToolResultView, ...],
+        tool_results: tuple[ReportedCall | ToolResultView, ...],
         session_metadata: dict[str, object],
         replayed_conversation_segments: tuple[ContextSegment, ...],
     ) -> RuntimeAssembledContext: ...
@@ -214,13 +215,14 @@ class RuntimeSurface(Protocol):
         request_metadata: Mapping[str, object],
         effective_config: EffectiveRuntimeConfig,
         failure_kind: str,
-    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None]: ...
+    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None, tuple[McpToolDescriptor, ...]]: ...
 
     def tool_registry_for_run(
         self,
         *,
         session: SessionState,
         effective_config: EffectiveRuntimeConfig,
+        mcp_descriptors: tuple[McpToolDescriptor, ...],
     ) -> ToolRegistry: ...
 
     def refresh_mcp_tools_for_session(
@@ -229,9 +231,7 @@ class RuntimeSurface(Protocol):
         session: SessionState,
         sequence: int,
         failure_kind: str,
-    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None]: ...
-
-    def reset_tool_registry_to_base(self) -> None: ...
+    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int, RuntimeStreamChunk | None, tuple[McpToolDescriptor, ...]]: ...
 
     # --- run entry / persistence (supervisor-oriented) ---
     def run_with_persistence(

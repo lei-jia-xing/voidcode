@@ -9,17 +9,39 @@ import mimetypes
 import tarfile
 import time
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, final
 
 from pydantic import BaseModel, field_validator
 
-from ..core.tool_context import RULE_URI_PREFIX, ToolContext
+from ..core.tool_context import (
+    RULE_URI_PREFIX,
+    ArtifactInvalid,
+    ArtifactMissing,
+    ArtifactPage,
+    ArtifactUnavailable,
+    NextPage,
+    ToolContext,
+    TranscriptInaccessible,
+    TranscriptPage,
+)
+from ..security.json_values import json_wire_object
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._pydantic_args import parse_tool_args, validate_non_empty
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult, is_read_tier
+from .contracts import (
+    AttachmentOutput,
+    OpaqueToolBody,
+    OutputBounds,
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolEffect,
+    ToolResult,
+    ToolSuccess,
+    is_read_tier,
+)
 from .guidance import guidance_for_tool
 from .output import _ARTIFACT_ID_PATTERN
 
@@ -73,7 +95,8 @@ def _render_tool_documentation(path: str, *, context: ToolContext) -> _ReadOutco
         sections.append("")
         sections.append("JSON input schema (input_schema):")
         sections.append("")
-    schema_text = json.dumps(definition.input_schema, indent=2)
+    schema = json_wire_object(definition.input_schema)
+    schema_text = json.dumps(schema, indent=2)
     sections.append(schema_text)
     sections.append("")
     effects = sorted(effect.value for effect in definition.effects)
@@ -82,17 +105,19 @@ def _render_tool_documentation(path: str, *, context: ToolContext) -> _ReadOutco
     sections.append(f"read_only: {str(read_only).lower()}")
     content = "\n".join(sections).strip()
     return _ReadOutcome(
-        content=f"Read documentation for tool {tool_name}.",
-        data={
-            "path": path,
-            "type": "tool_documentation",
-            "tool_name": definition.name,
-            "effects": effects,
-            "read_only": read_only,
-            "guidance": guidance,
-            "input_schema": definition.input_schema,
-            "raw_content": content,
-        },
+        output=_text_output(f"Read documentation for tool {tool_name}.", raw_content=content),
+        body=OpaqueToolBody(
+            {
+                "path": path,
+                "type": "tool_documentation",
+                "tool_name": definition.name,
+                "effects": effects,
+                "read_only": read_only,
+                "guidance": guidance,
+                "input_schema": schema,
+                "raw_content": content,
+            }
+        ),
     )
 
 
@@ -120,39 +145,40 @@ def _render_artifact(path: str, *, context: ToolContext, offset: int, limit: int
         offset=max(0, offset - 1),
         limit=limit,
     )
-    if result is None:
+    if isinstance(result, ArtifactMissing):
         raise ValueError(f"artifact not found in current session: {artifact_id}")
-    status = result.get("status")
-    if status == "missing":
-        raise ValueError(f"artifact is missing from storage: {artifact_id}")
-    if status != "available":
-        raise ValueError(f"artifact read failed with status {status}: {artifact_id}")
-    content = result.get("content")
-    if not isinstance(content, str):
+    if isinstance(result, ArtifactInvalid):
+        raise ValueError(f"artifact read failed: {result.reason}")
+    if isinstance(result, ArtifactUnavailable):
+        raise ValueError(f"artifact read failed: {result.reason}")
+    if not isinstance(result, ArtifactPage):
         raise ValueError(f"artifact read returned no content: {artifact_id}")
-    line_count = result.get("line_count")
-    next_offset = result.get("next_offset")
+    content = result.text
+    next_offset = result.page.offset if isinstance(result.page, NextPage) else None
     truncated = next_offset is not None
     rendered_lines = content.splitlines()
-    return _ReadOutcome(
-        content=(
-            f"Read {len(rendered_lines)} line(s) from {path}"
-            + ("; output is truncated; continue reading with the returned next_offset." if truncated else ".")
-        ),
-        data={
+    body = result.as_payload()
+    body.update(
+        {
             "path": path,
             "type": "artifact",
-            "artifact_id": artifact_id,
-            "status": status,
-            "line_count": line_count,
             "offset": offset,
-            "limit": limit,
-            "next_offset": next_offset,
             "truncated": truncated,
             "partial": truncated,
             "byte_count": len(content.encode("utf-8")),
             "raw_content": content,
-        },
+        }
+    )
+    return _ReadOutcome(
+        output=_text_output(
+            f"Read {len(rendered_lines)} line(s) from {path}"
+            + ("; output is truncated; continue reading with the returned next_offset." if truncated else "."),
+            raw_content=content,
+            next_offset=next_offset,
+            truncated=truncated,
+            partial=truncated,
+        ),
+        body=OpaqueToolBody(body),
     )
 
 
@@ -176,29 +202,21 @@ def _render_transcript(path: str, *, context: ToolContext, limit: int) -> _ReadO
     if facade is None:
         raise ValueError("read cannot resolve voidcode://transcript URLs without a runtime transcript reader")
     result = facade.read_transcript(caller_session_id=caller_session_id, session_id=session_id, limit=limit)
-    if result is None:
+    if isinstance(result, TranscriptInaccessible):
         raise ValueError(f"transcript not accessible for session: {session_id}")
-    transcript = result.get("transcript")
-    if not isinstance(transcript, list):
+    if not isinstance(result, TranscriptPage):
         raise ValueError(f"transcript read returned no events for session: {session_id}")
-    truncated = result.get("transcript_truncated") is True
+    truncated = result.truncated
+    body = result.as_payload()
+    body.update({"path": path, "type": "transcript"})
     return _ReadOutcome(
-        content=(
-            f"Read {len(transcript)} transcript event(s) from {path}"
-            + ("; transcript is truncated; raise the limit to see more." if truncated else ".")
+        output=_text_output(
+            f"Read {len(result.entries)} transcript event(s) from {path}"
+            + ("; transcript is truncated; raise the limit to see more." if truncated else "."),
+            truncated=truncated,
+            partial=truncated,
         ),
-        data={
-            "path": path,
-            "type": "transcript",
-            "session_id": session_id,
-            "status": result.get("status"),
-            "summary": result.get("summary"),
-            "last_event_sequence": result.get("last_event_sequence"),
-            "message_limit": result.get("message_limit"),
-            "transcript_count": result.get("transcript_count"),
-            "transcript_truncated": truncated,
-            "transcript": transcript,
-        },
+        body=OpaqueToolBody(body),
     )
 
 
@@ -234,18 +252,157 @@ MAX_LINE_LENGTH = 2000
 MAX_BYTES = 50 * 1024
 MAX_ATTACHMENT_BYTES = 50 * 1024
 BINARY_SNIFF_BYTES = 4096
+_LINE_TRUNCATION_SUFFIX = f"... (line truncated to {MAX_LINE_LENGTH} chars)"
+
+
+@dataclass(frozen=True, slots=True)
+class ReadLine:
+    line: int
+    text: str
+    truncated: bool
+
+    def as_payload(self) -> dict[str, object]:
+        return {"line": self.line, "text": self.text, "truncated": self.truncated}
+
+
+@dataclass(frozen=True, slots=True)
+class ReadResultBody:
+    """Typed observation of one rendered workspace-file page."""
+
+    line_count: int
+    offset: int
+    limit: int
+    next_offset: int | None
+    truncated: bool
+    partial: bool
+    byte_count: int
+    content_hash: str
+    lines: tuple[ReadLine, ...]
+    raw_content: str
+
+    @property
+    def whole_file(self) -> bool:
+        return (
+            self.offset == 1
+            and self.next_offset is None
+            and self.line_count == len(self.lines)
+            and not self.truncated
+            and all(not line.truncated for line in self.lines)
+        )
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "type": "file",
+            "line_count": self.line_count,
+            "offset": self.offset,
+            "limit": self.limit,
+            "next_offset": self.next_offset,
+            "truncated": self.truncated,
+            "partial": self.partial,
+            "byte_count": self.byte_count,
+            "content_hash": self.content_hash,
+            "lines": [line.as_payload() for line in self.lines],
+            "raw_content": self.raw_content,
+        }
+
+    @classmethod
+    def from_payload(cls, value: Mapping[str, object]) -> ReadResultBody:
+        fields = {
+            "type",
+            "line_count",
+            "offset",
+            "limit",
+            "next_offset",
+            "truncated",
+            "partial",
+            "byte_count",
+            "content_hash",
+            "lines",
+            "raw_content",
+        }
+        if set(value) != fields or value.get("type") != "file":
+            raise ValueError("persisted read body has an unsupported file shape")
+
+        def integer(key: str, *, minimum: int) -> int:
+            item = value[key]
+            if not isinstance(item, int) or isinstance(item, bool) or item < minimum:
+                raise ValueError(f"persisted read body {key} must be an integer >= {minimum}")
+            return item
+
+        content_hash = value["content_hash"]
+        raw_content = value["raw_content"]
+        raw_lines = value["lines"]
+        truncated = value["truncated"]
+        partial = value["partial"]
+        next_offset = value["next_offset"]
+        if not isinstance(content_hash, str) or len(content_hash) != 64 or any(char not in "0123456789abcdef" for char in content_hash):
+            raise ValueError("persisted read body content hash must be lowercase SHA-256")
+        if not isinstance(raw_content, str) or not isinstance(raw_lines, list):
+            raise ValueError("persisted read body content and lines have invalid types")
+        if not isinstance(truncated, bool) or not isinstance(partial, bool):
+            raise ValueError("persisted read body bounds flags must be booleans")
+        if next_offset is not None and (not isinstance(next_offset, int) or isinstance(next_offset, bool) or next_offset < 1):
+            raise ValueError("persisted read body next offset must be a positive integer or null")
+
+        line_count = integer("line_count", minimum=0)
+        offset = integer("offset", minimum=1)
+        limit = integer("limit", minimum=1)
+        byte_count = integer("byte_count", minimum=0)
+        lines: list[ReadLine] = []
+        for index, raw_line in enumerate(raw_lines):
+            if not isinstance(raw_line, Mapping) or set(raw_line) != {"line", "text", "truncated"}:
+                raise ValueError("persisted read body line has an invalid shape")
+            line, text = raw_line["line"], raw_line["text"]
+            if not isinstance(line, int) or isinstance(line, bool) or line != offset + index or not isinstance(text, str):
+                raise ValueError("persisted read body lines must be contiguous numbered text")
+            line_truncated = raw_line["truncated"]
+            if not isinstance(line_truncated, bool):
+                raise ValueError("persisted read body line truncation must be a boolean")
+            lines.append(ReadLine(line, text, line_truncated))
+        if offset > max(1, line_count):
+            raise ValueError("persisted read body offset is outside the file")
+        if partial != truncated:
+            raise ValueError("persisted read body partial flag disagrees with truncation")
+        if len(lines) > limit or offset + len(lines) - 1 > line_count:
+            raise ValueError("persisted read body lines exceed the declared file page")
+        if next_offset is not None and next_offset != offset + len(lines):
+            raise ValueError("persisted read body next offset does not follow its lines")
+        if raw_content != "\n".join(line.text for line in lines):
+            raise ValueError("persisted read body raw content disagrees with its lines")
+        if byte_count != len(raw_content.encode("utf-8")):
+            raise ValueError("persisted read body byte count disagrees with its content")
+        return cls(line_count, offset, limit, next_offset, truncated, partial, byte_count, content_hash, tuple(lines), raw_content)
 
 
 @dataclass(frozen=True, slots=True)
 class _ReadOutcome:
-    content: str
-    data: dict[str, object]
+    output: TextOutput | AttachmentOutput
+    body: ReadResultBody | OpaqueToolBody
+
+
+def _text_output(
+    content: str,
+    *,
+    raw_content: str | None = None,
+    content_hash: str | None = None,
+    next_offset: int | None = None,
+    truncated: bool = False,
+    partial: bool = False,
+) -> TextOutput:
+    text = content
+    if content_hash is not None:
+        text = f"{text}\nSHA-256 content hash: {content_hash}"
+    if next_offset is not None:
+        text = f"{text}\nNext offset: {next_offset}"
+    if raw_content:
+        text = f"{text}\n\n{raw_content}"
+    return TextOutput(text, bounds=OutputBounds(truncated=truncated, partial=partial))
 
 
 def _truncate_line(line: str) -> tuple[str, bool]:
     if len(line) <= MAX_LINE_LENGTH:
         return line, False
-    return f"{line[:MAX_LINE_LENGTH]}... (line truncated to {MAX_LINE_LENGTH} chars)", True
+    return f"{line[:MAX_LINE_LENGTH]}{_LINE_TRUNCATION_SUFFIX}", True
 
 
 def _is_binary_file(path: Path) -> bool:
@@ -311,17 +468,19 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
         label = "Image" if mime.startswith("image/") else "PDF"
         message = f"{label} read successfully"
         return _ReadOutcome(
-            content=message,
-            data={
-                "path": relative_path,
-                "type": "attachment",
-                "content_type": mime,
-                "byte_count": len(raw),
-                "content_hash": hashlib.sha256(raw).hexdigest(),
-                "attachment": {"mime": mime, "data_uri": data_uri},
-                "truncated": False,
-                "partial": False,
-            },
+            output=AttachmentOutput(mime, data_uri, presentation=message),
+            body=OpaqueToolBody(
+                {
+                    "path": relative_path,
+                    "type": "attachment",
+                    "content_type": mime,
+                    "byte_count": len(raw),
+                    "content_hash": hashlib.sha256(raw).hexdigest(),
+                    "attachment": {"mime": mime, "data_uri": data_uri},
+                    "truncated": False,
+                    "partial": False,
+                }
+            ),
         )
 
     if _is_binary_file(candidate):
@@ -334,7 +493,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
     content_hash = digest.hexdigest()
 
     limit = min(limit, DEFAULT_READ_LIMIT)
-    rendered_lines: list[str] = []
+    rendered_lines: list[ReadLine] = []
     total_lines = 0
     bytes_used = 0
     content_truncated = False
@@ -346,7 +505,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
                 total_lines = line_number
                 if line_number < offset:
                     continue
-                if len(rendered_lines) >= limit:
+                if has_more or len(rendered_lines) >= limit:
                     has_more = True
                     continue
 
@@ -356,9 +515,9 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
                 if bytes_used + encoded_size > MAX_BYTES:
                     content_truncated = True
                     has_more = True
-                    break
+                    continue
 
-                rendered_lines.append(line_text)
+                rendered_lines.append(ReadLine(line_number, line_text, line_truncated))
                 bytes_used += encoded_size
                 content_truncated = content_truncated or line_truncated
     except UnicodeDecodeError as exc:
@@ -370,22 +529,29 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
     next_offset = offset + len(rendered_lines)
     content_truncated = content_truncated or has_more
 
+    raw_content = "\n".join(line.text for line in rendered_lines)
+    body = ReadResultBody(
+        line_count=total_lines,
+        offset=offset,
+        limit=limit,
+        next_offset=next_offset if has_more else None,
+        truncated=content_truncated,
+        partial=content_truncated,
+        byte_count=bytes_used,
+        content_hash=content_hash,
+        lines=tuple(rendered_lines),
+        raw_content=raw_content,
+    )
     return _ReadOutcome(
-        content=(f"Read {len(rendered_lines)} line(s) from {relative_path}" + ("; output is truncated." if content_truncated else ".")),
-        data={
-            "path": relative_path,
-            "type": "file",
-            "line_count": total_lines,
-            "offset": offset,
-            "limit": limit,
-            "next_offset": next_offset if has_more else None,
-            "truncated": content_truncated,
-            "partial": content_truncated,
-            "byte_count": bytes_used,
-            "content_hash": content_hash,
-            "lines": [{"line": offset + index, "text": line} for index, line in enumerate(rendered_lines)],
-            "raw_content": "\n".join(rendered_lines),
-        },
+        output=_text_output(
+            f"Read {len(rendered_lines)} line(s) from {relative_path}" + ("; output is truncated." if content_truncated else "."),
+            raw_content=body.raw_content,
+            content_hash=body.content_hash,
+            next_offset=body.next_offset,
+            truncated=body.truncated,
+            partial=body.partial,
+        ),
+        body=body,
     )
 
 
@@ -554,15 +720,17 @@ def _render_directory(root: Path, *, label: str) -> _ReadOutcome:
     content = f"Listed {entry_count} entr{'y' if entry_count == 1 else 'ies'} in {label}"
     content += "; listing is truncated." if truncated else "."
     return _ReadOutcome(
-        content=content,
-        data={
-            "path": label,
-            "type": "directory",
-            "entry_count": entry_count,
-            "truncated": truncated,
-            "partial": truncated,
-            "raw_content": rendered,
-        },
+        output=_text_output(content, raw_content=rendered, truncated=truncated, partial=truncated),
+        body=OpaqueToolBody(
+            {
+                "path": label,
+                "type": "directory",
+                "entry_count": entry_count,
+                "truncated": truncated,
+                "partial": truncated,
+                "raw_content": rendered,
+            }
+        ),
     )
 
 
@@ -673,21 +841,30 @@ def _render_archive_lines(text: str, *, label: str, offset: int, limit: int) -> 
         content_truncated = content_truncated or line_truncated
     next_offset = offset + len(rendered_lines)
     content_truncated = content_truncated or has_more
+    raw_content = "\n".join(rendered_lines)
     return _ReadOutcome(
-        content=f"Read {len(rendered_lines)} line(s) from {label}" + ("; output is truncated." if content_truncated else "."),
-        data={
-            "path": label,
-            "type": "archive",
-            "line_count": total_lines,
-            "offset": offset,
-            "limit": limit,
-            "next_offset": next_offset if has_more else None,
-            "truncated": content_truncated,
-            "partial": content_truncated,
-            "byte_count": bytes_used,
-            "lines": [{"line": offset + index, "text": line} for index, line in enumerate(rendered_lines)],
-            "raw_content": "\n".join(rendered_lines),
-        },
+        output=_text_output(
+            f"Read {len(rendered_lines)} line(s) from {label}" + ("; output is truncated." if content_truncated else "."),
+            raw_content=raw_content,
+            next_offset=next_offset if has_more else None,
+            truncated=content_truncated,
+            partial=content_truncated,
+        ),
+        body=OpaqueToolBody(
+            {
+                "path": label,
+                "type": "archive",
+                "line_count": total_lines,
+                "offset": offset,
+                "limit": limit,
+                "next_offset": next_offset if has_more else None,
+                "truncated": content_truncated,
+                "partial": content_truncated,
+                "byte_count": bytes_used,
+                "lines": [{"line": offset + index, "text": line} for index, line in enumerate(rendered_lines)],
+                "raw_content": raw_content,
+            }
+        ),
     )
 
 
@@ -748,15 +925,22 @@ def _render_archive_members(
         entry_count = len(shown)
         rendered = "\n".join(lines)
         return _ReadOutcome(
-            content=f"Listed {entry_count} entr{'y' if entry_count == 1 else 'ies'} in {label}" + ("; listing is truncated." if truncated else "."),
-            data={
-                "path": label,
-                "type": "archive_listing",
-                "entry_count": entry_count,
-                "truncated": truncated,
-                "partial": truncated,
-                "raw_content": rendered,
-            },
+            output=_text_output(
+                f"Listed {entry_count} entr{'y' if entry_count == 1 else 'ies'} in {label}" + ("; listing is truncated." if truncated else "."),
+                raw_content=rendered,
+                truncated=truncated,
+                partial=truncated,
+            ),
+            body=OpaqueToolBody(
+                {
+                    "path": label,
+                    "type": "archive_listing",
+                    "entry_count": entry_count,
+                    "truncated": truncated,
+                    "partial": truncated,
+                    "raw_content": rendered,
+                }
+            ),
         )
 
     if normalized_inner not in names:
@@ -766,16 +950,22 @@ def _render_archive_members(
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         return _ReadOutcome(
-            content=f"{label} is not UTF-8 text ({len(raw)} bytes); binary archive members are not decoded.",
-            data={
-                "path": label,
-                "type": "archive_binary",
-                "byte_count": len(raw),
-                "truncated": False,
-                "partial": False,
-            },
+            output=TextOutput(f"{label} is not UTF-8 text ({len(raw)} bytes); binary archive members are not decoded."),
+            body=OpaqueToolBody(
+                {
+                    "path": label,
+                    "type": "archive_binary",
+                    "byte_count": len(raw),
+                    "truncated": False,
+                    "partial": False,
+                }
+            ),
         )
     return _render_archive_lines(text, label=label, offset=offset, limit=limit)
+
+
+def _read_success(outcome: _ReadOutcome) -> ToolSuccess[ReadResultBody | OpaqueToolBody]:
+    return ToolSuccess("read", output=outcome.output, body=outcome.body)
 
 
 @final
@@ -805,7 +995,7 @@ class ReadTool:
                 "type": "integer",
                 "minimum": 1,
                 "maximum": DEFAULT_READ_LIMIT,
-                "description": "Maximum lines to return; use data.next_offset to continue when truncated.",
+                "description": "Maximum lines to return; when truncated, continue with the next offset shown in the read output.",
             },
             "required": ["path"],
         },
@@ -828,61 +1018,56 @@ class ReadTool:
             reader = context.read_rule
             if reader is None:
                 raise RuntimeError("read requires an explicit rule reader for voidcode://rule URLs")
-            data = reader(
+            page = reader(
                 args.path,
                 workspace=context.require_workspace(),
                 offset=args.offset or 1,
                 limit=args.limit or DEFAULT_READ_LIMIT,
             )
-            truncated = bool(data["truncated"])
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="ok",
-                content=(f"Read rule {data['rule']} from {args.path}" + ("; output is truncated; continue with next_offset." if truncated else ".")),
-                data=data,
-                truncated=truncated,
-                partial=bool(data["partial"]),
+            next_offset = page.page.offset if isinstance(page.page, NextPage) else None
+            truncated = page.byte_truncated or next_offset is not None
+            body = page.as_payload()
+            body.update(
+                {
+                    "type": "rule",
+                    "truncated": truncated,
+                    "partial": truncated,
+                    "byte_count": len(page.text.encode("utf-8")),
+                    "raw_content": page.text,
+                }
             )
+            return _read_success(
+                _ReadOutcome(
+                    output=_text_output(
+                        f"Read rule {page.rule} from {args.path}" + ("; output is truncated; continue with next_offset." if truncated else "."),
+                        raw_content=page.text,
+                        content_hash=page.content_hash,
+                        next_offset=next_offset,
+                        truncated=truncated,
+                        partial=truncated,
+                    ),
+                    body=OpaqueToolBody(body),
+                )
+            )
+
         if args.path.startswith(VOIDCODE_TOOL_DOC_PREFIX):
-            outcome = _render_tool_documentation(args.path, context=context)
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="ok",
-                content=outcome.content,
-                data=outcome.data,
-                truncated=bool(outcome.data.get("truncated", False)),
-                partial=bool(outcome.data.get("partial", False)),
-            )
-
+            return _read_success(_render_tool_documentation(args.path, context=context))
         if args.path.startswith(VOIDCODE_ARTIFACT_PREFIX):
-            outcome = _render_artifact(
-                args.path,
-                context=context,
-                offset=args.offset or 1,
-                limit=args.limit or DEFAULT_READ_LIMIT,
+            return _read_success(
+                _render_artifact(
+                    args.path,
+                    context=context,
+                    offset=args.offset or 1,
+                    limit=args.limit or DEFAULT_READ_LIMIT,
+                )
             )
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="ok",
-                content=outcome.content,
-                data=outcome.data,
-                truncated=bool(outcome.data["truncated"]),
-                partial=bool(outcome.data["partial"]),
-            )
-
         if args.path.startswith(VOIDCODE_TRANSCRIPT_PREFIX):
-            outcome = _render_transcript(
-                args.path,
-                context=context,
-                limit=args.limit or DEFAULT_TRANSCRIPT_LIMIT,
-            )
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="ok",
-                content=outcome.content,
-                data=outcome.data,
-                truncated=bool(outcome.data["transcript_truncated"]),
-                partial=bool(outcome.data["transcript_truncated"]),
+            return _read_success(
+                _render_transcript(
+                    args.path,
+                    context=context,
+                    limit=args.limit or DEFAULT_TRANSCRIPT_LIMIT,
+                )
             )
 
         workspace = context.require_workspace()
@@ -893,7 +1078,6 @@ class ReadTool:
         )
         candidate = resolution.candidate
         relative_path = str(candidate.resolve()) if resolution.is_external else resolution.relative_path
-
         offset = args.offset or 1
         limit = args.limit or DEFAULT_READ_LIMIT
 
@@ -907,14 +1091,15 @@ class ReadTool:
             )
             if not resolved_archive.candidate.is_file():
                 raise ValueError(f"read target does not exist: {archive_path}")
-            outcome = _render_archive(resolved_archive.candidate, inner, family=family, label=args.path, offset=offset, limit=limit)
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="ok",
-                content=outcome.content,
-                data=outcome.data,
-                truncated=bool(outcome.data["truncated"]),
-                partial=bool(outcome.data["partial"]),
+            return _read_success(
+                _render_archive(
+                    resolved_archive.candidate,
+                    inner,
+                    family=family,
+                    label=args.path,
+                    offset=offset,
+                    limit=limit,
+                )
             )
 
         if args.path.lower().endswith(UNSUPPORTED_ARCHIVE_SUFFIXES):
@@ -923,31 +1108,10 @@ class ReadTool:
                 f"read does not support {suffix} archives (third-party codec required); "
                 f"supported archive families are zip ({', '.join(_ZIP_SUFFIXES)}) and tar ({', '.join(_TAR_SUFFIXES)})."
             )
-
         if not candidate.exists():
             raise ValueError(f"read target does not exist: {args.path}")
-
         if candidate.is_dir():
-            outcome = _render_directory(candidate, label=relative_path)
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="ok",
-                content=outcome.content,
-                data=outcome.data,
-                truncated=bool(outcome.data["truncated"]),
-                partial=bool(outcome.data["partial"]),
-            )
-
+            return _read_success(_render_directory(candidate, label=relative_path))
         if not candidate.is_file():
             raise ValueError(f"read only supports regular files: {args.path}")
-
-        outcome = _render_file(candidate, relative_path=relative_path, offset=offset, limit=limit)
-
-        return ToolResult(
-            tool_name=self.definition.name,
-            status="ok",
-            content=outcome.content,
-            data=outcome.data,
-            truncated=bool(outcome.data["truncated"]),
-            partial=bool(outcome.data["partial"]),
-        )
+        return _read_success(_render_file(candidate, relative_path=relative_path, offset=offset, limit=limit))

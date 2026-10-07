@@ -8,19 +8,25 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 
-from ...core.transcript import ToolResultView
+from ...core.transcript import output_text
+from ...core.turns import ReportedCall
+from ...security.json_values import json_wire_object
 from ...tools.contracts import (
-    ToolCall,
+    ProgressYield,
+    QuestionAnswered,
+    QuestionPrepared,
+    TerminalYield,
+    TerminalYieldFailure,
     ToolDiagnostics,
     ToolDiagnosticsDetails,
-    ToolResult,
+    ToolFailure,
 )
-from ...tools.output import cap_tool_result_output, sanitize_tool_result_data
+from ...tools.output import sanitize_tool_arguments
 from ..session import SessionState
 from ..session_metadata_helpers import session_model_identity
 from ..tool_display import build_tool_display, build_tool_status
+from .report_codec import report_payload
 
 
 def _tool_completed_identity_payload(session: SessionState | None) -> dict[str, str]:
@@ -41,104 +47,100 @@ def _tool_completed_identity_payload(session: SessionState | None) -> dict[str, 
     return identity
 
 
-def _normalized_tool_result(
-    *,
-    tool_result: ToolResult,
-    session: SessionState,
-    plan_tool_call: ToolCall,
-    sequence: int,
-    tool_call_id: str,
-) -> tuple[ToolResult, dict[str, object]]:
-    """Cap and sanitize a tool result before delivery."""
-    _ = plan_tool_call, sequence
-    runtime_tool_result_data = dict(tool_result.data)
-    tool_result = cap_tool_result_output(
-        tool_result,
-        session_id=session.session.id,
-        tool_call_id=tool_call_id,
-    )
-    tool_result = replace(
-        tool_result,
-        data=sanitize_tool_result_data(tool_result.data),
-    )
-    return tool_result, runtime_tool_result_data
-
-
 def _tool_completed_payload(
     *,
     session: SessionState | None,
-    tool_result: ToolResult,
-    tool_call_id: str,
-    sanitized_arguments: dict[str, object],
+    report: ReportedCall,
     display_tool_name: str | None = None,
 ) -> dict[str, object]:
-    """Assemble the ``runtime.tool_completed`` payload for a delivered result.
-
-    ``display_tool_name`` preserves the native-call path's historical display
-    selection when a tool returns a result under a different name; the
-    invoke-tool path keeps the result name as its default.
-    """
-    completed_payload: dict[str, object] = {
+    """Assemble the stable event projection from the authoritative report."""
+    tool_result = report.result
+    tool_call_id = report.tool_call_id
+    sanitized_arguments = sanitize_tool_arguments(report.authorized_arguments)
+    data = dict(tool_result.body.as_payload()) if tool_result.body is not None else {}
+    bounds = tool_result.output.bounds
+    if bounds.truncated:
+        data["truncated"] = True
+    if bounds.partial:
+        data["partial"] = True
+    if bounds.reference is not None:
+        data["reference"] = bounds.reference.uri
+        if bounds.reference.artifact is not None:
+            data.update(json_wire_object(bounds.reference.artifact))
+    if bounds.source is not None:
+        data["source"] = bounds.source
+    if bounds.fallback_reason is not None:
+        data["fallback_reason"] = bounds.fallback_reason
+    data.update({"tool_call_id": tool_call_id, "arguments": sanitized_arguments})
+    payload: dict[str, object] = {
         **_tool_completed_identity_payload(session),
-        **tool_result.data,
-        "tool_call_id": tool_call_id,
+        **data,
+        "tool_call_id": report.tool_call_id,
         "arguments": sanitized_arguments,
         "status": tool_result.status,
-        "content": tool_result.content,
-        "error": tool_result.error,
+        "content": output_text(tool_result.output),
+        "error": tool_result.error if isinstance(tool_result, ToolFailure) else None,
+        "tool": report.final_tool_name,
     }
-    if tool_result.diagnostics is not None:
-        completed_payload["diagnostics"] = tool_result.diagnostics.as_payload()
-    completed_payload["tool"] = tool_result.tool_name
-
+    payload["reported_call"] = report_payload(report)
+    if isinstance(tool_result, ToolFailure) and tool_result.diagnostics is not None:
+        payload["diagnostics"] = tool_result.diagnostics.as_payload()
+    if isinstance(tool_result, ToolFailure) and tool_result.execution is not None:
+        payload.update(
+            cancellation_signalled=tool_result.execution.cancellation_signalled,
+            execution_stopped=tool_result.execution.execution_stopped,
+            side_effect_state=tool_result.execution.side_effect_state,
+        )
+    control = tool_result.control
+    if isinstance(control, ProgressYield):
+        progress = control.as_payload()
+        payload.update(yield_kind="progress", type=progress["type"], result=progress["result"], progress=progress)
+    elif isinstance(control, TerminalYield):
+        payload.update(yield_kind="terminal", result=control.summary, handoff=control.as_payload())
+    elif isinstance(control, TerminalYieldFailure):
+        payload["handoff"] = json_wire_object(control.data)
+    elif isinstance(control, QuestionPrepared):
+        payload["questions"] = [
+            {
+                "question": prompt.question,
+                "header": prompt.header,
+                "options": [{"label": option.label, "description": option.description} for option in prompt.options],
+                "multiple": prompt.multiple,
+            }
+            for prompt in control.prompts
+        ]
+    elif isinstance(control, QuestionAnswered):
+        payload["responses"] = [{"header": response.header, "answers": list(response.answers)} for response in control.responses]
     completed_display = build_tool_display(
         tool_result.tool_name if display_tool_name is None else display_tool_name,
         sanitized_arguments,
-        result_data=tool_result.data,
+        result_data=data,
     )
-    completed_status = build_tool_status(
+    payload["display"] = completed_display
+    payload["tool_status"] = build_tool_status(
         tool_result.tool_name,
         tool_call_id,
         phase="completed" if tool_result.status == "ok" else "failed",
         status="completed" if tool_result.status == "ok" else "failed",
         display=completed_display,
     )
-    completed_payload["display"] = completed_display
-    completed_payload["tool_status"] = completed_status
-    return completed_payload
+    return payload
 
 
-def _serialized_tool_results(tool_results: Sequence[ToolResult | ToolResultView]) -> tuple[dict[str, object], ...]:
-    """Serialize authoritative tool results into the strict checkpoint shape."""
-    serialized: list[dict[str, object]] = []
-    for result in tool_results:
-        source_result = result.result if isinstance(result, ToolResultView) else result
-        is_err = source_result.status == "error"
-        entry: dict[str, object] = {
-            "tool_name": source_result.tool_name,
-            "content": source_result.content if source_result.content is not None and not is_err else None,
-            "status": "error" if is_err else "ok",
-            "data": dict(source_result.data),
-            "error": source_result.error if source_result.error is not None and is_err else None,
+def _serialized_tool_results(tool_results: Sequence[ReportedCall]) -> tuple[dict[str, object], ...]:
+    """Checkpoint authority is the canonical report, not a second client projection."""
+    return tuple(
+        {
+            "tool_name": report.final_tool_name,
+            "status": report.result.status,
+            "reported_call": report_payload(report),
         }
-        if is_err:
-            if source_result.diagnostics is not None:
-                entry["diagnostics"] = source_result.diagnostics.as_payload()
-        serialized.append(entry)
-    return tuple(serialized)
+        for report in tool_results
+    )
 
 
-def _tool_result_call_id(result: ToolResult) -> str | None:
-    value = result.data.get("tool_call_id")
-    return value if isinstance(value, str) and value else None
-
-
-def _is_terminal_yield_result(result: ToolResult) -> bool:
-    if result.tool_name != "yield":
-        return False
-    if result.data.get("yield_kind") == "progress":
-        return False
-    return result.status in ("ok", "error") and isinstance(result.data.get("handoff"), Mapping)
+def _is_terminal_yield_result(report: ReportedCall) -> bool:
+    return report.final_tool_name == "yield" and isinstance(report.result.control, (TerminalYield, TerminalYieldFailure))
 
 
 def _progress_payload_size(payload: Mapping[str, object]) -> int:
@@ -166,9 +168,10 @@ def _fit_numbered_progress_payload(
             if _progress_payload_size(candidate) <= max_chars:
                 return candidate
     data = payload.get("data")
-    if data is not None:
+    if isinstance(data, dict):
+        metadata = {key: data[key] for key in ("ordinal", "retained_chars") if key in data}
         candidate = dict(payload)
-        candidate["data"] = {"truncated": True}
+        candidate["data"] = {"truncated": True, **metadata}
         if _progress_payload_size(candidate) <= max_chars:
             return candidate
     types = payload.get("type")
@@ -201,7 +204,7 @@ def _tool_error_details(
     tool_name: str,
     extra: dict[str, object] | None = None,
 ) -> ToolDiagnosticsDetails:
-    details: ToolDiagnosticsDetails = {"tool_name": tool_name}
+    details: dict[str, object] = {"tool_name": tool_name}
     if extra:
         details.update(extra)
     return details
@@ -243,8 +246,6 @@ def _tool_error_payload(
 __all__ = [
     "_fit_numbered_progress_payload",
     "_is_terminal_yield_result",
-    "_normalized_tool_result",
-    "_progress_payload_size",
     "_serialized_tool_results",
     "_tool_completed_identity_payload",
     "_tool_completed_payload",
@@ -253,5 +254,4 @@ __all__ = [
     "_tool_error_payload",
     "_tool_error_retry_guidance",
     "_tool_error_summary",
-    "_tool_result_call_id",
 ]

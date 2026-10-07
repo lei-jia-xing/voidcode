@@ -6,10 +6,12 @@ from pydantic import BaseModel
 
 from ....core.tool_context import ToolContext
 from ....tools._pydantic_args import NonEmptyProcessId, parse_tool_args
-from ....tools.contracts import ToolCall, ToolResult
+from ....tools.contracts import TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess
 
 if TYPE_CHECKING:
     from .background_process import BackgroundProcessRuntime
+
+from .background_process_results import BackgroundProcessStaleBody, BackgroundProcessStopBody
 
 
 class _BackgroundProcessStopArgs(BaseModel):
@@ -38,21 +40,21 @@ class BackgroundProcessStopTool:
             raise ValueError(f"unknown background process: {args.process_id}")
         if state.prior_runtime:
             message = state.reconciliation_reason or ("Prior-runtime process is externally managed/unavailable to this runtime")
-            return ToolResult(
+            return ToolFailure(
                 tool_name=self.name,
-                status="error",
-                content=message,
                 error=message,
-                data={
-                    "process_id": state.process_id,
-                    "pid": state.process.pid,
-                    "status": "stale",
-                    "prior_runtime": True,
-                    "running": None,
-                    "observed_running": state.observed_running,
-                    "identity_match": state.identity_match,
-                    "controllable": False,
-                },
+                output=TextOutput(message),
+                body=BackgroundProcessStaleBody(
+                    process_id=state.process_id,
+                    pid=state.process.pid,
+                    status="stale",
+                    prior_runtime=True,
+                    reconciliation_reason=None,
+                    running=None,
+                    observed_running=state.observed_running,
+                    identity_match=state.identity_match,
+                    controllable=False,
+                ),
             )
         state = manager.stop(
             args.process_id,
@@ -60,9 +62,13 @@ class BackgroundProcessStopTool:
             owner_session_id=caller_session_id,
             enforce_owner=True,
         )
-        return ToolResult(
+        exit_code = state.process.poll()
+        return ToolSuccess(
             tool_name=self.name,
-            status="ok",
-            content=f"Stopped background process {state.process_id}.",
-            data={"process_id": state.process_id, "exit_code": state.process.poll(), "running": state.process.poll() is None},
+            output=TextOutput(f"Stopped background process {state.process_id}."),
+            body=BackgroundProcessStopBody(
+                process_id=state.process_id,
+                exit_code=exit_code,
+                running=exit_code is None,
+            ),
         )

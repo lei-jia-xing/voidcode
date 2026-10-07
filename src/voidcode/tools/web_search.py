@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from typing import ClassVar
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -11,7 +12,7 @@ from pydantic import BaseModel, field_validator
 
 from ..core.tool_context import ToolContext
 from ._pydantic_args import parse_tool_args, validate_non_empty
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 
 
 class WebSearchArgs(BaseModel):
@@ -31,6 +32,20 @@ class WebSearchArgs(BaseModel):
 DEFAULT_NUM_RESULTS = 8
 DEFAULT_TIMEOUT = 30
 DUCKDUCKGO_EMPTY_MESSAGE = "No search results found. Please try a different query."
+
+
+@dataclass(frozen=True, slots=True)
+class WebSearchResultBody:
+    query: str
+    num_results: int
+    timeout_seconds: int
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "query": self.query,
+            "num_results": self.num_results,
+            "timeout_seconds": self.timeout_seconds,
+        }
 
 
 def _search_exa(
@@ -365,19 +380,22 @@ class WebSearchTool:
             fallback_reason = exa_failure or fallback_reason
 
         failed = source == "duckduckgo-error"
-        return ToolResult(
+        bounds = OutputBounds(source=source, fallback_reason=fallback_reason)
+        body = WebSearchResultBody(args.query, num_results, timeout)
+        if failed:
+            return ToolFailure(
+                tool_name=self.definition.name,
+                error=output,
+                output=TextOutput(output, bounds=bounds),
+                body=body,
+                timeout_seconds=timeout,
+            )
+        return ToolSuccess(
             tool_name=self.definition.name,
-            status="error" if failed else "ok",
-            content=output if failed else f"Found web results for {args.query} using {source}.",
-            error=output if failed else None,
-            data={
-                "query": args.query,
-                "num_results": num_results,
-                "source": source,
-                "timeout_seconds": timeout,
-                "results": output,
-            },
-            timeout_seconds=timeout,
-            source=source,
-            fallback_reason=fallback_reason,
+            output=TextOutput(
+                output,
+                presentation=f"Found web results for {args.query} using {source}.",
+                bounds=bounds,
+            ),
+            body=body,
         )

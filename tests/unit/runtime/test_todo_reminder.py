@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from tests.runtime_storage import repositories_for_test_store
-from voidcode.core.turns import TurnPlan
+from voidcode.core.turns import FinalTurn, ToolTurn
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig
 from voidcode.runtime.background.models import BackgroundTaskRef, StoredBackgroundTaskSummary
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig, RuntimeRemindersConfig
@@ -55,17 +55,25 @@ _TODO_INIT_CALL = ToolCall(
     tool_name="todo",
     arguments={"op": "init", "list": [{"phase": "Phase 1", "items": ["write the reminder", "prove it"]}]},
 )
+
+
+class _FinalGraph:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> FinalTurn:
+        _ = request, tool_results, session
+        return FinalTurn(output="done")
+
+
 _TODO_DONE_CALL = ToolCall(tool_name="todo", arguments={"op": "done"})
 
 
 class _ScriptedGraph:
     """Hands out scripted steps in order and records every assembled context."""
 
-    def __init__(self, script: list[TurnPlan]) -> None:
+    def __init__(self, script: list[ToolTurn | FinalTurn]) -> None:
         self._script = list(script)
         self.seen_segments: list[tuple[Any, ...]] = []
 
-    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> TurnPlan:
+    def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> ToolTurn | FinalTurn:
         _ = tool_results, session
         self.seen_segments.append(tuple(request.assembled_context.segments))
         if not self._script:
@@ -171,9 +179,7 @@ def _stored_session(tmp_path: Path) -> Any:
 
 
 def test_terminal_turn_with_unfinished_todos_injects_one_per_call_reminder(tmp_path: Path) -> None:
-    graph = _ScriptedGraph(
-        [TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="done for now", is_finished=True), TurnPlan(output="finished", is_finished=True)]
-    )
+    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="done for now"), FinalTurn(output="finished")])
 
     chunks = _run(tmp_path, graph)
 
@@ -214,11 +220,11 @@ def test_terminal_turn_with_unfinished_todos_injects_one_per_call_reminder(tmp_p
 
 
 def test_reminder_budget_stops_after_max_per_cycle_attempts(tmp_path: Path) -> None:
-    script: list[TurnPlan] = [TurnPlan(tool_calls=(_TODO_INIT_CALL,))]
+    script: list[ToolTurn | FinalTurn] = [ToolTurn(calls=(_TODO_INIT_CALL,))]
     for _attempt in range(3):
-        script.append(TurnPlan(output="stopping", is_finished=True))
-        script.append(TurnPlan(tool_calls=(_PROGRESS_CALL,)))
-    script.append(TurnPlan(output="stopping", is_finished=True))
+        script.append(FinalTurn(output="stopping"))
+        script.append(ToolTurn(calls=(_PROGRESS_CALL,)))
+    script.append(FinalTurn(output="stopping"))
     graph = _ScriptedGraph(script)
 
     chunks = _run(tmp_path, graph)
@@ -232,9 +238,7 @@ def test_reminder_budget_stops_after_max_per_cycle_attempts(tmp_path: Path) -> N
 def test_repeated_stop_without_progress_does_not_repeat_the_reminder(tmp_path: Path) -> None:
     """A reminder still awaiting agent action suppresses the next one."""
 
-    graph = _ScriptedGraph(
-        [TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="stopping", is_finished=True), TurnPlan(output="stopping again", is_finished=True)]
-    )
+    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping"), FinalTurn(output="stopping again")])
 
     chunks = _run(tmp_path, graph)
 
@@ -263,9 +267,9 @@ def test_counters_from_a_previous_cycle_are_ignored() -> None:
 def test_completed_todos_never_earn_a_reminder(tmp_path: Path) -> None:
     graph = _ScriptedGraph(
         [
-            TurnPlan(tool_calls=(_TODO_INIT_CALL,)),
-            TurnPlan(tool_calls=(_TODO_DONE_CALL,)),
-            TurnPlan(output="all done", is_finished=True),
+            ToolTurn(calls=(_TODO_INIT_CALL,)),
+            ToolTurn(calls=(_TODO_DONE_CALL,)),
+            FinalTurn(output="all done"),
         ]
     )
 
@@ -278,7 +282,7 @@ def test_completed_todos_never_earn_a_reminder(tmp_path: Path) -> None:
 
 
 def test_disabled_reminders_never_inject(tmp_path: Path) -> None:
-    graph = _ScriptedGraph([TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="stopping", is_finished=True)])
+    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping")])
 
     chunks = _run(tmp_path, graph, reminders=RuntimeRemindersConfig(enabled=False))
 
@@ -289,7 +293,7 @@ def test_disabled_reminders_never_inject(tmp_path: Path) -> None:
 def test_non_provider_engine_never_injects(tmp_path: Path) -> None:
     """The channel nudges a model call; a non-provider graph has none."""
 
-    graph = _ScriptedGraph([TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="stopping", is_finished=True)])
+    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping")])
 
     chunks = _run(tmp_path, graph, execution_engine="deterministic")
 
@@ -301,9 +305,7 @@ def test_non_provider_engine_never_injects(tmp_path: Path) -> None:
 
 
 def test_reminder_text_stays_out_of_the_persisted_transcript(tmp_path: Path) -> None:
-    graph = _ScriptedGraph(
-        [TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="stopping", is_finished=True), TurnPlan(output="finished", is_finished=True)]
-    )
+    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping"), FinalTurn(output="finished")])
 
     _run(tmp_path, graph)
 
@@ -318,18 +320,32 @@ def test_reminder_text_stays_out_of_the_persisted_transcript(tmp_path: Path) -> 
 def test_reminder_counters_survive_checkpoint_verification(tmp_path: Path) -> None:
     """A counter advanced after the checkpoint was captured must not block resume."""
 
-    todos = todo_state_payload(({"name": "Phase 1", "tasks": [{"content": "work", "status": "pending"}]},), revision=1)
-    checkpoint_metadata: dict[str, object] = {"runtime_state": {"run_id": "run-1", "todos": todos}}
-    stored_metadata: dict[str, object] = {
-        "runtime_state": {
-            "run_id": "run-1",
-            "todos": todos,
-            "reminders": {"todo": TodoReminderState(attempts=1, awaiting_progress=True, progress_watermark=2, cycle_run_id="run-1").payload()},
-        }
-    }
-
+    store = SqliteSessionStore(database_path=tmp_path / "todo-continuity.sqlite3")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        repositories=repositories_for_test_store(store),
+        turn_producer=_FinalGraph(),
+        config=RuntimeConfig(execution_engine="deterministic", mcp=RuntimeMcpConfig(enabled=False)),
+        permission_policy=PermissionPolicy(mode="yolo"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="done", session_id="todo-owner"))
+    stored = store.load_session(workspace=tmp_path, session_id="todo-owner").session
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="todo-owner")
+    assert checkpoint is not None
+    checkpoint_metadata = dict(cast(dict[str, object], checkpoint["session_metadata"]))
+    stored_metadata = dict(stored.metadata)
+    todos = todo_state_payload(
+        runtime_todo_phases_from_payload([{"name": "Phase 1", "tasks": [{"content": "work", "status": "pending"}]}]),
+        revision=1,
+    )
+    checkpoint_state = dict(cast(dict[str, object], checkpoint_metadata["runtime_state"]))
+    stored_state = dict(cast(dict[str, object], stored_metadata["runtime_state"]))
+    checkpoint_state["todos"] = todos
+    stored_state["todos"] = todos
+    stored_state["reminders"] = {"todo": TodoReminderState(attempts=1, awaiting_progress=True, progress_watermark=2, cycle_run_id="run-1").payload()}
+    checkpoint_metadata["runtime_state"] = checkpoint_state
+    stored_metadata["runtime_state"] = stored_state
     verified = verified_checkpoint_session_metadata(checkpoint_metadata=checkpoint_metadata, stored_metadata=stored_metadata)
-
     assert verified == checkpoint_metadata
 
 
@@ -380,9 +396,7 @@ def test_runtime_waits_for_user_reads_the_parked_plan_state() -> None:
 
 
 def test_reminder_segment_is_never_replayed_history(tmp_path: Path) -> None:
-    graph = _ScriptedGraph(
-        [TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="stopping", is_finished=True), TurnPlan(output="finished", is_finished=True)]
-    )
+    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping"), FinalTurn(output="finished")])
 
     _run(tmp_path, graph)
 
@@ -394,7 +408,7 @@ def test_reminder_segment_is_never_replayed_history(tmp_path: Path) -> None:
 
 
 def test_pending_background_task_suppresses_the_reminder_end_to_end(tmp_path: Path) -> None:
-    graph = _ScriptedGraph([TurnPlan(tool_calls=(_TODO_INIT_CALL,)), TurnPlan(output="stopping", is_finished=True)])
+    graph = _ScriptedGraph([ToolTurn(calls=(_TODO_INIT_CALL,)), FinalTurn(output="stopping")])
 
     chunks = _run(tmp_path, graph, store=_PendingBackgroundTaskStore())
 

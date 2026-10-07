@@ -1,29 +1,27 @@
 from __future__ import annotations
 
 from ..core.tool_context import ToolContext
-from ..mcp import McpToolSafety
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from ..mcp import McpToolDescriptor
+from ..security.json_values import json_wire_object
+from .contracts import EmptyOutput, OpaqueToolBody, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
+
+
+def mcp_tool_definition(descriptor: McpToolDescriptor) -> ToolDefinition:
+    """Project an observed remote descriptor without constructing its adapter."""
+    return ToolDefinition(
+        name=f"mcp/{descriptor.server_name}/{descriptor.tool_name}",
+        description=descriptor.description,
+        input_schema=descriptor.input_schema,
+        effects=frozenset({ToolEffect.READ if descriptor.safety.read_only else ToolEffect.WRITE, ToolEffect.NETWORK}),
+    )
 
 
 class McpTool:
-    def __init__(
-        self,
-        *,
-        server_name: str,
-        tool_name: str,
-        description: str,
-        input_schema: dict[str, object],
-        safety: McpToolSafety | None = None,
-    ) -> None:
-        self._server_name = server_name
-        self._tool_name = tool_name
-        self._safety = safety or McpToolSafety()
-        self.definition = ToolDefinition(
-            name=f"mcp/{server_name}/{tool_name}",
-            description=description,
-            input_schema=input_schema,
-            effects=frozenset({ToolEffect.READ if self._safety.read_only else ToolEffect.WRITE, ToolEffect.NETWORK}),
-        )
+    def __init__(self, descriptor: McpToolDescriptor) -> None:
+        self._server_name = descriptor.server_name
+        self._tool_name = descriptor.tool_name
+        self._safety = descriptor.safety
+        self.definition = mcp_tool_definition(descriptor)
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         workspace = context.require_workspace()
@@ -33,7 +31,7 @@ class McpTool:
         result = requester(
             server_name=self._server_name,
             tool_name=self._tool_name,
-            arguments=call.arguments,
+            arguments=json_wire_object(call.arguments),
             workspace=workspace,
         )
         content_parts: list[str] = []
@@ -55,15 +53,14 @@ class McpTool:
             },
         }
         if result.is_error:
-            return ToolResult(
+            return ToolFailure(
                 tool_name=self.definition.name,
-                status="error",
                 error=content or f"MCP tool {self.definition.name} reported an error",
-                data=payload,
+                output=TextOutput(content) if content is not None else EmptyOutput(),
+                body=OpaqueToolBody(payload),
             )
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.definition.name,
-            status="ok",
-            content=content,
-            data=payload,
+            output=TextOutput(content) if content is not None else EmptyOutput(),
+            body=OpaqueToolBody(payload),
         )

@@ -1894,6 +1894,7 @@ class RuntimeTransportApp(FastAPI):
             "delegation": result.delegated_execution.as_payload(),
             "message": result.delegated_message.as_payload(),
             "structured_output": result.structured_output,
+            "handoff": None if result.handoff is None else result.handoff.as_payload(),
             "schema_validation": (None if result.schema_validation is None else result.schema_validation.as_payload()),
         }
 

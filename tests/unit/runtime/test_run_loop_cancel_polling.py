@@ -8,7 +8,7 @@ from voidcode.core.tool_context import ToolContext
 from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.tool_execution import RuntimeToolExecutor
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolInvocation, ToolResult
+from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolInvocation, ToolResult, ToolSuccess
 
 
 class _AbortSignal:
@@ -35,7 +35,7 @@ class _ProgressHangingTool:
         _ = call, context
         self.started = True
         time.sleep(9999)
-        return ToolResult(tool_name=self.definition.name, status="ok", content="unreachable")
+        return ToolSuccess(tool_name=self.definition.name, output=TextOutput("unreachable"))
 
 
 def test_progress_capable_running_tool_interrupts_on_abort_signal(tmp_path: Path) -> None:

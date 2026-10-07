@@ -16,6 +16,7 @@ from typing import cast
 
 import pytest
 
+from tests.runtime_composition import save_checkpoint
 from voidcode.runtime.contracts import (
     RuntimeSessionCheckoutBoundaryError,
     SessionTreePathError,
@@ -36,7 +37,8 @@ def _seed_session(
     session_id: str,
     events: tuple[tuple[str, str, dict[str, object]], ...],
 ) -> None:
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=workspace,
         session_id=session_id,
         prompt="run",
@@ -361,7 +363,8 @@ def test_session_entries_mark_abandoned_rows_and_preview_their_text(tmp_path: Pa
 
 def test_session_entries_are_empty_for_a_session_with_no_events(tmp_path: Path) -> None:
     store, workspace = _seed_store(tmp_path)
-    store.save_interrupted_checkpoint(
+    save_checkpoint(
+        store,
         workspace=workspace,
         session_id="s8",
         prompt="empty",

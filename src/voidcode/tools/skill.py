@@ -1,12 +1,37 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import ClassVar
 
 from pydantic import BaseModel, field_validator
 
 from ..core.tool_context import ToolContext
 from ._pydantic_args import parse_tool_args, validate_non_empty_stripped
-from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from .contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
+
+
+@dataclass(frozen=True, slots=True)
+class SkillResultBody:
+    name: str
+    description: str
+    source_path: str
+    directory: str
+    content: str
+    user_message: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "skill": {
+                "name": self.name,
+                "description": self.description,
+                "source_path": self.source_path,
+                "directory": self.directory,
+                "content": self.content,
+            }
+        }
+        if self.user_message is not None:
+            payload["user_message"] = self.user_message
+        return payload
 
 
 class _SkillArgs(BaseModel):
@@ -63,18 +88,15 @@ class SkillTool:
         ]
         if args.user_message:
             content_lines.extend(("", f"User message: {args.user_message}"))
-        return ToolResult(
+        return ToolSuccess(
             tool_name=self.definition.name,
-            status="ok",
-            content="\n".join(content_lines).strip(),
-            data={
-                "skill": {
-                    "name": skill.name,
-                    "description": skill.description,
-                    "source_path": str(skill.entry_path),
-                    "directory": str(skill.directory),
-                    "content": skill.content,
-                },
-                **({"user_message": args.user_message} if args.user_message is not None else {}),
-            },
+            output=TextOutput("\n".join(content_lines).strip()),
+            body=SkillResultBody(
+                name=skill.name,
+                description=skill.description,
+                source_path=str(skill.entry_path),
+                directory=str(skill.directory),
+                content=skill.content,
+                user_message=args.user_message,
+            ),
         )
