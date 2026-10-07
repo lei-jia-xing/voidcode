@@ -13,6 +13,7 @@ from ....tools._pydantic_args import NonEmptyPrompt, parse_tool_args
 from ....tools.contracts import EmptyOutput, TextOutput, ToolCall, ToolResult, ToolSuccess
 from ....tools.delegation.task import TaskTool
 from ...background.models import BackgroundTaskState
+from ...background.substrate import TaskSpec, TaskSubstrate
 from ...contracts import (
     RuntimeRequest,
     RuntimeResponse,
@@ -177,9 +178,10 @@ def _delegation_metadata(args: _TaskArgs) -> dict[str, object]:
 
 
 class TaskCommand:
-    def __init__(self, *, runtime: TaskRuntime) -> None:
+    def __init__(self, *, runtime: TaskRuntime, substrate: TaskSubstrate | None = None) -> None:
         self._runtime = runtime
-        self._control = TaskControlTool(runtime=runtime)
+        self._substrate = substrate or getattr(runtime, "task_substrate", None)
+        self._control = TaskControlTool(runtime=runtime, substrate=self._substrate)
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         if call.tool_name != TaskTool.definition.name:
@@ -212,7 +214,11 @@ class TaskCommand:
         )
 
         if args.run_in_background:
-            task = self._runtime.start_background_task(request)
+            if self._substrate is not None:
+                spec = TaskSpec.from_runtime_request(request, keep_alive=args.keep_alive)
+                task = self._substrate.start_task(spec)
+            else:
+                task = self._runtime.start_background_task(request)
             waiting_reason = task.observability.waiting_reason if task.observability is not None else None
             keep_alive_guidance = (
                 " This task is keep-alive: after each turn without a terminal yield the worker parks as idle "

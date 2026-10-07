@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from ....core.tool_context import ToolContext
 from ....tools._pydantic_args import MessageLimit, TimeoutMs, parse_tool_args
 from ....tools.contracts import ToolCall, ToolResult
+from ...background.substrate import TaskSubstrate
 from .task_cancel import TaskCancelRuntime, TaskCancelTool
 from .task_output import TaskOutputRuntime, TaskOutputTool
 from .task_ps import TaskPsRuntime, TaskPsTool
@@ -100,11 +101,13 @@ class TaskControlTool:
 
     name = "task"
 
-    def __init__(self, *, runtime: TaskControlRuntime) -> None:
-        self._output = TaskOutputTool(runtime=runtime)
-        self._cancel = TaskCancelTool(runtime=runtime)
-        self._ps = TaskPsTool(runtime=runtime)
-        self._steer = TaskSteerTool(runtime=runtime)
+    def __init__(self, *, runtime: TaskControlRuntime, substrate: TaskSubstrate | None = None) -> None:
+        self._runtime = runtime
+        self._substrate = substrate or getattr(runtime, "task_substrate", None)
+        self._output = TaskOutputTool(runtime=runtime, substrate=self._substrate)
+        self._cancel = TaskCancelTool(runtime=runtime, substrate=self._substrate)
+        self._ps = TaskPsTool(runtime=runtime, substrate=self._substrate)
+        self._steer = TaskSteerTool(runtime=runtime, substrate=self._substrate)
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         args = parse_tool_args(_TaskControlArgs, call.arguments, tool_name=self.name)

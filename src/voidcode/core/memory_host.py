@@ -51,7 +51,14 @@ class MemoryContext:
 class MemoryHost:
     """An actual transient tool/context host; it owns no runtime or durable state."""
 
-    def __init__(self, *, tools: tuple[Tool, ...], abort_signal: ProviderAbortSignal | None = None, event_store: FactStore | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        tools: tuple[Tool, ...],
+        abort_signal: ProviderAbortSignal | None = None,
+        event_store: FactStore | None = None,
+        tool_context: ToolContext | None = None,
+    ) -> None:
         self._tools = {tool.definition.name: tool for tool in tools}
         self.abort_signal = abort_signal or MemoryAbortSignal()
         self.session = TurnSessionSnapshot(f"memory-{uuid4().hex}")
@@ -61,6 +68,7 @@ class MemoryHost:
         self._followup: deque[str] = deque()
         self._current_batch: TurnBatch | None = None
         self._batch_seed: CallSeed | None = None
+        self.tool_context = tool_context
 
     def _record(self, fact: TurnFact) -> None:
         self.facts.append(fact)
@@ -134,15 +142,23 @@ class MemoryHost:
         if tool is None:
             result = ToolFailure(tool_name=call.tool_name, error=f"unknown tool: {call.tool_name}")
         else:
-            result = tool.invoke(
-                call,
-                context=ToolContext(
+            context = (
+                replace(
+                    self.tool_context,
                     session_id=self.session.session_id,
                     run_id=state.request.run_id,
                     invocation_id=call.tool_call_id,
                     abort_signal=self.abort_signal,
-                ),
+                )
+                if self.tool_context is not None
+                else ToolContext(
+                    session_id=self.session.session_id,
+                    run_id=state.request.run_id,
+                    invocation_id=call.tool_call_id,
+                    abort_signal=self.abort_signal,
+                )
             )
+            result = tool.invoke(call, context=context)
         report = report_call(
             call,
             result,
@@ -154,6 +170,7 @@ class MemoryHost:
         yield completed
         return CallReported(report)
 
-    def finish(self, _plan: FinalTurn, _state: EngineState) -> Generator[TurnFact, None, str | None]:
+    def finish(self, plan: FinalTurn, state: EngineState) -> Generator[TurnFact, None, str | None]:
+        _ = (plan, state)
         yield from ()
         return None

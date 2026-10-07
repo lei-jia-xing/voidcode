@@ -14,7 +14,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
+
+if TYPE_CHECKING:
+    from .composition import FrozenComposition
 
 from ..core.transcript import ContextSegment, ToolResultView
 from ..core.turns import ReportedCall, TurnProducer, TurnRequest
@@ -66,6 +69,7 @@ class RuntimeSurface(Protocol):
 
     def runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig: ...
 
+    def prepare_execution_composition(self, config: EffectiveRuntimeConfig) -> FrozenComposition: ...
     def reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> ReasoningEffortCapability: ...
 
     # --- permission / tool governance (runtime owns uniformly) ---

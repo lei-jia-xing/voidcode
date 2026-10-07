@@ -367,10 +367,10 @@ def test_background_task_steer_parent_dispatches_steer() -> None:
         ("steer", "task-keep-alive-1"),
     ]
     assert result.status == "ok"
-    assert result.data["task_id"] == "task-keep-alive-1"
-    assert result.data["status"] == "running"
-    assert result.data["keep_alive"] is True
-    assert result.data["steer_prompt"] == "continue"
-    assert result.data["child_session_id"] == "child-session-1"
-    assert result.data["terminal"] is False
+    assert result.body.task_id == "task-keep-alive-1"
+    assert result.body.status == "running"
+    assert result.body.keep_alive is True
+    assert result.body.steer_prompt == "continue"
+    assert result.body.child_session_id == "child-session-1"
+    assert result.body.terminal is False
     assert runtime.steered == [("task-keep-alive-1", "continue")]

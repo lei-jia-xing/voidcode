@@ -12,6 +12,7 @@ from ....tools._pydantic_args import NonEmptyPrompt, parse_tool_args
 from ....tools.contracts import TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess
 from ....tools.delegation.task_batch import MAX_BATCH_SIZE, TaskBatchTool
 from ...background.models import BackgroundTaskState
+from ...background.substrate import TaskSpec, TaskSubstrate
 from ...contracts import (
     RuntimeRequest,
     RuntimeRequestError,
@@ -157,8 +158,9 @@ class _TaskBatchArgs(BaseModel):
 
 
 class TaskBatchCommand:
-    def __init__(self, *, runtime: TaskBatchRuntime) -> None:
+    def __init__(self, *, runtime: TaskBatchRuntime, substrate: TaskSubstrate | None = None) -> None:
         self._runtime = runtime
+        self._substrate = substrate or getattr(runtime, "task_substrate", None)
 
     @staticmethod
     def _delegation_metadata(
@@ -239,7 +241,11 @@ class TaskBatchCommand:
         task_ids: list[str] = []
         for index, item, request in requests:
             try:
-                task = self._runtime.start_background_task(request)
+                if self._substrate is not None:
+                    spec = TaskSpec.from_runtime_request(request)
+                    task = self._substrate.start_task(spec)
+                else:
+                    task = self._runtime.start_background_task(request)
             except Exception as exc:
                 failed.append(
                     TaskBatchFailed(

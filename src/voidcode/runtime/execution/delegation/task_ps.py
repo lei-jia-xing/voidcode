@@ -7,6 +7,7 @@ from typing import Protocol, cast
 from ....core.tool_context import ToolContext
 from ....security.json_values import json_wire_object, own_json_object
 from ....tools.contracts import TextOutput, ToolCall, ToolResult, ToolSuccess
+from ...background.substrate import TaskSubstrate
 
 
 class TaskPsRuntime(Protocol):
@@ -39,8 +40,9 @@ class TaskRosterResultBody:
 class TaskPsTool:
     name = "task_ps"
 
-    def __init__(self, *, runtime: TaskPsRuntime) -> None:
+    def __init__(self, *, runtime: TaskPsRuntime, substrate: TaskSubstrate | None = None) -> None:
         self._runtime = runtime
+        self._substrate = substrate or getattr(runtime, "task_substrate", None)
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         caller_session_id = context.require_session_id()

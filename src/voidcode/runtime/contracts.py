@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Final, Literal, Protocol, TypedDict, TypeIs, cast, runtime_checkable
+from typing import Any, Final, Literal, Protocol, TypedDict, TypeIs, cast, runtime_checkable
 
 from ..provider.reasoning_effort import normalize_reasoning_effort
 from ..tools.contracts import TerminalYield
@@ -1216,6 +1216,11 @@ class BackgroundTaskResult:
             delegation=delegated_execution,
             message=self.delegated_message,
         )
+
+    def as_task_result(self) -> Any:
+        from .background.substrate import TaskResult
+
+        return TaskResult.from_background_task_result(self)
 
 
 @dataclass(frozen=True, slots=True)

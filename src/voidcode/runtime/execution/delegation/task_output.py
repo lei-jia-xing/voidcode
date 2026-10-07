@@ -12,6 +12,7 @@ from ....security.json_values import json_wire_object, own_json_object
 from ....tools._pydantic_args import MessageLimit, TimeoutMs, parse_tool_args
 from ....tools.contracts import OutputBounds, OutputReference, TerminalYield, TextOutput, ToolCall, ToolResult, ToolSuccess
 from ...background.models import BackgroundTaskState, is_background_task_terminal
+from ...background.substrate import TaskSubstrate
 from ...contracts import (
     BackgroundTaskGroupResult,
     BackgroundTaskResult,
@@ -248,8 +249,9 @@ class TaskOutputGroupBody:
 class TaskOutputTool:
     name = "task_output"
 
-    def __init__(self, *, runtime: TaskOutputRuntime) -> None:
+    def __init__(self, *, runtime: TaskOutputRuntime, substrate: TaskSubstrate | None = None) -> None:
         self._runtime = runtime
+        self._substrate = substrate or getattr(runtime, "task_substrate", None)
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         caller_session_id = context.require_session_id()
@@ -303,7 +305,10 @@ class TaskOutputTool:
         )
         block_timed_out = False
         if args.block and not is_background_task_terminal(result.status):
-            waited = self._runtime.wait_for_background_task(args.task_id, timeout_seconds=timeout_seconds)
+            if self._substrate is not None:
+                waited = self._substrate.wait_task(args.task_id, timeout_seconds=timeout_seconds)
+            else:
+                waited = self._runtime.wait_for_background_task(args.task_id, timeout_seconds=timeout_seconds)
             block_timed_out = not is_background_task_terminal(waited.status)
             result = self._runtime.load_background_task_result(
                 args.task_id,

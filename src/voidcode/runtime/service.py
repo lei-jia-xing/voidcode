@@ -112,6 +112,9 @@ from .background.routing import (
     delegated_model_for_route_from_configs,
     provider_fallback_for_agent_selection,
 )
+from .background.substrate import (
+    TaskSubstrate,
+)
 from .background.supervisor import RuntimeBackgroundTaskSupervisor
 from .bundle import (
     SessionBundle,
@@ -897,8 +900,8 @@ class VoidCodeRuntime(RuntimeSurface):
                 resolve_edit_schema=self._edit_schema_resolver(),
                 lsp_request=self.request_lsp,
                 mcp_request=self.request_mcp_tool,
-                task_command=TaskCommand(runtime=self).invoke,
-                task_batch_command=TaskBatchCommand(runtime=self).invoke,
+                task_command=TaskCommand(runtime=self, substrate=self._background_task_supervisor).invoke,
+                task_batch_command=TaskBatchCommand(runtime=self, substrate=self._background_task_supervisor).invoke,
                 process_command=BackgroundProcessCommand(runtime=self).invoke,
             ),
         )
@@ -1175,6 +1178,9 @@ class VoidCodeRuntime(RuntimeSurface):
             custom = payload.get("custom")
             selected = {"custom": {provider_name: custom[provider_name]}} if isinstance(custom, dict) and provider_name in custom else {}
         return {"provider_name": provider_name, "providers": selected}
+
+    def prepare_execution_composition(self, config: EffectiveRuntimeConfig) -> FrozenComposition:
+        return self._prepare_execution_composition(config)
 
     def _prepare_execution_composition(self, config: EffectiveRuntimeConfig) -> FrozenComposition:
         selections = list(config.components)
@@ -3042,6 +3048,11 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def tool_effectiveness_report(self) -> ToolEffectivenessReport:
         return self._inspection_coordinator.tool_effectiveness_report()
+
+    @property
+    def task_substrate(self) -> TaskSubstrate:
+        """Runtime-owned task substrate providing minimal async task lifecycle."""
+        return self._background_task_supervisor
 
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
         validated_request = self._validated_request(request)

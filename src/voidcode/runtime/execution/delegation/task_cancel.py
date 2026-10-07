@@ -9,6 +9,7 @@ from ....core.tool_context import ToolContext
 from ....tools._pydantic_args import parse_tool_args, validate_non_empty_stripped
 from ....tools.contracts import TextOutput, ToolCall, ToolResult, ToolSuccess
 from ...background.models import BackgroundTaskState, is_background_task_terminal
+from ...background.substrate import TaskSubstrate
 from ...contracts import UnknownBackgroundTaskError
 
 
@@ -68,8 +69,9 @@ class _TaskCancelArgs(BaseModel):
 class TaskCancelTool:
     name = "task_cancel"
 
-    def __init__(self, *, runtime: TaskCancelRuntime) -> None:
+    def __init__(self, *, runtime: TaskCancelRuntime, substrate: TaskSubstrate | None = None) -> None:
         self._runtime = runtime
+        self._substrate = substrate or getattr(runtime, "task_substrate", None)
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         caller_session_id = context.require_session_id()
@@ -82,7 +84,10 @@ class TaskCancelTool:
         except UnknownBackgroundTaskError as exc:
             return _unknown_task_result(args.taskId, str(exc))
         try:
-            task = self._runtime.cancel_background_task(args.taskId)
+            if self._substrate is not None:
+                task = self._substrate.cancel_task(args.taskId)
+            else:
+                task = self._runtime.cancel_background_task(args.taskId)
         except UnknownBackgroundTaskError as exc:
             return _unknown_task_result(args.taskId, str(exc))
         cause = task.cancellation_cause or task.error

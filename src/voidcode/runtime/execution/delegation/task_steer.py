@@ -9,6 +9,7 @@ from ....core.tool_context import ToolContext
 from ....tools._pydantic_args import NonEmptyPrompt, parse_tool_args, validate_non_empty_stripped
 from ....tools.contracts import TextOutput, ToolCall, ToolResult, ToolSuccess
 from ...background.models import BackgroundTaskState, is_background_task_terminal
+from ...background.substrate import TaskSubstrate
 
 
 class TaskSteerRuntime(Protocol):
@@ -53,8 +54,9 @@ class _TaskSteerArgs(BaseModel):
 class TaskSteerTool:
     name = "task_steer"
 
-    def __init__(self, *, runtime: TaskSteerRuntime) -> None:
+    def __init__(self, *, runtime: TaskSteerRuntime, substrate: TaskSubstrate | None = None) -> None:
         self._runtime = runtime
+        self._substrate = substrate or getattr(runtime, "task_substrate", None)
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         caller_session_id = context.require_session_id()
@@ -64,14 +66,20 @@ class TaskSteerTool:
             args.task_id,
             parent_session_id=caller_session_id,
         )
-        current_task = self._runtime.load_background_task(args.task_id)
+        if self._substrate is not None:
+            current_task = self._substrate.load_task(args.task_id)
+        else:
+            current_task = self._runtime.load_background_task(args.task_id)
         if current_task.parent_session_id != caller_session_id:
             raise ValueError(
                 f"steer_task cannot steer background task {args.task_id}: only its parent "
                 f"session ({current_task.parent_session_id or 'unknown'}) may steer it "
                 f"(current session: {context.session_id})"
             )
-        task = self._runtime.steer_background_task(args.task_id, args.prompt)
+        if self._substrate is not None:
+            task = self._substrate.steer_task(args.task_id, args.prompt)
+        else:
+            task = self._runtime.steer_background_task(args.task_id, args.prompt)
         waiting_reason = task.observability.waiting_reason if task.observability is not None else None
         if task.status == "running":
             content = (

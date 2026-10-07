@@ -11,6 +11,7 @@ from .routing import (
 
 if TYPE_CHECKING:
     from ..contracts import RuntimeRequest
+    from .substrate import TaskHandle, TaskSubstrate
 
 type BackgroundTaskStatus = Literal[
     "queued",
@@ -242,6 +243,11 @@ class BackgroundTaskState:
             approval_request_id=self.approval_request_id,
             question_request_id=self.question_request_id,
         )
+
+    def as_handle(self, *, substrate: TaskSubstrate | None = None) -> TaskHandle:
+        from .substrate import TaskHandle
+
+        return TaskHandle.from_state(self, substrate=substrate)
 
 
 @dataclass(frozen=True, slots=True)

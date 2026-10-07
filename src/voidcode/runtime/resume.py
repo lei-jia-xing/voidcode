@@ -1051,6 +1051,10 @@ class RuntimeResumeCoordinator:
         pending: PendingApproval,
         stored_metadata: dict[str, object],
     ) -> ApprovalResumeCheckpointState:
+        if "execution_composition" not in stored_metadata:
+            ref = composition_ref_from_session_metadata(stored_metadata)
+            frozen = self._recovery.load_execution_composition(ref=ref)
+            stored_metadata = {**stored_metadata, "execution_composition": frozen.to_payload()}
         return _approval_resume_state_from_checkpoint(
             checkpoint=checkpoint,
             pending=pending,
@@ -1064,6 +1068,10 @@ class RuntimeResumeCoordinator:
         pending: PendingQuestion,
         stored_metadata: dict[str, object],
     ) -> ApprovalResumeCheckpointState:
+        if "execution_composition" not in stored_metadata:
+            ref = composition_ref_from_session_metadata(stored_metadata)
+            frozen = self._recovery.load_execution_composition(ref=ref)
+            stored_metadata = {**stored_metadata, "execution_composition": frozen.to_payload()}
         return _question_resume_state_from_checkpoint(
             checkpoint=checkpoint,
             pending=pending,

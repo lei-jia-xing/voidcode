@@ -77,6 +77,11 @@ from .models import (
     is_background_task_terminal,
     validate_background_task_id,
 )
+from .substrate import (
+    TaskHandle,
+    TaskResult,
+    TaskSpec,
+)
 
 if TYPE_CHECKING:
     from ..acp import AcpAdapter
@@ -503,6 +508,63 @@ class RuntimeBackgroundTaskSupervisor:
         validate_background_task_id(task_id)
         task = self._tasks.load_background_task(workspace=self._workspace, task_id=task_id)
         return self.task_with_observability(task)
+
+    def load_background_task(self, task_id: str) -> BackgroundTaskState:
+        """Load a background task by ID with observability."""
+        return self._load_background_task(task_id)
+
+    # -----------------------------------------------------------------------
+    # TaskSubstrate Protocol Implementation
+    # -----------------------------------------------------------------------
+
+    def start_task(
+        self,
+        spec: TaskSpec,
+        *,
+        composition: FrozenComposition | None = None,
+    ) -> TaskHandle:
+        """Start a new background task from a TaskSpec."""
+        request = spec.as_runtime_request()
+        if composition is None and request.metadata.get("composition_ref") is None:
+            effective_config = self._surface.runtime_config_for_request(request)
+            composition = self._surface.prepare_execution_composition(effective_config)
+        state = self.start_background_task(request, composition=composition)
+        return TaskHandle.from_state(state, substrate=self)
+
+    def load_task(self, task_id: str) -> TaskHandle:
+        """Load a background task by ID as a TaskHandle."""
+        state = self._load_background_task(task_id)
+        return TaskHandle.from_state(state, substrate=self)
+
+    def cancel_task(self, task_id: str) -> TaskHandle:
+        """Cancel a background task by ID and return its updated TaskHandle."""
+        state = self.cancel_background_task(task_id)
+        return TaskHandle.from_state(state, substrate=self)
+
+    def steer_task(self, task_id: str, content: str) -> TaskHandle:
+        """Steer a keep-alive background task by ID and return its updated TaskHandle."""
+        state = self.steer_background_task(task_id, content)
+        return TaskHandle.from_state(state, substrate=self)
+
+    def wait_task(self, task_id: str, *, timeout_seconds: float) -> TaskHandle:
+        """Wait for a background task to reach a terminal state."""
+        self.reconcile_background_tasks_if_needed()
+        self.drain_queued_background_tasks()
+        state = self.wait_for_background_task(task_id, timeout_seconds=timeout_seconds)
+        return TaskHandle.from_state(state, substrate=self)
+
+    def load_task_result(self, task_id: str) -> TaskResult:
+        """Load the execution result for a background task as a TaskResult."""
+        self.reconcile_background_tasks_if_needed()
+        self.drain_queued_background_tasks()
+        bg_result = self.load_background_task_result(task_id)
+        return TaskResult.from_background_task_result(bg_result)
+
+    def list_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
+        """List all background tasks with observability."""
+        self.reconcile_background_tasks_if_needed()
+        self.drain_queued_background_tasks()
+        return self.summaries_with_observability(self._tasks.list_background_tasks(workspace=self._workspace))
 
     def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None:
         """Verify that ``parent_session_id`` owns ``task_id`` without mutating state.

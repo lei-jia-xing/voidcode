@@ -251,7 +251,7 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 
 **风险：** substrate 抽取意外扩大 preset/topology 权限、通知重复、child session ownership 与 fork lineage 混合；最终 cleanup 不得删除仍有消费者的 contract。
 
-**当前 focused 进展（不代表 P6 完成）：** queued→dispatch→child session→result/retry/steer/reopen、keep-alive ownership seizure/fresh resume、explicit ToolContext parity、typed facts, provider/core parsing, recovery and governance cells have focused behavioral evidence. A concrete direct-task child-session collision was fixed by forcing allocation when a background request lacks an explicit session id. Remaining acceptance blockers are external package all-slot runtime adapters and durable package phase owner; unselected historical tests are not completion evidence.
+**当前 focused 进展（不代表 P6 完成）：** queued→dispatch→child session→result/retry/steer/reopen、keep-alive ownership seizure/fresh resume、explicit ToolContext parity、typed facts, provider/core parsing, recovery and governance cells have focused behavioral evidence. A concrete direct-task child-session collision was fixed by forcing allocation when a background request lacks an explicit session id. P6 task substrate 核心契约（`TaskSpec`/`TaskHandle`/`TaskResult`/`TaskSubstrate`）已在 `runtime/background/substrate.py` 抽出，`RuntimeBackgroundTaskSupervisor` 与 delegation 工具适配器已完成消费切分，`test_local_workflow.py` 内存工作流与 `test_background_task_substrate.py` 契约用例已闭环。Remaining acceptance blockers are external package all-slot runtime adapters (#1) and durable package phase owner (#9); unselected historical tests are not completion evidence.
 
 ## 审计覆盖映射
 
