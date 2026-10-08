@@ -68,7 +68,7 @@ frontend/
 - [x] UI 壳程序与导航
 - [x] 运行时驱动的会话列表 / 会话重放 / 流式运行 / 审批处理 / question answer 基础路径
 - [x] 运行时驱动的 review tree / diff 面板与轻量 file-tree 入口
-- [x] 后端 `tool_status` / `display` payload 驱动的工具活动渲染基线
+- [x] 以规范 `tool_call_id` 关联工具活动、按事件类型读取名称和生命周期状态，并以匹配的 `tool_status` 补充展示
 - [ ] 更完整的运行时驱动任务体验
 - [ ] 更丰富的客户端交互与状态打磨
 
@@ -77,6 +77,9 @@ frontend/
 前端设计通过以下方式与 VoidCode 运行时进行通信：
 
 1. **HTTP API / SSE** - 用于会话管理、会话重放和流式运行事件交付
+
+工具事件按类型消费，调用身份始终来自事件 payload 的 `tool_call_id`。持久化的 `graph.tool_request_created`、`runtime.tool_started` 和 `runtime.tool_completed` 使用 `tool`；provider 流式 `graph.tool_call_start/delta/end` 使用可缺省的 `tool_name`，并按 `tool_call_id` 延续同一条流；`runtime.tool_progress` 也使用 `tool_call_id`。请求和开始状态由事件类型决定，完成状态只认 `runtime.tool_completed` 的 `ok` / `error`；`tool_status` 仅补充匹配调用的展示信息。`runtime.todo_updated` 更新独立的 todo 面板状态，不会创建或改写工具活动行；审批参数读取 payload 的 `arguments`。
+
 
 **后端启动与 provider 选择：** 前端不会把 API key 写入浏览器状态或请求体。首次无凭据验证使用确定性引擎。开发服务器默认把 `/api` 代理到 canonical local `voidcode serve` 地址 `http://127.0.0.1:8765`：
 

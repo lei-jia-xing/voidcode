@@ -412,9 +412,42 @@ def test_recorded_real_reader_prefix_restores_without_repeating_completed_io(
 
     reader = Reader()
     producer = Producer()
-    host = MemoryHost(tools=(reader,), abort_signal=abort, event_store=facts)
     engine = TurnEngine(producer)
-    list(engine.run(host.request("read both real files"), host=host))
+    host = MemoryHost(tools=(reader,), abort_signal=abort, event_store=facts)
+    request = host.request("read both real files")
+    assert request.run_id is not None
+    if isinstance(facts, SqliteFactStore):
+        owner = SqliteSessionStore(database_path=tmp_path / "facts.sqlite3")
+        metadata = session_metadata_with_runtime_state_updates(
+            owner.load_session(workspace=tmp_path, session_id="facts").session.metadata,
+            updates={
+                "composition_turn_occurrence": 1,
+                "composition_turn": {
+                    "session_id": "facts",
+                    "run_id": request.run_id,
+                    "scope_id": f"facts:{request.run_id}:1",
+                    "occurrence": 1,
+                    "completed": False,
+                    "invoked_call_ids": [call.tool_call_id for call in calls],
+                },
+                "turn_batch": persisted_turn_batch(
+                    CallSeed(calls, reasoning=reasoning, run_step=1),
+                    session_id="facts",
+                    run_id=request.run_id,
+                    started_sequence=0,
+                ),
+            },
+        )
+        save_checkpoint(
+            owner,
+            workspace=tmp_path,
+            session_id="facts",
+            prompt="fact tree",
+            session_metadata=metadata,
+            tool_results=(),
+            last_event_sequence=0,
+        )
+    list(engine.run(request, host=host))
     assert reader.call_ids == ["native-first-read"]
     if isinstance(facts, SqliteFactStore):
         reopened = SqliteSessionStore(database_path=tmp_path / "facts.sqlite3")
@@ -445,7 +478,16 @@ def test_runtime_only_page_does_not_erase_authentic_completed_prefix(tmp_path: P
     metadata = session_metadata_with_runtime_state_updates(
         {},
         updates={
-            "turn_batch": persisted_turn_batch(batch, session_id="facts", run_id=None, started_sequence=0),
+            "composition_turn_occurrence": 1,
+            "composition_turn": {
+                "session_id": "facts",
+                "run_id": "producer",
+                "scope_id": "facts:producer:1",
+                "occurrence": 1,
+                "completed": False,
+                "invoked_call_ids": ["native-after-runtime-page"],
+            },
+            "turn_batch": persisted_turn_batch(batch, session_id="facts", run_id="producer", started_sequence=0),
         },
     )
     database = tmp_path / "facts.sqlite3"

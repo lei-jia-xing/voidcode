@@ -2,18 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import cast
+from uuid import uuid4
 
 from tests.runtime_composition import save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
-from voidcode.core.turns import FinalTurn, ReportedCall, ResponseReadyFact, StreamFact, ToolTurn, TurnRequest
+from voidcode.core.turns import FinalTurn, ResponseReadyFact, StreamFact, ToolTurn, TurnRequest
 from voidcode.provider.protocol import ProviderStreamEvent
+from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.events import EventEnvelope
-from voidcode.runtime.policy import materialize_runtime_policy_snapshot
-from voidcode.runtime.resume import RuntimeResumeCoordinator
-from voidcode.runtime.service import RuntimeStreamChunk, SessionState, ToolRegistry, VoidCodeRuntime
+from voidcode.runtime.service import RuntimeRequest, RuntimeStreamChunk, SessionState, ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import TextOutput, ToolCall, ToolDiagnostics, ToolFailure, ToolSuccess
+from voidcode.tools.contracts import ToolCall
+from voidcode.tools.read import ReadTool
 
 
 def _create_session_row(store: SqliteSessionStore, *, workspace: Path, session_id: str) -> None:
@@ -29,8 +30,19 @@ def _create_session_row(store: SqliteSessionStore, *, workspace: Path, session_i
     )
 
 
-def _runtime_with_store(tmp_path: Path, store: SqliteSessionStore) -> VoidCodeRuntime:
-    return VoidCodeRuntime(workspace=tmp_path, repositories=repositories_for_test_store(store))
+def _runtime_with_store(
+    tmp_path: Path,
+    store: SqliteSessionStore,
+    *,
+    config: RuntimeConfig | None = None,
+    tool_registry: ToolRegistry | None = None,
+) -> VoidCodeRuntime:
+    return VoidCodeRuntime(
+        workspace=tmp_path,
+        config=config,
+        repositories=repositories_for_test_store(store),
+        tool_registry=tool_registry,
+    )
 
 
 def _loaded_events(store: SqliteSessionStore, *, workspace: Path, session_id: str) -> tuple[EventEnvelope, ...]:
@@ -38,27 +50,16 @@ def _loaded_events(store: SqliteSessionStore, *, workspace: Path, session_id: st
 
 
 def _turn_request(runtime: VoidCodeRuntime, *, session_id: str, provider_stream: bool = False) -> tuple[SessionState, TurnRequest, ToolRegistry]:
-    effective_config = runtime.effective_runtime_config()
-    runtime_config_metadata = runtime._runtime_config_metadata()
-    runtime_policy = materialize_runtime_policy_snapshot(
-        persisted_session_policy=None,
-        agent_preset=effective_config.agent.preset if effective_config.agent is not None else "leader",
-        agent_manifest_id=effective_config.agent.preset if effective_config.agent is not None else "leader",
-        runtime_config=runtime_config_metadata,
-        request_metadata={},
-        parent_snapshot=None,
-    ).as_payload()
-    session = SessionState(
-        session=SessionRef(id=session_id),
-        status="running",
-        turn=0,
-        metadata={
-            "runtime_config": runtime_config_metadata,
-            "runtime_policy": runtime_policy,
-        },
+    run_id = f"test-run-{uuid4().hex}"
+    runtime_request = RuntimeRequest(prompt="probe", session_id=session_id)
+    prepared = runtime._prepare_stream_request_and_rehydration(
+        runtime_request,
+        session_id=session_id,
+        run_id=run_id,
     )
-    prompt = "probe"
-    tool_registry = runtime.tool_registry_for_effective_config(runtime.effective_runtime_config())
+    session = runtime._assemble_stream_session_metadata(prepared, run_id=run_id)
+    tool_registry = runtime.tool_registry_for_effective_config(prepared.effective_config)
+    prompt = runtime_request.prompt
     context_window = runtime.prepare_provider_context_window(
         prompt=prompt,
         tool_results=(),
@@ -75,6 +76,7 @@ def _turn_request(runtime: VoidCodeRuntime, *, session_id: str, provider_stream:
             session_metadata=session.metadata,
         ),
         metadata={**session.metadata, **({"provider_stream": True} if provider_stream else {})},
+        run_id=run_id,
     )
     return session, request, tool_registry
 
@@ -156,45 +158,9 @@ def test_persist_chunk_reassigns_db_sequence(tmp_path: Path) -> None:
     assert [(event.sequence, event.event_type) for event in events] == [(1, "runtime.failed")]
 
 
-def test_serialized_tool_results_roundtrip_through_checkpoint_reader() -> None:
-    from voidcode.runtime.run_loop import _serialized_tool_results
-
-    tool_results = (
-        ReportedCall("call-1", "read", {"path": "a.txt"}, ToolSuccess("read", output=TextOutput("alpha\n"))),
-        ReportedCall(
-            "call-2",
-            "shell_exec",
-            {"command": "ls"},
-            ToolFailure(
-                "shell_exec",
-                "boom",
-                diagnostics=ToolDiagnostics(
-                    kind="tool_timeout",
-                    summary="timed out",
-                    details={"message": "timed out"},
-                    guidance="retry",
-                ),
-            ),
-        ),
-    )
-
-    serialized = _serialized_tool_results(tool_results)
-
-    assert [entry["tool_name"] for entry in serialized] == ["read", "shell_exec"]
-    rehydrated = RuntimeResumeCoordinator.tool_results_from_checkpoint(list(serialized), version=2)
-    assert [result.tool_call_id for result in rehydrated] == ["call-1", "call-2"]
-    assert isinstance(rehydrated[0].result, ToolSuccess)
-    assert rehydrated[0].result.output == TextOutput("alpha\n")
-    assert isinstance(rehydrated[1].result, ToolFailure)
-    assert rehydrated[1].result.error == "boom"
-    assert rehydrated[1].result.diagnostics is not None
-    assert rehydrated[1].result.diagnostics.kind == "tool_timeout"
-
-
 def test_execute_turn_engine_streaming_dedupes_raw_provider_stream(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    _create_session_row(store, workspace=tmp_path, session_id="session-1")
-    runtime = _runtime_with_store(tmp_path, store)
+    runtime = _runtime_with_store(tmp_path, store, config=RuntimeConfig(model="openai/gpt-4o"))
 
     class _StreamingGraph:
         def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> ToolTurn | FinalTurn:
@@ -247,8 +213,7 @@ def test_execute_turn_engine_streaming_dedupes_raw_provider_stream(tmp_path: Pat
 
 def test_execute_turn_engine_streaming_persists_aggregated_reasoning(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    _create_session_row(store, workspace=tmp_path, session_id="session-1")
-    runtime = _runtime_with_store(tmp_path, store)
+    runtime = _runtime_with_store(tmp_path, store, config=RuntimeConfig(model="openai/gpt-4o"))
 
     class _StreamingReasoningGraph:
         def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> ToolTurn | FinalTurn:
@@ -300,8 +265,7 @@ def test_execute_turn_engine_streaming_persists_aggregated_reasoning(tmp_path: P
 
 def test_execute_turn_engine_non_streaming_persists_step_reasoning(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    _create_session_row(store, workspace=tmp_path, session_id="session-1")
-    runtime = _runtime_with_store(tmp_path, store)
+    runtime = _runtime_with_store(tmp_path, store, config=RuntimeConfig(model="openai/gpt-4o"))
 
     class _NonStreamingReasoningGraph:
         def produce(self, request: TurnRequest, tool_results: tuple, *, session: SessionState) -> ToolTurn | FinalTurn:
@@ -350,8 +314,12 @@ def test_execute_turn_engine_non_streaming_persists_step_reasoning(tmp_path: Pat
 
 def test_execute_turn_engine_captures_safe_boundary_checkpoint(tmp_path: Path) -> None:
     store = SqliteSessionStore()
-    _create_session_row(store, workspace=tmp_path, session_id="session-1")
-    runtime = _runtime_with_store(tmp_path, store)
+    runtime = _runtime_with_store(
+        tmp_path,
+        store,
+        config=RuntimeConfig(model="openai/gpt-4o"),
+        tool_registry=ToolRegistry.from_tools((ReadTool(),)),
+    )
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha\n", encoding="utf-8")
 

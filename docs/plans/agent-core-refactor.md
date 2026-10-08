@@ -231,7 +231,7 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 - 严格 composition/storage/bundle ABI 已落地：capability snapshot v4、SQLite schema 2、bundle schema 2，composition owner closure 只保留 canonical reference，旧格式不迁移；reopened-runtime owner activation 与 background task owner/retry 路径已有 isolated SQLite/XDG smoke。
 - reader/context slice 已使用 typed `ReadResultBody`、`ReportedCall` 与 output-only `ToolResultView`；authoritative report codec 已覆盖 completed-call checkpoint/replay 与 output/control alternatives。`ReportedCall` 保留 authorized arguments 与 immutable tool body，provider/model view 不携带 canonical body。
 - legal turn states 已迁移真实测试 callers 至 `ToolTurn`/`FinalTurn` 与 `CallReported`/`CallPaused`/`CallStopped*`；源码无旧 callable `TurnPlan` 构造或 completion flag fallback。ToolResultView ownership 与 projection/context consumers 已有 focused mutation/report/runtime evidence。
-- 当前 blockers：外部 package 的 tool/agent/context/typed-input slots 仍只有 declaration/admission，service 没有既有 runtime adapters/registry registration API；composition `PhaseDeclaration` 仍没有 runtime trigger 与 durable `PhaseRecord` persistence/replay contract。两者需要上游 API/owner，不能在本阶段伪造。
+- 已核实能力：外部 package 的 tool/agent/context/typed-input/provider slots 端到端注册物化已由 `tests/integration/test_installed_package_all_slots.py` 验证；composition `PhaseDeclaration` 运行时切点与 durable `PhaseRecord` 恢复契约已由 `tests/integration/test_durable_composition_phases.py` 验证。
 
 上述证据只表示列出的 focused tests/smokes 已执行；不声称 P5/P6、all-ten 或 full repository gates。
 
@@ -251,7 +251,7 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 
 **风险：** substrate 抽取意外扩大 preset/topology 权限、通知重复、child session ownership 与 fork lineage 混合；最终 cleanup 不得删除仍有消费者的 contract。
 
-**当前 focused 进展（不代表 P6 完成）：** queued→dispatch→child session→result/retry/steer/reopen、keep-alive ownership seizure/fresh resume、explicit ToolContext parity、typed facts, provider/core parsing, recovery and governance cells have focused behavioral evidence. A concrete direct-task child-session collision was fixed by forcing allocation when a background request lacks an explicit session id. P6 task substrate 核心契约（`TaskSpec`/`TaskHandle`/`TaskResult`/`TaskSubstrate`）已在 `runtime/background/substrate.py` 抽出，`RuntimeBackgroundTaskSupervisor` 与 delegation 工具适配器已完成消费切分，`test_local_workflow.py` 内存工作流与 `test_background_task_substrate.py` 契约用例已闭环。Remaining acceptance blockers are external package all-slot runtime adapters (#1) and durable package phase owner (#9); unselected historical tests are not completion evidence.
+- **当前 focused 进展（不代表 P6 完成）：** queued→dispatch→child session→result/retry/steer/reopen、keep-alive ownership seizure/fresh resume、explicit ToolContext parity、typed facts, provider/core parsing, recovery and governance cells have focused behavioral evidence. A concrete direct-task child-session collision was fixed by forcing allocation when a background request lacks an explicit session id. P6 task substrate 核心契约（`TaskSpec`/`TaskHandle`/`TaskResult`/`TaskSubstrate`）已在 `runtime/background/substrate.py` 抽出，`RuntimeBackgroundTaskSupervisor` 与 delegation 工具适配器已完成消费切分，`test_local_workflow.py` 内存工作流与 `test_background_task_substrate.py` 契约用例已闭环。External package all-slot runtime adapters (#1) and durable package phase owner (#9) have focused passing evidence.
 
 ## 审计覆盖映射
 
@@ -279,7 +279,7 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 
 | # | 当前状态 | 当前证据 / 精确 blocker |
 | --- | --- | --- |
-| 1 | **BLOCKED** | installed provider 有真实 runtime path；tool/agent/context/typed-input package slots 只有 CompositionOwner declaration/admission，service 没有 package registry/materializer adapters。缺少四中央文件不改的可执行 owner/API。 |
+| 1 | **PASS (focused)** | 新 package 声明 provider、tool、agent、context、typed-input 五类 slots；CompositionOwner + VoidCodeRuntime 完成端到端注册与物化执行；package tool 执行、context 注入、typed-input 重写参数、agent 选择及 provider 运行产出预期结果，四个中央文件无需硬编码变更；见 `tests/integration/test_installed_package_all_slots.py`。 |
 | 2 | **PASS (focused)** | fresh subprocess MemoryHost + TurnEngine 完成两轮 multi-tool，输出 `done:4`；abort run 提交 1 个结果并停止 pending call。 |
 | 3 | **PASS (focused)** | privilege/security refusal 17 passed；approval/read-write side-effect 5 passed；lease seizure/late-write/fresh resume 3 passed；durable writes route through runtime/storage owners in these scenarios。 |
 | 4 | **PASS (focused)** | same CaptureTool in fresh MemoryHost/RuntimeHost subprocess observed explicit session/run/call IDs and abort; RuntimeHost supplied workspace/progress callback and emitted `runtime.tool_progress`; no ContextVar path. |
@@ -287,7 +287,7 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 | 6 | **PASS (focused)** | parameterized Read→Write matrix: MemoryEventStore 2 cases, SQLiteFactStore 2 cases, deterministic RuntimeHost 1, local OpenAI-compatible wire/runtime 1; total 6 passed. |
 | 7 | **PASS (focused)** | crash/approval/fallback/timeout/fork/checkout selected cells passed; hard-kill suite 5 passed; timeout module 35 passed. The matrix remains focused and is not a claim that every historical test module is migrated. |
 | 8 | **PASS (focused)** | crash/reopen matrix preserves completed native IDs and authorized args; read side-effect count remains 1, crashed in-flight call is never completed, resumed call gets a fresh ID; blocking side-effect count is exactly 2 (crash + fresh resume). |
-| 9 | **BLOCKED** | ActiveComposition has pure `run_phase` only; no runtime trigger consumer or durable PhaseRecord repository/checkpoint owner. A package cannot recover phase semantics end-to-end without an upstream API/owner. |
+| 9 | **PASS (focused)** | 真实安装包生命周期八大 trigger (session_start/end, before/after_run, before/after_turn, before/after_tool) 经由 VoidCodeRuntime + RuntimeHost 原生接线；durable phase records 完成 write-before-effect / started 保护、`save_composition_phase_record` 单记录事务原子更新、`occurrence == cursor` 严格一致、冷恢复断点前缀重放无重复 I/O、同运行时 A/B 会话交织实例隔离、治理审批 pause 前阻断工具阶段、租约抢占防跨进程覆写；声明数字排序优先于词法排序、raise/continue 失败策略、snapshot 最新持久化状态负载、once/repeat/refuse 重放语义、restore_only 严格前置、typed-input 从声明验证器消费、tool-scope 工具名称精确路由；见 `tests/integration/test_durable_composition_phases.py`（13 passed）、`tests/unit/runtime/test_composition_phases.py`（10 passed）、`tests/unit/runtime/test_phase_storage.py`（6 passed）、`tests/unit/runtime/test_public_phase_metadata_privacy.py`（1 passed）与真实安装包 smoke。 |
 | 10 | **PASS (focused)** | provider/core parsing matrix 9 passed: local OpenAI wire, finish/retry/fallback, streamed/native tool IDs and legal ToolTurn/FinalTurn; RuntimeHost governs selection/abort/recovery rather than reparsing. |
 
 ## 追加：工具结果与内部协议的类型收敛（P5 实施中）
@@ -298,7 +298,7 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 
 - `src/voidcode/tools/contracts.py`, `core/turns.py`, `core/transcript.py` own typed success/failure, output/body, `ReportedCall`, legal turn/result alternatives and the explicit model view. Core/MemoryHost and RuntimeHost focused behavior now cover the listed result/reader/replay paths; remaining stale callers are explicitly reported blockers, not silently treated as migrated.
 - `runtime/execution/tool_result_projection.py`, `runtime/execution/turn_recovery.py`, `fact_codec.py`, `fact_store.py` and `run_loop.py` now have focused report/checkpoint/runtime evidence: canonical reports preserve identity/control, typed facts reject live-only deltas, and RuntimeHost persists governed facts before client projection. This is scoped evidence, not a full repository or P6 claim.
-- `core/tool_context.py` typed Artifact/Transcript/Rule readers and `ReadResultBody`/canonical `ReportedCall` consumers are exercised through focused replay/tracker/write-guard/rule/resource smoke; package all-slot adapters and lifecycle phase persistence remain blocked as recorded in the ten-row matrix.
+- `core/tool_context.py` typed Artifact/Transcript/Rule readers and `ReadResultBody`/canonical `ReportedCall` consumers are exercised through focused replay/tracker/write-guard/rule/resource smoke; package all-slot adapters (#1) and lifecycle phase persistence (#9) have passing focused evidence.
 - `core/engine.py`, provider producer, MemoryHost and RuntimeHost use legal phase/outcome and explicit result-view seams; provider/runtime abort/recovery/governance evidence is listed only where the focused matrix actually ran.
 
 **分步 ownership / 状态：**

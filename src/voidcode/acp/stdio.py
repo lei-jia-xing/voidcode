@@ -56,7 +56,6 @@ class AcpSessionBinding:
     active_run_id: str | None = None
     active: bool = False
     cancel_requested: bool = False
-    tool_call_ids_by_tool: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -265,8 +264,6 @@ class StdioAcpServer:
                         failure_message = _runtime_failure_summary(chunk.event.payload)
                     self._write_runtime_event_update(
                         acp_session_id=acp_session_id,
-                        runtime_session_id=chunk.session.session.id,
-                        binding=binding,
                         event=chunk.event,
                     )
                 if chunk.kind == "output":
@@ -338,16 +335,13 @@ class StdioAcpServer:
         self,
         *,
         acp_session_id: str,
-        runtime_session_id: str,
-        binding: AcpSessionBinding,
         event: EventEnvelope,
     ) -> None:
         event_type = event.event_type
         payload = event.payload
         if event_type == "graph.tool_request_created":
-            tool_name = _string_payload(payload, "tool", default="tool")
-            tool_call_id = f"{runtime_session_id}:{tool_name}:{event.sequence}"
-            binding.tool_call_ids_by_tool[tool_name] = tool_call_id
+            tool_name = _required_payload_string(payload, "tool")
+            tool_call_id = _required_payload_string(payload, "tool_call_id")
             self._write_session_update(
                 acp_session_id,
                 {
@@ -362,13 +356,20 @@ class StdioAcpServer:
         if event_type == "runtime.tool_started":
             return
         if event_type == "runtime.tool_completed":
-            tool_name = _string_payload(payload, "tool", default="tool")
+            tool_call_id = _required_payload_string(payload, "tool_call_id")
+            raw_status = payload.get("status")
+            if raw_status == "ok":
+                status = "completed"
+            elif raw_status == "error":
+                status = "failed"
+            else:
+                raise ValueError(f"unsupported or missing tool completion status: {raw_status!r}")
             self._write_session_update(
                 acp_session_id,
                 {
                     "sessionUpdate": "tool_call_update",
-                    "toolCallId": binding.tool_call_ids_by_tool.get(tool_name, _tool_call_id(payload, runtime_session_id)),
-                    "status": "completed",
+                    "toolCallId": tool_call_id,
+                    "status": status,
                 },
             )
             return
@@ -500,18 +501,11 @@ def _session_run_id(session: SessionState) -> str | None:
     return run_id if run_id else None
 
 
-def _string_payload(payload: Mapping[str, object], key: str, *, default: str = "") -> str:
+def _required_payload_string(payload: Mapping[str, object], key: str) -> str:
     value = payload.get(key)
-    return value if isinstance(value, str) and value else default
-
-
-def _tool_call_id(payload: Mapping[str, object], runtime_session_id: str) -> str:
-    for key in ("tool_call_id", "call_id", "request_id"):
-        value = payload.get(key)
-        if isinstance(value, str) and value:
-            return value
-    tool_name = _string_payload(payload, "tool", default="tool")
-    return f"{runtime_session_id}:{tool_name}"
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"event payload missing canonical {key}")
+    return value
 
 
 def _runtime_failure_summary(payload: Mapping[str, object]) -> str:

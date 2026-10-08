@@ -230,7 +230,6 @@ class TurnEngine:
                     state.request = replace(
                         state.request,
                         prompt=self._append_messages(state.request.prompt, followup),
-                        run_step=state.request.run_step + 1,
                     )
                     continue
                 continuation = yield from host.finish(plan, state)

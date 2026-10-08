@@ -9,7 +9,7 @@ from time import time
 from typing import TYPE_CHECKING, Any, cast
 
 from ..agent_capability import validate_agent_capability_snapshot
-from ..composition import CompositionRef, FrozenComposition, SessionCompositionOwner, TaskCompositionOwner
+from ..composition import CompositionRef, FrozenComposition, PhaseRecord, SessionCompositionOwner, TaskCompositionOwner
 from ..contracts import (
     RuntimeRequest,
     RuntimeResponse,
@@ -24,6 +24,7 @@ from ..events import (
     EventSource,
 )
 from ..execution.report_codec import parse_report_payload, report_payload
+from ..execution.turn_recovery import validated_composition_turn
 from ..interaction_queue import QueuedMessageKind, QueuedRuntimeMessage, drain_runtime_messages, enqueue_runtime_message
 from ..session import (
     SessionEntrySummary,
@@ -35,8 +36,9 @@ from ..session import (
     session_entry_preview,
     session_metadata_for_persistence,
 )
+from ..session_metadata_helpers import parse_runtime_state_metadata
 from ..todos import runtime_todo_phases_from_payload, todo_state_payload
-from .fork import _NON_TRANSFERABLE_METADATA_KEYS, _dangling_interaction
+from .fork import _dangling_interaction
 from .rows import (
     SessionCreatedAtRow,
     SessionCreatedAtUnixMsRow,
@@ -209,6 +211,17 @@ class _SessionStorageMixin(_MixinBase):
             session_id=session_id,
             metadata=persisted_metadata,
         )
+        checkpoint_metadata = resume_checkpoint.get("session_metadata")
+        if not isinstance(checkpoint_metadata, dict):
+            raise ValueError("resume checkpoint requires session metadata")
+        checkpoint_metadata = self._merge_runtime_owned_metadata(
+            connection=connection,
+            workspace=workspace,
+            session_id=session_id,
+            metadata=checkpoint_metadata,
+        )
+        checkpoint_metadata.pop("execution_composition", None)
+        resume_checkpoint = {**resume_checkpoint, "session_metadata": checkpoint_metadata}
         created_at = self._read_created_at(
             connection=connection,
             workspace=workspace,
@@ -337,26 +350,38 @@ class _SessionStorageMixin(_MixinBase):
         session_id: str,
         metadata: dict[str, object],
         initial: bool = False,
+        advance_composition_turn: bool = False,
     ) -> dict[str, object]:
-        """Preserve the queue owner's current state, including consumed absence.
+        """Merge queue and private lifecycle ownership inside the write transaction.
 
-        Snapshot writers own all other metadata; only explicit enqueue/drain
-        transactions own pending input and its delivery cursor. Reading those
-        fields within the same write transaction prevents stale snapshots from
-        erasing newly queued input or resurrecting already consumed messages.
+        Checkpoints never own phase records or the producer cursor. Explicit
+        metadata updates may advance the cursor; phase outcomes have a dedicated
+        single-record writer so stale whole maps cannot roll back later outcomes.
         """
-        row = fetch_row(
-            connection,
-            "SELECT metadata_json FROM sessions WHERE workspace_id = ? AND session_id = ?",
+        incoming_state = dict(parse_runtime_state_metadata(metadata["runtime_state"])) if "runtime_state" in metadata else {}
+        if "composition_turn" in incoming_state:
+            validated_composition_turn(metadata, session_id=session_id)
+        row = connection.execute(
+            "SELECT metadata_json, resume_checkpoint_json FROM sessions WHERE workspace_id = ? AND session_id = ?",
             (str(workspace), session_id),
-        )
+        ).fetchone()
         if row is None:
             if not initial:
                 raise ValueError("session must be created by its atomic canonical checkpoint writer")
             return metadata
-        stored_metadata = json.loads(decode_row(row, SessionMetadataRow)["metadata_json"])
+        stored_metadata = json.loads(row[0])
         if not isinstance(stored_metadata, dict):
             raise ValueError("session metadata must decode to an object")
+        checkpoint_state: dict[str, object] = {}
+        if row[1] and isinstance(row[1], str):
+            try:
+                cp_data = json.loads(row[1])
+                if isinstance(cp_data, dict):
+                    cp_meta = cp_data.get("session_metadata")
+                    if isinstance(cp_meta, dict) and "runtime_state" in cp_meta:
+                        checkpoint_state = dict(parse_runtime_state_metadata(cp_meta["runtime_state"]))
+            except Exception:
+                checkpoint_state = {}
 
         stored_ref = _SessionStorageMixin._session_composition_ref(stored_metadata)
         if _SessionStorageMixin._session_composition_ref(metadata) != stored_ref:
@@ -367,6 +392,67 @@ class _SessionStorageMixin(_MixinBase):
                 merged[key] = stored_metadata[key]
             else:
                 merged.pop(key, None)
+        if "phase_records" in stored_metadata:
+            if not isinstance(stored_metadata["phase_records"], dict):
+                raise ValueError("persisted phase_records mapping is malformed")
+            merged["phase_records"] = stored_metadata["phase_records"]
+        else:
+            merged.pop("phase_records", None)
+        stored_state = dict(parse_runtime_state_metadata(stored_metadata["runtime_state"])) if "runtime_state" in stored_metadata else {}
+        if "composition_turn" in stored_state:
+            validated_composition_turn(stored_metadata, session_id=session_id)
+        next_state = dict(incoming_state)
+        stored_cursor = cast(int, stored_state.get("composition_turn_occurrence", 0))
+        incoming_cursor = cast(int, incoming_state.get("composition_turn_occurrence", 0))
+        advance = advance_composition_turn and incoming_cursor > stored_cursor
+        for key in ("composition_turn_occurrence", "composition_turn"):
+            if advance:
+                owner_state = incoming_state
+            elif key in stored_state:
+                owner_state = stored_state
+            elif key == "composition_turn" and "composition_turn_occurrence" in stored_state and stored_cursor >= incoming_cursor:
+                owner_state = stored_state
+            else:
+                owner_state = incoming_state
+            if key in owner_state:
+                next_state[key] = owner_state[key]
+            else:
+                next_state.pop(key, None)
+        if incoming_cursor == stored_cursor and "composition_turn" in incoming_state and "composition_turn" in stored_state:
+            incoming_turn = incoming_state["composition_turn"]
+            stored_turn = stored_state.get("composition_turn")
+            if isinstance(stored_turn, dict) and isinstance(incoming_turn, dict):
+                for key in ("session_id", "run_id", "scope_id", "occurrence"):
+                    if incoming_turn.get(key) != stored_turn.get(key):
+                        raise ValueError("composition turn identity is immutable at its occurrence")
+                stored_calls = stored_turn.get("invoked_call_ids", [])
+                incoming_calls = incoming_turn.get("invoked_call_ids", [])
+                if not isinstance(stored_calls, list) or not isinstance(incoming_calls, list):
+                    raise ValueError("composition turn invoked call IDs must be a list")
+                if any(not isinstance(call, str) or not call for call in [*stored_calls, *incoming_calls]):
+                    raise ValueError("composition turn invoked call IDs must be nonempty strings")
+                next_state["composition_turn"] = {
+                    **incoming_turn,
+                    "completed": stored_turn.get("completed") is True or incoming_turn.get("completed") is True,
+                    "invoked_call_ids": list(dict.fromkeys([*stored_calls, *incoming_calls])),
+                }
+        effective_stored_batch = checkpoint_state.get("turn_batch") or stored_state.get("turn_batch")
+        if isinstance(effective_stored_batch, dict):
+            incoming_batch = incoming_state.get("turn_batch")
+            if (
+                isinstance(incoming_batch, dict)
+                and incoming_batch.get("run_id") == effective_stored_batch.get("run_id")
+                and incoming_batch.get("run_step") == effective_stored_batch.get("run_step")
+            ):
+                stored_completed = effective_stored_batch.get("completed_call_ids", [])
+                incoming_completed = incoming_batch.get("completed_call_ids", [])
+                if isinstance(stored_completed, list) and isinstance(incoming_completed, list):
+                    if len(stored_completed) > len(incoming_completed):
+                        next_state["turn_batch"] = effective_stored_batch
+        if next_state:
+            merged["runtime_state"] = next_state
+        else:
+            merged.pop("runtime_state", None)
         if "execution_composition" in stored_metadata:
             if "execution_composition" in metadata and metadata["execution_composition"] != stored_metadata["execution_composition"]:
                 raise ValueError("session execution composition is immutable")
@@ -404,9 +490,9 @@ class _SessionStorageMixin(_MixinBase):
         the terminal state and never regresses ``last_event_sequence``.
         Context assembly lives in ``context/window.py``.
 
-        ``seal_terminal_status=False`` writes the row as ``interrupted`` instead
-        of the terminal status, so an older-finishing run cannot re-seal a
-        session that a newer run is still actively appending to.
+        ``seal_terminal_status=False`` writes the row and any terminal checkpoint
+        as ``interrupted`` instead of sealing the completed turn, because a
+        newer run on the same session is still active.
         """
         session_id = response.session.session.id
         with self._write_connect(workspace) as connection:
@@ -418,6 +504,13 @@ class _SessionStorageMixin(_MixinBase):
                 workspace=workspace,
                 session_id=session_id,
             )
+            resume_checkpoint = self._run_resume_checkpoint(
+                request=request,
+                response=response,
+                last_event_sequence=persisted_last_sequence,
+            )
+            if not seal_terminal_status and resume_checkpoint["kind"] == "terminal":
+                resume_checkpoint = {**resume_checkpoint, "kind": "interrupted", "session_status": "interrupted"}
             self._write_session_snapshot(
                 connection=connection,
                 workspace=workspace,
@@ -433,11 +526,7 @@ class _SessionStorageMixin(_MixinBase):
                     )
                 ),
                 pending_question_json=None,
-                resume_checkpoint=self._run_resume_checkpoint(
-                    request=request,
-                    response=response,
-                    last_event_sequence=persisted_last_sequence,
-                ),
+                resume_checkpoint=resume_checkpoint,
                 seal_terminal_status=seal_terminal_status,
             )
             self._sync_background_task_durable_state(
@@ -793,7 +882,7 @@ class _SessionStorageMixin(_MixinBase):
         with self._write_connect(workspace) as connection:
             existing = fetch_row(
                 connection,
-                "SELECT 1 FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                "SELECT resume_checkpoint_json FROM sessions WHERE workspace_id = ? AND session_id = ?",
                 (str(workspace), session_id),
             )
             if composition is not None:
@@ -808,10 +897,37 @@ class _SessionStorageMixin(_MixinBase):
                 metadata=persisted_metadata,
                 initial=existing is None,
             )
+            effective_results = tool_results
+            if existing is not None and existing[0]:
+                try:
+                    cp_data = json.loads(existing[0])
+                    if isinstance(cp_data, dict):
+                        cp_meta = cp_data.get("session_metadata")
+                        stored_batch = (
+                            dict(parse_runtime_state_metadata(cp_meta["runtime_state"])).get("turn_batch")
+                            if isinstance(cp_meta, dict) and "runtime_state" in cp_meta
+                            else None
+                        )
+                        incoming_batch = (
+                            dict(parse_runtime_state_metadata(persisted_metadata["runtime_state"])).get("turn_batch")
+                            if "runtime_state" in persisted_metadata
+                            else None
+                        )
+                        same_step = (
+                            isinstance(stored_batch, dict)
+                            and isinstance(incoming_batch, dict)
+                            and stored_batch.get("run_id") == incoming_batch.get("run_id")
+                            and stored_batch.get("run_step") == incoming_batch.get("run_step")
+                        )
+                        stored_results = cp_data.get("tool_results", [])
+                        if same_step and isinstance(stored_results, list) and len(stored_results) > len(tool_results):
+                            effective_results = tuple(stored_results)
+                except Exception:
+                    pass
             checkpoint = self._interrupted_resume_checkpoint(
                 prompt=prompt,
                 session_metadata=persisted_metadata,
-                tool_results=tool_results,
+                tool_results=effective_results,
                 last_event_sequence=last_event_sequence,
                 output=output,
             )
@@ -1195,6 +1311,9 @@ class _SessionStorageMixin(_MixinBase):
         abandoned branch's pending approval/question — is dropped in the same
         ``BEGIN IMMEDIATE`` transaction as the move, so a later run re-derives
         it from the events on the new path.
+        Private phase records remain this session's authoritative history. Its
+        producer occurrence cursor is retained monotonically, but the active
+        turn identity is cleared so continuing allocates a fresh turn scope.
 
         A checkout is an explicit "continue from here", so the session is never
         left terminal at the chosen position: the row becomes ``interrupted``,
@@ -1228,7 +1347,10 @@ class _SessionStorageMixin(_MixinBase):
             if dangling is not None:
                 kind, label = dangling
                 raise RuntimeSessionCheckoutBoundaryError(f"checkout target {sequence} splits a {kind} call from its result ({label})")
-            next_metadata = {key: value for key, value in metadata.items() if key not in _NON_TRANSFERABLE_METADATA_KEYS}
+            next_metadata = {key: value for key, value in metadata.items() if key != "runtime_state"}
+            runtime_state = parse_runtime_state_metadata(metadata["runtime_state"]) if "runtime_state" in metadata else {}
+            if "composition_turn_occurrence" in runtime_state:
+                next_metadata["runtime_state"] = {"composition_turn_occurrence": runtime_state["composition_turn_occurrence"]}
             metadata_json = json.dumps(next_metadata, sort_keys=True)
             checkpoint = self._interrupted_resume_checkpoint(
                 prompt=_checked_out_prompt(path),
@@ -1574,8 +1696,41 @@ class _SessionStorageMixin(_MixinBase):
                 workspace=workspace,
                 session_id=session_id,
                 metadata=persisted,
+                advance_composition_turn=True,
             )
             self._write_session_metadata_row(connection=connection, workspace=workspace, session_id=session_id, metadata=persisted)
+            connection.commit()
+
+    def save_composition_phase_record(self, *, workspace: Path, session_id: str, record: PhaseRecord) -> None:
+        """Publish one authoritative phase transition without replacing stale maps."""
+        with self._write_connect(workspace) as connection:
+            row = fetch_row(
+                connection,
+                "SELECT metadata_json FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            )
+            if row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            metadata = json.loads(decode_row(row, SessionMetadataRow)["metadata_json"])
+            if not isinstance(metadata, dict):
+                raise ValueError("session metadata must decode to an object")
+            records = metadata["phase_records"] if "phase_records" in metadata else {}
+            if not isinstance(records, dict):
+                raise ValueError("persisted phase_records mapping is malformed")
+            for key, payload in records.items():
+                if not isinstance(payload, dict):
+                    raise ValueError("persisted phase_records entry is malformed")
+                parsed = PhaseRecord.model_validate(payload)
+                if key != f"{parsed.phase_key}:{parsed.scope}:{parsed.scope_id}":
+                    raise ValueError("persisted phase record key does not match its identity")
+            key = f"{record.phase_key}:{record.scope}:{record.scope_id}"
+            metadata["phase_records"] = {**records, key: record.model_dump(mode="json")}
+            self._write_session_metadata_row(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+                metadata=session_metadata_for_persistence(metadata),
+            )
             connection.commit()
 
     def enqueue_session_message(

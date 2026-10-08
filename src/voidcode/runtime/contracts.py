@@ -213,6 +213,8 @@ class RuntimeStateMetadata(TypedDict, total=False):
     todos: dict[str, object]
     pending_tool_intent: dict[str, object]
     turn_batch: dict[str, object]
+    composition_turn_occurrence: int
+    composition_turn: dict[str, object]
     context_compacted: dict[str, object]
     context_transform_applied: dict[str, object]
     # Per-call reminder cycle counters (``reminders.py``); never reminder text.

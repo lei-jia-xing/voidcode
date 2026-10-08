@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from voidcode.core.tool_context import ToolContext
+from voidcode.core.transcript import output_text
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.web_search import WebSearchTool
 
@@ -60,7 +61,7 @@ def test_websearch_tool_respects_num_results_limit() -> None:
             context=ToolContext(workspace=Path("/tmp")),
         )
 
-    assert result.data["num_results"] == 5
+    assert result.body is not None and result.body.num_results == 5
 
 
 def test_websearch_tool_defaults_to_8_results() -> None:
@@ -80,7 +81,7 @@ def test_websearch_tool_defaults_to_8_results() -> None:
             context=ToolContext(workspace=Path("/tmp")),
         )
 
-    assert result.data["num_results"] == 8
+    assert result.body is not None and result.body.num_results == 8
 
 
 def test_websearch_tool_uses_beautifulsoup_ddg_fallback_parsing() -> None:
@@ -117,9 +118,10 @@ def test_websearch_tool_uses_beautifulsoup_ddg_fallback_parsing() -> None:
         )
 
     assert result.status == "ok"
-    assert result.data["source"] == "duckduckgo"
-    assert isinstance(result.content, str)
-    lines = str(result.data["results"]).splitlines()
+    assert result.output.bounds.source == "duckduckgo"
+    content = output_text(result.output)
+    assert isinstance(content, str)
+    lines = content.splitlines()
     assert lines[0] == "1. Result A"
     assert lines[1] == "   https://example.com/a"
     assert lines[2] == "   Snippet A..."
@@ -138,8 +140,8 @@ def test_websearch_tool_reports_truthful_metadata_when_ddg_parsing_fails() -> No
         )
 
     assert result.status == "error"
-    assert result.data["source"] == "duckduckgo-error"
+    assert result.output.bounds.source == "duckduckgo-error"
     assert result.error is not None
     assert result.error.startswith("Web search failed:")
-    assert result.fallback_reason is not None
-    assert result.fallback_reason.startswith("duckduckgo fallback failed:")
+    assert result.output.bounds.fallback_reason is not None
+    assert result.output.bounds.fallback_reason.startswith("duckduckgo fallback failed:")

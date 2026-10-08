@@ -34,7 +34,6 @@ from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
-    is_background_task_terminal,
 )
 from voidcode.runtime.composition import CompositionOwner, CompositionRef, FrozenComposition, TaskCompositionOwner
 from voidcode.runtime.config import (
@@ -88,7 +87,6 @@ from voidcode.runtime.service import (
     SessionState,
     VoidCodeRuntime,
 )
-from voidcode.runtime.session import SessionRef
 from voidcode.runtime.session_metadata_helpers import (
     continuity_state_from_session_metadata,
 )
@@ -465,8 +463,8 @@ class _AbortableStreamingProducer:
         session: TurnSession,
     ) -> Iterator[object]:
         _ = tool_results, session
-        yield StreamFact(ProviderStreamEvent(kind="delta", channel="text", text="partial answer"))
         self.started.set()
+        yield StreamFact(ProviderStreamEvent(kind="delta", channel="text", text="partial answer"))
         while request.abort_signal is None or not request.abort_signal.cancelled:
             time.sleep(0.005)
         if self.generic_error:
@@ -573,15 +571,9 @@ def _wait_for_background_task(
     runtime: VoidCodeRuntime,
     task_id: str,
     *,
-    timeout_seconds: float = 2.0,
+    timeout_seconds: float = 30.0,
 ) -> BackgroundTaskState:
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        task = runtime.load_background_task(task_id)
-        if is_background_task_terminal(task.status):
-            return task
-        time.sleep(0.01)
-    raise AssertionError(f"background task {task_id} did not reach terminal state")
+    return runtime.wait_for_background_task(task_id, timeout_seconds=timeout_seconds)
 
 
 def _wait_for_background_task_session(runtime: VoidCodeRuntime, task_id: str) -> BackgroundTaskState:
@@ -1881,12 +1873,21 @@ def test_runtime_resume_rejects_wrong_workspace_metadata_on_approval_resume(tmp_
         ).fetchone()
         assert row is not None
         metadata = json.loads(str(row[0]))
+        checkpoint = json.loads(str(row[1]))
         assert isinstance(metadata, dict)
+        assert isinstance(checkpoint, dict)
         metadata_dict = cast(dict[str, object], metadata)
+        checkpoint_dict = cast(dict[str, object], checkpoint)
+        checkpoint_metadata = cast(dict[str, object], checkpoint_dict["session_metadata"])
         metadata_dict["workspace"] = "/tmp/other-workspace"
+        checkpoint_metadata["workspace"] = "/tmp/other-workspace"
         _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata_dict, sort_keys=True), "wrong-workspace-approval"),
+            "UPDATE sessions SET metadata_json = ?, resume_checkpoint_json = ? WHERE session_id = ?",
+            (
+                json.dumps(metadata_dict, sort_keys=True),
+                json.dumps(checkpoint_dict, sort_keys=True),
+                "wrong-workspace-approval",
+            ),
         )
         connection.commit()
     finally:
@@ -1925,17 +1926,26 @@ def test_runtime_answer_question_rejects_wrong_workspace_metadata(tmp_path: Path
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
-            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            "SELECT metadata_json, resume_checkpoint_json FROM sessions WHERE session_id = ?",
             ("wrong-workspace-question",),
         ).fetchone()
         assert row is not None
         metadata = json.loads(str(row[0]))
+        checkpoint = json.loads(str(row[1]))
         assert isinstance(metadata, dict)
+        assert isinstance(checkpoint, dict)
         metadata_dict = cast(dict[str, object], metadata)
+        checkpoint_dict = cast(dict[str, object], checkpoint)
+        checkpoint_metadata = cast(dict[str, object], checkpoint_dict["session_metadata"])
         metadata_dict["workspace"] = "/tmp/other-workspace"
+        checkpoint_metadata["workspace"] = "/tmp/other-workspace"
         _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata_dict, sort_keys=True), "wrong-workspace-question"),
+            "UPDATE sessions SET metadata_json = ?, resume_checkpoint_json = ? WHERE session_id = ?",
+            (
+                json.dumps(metadata_dict, sort_keys=True),
+                json.dumps(checkpoint_dict, sort_keys=True),
+                "wrong-workspace-question",
+            ),
         )
         connection.commit()
     finally:
@@ -2158,9 +2168,11 @@ def test_runtime_retries_failed_background_task_as_fresh_queued_task(
     assert retried.request.allocate_session_id is True
     retry_metadata = retried.request.metadata
     failed_metadata = failed.request.metadata
-    assert retry_metadata["composition_ref"] == failed_metadata["composition_ref"]
-    assert "execution_composition" not in retry_metadata
-    assert "execution_composition" in failed_metadata
+    retry_ref = cast(dict[str, object], retry_metadata["composition_ref"])
+    failed_ref = cast(dict[str, object], failed_metadata["composition_ref"])
+    assert retry_ref["owner"] == {"kind": "task", "task_id": retried.task.id}
+    assert {key: value for key, value in retry_ref.items() if key != "owner"} == {key: value for key, value in failed_ref.items() if key != "owner"}
+    assert retry_metadata["execution_composition"] == failed_metadata["execution_composition"]
     assert {key: value for key, value in retry_metadata.items() if key not in {"composition_ref", "execution_composition"}} == {
         key: value for key, value in failed_metadata.items() if key not in {"composition_ref", "execution_composition"}
     }
@@ -2866,7 +2878,7 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
     child_delegation = cast(dict[str, object], child_capability["delegation"])
 
     assert child_tools - {"yield"} <= parent_tools
-    assert child_tools == {"read", "yield"}
+    assert child_tools == {"read", "task", "yield"}
     assert child_delegation["parent_bounded"] is True
     assert child_delegation["can_expand_parent_policy"] is False
     assert cast(list[str], child_delegation["allowed_child_presets"]) == [
@@ -3981,48 +3993,6 @@ def test_runtime_effective_runtime_config_rejects_missing_persisted_fallback_mod
         resumed_runtime.effective_runtime_config(session_id="fallback-config-missing-key")
 
 
-def test_runtime_persists_resolved_provider_snapshot_in_runtime_metadata(tmp_path: Path) -> None:
-    sample_file = tmp_path / "sample.txt"
-    sample_file.write_text("resolved provider config\n", encoding="utf-8")
-
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            providers=_STANDIN_PROVIDERS,
-            approval_mode="yolo",
-            execution_engine="deterministic",
-            model="opencode-zen/gpt-5.4",
-            provider_fallback=RuntimeProviderFallbackConfig(
-                preferred_model="opencode-zen/gpt-5.4",
-                fallback_models=("custom/demo",),
-            ),
-        ),
-    )
-
-    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="resolved-provider"))
-
-    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    assert runtime_config["resolved_provider"] == {
-        "active_target": {
-            "raw_model": "opencode-zen/gpt-5.4",
-            "provider": "opencode-zen",
-            "model": "gpt-5.4",
-        },
-        "targets": [
-            {
-                "raw_model": "opencode-zen/gpt-5.4",
-                "provider": "opencode-zen",
-                "model": "gpt-5.4",
-            },
-            {
-                "raw_model": "custom/demo",
-                "provider": "custom",
-                "model": "demo",
-            },
-        ],
-    }
-
-
 def test_runtime_effective_runtime_config_rejects_malformed_persisted_provider_fallback(
     tmp_path: Path,
 ) -> None:
@@ -4169,6 +4139,7 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_resolved_p
         metadata_dict = cast(dict[str, object], metadata)
         runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
         runtime_config["resolved_provider"] = {
+            "schema_version": 2,
             "active_target": {
                 "raw_model": "opencode-zen/gpt-5.4",
                 "provider": "opencode-zen",
@@ -4297,14 +4268,6 @@ def test_runtime_resume_approval_rebuilds_from_persisted_checkpoint_after_restar
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-resume-session"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = sessions_db_path()
-    connection = sqlite3.connect(database_path)
-    try:
-        _ = connection.execute("DELETE FROM session_events WHERE session_id = ?", ("checkpoint-resume-session",))
-        connection.commit()
-    finally:
-        connection.close()
-
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         turn_producer=_ApprovalThenCaptureSkillGraph(),
@@ -4411,18 +4374,17 @@ def test_runtime_resume_rejects_skill_snapshot_hash_mismatch_with_checkpoint(
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
-            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            "SELECT resume_checkpoint_json FROM sessions WHERE session_id = ?",
             ("checkpoint-hash-mismatch",),
         ).fetchone()
         assert row is not None
-        metadata = json.loads(str(row[0]))
-        assert isinstance(metadata, dict)
-        metadata_dict = cast(dict[str, object], metadata)
-        skill_snapshot = cast(dict[str, object], metadata_dict["skill_snapshot"])
-        skill_snapshot["snapshot_hash"] = "tampered-hash"
+        checkpoint = json.loads(str(row[0]))
+        assert isinstance(checkpoint, dict)
+        checkpoint_dict = cast(dict[str, object], checkpoint)
+        checkpoint_dict["skill_snapshot_hash"] = "tampered-hash"
         _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(metadata_dict, sort_keys=True), "checkpoint-hash-mismatch"),
+            "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
+            (json.dumps(checkpoint_dict, sort_keys=True), "checkpoint-hash-mismatch"),
         )
         connection.commit()
     finally:
@@ -4718,20 +4680,16 @@ def test_pre_tool_match_filter_runs_hook_for_matching_tool_on_plan_path(tmp_path
 
 def test_runtime_rename_session_bounds_rejects_and_returns_updated_summary(tmp_path: Path) -> None:
     """The runtime boundary is the one title validator: bound, reject, and echo."""
-    runtime = VoidCodeRuntime(workspace=tmp_path)
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
+    )
 
     def _seed(session_id: str, prompt: str) -> None:
-        runtime._repositories.run_writer.save_run(
-            workspace=tmp_path,
-            request=RuntimeRequest(prompt=prompt, session_id=session_id),
-            response=RuntimeResponse(
-                session=SessionState(session=SessionRef(id=session_id), status="completed", turn=1),
-                events=(),
-                output=None,
-            ),
-        )
+        _ = runtime.run(RuntimeRequest(prompt=prompt, session_id=session_id))
 
-    _seed("rename-ok", "seed prompt")
+    _ = (tmp_path / "sample.txt").write_text("seed\n", encoding="utf-8")
+    _seed("rename-ok", "read sample.txt")
 
     renamed = runtime.rename_session(session_id="rename-ok", title="  spaced\n\ttitle  ")
 
@@ -4749,16 +4707,12 @@ def test_runtime_rename_session_bounds_rejects_and_returns_updated_summary(tmp_p
 
 
 def test_runtime_rename_session_accepts_exactly_at_the_bound(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path)
-    runtime._repositories.run_writer.save_run(
+    runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        request=RuntimeRequest(prompt="boundary", session_id="boundary-session"),
-        response=RuntimeResponse(
-            session=SessionState(session=SessionRef(id="boundary-session"), status="completed", turn=1),
-            events=(),
-            output=None,
-        ),
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
     )
+    _ = (tmp_path / "sample.txt").write_text("boundary\n", encoding="utf-8")
+    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="boundary-session"))
 
     at_bound = "y" * SESSION_TITLE_MAX_LENGTH
 

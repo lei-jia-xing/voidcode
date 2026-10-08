@@ -106,6 +106,11 @@ def parse_runtime_state_metadata(raw: object) -> RuntimeStateMetadata:
         if not isinstance(run_id, str) or not run_id:
             raise ValueError("persisted runtime_state field 'run_id' must be a non-empty string")
         normalized["run_id"] = run_id
+    if "composition_turn_occurrence" in payload:
+        occurrence = payload["composition_turn_occurrence"]
+        if type(occurrence) is not int or occurrence < 0:
+            raise ValueError("persisted composition turn occurrence must be a nonnegative integer")
+        normalized["composition_turn_occurrence"] = occurrence
     for field in (
         "acp",
         "context_projection",
@@ -113,6 +118,7 @@ def parse_runtime_state_metadata(raw: object) -> RuntimeStateMetadata:
         "todos",
         "pending_tool_intent",
         "turn_batch",
+        "composition_turn",
         "context_compacted",
         "context_transform_applied",
         "reminders",

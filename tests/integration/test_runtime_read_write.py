@@ -253,11 +253,16 @@ def test_openai_sdk_resumes_original_batch_after_read_before_approved_write(
             assert isinstance(capability, dict)
             composition_ref = capability["composition_ref"]
             assert isinstance(composition_ref, dict)
-            assert composition_ref == source.session.metadata["composition_ref"]
-            assert "execution_composition" not in stored_fork.session.metadata
-            assert new_store.load_execution_composition(ref=CompositionRef.model_validate(composition_ref)) == FrozenComposition.from_payload(
-                source.session.metadata["execution_composition"]
-            )
+            source_ref = source.session.metadata["composition_ref"]
+            assert isinstance(source_ref, dict)
+            assert composition_ref["owner"] == {"kind": "session", "session_id": fork.session.id}
+            assert {key: value for key, value in composition_ref.items() if key != "owner"} == {
+                key: value for key, value in source_ref.items() if key != "owner"
+            }
+            forked_composition = FrozenComposition.from_payload(stored_fork.session.metadata["execution_composition"])
+            source_composition = FrozenComposition.from_payload(source.session.metadata["execution_composition"])
+            assert new_store.load_execution_composition(ref=CompositionRef.model_validate(composition_ref)) == forked_composition
+            assert forked_composition == source_composition
             fork_replay = new_runtime.resume(fork.session.id)
             assert fork_replay.session.session.id == fork.session.id
             assert len(server.requests) == 2

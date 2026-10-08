@@ -43,6 +43,11 @@ Provider streaming 可发送 `graph.tool_call_start`、`graph.tool_call_delta` �
 `graph.tool_call_end` 事件。事件按 `tool_call_id`（并保留 ordinal）关联；
 `arguments_delta` 是可拼接的原始 JSON 片段，不能被当作完整工具输入执行。
 
+Provider 的 completed turn 必须包含非空终端文本或完整工具调用。Native lifecycle
+调用缺少 `tool_call_id`、`tool_name` 或 `tool_call_end`，以及参数不是 JSON object
+(或无法解析) 时，runtime 按 transient failure 拒绝整轮；缺少最终文本和工具调用时也
+拒绝，不会将不完整/空结果报告为成功或发出工具执行请求。
+
 这些参数增量是 **live-only** 观察数据，不写入持久化 session truth，也不出现在
 replay 中。对于 `write`、`edit`、`multi_edit`、`apply_patch`，runtime/graph 会
 在相应 lifecycle payload 中提供有界的 `diff_preview`；写工具事件不会把

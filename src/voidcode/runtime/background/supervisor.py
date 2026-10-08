@@ -758,7 +758,7 @@ class RuntimeBackgroundTaskSupervisor:
             composition_ref = None
         else:
             if composition is not None:
-                raise ValueError("background task retries must reuse their existing composition owner")
+                raise ValueError("background task cannot supply both a composition reference and frozen composition")
             composition_ref = CompositionRef.model_validate(raw_ref)
             if composition_ref.workspace != str(self._workspace):
                 raise ValueError("background task composition reference names a different workspace")
@@ -812,12 +812,15 @@ class RuntimeBackgroundTaskSupervisor:
         )
         if previous_task.status not in ("failed", "cancelled", "interrupted"):
             raise ValueError(f"background task retry requires a failed, cancelled, or interrupted task; task {task_id} is {previous_task.status}")
-        self._tasks.stop_background_task_idle_reminder(
-            workspace=self._workspace,
-            task_id=task_id,
-            stop_condition="explicit_retry",
-        )
-        return self.start_background_task(previous_task.request.as_runtime_request())
+        composition_ref = CompositionRef.model_validate(previous_task.request.metadata.get("composition_ref"))
+        if composition_ref.workspace != str(self._workspace):
+            raise ValueError("background task composition reference names a different workspace")
+        composition = self._recovery.load_execution_composition(ref=composition_ref)
+        request = previous_task.request.as_runtime_request()
+        metadata = dict(request.metadata)
+        metadata.pop("composition_ref", None)
+        metadata.pop("execution_composition", None)
+        return self.start_background_task(replace(request, metadata=metadata), composition=composition)
 
     def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState:
         """Dispatch a new worker turn for a keep-alive background task.

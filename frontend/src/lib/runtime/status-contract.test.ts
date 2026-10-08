@@ -1,73 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { deriveChatMessages } from "./event-parser";
 import { EventEnvelope } from "./types";
+import { deriveLatestTodoSnapshot } from "../../components/todoPanelModel";
 
 describe("Tool Status Contract", () => {
-  it("renders backend-provided tool status and label", () => {
-    const events: EventEnvelope[] = [
-      {
-        session_id: "test",
-        sequence: 1,
-        event_type: "runtime.request_received",
-        source: "runtime",
-        payload: { prompt: "Read the file" },
-      },
-      {
-        session_id: "test",
-        sequence: 2,
-        event_type: "some.event.type.does.not.matter",
-        source: "graph",
-        payload: {
-          tool_status: {
-            invocation_id: "call_abc",
-            tool_name: "read",
-            phase: "running",
-            status: "running",
-            label: "Reading file...",
-            display: {
-              kind: "context",
-              title: "Read",
-              summary: "Reading file...",
-            },
-          },
-        },
-      },
-      {
-        session_id: "test",
-        sequence: 3,
-        event_type: "another.event.type",
-        source: "tool",
-        payload: {
-          tool_status: {
-            invocation_id: "call_abc",
-            tool_name: "read",
-            phase: "completed",
-            status: "completed",
-            label: "Read 10 lines",
-            display: {
-              kind: "context",
-              title: "Read",
-              summary: "Read 10 lines",
-            },
-          },
-        },
-      },
-    ];
-
-    const messages = deriveChatMessages(events, null);
-    const assistantMessage = messages.find((m) => m.role === "assistant");
-    expect(assistantMessage).toBeDefined();
-
-    expect(assistantMessage!.tools).toHaveLength(1);
-    const tool = assistantMessage!.tools[0];
-
-    expect(tool.id).toBe("call_abc");
-    expect(tool.name).toBe("read");
-    expect(tool.label).toBe("Read 10 lines");
-    expect(tool.status).toBe("completed");
-  });
-
-  it("tracks the stable tool-status payload shape without frontend heuristics", () => {
+  it("ignores a tool-status projection for a different native call identity", () => {
     const events: EventEnvelope[] = [
       {
         session_id: "test",
@@ -82,9 +19,11 @@ describe("Tool Status Contract", () => {
         event_type: "runtime.tool_started",
         source: "runtime",
         payload: {
+          tool: "read",
+          tool_call_id: "call_xyz",
           tool_status: {
-            invocation_id: "call_xyz",
-            tool_name: "read",
+            invocation_id: "other-id",
+            tool_name: "other-tool",
             phase: "running",
             status: "running",
             label: "Reading file",
@@ -105,10 +44,101 @@ describe("Tool Status Contract", () => {
       {
         id: "call_xyz",
         name: "read",
-        label: "Reading file",
-        summary: "Reading file",
         status: "running",
       },
+    ]);
+    expect(assistantMessage?.tools[0]?.label).toBeUndefined();
+  });
+
+  it("uses event-specific native statuses, never tool_status status projections", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "test",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "Run a tool" },
+      },
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "graph.tool_request_created",
+        source: "graph",
+        payload: {
+          tool: "read",
+          tool_call_id: "native-1",
+          status: "error",
+          tool_status: {
+            invocation_id: "native-1",
+            tool_name: "read",
+            status: "failed",
+          },
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 3,
+        event_type: "runtime.tool_started",
+        source: "runtime",
+        payload: {
+          tool: "read",
+          tool_call_id: "native-1",
+          status: "error",
+          tool_status: {
+            invocation_id: "native-1",
+            tool_name: "read",
+            status: "failed",
+          },
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 4,
+        event_type: "runtime.tool_completed",
+        source: "tool",
+        payload: {
+          tool: "read",
+          tool_call_id: "native-1",
+          status: "ok",
+          tool_status: {
+            invocation_id: "native-1",
+            tool_name: "read",
+            status: "failed",
+          },
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 5,
+        event_type: "runtime.tool_completed",
+        source: "tool",
+        payload: {
+          tool: "grep",
+          tool_call_id: "native-2",
+          tool_status: {
+            invocation_id: "native-2",
+            tool_name: "grep",
+            status: "completed",
+          },
+        },
+      },
+    ];
+    expect(
+      deriveChatMessages(events.slice(0, 2), null).find(
+        (message) => message.role === "assistant",
+      )?.tools,
+    ).toMatchObject([{ id: "native-1", status: "pending" }]);
+    expect(
+      deriveChatMessages(events.slice(0, 3), null).find(
+        (message) => message.role === "assistant",
+      )?.tools,
+    ).toMatchObject([{ id: "native-1", status: "running" }]);
+
+    const assistant = deriveChatMessages(events, null).find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistant?.tools.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: "native-1", status: "completed" },
     ]);
   });
 
@@ -250,13 +280,6 @@ describe("Tool Status Contract", () => {
           tool: "shell_exec",
           tool_call_id: "shell-approval-1",
           arguments: { command: "npm test" },
-          tool_status: {
-            invocation_id: "shell-approval-1",
-            tool_name: "shell_exec",
-            phase: "running",
-            status: "running",
-            display: { kind: "shell", title: "Shell", summary: "npm test" },
-          },
         },
       },
       {
@@ -267,6 +290,7 @@ describe("Tool Status Contract", () => {
         payload: {
           request_id: "approval-1",
           tool: "shell_exec",
+          tool_call_id: "shell-approval-1",
           decision: "ask",
           arguments: { command: "npm test" },
           target_summary: "shell_exec",
@@ -283,6 +307,9 @@ describe("Tool Status Contract", () => {
       name: "shell_exec",
       status: "pending",
     });
+    expect(assistantMessage?.approval?.parameters).toBe(
+      '{"command":"npm test"}',
+    );
   });
 
   it("marks only the approval-blocked tool row as failed when approval is denied", () => {
@@ -302,13 +329,6 @@ describe("Tool Status Contract", () => {
         payload: {
           tool: "shell_exec",
           tool_call_id: "shell-deny-1",
-          tool_status: {
-            invocation_id: "shell-deny-1",
-            tool_name: "shell_exec",
-            phase: "running",
-            status: "running",
-            display: { kind: "shell", title: "Shell", summary: "rm -rf build" },
-          },
           arguments: { command: "rm -rf build" },
         },
       },
@@ -320,6 +340,7 @@ describe("Tool Status Contract", () => {
         payload: {
           request_id: "approval-deny-1",
           tool: "shell_exec",
+          tool_call_id: "shell-deny-1",
           decision: "ask",
           arguments: { command: "rm -rf build" },
           target_summary: "shell_exec",
@@ -414,11 +435,7 @@ describe("Tool Status Contract", () => {
         payload: {
           tool: "read",
           tool_call_id: "call_raw",
-          execution_intent: {
-            tool_call_id: "call_raw",
-            tool_name: "read",
-            arguments: { path: "README.md", line_start: 1 },
-          },
+          arguments: { path: "README.md", line_start: 1 },
         },
       },
       {
@@ -430,7 +447,7 @@ describe("Tool Status Contract", () => {
           tool: "read",
           tool_call_id: "call_raw",
           status: "ok",
-          arguments: {},
+          arguments: { path: "README.md", line_start: 1 },
           content: "file contents",
           data: { path: "README.md" },
         },
@@ -528,199 +545,6 @@ describe("Tool Status Contract", () => {
       { kind: "tool", sequence: 3, toolKey: "call-tool-channel" },
     ]);
   });
-  it("binds a generated start id to a pending raw graph request", () => {
-    const events: EventEnvelope[] = [
-      {
-        session_id: "test",
-        sequence: 1,
-        event_type: "runtime.request_received",
-        source: "runtime",
-        payload: { prompt: "Read" },
-      },
-      {
-        session_id: "test",
-        sequence: 2,
-        event_type: "graph.tool_request_created",
-        source: "graph",
-        payload: {
-          tool: "read",
-          arguments: { path: "README.md", line_start: 1 },
-        },
-      },
-      {
-        session_id: "test",
-        sequence: 3,
-        event_type: "runtime.tool_started",
-        source: "runtime",
-        payload: {
-          tool: "read",
-          tool_call_id: "runtime-tool-read",
-          execution_intent: {
-            arguments: { path: "README.md", line_start: 1 },
-          },
-        },
-      },
-      {
-        session_id: "test",
-        sequence: 4,
-        event_type: "runtime.tool_completed",
-        source: "tool",
-        payload: {
-          tool: "read",
-          tool_call_id: "runtime-tool-read",
-          status: "ok",
-          content: "contents",
-        },
-      },
-    ];
-
-    const assistantMessage = deriveChatMessages(events, null).find(
-      (message) => message.role === "assistant",
-    );
-    expect(assistantMessage?.tools).toHaveLength(1);
-    expect(assistantMessage?.tools[0]).toMatchObject({
-      id: "runtime-tool-read",
-      name: "read",
-      status: "completed",
-      arguments: { path: "README.md", line_start: 1 },
-    });
-    expect(assistantMessage?.parts).toEqual([
-      { kind: "tool", sequence: 2, toolKey: "read#2" },
-    ]);
-  });
-  it("does not merge an identified call into an unidentified sibling", () => {
-    const events: EventEnvelope[] = [
-      {
-        session_id: "test",
-        sequence: 1,
-        event_type: "runtime.request_received",
-        source: "runtime",
-        payload: { prompt: "Read two files" },
-      },
-      {
-        session_id: "test",
-        sequence: 2,
-        event_type: "runtime.tool_started",
-        source: "runtime",
-        payload: {
-          tool: "read",
-          execution_intent: { arguments: { path: "a.txt" } },
-        },
-      },
-      {
-        session_id: "test",
-        sequence: 3,
-        event_type: "runtime.tool_started",
-        source: "runtime",
-        payload: {
-          tool: "read",
-          tool_call_id: "call-b",
-          arguments: { path: "b.txt" },
-        },
-      },
-      {
-        session_id: "test",
-        sequence: 4,
-        event_type: "runtime.tool_completed",
-        source: "tool",
-        payload: {
-          tool: "read",
-          tool_call_id: "call-b",
-          status: "ok",
-          content: "b contents",
-        },
-      },
-      {
-        session_id: "test",
-        sequence: 5,
-        event_type: "runtime.tool_completed",
-        source: "tool",
-        payload: {
-          tool: "read",
-          tool_call_id: "runtime-tool-read",
-          arguments: { path: "a.txt" },
-          status: "ok",
-          content: "a contents",
-        },
-      },
-    ];
-
-    const assistantMessage = deriveChatMessages(events, null).find(
-      (message) => message.role === "assistant",
-    );
-    expect(assistantMessage?.tools).toEqual([
-      expect.objectContaining({
-        id: "runtime-tool-read",
-        name: "read",
-        status: "completed",
-        arguments: { path: "a.txt" },
-        content: "a contents",
-      }),
-      expect.objectContaining({
-        id: "call-b",
-        name: "read",
-        status: "completed",
-        arguments: { path: "b.txt" },
-        content: "b contents",
-      }),
-    ]);
-    expect(assistantMessage?.parts).toEqual([
-      { kind: "tool", sequence: 2, toolKey: "read#2" },
-      { kind: "tool", sequence: 3, toolKey: "call-b" },
-    ]);
-  });
-
-  it("prefers tool_status identity and display over raw fields", () => {
-    const events: EventEnvelope[] = [
-      {
-        session_id: "test",
-        sequence: 1,
-        event_type: "runtime.request_received",
-        source: "runtime",
-        payload: { prompt: "Read" },
-      },
-      {
-        session_id: "test",
-        sequence: 2,
-        event_type: "runtime.tool_started",
-        source: "runtime",
-        payload: {
-          tool: "raw_read",
-          tool_call_id: "raw-id",
-          arguments: { path: "raw.txt" },
-          execution_intent: { arguments: { path: "intent.txt" } },
-          display: {
-            kind: "context",
-            title: "Raw Read",
-            summary: "Raw display",
-          },
-          tool_status: {
-            invocation_id: "status-id",
-            tool_name: "status_read",
-            status: "running",
-            display: {
-              kind: "context",
-              title: "Status Read",
-              summary: "Status display",
-            },
-          },
-        },
-      },
-    ];
-
-    const assistantMessage = deriveChatMessages(events, null).find(
-      (message) => message.role === "assistant",
-    );
-    expect(assistantMessage?.tools[0]).toMatchObject({
-      id: "status-id",
-      name: "status_read",
-      status: "running",
-      summary: "Status display",
-      display: { summary: "Status display" },
-      arguments: { path: "raw.txt" },
-    });
-  });
-
   it("records frontend receive time for reasoning duration when present", () => {
     const events: EventEnvelope[] = [
       {
@@ -735,7 +559,7 @@ describe("Tool Status Contract", () => {
         sequence: 2,
         event_type: "graph.provider_stream",
         source: "graph",
-        payload: { channel: "reasoning", delta: "first" },
+        payload: { channel: "reasoning", kind: "delta", text: "first" },
         received_at: 1000,
       },
       {
@@ -743,7 +567,7 @@ describe("Tool Status Contract", () => {
         sequence: 3,
         event_type: "graph.provider_stream",
         source: "graph",
-        payload: { channel: "reasoning", delta: "second" },
+        payload: { channel: "reasoning", kind: "delta", text: "second" },
         received_at: 2500,
       },
     ];
@@ -757,7 +581,45 @@ describe("Tool Status Contract", () => {
   });
 });
 
-it("merges runtime.todo_updated into the existing todo tool card", () => {
+it("keeps the latest flat todo result separate from same-name native tool calls", () => {
+  const todoState = {
+    phases: [
+      {
+        name: "Plan",
+        tasks: [{ content: "Draft plan", status: "completed" }],
+      },
+    ],
+    summary: {
+      total: 1,
+      pending: 0,
+      in_progress: 0,
+      completed: 1,
+      abandoned: 0,
+      blocked: 0,
+      active: 0,
+    },
+  };
+  const laterPhases = [
+    {
+      name: "Plan",
+      tasks: [
+        { content: "Draft plan", status: "completed" },
+        { content: "Ship plan", status: "in_progress" },
+      ],
+    },
+  ];
+  const latestTodoState = {
+    phases: laterPhases,
+    summary: {
+      total: 2,
+      pending: 0,
+      in_progress: 1,
+      completed: 1,
+      abandoned: 0,
+      blocked: 0,
+      active: 1,
+    },
+  };
   const events: EventEnvelope[] = [
     {
       session_id: "test",
@@ -769,55 +631,55 @@ it("merges runtime.todo_updated into the existing todo tool card", () => {
     {
       session_id: "test",
       sequence: 2,
-      event_type: "runtime.tool_completed",
+      event_type: "runtime.tool_started",
       source: "runtime",
-      payload: {
-        tool_status: {
-          invocation_id: "todo-call",
-          tool_name: "todo",
-          phase: "completed",
-          status: "completed",
-          display: { kind: "todo", title: "Todo", summary: "Updated todos" },
-        },
-        phases: [
-          {
-            name: "Plan",
-            tasks: [{ content: "Draft plan", status: "pending" }],
-          },
-        ],
-      },
+      payload: { tool: "todo", tool_call_id: "todo-call-1" },
     },
     {
       session_id: "test",
       sequence: 3,
+      event_type: "runtime.tool_started",
+      source: "runtime",
+      payload: { tool: "todo", tool_call_id: "todo-call-2" },
+    },
+    {
+      session_id: "test",
+      sequence: 4,
       event_type: "runtime.todo_updated",
       source: "runtime",
+      payload: todoState,
+    },
+    {
+      session_id: "test",
+      sequence: 5,
+      event_type: "runtime.tool_completed",
+      source: "tool",
       payload: {
-        phases: [
-          {
-            name: "Plan",
-            tasks: [{ content: "Draft plan", status: "completed" }],
-          },
-        ],
-        summary: {
-          total: 1,
-          pending: 0,
-          in_progress: 0,
-          completed: 1,
-          abandoned: 0,
-          blocked: 0,
-          active: 0,
-        },
+        tool: "todo",
+        tool_call_id: "todo-call-2",
+        status: "ok",
+        arguments: { op: "start", task: "Ship plan" },
+        phases: laterPhases,
+        summary: latestTodoState.summary,
+        op: "start",
+        mutated: true,
       },
     },
   ];
 
   const messages = deriveChatMessages(events, null);
-  const tools = messages[1]?.tools.filter((tool) => tool.name === "todo") ?? [];
-  expect(tools).toHaveLength(1);
-  expect(tools[0]?.result?.phases).toEqual([
-    { name: "Plan", tasks: [{ content: "Draft plan", status: "completed" }] },
+  const assistant = messages.find((message) => message.role === "assistant");
+  expect(assistant?.tools.map(({ id, status }) => ({ id, status }))).toEqual([
+    { id: "todo-call-1", status: "running" },
+    { id: "todo-call-2", status: "completed" },
   ]);
+  expect(assistant?.todoState?.phases).toEqual(laterPhases);
+  expect(deriveLatestTodoSnapshot(messages)).toEqual({
+    items: [
+      { content: "Draft plan", status: "completed", phase: "Plan" },
+      { content: "Ship plan", status: "in_progress", phase: "Plan" },
+    ],
+  });
 });
 
 describe("Tool Display Metadata Contract", () => {
@@ -919,6 +781,8 @@ describe("Tool Display Metadata Contract", () => {
         event_type: "runtime.tool_started",
         source: "runtime",
         payload: {
+          tool: "read",
+          tool_call_id: "call_xyz",
           tool_status: {
             invocation_id: "call_xyz",
             tool_name: "read",
@@ -1026,6 +890,8 @@ describe("Tool Display Metadata Contract", () => {
         event_type: "runtime.tool_started",
         source: "runtime",
         payload: {
+          tool: "read",
+          tool_call_id: "read-a",
           tool_status: {
             invocation_id: "read-a",
             tool_name: "read",
@@ -1047,6 +913,8 @@ describe("Tool Display Metadata Contract", () => {
         event_type: "runtime.tool_started",
         source: "runtime",
         payload: {
+          tool: "read",
+          tool_call_id: "read-b",
           tool_status: {
             invocation_id: "read-b",
             tool_name: "read",
@@ -1069,6 +937,9 @@ describe("Tool Display Metadata Contract", () => {
         source: "tool",
         payload: {
           content: "b contents",
+          tool: "read",
+          tool_call_id: "read-b",
+          status: "ok",
           tool_status: {
             invocation_id: "read-b",
             tool_name: "read",
@@ -1091,6 +962,9 @@ describe("Tool Display Metadata Contract", () => {
         source: "tool",
         payload: {
           content: "a contents",
+          tool: "read",
+          tool_call_id: "read-a",
+          status: "ok",
           tool_status: {
             invocation_id: "read-a",
             tool_name: "read",
@@ -1308,6 +1182,7 @@ describe("Live Stream Reasoning Contract", () => {
         source: "graph",
         payload: {
           tool: "read",
+          tool_call_id: "call_1",
           tool_status: {
             invocation_id: "call_1",
             tool_name: "read",
@@ -1480,7 +1355,7 @@ describe("Shell tool progress contract", () => {
     session_id: "test",
     sequence,
     event_type,
-    source: "runtime",
+    source: event_type === "runtime.tool_completed" ? "tool" : "runtime",
     payload,
   });
   const start = event(2, "runtime.tool_started", {
@@ -1502,31 +1377,31 @@ describe("Shell tool progress contract", () => {
         event(1, "runtime.request_received", { prompt: "run" }),
         start,
         event(3, "runtime.tool_progress", {
-          invocation_id: "shell-1",
+          tool_call_id: "shell-1",
           stream: "stdout",
           chunk: "one",
           ordinal: 1,
         }),
         event(4, "runtime.tool_progress", {
-          invocation_id: "shell-1",
+          tool_call_id: "shell-1",
           stream: "stderr",
           chunk: "warn",
           ordinal: 2,
         }),
         event(5, "runtime.tool_progress", {
-          invocation_id: "shell-1",
+          tool_call_id: "shell-1",
           stream: "stdout",
           chunk: "one",
           ordinal: 1,
         }),
         event(6, "runtime.tool_progress", {
-          invocation_id: "shell-1",
+          tool_call_id: "shell-1",
           stream: "stdout",
           chunk: "old",
           ordinal: 0,
         }),
         event(7, "runtime.tool_progress", {
-          invocation_id: "shell-1",
+          tool_call_id: "shell-1",
           stream: "stdout",
           chunk: "x".repeat(13_000),
           ordinal: 3,
@@ -1540,11 +1415,14 @@ describe("Shell tool progress contract", () => {
     expect(tool.liveOutput?.stderr).toBe("warn");
   });
 
-  it("reconciles completed data and rejects cancellation late progress", () => {
+  it("reconciles a completed shell result and rejects cancellation late progress", () => {
     const completed = event(4, "runtime.tool_completed", {
       tool_call_id: "shell-1",
+      tool: "shell_exec",
       status: "ok",
-      data: { stdout: "final", stderr: "" },
+      stdout: "final",
+      stderr: "",
+      content: "final",
       tool_status: {
         invocation_id: "shell-1",
         tool_name: "shell_exec",
@@ -1558,14 +1436,14 @@ describe("Shell tool progress contract", () => {
         event(1, "runtime.request_received", { prompt: "run" }),
         start,
         event(3, "runtime.tool_progress", {
-          invocation_id: "shell-1",
+          tool_call_id: "shell-1",
           stream: "stdout",
           chunk: "preview",
           ordinal: 1,
         }),
         completed,
         event(5, "runtime.tool_progress", {
-          invocation_id: "shell-1",
+          tool_call_id: "shell-1",
           stream: "stdout",
           chunk: "late",
           ordinal: 2,
@@ -1573,10 +1451,8 @@ describe("Shell tool progress contract", () => {
       ],
       null,
     );
-    expect(messages[1].tools[0].result?.data).toEqual({
-      stdout: "final",
-      stderr: "",
-    });
+    expect(messages[1].tools[0].status).toBe("completed");
+    expect(messages[1].tools[0].content).toBe("final");
     expect(messages[1].tools[0].liveOutput?.stdout).toBe("preview");
 
     const cancelled = deriveChatMessages(
@@ -1585,7 +1461,7 @@ describe("Shell tool progress contract", () => {
         start,
         event(3, "runtime.failed", { cancelled: true, error: "cancelled" }),
         event(4, "runtime.tool_progress", {
-          invocation_id: "shell-1",
+          tool_call_id: "shell-1",
           stream: "stdout",
           chunk: "late",
           ordinal: 1,
@@ -1601,13 +1477,13 @@ describe("Shell tool progress contract", () => {
         event(1, "runtime.request_received", { prompt: "run" }),
         start,
         event(3, "runtime.tool_progress", {
-          invocation_id: "shell-1",
+          tool_call_id: "shell-1",
           stream: "stdout",
           chunk: "before",
           ordinal: 1,
         }),
         event(4, "runtime.tool_progress", {
-          invocation_id: "shell-1",
+          tool_call_id: "shell-1",
           stream: "stdout",
           gap: true,
           dropped_count: 2,
@@ -1641,7 +1517,7 @@ describe("Shell tool progress contract", () => {
         event(1, "runtime.request_received", { prompt: "first" }),
         start,
         event(3, "runtime.tool_progress", {
-          invocation_id: "shell-1",
+          tool_call_id: "shell-1",
           stream: "stdout",
           chunk: "first output",
           ordinal: 1,
@@ -1650,7 +1526,7 @@ describe("Shell tool progress contract", () => {
         event(5, "runtime.request_received", { prompt: "second" }),
         secondStart,
         event(7, "runtime.tool_progress", {
-          invocation_id: "shell-1",
+          tool_call_id: "shell-1",
           stream: "stdout",
           chunk: "second output",
           ordinal: 1,
@@ -1683,7 +1559,7 @@ describe("Provider tool-call delta contract", () => {
         base,
         event(2, "graph.tool_call_start", {
           tool_call_id: "call-a",
-          tool: "write",
+          tool_name: "write",
         }),
         event(3, "graph.tool_call_delta", {
           tool_call_id: "call-a",
@@ -1704,6 +1580,28 @@ describe("Provider tool-call delta contract", () => {
     });
     expect(tool.result).toBeUndefined();
   });
+  it("waits for the streamed tool name without inventing an identity", () => {
+    const messages = deriveChatMessages(
+      [
+        base,
+        event(2, "graph.tool_call_start", { tool_call_id: "call-stream" }),
+        event(3, "graph.tool_call_delta", {
+          tool_call_id: "call-stream",
+          tool_name: "write",
+          arguments_delta: '{"path":',
+          fragment_ordinal: 0,
+        }),
+      ],
+      null,
+    );
+    expect(messages[1].tools).toMatchObject([
+      {
+        id: "call-stream",
+        name: "write",
+        partialArguments: '{"path":',
+      },
+    ]);
+  });
 
   it("renders the backend canonical diff preview without creating an execution result", () => {
     const messages = deriveChatMessages(
@@ -1711,7 +1609,7 @@ describe("Provider tool-call delta contract", () => {
         base,
         event(2, "graph.tool_call_start", {
           tool_call_id: "call-diff",
-          tool: "write",
+          tool_name: "write",
           diff_preview: { path: "note.txt", diff: "@@ -1 +1 @@\n-old\n+new" },
         }),
       ],
@@ -1747,8 +1645,14 @@ describe("Provider tool-call delta contract", () => {
     const messages = deriveChatMessages(
       [
         base,
-        event(2, "graph.tool_call_start", { tool_call_id: "a", tool: "write" }),
-        event(3, "graph.tool_call_start", { tool_call_id: "b", tool: "write" }),
+        event(2, "graph.tool_call_start", {
+          tool_call_id: "a",
+          tool_name: "write",
+        }),
+        event(3, "graph.tool_call_start", {
+          tool_call_id: "b",
+          tool_name: "write",
+        }),
         event(4, "graph.tool_call_delta", {
           tool_call_id: "a",
           arguments_delta: "A",
@@ -1784,17 +1688,17 @@ describe("Provider tool-call delta contract", () => {
         base,
         event(2, "graph.tool_call_start", {
           tool_call_id: "shell",
-          tool: "shell_exec",
+          tool_name: "shell_exec",
         }),
         event(3, "runtime.tool_progress", {
-          invocation_id: "shell",
+          tool_call_id: "shell",
           stream: "stdout",
           chunk: "é",
           offset: 0,
           ordinal: 1,
         }),
         event(4, "runtime.tool_progress", {
-          invocation_id: "shell",
+          tool_call_id: "shell",
           stream: "stdout",
           chunk: "ok",
           offset: 2,
@@ -1815,7 +1719,7 @@ describe("Provider tool-call delta contract", () => {
         base,
         event(2, "graph.tool_call_start", {
           tool_call_id: "call-degraded",
-          tool: "write",
+          tool_name: "write",
           diff_preview: {
             schema_version: 1,
             phase: "partial",
@@ -1843,7 +1747,7 @@ describe("Provider tool-call delta contract", () => {
         base,
         event(2, "graph.tool_call_start", {
           tool_call_id: "same",
-          tool: "write",
+          tool_name: "write",
         }),
         event(3, "graph.tool_call_delta", {
           tool_call_id: "same",
@@ -1855,7 +1759,7 @@ describe("Provider tool-call delta contract", () => {
         event(5, "runtime.request_received", { prompt: "again" }),
         event(6, "graph.tool_call_start", {
           tool_call_id: "same",
-          tool: "read",
+          tool_name: "read",
         }),
         event(7, "graph.tool_call_delta", {
           tool_call_id: "same",

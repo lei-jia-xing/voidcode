@@ -183,7 +183,7 @@ def decode_fact(event: EventEnvelope, *, version: int = FACT_CODEC_VERSION) -> T
     if event.event_type == "runtime.tool_completed":
         report = reported_call_from_event(event)
         if report is None:
-            raise ValueError("legacy tool completion is read-only; migrate before runtime replay")
+            raise ValueError("unsupported or malformed runtime.tool_completed payload; missing canonical reported_call")
         return ToolCompletedFact(report)
     if event.event_type in {"graph.provider_stream", "graph.tool_call_start", "graph.tool_call_delta", "graph.tool_call_end"}:
         raise ValueError("live-only provider facts do not belong in the durable log")

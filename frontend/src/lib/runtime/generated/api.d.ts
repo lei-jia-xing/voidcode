@@ -1882,9 +1882,10 @@ export interface components {
          * SessionStateBody
          * @description ``_serialize_session_state``: session identity plus status, turn, metadata.
          *
-         *     ``metadata`` is dynamic: it is the runtime-owned persisted session metadata
-         *     map (runtime config, capability snapshots, todos, context projection,
-         *     runtime policy, ...), projected per surface by the runtime itself.
+         *     ``metadata`` is dynamic: it is a bounded, redacted projection of the
+         *     runtime-owned persisted metadata (runtime config, capability snapshots,
+         *     todos, context projection, runtime policy, ...). Durable phase snapshots
+         *     and the composition turn cursor are private and never included.
          */
         SessionStateBody: {
             /** Metadata */

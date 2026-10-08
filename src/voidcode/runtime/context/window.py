@@ -10,7 +10,7 @@ from ...core.transcript import ContextSegment, ToolResultView, output_text, proj
 from ...core.turns import ReportedCall
 from ...provider.model_catalog import static_catalog_metadata
 from ...provider.tokenizer import count_tokens
-from ...tools.contracts import TextOutput
+from ...tools.contracts import TextOutput, ToolFailure, ToolResult, ToolSuccess
 from ..todos import render_provider_todo_state
 from .prompt_assembly import (
     PromptAssemblyPlan,
@@ -908,10 +908,11 @@ def _pending_state_segment(session_metadata: Mapping[str, object]) -> ContextSeg
     )
 
 
-def result_payload_text(result: ToolResultView) -> str:
+def result_payload_text(result: ToolResultView | ToolResult) -> str:
     """Text visible to the provider; canonical body fields stay private."""
     output = output_text(result.output) or ""
-    return f"{output}\n{result.error}" if result.error else output
+    error = getattr(result, "error", None)
+    return f"{output}\n{error}" if error else output
 
 
 def _result_payload_bytes(result: ToolResultView) -> int:
@@ -1118,7 +1119,23 @@ def project_tool_results_for_context_window(
     prepared_results: list[ToolResultView] = []
     truncated_count = 0
     for report in tool_results:
-        result = project_report(report) if isinstance(report, ReportedCall) else report
+        if isinstance(report, ReportedCall):
+            result = project_report(report)
+        elif isinstance(report, ToolResultView):
+            result = report
+        elif isinstance(report, (ToolSuccess, ToolFailure)):
+            body_dict = report.body.as_payload() if hasattr(report.body, "as_payload") else None
+            result = ToolResultView(
+                tool_call_id=getattr(report, "tool_call_id", "call-0") or "call-0",
+                tool_name=report.tool_name,
+                arguments=body_dict or {},
+                output=report.output,
+                status=report.status,
+                error=report.error if isinstance(report, ToolFailure) else None,
+                diagnostics=report.diagnostics if isinstance(report, ToolFailure) else None,
+            )
+        else:
+            result = report
         prepared_result, was_truncated = _truncated_view_for_result(
             result,
             limit=_tool_limit_for_result(result, policy),

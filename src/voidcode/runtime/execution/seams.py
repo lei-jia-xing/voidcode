@@ -192,9 +192,21 @@ def context_limit_promotion_for_provider_error(
     if chosen_attempt is not None:
         target = provider_chain.target_at(chosen_attempt)
         assert target is not None
+        bound_target: BoundProviderModel | None = None
+        if config.execution_engine == "provider":
+            bound_config = config.bound_provider
+            if bound_config is None:
+                raise ValueError("provider execution has no activated composition binding")
+            bound_target = bound_config.target_chain.target_at(chosen_attempt)
+            if bound_target is None or bound_target.selection != target.selection:
+                raise ValueError("bound provider target does not match its frozen fallback selection")
         return ContextLimitPromotion(
             selection=RuntimeTurnProducerSelection(
-                producer=build_runtime_turn_producer(engine_name=config.execution_engine, provider_model=target),
+                producer=build_runtime_turn_producer(
+                    engine_name=config.execution_engine,
+                    provider_model=target,
+                    bound_provider_model=bound_target,
+                ),
                 provider_attempt=chosen_attempt,
                 provider_target=target,
             ),

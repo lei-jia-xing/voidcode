@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from voidcode.core.tool_context import ToolContext
+from voidcode.core.transcript import output_text
 from voidcode.tools.ast_grep import AstGrepTool
 from voidcode.tools.contracts import ToolCall
 
@@ -62,11 +63,13 @@ def test_ast_grep_search_parses_json_stream_results(tmp_path: Path) -> None:
         )
 
     assert result.status == "ok"
-    assert result.data["match_count"] == 1
-    assert result.data["path"] == "sample.py"
-    first_match = cast(list[dict[str, object]], result.data["matches"])[0]
+    assert result.body is not None
+    data = result.body.as_payload()
+    assert data["match_count"] == 1
+    assert data["path"] == "sample.py"
+    first_match = cast(list[dict[str, object]], data["matches"])[0]
     assert first_match["file"] == "sample.py"
-    assert "Found 1 AST match(es)" in (result.content or "")
+    assert "Found 1 AST match(es)" in (output_text(result.output) or "")
     assert "--json=stream" in run_mock.call_args.args[0]
     assert "--lang" in run_mock.call_args.args[0]
 
@@ -107,9 +110,11 @@ def test_ast_grep_preview_defaults_to_read_only_preview_mode(tmp_path: Path) -> 
         )
 
     assert result.status == "ok"
-    assert result.data["replacement_count"] == 1
-    assert result.data["applied"] is False
-    assert "Previewed 1 AST replacement(s)" in (result.content or "")
+    assert result.body is not None
+    data = result.body.as_payload()
+    assert data["replacement_count"] == 1
+    assert data["applied"] is False
+    assert "Previewed 1 AST replacement(s)" in (output_text(result.output) or "")
     assert "-U" not in run_mock.call_args.args[0]
     assert "-r" in run_mock.call_args.args[0]
     assert "--json=stream" in run_mock.call_args.args[0]
@@ -134,11 +139,13 @@ def test_ast_grep_replace_can_apply_changes(tmp_path: Path) -> None:
         )
 
     assert result.status == "ok"
-    assert result.data["applied"] is True
-    assert result.data["replacement_count"] == 1
-    first_match = cast(list[dict[str, object]], result.data["matches"])[0]
+    assert result.body is not None
+    data = result.body.as_payload()
+    assert data["applied"] is True
+    assert data["replacement_count"] == 1
+    first_match = cast(list[dict[str, object]], data["matches"])[0]
     assert first_match["file"] == "sample.py"
-    assert result.content == "Applied 1 AST replacement(s) in sample.py"
+    assert output_text(result.output) == "Applied 1 AST replacement(s) in sample.py"
     assert "--json=stream" in run_mock.call_args_list[0].args[0]
     assert "-U" not in run_mock.call_args_list[0].args[0]
     assert "-U" in run_mock.call_args_list[1].args[0]

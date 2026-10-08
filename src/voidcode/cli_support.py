@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .command.models import CommandDefinition
 from .runtime.events import EventEnvelope, redact_reasoning_payload
-from .runtime.session import SessionState, StoredSessionSummary
+from .runtime.session import SessionState, StoredSessionSummary, session_metadata_for_public
 
 EXIT_SUCCESS = 0
 EXIT_GENERAL_ERROR = 1
@@ -69,7 +69,7 @@ def serialize_session_state(session: SessionState) -> dict[str, object]:
         "session": session_payload,
         "status": session.status,
         "turn": session.turn,
-        "metadata": session.metadata,
+        "metadata": session_metadata_for_public(session.metadata),
     }
 
 

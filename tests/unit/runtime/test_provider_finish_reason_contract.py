@@ -24,10 +24,7 @@ from typing import cast
 import pytest
 
 import voidcode.runtime.service as runtime_service_module
-from tests.runtime_composition import save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
-from voidcode.core.provider_turns import ProviderTurnProducer
-from voidcode.core.turns import TurnRequest
 from voidcode.provider.config import ProviderEndpointConfig, ProviderTransientRetryConfig
 from voidcode.provider.protocol import (
     ProviderDoneReason,
@@ -38,59 +35,14 @@ from voidcode.provider.protocol import (
     TurnProvider,
 )
 from voidcode.provider.registry import ModelProviderRegistry
-from voidcode.provider.resolution import resolve_provider_model
 from voidcode.runtime.config import (
     RuntimeConfig,
     RuntimeProviderFallbackConfig,
     RuntimeProvidersConfig,
 )
 from voidcode.runtime.contracts import RuntimeRequest
-from voidcode.runtime.policy import materialize_runtime_policy_snapshot
-from voidcode.runtime.service import RuntimeStreamChunk, SessionState, ToolRegistry, VoidCodeRuntime
-from voidcode.runtime.session import SessionRef
+from voidcode.runtime.service import RuntimeStreamChunk, VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
-
-
-def _create_session_row(store: SqliteSessionStore, *, workspace: Path, session_id: str) -> None:
-    save_checkpoint(
-        store,
-        workspace=workspace,
-        session_id=session_id,
-        prompt="hi",
-        session_metadata={},
-        tool_results=(),
-        last_event_sequence=0,
-        create_if_missing=True,
-    )
-
-
-def _turn_request(runtime: VoidCodeRuntime, *, session_id: str) -> tuple[SessionState, TurnRequest, ToolRegistry]:
-    effective_config = runtime.effective_runtime_config()
-    runtime_config_metadata = runtime._runtime_config_metadata()
-    runtime_policy = materialize_runtime_policy_snapshot(
-        persisted_session_policy=None,
-        agent_preset="leader",
-        agent_manifest_id="leader",
-        runtime_config=runtime_config_metadata,
-        request_metadata={},
-        parent_snapshot=None,
-    ).as_payload()
-    session = SessionState(
-        session=SessionRef(id=session_id),
-        status="running",
-        turn=0,
-        metadata={"runtime_config": runtime_config_metadata, "runtime_policy": runtime_policy},
-    )
-    tool_registry = runtime.tool_registry_for_effective_config(effective_config)
-    request = TurnRequest(
-        session=session,
-        prompt="hi",
-        available_tools=tool_registry.definitions(),
-        context_window=runtime.prepare_provider_context_window(prompt="hi", tool_results=(), session_metadata=session.metadata),
-        assembled_context=runtime.assemble_provider_context(prompt="hi", tool_results=(), session_metadata=session.metadata),
-        metadata={**session.metadata, "provider_stream": True},
-    )
-    return session, request, tool_registry
 
 
 def _streamed_text(chunks: list[RuntimeStreamChunk]) -> list[str]:
@@ -162,13 +114,6 @@ class _RestartStreamingProvider:
         yield ProviderStreamEvent(kind="done", done_reason=self._finish_reason)
 
 
-def _provider_turn_producer_for(provider: TurnProvider) -> ProviderTurnProducer:
-    return ProviderTurnProducer(
-        provider=provider,
-        provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
-    )
-
-
 def _run_turn_engine(
     *,
     tmp_path: Path,
@@ -176,19 +121,28 @@ def _run_turn_engine(
     session_id: str,
 ) -> tuple[list[RuntimeStreamChunk], SqliteSessionStore]:
     store = SqliteSessionStore()
-    _create_session_row(store, workspace=tmp_path, session_id=session_id)
-    runtime = VoidCodeRuntime(workspace=tmp_path, repositories=repositories_for_test_store(store))
-    session, request, tool_registry = _turn_request(runtime, session_id=session_id)
-    chunks = list(
-        runtime._run_loop_coordinator.execute_turn_engine(
-            producer=_provider_turn_producer_for(provider),
-            tool_registry=tool_registry,
-            session=session,
-            sequence=0,
-            turn_request=request,
-            tool_results=[],
-        )
+    provider_registry = ModelProviderRegistry.with_defaults()
+
+    class _RegisteredProvider:
+        @property
+        def name(self) -> str:
+            return "opencode-zen"
+
+        def turn_provider(self) -> TurnProvider:
+            return provider
+
+    provider_registry.providers = {"opencode-zen": _RegisteredProvider()}
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        repositories=repositories_for_test_store(store),
+        model_provider_registry=provider_registry,
+        config=RuntimeConfig(
+            approval_mode="yolo",
+            execution_engine="provider",
+            model="opencode-zen/gpt-5.4",
+        ),
     )
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="hi", session_id=session_id, metadata={"provider_stream": True})))
     return chunks, store
 
 

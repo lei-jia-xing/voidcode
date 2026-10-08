@@ -100,10 +100,19 @@ class SqliteFactStore:
             if batch.completed_reports:
                 raise ValueError("a factual batch snapshot cannot duplicate completed reports")
             raw = runtime_state_value(metadata, "turn_batch")
+            initial_run_id = raw.get("run_id") if isinstance(raw, dict) else None
+            if not isinstance(initial_run_id, str) or not initial_run_id.strip():
+                turn = runtime_state_value(metadata, "composition_turn")
+                initial_run_id = turn.get("run_id") if isinstance(turn, dict) else None
+            if not isinstance(initial_run_id, str) or not initial_run_id.strip():
+                run_id_val = runtime_state_value(metadata, "run_id")
+                initial_run_id = run_id_val if isinstance(run_id_val, str) else None
+            if not isinstance(initial_run_id, str) or not initial_run_id.strip():
+                raise ValueError("native batch checkpoint requires its producer run identity")
             candidate = persisted_turn_batch(
                 batch,
                 session_id=self._session_id,
-                run_id=None,
+                run_id=initial_run_id,
                 started_sequence=prior_leaf or 0,
             )
             same_batch = isinstance(raw, dict) and all(raw.get(key) == candidate[key] for key in ("calls", "reasoning", "run_step"))
@@ -117,8 +126,8 @@ class SqliteFactStore:
                     raise ValueError("recorded native completion identities are malformed")
                 if not isinstance(started, int) or isinstance(started, bool) or started < 0:
                     raise ValueError("recorded native batch has no authentic start cursor")
-                if run_id is not None and not isinstance(run_id, str):
-                    raise ValueError("recorded native batch has an invalid run identity")
+                if not isinstance(run_id, str) or not run_id.strip():
+                    raise ValueError("recorded native batch has no authentic run identity")
                 completed_ids = tuple(cast(list[str], ids))
                 candidate = persisted_turn_batch(
                     batch, session_id=self._session_id, run_id=run_id, started_sequence=started, completed_call_ids=completed_ids

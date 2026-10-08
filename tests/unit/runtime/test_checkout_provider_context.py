@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 from tests.runtime_composition import save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.transcript import output_text, project_report
 from voidcode.core.turns import FinalTurn, ReportedCall, TurnRequest, TurnSession
+from voidcode.runtime.composition import CompositionRef, SessionCompositionOwner
 from voidcode.runtime.execution.report_codec import report_payload
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
@@ -175,26 +177,33 @@ def test_debug_provider_context_follows_the_checked_out_leaf(tmp_path: Path) -> 
 
     # Harvest the full metadata snapshot a real run persists (runtime_config +
     # agent_capability_snapshot) so the debug read passes its boundary checks.
-    save_checkpoint(
-        store,
-        workspace=tmp_path,
-        session_id="meta-seed",
-        prompt="seed",
-        session_metadata={},
-        tool_results=(),
-        last_event_sequence=0,
-        create_if_missing=True,
-    )
     seed = runtime.run(RuntimeRequest(prompt="seed", session_id="meta-seed"))
 
-    save_checkpoint(
-        store,
+    metadata = dict(seed.session.metadata)
+    composition = store.load_execution_composition(ref=CompositionRef.model_validate(metadata["composition_ref"]))
+    composition_ref = composition.reference(
+        workspace=str(tmp_path),
+        owner=SessionCompositionOwner(kind="session", session_id=_SESSION_ID),
+    )
+    metadata["composition_ref"] = composition_ref.model_dump(mode="json")
+    capability = dict(cast(dict[str, object], metadata["agent_capability_snapshot"]))
+    capability["composition_ref"] = composition_ref.model_dump(mode="json")
+    metadata["agent_capability_snapshot"] = capability
+    runtime_state = dict(cast(dict[str, object], metadata["runtime_state"]))
+    runtime_state.pop("composition_turn", None)
+    runtime_state.pop("composition_turn_occurrence", None)
+    runtime_state.pop("turn_batch", None)
+    metadata["runtime_state"] = runtime_state
+    metadata.pop("execution_composition", None)
+    store.save_interrupted_checkpoint(
         workspace=tmp_path,
         session_id=_SESSION_ID,
         prompt="seed",
-        session_metadata=dict(seed.session.metadata),
+        session_metadata=metadata,
         tool_results=(),
         last_event_sequence=0,
+        composition_ref=composition_ref,
+        composition=composition,
         create_if_missing=True,
     )
 
@@ -206,14 +215,14 @@ def test_debug_provider_context_follows_the_checked_out_leaf(tmp_path: Path) -> 
 
     # Check out to A's tool completion — B's turn is abandoned off the path, so
     # the debug snapshot must stop reporting B's tool result to the operator.
-    assert store.checkout_session(workspace=tmp_path, session_id=_SESSION_ID, sequence=2) == 2
+    assert store.checkout_session(workspace=tmp_path, session_id=_SESSION_ID, sequence=3) == 3
     after = _debug_provider_tool_contents(runtime, workspace=tmp_path)
     assert "A result" in after
     assert "B result" not in after
 
     # B's branch was abandoned, not deleted: checking back out restores it.
-    assert [event.sequence for event in store.session_path(workspace=tmp_path, session_id=_SESSION_ID)] == [1, 2]
-    assert store.checkout_session(workspace=tmp_path, session_id=_SESSION_ID, sequence=4) == 4
+    assert [event.sequence for event in store.session_path(workspace=tmp_path, session_id=_SESSION_ID)] == [1, 2, 3]
+    assert store.checkout_session(workspace=tmp_path, session_id=_SESSION_ID, sequence=6) == 6
     restored = _debug_provider_tool_contents(runtime, workspace=tmp_path)
     assert "A result" in restored
     assert "B result" in restored

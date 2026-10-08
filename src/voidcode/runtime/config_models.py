@@ -39,6 +39,7 @@ from typing import Annotated, Literal, TypeIs, overload
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from ..agent.prompts import BUILTIN_PROMPT_PROFILES
 from ..formatter import FormatterCwdPolicy
 from ..mcp.builtin import get_builtin_mcp_descriptor
 from ..provider.config import ProviderConfigsPayload, format_runtime_config_field_error
@@ -1627,7 +1628,7 @@ class AgentPayload(_PayloadModel):
     )
     prompt_profile: str | None = Field(
         default=None,
-        json_schema_extra={"minLength": 1},
+        json_schema_extra={"minLength": 1, "enum": (*BUILTIN_PROMPT_PROFILES, None)},
         description="Prompt/profile selection for this agent entry.",
     )
     prompt: str | None = Field(

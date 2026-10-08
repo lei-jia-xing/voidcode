@@ -1123,6 +1123,8 @@ class RuntimeResumeCoordinator:
         *,
         session_id: str,
         checkpoint: dict[str, object],
+        run_id: str,
+        abort_signal: ProviderAbortSignal,
         finalize_background_task: bool = False,
     ) -> RuntimeResponse:
         output: str | None = None
@@ -1130,6 +1132,8 @@ class RuntimeResumeCoordinator:
         for chunk in self.resume_provider_failure_stream(
             session_id=session_id,
             checkpoint=checkpoint,
+            run_id=run_id,
+            abort_signal=abort_signal,
         ):
             final_session = chunk.session
             if chunk.kind == "output":
@@ -1149,6 +1153,8 @@ class RuntimeResumeCoordinator:
         *,
         session_id: str,
         checkpoint: dict[str, object],
+        run_id: str,
+        abort_signal: ProviderAbortSignal,
         finalize_background_task: bool = False,
     ) -> RuntimeResponse:
         output: str | None = None
@@ -1156,6 +1162,8 @@ class RuntimeResumeCoordinator:
         for chunk in self.resume_interrupted_stream(
             session_id=session_id,
             checkpoint=checkpoint,
+            run_id=run_id,
+            abort_signal=abort_signal,
         ):
             final_session = chunk.session
             if chunk.kind == "output":
@@ -1530,7 +1538,7 @@ class RuntimeResumeCoordinator:
                 )
                 if finalize_background_task:
                     self._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
-                return
+                raise
             raise
 
         if final_session.status == "waiting":

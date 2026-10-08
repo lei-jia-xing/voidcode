@@ -78,6 +78,8 @@ class RuntimeLike(Protocol):
 
     def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskStateLike: ...
 
+    def wait_for_background_task(self, task_id: str, *, timeout_seconds: float) -> BackgroundTaskStateLike: ...
+
     def shutdown_background_tasks(self, *, timeout_seconds: float = 2.0) -> None: ...
 
 
@@ -99,6 +101,12 @@ def _wait_for_background_task_status(
     *,
     timeout: float = 5.0,
 ) -> BackgroundTaskStateLike:
+    terminal_statuses = {"completed", "failed", "cancelled", "interrupted"}
+    if statuses <= terminal_statuses:
+        task = runtime.wait_for_background_task(task_id, timeout_seconds=timeout)
+        if task.status not in statuses:
+            raise AssertionError(f"background task {task_id} did not reach {sorted(statuses)}; last_status={task.status!r}")
+        return task
     deadline = time.monotonic() + timeout
     last_task: BackgroundTaskStateLike | None = None
     while time.monotonic() < deadline:

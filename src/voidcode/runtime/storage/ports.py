@@ -11,7 +11,7 @@ from ..background.models import (
     StoredBackgroundTaskSummary,
 )
 from ..background.process import BackgroundProcessPersistence
-from ..composition import CompositionRef, FrozenComposition
+from ..composition import CompositionRef, FrozenComposition, PhaseRecord
 from ..contracts import RuntimeRequest, RuntimeResponse, RuntimeSessionResult
 from ..effectiveness import ToolEffectivenessReport
 from ..events import EventEnvelope, EventSource
@@ -101,6 +101,8 @@ class SessionRepository(Protocol):
     ) -> None: ...
 
     def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None: ...
+
+    def save_composition_phase_record(self, *, workspace: Path, session_id: str, record: PhaseRecord) -> None: ...
 
     def enqueue_session_message(
         self,

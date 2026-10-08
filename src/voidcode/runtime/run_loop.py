@@ -79,6 +79,7 @@ from ..tools.question import QuestionTool
 from ..tools.skill import SkillResultBody
 from ..tools.todo import TodoResultBody
 from .agent_capability import composition_ref_from_session_metadata
+from .composition import LifecycleScope, PhaseContext
 from .config import RuntimeConfig
 from .config_materializer import EffectiveRuntimeConfig
 from .context.continuity import replayed_conversation_segments_from_segments
@@ -152,7 +153,8 @@ from .execution.tool_result_projection import (
     _tool_error_summary,
 )
 from .execution.turn_adapter import turn_request_for_session, turn_session_snapshot
-from .execution.turn_recovery import AnsweredQuestion, ApprovedInvocation, RuntimeContinuation, persisted_turn_batch
+from .execution.turn_recovery import AnsweredQuestion, ApprovedInvocation, RuntimeContinuation, persisted_turn_batch, validated_composition_turn
+from .execution_ownership import ExecutionOwnershipRevokedError
 from .fact_codec import encode_fact, reported_call_from_event
 from .fact_store import SqliteFactStore
 from .hook_runtime import (
@@ -189,6 +191,7 @@ from .session_metadata_helpers import (
     runtime_state_context_compacted,
     runtime_state_context_transform_applied,
     runtime_state_run_id,
+    runtime_state_value,
     session_metadata_with_runtime_state_updates,
     session_model_identity,
     session_with_context_compacted_state,
@@ -597,6 +600,7 @@ class RuntimeRunLoopCoordinator:
         self._tool_input_handler_registry = tool_input_handler_registry
         self._tool_executor = tool_executor
         self._pending_hook_guidance: list[str] = []
+        self._composition_invocations: set[tuple[str, str, str]] = set()
 
     def update_provider_catalog_query(self, provider_catalog_query: RuntimeProviderCatalogQuery) -> None:
         """Publish the provider catalog query used by reasoning diagnostics."""
@@ -656,12 +660,85 @@ class RuntimeRunLoopCoordinator:
             events=((event_type, source, payload, dedupe_key),),
         )[0]
 
+    def _fresh_composition_session(self, session: SessionState) -> SessionState:
+        return replace(session, metadata=self._surface.composition_session_metadata(session.session.id, session.metadata))
+
+    def _composition_turn_context(self, session: SessionState) -> PhaseContext:
+        raw = validated_composition_turn(session.metadata, session_id=session.session.id)
+        return PhaseContext(self._workspace, session.session.id, cast(str, raw["run_id"]), "turn", cast(str, raw["scope_id"]))
+
+    def _tool_composition_phase(
+        self, name: str, value: ToolCall | ReportedCall, session: SessionState, *, restore_only: bool = False
+    ) -> SessionState:
+        turn_context = self._composition_turn_context(session)
+        call_id = value.tool_call_id
+        if not isinstance(call_id, str) or not call_id.strip():
+            raise ValueError("tool lifecycle requires its actual call identity")
+        context = PhaseContext(self._workspace, session.session.id, turn_context.run_id, "tool", f"{turn_context.scope_id}:{call_id}")
+        self._surface.run_composition_phase(
+            name, value, scope="tool", scope_id=context.scope_id, session_id=session.session.id, context=context, restore_only=restore_only
+        )
+        return self._fresh_composition_session(session)
+
+    def _begin_composition_tool(self, session: SessionState, call: ToolCall) -> SessionState:
+        session = self._fresh_composition_session(session)
+        session = self._tool_composition_phase("before_tool", call, session)
+        turn = runtime_state_value(session.metadata, "composition_turn")
+        assert isinstance(turn, dict)
+        call_id = call.tool_call_id
+        assert call_id is not None
+        invoked_ids = cast(list[str], turn["invoked_call_ids"])
+        if call_id not in invoked_ids:
+            session = replace(
+                session,
+                metadata=session_metadata_with_runtime_state_updates(
+                    session.metadata, updates={"composition_turn": {**turn, "invoked_call_ids": [*invoked_ids, call_id]}}
+                ),
+            )
+            self._sessions.update_session_metadata(workspace=self._workspace, session_id=session.session.id, metadata=session.metadata)
+        self._composition_invocations.add((session.session.id, self._composition_turn_context(session).scope_id, call_id))
+        return session
+
+    def _complete_composition_turn(self, session: SessionState, plan: TurnPlan) -> SessionState:
+        session = self._fresh_composition_session(session)
+        raw = runtime_state_value(session.metadata, "composition_turn")
+        context = self._composition_turn_context(session)
+        assert isinstance(raw, dict)
+        if raw.get("completed") is True:
+            return session
+        self._surface.run_composition_phase(
+            "after_turn", plan, scope="turn", scope_id=context.scope_id, session_id=session.session.id, context=context
+        )
+        session = self._fresh_composition_session(session)
+        session = replace(
+            session, metadata=session_metadata_with_runtime_state_updates(session.metadata, updates={"composition_turn": {**raw, "completed": True}})
+        )
+        self._sessions.update_session_metadata(workspace=self._workspace, session_id=session.session.id, metadata=session.metadata)
+        return session
+
     def _fact_store(self, session: SessionState) -> SqliteFactStore:
         return SqliteFactStore(
             events=self._events, recovery=self._recovery, workspace=self._workspace, session_id=session.session.id, session=session
         )
 
     def _persist_fact(self, *, session: SessionState, fact: TurnFact) -> EventEnvelope:
+        session = self._fresh_composition_session(session)
+        if isinstance(fact, ToolCompletedFact):
+            invocation_key = (session.session.id, self._composition_turn_context(session).scope_id, fact.report.tool_call_id)
+            if invocation_key in self._composition_invocations:
+                session = self._tool_composition_phase("after_tool", fact.report, session)
+                self._composition_invocations.remove(invocation_key)
+            raw_batch = runtime_state_value(session.metadata, "turn_batch")
+            if isinstance(raw_batch, dict):
+                calls = raw_batch.get("calls")
+                if isinstance(calls, list) and calls and isinstance(calls[-1], dict) and calls[-1].get("tool_call_id") == fact.report.tool_call_id:
+                    plan = ToolTurn(
+                        calls=tuple(
+                            ToolCall(tool_name=call["tool_name"], tool_call_id=call["tool_call_id"], arguments=call["arguments"]) for call in calls
+                        ),
+                        reasoning=raw_batch.get("reasoning"),
+                    )
+                    session = self._complete_composition_turn(session, plan)
         return self._fact_store(session).append_for_publication((fact,))[0]
 
     def _persist_chunk(self, chunk: RuntimeStreamChunk) -> tuple[RuntimeStreamChunk, int]:
@@ -754,6 +831,7 @@ class RuntimeRunLoopCoordinator:
         last_event_sequence: int,
     ) -> None:
         current_turn_results = tool_results
+        session = self._fresh_composition_session(session)
         self._recovery.save_interrupted_checkpoint(
             workspace=self._workspace,
             session_id=session.session.id,
@@ -824,6 +902,7 @@ class RuntimeRunLoopCoordinator:
         and ``invoke_tool`` inner calls.
         """
         sequence = start_sequence - 1
+        session = self._fresh_composition_session(session)
         todo_state = todo_state_from_session_metadata(session.metadata)
         todo_phases: tuple[TodoPhase, ...] = runtime_todo_phases_from_payload(todo_state["phases"]) if todo_state is not None else ()
         invocation = ToolInvocation(
@@ -877,7 +956,10 @@ class RuntimeRunLoopCoordinator:
         tool_call_id: str | None,
     ) -> tuple[ToolCall, str, dict[str, object], SessionState]:
         """Persist the canonical final call before its pre-tool hook when required."""
-        canonical_tool_call_id = tool_call_id or tool_call.tool_call_id or f"runtime-tool-{uuid4().hex}"
+        session = self._fresh_composition_session(session)
+        if not isinstance(tool_call_id, str) or not tool_call_id.strip() or tool_call.tool_call_id != tool_call_id:
+            raise ValueError("resolved tool intent requires its authentic normalized call identity")
+        canonical_tool_call_id = tool_call_id
         canonical_tool_call = replace(tool_call, tool_call_id=canonical_tool_call_id)
         execution_intent = ToolExecutionIntent.from_call(
             canonical_tool_call,
@@ -943,6 +1025,11 @@ class RuntimeRunLoopCoordinator:
         preserved_continuity_state: ContextProjection | None = None,
         continuation: RuntimeContinuation | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
+        run_id = turn_request.run_id or runtime_state_run_id(session.metadata)
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise ValueError("execution requires its actual run identity")
+        if turn_request.run_id != run_id:
+            turn_request = replace(turn_request, run_id=run_id)
         host = RuntimeHost(
             self,
             producer=producer,
@@ -959,19 +1046,66 @@ class RuntimeRunLoopCoordinator:
             turn_request, host=host, tool_results=tool_results, seed=continuation.batch if continuation is not None else None
         )
         interrupted_emitted = False
+        failed_emitted = False
         try:
+            entry_phases: tuple[tuple[str, LifecycleScope, str], ...] = (
+                ("session_start", "session", session.session.id),
+                ("before_run", "run", run_id),
+            )
+            for name, scope, scope_id in entry_phases:
+                context = PhaseContext(self._workspace, session.session.id, run_id, scope, scope_id)
+                restore_only = name == "session_start" and any(
+                    record["scope"] == "session" and record["scope_id"] == scope_id
+                    for record in self._surface.phase_records(session.session.id).values()
+                )
+                self._surface.run_composition_phase(
+                    name, turn_request, scope=scope, scope_id=scope_id, session_id=session.session.id, context=context, restore_only=restore_only
+                )
+                host.session = self._fresh_composition_session(host.session)
             while True:
                 try:
                     chunk = next(engine)
                 except StopIteration as completed:
                     result = completed.value
                     break
-                if chunk.event is not None and chunk.event.event_type == "runtime.failed" and chunk.session.status == "interrupted":
-                    interrupted_emitted = True
+                if chunk.event is not None and chunk.event.event_type == "runtime.failed":
+                    interrupted_emitted = chunk.session.status == "interrupted"
+                    failed_emitted = chunk.session.status == "failed"
+                    if failed_emitted:
+                        host.session = self._fresh_composition_session(chunk.session)
+                        host.sequence = chunk.event.sequence
+                        try:
+                            host._terminal_composition_phases(chunk.event)
+                        except Exception:
+                            failed_emitted = False
+                            raise
+                        chunk = replace(chunk, session=self._fresh_composition_session(chunk.session))
                 yield chunk
             if result.status == "aborted" and not interrupted_emitted:
                 yield from self._emit_interrupted_failure(session=host.session, sequence=host.sequence, active_turn_request=host.active_turn_request)
+        except Exception as error:
+            if not failed_emitted and not interrupted_emitted and not _is_abort_requested(host.active_turn_request):
+                try:
+                    host._terminal_composition_phases(error)
+                except Exception as terminal_error:
+                    failure_text = f"{error}; terminal lifecycle failed: {terminal_error}"
+                else:
+                    failure_text = str(error)
+                try:
+                    host.session = self._fresh_composition_session(host.session)
+                    failure, host.sequence = self._persist_chunk(
+                        chunk_builders.failed_chunk(
+                            session=host.session, sequence=host.sequence + 1, error=failure_text, payload={"kind": "execution_failed"}
+                        )
+                    )
+                except ExecutionOwnershipRevokedError:
+                    raise error from None
+                except Exception as storage_error:
+                    raise storage_error from error
+                yield failure
+            raise
         finally:
+            engine.close()
             if host.state is not None:
                 tool_results[:] = host.state.results
 
@@ -1495,6 +1629,7 @@ class RuntimeRunLoopCoordinator:
         tool_results: list[ReportedCall],
         complete: bool = True,
     ) -> Generator[RuntimeStreamChunk, None, tuple[bool, SessionState, SessionState, int, bool]]:
+        session = self._fresh_composition_session(session)
         is_final_step = complete and isinstance(turn_plan, FinalTurn)
         if is_final_step and session.session.parent_id is not None and (session.metadata.get("keep_alive_turn") is not True):
             if not tool_results or not _is_terminal_yield_result(tool_results[-1]):
@@ -2147,7 +2282,7 @@ class RuntimeRunLoopCoordinator:
                     "action": "fallback",
                     "provider_attempt": provider_attempt,
                     "provider_retry_attempt": provider_retry_attempt,
-                    "producer": producer,
+                    "producer": fallback_selection.producer,
                     "session": session,
                     "turn_request": active_turn_request,
                 }
@@ -2210,7 +2345,7 @@ class RuntimeRunLoopCoordinator:
         """
         if tool_call.tool_name == "invoke_tool":
             return tool_call, tool, ToolInputHookOutcome(tool_call=tool_call)
-        outcome = self._tool_input_handler_registry.apply(
+        outcome = self._surface.tool_input_handler_registry_for_session(session).apply(
             event=ToolInputEvent(
                 session_id=session.session.id,
                 tool_call=tool_call,
@@ -2275,7 +2410,9 @@ class RuntimeRunLoopCoordinator:
                 raise ValueError("approved invocation does not match the original core call identity")
             plan_tool_call = approved.call
         explicit_tool_call_id = plan_tool_call.tool_call_id
-        tool_call_id = explicit_tool_call_id or f"runtime-tool-{uuid4().hex}"
+        if not isinstance(explicit_tool_call_id, str) or not explicit_tool_call_id.strip():
+            raise ValueError("planned tool requires its authentic normalized native call identity")
+        tool_call_id = explicit_tool_call_id
         if approved is None:
             diff_preview = None
             if original_tool_call.tool_name in WRITE_PREVIEW_TOOLS:
@@ -2470,6 +2607,7 @@ class RuntimeRunLoopCoordinator:
                 abort_signal=active_turn_request.abort_signal,
             )
             return "returned", None, session, sequence
+        session = self._begin_composition_tool(session, plan_tool_call)
         try:
             read_tracking = read_tracking_for_tool_results(
                 tool_results=tuple(tool_results),
@@ -2626,6 +2764,7 @@ class RuntimeRunLoopCoordinator:
         tool_result: ToolResult,
         active_turn_request: TurnRequest,
     ) -> Generator[RuntimeStreamChunk, None, tuple[ToolResult, SessionState, int, bool]]:
+        session = self._fresh_composition_session(session)
         tool_result = cap_tool_result_output(
             tool_result,
             session_id=session.session.id,
@@ -2662,6 +2801,7 @@ class RuntimeRunLoopCoordinator:
         plan_tool_call: ToolCall,
         tool_result: ToolResult,
     ) -> Generator[RuntimeStreamChunk, None, bool]:
+        session = self._fresh_composition_session(session)
         if (
             plan_tool_call.tool_name == QuestionTool.definition.name
             and isinstance(tool_result, ToolSuccess)
@@ -2763,8 +2903,9 @@ class RuntimeRunLoopCoordinator:
             ),
         )
         sequence = envelope.sequence
-        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+        session = self._fresh_composition_session(session)
         session = clear_tool_execution_intent(self._sessions, self._workspace, session)
+        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
 
         if plan_tool_call.tool_name == "skill" and isinstance(tool_result, ToolSuccess) and isinstance(tool_result.body, SkillResultBody):
             envelope = self._persist_event(
@@ -3017,6 +3158,7 @@ class RuntimeRunLoopCoordinator:
                 session=session, sequence=sequence, tool_call=inner_call, tool_call_id=outer_call_id, abort_signal=abort_signal
             )
             return (session, sequence, CallStoppedBeforeReport())
+        session = self._begin_composition_tool(session, inner_call)
         try:
             read_tracking = read_tracking_for_tool_results(
                 tool_results=tuple(tool_results),
@@ -3098,8 +3240,9 @@ class RuntimeRunLoopCoordinator:
         )
         envelope = self._persist_fact(session=session, fact=ToolCompletedFact(report))
         sequence = envelope.sequence
-        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+        session = self._fresh_composition_session(session)
         session = clear_tool_execution_intent(self._sessions, self._workspace, session)
+        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
         if _is_abort_signal_requested(abort_signal):
             failed_chunk, _ = self._persist_chunk(
                 chunk_builders.failed_chunk(
@@ -3174,7 +3317,9 @@ class RuntimeRunLoopCoordinator:
     def _permission_denied_tool_feedback_chunks(
         self, *, session: SessionState, tool_call: ToolCall, pending: PendingApproval | None, tool_call_id: str | None = None
     ) -> Generator[RuntimeStreamChunk, None, tuple[int, ReportedCall]]:
-        tool_feedback_id = tool_call_id or tool_call.tool_call_id or f"runtime-tool-{uuid4().hex}"
+        tool_feedback_id = tool_call.tool_call_id if tool_call_id is None else tool_call_id
+        if not isinstance(tool_feedback_id, str) or not tool_feedback_id.strip():
+            raise ValueError("permission feedback requires its actual native call identity")
         error = f"permission denied for tool: {tool_call.tool_name}"
         denied_by = "user" if pending is not None and pending.policy_mode == "ask" else None
         result = ToolFailure(
@@ -3355,9 +3500,12 @@ class RuntimeHost:
         self.current_batch: TurnBatch | None = None
         self.batch_snapshot: CallSeed | None = None
         self.batch_started_sequence = continuation.started_sequence if continuation is not None else sequence
+        self._restored_pending_turn = False
+        self._terminal_phase_attempts: set[str] = set()
         coordinator._pending_hook_guidance = []
 
     def _save_batch(self, state: EngineState) -> None:
+        self.session = self.coordinator._fresh_composition_session(self.session)
         batch = state.batches[-1]
         if self.current_batch is not batch:
             if self.current_batch is not None or self.continuation is None:
@@ -3373,7 +3521,7 @@ class RuntimeHost:
                     "turn_batch": persisted_turn_batch(
                         self.batch_snapshot,
                         session_id=self.session.session.id,
-                        run_id=state.request.run_id,
+                        run_id=self.coordinator._composition_turn_context(self.session).run_id,
                         started_sequence=self.batch_started_sequence,
                         completed_call_ids=tuple(result.tool_call_id for result in batch.results),
                     )
@@ -3388,9 +3536,50 @@ class RuntimeHost:
 
     def prepare(self, state: EngineState) -> Generator[RuntimeStreamChunk, None, TurnRequest | None]:
         self.state = state
+        self.session = self.coordinator._fresh_composition_session(self.session)
         self.active_turn_request = state.request
+        if self.continuation is not None and not self._restored_pending_turn:
+            context = self.coordinator._composition_turn_context(self.session)
+            self.runtime.run_composition_phase(
+                "before_turn",
+                self.active_turn_request,
+                scope="turn",
+                scope_id=context.scope_id,
+                session_id=self.session.session.id,
+                context=context,
+                restore_only=True,
+            )
+            self.session = self.coordinator._fresh_composition_session(self.session)
+            raw_turn = runtime_state_value(self.session.metadata, "composition_turn")
+            assert isinstance(raw_turn, dict)
+            invoked_ids = cast(list[str], raw_turn["invoked_call_ids"])
+            for report in self.continuation.batch.completed_reports:
+                if report.tool_call_id not in invoked_ids:
+                    continue
+                restored_call = ToolCall(tool_name=report.final_tool_name, tool_call_id=report.tool_call_id, arguments=report.authorized_arguments)
+                self.session = self.coordinator._tool_composition_phase("before_tool", restored_call, self.session, restore_only=True)
+                self.session = self.coordinator._tool_composition_phase("after_tool", report, self.session, restore_only=True)
+            raw_turn = runtime_state_value(self.session.metadata, "composition_turn")
+            if isinstance(raw_turn, dict) and raw_turn.get("completed") is True:
+                self.runtime.run_composition_phase(
+                    "after_turn",
+                    ToolTurn(calls=self.continuation.batch.calls, reasoning=self.continuation.batch.reasoning),
+                    scope="turn",
+                    scope_id=context.scope_id,
+                    session_id=self.session.session.id,
+                    context=context,
+                    restore_only=True,
+                )
+            self._restored_pending_turn = True
+            self.session = self.coordinator._fresh_composition_session(self.session)
         if state.batches:
             self._save_batch(state)
+            if not state.pending:
+                batch = state.batches[-1]
+                self.session = self.coordinator._complete_composition_turn(
+                    self.session, ToolTurn(calls=batch.calls, reasoning=batch.reasoning, provider_usage=batch.provider_usage)
+                )
+        new_tool_results = len(state.results) > self.checkpoint_tool_result_count
         self.checkpoint_tool_result_count = self.coordinator._capture_iteration_checkpoint(
             at_safe_boundary=state.at_safe_boundary,
             session=self.session,
@@ -3400,13 +3589,14 @@ class RuntimeHost:
             checkpoint_tool_result_count=self.checkpoint_tool_result_count,
         )
         if state.results and _is_terminal_yield_result(state.results[-1]):
+            self._terminal_composition_phases(state.results[-1])
             self.sequence = yield from self.coordinator._yield_terminal(
                 session=self.session,
                 tool_results=state.results,
                 sequence=self.sequence,
             )
             return None
-        if self.provider_attempt and state.results:
+        if self.provider_attempt and new_tool_results:
             reset = _provider_attempt_reset_after_tool_result(
                 provider_attempt=self.provider_attempt,
                 selection=select_turn_producer_for_effective_config(config=self.effective_runtime_config, provider_attempt=0),
@@ -3503,6 +3693,7 @@ class RuntimeHost:
         self.active_turn_request = turn_request_for_session(
             replace(
                 self.active_turn_request,
+                prompt=state.request.prompt,
                 assembled_context=context,
                 context_window=self.context_window,
                 tool_call_preview=self.coordinator._tool_call_preview,
@@ -3524,6 +3715,43 @@ class RuntimeHost:
     def invoke(self, producer: TurnProducer, state: EngineState) -> Generator[RuntimeStreamChunk, None, TurnPlan | None]:
         del producer
         while True:
+            self.session = self.coordinator._fresh_composition_session(self.session)
+            occurrence = runtime_state_value(self.session.metadata, "composition_turn_occurrence")
+            if occurrence is None:
+                occurrence = 0
+            if type(occurrence) is not int or occurrence < 0:
+                raise ValueError("composition turn cursor must be a nonnegative integer")
+            occurrence += 1
+            run_id = self.active_turn_request.run_id
+            if not isinstance(run_id, str) or not run_id.strip():
+                raise ValueError("producer turn requires its actual run identity")
+            scope_id = f"{self.session.session.id}:{run_id}:{occurrence}"
+            context = PhaseContext(self.coordinator._workspace, self.session.session.id, run_id, "turn", scope_id)
+            turn_payload = {
+                "session_id": context.session_id,
+                "run_id": run_id,
+                "scope_id": context.scope_id,
+                "occurrence": occurrence,
+                "completed": False,
+                "invoked_call_ids": [],
+            }
+            self.session = replace(
+                self.session,
+                metadata=session_metadata_with_runtime_state_updates(
+                    self.session.metadata,
+                    updates={
+                        "composition_turn_occurrence": occurrence,
+                        "composition_turn": turn_payload,
+                    },
+                ),
+            )
+            self.coordinator._sessions.update_session_metadata(
+                workspace=self.coordinator._workspace, session_id=self.session.session.id, metadata=self.session.metadata
+            )
+            self.runtime.run_composition_phase(
+                "before_turn", self.active_turn_request, scope="turn", scope_id=context.scope_id, session_id=context.session_id, context=context
+            )
+            self.session = self.coordinator._fresh_composition_session(self.session)
             try:
                 plan, self.sequence, reasoning = yield from self.coordinator._invoke_provider_step(
                     active_turn_request=self.active_turn_request,
@@ -3581,6 +3809,8 @@ class RuntimeHost:
     def observe(self, plan: TurnPlan, state: EngineState) -> Generator[RuntimeStreamChunk, None, bool]:
         if isinstance(plan, ToolTurn):
             self._save_batch(state)
+        else:
+            self.session = self.coordinator._complete_composition_turn(self.session, plan)
         _, self.session, self.current_chunk_session, self.provider_attempt, terminated = yield from self.coordinator._finalize_step_state(
             session=self.session,
             sequence=self.sequence,
@@ -3615,6 +3845,10 @@ class RuntimeHost:
             final_call, tool_result = answered.call, answered.result.result
             call_id = final_call.tool_call_id
             assert call_id is not None
+            self.session = self.coordinator._tool_composition_phase("before_tool", final_call, self.session, restore_only=True)
+            self.coordinator._composition_invocations.add(
+                (self.session.session.id, self.coordinator._composition_turn_context(self.session).scope_id, call_id)
+            )
         else:
             assert isinstance(state.plan, ToolTurn)
             final_call, tool, call_id, self.sequence, input_outcome = yield from self.coordinator._plan_tool_step(
@@ -3747,6 +3981,19 @@ class RuntimeHost:
                 return CallStoppedAfterReport(report)
         return CallReported(report)
 
+    def _terminal_composition_phases(self, value: object) -> None:
+        run_id = self.active_turn_request.run_id
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise ValueError("terminal lifecycle requires its authentic run identity")
+        phases: tuple[tuple[str, LifecycleScope, str], ...] = (("after_run", "run", run_id), ("session_end", "session", self.session.session.id))
+        for name, scope, scope_id in phases:
+            if name in self._terminal_phase_attempts:
+                continue
+            self._terminal_phase_attempts.add(name)
+            context = PhaseContext(self.coordinator._workspace, self.session.session.id, run_id, scope, scope_id)
+            self.runtime.run_composition_phase(name, value, scope=scope, scope_id=scope_id, session_id=self.session.session.id, context=context)
+            self.session = self.coordinator._fresh_composition_session(self.session)
+
     def finish(self, plan: FinalTurn, state: EngineState) -> Generator[RuntimeStreamChunk, None, str | None]:
         self.session, self.sequence, self.pending_reminder_segment = yield from self.coordinator._todo_reminder_step(
             session=self.session,
@@ -3757,6 +4004,7 @@ class RuntimeHost:
         )
         if self.pending_reminder_segment is not None:
             return state.request.prompt
+        self.session = self.coordinator._fresh_composition_session(self.session)
         self.session = replace(
             self.session,
             metadata=session_metadata_with_runtime_state_updates(
@@ -3773,6 +4021,8 @@ class RuntimeHost:
             tool_results=state.results,
         )
         if not terminated:
+            self._terminal_composition_phases(plan)
+            self.current_chunk_session = self.coordinator._fresh_composition_session(self.current_chunk_session)
             yield from self.coordinator._emit_final_step_artifacts(
                 runtime=self.runtime,
                 session=self.current_chunk_session,

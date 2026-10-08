@@ -73,7 +73,6 @@ Homepage = "https://github.com/lei-jia-xing/voidcode"
 Repository = "https://github.com/lei-jia-xing/voidcode"
 Documentation = "https://github.com/lei-jia-xing/voidcode#readme"
 Issues = "https://github.com/lei-jia-xing/voidcode/issues"
-Changelog = "https://github.com/lei-jia-xing/voidcode/blob/master/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/voidcode"]
@@ -86,7 +85,6 @@ include = [
   "tests",
   "schema",
   "README.md",
-  "CHANGELOG.md",
   "LICENSE",
   "CONTRIBUTING.md",
   "SECURITY.md",

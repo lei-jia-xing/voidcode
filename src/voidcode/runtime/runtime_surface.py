@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
-    from .composition import FrozenComposition
-
+    from ..hook.typed import ToolInputHandlerRegistry
+    from .composition import ActiveComposition, FrozenComposition, LifecycleScope, PhaseContext, PhaseOutcome
 from ..core.transcript import ContextSegment, ToolResultView
 from ..core.turns import ReportedCall, TurnProducer, TurnRequest
 from ..mcp import McpToolDescriptor
@@ -277,3 +277,23 @@ class RuntimeSurface(Protocol):
         turn: int | None = None,
         parent_session_id: str | None = None,
     ) -> None: ...
+
+    def active_composition(self, *, session_id: str) -> ActiveComposition: ...
+
+    def run_composition_phase(
+        self,
+        name: str,
+        value: object,
+        *,
+        scope: LifecycleScope,
+        scope_id: str,
+        session_id: str,
+        context: PhaseContext,
+        recovering: bool = False,
+        restore_only: bool = False,
+    ) -> tuple[PhaseOutcome, ...]: ...
+
+    def phase_records(self, session_id: str) -> dict[str, dict[str, object]]: ...
+
+    def composition_session_metadata(self, session_id: str, metadata: dict[str, object]) -> dict[str, object]: ...
+    def tool_input_handler_registry_for_session(self, session: SessionState) -> ToolInputHandlerRegistry: ...

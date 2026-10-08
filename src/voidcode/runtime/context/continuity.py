@@ -33,6 +33,9 @@ _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS = frozenset({"context_window"})
 # mismatch) and must not be lost — it is preserved from the stored row and
 # delivered on the next run after the resolution seals the session.
 _INTERACTION_QUEUE_METADATA_KEYS = frozenset({"pending_messages"})
+# Phase callbacks advance independently of approval/question checkpoint capture.
+# Only these private fields are row-authoritative; all other integrity remains.
+_PRIVATE_PHASE_RUNTIME_KEYS = frozenset({"composition_turn_occurrence", "composition_turn"})
 
 
 def replayed_conversation_segments_from_events(
@@ -211,17 +214,39 @@ def verified_checkpoint_session_metadata(
     raw_messages = stored_metadata.get("pending_messages")
     if isinstance(raw_messages, list):
         merged["pending_messages"] = raw_messages
+    if "phase_records" in stored_metadata:
+        merged["phase_records"] = stored_metadata["phase_records"]
+    else:
+        merged.pop("phase_records", None)
+    state = dict(parse_runtime_state_metadata(merged["runtime_state"])) if "runtime_state" in merged else {}
+    stored_state = parse_runtime_state_metadata(stored_metadata["runtime_state"]) if "runtime_state" in stored_metadata else None
+    if stored_state is not None:
+        if "composition_turn_occurrence" in stored_state:
+            state["composition_turn_occurrence"] = stored_state["composition_turn_occurrence"]
+        else:
+            state.pop("composition_turn_occurrence", None)
+        if "composition_turn" in stored_state:
+            state["composition_turn"] = stored_state["composition_turn"]
+        else:
+            state.pop("composition_turn", None)
+    else:
+        state.pop("composition_turn_occurrence", None)
+        state.pop("composition_turn", None)
+    if state:
+        merged["runtime_state"] = state
+    else:
+        merged.pop("runtime_state", None)
     return merged
 
 
 def _without_recoverable_context(metadata: dict[str, object]) -> dict[str, object]:
-    stripped = {key: value for key, value in metadata.items() if key not in _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS}
+    stripped = {key: value for key, value in metadata.items() if key not in _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS | {"phase_records"}}
     runtime_state = stripped.get("runtime_state")
     if isinstance(runtime_state, dict):
         runtime_payload = {
             key: value
             for key, value in parse_runtime_state_metadata(runtime_state).items()
-            if key not in _RECOVERABLE_RUNTIME_CONTEXT_KEYS | _CHECKPOINT_PROGRESS_RUNTIME_STATE_KEYS
+            if key not in _RECOVERABLE_RUNTIME_CONTEXT_KEYS | _CHECKPOINT_PROGRESS_RUNTIME_STATE_KEYS | _PRIVATE_PHASE_RUNTIME_KEYS
         }
         if runtime_payload:
             stripped["runtime_state"] = runtime_payload

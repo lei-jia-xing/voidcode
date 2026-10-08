@@ -37,6 +37,7 @@ from ..hook.presets import (
     resolve_hook_preset_refs,
 )
 from ..hook.typed import (
+    ToolInputHandlerBinding,
     ToolInputHandlerDeclaration,
     ToolInputHandlerRegistry,
     builtin_tool_input_handler_declarations,
@@ -122,6 +123,7 @@ from .bundle import (
     SessionBundleOptions,
 )
 from .composition import (
+    ActiveComposition,
     BuiltinDeclaration,
     ComponentDeclaration,
     ComponentSelection,
@@ -129,7 +131,11 @@ from .composition import (
     CompositionOwner,
     CompositionRef,
     FrozenComposition,
+    LifecycleScope,
     PackageDeclaration,
+    PhaseContext,
+    PhaseOutcome,
+    PhaseRecord,
     SessionCompositionOwner,
     ValidatedConfig,
 )
@@ -160,6 +166,7 @@ from .context.provider import inspect_provider_context
 from .context.rules import build_rule_catalog, read_rule_uri, rulebook_snapshot_from_payload, rulebook_snapshot_payload
 from .context.transforms import (
     RuntimeContextTransformDeclaration,
+    RuntimeContextTransformProvider,
     RuntimeContextTransformRegistry,
     build_provider_context_transform_result,
     builtin_runtime_context_transform_declarations,
@@ -313,9 +320,11 @@ from .session_metadata_helpers import (
     continuity_state_from_session_metadata,
     delegation_depth_from_metadata,
     parse_delegation_metadata,
+    parse_runtime_state_metadata,
     remaining_spawn_budget_from_metadata,
     runtime_state_metadata_payload,
     runtime_state_pending_tool_intent,
+    session_metadata_with_runtime_state_updates,
     session_with_context_window_payload_metadata,
     session_with_current_acp_metadata,
     session_with_plan_state,
@@ -720,11 +729,11 @@ class VoidCodeRuntime(RuntimeSurface):
         context_window_policy: ContextWindowPolicy | None = None,
         context_transform_registry: RuntimeContextTransformRegistry | None = None,
         tool_input_handler_registry: ToolInputHandlerRegistry | None = None,
+        composition_owner: CompositionOwner | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
         self._permission_context_resolver = RuntimePermissionContextResolver(workspace=self._workspace)
         self._config = config or load_runtime_config(self._workspace)
-        self._agent_registry = self._runtime_agent_registry()
         self._bind_tool_scope_resolver()
         self._permission_engine = PermissionEngine(
             _context_resolver=self._permission_context_resolver,
@@ -732,24 +741,53 @@ class VoidCodeRuntime(RuntimeSurface):
             _patch_path_extractor=extract_paths_from_patch,
         )
         self._model_provider_registry = model_provider_registry or ModelProviderRegistry.with_defaults(provider_configs=self._config.providers)
-        self._composition_owner = CompositionOwner(
-            builtins=(
-                _builtin_runtime_package(
-                    Path(__file__).resolve().parents[2],
-                    self._model_provider_registry.descriptors,
-                ),
-            )
+        builtin_pkg = _builtin_runtime_package(
+            Path(__file__).resolve().parents[2],
+            self._model_provider_registry.descriptors,
         )
+        if composition_owner is not None:
+            self._composition_owner = composition_owner
+            if "voidcode" not in self._composition_owner._builtins:
+                self._composition_owner._builtins["voidcode"] = builtin_pkg
+        else:
+            self._composition_owner = CompositionOwner(builtins=(builtin_pkg,))
+        installed_agent_manifests: list[AgentManifest] = []
+        self._installed_tool_definitions: list[ToolDefinition] = []
+        installed_context_transforms: list[RuntimeContextTransformDeclaration] = []
+        installed_typed_inputs: list[ToolInputHandlerDeclaration] = []
         if self._config.components:
-            preflight = self._composition_owner.prepare(self._config.components, intent={"provider_registry_preflight": True})
+            preflight = self._composition_owner.prepare(self._config.components, intent={"component_preflight": True})
             for component in preflight.binding.components:
-                if component.slot != "provider" or component.distribution == "voidcode":
+                if component.distribution == "voidcode":
                     continue
-                descriptor = self._composition_owner.validated_value(preflight, component.key)
-                if not isinstance(descriptor, ProviderDescriptor) or descriptor.provider_name != component.name:
-                    raise ValueError("installed provider component validator returned a mismatched descriptor")
-                self._model_provider_registry.register(descriptor)
-        self._activated_provider_bindings: dict[str, tuple[ResolvedProviderConfig, BoundProviderConfig]] = {}
+                validated = self._composition_owner.validated_value(preflight, component.key)
+                if component.slot == "provider":
+                    if not isinstance(validated, ProviderDescriptor) or validated.provider_name != component.name:
+                        raise ValueError("installed provider component validator returned a mismatched descriptor")
+                    self._model_provider_registry.register(validated)
+                elif component.slot == "tool":
+                    if not isinstance(validated, ToolDefinition) or validated.name != component.name:
+                        raise ValueError("installed tool component validator returned a mismatched definition")
+                    self._installed_tool_definitions.append(validated)
+                elif component.slot == "agent":
+                    if not isinstance(validated, AgentManifest) or (validated.id != component.name and validated.name != component.name):
+                        raise ValueError("installed agent component validator returned a mismatched manifest")
+                    installed_agent_manifests.append(validated)
+                elif component.slot == "context":
+                    if not isinstance(validated, RuntimeContextTransformDeclaration) or validated.provider_id != component.name:
+                        raise ValueError("installed context component validator returned a mismatched declaration")
+                    installed_context_transforms.append(validated)
+                elif component.slot == "typed-input":
+                    if not isinstance(validated, ToolInputHandlerDeclaration) or validated.name != component.name:
+                        raise ValueError("installed typed-input component validator returned a mismatched declaration")
+                    installed_typed_inputs.append(validated)
+        self._agent_registry = self._runtime_agent_registry(installed_manifests=installed_agent_manifests)
+        self._installed_context_transforms = tuple(installed_context_transforms)
+        self._installed_typed_inputs = tuple(installed_typed_inputs)
+        self._activated_provider_bindings: dict[CompositionRef, tuple[ResolvedProviderConfig, BoundProviderConfig]] = {}
+        self._active_compositions: dict[CompositionRef, ActiveComposition] = {}
+        self._activated_context_transform_registries: dict[CompositionRef, RuntimeContextTransformRegistry] = {}
+        self._activated_tool_input_registries: dict[CompositionRef, ToolInputHandlerRegistry] = {}
         self._bind_provider_catalog_collaborators()
         self._provider_summary_projector = ProviderSummaryProjector()
         self._hydrate_provider_model_catalog_cache()
@@ -799,17 +837,32 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         self._skill_registry_is_injected = skill_registry is not None
         self._skill_registry = skill_registry or StreamPrepCoordinator.build_skill_registry_for_workspace(self._workspace, self._config.skills)
-        self._base_tool_registry = tool_registry or self._build_base_tool_registry()
+        base_registry = tool_registry or self._build_base_tool_registry()
+        if self._installed_tool_definitions:
+            all_definitions = (*base_registry.definitions(), *self._installed_tool_definitions)
+            base_registry = ToolRegistry.from_definitions(all_definitions)
+            if tool_registry:
+                base_registry.tools.update(tool_registry.tools)
+        self._base_tool_registry = base_registry
+        installed_tool_names = frozenset(d.name for d in self._installed_tool_definitions)
         base_provenance = tuple(
             tool_provenance(
                 definition,
-                source_kind="base" if definition.name not in self._base_tool_registry.tools else "package",
+                source_kind=(
+                    "package"
+                    if definition.name in installed_tool_names
+                    else ("base" if definition.name not in self._base_tool_registry.tools else "package")
+                ),
                 source_id=(
-                    f"base:{definition.name}"
-                    if definition.name not in self._base_tool_registry.tools
+                    f"package:{definition.name}"
+                    if definition.name in installed_tool_names
                     else (
-                        f"{type(self._base_tool_registry.tools[definition.name]).__module__}:"
-                        f"{type(self._base_tool_registry.tools[definition.name]).__qualname__}"
+                        f"base:{definition.name}"
+                        if definition.name not in self._base_tool_registry.tools
+                        else (
+                            f"{type(self._base_tool_registry.tools[definition.name]).__module__}:"
+                            f"{type(self._base_tool_registry.tools[definition.name]).__qualname__}"
+                        )
                     )
                 ),
             )
@@ -860,9 +913,13 @@ class VoidCodeRuntime(RuntimeSurface):
         self._context_transform_registry = context_transform_registry or RuntimeContextTransformRegistry.from_declarations(
             builtin_runtime_context_transform_declarations()
         ).bind(materialize_builtin_context_transform)
+        for declaration in self._installed_context_transforms:
+            self._context_transform_registry.register(declaration)
         self._tool_input_handler_registry = tool_input_handler_registry or ToolInputHandlerRegistry.from_declarations(
             builtin_tool_input_handler_declarations()
         ).bind(materialize_builtin_tool_input_handler)
+        for declaration in self._installed_typed_inputs:
+            self._tool_input_handler_registry.register(declaration)
         self._default_context_window_policy = context_window_policy_from_config(initial_context_window)
         self._background_task_supervisor = RuntimeBackgroundTaskSupervisor(
             self,
@@ -1262,20 +1319,50 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         descriptors: dict[str, ProviderDescriptor] = {}
         component_keys: dict[str, str] = {}
+        context_providers = list(self._context_transform_registry.providers)
+        tool_input_bindings = list(self._tool_input_handler_registry.bindings)
         for component in frozen.binding.components:
-            if component.slot != "provider":
-                continue
-            descriptor = active.admitted_value(component.key)
-            if not isinstance(descriptor, ProviderDescriptor) or descriptor.provider_name != component.name:
-                raise ValueError("activated provider component does not match its frozen declaration")
-            descriptors[component.name] = descriptor
-            component_keys[component.name] = component.key
+            if component.slot == "provider":
+                descriptor = active.admitted_value(component.key)
+                if not isinstance(descriptor, ProviderDescriptor) or descriptor.provider_name != component.name:
+                    raise ValueError("activated provider component does not match its frozen declaration")
+                descriptors[component.name] = descriptor
+                component_keys[component.name] = component.key
+            elif component.distribution != "voidcode":
+                instance = active.construct(component.key, context=composition_ref)
+                if component.slot == "tool":
+                    if not callable(getattr(instance, "invoke", None)):
+                        raise ValueError(f"activated tool component does not implement invoke: {component.name}")
+                elif component.slot == "context":
+                    if getattr(instance, "provider_id", None) != component.name or not callable(getattr(instance, "build_result", None)):
+                        raise ValueError(f"activated context component does not match declaration: {component.name}")
+                    context_providers.append(cast(RuntimeContextTransformProvider, instance))
+                elif component.slot == "typed-input":
+                    if not isinstance(instance, ToolInputHandlerBinding) or instance.declaration.name != component.name:
+                        raise ValueError(f"activated typed-input component must be a ToolInputHandlerBinding for {component.name}")
+                    tool_input_bindings.append(instance)
+        self._activated_context_transform_registries[composition_ref] = RuntimeContextTransformRegistry(
+            providers=context_providers,
+            declarations=self._context_transform_registry.declarations.values(),
+        )
+        self._activated_tool_input_registries[composition_ref] = ToolInputHandlerRegistry(
+            bindings=tool_input_bindings,
+            declarations=self._tool_input_handler_registry.declarations.values(),
+        )
+        self._tool_materialization = self._tool_materializer.base()
         resolved = self._resolved_provider_from_composition(frozen, descriptors)
+
+        def _materialize_provider(descriptor: ProviderDescriptor) -> ModelTurnProvider:
+            if descriptor.provider_name in self._model_provider_registry.providers:
+                return self._model_provider_registry.providers[descriptor.provider_name]
+            return cast(ModelTurnProvider, active.construct(component_keys[descriptor.provider_name], context=composition_ref))
+
         bound = self._model_provider_registry.bind(
             resolved,
-            materialize=lambda descriptor: cast(ModelTurnProvider, active.construct(component_keys[descriptor.provider_name], context=self)),
+            materialize=_materialize_provider,
         )
-        self._activated_provider_bindings[composition_ref.binding_id] = (resolved, bound)
+        self._activated_provider_bindings[composition_ref] = (resolved, bound)
+        self._active_compositions[composition_ref] = active
         return replace(base_config, resolved_provider=resolved, bound_provider=bound)
 
     def _activate_existing_session_composition(self, session_id: str) -> EffectiveRuntimeConfig:
@@ -1288,6 +1375,119 @@ class VoidCodeRuntime(RuntimeSurface):
             composition_ref=composition_ref,
             base_config=self.effective_runtime_config_from_metadata(metadata),
         )
+
+    def active_composition(self, *, session_id: str) -> ActiveComposition:
+        if not session_id:
+            raise ValueError("active composition requires a non-empty session identity")
+        stored = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        ref = composition_ref_from_session_metadata(stored.session.metadata)
+        if ref.workspace != str(self._workspace):
+            raise ValueError("composition reference names a different workspace")
+        if isinstance(ref.owner, SessionCompositionOwner):
+            if ref.owner.session_id != session_id:
+                raise ValueError("composition owner does not match the active session")
+        else:
+            task = self._repositories.tasks.load_background_task(workspace=self._workspace, task_id=ref.owner.task_id)
+            if task.session_id != session_id:
+                raise ValueError("composition task owner does not match the active session")
+        if ref in self._active_compositions:
+            return self._active_compositions[ref]
+        frozen = self._repositories.recovery.load_execution_composition(ref=ref)
+        active = self._composition_owner.activate(
+            frozen,
+            read_persisted=lambda: self._repositories.recovery.load_execution_composition(ref=ref),
+        )
+        self._active_compositions[ref] = active
+        return active
+
+    def run_composition_phase(
+        self,
+        name: str,
+        value: object,
+        *,
+        scope: LifecycleScope,
+        scope_id: str,
+        session_id: str,
+        context: PhaseContext,
+        recovering: bool = False,
+        restore_only: bool = False,
+    ) -> tuple[PhaseOutcome, ...]:
+        if not session_id or not scope_id:
+            raise ValueError("run_composition_phase requires non-empty session_id and scope_id")
+        if (
+            context.workspace != self._workspace
+            or context.session_id != session_id
+            or context.scope != scope
+            or context.scope_id != scope_id
+            or not context.run_id
+        ):
+            raise ValueError("phase context does not match its authentic runtime scope")
+        active = self.active_composition(session_id=session_id)
+
+        def read_record(key: str) -> PhaseRecord | None:
+            records = self.phase_records(session_id)
+            if key not in records:
+                return None
+            return PhaseRecord.model_validate(records[key])
+
+        def write_record(record: PhaseRecord) -> None:
+            self._repositories.sessions.save_composition_phase_record(
+                workspace=self._workspace,
+                session_id=session_id,
+                record=record,
+            )
+
+        return active.run_phase(
+            name,
+            value,
+            scope=scope,
+            scope_id=scope_id,
+            context=context,
+            read_record=read_record,
+            write_record=write_record,
+            recovering=recovering,
+            restore_only=restore_only,
+        )
+
+    def phase_records(self, session_id: str) -> dict[str, dict[str, object]]:
+        if not session_id:
+            raise ValueError("phase records require a non-empty session identity")
+        stored = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        if "phase_records" not in stored.session.metadata:
+            return {}
+        records = stored.session.metadata["phase_records"]
+        if not isinstance(records, dict):
+            raise ValueError("persisted phase_records mapping is malformed")
+        frozen = self.active_composition(session_id=session_id).frozen
+        phases = {phase.key: phase.declaration for phase in frozen.plan.phases}
+        validated: dict[str, dict[str, object]] = {}
+        for key, raw in records.items():
+            if not isinstance(key, str) or not isinstance(raw, dict):
+                raise ValueError("persisted phase_records entry is malformed")
+            record = PhaseRecord.model_validate(raw)
+            declaration = phases.get(record.phase_key)
+            if (
+                declaration is None
+                or record.binding_id != frozen.binding.binding_id
+                or record.version != declaration.version
+                or record.scope != declaration.scope
+            ):
+                raise ValueError("persisted phase record does not match its frozen declaration")
+            if key != f"{record.phase_key}:{record.scope}:{record.scope_id}":
+                raise ValueError("persisted phase record key does not match its identity")
+            validated[key] = record.model_dump(mode="json")
+        return validated
+
+    def composition_session_metadata(self, session_id: str, metadata: dict[str, object]) -> dict[str, object]:
+        """Merge durable phase state into an older run/checkpoint snapshot."""
+        stored = self._repositories.sessions.load_session(workspace=self._workspace, session_id=session_id)
+        state: dict[str, object] = (
+            dict(parse_runtime_state_metadata(stored.session.metadata["runtime_state"])) if "runtime_state" in stored.session.metadata else {}
+        )
+        phase_keys = frozenset({"composition_turn_occurrence", "composition_turn"})
+        phase_state = {key: state[key] for key in phase_keys if key in state}
+        merged = session_metadata_with_runtime_state_updates(metadata, updates=phase_state, removed=phase_keys - state.keys())
+        return {**merged, "phase_records": self.phase_records(session_id)}
 
     def _background_task_composition_ref(self, *, task_id: str, session_id: str) -> CompositionRef:
         task = self._repositories.tasks.load_background_task(workspace=self._workspace, task_id=task_id)
@@ -1352,6 +1552,14 @@ class VoidCodeRuntime(RuntimeSurface):
                 is None
             ):
                 raise ValueError("persisted session metadata does not match its resume checkpoint")
+        phases = {phase.key: phase.declaration for phase in frozen.plan.phases}
+        records = self.phase_records(session_id)
+        for record_payload in records.values():
+            record = PhaseRecord.model_validate(record_payload)
+            if record.state == "started":
+                declaration = phases.get(record.phase_key)
+                if declaration is not None and declaration.replay in ("once", "refuse"):
+                    raise ValueError(f"package lifecycle phase was interrupted in-flight; replay={declaration.replay!r} refuses duplicate execution")
         self._composition_owner.refresh(frozen)
         return frozen
 
@@ -1505,6 +1713,17 @@ class VoidCodeRuntime(RuntimeSurface):
             )
         mcp_by_name = {mcp_tool_definition(item).name: item for item in mcp_descriptors}
         local_by_name = {local_custom_tool_definition(item).name: item for item in local_manifests}
+        active_tools: dict[str, Tool] = {}
+        if "composition_ref" in session.metadata or "agent_capability_snapshot" in session.metadata:
+            try:
+                ref = composition_ref_from_session_metadata(session.metadata)
+                active = self._active_compositions.get(ref)
+                if active is not None:
+                    for comp in active.frozen.binding.components:
+                        if comp.slot == "tool" and comp.key in active._instances:
+                            active_tools[comp.name] = cast(Tool, active._instances[comp.key])
+            except Exception:
+                pass
 
         def materialize_definition(definition: ToolDefinition) -> Tool:
             if definition.name in BUILTIN_TOOL_NAMES:
@@ -1515,6 +1734,10 @@ class VoidCodeRuntime(RuntimeSurface):
             manifest = local_by_name.get(definition.name)
             if manifest is not None:
                 return LocalCustomTool(manifest)
+            if definition.name in active_tools:
+                return active_tools[definition.name]
+            if definition.name in self._base_tool_registry.tools:
+                return self._base_tool_registry.tools[definition.name]
             raise ValueError(f"no activated tool factory for declaration: {definition.name}")
 
         return tool_materialization.registry.bind(materialize_definition)
@@ -1720,8 +1943,8 @@ class VoidCodeRuntime(RuntimeSurface):
     def disconnect_acp(self) -> tuple[EventEnvelope, ...]:
         return self._inspection_coordinator.disconnect_acp()
 
-    def _runtime_agent_registry(self) -> AgentManifestRegistry:
-        registry = load_agent_manifest_registry(self._workspace)
+    def _runtime_agent_registry(self, installed_manifests: Iterable[AgentManifest] = ()) -> AgentManifestRegistry:
+        registry = load_agent_manifest_registry(self._workspace, installed_manifests=installed_manifests)
         builtin = dict(registry.builtin)
         for agent_id in tuple(builtin):
             manifest = get_builtin_agent_manifest(agent_id)
@@ -1772,13 +1995,17 @@ class VoidCodeRuntime(RuntimeSurface):
                         output = chunk.output
                     yield chunk
             except GeneratorExit:
-                self._persist_interrupted_terminal_on_generator_close(
-                    request=request,
-                    abort_signal=abort_signal,
-                    final_session=final_session,
-                    events=events,
-                    run_id=run_id,
-                )
+                if final_session is not None and final_session.status == "waiting":
+                    response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
+                    self.persist_response(request=request, response=response)
+                else:
+                    self._persist_interrupted_terminal_on_generator_close(
+                        request=request,
+                        abort_signal=abort_signal,
+                        final_session=final_session,
+                        events=events,
+                        run_id=run_id,
+                    )
                 raise
             except Exception:
                 if final_session is not None and final_session.status == "failed":
@@ -2256,6 +2483,11 @@ class VoidCodeRuntime(RuntimeSurface):
             composition_ref=composition_ref_payload,
         )
         session = replace(session, metadata={**session.metadata, "composition_ref": composition_ref_payload})
+        if existing_session is not None:
+            session = replace(
+                session,
+                metadata=self.composition_session_metadata(resolved_session_id, session.metadata),
+            )
         # Every fresh run must start from a writable row, ALWAYS. ``status`` in
         # {completed, failed} is per-TURN, not per-session: follow-up messages
         # re-enter the same session_id, so a previously sealed row would reject
@@ -3915,18 +4147,24 @@ class VoidCodeRuntime(RuntimeSurface):
             checkpoint = self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
             if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
                 self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
-                return self._resume_coordinator.resume_provider_failure_response(
-                    session_id=session_id,
-                    checkpoint=checkpoint,
-                    finalize_background_task=True,
-                )
+                with self._active_resume_registration(session_id, resume_kind="provider_failure") as (run_id, abort_signal):
+                    return self._resume_coordinator.resume_provider_failure_response(
+                        session_id=session_id,
+                        checkpoint=checkpoint,
+                        finalize_background_task=True,
+                        run_id=run_id,
+                        abort_signal=abort_signal,
+                    )
             if checkpoint is not None and checkpoint.get("kind") == "interrupted":
                 self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
-                return self._resume_coordinator.resume_interrupted_response(
-                    session_id=session_id,
-                    checkpoint=checkpoint,
-                    finalize_background_task=True,
-                )
+                with self._active_resume_registration(session_id, resume_kind="interrupted") as (run_id, abort_signal):
+                    return self._resume_coordinator.resume_interrupted_response(
+                        session_id=session_id,
+                        checkpoint=checkpoint,
+                        finalize_background_task=True,
+                        run_id=run_id,
+                        abort_signal=abort_signal,
+                    )
             self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
             return self._load_replay_response(session_id=session_id)
         if approval_request_id is None or approval_decision is None:
@@ -4603,6 +4841,12 @@ class VoidCodeRuntime(RuntimeSurface):
             session_metadata,
             agent=effective_config.agent,
         )
+        comp_ref = None
+        if session_metadata is not None and ("composition_ref" in session_metadata or "agent_capability_snapshot" in session_metadata):
+            try:
+                comp_ref = composition_ref_from_session_metadata(session_metadata)
+            except Exception:
+                comp_ref = None
         context_transform_result = build_provider_context_transform_result(
             workspace=self._workspace,
             tool_results=tool_results,
@@ -4614,6 +4858,7 @@ class VoidCodeRuntime(RuntimeSurface):
             registry=self._context_transform_registry_for_agent(
                 effective_config.agent,
                 mode_transform_refs=mode_resolution.transform_refs,
+                composition_ref=comp_ref,
             ),
         )
         if compaction_budget is None:
@@ -5062,10 +5307,23 @@ class VoidCodeRuntime(RuntimeSurface):
         agent: RuntimeAgentConfig | None,
         *,
         mode_transform_refs: tuple[str, ...] = (),
+        composition_ref: CompositionRef | None = None,
     ) -> RuntimeContextTransformRegistry:
         refs = agent.context_transform_refs if agent is not None else ()
         combined = tuple(dict.fromkeys((*refs, *mode_transform_refs)))
-        return self._context_transform_registry.filtered(combined)
+        registry = (
+            self._activated_context_transform_registries.get(composition_ref, self._context_transform_registry)
+            if composition_ref is not None
+            else self._context_transform_registry
+        )
+        return registry.filtered(combined)
+
+    def tool_input_handler_registry_for_session(self, session: SessionState) -> ToolInputHandlerRegistry:
+        try:
+            ref = composition_ref_from_session_metadata(session.metadata)
+            return self._activated_tool_input_registries.get(ref, self._tool_input_handler_registry)
+        except Exception:
+            return self._tool_input_handler_registry
 
     def _skill_snapshot_from_metadata(
         self,
@@ -5491,12 +5749,9 @@ class VoidCodeRuntime(RuntimeSurface):
         else:
             agent = None
         activated_binding: tuple[ResolvedProviderConfig, BoundProviderConfig] | None = None
-        if metadata is not None:
-            raw_capability = metadata.get("agent_capability_snapshot")
-            if isinstance(raw_capability, dict):
-                raw_ref = raw_capability.get("composition_ref")
-                if isinstance(raw_ref, dict) and isinstance(raw_ref.get("binding_id"), str):
-                    activated_binding = self._activated_provider_bindings.get(raw_ref["binding_id"])
+        if metadata is not None and "agent_capability_snapshot" in metadata:
+            ref = composition_ref_from_session_metadata(metadata)
+            activated_binding = self._activated_provider_bindings.get(ref)
         raw_resolved_provider = materialized.raw_resolved_provider
         bound_provider = None
         if activated_binding is not None:
@@ -5548,7 +5803,8 @@ class VoidCodeRuntime(RuntimeSurface):
 
         # Reuse self._graph if the session's config matches the runtime's config
         if (
-            effective_config.execution_engine == self._initial_effective_config.execution_engine
+            effective_config.execution_engine != "provider"
+            and effective_config.execution_engine == self._initial_effective_config.execution_engine
             and effective_config.model == self._initial_effective_config.model
             and effective_config.reasoning_effort == self._initial_effective_config.reasoning_effort
             and effective_config.provider_fallback == self._initial_effective_config.provider_fallback

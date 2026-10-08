@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from .composition import FrozenComposition
+from ..security.json_values import json_wire_object, own_json_object
+from .composition import FrozenComposition, PhaseRecord
 from .events import EventEnvelope
 from .mode import backfill_runtime_policy_mode, runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .policy import runtime_policy_snapshot_from_session_metadata
@@ -150,6 +151,16 @@ def _bounded_redacted(value: object, *, key: str | None = None) -> object:
     return value
 
 
+def session_metadata_for_public(metadata: dict[str, object]) -> dict[str, object]:
+    """Return bounded, redacted metadata without durable phase snapshots/cursors."""
+    private_keys = {"phase_records", "composition_turn_occurrence", "composition_turn"}
+    projected = {key: value for key, value in metadata.items() if key not in private_keys}
+    runtime_state = projected.get("runtime_state")
+    if isinstance(runtime_state, dict):
+        projected["runtime_state"] = {key: value for key, value in runtime_state.items() if key not in private_keys}
+    return _bounded_redacted_mapping(projected)
+
+
 def session_metadata_for_replay(metadata: dict[str, object]) -> dict[str, object]:
     """Return session metadata projected for replay/resume without run-local markers."""
 
@@ -223,11 +234,39 @@ def session_metadata_for_persistence(
 
     Boundary: this applies safety bounds (secret scrubbing, string-length caps,
     dict/list depth limits) — NOT context compaction. Context window projection
-    is owned by ``context/window.py``. The bounds here prevent unbounded metadata
-    bloat in the sessions row.
+    is owned by ``context/window.py``. Private phase records and turn ownership
+    are validated JSON, retained exactly for cold recovery, and excluded from
+    public projection rather than scrubbed or truncated.
     """
 
-    persisted = _bounded_redacted_mapping(metadata)
+    persisted = session_metadata_for_public(metadata)
+    persisted.update(
+        json_wire_object(
+            own_json_object({key: value for key, value in metadata.items() if key in {"composition_turn_occurrence", "composition_turn"}})
+        )
+    )
+    if "phase_records" in metadata:
+        records = metadata["phase_records"]
+        if not isinstance(records, dict):
+            raise ValueError("persisted phase_records mapping is malformed")
+        exact_records: dict[str, object] = {}
+        for key, raw_record in records.items():
+            if not isinstance(raw_record, dict):
+                raise ValueError("persisted phase_records entry is malformed")
+            record = PhaseRecord.model_validate(raw_record)
+            if key != f"{record.phase_key}:{record.scope}:{record.scope_id}":
+                raise ValueError("persisted phase record key does not match its identity")
+            exact_records[key] = record.model_dump(mode="json")
+        persisted["phase_records"] = exact_records
+    runtime_state = metadata.get("runtime_state")
+    if isinstance(runtime_state, dict):
+        private_turn_state = {key: value for key, value in runtime_state.items() if key in {"composition_turn_occurrence", "composition_turn"}}
+        if private_turn_state:
+            public_runtime_state = persisted.get("runtime_state")
+            persisted["runtime_state"] = {
+                **(public_runtime_state if isinstance(public_runtime_state, dict) else {}),
+                **json_wire_object(own_json_object(private_turn_state)),
+            }
     raw_composition = metadata.get("execution_composition")
     if raw_composition is not None:
         # This signed nonsecret owner is already projected by composition's

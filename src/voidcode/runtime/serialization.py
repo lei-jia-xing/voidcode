@@ -7,7 +7,7 @@ from .contracts import (
     RuntimeSessionDebugSnapshot,
 )
 from .events import redact_reasoning_payload, runtime_policy_observability_payload
-from .session import SessionEntrySummary, SessionRef, SessionState
+from .session import SessionEntrySummary, SessionRef, SessionState, session_metadata_for_public
 
 
 def serialize_session_entry_summary(entry: SessionEntrySummary) -> dict[str, object]:
@@ -219,5 +219,5 @@ def _serialize_session_state(session: SessionState) -> dict[str, object]:
         "session": _serialize_session_ref(session.session),
         "status": session.status,
         "turn": session.turn,
-        "metadata": session.metadata,
+        "metadata": session_metadata_for_public(session.metadata),
     }

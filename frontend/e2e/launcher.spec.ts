@@ -1,6 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
 import { spawn, ChildProcess } from "child_process";
-import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -107,21 +106,31 @@ async function installMockRuntime(page: Page) {
     session_id: "browser-session",
     sequence: 2,
     event_type: "runtime.tool_completed",
-    source: "runtime",
+    source: "tool",
     payload: {
       tool: "read",
       tool_call_id: "read-1",
       status: "ok",
       arguments: { path: "README.md" },
+      content: "README fixture contents",
+      error: null,
+      display: {
+        kind: "read",
+        title: "Read",
+        summary: "README.md",
+        args: ["README.md"],
+        copyable: { path: "README.md" },
+      },
       tool_status: {
         invocation_id: "read-1",
         tool_name: "read",
         status: "completed",
         display: {
-          kind: "context",
+          kind: "read",
           title: "Read",
-          summary: "Read README.md",
+          summary: "README.md",
           args: ["README.md"],
+          copyable: { path: "README.md" },
         },
       },
     },
@@ -130,21 +139,31 @@ async function installMockRuntime(page: Page) {
     session_id: "browser-session",
     sequence: 3,
     event_type: "runtime.tool_completed",
-    source: "runtime",
+    source: "tool",
     payload: {
       tool: "grep",
       tool_call_id: "grep-1",
       status: "ok",
       arguments: { pattern: "TODO", path: "." },
+      content: "src/app.ts:42: // TODO",
+      error: null,
+      display: {
+        kind: "search",
+        title: "Search",
+        summary: "TODO",
+        args: ["TODO", "."],
+        copyable: { path: "." },
+      },
       tool_status: {
         invocation_id: "grep-1",
         tool_name: "grep",
         status: "completed",
         display: {
-          kind: "context",
+          kind: "search",
           title: "Search",
-          summary: "Search TODO",
+          summary: "TODO",
           args: ["TODO", "."],
+          copyable: { path: "." },
         },
       },
     },
@@ -153,17 +172,27 @@ async function installMockRuntime(page: Page) {
     session_id: "browser-session",
     sequence: 4,
     event_type: "runtime.tool_completed",
-    source: "runtime",
+    source: "tool",
     payload: {
       tool: "shell_exec",
       tool_call_id: "shell-1",
       status: "ok",
       arguments: { command: "bun run --cwd frontend lint" },
-      data: {
-        command: "bun run --cwd frontend lint",
-        exit_code: 0,
-        stdout: "lint passed",
-        stderr: "",
+      command: "bun run --cwd frontend lint",
+      exit_code: 0,
+      stdout: "lint passed",
+      stderr: "",
+      content: "lint passed",
+      error: null,
+      display: {
+        kind: "shell",
+        title: "Shell",
+        summary: "bun run --cwd frontend lint",
+        args: ["bun run --cwd frontend lint"],
+        copyable: {
+          command: "bun run --cwd frontend lint",
+          output: "lint passed",
+        },
       },
       tool_status: {
         invocation_id: "shell-1",
@@ -172,7 +201,7 @@ async function installMockRuntime(page: Page) {
         display: {
           kind: "shell",
           title: "Shell",
-          summary: "Run frontend lint",
+          summary: "bun run --cwd frontend lint",
           args: ["bun run --cwd frontend lint"],
           copyable: {
             command: "bun run --cwd frontend lint",
@@ -217,23 +246,33 @@ async function installMockRuntime(page: Page) {
       },
     });
   });
+  let runtimeStarted = false;
+  let releaseSessionEvents!: () => void;
+  const sessionEventsReleased = new Promise<void>((resolve) => {
+    releaseSessionEvents = resolve;
+  });
+
   await page.route("**/api/workspaces", async (route) =>
     route.fulfill(jsonResponse(workspaceSnapshot)),
   );
   await page.route("**/api/workspaces/open", async (route) =>
     route.fulfill(jsonResponse(workspaceSnapshot)),
   );
-  await page.route("**/api/sessions", async (route) =>
+  await page.route("**/api/sessions*", async (route) =>
     route.fulfill(
-      jsonResponse([
-        {
-          session: { id: "browser-session" },
-          status: "waiting",
-          turn: 1,
-          prompt: "browser QA tool surfaces",
-          updated_at: 1,
-        },
-      ]),
+      jsonResponse(
+        runtimeStarted
+          ? [
+              {
+                session: { id: "browser-session" },
+                status: "waiting",
+                turn: 1,
+                prompt: "browser QA tool surfaces",
+                updated_at: 1,
+              },
+            ]
+          : [],
+      ),
     ),
   );
   await page.route("**/api/sessions/browser-session", async (route) =>
@@ -245,6 +284,18 @@ async function installMockRuntime(page: Page) {
       }),
     ),
   );
+  await page.route(
+    "**/api/sessions/browser-session/events*",
+    async (route) => {
+      await sessionEventsReleased;
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: "",
+      });
+    },
+  );
+
   await page.route("**/api/sessions/browser-session/debug", async (route) =>
     route.fulfill(
       jsonResponse({
@@ -357,8 +408,9 @@ async function installMockRuntime(page: Page) {
   await page.route("**/api/tasks", async (route) =>
     route.fulfill(jsonResponse([])),
   );
-  await page.route("**/api/runtime/run/stream", async (route) =>
-    route.fulfill({
+  await page.route("**/api/runtime/run/stream*", async (route) => {
+    runtimeStarted = true;
+    await route.fulfill({
       status: 200,
       contentType: "text/event-stream",
       body: sseBody([
@@ -393,10 +445,10 @@ async function installMockRuntime(page: Page) {
           output: null,
         },
       ]),
-    }),
-  );
+    });
+  });
   await page.route(
-    "**/api/sessions/browser-session/approval",
+    "**/api/sessions/browser-session/approval*",
     async (route) => {
       const body = route.request().postDataJSON() as {
         request_id?: string;
@@ -422,6 +474,7 @@ async function installMockRuntime(page: Page) {
       );
     },
   );
+  return releaseSessionEvents;
 }
 
 test.describe("VoidCode Web Launcher", () => {
@@ -533,7 +586,7 @@ test.describe("VoidCode Web Launcher", () => {
   test("should answer a runtime question from the browser", async ({
     page,
   }) => {
-    await page.route("**/api/runtime/run/stream", async (route) => {
+    await page.route("**/api/runtime/run/stream*", async (route) => {
       const session = {
         session: { id: "question-session" },
         status: "waiting",
@@ -580,9 +633,25 @@ test.describe("VoidCode Web Launcher", () => {
         ].join("\n"),
       });
     });
+    let releaseQuestionEvents!: () => void;
+    const questionEventsReleased = new Promise<void>((resolve) => {
+      releaseQuestionEvents = resolve;
+    });
+    await page.route(
+      "**/api/sessions/question-session/events*",
+      async (route) => {
+        await questionEventsReleased;
+        await route.fulfill({
+          status: 200,
+          contentType: "text/event-stream",
+          body: "",
+        });
+      },
+    );
+
 
     await page.route(
-      "**/api/sessions/question-session/question",
+      "**/api/sessions/question-session/question*",
       async (route) => {
         const body = route.request().postDataJSON() as { request_id?: string };
         expect(body.request_id).toBe("question-1");
@@ -610,13 +679,41 @@ test.describe("VoidCode Web Launcher", () => {
               {
                 session_id: "question-session",
                 sequence: 2,
+                event_type: "runtime.question_requested",
+                source: "runtime",
+                payload: {
+                  request_id: "question-1",
+                  tool: "question",
+                  question_count: 1,
+                  questions: [
+                    {
+                      header: "Direction",
+                      question: "Which path should VoidCode take?",
+                      multiple: false,
+                      options: [
+                        {
+                          label: "simple",
+                          description: "Use the simple path",
+                        },
+                        {
+                          label: "detailed",
+                          description: "Use the detailed path",
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+              {
+                session_id: "question-session",
+                sequence: 3,
                 event_type: "runtime.question_answered",
                 source: "runtime",
                 payload: { request_id: "question-1" },
               },
               {
                 session_id: "question-session",
-                sequence: 3,
+                sequence: 4,
                 event_type: "graph.response_ready",
                 source: "graph",
                 payload: { output: "question answered" },
@@ -696,29 +793,30 @@ test.describe("VoidCode Web Launcher", () => {
     await input.fill("ask for direction");
     await input.press("Enter");
 
-    await expect(page.getByText("Question Required")).toBeVisible({
+    await expect(
+      page.getByText("Which path should VoidCode take?"),
+    ).toBeVisible({
       timeout: 10000,
     });
+    await expect(
+      page.getByText(/Live session updates stopped:/),
+    ).not.toBeVisible();
     await page.getByLabel("simple").check();
     await page.getByRole("button", { name: "Submit Answer" }).click();
 
     await expect(page.getByText("question answered")).toBeVisible({
       timeout: 10000,
     });
+    releaseQuestionEvents();
   });
 
-  test("should cover browser UI controls and monochrome tool layout", async ({
-    page,
-  }) => {
+  test("should cover browser UI controls and monochrome tool layout", async (
+    { page },
+    testInfo,
+  ) => {
     test.setTimeout(60000);
 
-    await installMockRuntime(page);
-    const rootDir = path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "../..",
-    );
-    const evidenceDir = path.join(rootDir, ".sisyphus/evidence");
-    fs.mkdirSync(evidenceDir, { recursive: true });
+    const releaseSessionEvents = await installMockRuntime(page);
 
     await page.goto(launcherUrl);
     await expect(page.getByRole("button", { name: "Model" })).toHaveText(
@@ -778,7 +876,7 @@ test.describe("VoidCode Web Launcher", () => {
       page.getByRole("button", { name: "M src/app.ts" }),
     ).toBeVisible();
     await page.screenshot({
-      path: path.join(evidenceDir, "task-11-layout-buttons.png"),
+      path: testInfo.outputPath("task-11-layout-buttons.png"),
       fullPage: true,
     });
     await page.getByRole("button", { name: "Close code review panel" }).click();
@@ -788,21 +886,26 @@ test.describe("VoidCode Web Launcher", () => {
     await input.fill("browser QA tool surfaces");
     await input.press("Enter");
 
-    await expect(
-      page.getByRole("button", { name: /show details for project lookups/i }),
-    ).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText("2 lookups")).toBeVisible();
-    await page
-      .getByRole("button", { name: /show details for project lookups/i })
-      .click();
-    await expect(page.getByText("Read README.md")).toBeVisible();
-    await expect(page.getByText("Search TODO")).toBeVisible();
+    const readToggle = page.getByRole("button", {
+      name: /show details for read/i,
+    }).first();
+    const grepToggle = page.getByRole("button", {
+      name: /show details for grep/i,
+    }).first();
+    await expect(readToggle).toBeVisible();
+    await expect(grepToggle).toBeVisible();
+    await readToggle.click();
+    await expect(page.getByText("README fixture contents")).toBeVisible();
+    await grepToggle.click();
+    await expect(page.getByText("src/app.ts:42: // TODO")).toBeVisible();
 
     const shellToggle = page.getByRole("button", {
       name: /show details for shell/i,
-    });
+    }).first();
     await expect(shellToggle).toBeVisible();
-    await expect(page.getByText("Run frontend lint")).toBeVisible();
+    await expect(
+      page.getByText("bun run --cwd frontend lint", { exact: true }),
+    ).toBeVisible();
     await expect(page.getByText("lint passed")).not.toBeVisible();
     await expect(shellToggle).not.toHaveClass(/border/);
     await shellToggle.click();
@@ -818,7 +921,7 @@ test.describe("VoidCode Web Launcher", () => {
       )
       .toContain("bun run --cwd frontend lint");
     await page.screenshot({
-      path: path.join(evidenceDir, "task-11-tool-browser.png"),
+      path: testInfo.outputPath("task-11-tool-browser.png"),
       fullPage: true,
     });
 
@@ -830,6 +933,10 @@ test.describe("VoidCode Web Launcher", () => {
         .getByText("Browser QA completed.")
         .locator('xpath=ancestor::*[contains(@class, "markdown-body")][1]'),
     ).toHaveCount(1);
+    await expect(
+      page.getByText(/Live session updates stopped:/),
+    ).not.toBeVisible();
+    releaseSessionEvents();
 
     const statusToggle = page.getByRole("button", {
       name: "Toggle runtime status",
@@ -839,21 +946,25 @@ test.describe("VoidCode Web Launcher", () => {
     if (!statusDetailId)
       throw new Error("Runtime status toggle should control a detail popover");
     const statusDetail = page.locator(`[id="${statusDetailId}"]`);
+    await page.getByRole("tab", { name: "MCP" }).click();
+    await expect(statusDetail.getByText("local", { exact: true })).toBeVisible();
+    await expect(statusDetail.getByText("stopped", { exact: true })).toBeVisible();
     await expect(
-      statusDetail.getByText("Server", { exact: true }),
+      statusDetail.getByText("stage: idle", { exact: true }),
     ).toBeVisible();
-    await expect(statusDetail.getByText("LSP", { exact: true })).toBeVisible();
-    await expect(statusDetail.getByText("MCP", { exact: true })).toBeVisible();
-    await expect(statusDetail.getByText(/transport: connected/)).toBeVisible();
-    await expect(
-      statusDetail.getByText(/last request: handshake/),
-    ).toBeVisible();
+    const retryRequest = page.waitForRequest(
+      (request) =>
+        new URL(request.url()).pathname === "/api/status/mcp/retry",
+    );
     await page.getByRole("button", { name: "Retry MCP" }).click();
+    await retryRequest;
 
     await page.getByRole("button", { name: "Settings" }).click();
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+    await page.getByRole("button", { name: "Provider & Model" }).click();
     await expect(page.getByText("Configured providers")).toBeVisible();
-    await page.locator("form").getByRole("button", { name: "Close" }).click();
+    await expect(page.getByText("DeepSeek", { exact: true })).toBeVisible();
+    await page.getByRole("dialog", { name: "Settings" }).getByLabel("Close").click();
 
     await page.getByRole("button", { name: "Open Project" }).first().click();
     await expect(

@@ -10,12 +10,15 @@ existing fallback chain or fails in a way that ``sessions resume`` can retry.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 from voidcode.core.turns import FinalTurn, ToolTurn
 from voidcode.provider.config import ProviderConfigs, ProviderEndpointConfig, ProviderFallbackConfig
+from voidcode.provider.openai_native import OpenAIChatCompletionsProvider, OpenAITransportError
 from voidcode.provider.protocol import ProviderExecutionError
+from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.runtime.config import RuntimeCompactionConfig, RuntimeConfig, RuntimeContextWindowConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.events import RUNTIME_PROVIDER_CONTEXT_RECOVERY, RUNTIME_PROVIDER_FALLBACK
@@ -135,25 +138,85 @@ def _events(chunks: list[Any], event_type: str) -> list[Any]:
 def test_promotion_prefers_a_strictly_larger_window_candidate(tmp_path: Path) -> None:
     """Chain order is not enough: a same-or-smaller first candidate is skipped."""
     _workspace(tmp_path)
-    graph = _OverflowScript(
-        [
-            *_reads(),
-            "overflow",
-            "overflow",
-        ],
-        repeat_last=True,
-        provider="google",
-        model="gemini-2.5-flash",
-    )
+    transport_requests: list[dict[str, object]] = []
 
-    chunks = list(
-        _chain_runtime(
-            tmp_path,
-            graph,
-            model="google/gemini-2.5-flash",  # 983k effective window
-            fallback_models=("openai/gpt-4o", "openai/gpt-4.1"),  # 111k then 1.01M
-        ).run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID))
+    class OfflineOpenAITransport:
+        def request(self, payload: dict[str, object], *, timeout_seconds: float) -> object:
+            _ = timeout_seconds
+            transport_requests.append(payload)
+            model = payload["model"]
+            model_calls = sum(call["model"] == model for call in transport_requests)
+            if model == "gpt-4o" and model_calls <= READ_COUNT:
+                index = model_calls - 1
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": f"read-{index}",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "read",
+                                            "arguments": json.dumps({"path": f"big-{index}.txt"}),
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                }
+            if model == "gpt-4.1":
+                return {
+                    "choices": [
+                        {
+                            "message": {"content": "answered by the larger-window target"},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                }
+            raise OpenAITransportError(
+                {
+                    "error": {
+                        "message": "prompt is too long: 250000 tokens > 200000 maximum context length",
+                        "type": "invalid_request_error",
+                        "code": "context_length_exceeded",
+                    }
+                }
+            )
+
+    class OfflineOpenAIModelProvider:
+        name = "openai"
+
+        def turn_provider(self) -> OpenAIChatCompletionsProvider:
+            return OpenAIChatCompletionsProvider(name=self.name, transport=OfflineOpenAITransport())
+
+    provider_registry = ModelProviderRegistry.with_defaults()
+    provider_registry.providers = {"openai": OfflineOpenAIModelProvider()}
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([ReadTool()]),
+        model_provider_registry=provider_registry,
+        config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
+            execution_engine="provider",
+            model="openai/gpt-4o",
+            provider_fallback=ProviderFallbackConfig(
+                preferred_model="openai/gpt-4o",
+                fallback_models=("openai/gpt-4o-mini", "openai/gpt-4.1"),
+            ),
+            context_window=RuntimeContextWindowConfig(compaction=RuntimeCompactionConfig(threshold_tokens=2_000, keep_recent_tool_tokens=100)),
+        ),
+        permission_policy=PermissionPolicy(mode="yolo"),
     )
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt=PROMPT, session_id=SESSION_ID, metadata={"provider_stream": False})))
+
+    requested_models = [call["model"] for call in transport_requests]
+    assert requested_models[0] == "gpt-4o"
+    assert requested_models[-1] == "gpt-4.1"
+    assert "gpt-4o-mini" not in requested_models
+    assert chunks[-1].output == "answered by the larger-window target"
 
     promote = [event for event in _events(chunks, RUNTIME_PROVIDER_CONTEXT_RECOVERY) if event.payload["mode"] == "promote"]
     assert len(promote) == 1
@@ -163,8 +226,7 @@ def test_promotion_prefers_a_strictly_larger_window_candidate(tmp_path: Path) ->
     assert payload["window_tokens_before"] is not None and payload["window_tokens_after"] is not None
     assert payload["window_tokens_after"] > payload["window_tokens_before"]
     fallback = _events(chunks, RUNTIME_PROVIDER_FALLBACK)
-    assert [(event.payload["from_model"], event.payload["to_model"]) for event in fallback] == [("gemini-2.5-flash", "gpt-4.1")]
-    assert [chunk.session.status for chunk in chunks][-1] == "failed"
+    assert [(event.payload["from_model"], event.payload["to_model"]) for event in fallback] == [("gpt-4o", "gpt-4.1")]
 
 
 def test_promotion_without_a_larger_candidate_keeps_the_chain_order_target(tmp_path: Path) -> None:

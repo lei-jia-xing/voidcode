@@ -328,6 +328,25 @@ class RuntimeContextTransformRegistry:
     def providers(self) -> tuple[RuntimeContextTransformProvider, ...]:
         return tuple(self._bound.values())
 
+    def register(self, declaration: RuntimeContextTransformDeclaration) -> None:
+        if type(declaration) is not RuntimeContextTransformDeclaration:
+            raise ValueError("context declarations must be pure RuntimeContextTransformDeclaration records")
+        if declaration.provider_id in self._declarations:
+            raise ValueError(f"context transform provider id is already declared: {declaration.provider_id}")
+        declarations = dict(self._declarations)
+        declarations[declaration.provider_id] = declaration
+        self._declarations = MappingProxyType(declarations)
+
+    def bind_provider(self, provider: RuntimeContextTransformProvider) -> None:
+        declaration = RuntimeContextTransformDeclaration.from_provider(provider)
+        if declaration.provider_id not in self._declarations:
+            raise ValueError(f"unknown context transform declaration: {declaration.provider_id}")
+        if self._declarations[declaration.provider_id] != declaration:
+            raise ValueError(f"context transform binding does not match unique declaration: {declaration.provider_id}")
+        bound = dict(self._bound)
+        bound[declaration.provider_id] = provider
+        self._bound = MappingProxyType(bound)
+
     def bind(self, materialize: Callable[[str], RuntimeContextTransformProvider]) -> RuntimeContextTransformRegistry:
         if len(self._bound) == len(self._declarations):
             return self

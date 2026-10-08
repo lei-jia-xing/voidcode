@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
+from ..composition import SessionCompositionOwner
 from ..contracts import (
     RuntimeSessionForkBoundaryError,
     SessionLineageCycleError,
@@ -59,13 +60,9 @@ _REQUEST_PAIRS = (
     (RUNTIME_QUESTION_REQUESTED, RUNTIME_QUESTION_ANSWERED),
 )
 
-#: Metadata keys that describe a *position in a run* rather than a session
-#: identity. A fork replays the copied events instead of resuming them, so an
-#: inherited position would point at sequences the fork does not own. Only
-#: ``runtime_state`` (context projection + todos) is position-scoped; the
-#: session-scoped effective config and policy must carry over or the fork is
-#: unusable (``run -r``/inspection require ``runtime_config``).
-_NON_TRANSFERABLE_METADATA_KEYS = ("runtime_state",)
+#: Forks start their own executable lifecycle scopes and producer cursor.
+#: Config/policy transfer, but source phase keys and run-position state do not.
+_NON_TRANSFERABLE_METADATA_KEYS = ("runtime_state", "phase_records")
 
 
 def _normalized_tool_call_id(payload: dict[str, object]) -> str | None:
@@ -284,9 +281,16 @@ class _ForkStorageMixin(_MixinBase):
                 session_id=forked_id,
             )
             created_at_unix_ms = self._current_unix_ms()
+            frozen = self_any._load_execution_composition(connection, current_ref)
+            forked_ref = frozen.reference(
+                workspace=str(workspace),
+                owner=SessionCompositionOwner(kind="session", session_id=forked_id),
+            )
             forked_metadata = _fork_metadata(
                 raw_metadata_json=source_row["metadata_json"],
                 workspace=str(workspace),
+                forked_ref_payload=forked_ref.model_dump(mode="json"),
+                execution_composition_payload=frozen.to_payload(),
             )
             try:
                 _ = connection.execute(
@@ -436,24 +440,36 @@ class _ForkStorageMixin(_MixinBase):
         return forest_from_lineage_entries(self.session_lineage(workspace=workspace))
 
 
-def _fork_metadata(*, raw_metadata_json: str, workspace: str) -> dict[str, object]:
-    """Preserve the original canonical owner while dropping run-position state."""
+def _fork_metadata(
+    *,
+    raw_metadata_json: str,
+    workspace: str,
+    forked_ref_payload: dict[str, object],
+    execution_composition_payload: dict[str, object],
+) -> dict[str, object]:
+    """Preserve the canonical plan reference, not the source's executable scopes."""
     source_metadata = normalize_persisted_session_metadata(cast(dict[str, object], json.loads(raw_metadata_json)))
-    forked = {key: value for key, value in source_metadata.items() if key not in (*_NON_TRANSFERABLE_METADATA_KEYS, "execution_composition")}
+    forked = {key: value for key, value in source_metadata.items() if key not in _NON_TRANSFERABLE_METADATA_KEYS}
     forked["workspace"] = workspace
+    forked["composition_ref"] = forked_ref_payload
+    forked["execution_composition"] = execution_composition_payload
+    snapshot = forked.get("agent_capability_snapshot")
+    if isinstance(snapshot, dict):
+        forked["agent_capability_snapshot"] = {**snapshot, "composition_ref": forked_ref_payload}
     return forked
 
 
 def _fork_resume_checkpoint(boundary: int, session_metadata: dict[str, object], prompt: str) -> dict[str, object]:
     """Replay-only checkpoint for the fork's own watermark and canonical ref."""
-
+    checkpoint_metadata = dict(session_metadata)
+    checkpoint_metadata.pop("execution_composition", None)
     return {
         "version": 2,
         "kind": "terminal",
         "last_event_sequence": boundary,
         "prompt": prompt,
         "session_status": "interrupted",
-        "session_metadata": session_metadata,
+        "session_metadata": checkpoint_metadata,
         "output": None,
         "tool_results": [],
     }

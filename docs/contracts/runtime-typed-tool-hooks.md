@@ -192,6 +192,8 @@ materialized binding 与声明完全匹配。已绑定 handlers 按 priority 升
 priority 保持声明注册顺序。每个 handler 看到前一个成功 rewrite 后的当前参数 snapshot，
 因此组合是确定的。第一个 block 短路；diagnostic 累积；多个 rewrite 按稳定顺序依次应用。
 
+Clean cutover: runtime 仅接受规范的 `ToolInputHandlerBinding`（校验 declaration name 与 handler 匹配），彻底切除 historical plain callable fallback。非 `ToolInputHandlerBinding` 类型输入在 materialization/bind 边界直接拒绝。
+
 ## 与现有 runtime 治理的关系
 
 Typed input hook 是 runtime tool governance 中的附加候选变换层：

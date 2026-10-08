@@ -343,6 +343,15 @@
         },
         "prompt_profile": {
           "description": "Prompt/profile selection for this agent entry.",
+          "enum": [
+            "leader",
+            "worker",
+            "advisor",
+            "explore",
+            "researcher",
+            "product",
+            null
+          ],
           "minLength": 1,
           "type": [
             "string",

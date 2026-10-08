@@ -117,11 +117,13 @@ export interface ChatMessage {
       sessionId?: string;
     }[];
   }[];
+  todoState?: Record<string, unknown>;
   // Populated by deriveChatMessages with the model's actual emission order.
   parts?: MessagePart[];
   approval: {
     requestId: string;
     tool: string;
+    toolCallId?: string;
     targetSummary: string;
     command?: string;
     path?: string;
@@ -196,42 +198,17 @@ function hasOwnPayloadKey(payload: Record<string, unknown>, key: string) {
   return Object.prototype.hasOwnProperty.call(payload, key);
 }
 
-function toolStatusFromPayload(status: unknown): ChatTool["status"] {
-  return status === "pending" ||
-    status === "running" ||
-    status === "completed" ||
-    status === "failed"
-    ? status
-    : status === "ok"
-      ? "completed"
-      : status === "error"
-        ? "failed"
-        : "completed";
+function toolStatusFromPayload(status: unknown): ChatTool["status"] | null {
+  if (status === "ok") return "completed";
+  if (status === "error") return "failed";
+  return null;
 }
 
 function findTool(
   tools: ChatMessage["tools"],
-  options: { id?: string; name?: string },
+  id: string,
 ): ChatTool | undefined {
-  const { id, name } = options;
-  if (id) return tools.find((tool) => tool.id === id);
-  const running = tools.filter(
-    (tool) =>
-      tool.name === name &&
-      (tool.status === "running" || tool.status === "pending"),
-  );
-  return running.length === 1 ? running[0] : undefined;
-}
-
-function findApprovalBlockedTool(
-  tools: ChatMessage["tools"],
-  name: string,
-): ChatTool | undefined {
-  return tools.find(
-    (tool) =>
-      tool.name === name &&
-      (tool.status === "running" || tool.status === "pending"),
-  );
+  return tools.find((tool) => tool.id === id);
 }
 
 /** Structural equality for the plain-data shapes the transcript fold produces. */
@@ -271,39 +248,9 @@ function upsertTool(
   sequence: number,
 ): ChatTool | null {
   if (!currentAssistant) return null;
-  const existingByIdentity = findTool(currentAssistant.tools, {
-    id: tool.id,
-    name: tool.name,
-  });
-  // A call can be announced before the runtime names it: the deterministic
-  // graph emits `graph.tool_request_created` without a `tool_call_id`, and the
-  // `runtime.tool_started` that follows carries the id but no `arguments`, so an
-  // argument-equality match is impossible and the announced row would survive as
-  // a second row for one call. Adopt the single anonymous row of the same name
-  // whenever the arguments on hand cannot contradict it.
-  const unidentified =
-    tool.id && !existingByIdentity
-      ? currentAssistant.tools.filter(
-          (candidate) =>
-            !candidate.id &&
-            candidate.name === tool.name &&
-            // `failed` is adoptable too: a denied approval marks the announced
-            // row failed before the denial's own `runtime.tool_completed`, which
-            // is the event that finally carries the id.
-            candidate.status !== "completed",
-        )
-      : [];
-  const matchingUnidentified = unidentified.filter(
-    (candidate) =>
-      candidate.arguments === undefined ||
-      tool.arguments === undefined ||
-      deeplyEqual(candidate.arguments, tool.arguments),
-  );
-  const existing =
-    existingByIdentity ??
-    (tool.id && matchingUnidentified.length === 1
-      ? matchingUnidentified[0]
-      : undefined);
+  const existing = tool.id
+    ? findTool(currentAssistant.tools, tool.id)
+    : undefined;
   if (!existing) {
     const partKey = tool.partKey ?? tool.id ?? `${tool.name}#${sequence}`;
     const newTool = { ...tool, partKey };
@@ -381,18 +328,14 @@ function appendHookToTool(
   event: EventEnvelope,
 ) {
   if (!currentAssistant) return;
-  const toolName =
-    typeof event.payload?.tool_name === "string"
-      ? event.payload.tool_name
-      : typeof event.payload?.tool === "string"
-        ? event.payload.tool
-        : null;
+  const toolId =
+    typeof event.payload?.tool_call_id === "string"
+      ? event.payload.tool_call_id
+      : null;
   const phase =
     typeof event.payload?.phase === "string" ? event.payload.phase : null;
-  if (!toolName || !phase) return;
-  const matchingTool = [...currentAssistant.tools]
-    .reverse()
-    .find((tool) => tool.name === toolName);
+  if (!toolId || !phase) return;
+  const matchingTool = findTool(currentAssistant.tools, toolId);
   if (!matchingTool) return;
   matchingTool.hooks = [
     ...(matchingTool.hooks ?? []),
@@ -472,12 +415,7 @@ function toolArgumentsFromPayload(
   payload: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
   const direct = objectPayload(payload.arguments);
-  if (direct && Object.keys(direct).length > 0) return direct;
-  const executionIntent = objectPayload(payload.execution_intent);
-  const intentArguments = objectPayload(executionIntent?.arguments);
-  return intentArguments && Object.keys(intentArguments).length > 0
-    ? intentArguments
-    : undefined;
+  return direct && Object.keys(direct).length > 0 ? direct : undefined;
 }
 function responseTextFromPayload(
   payload: Record<string, unknown>,
@@ -559,36 +497,50 @@ function updateDiffPreview(
   return preview;
 }
 
-function applyToolStatus(
+function applyToolEvent(
   currentAssistant: ChatMessage | null,
-  toolStatus: ToolStatusPayload,
-  sequence: number,
-  eventPayload?: Record<string, unknown>,
-  diffPreview?: ToolDiffPreview,
+  event: EventEnvelope,
+  diffPreviewState: Map<string, DiffPreviewState>,
 ) {
   if (!currentAssistant) return;
 
-  const name = toolStatus.tool_name;
-  const id = toolStatus.invocation_id;
-  const display = toolStatus.display;
-  const label = nonEmptyString(toolStatus.label) ?? display.summary;
-  const summary = display.summary;
-  const content =
-    eventPayload && hasOwnPayloadKey(eventPayload, "content")
-      ? (nonEmptyString(eventPayload.content) ?? null)
-      : undefined;
-  const error =
-    eventPayload && hasOwnPayloadKey(eventPayload, "error")
-      ? (nonEmptyString(eventPayload.error) ?? null)
-      : undefined;
+  const payload = event.payload ?? {};
+  const id = nonEmptyString(payload.tool_call_id);
+  const name = nonEmptyString(payload.tool);
+  if (!id || !name) return;
+  const rawToolStatus = getToolStatusPayload(event);
+  const toolStatus =
+    rawToolStatus?.invocation_id === id && rawToolStatus.tool_name === name
+      ? rawToolStatus
+      : null;
+  const display = toolStatus?.display ?? parseToolDisplay(payload.display);
+  const label = nonEmptyString(toolStatus?.label) ?? display?.summary;
+  const summary = display?.summary;
+  const status =
+    event.event_type === "graph.tool_request_created"
+      ? "pending"
+      : event.event_type === "runtime.tool_started"
+        ? "running"
+        : toolStatusFromPayload(payload.status);
+  if (!status) return;
+
+  const content = hasOwnPayloadKey(payload, "content")
+    ? (nonEmptyString(payload.content) ?? null)
+    : undefined;
+  const error = hasOwnPayloadKey(payload, "error")
+    ? (nonEmptyString(payload.error) ?? null)
+    : undefined;
   const result =
-    eventPayload &&
-    (toolStatus.status === "completed" ||
-      toolStatus.status === "failed" ||
-      eventPayload.status === "ok" ||
-      eventPayload.status === "error")
-      ? eventPayload
+    status === "completed" ||
+    status === "failed" ||
+    payload.status === "ok" ||
+    payload.status === "error" ||
+    event.event_type === "runtime.tool_completed"
+      ? payload
       : undefined;
+
+  const diffPreview = updateDiffPreview(diffPreviewState, id, name, event);
+
   upsertTool(
     currentAssistant,
     {
@@ -598,16 +550,14 @@ function applyToolStatus(
       summary,
       display,
       copyable: display?.copyable,
-      status: toolStatusFromPayload(toolStatus.status),
-      arguments: eventPayload
-        ? toolArgumentsFromPayload(eventPayload)
-        : undefined,
+      status,
+      arguments: toolArgumentsFromPayload(payload),
       result,
       content,
       error,
       diffPreview,
     },
-    sequence,
+    event.sequence,
   );
 }
 
@@ -628,15 +578,11 @@ function applyToolCallEvent(
 ) {
   if (!currentAssistant) return;
   const payload = event.payload ?? {};
-  const id =
-    nonEmptyString(payload.tool_call_id) ??
-    nonEmptyString(payload.invocation_id);
+  const id = nonEmptyString(payload.tool_call_id);
   if (!id) return;
   const type = event.event_type;
-  const name =
-    nonEmptyString(payload.tool) ??
-    nonEmptyString(payload.tool_name) ??
-    "unknown_tool";
+  const existing = findTool(currentAssistant.tools, id);
+  const name = nonEmptyString(payload.tool_name) ?? existing?.name;
   const state = argumentsState.get(id) ?? {
     text: "",
     preview: "",
@@ -644,20 +590,11 @@ function applyToolCallEvent(
     seen: new Set<string>(),
     degraded: false,
   };
-  const rawPreview =
-    nonEmptyString(payload.arguments_preview) ??
-    (type === "graph.tool_call_start"
-      ? nonEmptyString(payload.arguments)
-      : undefined);
   if (
     payload.gap === true ||
     (typeof payload.dropped_count === "number" && payload.dropped_count > 0)
   )
     state.degraded = true;
-  if (rawPreview && rawPreview.length > state.preview.length) {
-    state.preview = rawPreview.slice(0, TOOL_ARGUMENTS_PREVIEW_LIMIT);
-    if (rawPreview.length > TOOL_ARGUMENTS_PREVIEW_LIMIT) state.degraded = true;
-  }
   if (type === "graph.tool_call_delta") {
     const fragment =
       typeof payload.arguments_delta === "string"
@@ -684,18 +621,13 @@ function applyToolCallEvent(
     }
   }
   argumentsState.set(id, state);
-  const existing = findTool(currentAssistant.tools, { id });
-  const diffPreview = updateDiffPreview(
-    diffPreviewState,
-    id,
-    existing?.name ?? name,
-    event,
-  );
+  if (!name) return;
+  const diffPreview = updateDiffPreview(diffPreviewState, id, name, event);
   upsertTool(
     currentAssistant,
     {
       id,
-      name: existing?.name ?? name,
+      name,
       status:
         existing?.status === "completed" || existing?.status === "failed"
           ? existing.status
@@ -741,9 +673,7 @@ function applyToolProgress(
   )
     return;
   const payload = event.payload ?? {};
-  const id =
-    nonEmptyString(payload.invocation_id) ??
-    nonEmptyString(payload.tool_call_id);
+  const id = nonEmptyString(payload.tool_call_id);
   if (!id) return;
   const stream =
     payload.stream === "stderr"
@@ -755,8 +685,8 @@ function applyToolProgress(
   const loss =
     payload.gap === true ||
     (typeof payload.dropped_count === "number" && payload.dropped_count > 0);
-  const tool = findTool(currentAssistant.tools, { id });
-  if (tool && (tool.status === "completed" || tool.status === "failed")) return;
+  const tool = findTool(currentAssistant.tools, id);
+  if (!tool || tool.status === "completed" || tool.status === "failed") return;
   const state = progressState.get(id) ?? {
     stdout: "",
     stderr: "",
@@ -786,10 +716,7 @@ function applyToolProgress(
     }
     return;
   }
-  const name =
-    nonEmptyString(payload.tool_name) ??
-    nonEmptyString(payload.tool) ??
-    "shell_exec";
+  const name = tool.name;
   const ordinal =
     typeof payload.ordinal === "number"
       ? payload.ordinal
@@ -834,79 +761,6 @@ function applyToolProgress(
   );
 }
 
-/** Apply the raw tool lifecycle payload when the rich tool_status is absent. */
-function applyRawToolEvent(
-  currentAssistant: ChatMessage | null,
-  event: EventEnvelope,
-  diffPreviewState: Map<string, DiffPreviewState>,
-) {
-  if (!currentAssistant) return;
-
-  const payload = event.payload ?? {};
-  const toolStatus = objectPayload(payload.tool_status);
-  const executionIntent = objectPayload(payload.execution_intent);
-  const id =
-    nonEmptyString(toolStatus?.invocation_id) ??
-    nonEmptyString(payload.tool_call_id) ??
-    nonEmptyString(payload.call_id) ??
-    nonEmptyString(payload.request_id) ??
-    nonEmptyString(executionIntent?.tool_call_id);
-  const name =
-    nonEmptyString(toolStatus?.tool_name) ??
-    nonEmptyString(payload.tool) ??
-    nonEmptyString(payload.tool_name) ??
-    nonEmptyString(executionIntent?.tool_name);
-  if (!name) return;
-
-  const display =
-    parseToolDisplay(toolStatus?.display) ?? parseToolDisplay(payload.display);
-  const rawStatus =
-    nonEmptyString(toolStatus?.status) ?? nonEmptyString(payload.status);
-  const status = rawStatus
-    ? toolStatusFromPayload(rawStatus)
-    : event.event_type === "graph.tool_request_created"
-      ? "pending"
-      : event.event_type === "runtime.tool_completed"
-        ? "completed"
-        : "running";
-  const content = hasOwnPayloadKey(payload, "content")
-    ? (nonEmptyString(payload.content) ?? null)
-    : undefined;
-  const error = hasOwnPayloadKey(payload, "error")
-    ? (nonEmptyString(payload.error) ?? null)
-    : undefined;
-  const result =
-    status === "completed" ||
-    status === "failed" ||
-    payload.status === "ok" ||
-    payload.status === "error" ||
-    event.event_type === "runtime.tool_completed"
-      ? payload
-      : undefined;
-
-  const diffPreview = id
-    ? updateDiffPreview(diffPreviewState, id, name, event)
-    : undefined;
-  upsertTool(
-    currentAssistant,
-    {
-      id,
-      name,
-      label: display?.summary,
-      summary: display?.summary,
-      display,
-      copyable: display?.copyable,
-      status,
-      arguments: toolArgumentsFromPayload(payload),
-      result,
-      content,
-      error,
-      diffPreview,
-    },
-    event.sequence,
-  );
-}
-
 function reasoningTextFromEvent(event: EventEnvelope): string {
   const payload = event.payload;
   if (!payload) return "";
@@ -917,11 +771,10 @@ function reasoningTextFromEvent(event: EventEnvelope): string {
   }
   if (
     event.event_type === "graph.provider_stream" &&
-    payload.channel === "reasoning"
+    payload.channel === "reasoning" &&
+    typeof payload.text === "string"
   ) {
-    if (typeof payload.delta === "string") return payload.delta;
-    if (typeof payload.content === "string") return payload.content;
-    if (typeof payload.text === "string") return payload.text;
+    return payload.text;
   }
   return "";
 }
@@ -948,7 +801,6 @@ export function deriveChatMessages(
   const diffPreviewState = new Map<string, DiffPreviewState>();
   for (const event of events) {
     const messageSessionId = event.session_id || fallbackSessionId || "session";
-    const toolStatus = getToolStatusPayload(event);
 
     if (event.event_type === "runtime.request_received") {
       requestOrdinal += 1;
@@ -1051,14 +903,9 @@ export function deriveChatMessages(
           failureMessage,
         );
         const delta =
-          event.payload?.channel === "text"
-            ? typeof event.payload?.text === "string"
-              ? event.payload.text
-              : typeof event.payload?.delta === "string"
-                ? event.payload.delta
-                : typeof event.payload?.content === "string"
-                  ? event.payload.content
-                  : ""
+          event.payload?.channel === "text" &&
+          typeof event.payload.text === "string"
+            ? event.payload.text
             : "";
         if (delta) {
           currentAssistant.content += delta;
@@ -1071,53 +918,31 @@ export function deriveChatMessages(
       event.event_type === "runtime.tool_completed"
     ) {
       if (currentAssistant) {
-        if (toolStatus) {
-          applyToolStatus(
-            currentAssistant,
-            toolStatus,
-            event.sequence,
-            event.payload,
-            updateDiffPreview(
-              diffPreviewState,
-              toolStatus.invocation_id,
-              toolStatus.tool_name,
-              event,
-            ),
-          );
-        } else {
-          applyRawToolEvent(currentAssistant, event, diffPreviewState);
+        applyToolEvent(currentAssistant, event, diffPreviewState);
+        const payload = event.payload;
+        if (
+          event.event_type === "runtime.tool_completed" &&
+          payload?.tool === "todo" &&
+          payload.status === "ok" &&
+          Array.isArray(payload.phases)
+        ) {
+          currentAssistant.todoState = payload;
         }
       }
     } else if (event.event_type === "runtime.todo_updated") {
       if (currentAssistant) {
-        const existingTodo = [...currentAssistant.tools]
-          .reverse()
-          .find((tool) => tool.name === "todo");
-        if (existingTodo) {
-          existingTodo.status = "completed";
-          existingTodo.result = event.payload;
-          existingTodo.content = null;
-        } else {
-          upsertTool(
-            currentAssistant,
-            {
-              id: `runtime-todo-${event.sequence}`,
-              name: "todo",
-              status: "completed",
-              result: event.payload,
-              content: null,
-            },
-            event.sequence,
-          );
-        }
+        currentAssistant.todoState = event.payload ?? {};
       }
     } else if (event.event_type === "runtime.approval_requested") {
       if (currentAssistant) {
         const blockedTool = String(event.payload?.tool || "");
-        const pendingTool = findApprovalBlockedTool(
-          currentAssistant.tools,
-          blockedTool,
-        );
+        const blockedToolId =
+          typeof event.payload?.tool_call_id === "string"
+            ? event.payload.tool_call_id
+            : null;
+        const pendingTool = blockedToolId
+          ? findTool(currentAssistant.tools, blockedToolId)
+          : undefined;
         if (pendingTool) {
           pendingTool.status = "pending";
         }
@@ -1125,12 +950,11 @@ export function deriveChatMessages(
         currentAssistant.approval = {
           requestId: String(event.payload?.request_id || ""),
           tool: blockedTool,
-          targetSummary: safeApprovalText(event.payload?.target_summary) ?? "",
+          toolCallId: blockedToolId ?? undefined,
           command: safeApprovalText(event.payload?.command),
+          targetSummary: safeApprovalText(event.payload?.target_summary) ?? "",
           path: safeApprovalText(event.payload?.path),
-          parameters: safeApprovalText(
-            event.payload?.parameters ?? event.payload?.args,
-          ),
+          parameters: safeApprovalText(event.payload?.arguments),
           impact: safeApprovalText(event.payload?.impact),
         };
       }
@@ -1152,9 +976,11 @@ export function deriveChatMessages(
       if (currentAssistant) {
         const decision = event.payload?.decision;
         if (decision === "deny") {
-          const blockedTool = currentAssistant.approval?.tool;
-          const pendingTool = blockedTool
-            ? findApprovalBlockedTool(currentAssistant.tools, blockedTool)
+          const pendingTool = currentAssistant.approval?.toolCallId
+            ? findTool(
+                currentAssistant.tools,
+                currentAssistant.approval.toolCallId,
+              )
             : undefined;
           if (pendingTool) {
             pendingTool.status = "failed";
@@ -1190,13 +1016,6 @@ export function deriveChatMessages(
       event.event_type === "runtime.tool_hook_post"
     ) {
       appendHookToTool(currentAssistant, event);
-    } else if (toolStatus) {
-      applyToolStatus(
-        currentAssistant,
-        toolStatus,
-        event.sequence,
-        event.payload,
-      );
     }
   }
 

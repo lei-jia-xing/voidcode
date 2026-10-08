@@ -28,15 +28,39 @@ from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_serializer, field_validator
 
+from ..core.turns import ReportedCall
 from ..security.json_values import json_wire_object, own_json_object
+from ..tools.contracts import ToolCall
 
 MANIFEST_NAME = "voidcode-components.json"
 type ComponentSlot = Literal["provider", "tool", "agent", "context", "typed-input"]
 type LifecycleScope = Literal["session", "run", "turn", "tool"]
+
+VALID_PHASE_TRIGGERS: Mapping[LifecycleScope, frozenset[str]] = {
+    "session": frozenset({"session_start", "session_end"}),
+    "run": frozenset({"before_run", "after_run"}),
+    "turn": frozenset({"before_turn", "after_turn"}),
+    "tool": frozenset({"before_tool", "after_tool"}),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseContext:
+    workspace: Path
+    session_id: str
+    run_id: str
+    scope: LifecycleScope
+    scope_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.workspace, Path) or self.scope not in VALID_PHASE_TRIGGERS:
+            raise ValueError("lifecycle context requires an actual workspace and scope")
+        if any(not isinstance(value, str) or not value.strip() for value in (self.session_id, self.run_id, self.scope_id)):
+            raise ValueError("lifecycle context requires nonempty actual identities")
 
 
 def _digest(value: object) -> str:
@@ -283,13 +307,27 @@ type PhaseOutcome = PhaseCompleted | PhaseFailed
 
 
 class PhaseRecord(_FrozenModel):
-    phase_key: str
-    binding_id: str
-    version: str
+    phase_key: str = Field(min_length=1)
+    binding_id: str = Field(min_length=1)
+    version: str = Field(min_length=1)
     scope: LifecycleScope
-    scope_id: str
+    scope_id: str = Field(min_length=1)
     failed: StrictBool
+    state: Literal["started", "completed"]
     payload: Mapping[str, object]
+
+    @field_validator("phase_key", "binding_id", "version", "scope_id")
+    @classmethod
+    def _nonempty_identity(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("phase record identities must be nonempty")
+        return value
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.state == "started" and self.failed:
+            raise ValueError("phase record with state='started' cannot have failed=True")
+        if self.state == "started" and self.payload:
+            raise ValueError("phase record with state='started' cannot have payload data")
 
     @field_validator("payload")
     @classmethod
@@ -393,6 +431,11 @@ def _check_declaration(declaration: PackageDeclaration) -> None:
         if (phase.slot, phase.component) not in components:
             raise ValueError("lifecycle phase references an undeclared component")
         references.extend((phase.callback, phase.validate_input, phase.snapshot, phase.restore))
+        valid_triggers = VALID_PHASE_TRIGGERS.get(phase.scope)
+        if valid_triggers is None or phase.trigger not in valid_triggers:
+            raise ValueError(f"lifecycle phase {phase.name!r} has invalid trigger {phase.trigger!r} for scope {phase.scope!r}")
+        if phase.scope == "tool" and phase.slot != "tool":
+            raise ValueError("tool lifecycle phases must belong to a tool component")
     files = frozenset(declaration.files)
     for reference in references:
         module_path = _reference_module(reference).replace(".", "/")
@@ -613,18 +656,40 @@ class ActiveComposition:
         read_record: Callable[[str], PhaseRecord | None],
         write_record: Callable[[PhaseRecord], None],
         recovering: bool = False,
+        restore_only: bool = False,
     ) -> tuple[PhaseOutcome, ...]:
-        """Restore once-only outcomes, but never turn a recorded fatal failure into continuation."""
-        if not scope_id:
+        """Restore durable outcomes without callbacks during pending-turn recovery."""
+        if not isinstance(context, PhaseContext) or context.scope != scope or context.scope_id != scope_id:
+            raise ValueError("lifecycle phase requires its matching actual PhaseContext")
+        if not isinstance(scope_id, str) or not scope_id.strip():
             raise ValueError("lifecycle phase requires its actual scope identity")
+        if name not in VALID_PHASE_TRIGGERS[scope]:
+            raise ValueError("lifecycle trigger does not match its scope")
+        tool_name: str | None = None
+        if scope == "tool":
+            if isinstance(value, ToolCall):
+                tool_name = value.tool_name
+                call_id = value.tool_call_id
+            elif isinstance(value, ReportedCall):
+                tool_name = value.final_tool_name
+                call_id = value.tool_call_id
+            else:
+                raise TypeError("tool lifecycle requires ToolCall or ReportedCall")
+            if not isinstance(call_id, str) or not call_id.strip():
+                raise ValueError("tool lifecycle requires its actual call identity")
         outcomes: list[PhaseOutcome] = []
         for phase in self.frozen.plan.phases:
             declaration = phase.declaration
             if declaration.trigger != name or declaration.scope != scope:
                 continue
+            if scope == "tool" and tool_name != declaration.component:
+                continue
             record_key = f"{phase.key}:{scope}:{scope_id}"
             record = read_record(record_key)
+            if restore_only and (record is None or record.state != "completed"):
+                raise ValueError("pending lifecycle recovery requires a completed durable phase record")
             validate_input, callback, snapshot, restore = self._phase_functions[phase.key]
+            instance = self.construct(phase.component_key, context=context)
             if record is not None:
                 if (record.phase_key, record.binding_id, record.version, record.scope, record.scope_id) != (
                     phase.key,
@@ -634,20 +699,39 @@ class ActiveComposition:
                     scope_id,
                 ):
                     raise ValueError("recorded lifecycle scope/version does not match the frozen plan")
+                if record.state == "started":
+                    if declaration.replay in ("once", "refuse"):
+                        raise ValueError(
+                            f"package lifecycle phase was interrupted in-flight; replay={declaration.replay!r} refuses duplicate execution"
+                        )
+                elif record.state == "completed":
+                    if restore_only or declaration.replay != "repeat":
+                        restored = restore(record.payload, instance, context)
+                        if record.failed:
+                            error = str(restored)
+                            if declaration.failure == "raise":
+                                raise RuntimeError(error)
+                            outcomes.append(PhaseFailed(record_key, error))
+                        else:
+                            outcomes.append(PhaseCompleted(record_key, restored))
+                        continue
             if recovering and record is None and declaration.replay == "refuse":
                 raise ValueError("package lifecycle phase refuses unrecorded recovery execution")
             typed_input = validate_input(value)
-            instance = self.construct(phase.component_key, context=context)
-            if record is not None and declaration.replay != "repeat":
-                restored = restore(record.payload, instance, context)
-                if record.failed:
-                    error = str(restored)
-                    if declaration.failure == "raise":
-                        raise RuntimeError(error)
-                    outcomes.append(PhaseFailed(record_key, error))
-                else:
-                    outcomes.append(PhaseCompleted(record_key, restored))
-                continue
+            write_record(
+                PhaseRecord.model_validate(
+                    {
+                        "phase_key": phase.key,
+                        "binding_id": self.frozen.binding.binding_id,
+                        "version": declaration.version,
+                        "scope": scope,
+                        "scope_id": scope_id,
+                        "failed": False,
+                        "state": "started",
+                        "payload": {},
+                    }
+                )
+            )
             try:
                 result = callback(typed_input, instance, context)
             except Exception as error:
@@ -662,6 +746,7 @@ class ActiveComposition:
                             "scope": scope,
                             "scope_id": scope_id,
                             "failed": True,
+                            "state": "completed",
                             "payload": payload,
                         }
                     )
@@ -680,6 +765,7 @@ class ActiveComposition:
                             "scope": scope,
                             "scope_id": scope_id,
                             "failed": False,
+                            "state": "completed",
                             "payload": payload,
                         }
                     )

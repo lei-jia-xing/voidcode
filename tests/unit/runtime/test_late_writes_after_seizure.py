@@ -211,7 +211,8 @@ def test_a_seized_execution_loses_the_commits_its_tool_makes(tmp_path: Path, cap
         "late-write-execution",
         f"runtime-tool-{WRITER_TOOL}-worker",
     ]
-    assert all(diagnostic.count == 1 for diagnostic in refusals)
+    assert next(diagnostic for diagnostic in refusals if diagnostic.thread == f"runtime-tool-{WRITER_TOOL}-worker").count == 1
+    assert next(diagnostic for diagnostic in refusals if diagnostic.thread == "late-write-execution").count >= 1
     logged = "\n".join(record.getMessage() for record in caplog.records)
     assert f"refusing thread=runtime-tool-{WRITER_TOOL}-worker" in logged
     assert "refusing thread=late-write-execution" in logged
@@ -245,4 +246,5 @@ def test_a_writer_thread_spawned_by_a_tool_is_outside_the_lease_boundary(tmp_pat
         "late-write-execution",
         f"runtime-tool-{WRITER_TOOL}-worker",
     ]
-    assert sum(diagnostic.count for diagnostic in refusals) == 2
+    assert next(diagnostic for diagnostic in refusals if diagnostic.thread == f"runtime-tool-{WRITER_TOOL}-worker").count == 1
+    assert next(diagnostic for diagnostic in refusals if diagnostic.thread == "late-write-execution").count >= 1

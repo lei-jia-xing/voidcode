@@ -230,7 +230,7 @@ uv run pre-commit install
 `mise` orchestrates tasks and loads the local virtual environment. `uv` remains the source of truth for Python dependency management and execution. Use `mise run test` for the whole Python suite (unit and integration in parallel), and `mise run test:coverage` for the same suite with coverage. The suite is intentionally core-only — see [`docs/testing.md`](./docs/testing.md) for the policy and the areas that are deliberately untested today.
 Bun scripts are owned by `frontend/package.json`; the repository root intentionally has no `package.json` so root-level automation goes through `mise.toml`.
 
-`git-cliff` generates [`CHANGELOG.md`](./CHANGELOG.md) before a release. Keep `project.version` in [`pyproject.toml`](./pyproject.toml) at the current release version, regenerate and review the changelog, then create a GitHub Release whose tag is the same version with a `v` prefix (for example, `v0.1.0`). The release workflow validates both built artifact metadata and the tag, publishes the distributions to PyPI through trusted publishing, and uses the same tag's commits for the GitHub Release notes.
+`git-cliff` generates release notes before a release. Keep `project.version` in [`pyproject.toml`](./pyproject.toml) at the current release version, review the release notes, then create a GitHub Release whose tag is the same version with a `v` prefix (for example, `v0.1.0`). The release workflow validates both built artifact metadata and the tag, publishes the distributions to PyPI through trusted publishing, and uses the same tag's commits for the GitHub Release notes.
 
 ## Documentation
 
@@ -243,7 +243,6 @@ These internal contract documents are currently maintained in Chinese.
 - Contribution guide: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - Code of conduct: [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md)
 - Security policy: [`SECURITY.md`](./SECURITY.md)
-- Changelog: [`CHANGELOG.md`](./CHANGELOG.md)
 
 ## License
 

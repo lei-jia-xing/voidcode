@@ -119,7 +119,7 @@ def test_shell_exec_large_output_spills_full_payload_via_central_cap(tmp_path: P
     assert bounds.reference.uri.startswith("voidcode://artifact/")
     artifact = bounds.reference.artifact
     assert isinstance(artifact, Mapping)
-    reference_path = Path(str(artifact["path"]))
+    reference_path = Path(str(artifact["output_path"]))
     assert reference_path.exists()
     assert reference_path.read_text(encoding="utf-8") == "x" * payload_size
     assert not (tmp_path / ".voidcode" / "tool-output").exists()

@@ -51,6 +51,7 @@ from voidcode.runtime.config_schema import runtime_config_json_schema
 #: one leaf instead of tripping over a missing sibling.
 _SECTION_BASELINES: dict[str, object] = {
     "config_schema_version": 1,
+    "components": [],
     "approval_mode": "ask",
     "permission": {"external_directory_read": {"*": "allow"}},
     "policy": {"version": "v1", "tool_policy": {"allow": ["read"]}},
@@ -69,7 +70,7 @@ _SECTION_BASELINES: dict[str, object] = {
     "tui": {"keymap": {"a": "app.session.new"}, "preferences": {"theme": {"mode": "dark"}}},
     "providers": {"openai": {"timeout_seconds": 10}},
     "background_task": {"default_concurrency": 2, "provider_concurrency": {"openai": 1}},
-    "agent": {"preset": "leader", "model": "opencode-go/x", "tools": {"allowlist": ["read"]}},
+    "agent": {"preset": "leader", "prompt_profile": "leader", "model": "opencode-go/x", "tools": {"allowlist": ["read"]}},
     "agents": {"worker": {"model": "opencode-go/x"}},
 }
 
@@ -217,6 +218,7 @@ def _generated_corpus_rows() -> list[tuple[str, dict[str, object]]]:
 
 
 _HAND_WRITTEN_CORPUS: list[tuple[str, dict[str, object]]] = [
+    ("top.components_empty", {"components": []}),
     # --- mcp servers -------------------------------------------------------
     ("mcp.stdio.command_empty", {"mcp": {"servers": {"s": {"transport": "stdio", "command": []}}}}),
     ("mcp.stdio.command_empty_string", {"mcp": {"servers": {"s": {"command": [""]}}}}),

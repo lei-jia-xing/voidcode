@@ -347,7 +347,14 @@ class ProviderTurnProducer:
             preview_tool_name: str | None = stream_event.tool_name
             if stream_event.kind in {"tool_call_start", "tool_call_delta", "tool_call_end"}:
                 tool_call_id = stream_event.tool_call_id
-                if tool_call_id is not None:
+                if tool_call_id is None:
+                    raise self._provider_execution_error(
+                        kind="transient_failure",
+                        model_name=turn_request.model_name,
+                        message="provider stream tool lifecycle event has no call id",
+                        details={"source": "graph_stream", "reason": "missing_tool_call_id"},
+                    )
+                else:
                     state = lifecycle_tool_calls.setdefault(
                         tool_call_id,
                         {
@@ -500,9 +507,21 @@ class ProviderTurnProducer:
             )
         ordered_tool_calls: list[tuple[tuple[int, int, int], ToolCall]] = []
         for state in sorted(lifecycle_tool_calls.values(), key=lambda item: item["ordinal"]):
+            if state.get("ended") is not True:
+                raise self._provider_execution_error(
+                    kind="transient_failure",
+                    model_name=turn_request.model_name,
+                    message="provider stream ended with an incomplete tool call",
+                    details={"source": "graph_stream", "reason": "incomplete_tool_call"},
+                )
             tool_name = state["tool_name"]
-            if state.get("ended") is not True or not isinstance(tool_name, str):
-                continue
+            if not isinstance(tool_name, str) or not tool_name.strip():
+                raise self._provider_execution_error(
+                    kind="transient_failure",
+                    model_name=turn_request.model_name,
+                    message="provider stream tool call has no tool name",
+                    details={"source": "graph_stream", "reason": "missing_tool_name"},
+                )
             parsed_arguments = state.get("parsed_arguments")
             if not isinstance(parsed_arguments, dict):
                 raw_arguments = "".join(state["fragments"])
@@ -518,8 +537,13 @@ class ProviderTurnProducer:
                             "reason": "malformed_tool_payload",
                         },
                     ) from exc
-            if not isinstance(parsed_arguments, dict):
-                continue
+                if not isinstance(parsed_arguments, dict):
+                    raise self._provider_execution_error(
+                        kind="transient_failure",
+                        model_name=turn_request.model_name,
+                        message="provider stream tool call arguments must be a JSON object",
+                        details={"source": "graph_stream", "reason": "invalid_tool_arguments"},
+                    )
             explicit_call = ToolCall(
                 tool_name=tool_name,
                 arguments=parsed_arguments,
@@ -550,6 +574,14 @@ class ProviderTurnProducer:
             merged_tool_calls.append(tool_call)
         streamed_tool_calls = tuple(merged_tool_calls)
         output = "".join(output_parts)
+
+        if not streamed_tool_calls and not output:
+            raise self._provider_execution_error(
+                kind="transient_failure",
+                model_name=turn_request.model_name,
+                message="provider stream produced neither output nor tool calls",
+                details={"source": "graph_stream", "reason": "missing_terminal_outcome"},
+            )
 
         if streamed_tool_calls:
             return ToolTurn(

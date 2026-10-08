@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -23,7 +24,10 @@ def _metadata(result: object) -> dict[str, object]:
     assert isinstance(output, TextOutput)
     reference = output.bounds.reference
     assert reference is not None and reference.artifact is not None
-    return dict(reference.artifact)
+    meta = dict(reference.artifact)
+    if "artifact" in meta and isinstance(meta["artifact"], Mapping):
+        meta["artifact"] = dict(meta["artifact"])
+    return meta
 
 
 def test_cap_tool_result_output_noops_under_limits(tmp_path: Path) -> None:

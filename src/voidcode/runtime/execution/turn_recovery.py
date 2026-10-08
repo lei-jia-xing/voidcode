@@ -42,8 +42,10 @@ type RuntimeContinuation = ApprovedInvocation | AnsweredQuestion | InterruptedTu
 
 
 def persisted_turn_batch(
-    batch: CallSeed, *, session_id: str, run_id: str | None, started_sequence: int, completed_call_ids: tuple[str, ...] = ()
+    batch: CallSeed, *, session_id: str, run_id: str, started_sequence: int, completed_call_ids: tuple[str, ...] = ()
 ) -> dict[str, object]:
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError("native batch requires its actual producer run identity")
     if batch.run_step is None or batch.run_step < 1:
         raise ValueError("native batch has no actual positive run step")
     ids = tuple(call.tool_call_id for call in batch.calls)
@@ -74,6 +76,31 @@ def persisted_turn_batch(
     return safe
 
 
+def validated_composition_turn(metadata: Mapping[str, object], *, session_id: str) -> dict[str, object]:
+    raw = runtime_state_value(metadata, "composition_turn")
+    if not isinstance(raw, dict) or raw.get("session_id") != session_id:
+        raise ValueError("pending turn requires its durable composition identity")
+    run_id, scope_id = raw.get("run_id"), raw.get("scope_id")
+    if not isinstance(run_id, str) or not run_id.strip() or not isinstance(scope_id, str):
+        raise ValueError("persisted composition turn requires actual string identities")
+    occurrence = raw.get("occurrence")
+    if type(occurrence) is not int or occurrence < 1 or scope_id != f"{session_id}:{run_id}:{occurrence}":
+        raise ValueError("persisted composition turn identity is invalid")
+    if type(raw.get("completed")) is not bool:
+        raise ValueError("persisted composition turn requires its completion state")
+    cursor = runtime_state_value(metadata, "composition_turn_occurrence")
+    if type(cursor) is not int or occurrence != cursor:
+        raise ValueError("persisted composition turn does not match its durable cursor")
+    invoked_ids = raw.get("invoked_call_ids")
+    if (
+        not isinstance(invoked_ids, list)
+        or any(not isinstance(call_id, str) or not call_id.strip() for call_id in invoked_ids)
+        or len(set(invoked_ids)) != len(invoked_ids)
+    ):
+        raise ValueError("persisted composition turn requires its unique actual invocation identities")
+    return raw
+
+
 def restored_turn_batch(
     metadata: Mapping[str, object],
     *,
@@ -86,6 +113,12 @@ def restored_turn_batch(
     expected_keys = {"session_id", "run_id", "started_sequence", "run_step", "calls", "reasoning", "completed_call_ids", "recoverable"}
     if set(raw) != expected_keys or raw.get("session_id") != session_id:
         raise ValueError("persisted native batch identity or shape does not match its session")
+    run_id = raw.get("run_id")
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError("persisted native batch requires its actual producer run identity")
+    turn = validated_composition_turn(metadata, session_id=session_id)
+    if run_id != turn["run_id"]:
+        raise ValueError("persisted native batch does not belong to its original composition turn")
     if raw.get("recoverable") is not True or redact_mapping(raw) != raw or REDACTED_PLACEHOLDER in json.dumps(raw, ensure_ascii=True).lower():
         raise ValueError("native batch contains redacted credentials or reasoning and cannot safely resume")
     started_sequence = raw.get("started_sequence")

@@ -135,6 +135,37 @@ agent、skill、MCP、LSP、provider 与 workflow declaration 会 materialize �
 
 declaration 可以选择或收窄 capability，但不能授予 permission、绕过 tool allowlist、启动 unmanaged process，或重定义 delegated/session truth。
 
+### Package Composition & Lifecycle Phases
+
+已安装包组件支持 5 种 slots（`provider`、`tool`、`agent`、`context`、`typed-input`）与 8 种生命周期 triggers。
+
+1. **Factory 窄上下文 (Narrow Context Boundary)**:
+   组件 factory ABI 统一为 `factory(value, context)`。`context` 必须是不可变窄上下文 `CompositionRef`（仅包含 `workspace`、`owner` [SessionCompositionOwner | TaskCompositionOwner]、`binding_id` 和 `plan_id`），绝不传递 `VoidCodeRuntime` 实例或内部能力句柄，插件无法访问运行时内部治理、状态仓库或权限。
+
+2. **Typed-Input 强约束**:
+   仅接受规范的 `ToolInputHandlerBinding`（校验 declaration name 与 handler 匹配），彻底切除 historical plain callable fallback。非规范对象在物化绑定阶段直接拒绝。
+
+3. **8 个生命周期 Triggers 与 Scope IDs**:
+   - `session` scope: `session_start`, `session_end`。Scope ID 为 `{session_id}`。
+   - `run` scope: `before_run`, `after_run`。Scope ID 为 `{run_id}`。
+   - `turn` scope: `before_turn`, `after_turn`。Scope ID 为 `{session_id}:{run_id}:{occurrence}`。
+   - `tool` scope: `before_tool`, `after_tool`。Scope ID 为 `{session_id}:{run_id}:{occurrence}:{call_id}`。
+
+4. **排序与失败/重放语义 (Execution Semantics)**:
+   - `order`: 声明必须使用 `StrictInt`；执行计划中 phases 必须按 `order` 数字严格升序排序，数字排序优先于词法/列表声明顺序。
+   - `state` & `write-before-effect`: 回调调用前必须先原子持久化 `state="started", failed=False, payload={}` 记录；回调结束后原子更新为 `state="completed"` 记录，携带 `snapshot(outcome)` 的负载。
+   - `failure`:
+     - `"continue"`: 回调异常时记录 `failed=True, state="completed"`，并继续执行后续 phases。
+     - `"raise"`: 回调异常时记录 `failed=True, state="completed"`，并立即中断抛出异常。
+   - `replay`:
+     - `"once"`: 存在已完成记录时调用 `restore` 恢复结果，跳过回调执行；未完成的 `started` 记录拒绝重复执行。
+     - `"repeat"`: 存在已完成记录时仍然重复调用回调。
+     - `"refuse"`: 恢复时无记录或存在 `started` 状态记录则拒绝执行。
+   - `restore_only`: 恢复已完成前缀时必须存在 `state="completed"` 的持久化记录，仅执行 restore，不产生真实 I/O。
+
+5. **恢复身份隔离**:
+   恢复的 pending turn/batch 必须保留原始 producer run ID（与 native pending call identities 严格一致），而当前的 resume execution registration 使用 fresh execution run ID，两者严格分离，不得以 session ID 伪造或混淆 run identity。
+
 ## Event Semantics
 
 Runtime extension observability event 必须满足：

@@ -229,10 +229,6 @@ function primaryPath(tool: ChatTool): string | null {
   );
 }
 
-function resultData(tool: ChatTool) {
-  return nestedRecord(tool.result, "data") ?? tool.result;
-}
-
 const SENSITIVE_ARG_KEYS = new Set([
   "content",
   "oldString",
@@ -323,15 +319,11 @@ function lineDeltaFromDiff(
 function lineDelta(
   tool: ChatTool,
 ): { additions: number; deletions: number } | null {
-  const data = resultData(tool);
+  const data = tool.result;
   const additions =
-    numericToolValue(data?.additions) ??
-    numericToolValue(data?.added) ??
-    numericToolValue(tool.result?.additions);
+    numericToolValue(data?.additions) ?? numericToolValue(data?.added);
   const deletions =
-    numericToolValue(data?.deletions) ??
-    numericToolValue(data?.deleted) ??
-    numericToolValue(tool.result?.deletions);
+    numericToolValue(data?.deletions) ?? numericToolValue(data?.deleted);
   if (
     additions !== null &&
     deletions !== null &&
@@ -341,9 +333,7 @@ function lineDelta(
   }
 
   return lineDeltaFromDiff(
-    toolValue(data?.diff) ??
-      toolValue(tool.result?.diff) ??
-      toolValue(tool.arguments?.patch),
+    toolValue(data?.diff) ?? toolValue(tool.arguments?.patch),
   );
 }
 
@@ -843,7 +833,7 @@ function toolIcon(tool: ChatTool) {
 }
 
 function toolOutputSummary(tool: ChatTool): string | null {
-  const data = resultData(tool);
+  const data = tool.result;
   return (
     tool.content ??
     toolValue(data?.output) ??
@@ -868,7 +858,7 @@ function ReadToolActivity({ tool }: { tool: ChatTool }) {
   const path = primaryPath(tool);
   const args: string[] = [];
   if (path) args.unshift(`path=${path}`);
-  const data = resultData(tool);
+  const data = tool.result;
   const offset = toolValue(tool.arguments?.offset) ?? toolValue(data?.offset);
   const limit = toolValue(tool.arguments?.limit) ?? toolValue(data?.limit);
   if (offset) args.push(`offset=${offset}`);
@@ -903,7 +893,7 @@ function WriteToolActivity({
   tool: ChatTool;
   forceCollapsed?: boolean;
 }) {
-  const data = resultData(tool);
+  const data = tool.result;
   const path = primaryPath(tool) ?? toolDisplayTitle(tool, tool.name);
   const diff = toolValue(data?.diff);
   const bytes = toolValue(data?.byte_count);
@@ -953,7 +943,7 @@ function ShellToolActivity({
   forceCollapsed?: boolean;
 }) {
   const { t } = useTranslation();
-  const data = resultData(tool);
+  const data = tool.result;
   const command =
     toolValue(tool.arguments?.command) ??
     toolValue(data?.command) ??
@@ -1106,7 +1096,7 @@ function SkillToolActivity({
   forceCollapsed?: boolean;
 }) {
   const { t } = useTranslation();
-  const data = resultData(tool);
+  const data = tool.result;
   const skill = nestedRecord(data, "skill");
   const name =
     toolValue(tool.arguments?.name) ??
@@ -1280,7 +1270,7 @@ function TaskToolActivity({
   } | null;
 }) {
   const { t } = useTranslation();
-  const data = resultData(tool);
+  const data = tool.result;
   const route =
     toolValue(tool.arguments?.category) ??
     toolValue(data?.requested_category) ??
@@ -1413,7 +1403,7 @@ function TaskToolActivity({
 function todoItems(
   tool: ChatTool,
 ): { content: string; status: string; blocker?: string; phase?: string }[] {
-  const data = resultData(tool);
+  const data = tool.result;
   const hasPhases = Array.isArray(data?.phases);
   const rawPhases: unknown[] = hasPhases ? (data.phases as unknown[]) : [];
   const items = rawPhases.flatMap((rawPhase) => {
@@ -1465,7 +1455,7 @@ function TodoToolActivity({ tool }: { tool: ChatTool }) {
   const { t } = useTranslation();
   if (tool.display?.hidden) return null;
   const items = todoItems(tool);
-  const data = resultData(tool);
+  const data = tool.result;
   const summary = nestedRecord(data, "summary");
   const summaryText = summary
     ? ["in_progress", "pending", "completed", "abandoned", "blocked"]
@@ -1521,7 +1511,7 @@ function TodoToolActivity({ tool }: { tool: ChatTool }) {
 
 function WebFetchToolActivity({ tool }: { tool: ChatTool }) {
   const { t } = useTranslation();
-  const data = resultData(tool);
+  const data = tool.result;
   const url =
     toolValue(tool.arguments?.url) ??
     toolValue(data?.url) ??
@@ -1569,7 +1559,7 @@ function WebFetchToolActivity({ tool }: { tool: ChatTool }) {
 
 function WebSearchToolActivity({ tool }: { tool: ChatTool }) {
   const { t } = useTranslation();
-  const data = resultData(tool);
+  const data = tool.result;
   const query =
     toolValue(tool.arguments?.query) ?? toolValue(data?.query) ?? null;
   const results = Array.isArray(data?.results) ? data.results : null;
@@ -1605,7 +1595,7 @@ function WebSearchToolActivity({ tool }: { tool: ChatTool }) {
 }
 
 function LspToolActivity({ tool }: { tool: ChatTool }) {
-  const data = resultData(tool);
+  const data = tool.result;
   const method =
     toolValue(tool.arguments?.method) ?? toolValue(data?.method) ?? null;
   const server =
@@ -1645,7 +1635,7 @@ function LspToolActivity({ tool }: { tool: ChatTool }) {
 }
 
 function McpToolActivity({ tool }: { tool: ChatTool }) {
-  const data = resultData(tool);
+  const data = tool.result;
   const server =
     toolValue(tool.arguments?.server) ?? toolValue(data?.server) ?? null;
   const innerTool =
@@ -1679,7 +1669,7 @@ function McpToolActivity({ tool }: { tool: ChatTool }) {
 
 function BackgroundProcessToolActivity({ tool }: { tool: ChatTool }) {
   const { t } = useTranslation();
-  const data = resultData(tool);
+  const data = tool.result;
   const command =
     toolValue(tool.arguments?.command) ?? toolValue(data?.command) ?? null;
   const processId =

@@ -185,6 +185,29 @@ class ToolInputHandlerRegistry:
     def bindings(self) -> tuple[ToolInputHandlerBinding, ...]:
         return self._bindings
 
+    def register(self, declaration: ToolInputHandlerDeclaration) -> None:
+        if type(declaration) is not ToolInputHandlerDeclaration:
+            raise ValueError("input declarations must be pure ToolInputHandlerDeclaration records")
+        if declaration.name in self._declarations:
+            raise ValueError(f"tool input handler name is already declared: {declaration.name}")
+        declarations = dict(self._declarations)
+        declarations[declaration.name] = declaration
+        self._declarations = MappingProxyType(declarations)
+
+    def bind_handler(self, binding: ToolInputHandlerBinding) -> None:
+        if not isinstance(binding, ToolInputHandlerBinding):
+            raise ValueError("tool input binding requires a ToolInputHandlerBinding")
+        name = binding.declaration.name
+        if name not in self._declarations:
+            raise ValueError(f"unknown tool input handler declaration: {name}")
+        if self._declarations[name] != binding.declaration:
+            raise ValueError(f"tool input binding does not match unique declaration: {name}")
+        bound_by_name = {b.declaration.name: b for b in self._bindings}
+        bound_by_name[name] = binding
+        self._bindings = tuple(
+            bound_by_name[d.name] for d in sorted(self._declarations.values(), key=lambda item: item.priority) if d.name in bound_by_name
+        )
+
     def bind(self, materialize: Callable[[str], ToolInputHandlerBinding]) -> ToolInputHandlerRegistry:
         if len(self._bindings) == len(self._declarations):
             return self

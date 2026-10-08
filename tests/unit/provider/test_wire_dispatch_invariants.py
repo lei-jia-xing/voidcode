@@ -24,7 +24,7 @@ from voidcode.provider.model_routing import RoutedTurnProvider
 from voidcode.provider.openai_native import OpenAIChatCompletionsProvider
 from voidcode.provider.protocol import ProviderExecutionError, ProviderTurnRequest, TurnProvider
 from voidcode.provider.provider_table import PROVIDER_TABLE_BY_ID
-from voidcode.provider.registry import ModelProviderRegistry
+from voidcode.provider.registry import ModelProviderRegistry, materialize_builtin_provider
 
 #: Upstream wire name -> the wire VoidCode serves it at.
 _VOIDCODE_WIRE_BY_API: Mapping[str, str] = {
@@ -71,7 +71,7 @@ def test_dispatch_wire_matches_the_data_for_every_catalog_model() -> None:
 
     for provider_id, models in sorted(catalog.items()):
         row = PROVIDER_TABLE_BY_ID[provider_id]
-        turn = registry.resolve(provider_id).turn_provider()
+        turn = materialize_builtin_provider(registry.resolve_static(provider_id)).turn_provider()
         for model, metadata in sorted(models.items()):
             wire = _dispatch_wire(turn, provider_id, model)
             if row.wire_source == "provider":
@@ -101,7 +101,7 @@ def test_copilot_records_upstream_truth_but_dispatches_its_own_wire() -> None:
     dispatch stays chat-completions."""
     row = PROVIDER_TABLE_BY_ID["github-copilot"]
     catalog = model_catalog._load_static_catalog()["github-copilot"]
-    turn = ModelProviderRegistry.with_defaults().resolve("github-copilot").turn_provider()
+    turn = materialize_builtin_provider(ModelProviderRegistry.with_defaults().resolve_static("github-copilot")).turn_provider()
 
     assert row.wire_source == "provider"
     assert {metadata.api for metadata in catalog.values()} >= {"anthropic-messages", "openai-responses"}

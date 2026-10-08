@@ -140,6 +140,8 @@ def test_a_second_run_appends_without_rewriting_the_in_flight_history(tmp_path: 
     )
 
     assert second_chunks[-1].session.status == "completed"
+    checkpoint = _checkpoint(tmp_path)
+    assert checkpoint is not None and checkpoint["kind"] == "interrupted"
     after_second = _entries(tmp_path)
     # Nothing was rewritten: the in-flight run's prefix is still there in order.
     assert after_second[: len(before)] == before
@@ -152,6 +154,8 @@ def test_a_second_run_appends_without_rewriting_the_in_flight_history(tmp_path: 
     final = _entries(tmp_path)
     assert final[: len(before)] == before
     assert _status(tmp_path) == "completed"
+    checkpoint = _checkpoint(tmp_path)
+    assert checkpoint is not None and checkpoint["kind"] == "terminal"
     # Every event survived the other run's seal: the second run's appends are
     # still in the log and the tool result of the first run is durable once.
     assert set(after_second).issubset(final)

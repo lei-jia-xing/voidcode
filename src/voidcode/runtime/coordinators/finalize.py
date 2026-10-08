@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Generator, Iterable
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -158,6 +159,8 @@ class FinalizeCoordinator:
         parent_session_id: str | None = None,
     ) -> None:
         normalized_results = tuple(tool_results)
+        if self._sessions.has_session(workspace=self._workspace, session_id=session_id):
+            session_metadata = self._surface.composition_session_metadata(session_id, session_metadata)
         self._recovery.save_interrupted_checkpoint(
             workspace=self._workspace,
             session_id=session_id,
@@ -190,8 +193,6 @@ class FinalizeCoordinator:
         response: RuntimeResponse,
     ) -> RuntimeRequest:
         """Use the startup-drained follow-up prompt for checkpoint identity."""
-        from dataclasses import replace
-
         request_events = tuple(event for event in response.events if event.event_type == "runtime.request_received")
         if len(request_events) != 1:
             return request
@@ -204,6 +205,13 @@ class FinalizeCoordinator:
         return replace(request, prompt=event_prompt)
 
     def persist_response(self, *, request: RuntimeRequest, response: RuntimeResponse) -> None:
+        response = replace(
+            response,
+            session=replace(
+                response.session,
+                metadata=self._surface.composition_session_metadata(response.session.session.id, response.session.metadata),
+            ),
+        )
         request = self.request_for_persisted_response(request, response)
         if response.session.status in {"completed", "failed"}:
             cleaned_session = session_without_tool_intent(response.session)
@@ -309,7 +317,7 @@ class FinalizeCoordinator:
             workspace=self._workspace,
             session_id=final_session.session.id,
             prompt=request.prompt,
-            session_metadata=final_session.metadata,
+            session_metadata=self._surface.composition_session_metadata(final_session.session.id, final_session.metadata),
             tool_results=tool_results,
             last_event_sequence=persisted_event.sequence,
             composition_ref=composition_ref_from_session_metadata(final_session.metadata),

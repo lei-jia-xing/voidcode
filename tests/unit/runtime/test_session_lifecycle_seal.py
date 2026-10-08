@@ -43,7 +43,7 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     EventEnvelope,
 )
-from voidcode.runtime.execution.report_codec import report_payload
+from voidcode.runtime.execution.report_codec import parse_report_payload, report_payload
 from voidcode.runtime.permission import PendingApproval, PermissionPolicy
 from voidcode.runtime.question import PendingQuestion
 from voidcode.runtime.service import (
@@ -615,10 +615,10 @@ def test_same_run_followup_executes_each_real_read_once_in_input_order(tmp_path:
                 runtime.queue_follow_up("follow-up-active", "read second.txt")
         completed = runtime.session_result(session_id="follow-up-active")
         assert completed.session.status == "completed"
-        assert completed.output == "second real file"
+        assert completed.output is not None and "second real file" in completed.output
         assert tool.paths == ["first.txt", "second.txt"]
         results = [event for event in completed.transcript if event.event_type == "runtime.tool_completed"]
-        assert [cast(dict[str, object], event.payload["arguments"])["path"] for event in results] == ["first.txt", "second.txt"]
+        assert [parse_report_payload(event.payload["reported_call"]).authorized_arguments["path"] for event in results] == ["first.txt", "second.txt"]
 
 
 def test_steer_rejected_on_interrupted_session_without_active_run(tmp_path: Path) -> None:

@@ -109,14 +109,18 @@ def materialize_builtin_provider(descriptor: ProviderDescriptor) -> ModelTurnPro
 
 @dataclass(slots=True)
 class ModelProviderRegistry:
-    descriptors: Mapping[str, ProviderDescriptor]
+    descriptors: Mapping[str, ProviderDescriptor] = field(default_factory=lambda: MappingProxyType({}))
     model_catalog: dict[str, ProviderModelCatalog] = field(default_factory=dict)
+    providers: Mapping[str, ModelTurnProvider] = field(default_factory=lambda: MappingProxyType({}))
     _declarations: dict[str, ProviderDescriptor] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        declarations = self.descriptors
+        declarations = dict(self.descriptors)
         self._declarations = {}
         self.descriptors = MappingProxyType(self._declarations)
+        for name in self.providers:
+            if name not in declarations:
+                declarations[name] = ProviderDescriptor(provider_name=name)
         for name, descriptor in declarations.items():
             if canonical_provider_id(name) != descriptor.provider_name:
                 raise ValueError("provider declaration key must match its canonical id")

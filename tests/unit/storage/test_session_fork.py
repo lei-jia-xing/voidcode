@@ -45,7 +45,7 @@ def _seed_session(
         workspace=workspace,
         session_id=session_id,
         prompt=prompt,
-        session_metadata={"workspace": str(workspace), "runtime_state": {"todos": [{"id": "stale"}]}},
+        session_metadata={"workspace": str(workspace), "runtime_state": {"todos": {"version": 2, "revision": 1, "phases": [], "summary": {}}}},
         tool_results=(),
         last_event_sequence=0,
         create_if_missing=True,

@@ -8,7 +8,8 @@ from .prompt_sections import user_append_heading_block
 
 _AGENT_DIR = Path(__file__).resolve().parent
 _PROMPT_FILE_NAME = "base.txt"
-_BUILTIN_PROMPT_PROFILES = frozenset({"leader", "worker", "advisor", "explore", "researcher", "product"})
+BUILTIN_PROMPT_PROFILES = ("leader", "worker", "advisor", "explore", "researcher", "product")
+_BUILTIN_PROMPT_PROFILES = frozenset(BUILTIN_PROMPT_PROFILES)
 
 
 def _prompt_path(prompt_profile: str) -> Path:

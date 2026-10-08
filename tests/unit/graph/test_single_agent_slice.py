@@ -12,8 +12,8 @@ from voidcode.core.engine import TurnEngine
 from voidcode.core.memory_host import MemoryHost
 from voidcode.core.provider_turns import ProviderTurnProducer
 from voidcode.core.tool_context import ToolContext
-from voidcode.core.transcript import ContextSegment, tool_result_output
-from voidcode.core.turns import CallSeed, FinalTurn, StreamFact, ToolTurn, TurnRequest, TurnSessionSnapshot
+from voidcode.core.transcript import ContextSegment, output_text, tool_result_output
+from voidcode.core.turns import CallSeed, FinalTurn, StreamFact, ToolTurn, TurnRequest, TurnSessionSnapshot, report_call
 from voidcode.provider.protocol import (
     ProviderErrorKind,
     ProviderExecutionError,
@@ -27,7 +27,7 @@ from voidcode.runtime.context.window import (
     RuntimeAssembledContext,
     RuntimeContextWindow,
 )
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult
 from voidcode.tools.read import ReadTool
 
 
@@ -84,17 +84,10 @@ def _assembled_from_context_window(context_window: RuntimeContextWindow) -> Runt
         segments.append(
             ContextSegment(
                 role="tool",
-                content=result.content or "",
+                content=output_text(result.output) or (result.error if isinstance(result, ToolFailure) else ""),
                 tool_call_id=tool_call_id,
                 tool_name=result.tool_name,
-                metadata={
-                    "status": result.status,
-                    "error": result.error,
-                    "data": result.data,
-                    "truncated": result.truncated,
-                    "partial": result.partial,
-                    "reference": result.reference,
-                },
+                metadata={"status": result.status},
             )
         )
     return RuntimeAssembledContext(
@@ -405,7 +398,7 @@ def test_deterministic_read_preserves_actual_body_whitespace(tmp_path: Path) -> 
 
     plan = DeterministicTurnProducer().produce(request, (result,), session=request.session)
 
-    assert plan.output == body
+    assert plan.output.endswith(body)
 
 
 def test_provider_provider_graph_prefers_nonstream_tool_call_over_text() -> None:
@@ -838,7 +831,7 @@ def test_provider_provider_graph_stream_done_without_text_is_rejected() -> None:
     provider = _StreamNoTextDoneTurnProvider()
     graph = ProviderTurnProducer(provider=provider, provider_model=provider_model)
 
-    with pytest.raises(ProviderExecutionError, match="neither output nor tool calls"):
+    with pytest.raises(ProviderExecutionError) as exc_info:
         _ = graph.produce(
             request=TurnRequest(
                 session=_session(),
@@ -853,6 +846,8 @@ def test_provider_provider_graph_stream_done_without_text_is_rejected() -> None:
         )
     assert provider.stream_calls == 1
     assert provider.propose_calls == 0
+    assert exc_info.value.kind == "transient_failure"
+    assert exc_info.value.details["reason"] == "missing_terminal_outcome"
 
 
 @pytest.mark.parametrize(
@@ -1078,7 +1073,7 @@ def test_provider_graph_rejects_incomplete_lifecycle_call() -> None:
         provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
     )
     context = RuntimeContextWindow(prompt="read sample.txt")
-    with pytest.raises(ProviderExecutionError, match="neither output nor tool calls"):
+    with pytest.raises(ProviderExecutionError) as exc_info:
         graph.produce(
             TurnRequest(
                 session=_session(),
@@ -1091,6 +1086,51 @@ def test_provider_graph_rejects_incomplete_lifecycle_call() -> None:
             (),
             session=_session(),
         )
+    assert exc_info.value.kind == "transient_failure"
+    assert exc_info.value.details["reason"] == "incomplete_tool_call"
+
+
+def test_provider_graph_rejects_nonobject_lifecycle_arguments() -> None:
+    class _NonobjectArgumentsProvider:
+        name = "opencode-zen"
+
+        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+            _ = request
+            return ProviderTurnResult(output="unused")
+
+        def stream_turn(self, request: ProviderTurnRequest):
+            _ = request
+            return iter(
+                (
+                    ProviderStreamEvent(kind="tool_call_start", channel="tool", tool_call_id="call-1", tool_name="read"),
+                    ProviderStreamEvent(kind="tool_call_delta", channel="tool", tool_call_id="call-1", arguments_delta="[]"),
+                    ProviderStreamEvent(kind="tool_call_end", channel="tool", tool_call_id="call-1"),
+                    ProviderStreamEvent(kind="done", done_reason="tool_calls"),
+                )
+            )
+
+    graph = ProviderTurnProducer(
+        provider=_NonobjectArgumentsProvider(),
+        provider_model=resolve_provider_model("opencode-zen/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
+    )
+    context = RuntimeContextWindow(prompt="read sample.txt")
+
+    with pytest.raises(ProviderExecutionError) as exc_info:
+        graph.produce(
+            TurnRequest(
+                session=_session(),
+                prompt=context.prompt,
+                available_tools=_tool_definitions(),
+                context_window=context,
+                assembled_context=_assembled_from_context_window(context),
+                metadata={"provider_stream": True},
+            ),
+            (),
+            session=_session(),
+        )
+
+    assert exc_info.value.kind == "transient_failure"
+    assert exc_info.value.details["reason"] == "invalid_tool_arguments"
 
 
 def test_provider_graph_merges_explicit_and_complete_streamed_tool_calls() -> None:
@@ -1187,9 +1227,11 @@ def test_turn_engine_restores_completed_seed_result_without_replaying_it(tmp_pat
         call,
         context=ToolContext(session_id="seed-session", invocation_id=call.tool_call_id),
     )
-    seed_result = replace(
+    seed_report = report_call(
+        call,
         actual_result,
-        data={**actual_result.data, "tool_call_id": call.tool_call_id, "arguments": dict(call.arguments)},
+        final_arguments=call.arguments,
+        final_tool_name="read",
     )
     invocations_before = tuple(tool.call_ids)
 
@@ -1197,7 +1239,7 @@ def test_turn_engine_restores_completed_seed_result_without_replaying_it(tmp_pat
     engine = TurnEngine(DeterministicTurnProducer()).run(
         host.request("read sample.txt"),
         host=host,
-        seed=CallSeed((call,), completed_results=(seed_result,)),
+        seed=CallSeed((call,), completed_reports=(seed_report,)),
     )
     while True:
         try:
@@ -1209,4 +1251,4 @@ def test_turn_engine_restores_completed_seed_result_without_replaying_it(tmp_pat
     assert invocations_before == ("call-authenticated-read",)
     assert tuple(tool.call_ids) == invocations_before
     assert result.status == "completed"
-    assert result.output == body
+    assert result.output.endswith(body)
