@@ -8,8 +8,12 @@
 - Source clean cutover commit `49ee927024908132deb467dbef2da8ca6c00e14e` 已将 legacy/facade callers 迁到当前 owners，移除 obsolete aliases/private facades/duplicate paths 与失效 incidental tests。实际安装包五槽与八个 lifecycle phase、CLI/TUI 以及 source retry/re-entry paths 有 focused/actual-runtime 证据；provider 的在线服务 smoke 不计作通过。
 - `mise run check` exited 0：Python `1768 passed in 130.23s`；frontend Vitest `13 files / 142 tests passed`；Ruff、ty、schema、generated API、frontend lint/typecheck passed；完整输出留在 `/tmp/voidcode-p6-final-mise-check-2.log`。
 - All-files pre-commit 最终 11 hooks passed；正常启用 hooks 的 source commit 也全部通过，记录于 `/tmp/voidcode-p6-precommit-final.log` 和 `/tmp/voidcode-p6-commit.log`。
-- 隔离 offline browser E2E 在 provider credentials 显式置空、XDG state/config 与 Playwright outputDir 隔离后为 `4 passed, 1 skipped`；live-key case 因空 key 跳过。两个测试截图已改写到 Playwright `testInfo.outputPath`。
+- **Isolated offline browser E2E**: all provider credentials explicitly blank, state/config/output directories isolated, live-key case skipped; `4 passed, 1 skipped` in 8.4s. Screenshots write under Playwright `testInfo.outputPath`; stdout `/tmp/voidcode-p6-e2e-final.log`.
+- **实际 CLI**（临时 workspace/state/config/data，`VOIDCODE_EXECUTION_ENGINE=deterministic`）：真实 write→read 完成后 `sessions resume` replay 未重复文件 I/O；ask write 在审批前目标文件不存在，allow resume 后精确内容落盘；provider-stream 与 no-provider-stream 都观察到推进。session entries、fork provenance 与 checkout sequence 也通过实际命令核实。
+- **实际 HTTP cancel**：对运行中的任务发 `POST /api/sessions/<id>/cancel` 后 session 为 `interrupted`，待执行 `late.txt`/`second.txt` 均未创建；未声称 CLI sessions cancel 命令已测。
+- **实际 TUI**：stdlib PTY 80×24、`TERM=xterm-256color` 下运行 read 与 ask-mode write；`y` 通过后 `tui_out.txt` 落盘为 `written_by_tui`；双 Ctrl-C 安全退出，exit code 0。
 - 先前 live DeepSeek run-stream 与 sessions-list 请求返回 `internal server error`；现存输出没有 backend traceback，未重试在线请求。原 `.sisyphus/evidence/task-11-layout-buttons.png` 曾被该 E2E 覆写：原 SHA-256 `8641f5c635a0a6fc980f48ad219033ca3be17691f4d694251577a27778e4ffdc` 无法从备份、OMP 缓存/历史或 Git unreachable PNG blobs 恢复；当前文件 SHA-256 为 `2f28ad4497cf0fb134a14d56242339c22c005870d7c7d39a657ed016c24d668d`。未重建或冒充原图。
+- **Filesystem snapshot check**: `findmnt -T .` identifies `/home` on Btrfs subvolume `@home`. `btrfs subvolume list /home` returned `Operation not permitted`; the visible `/home` directory had no `.snapshots` entry, and `/home/hunter/.snapper.log` only records snapperd failing to acquire its DBus name. No exact screenshot bytes were exposed by the accessible snapshot paths.
 
 ## 当前数据格式策略（后续用户要求，覆盖旧迁移条款）
 
@@ -228,7 +232,7 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 
 **退出：** 在单一 extension package 内添加 provider/tool/agent/context extension 的 declaration、validator、materializer 和 phase 语义，只需注册该 package，不修改 `service.py`、`run_loop.py`、`config_models.py`、`events.py`。同一 registry 不意味不同能力拥有同一 authority；MCP/LSP 的资源创建/refresh/shutdown 仍由 runtime owner 处理。
 
-新增类型收敛的步骤 1–3 是 P5 前置实施项，步骤 4 在 P5 明确所有权；当前已完成的 focused slices 与仍阻塞的 external-slot/phase contract 见下方进展记录。P5 退出仍需真实 producer/consumer cutover 与行为证据，不能以本节 progress 取代阶段验收。
+新增类型收敛的步骤 1–4 已随 P5/P6 cutover 完成；旧 caller/facade 切除与实际行为证据见文首当前交付和 §8 矩阵。下方保留阶段时 progress 的真实性，不再代表未完成的 P5 blocker。
 
 **验证：** package fixture 注入新 provider、实际执行的纯工具、agent declaration 和 context transform，完整 runtime run 得到可断言输出；在 config/request precedence、parent policy 限制、ordering/failure、frozen snapshot recovery 中验证行为；恢复时磁盘 declaration 改动不能偷偷替换已冻结执行语义，无法恢复则明确拒绝。argv hook timeout/failure 仍按原配置处理，gate 不可扩权。
 
@@ -259,7 +263,7 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 
 **风险：** substrate 抽取意外扩大 preset/topology 权限、通知重复、child session ownership 与 fork lineage 混合；最终 cleanup 不得删除仍有消费者的 contract。
 
-- **P6 完成**：task substrate/delegation consumers 与 legacy/facade callers 已切换到唯一 runtime owners；obsolete aliases、facades、duplicate paths 和失效 incidental tests 已移除。queued→dispatch→child session→result/retry/steer/reopen、keep-alive ownership seizure/fresh resume、same-session re-entry 和 task retry/new owner 均有 focused behavior 与实际 runtime/SQLite 证据；五类 package slots 与 durable package phase owner 分别由 `test_installed_package_all_slots.py`、`test_durable_composition_phases.py` 证明。实际 CLI/TUI 行为记录见 §2.3；最终全量 gate 与 hooks 结果见当前状态和 §2.5。
+- **P6 完成**：task substrate/delegation consumers 与 legacy/facade callers 已切换到唯一 runtime owners；obsolete aliases、facades、duplicate paths 和失效 incidental tests 已移除。queued→dispatch→child session→result/retry/steer/reopen、keep-alive ownership seizure/fresh resume、same-session re-entry 和 task retry/new owner 均有 focused behavior 与实际 runtime/SQLite 证据；五类 package slots 与 durable package phase owner 分别由 `test_installed_package_all_slots.py`、`test_durable_composition_phases.py` 证明。实际 CLI/TUI 与 HTTP cancel 观察记录见文首“本轮 P5/P6 最终交付”。
 
 ## 审计覆盖映射
 
@@ -335,7 +339,7 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 - `runtime/agent_capability.py`：shape 错误说明使用 snapshot owner 的真实版本；不测试错误文案，不删除持久化输入验证。
 - 独立前置修复：首次 smoke import 发现 `runtime/reminders.py` 的重复原始 doc 段落和多余三引号导致 `SyntaxError`；只移除重复段落/引号，保留原 docstring 和所有 runtime 逻辑。
 - 前置清理验证（历史结果，本次未重跑）：九组 context-transform failure × policy mode 的 before/after projection/policy smoke 输出一致，重复 blocking code 保持去重、无效 persisted snapshot 保持拒绝；`uv run pytest tests/unit/runtime/test_context_window_diagnostics.py -q` 为 **2 passed**。最终 `mise run check` 观察到 **1709 Python / 144 frontend**，完整 pre-commit 通过；CLI/TUI 实际程序 deterministic read smoke 通过。以上是前置清理的历史基线，不是 P0 本次新运行的检查。
-本条记录的是该有限清理时没有运行 CLI/TUI smoke；集成后的真实 CLI/TUI 程序 smoke 已另记于 §2.3。
+该有限清理记录当时没有运行 CLI/TUI smoke；这只说明该历史 cleanup slice 的验证范围。集成后的真实 CLI/TUI 程序行为另列于文首最终交付记录。
 
 ## 明确延期：审计 §9
 
