@@ -339,7 +339,6 @@ runtime host 注入 context builder 和 governed tool executor，处理 approval
 - `runtime/agent_capability.py`：shape 错误说明使用 snapshot owner 的真实版本；不测试错误文案，不删除持久化输入验证。
 - 独立前置修复：首次 smoke import 发现 `runtime/reminders.py` 的重复原始 doc 段落和多余三引号导致 `SyntaxError`；只移除重复段落/引号，保留原 docstring 和所有 runtime 逻辑。
 - 前置清理验证（历史结果，本次未重跑）：九组 context-transform failure × policy mode 的 before/after projection/policy smoke 输出一致，重复 blocking code 保持去重、无效 persisted snapshot 保持拒绝；`uv run pytest tests/unit/runtime/test_context_window_diagnostics.py -q` 为 **2 passed**。最终 `mise run check` 观察到 **1709 Python / 144 frontend**，完整 pre-commit 通过；CLI/TUI 实际程序 deterministic read smoke 通过。以上是前置清理的历史基线，不是 P0 本次新运行的检查。
-该有限清理记录当时没有运行 CLI/TUI smoke；这只说明该历史 cleanup slice 的验证范围。集成后的真实 CLI/TUI 程序行为另列于文首最终交付记录。
 
 ## 明确延期：审计 §9
 
