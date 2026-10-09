@@ -496,6 +496,7 @@ def redact_reasoning_payload(
     show_thinking: bool = False,
 ) -> dict[str, object]:
     redacted = dict(payload)
+    redacted.pop("reported_call", None)
     if show_thinking or not is_reasoning_payload(event_type, payload):
         return redacted
     if "text" in redacted:

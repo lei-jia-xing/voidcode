@@ -60,7 +60,7 @@ class ReadThenWriteProducer:
 
 def test_runtime_reads_before_writing_and_replays_the_persisted_read_pair(tmp_path: Path) -> None:
     source = tmp_path / "sample.txt"
-    source.write_text("before\n", encoding="utf-8")
+    source.write_text("OPENAI_API_KEY=sk-test-secret-12345\nbefore 🚀\n", encoding="utf-8")
     producer = ReadThenWriteProducer()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -85,6 +85,26 @@ def test_runtime_reads_before_writing_and_replays_the_persisted_read_pair(tmp_pa
         assert read_call.tool_call_id == read_event.payload["tool_call_id"] == read_result.tool_call_id
         assert read_call.tool_arguments == {"path": "sample.txt"}
         assert read_result.content is not None and "before" in read_result.content
+
+    # Cold reopen with a fresh runtime to verify durable checkpoint and replay integrity
+    fresh_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([ReadTool(), WriteTool()]),
+        turn_producer=producer,
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic", approval_mode="yolo"),
+        permission_policy=PermissionPolicy(mode="yolo"),
+    )
+    with fresh_runtime:
+        reopened = fresh_runtime.replay_session(session_id="runtime-read-write")
+        assert reopened.session.status == "completed"
+        reopened_segments = fresh_runtime.replayed_conversation_segments_for_existing_session(
+            stored=reopened,
+            parent_session_id=None,
+        )
+        reopened_read_tool = next(segment for segment in reopened_segments if segment.role == "tool" and segment.tool_name == "read")
+        assert "OPENAI_API_KEY=sk-test-secret-12345" in (reopened_read_tool.content or "")
+        assert "before 🚀" in (reopened_read_tool.content or "")
+        assert source.read_text(encoding="utf-8") == "after\n"
 
 
 class _OpenAILoopbackServer(ThreadingHTTPServer):

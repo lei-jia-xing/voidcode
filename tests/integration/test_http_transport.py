@@ -693,6 +693,33 @@ def test_transport_streams_session_events_after_sequence(tmp_path: Path) -> None
     assert all(chunk["session"] is None for chunk in event_chunks)
 
 
+def test_transport_events_endpoint_strips_canonical_reported_call_and_redacts_secrets(tmp_path: Path) -> None:
+    sample_file = tmp_path / "secrets.env"
+    _ = sample_file.write_text("OPENAI_API_KEY=sk-super-secret-key-12345\nTOKEN=token_xyz\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+    runtime = runtime_class(workspace=tmp_path)
+    stored = runtime.run(runtime_request(prompt="read secrets.env", session_id="wire-secrets-session"))
+    assert stored.session.status == "completed"
+
+    response = _run_app(
+        create_runtime_app(workspace=tmp_path),
+        method="GET",
+        path="/api/sessions/wire-secrets-session/events",
+        query_string=b"after_sequence=0&show_thinking=true",
+    )
+    assert response.status == 200
+    raw_body = response.body.decode("utf-8")
+
+    # Internal canonical reported_call must be stripped from public SSE stream
+    assert "reported_call" not in raw_body
+    # Secret tokens must not leak across the wire
+    assert "sk-super-secret-key-12345" not in raw_body
+    assert "token_xyz" not in raw_body
+    # Public presentation content is redacted
+    assert "[redacted]" in raw_body
+
+
 def test_transport_session_result_redacts_reasoning_until_query_opt_in() -> None:
     runtime_http = importlib.import_module("voidcode.runtime.transport.http")
     runtime_contracts = importlib.import_module("voidcode.runtime.contracts")

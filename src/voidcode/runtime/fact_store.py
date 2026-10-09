@@ -5,7 +5,6 @@ from typing import cast
 
 from ..core.event_store import FactEntry, FactPage
 from ..core.turns import CallSeed, ReportedCall, ToolCompletedFact, TurnFact
-from ..security.redaction import redact_mapping
 from .events import EventEnvelope
 from .execution.resume_checkpoint import tool_results_from_checkpoint, validated_resume_checkpoint_envelope
 from .execution.tool_result_projection import _serialized_tool_results
@@ -144,7 +143,7 @@ class SqliteFactStore:
         return {
             **checkpoint,
             "session_metadata": session_metadata_for_persistence(metadata),
-            "tool_results": [redact_mapping(result) for result in serialized],
+            "tool_results": serialized,
         }
 
     def restore_batch(self) -> CallSeed:

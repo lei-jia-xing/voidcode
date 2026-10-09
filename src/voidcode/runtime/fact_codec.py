@@ -55,7 +55,7 @@ def reported_call_from_event(event: EventEnvelope) -> ReportedCall | None:
 
 
 def encode_fact(fact: TurnFact, *, version: int = FACT_CODEC_VERSION, session: SessionState | None = None) -> EncodedFact:
-    """Project a typed fact once; only the redacted result may reach rows/UI."""
+    """Project a typed fact once; public flat presentation fields are redacted, while private rows retain the canonical report."""
     require_fact_codec_version(version)
     source: EventSource = "graph"
     persistable = not isinstance(fact, StreamFact)
@@ -116,7 +116,11 @@ def encode_fact(fact: TurnFact, *, version: int = FACT_CODEC_VERSION, session: S
         event_type, source = "runtime.tool_completed", "tool"
         report = fact.report
         payload.update(_tool_completed_payload(session=session, report=report))
-    return EncodedFact(event_type, source, redact_mapping(payload), persistable)
+    raw_reported_call = payload.pop("reported_call", None)
+    redacted_payload = redact_mapping(payload)
+    if raw_reported_call is not None:
+        redacted_payload["reported_call"] = raw_reported_call
+    return EncodedFact(event_type, source, redacted_payload, persistable)
 
 
 def _text(payload: dict[str, object], key: str) -> str:
