@@ -63,14 +63,14 @@ def _normalize_text(value: str) -> str:
 
 def build_runtime_context(skill: SkillMetadata) -> SkillRuntimeContext:
     description = _normalize_text(skill.description)
-    content = _normalize_text(skill.content)
+    content = skill.content
     execution_notes = content
     prompt_parts = [f"Skill: {skill.name}"]
     if description:
         prompt_parts.append(f"Description: {description}")
     if execution_notes:
         prompt_parts.append(f"Instructions:\n{execution_notes}")
-    prompt_context = "\n".join(prompt_parts).strip()
+    prompt_context = "\n".join(prompt_parts)
 
     return SkillRuntimeContext(
         name=skill.name,
@@ -95,7 +95,13 @@ def build_runtime_contexts(
 
 
 def build_skill_prompt_context(contexts: Iterable[SkillRuntimeContext]) -> str:
-    rendered = [context.prompt_context for context in contexts if context.prompt_context]
+    rendered: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for context in contexts:
+        key = (context.name, context.source_path)
+        if context.prompt_context and key not in seen:
+            rendered.append(context.prompt_context)
+            seen.add(key)
     if not rendered:
         return ""
     return (
@@ -113,16 +119,16 @@ def runtime_context_from_payload(payload: dict[str, str]) -> SkillRuntimeContext
         raise ValueError("persisted skill payload missing required fields: " + ", ".join(missing_fields))
     name = payload["name"].strip()
     description = payload["description"].strip()
-    content = payload["content"].strip()
+    content = payload["content"]
     if not name:
         raise ValueError("persisted skill payload field 'name' must be a non-empty string")
     if not description:
         raise ValueError("persisted skill payload field 'description' must be a non-empty string")
-    if not content:
+    if not content.strip():
         raise ValueError("persisted skill payload field 'content' must be a non-empty string")
-    prompt_context = payload["prompt_context"].strip()
-    execution_notes = payload["execution_notes"].strip()
-    if not prompt_context:
+    prompt_context = payload["prompt_context"]
+    execution_notes = payload["execution_notes"]
+    if not prompt_context.strip():
         raise ValueError("persisted skill payload field 'prompt_context' must not be empty")
     return SkillRuntimeContext(
         name=name,

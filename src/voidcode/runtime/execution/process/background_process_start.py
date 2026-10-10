@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ....core.tool_context import ToolContext
 from ....tools._pydantic_args import NonEmptyCommand, OptionalDescription, parse_tool_args
@@ -17,6 +17,8 @@ from .background_process_results import BackgroundProcessStartBody
 class _BackgroundProcessStartArgs(BaseModel):
     command: NonEmptyCommand
     description: OptionalDescription = None
+    ready_pattern: str | None = Field(default=None, min_length=1, max_length=512)
+    ready_timeout: int = Field(default=10, ge=1, le=30)
 
 
 def _background_process_start_guidance(*, process_id: str, reused: bool, stale_process_id: str | None = None) -> str:
@@ -31,7 +33,7 @@ def _background_process_start_guidance(*, process_id: str, reused: bool, stale_p
     if reused:
         return (
             f"An exact-match process is already running; reuse process_id '{process_id}' "
-            "instead of calling background_process with op=start again for the same trimmed command "
+            "instead of calling background_process with op=start again for the same exact command string "
             "in this workspace." + stale_note
         )
     return f"Track this process by process_id '{process_id}'. Use background_process with op=logs, send, or stop." + stale_note
@@ -68,6 +70,8 @@ class BackgroundProcessStartTool:
             workspace=workspace,
             owner_session_id=owner_session_id,
             enforce_owner=enforce_owner,
+            ready_pattern=args.ready_pattern,
+            ready_timeout=args.ready_timeout,
         )
         reused = existing is not None
         stale_process_id = stale_matches[0].process_id if stale_matches else None
@@ -76,9 +80,16 @@ class BackgroundProcessStartTool:
             reused=reused,
             stale_process_id=stale_process_id,
         )
+        running = state.process.poll() is None
+        readiness = ""
+        if args.ready_pattern is not None and state.ready is not True:
+            if running:
+                readiness = f" Readiness pattern {args.ready_pattern!r} was not observed within {args.ready_timeout}s; process is still running."
+            else:
+                readiness = f" Process exited with code {state.process.poll()} before readiness pattern {args.ready_pattern!r} appeared."
         content = (
             f"{'Reusing' if reused else 'Started'} background process {state.process_id} "
-            f"(pid={state.process.pid}) for command: {args.command}. Guidance: {guidance}"
+            f"(pid={state.process.pid}) for command: {args.command}.{readiness} Guidance: {guidance}"
         )
         return ToolSuccess(
             tool_name=self.name,
@@ -88,10 +99,13 @@ class BackgroundProcessStartTool:
                 pid=state.process.pid,
                 command=args.command,
                 cwd=state.cwd,
-                running=state.process.poll() is None,
+                running=running,
                 reused=reused,
                 stale_process_id=stale_process_id,
                 guidance=guidance,
+                ready=state.ready,
+                ready_pattern=state.ready_pattern,
+                exit_code=state.process.poll(),
             ),
         )
 

@@ -115,7 +115,12 @@ class EngineState:
                     data["reasoning_content"] = batch.reasoning
                 if isinstance(projected.output, AttachmentOutput):
                     data["mime"] = projected.output.mime
-                    data["data_uri"] = projected.output.data_uri
+                    if projected.output.data_uri is not None:
+                        data["data_uri"] = projected.output.data_uri
+                    else:
+                        data["attachment_unavailable"] = True
+                        if projected.output.bounds.reference is not None:
+                            data["attachment_reference"] = projected.output.bounds.reference.uri
                 content = tool_result_output(projected)
                 bounds = projected.output.bounds
                 segments.extend(

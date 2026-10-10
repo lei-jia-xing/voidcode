@@ -161,9 +161,8 @@ def test_steer_background_task_rejects_empty_content(tmp_path: Path) -> None:
 
 def test_steer_background_task_rejects_running_turn_in_flight(tmp_path: Path) -> None:
     """A task with a turn in flight (running) cannot be steered (no pipelining)."""
-    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     runtime = _runtime(tmp_path)
-    runtime_request = _runtime_request_factory()
+    idle_task = _idle_keep_alive_task(tmp_path, runtime)
     read_module = importlib.import_module("voidcode.tools.read")
     read_tool = read_module.ReadTool
     original_invoke = read_tool.invoke
@@ -172,22 +171,25 @@ def test_steer_background_task_rejects_running_turn_in_flight(tmp_path: Path) ->
 
     def _blocking_read(self: object, call: object, *, context: ToolContext) -> object:
         started.set()
-        _ = release.wait(timeout=2)
+        _ = release.wait()
         return original_invoke(self, call, context=context)
 
-    with patch.object(read_tool, "invoke", autospec=True, side_effect=_blocking_read):
-        task = runtime.start_background_task(runtime_request(prompt="read sample.txt", metadata={"keep_alive": True}))
-        assert started.wait(timeout=1) is True
-        running = runtime.load_background_task(task.task.id)
-        assert running.status == "running"
+    try:
+        with patch.object(read_tool, "invoke", autospec=True, side_effect=_blocking_read):
+            runtime.steer_background_task(idle_task.task.id, "read sample.txt")
+            assert started.wait(timeout=5) is True
+            running = runtime.load_background_task(idle_task.task.id)
+            assert running.status == "running"
 
-        with pytest.raises(ValueError, match="can only be steered while idle or interrupted"):
-            runtime.steer_background_task(task.task.id, "read sample.txt")
+            with pytest.raises(ValueError, match="can only be steered while idle or interrupted"):
+                runtime.steer_background_task(idle_task.task.id, "read sample.txt")
 
+            release.set()
+            idle = _wait_for_background_task_status(runtime, idle_task.task.id, {"idle"})
+            assert idle.status == "idle"
+    finally:
         release.set()
-        idle = _wait_for_background_task_status(runtime, task.task.id, {"idle"})
-
-    assert idle.status == "idle"
+        runtime.shutdown_background_tasks()
 
 
 def test_concurrent_steers_launch_only_one_worker(tmp_path: Path) -> None:

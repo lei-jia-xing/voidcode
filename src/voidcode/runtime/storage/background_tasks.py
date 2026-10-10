@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from ...security.json_values import json_wire_object
 from ..background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -92,7 +93,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             return None, "permissive"
         raw_schema_mode = delegation.get("schema_mode")
         schema_mode = raw_schema_mode if raw_schema_mode in ("permissive", "strict") else "permissive"
-        return json.dumps(raw_output_schema, sort_keys=True), schema_mode
+        return json.dumps(json_wire_object(raw_output_schema), sort_keys=True), schema_mode
 
     @staticmethod
     def _schema_validation_from_json(raw: str | None) -> SchemaValidation | None:
@@ -430,7 +431,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     task.request.prompt,
                     task.request.session_id,
                     task.request.parent_session_id,
-                    json.dumps(metadata, sort_keys=True),
+                    json.dumps(json_wire_object(metadata), sort_keys=True),
                     task.request.session_id,
                     routing.mode if routing is not None else None,
                     routing.subagent_type if routing is not None else None,

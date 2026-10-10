@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import re
@@ -269,6 +270,33 @@ class _ExternalWriteGraph:
                     ToolCall(
                         tool_name="write",
                         arguments={"path": self._target.as_posix(), "content": "blocked"},
+                    ),
+                )
+            )
+        return FinalTurn(output="done")
+
+
+class _ExternalReadThenWriteGraph:
+    def __init__(self, *, raw_path: str, expected_hash: str) -> None:
+        self._raw_path = raw_path
+        self._expected_hash = expected_hash
+
+    def produce(
+        self,
+        request: TurnRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: TurnSession,
+    ) -> ToolTurn | FinalTurn:
+        _ = request, session
+        if not tool_results:
+            return ToolTurn(calls=(ToolCall("read", {"path": self._raw_path}),))
+        if len(tool_results) == 1:
+            return ToolTurn(
+                calls=(
+                    ToolCall(
+                        "write",
+                        {"path": self._raw_path, "content": "after\n", "expectedHash": self._expected_hash},
                     ),
                 )
             )
@@ -1131,6 +1159,57 @@ def test_runtime_pattern_permission_rule_denies_shell_command(tmp_path: Path) ->
     assert denied_feedback.payload["error"] == "permission denied for tool: shell_exec"
 
 
+@pytest.mark.parametrize("deferred", [False, True])
+def test_provider_runtime_continues_after_deny_rule_and_reads_unchanged_file(tmp_path: Path, deferred: bool) -> None:
+    target = tmp_path / "blocked.txt"
+    original = "before\n"
+    target.write_text(original, encoding="utf-8")
+    write_arguments = {
+        "path": target.name,
+        "content": "after\n",
+        "expectedHash": hashlib.sha256(original.encode("utf-8")).hexdigest(),
+    }
+    write_call = ToolCall("invoke_tool", {"name": "write", "arguments": write_arguments}) if deferred else ToolCall("write", write_arguments)
+    producer = _ScriptedTurnProducer(
+        outcomes=(
+            ProviderTurnResult(tool_calls=(write_call,)),
+            ProviderTurnResult(tool_calls=(ToolCall("read", {"path": target.name}),)),
+            ProviderTurnResult(output="continued after denied write"),
+        ),
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        turn_producer=producer,
+        config=RuntimeConfig(
+            approval_mode="yolo",
+            execution_engine="provider",
+            model="opencode-zen/gpt-5.4",
+            permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="write", path=target.name, decision="deny"),)),
+        ),
+        permission_policy=PermissionPolicy(mode="yolo"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="try a denied write, then read the file"))
+
+    assert response.session.status == "completed"
+    assert response.output == "continued after denied write"
+    assert target.read_text(encoding="utf-8") == original
+    denied = next(event for event in response.events if event.event_type == "runtime.approval_resolved")
+    assert denied.payload["policy_surface"] == "permission.rules"
+    assert denied.payload["decision"] == "deny"
+    denied_result = next(
+        event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("permission_denied") is True
+    )
+    assert denied_result.payload["tool"] == "write"
+    assert denied_result.payload["error"] == "permission denied for tool: write"
+    read_result = next(event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload["tool"] == "read")
+    assert read_result.payload["status"] == "ok"
+    read_context = next(
+        segment for segment in producer.requests[-1].assembled_context.segments if segment.role == "tool" and segment.tool_name == "read"
+    )
+    assert "before" in (read_context.content or "")
+
+
 def test_runtime_pattern_permission_rule_cannot_bypass_external_write_policy(
     tmp_path: Path,
 ) -> None:
@@ -1159,6 +1238,47 @@ def test_runtime_pattern_permission_rule_cannot_bypass_external_write_policy(
     assert denied_event.payload["decision"] == "deny"
     assert denied_event.payload["policy_surface"] == "external_directory_write"
     assert external_path.exists() is False
+
+
+def test_external_write_asks_for_runtime_approval_then_writes_raw_path(tmp_path: Path) -> None:
+    external_path = tmp_path.parent / f"{tmp_path.name}-external-approved.txt"
+    external_path.write_bytes(b"before\n")
+    raw_path = f"../{external_path.name}"
+    expected_hash = hashlib.sha256(b"before\n").hexdigest()
+    session_id = "external-write-approval"
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        turn_producer=_ExternalReadThenWriteGraph(raw_path=raw_path, expected_hash=expected_hash),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            mcp=RuntimeMcpConfig(enabled=False),
+            permission=ExternalDirectoryPermissionConfig(
+                read=ExternalDirectoryPolicy(rules=(("*", "allow"),)),
+                write=ExternalDirectoryPolicy(rules=(("*", "ask"),)),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="yolo"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt=f"write {raw_path}", session_id=session_id))
+    approval = next(event for event in waiting.events if event.event_type == "runtime.approval_requested")
+    request_id = cast(str, approval.payload["request_id"])
+    approval_arguments = cast(dict[str, object], approval.payload["arguments"])
+    assert waiting.session.status == "waiting"
+    assert approval.payload["path_scope"] == "external"
+    assert approval.payload["canonical_path"] == external_path.resolve().as_posix()
+    assert approval_arguments["path"] == raw_path
+    assert approval_arguments["expectedHash"] == expected_hash
+    assert external_path.read_bytes() == b"before\n"
+
+    resumed = runtime.resume(session_id, approval_request_id=request_id, approval_decision="allow")
+
+    file_bytes = external_path.read_bytes()
+    assert resumed.session.status == "completed"
+    assert file_bytes == b"after\n"
+    assert hashlib.sha256(file_bytes).hexdigest() == "7b9a72466d3960eb2aacccfc848939453490db0678bd4725def3f789b891c919"
+    resolution = next(event for event in resumed.events if event.event_type == "runtime.approval_resolved")
+    assert resolution.payload["decision"] == "allow"
 
 
 def test_runtime_persists_pattern_permission_rules_for_resume(tmp_path: Path) -> None:

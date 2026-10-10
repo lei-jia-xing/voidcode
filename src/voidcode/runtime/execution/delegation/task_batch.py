@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from ....core.tool_context import ToolContext
+from ....security.json_values import json_wire_object
 from ....tools._pydantic_args import NonEmptyPrompt, parse_tool_args
 from ....tools.contracts import TextOutput, ToolCall, ToolFailure, ToolResult, ToolSuccess
 from ....tools.delegation.task_batch import MAX_BATCH_SIZE, TaskBatchTool
@@ -145,7 +146,7 @@ class _TaskBatchArgs(BaseModel):
             raise ValueError(f"tasks may contain at most {MAX_BATCH_SIZE} child requests")
         fingerprints = {
             json.dumps(
-                item.model_dump(by_alias=True, exclude_none=True),
+                json_wire_object(item.model_dump(by_alias=True, exclude_none=True)),
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),

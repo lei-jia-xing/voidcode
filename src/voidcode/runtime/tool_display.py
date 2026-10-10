@@ -23,8 +23,6 @@ _TOOL_KIND_TABLE: dict[str, tuple[str, str]] = {
     "read": ("read", "Read"),
     "write": ("write", "Write"),
     "edit": ("edit", "Edit"),
-    "multi_edit": ("edit", "Edit"),
-    "apply_patch": ("edit", "Edit"),
     "ast_grep": ("search", "Search"),
     "grep": ("search", "Search"),
     "glob": ("context", "Context"),
@@ -202,10 +200,10 @@ def build_tool_display(
     if tool_name == "shell_exec":
         summary = _synthesize_shell_summary(arguments)
         args = _extract_primitive_args(arguments, "command")
-        copyable = _build_copyable(tool_name, arguments, result_data)
-
-    elif tool_name in {"edit", "multi_edit", "apply_patch"}:
+    elif tool_name == "edit":
         path = _first_primitive(arguments, "path")
+        if not path and "patch" in arguments:
+            path = "Patch"
         edit_count = 0
         if result_data is not None:
             raw_edits = result_data.get("edit_count")

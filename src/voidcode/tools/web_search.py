@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import ClassVar
 from urllib.parse import parse_qs, unquote, urlparse
@@ -35,16 +36,33 @@ DUCKDUCKGO_EMPTY_MESSAGE = "No search results found. Please try a different quer
 
 
 @dataclass(frozen=True, slots=True)
+class WebSearchItem:
+    rank: int
+    title: str
+    url: str
+    snippet: str
+
+    def as_payload(self) -> dict[str, object]:
+        return {"rank": self.rank, "title": self.title, "url": self.url, "snippet": self.snippet}
+
+
+@dataclass(frozen=True, slots=True)
 class WebSearchResultBody:
     query: str
     num_results: int
     timeout_seconds: int
+    source: str
+    fallback_reason: str | None
+    results: tuple[WebSearchItem, ...]
 
     def as_payload(self) -> dict[str, object]:
         return {
             "query": self.query,
             "num_results": self.num_results,
             "timeout_seconds": self.timeout_seconds,
+            "source": self.source,
+            "fallback_reason": self.fallback_reason,
+            "results": [item.as_payload() for item in self.results],
         }
 
 
@@ -52,62 +70,47 @@ def _search_exa(
     query: str,
     num_results: int = DEFAULT_NUM_RESULTS,
     timeout: int = DEFAULT_TIMEOUT,
-) -> tuple[str | None, str | None]:
+) -> tuple[list[WebSearchItem] | None, str | None]:
     api_key = os.environ.get("EXA_API_KEY")
     if not api_key:
         return None, None
 
     try:
-        request_data: dict[str, object] = {
-            "q": query,
-            "numResults": num_results,
-            "type": "neural",
-        }
-
         with httpx.Client(timeout=timeout) as client:
             response = client.post(
                 "https://api.exa.ai/search",
-                json=request_data,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                },
+                json={"query": query, "numResults": num_results, "type": "auto", "contents": {"highlights": True}},
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
             )
             response.raise_for_status()
             data = response.json()
 
-        if "results" in data:
-            results = data["results"]
-            output_lines: list[str] = []
-
-            index = 0
-            for result in results[:num_results]:
-                title = result.get("title")
-                url = result.get("url")
-                if not isinstance(title, str) or not title or not isinstance(url, str) or not url:
-                    continue
-                index += 1
-                snippet = result.get("snippet", "")
-
-                output_lines.append(f"{index}. {title}")
-                output_lines.append(f"   {url}")
-                if snippet:
-                    output_lines.append(f"   {snippet[:200]}...")
-                output_lines.append("")
-
-            return "\n".join(output_lines), None
-
+        if not isinstance(data, Mapping):
+            return None, "exa search returned an invalid response"
+        raw_results = data.get("results")
+        if not isinstance(raw_results, list):
+            return None, "exa search returned an invalid response"
+        results: list[WebSearchItem] = []
+        for result in raw_results[:num_results]:
+            if not isinstance(result, Mapping):
+                continue
+            title = result.get("title")
+            url = result.get("url")
+            highlights = result.get("highlights", [])
+            snippet = " ".join(item for item in highlights if isinstance(item, str)) if isinstance(highlights, list) else ""
+            if not isinstance(title, str) or not title or not isinstance(url, str) or not url:
+                continue
+            results.append(WebSearchItem(len(results) + 1, title, url, snippet))
+        return (results, None) if results else (None, "exa search returned no results")
     except Exception as exc:
         return None, f"exa search failed: {exc}"
-
-    return None, None
 
 
 def _search_fallback(
     query: str,
     num_results: int = DEFAULT_NUM_RESULTS,
     timeout: int = DEFAULT_TIMEOUT,
-) -> tuple[str, str, str | None]:
+) -> tuple[list[WebSearchItem], str, str | None, str | None]:
     url = "https://html.duckduckgo.com/html/"
 
     try:
@@ -115,30 +118,20 @@ def _search_fallback(
             response = client.get(
                 url,
                 params={"q": query, "kl": "wt-wt"},
-                headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; VoidCode/1.0)",
-                },
+                headers={"User-Agent": "Mozilla/5.0 (compatible; VoidCode/1.0)"},
             )
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
 
-        results = _extract_duckduckgo_results(soup, num_results)
-
+        results = [
+            WebSearchItem(rank, title, result_url, snippet)
+            for rank, (title, result_url, snippet) in enumerate(_extract_duckduckgo_results(soup, num_results), 1)
+        ]
         if results:
-            return _format_duckduckgo_results(results), "duckduckgo", None
-
-        return (
-            DUCKDUCKGO_EMPTY_MESSAGE,
-            "duckduckgo-empty",
-            "duckduckgo fallback returned no parseable results",
-        )
-
+            return results, "duckduckgo", None, None
+        return [], "duckduckgo-empty", "duckduckgo fallback returned no parseable results", None
     except Exception as exc:
-        return (
-            f"Web search failed: {exc}",
-            "duckduckgo-error",
-            f"duckduckgo fallback failed: {exc}",
-        )
+        return [], "duckduckgo-error", f"duckduckgo fallback failed: {exc}", f"Web search failed: {exc}"
 
 
 def _extract_duckduckgo_results(soup: BeautifulSoup, num_results: int) -> list[tuple[str, str, str]]:
@@ -288,14 +281,12 @@ def _duckduckgo_anchor_snippet(anchor: Tag) -> str:
     return ""
 
 
-def _format_duckduckgo_results(results: list[tuple[str, str, str]]) -> str:
+def _render_search_results(results: list[WebSearchItem]) -> str:
     output_lines: list[str] = []
-    for i, (title, result_url, snippet) in enumerate(results, 1):
-        output_lines.append(f"{i}. {title}")
-        output_lines.append(f"   {result_url}")
-        if snippet:
-            clean_snippet = re.sub(r"<[^>]+>", "", snippet)
-            output_lines.append(f"   {clean_snippet[:200]}...")
+    for result in results:
+        output_lines.extend((f"{result.rank}. {result.title}", f"   {result.url}"))
+        if result.snippet:
+            output_lines.append(f"   {result.snippet}")
         output_lines.append("")
     return "\n".join(output_lines)
 
@@ -370,22 +361,28 @@ class WebSearchTool:
         )
 
         exa_results, exa_failure = _search_exa(args.query, num_results, timeout)
-
         if exa_results:
-            output = exa_results
+            results = exa_results
             source = "exa"
             fallback_reason = None
+            error = None
         else:
-            output, source, fallback_reason = _search_fallback(args.query, num_results, timeout)
+            results, source, fallback_reason, error = _search_fallback(args.query, num_results, timeout)
             fallback_reason = exa_failure or fallback_reason
 
-        failed = source == "duckduckgo-error"
+        output = _render_search_results(results) if results else DUCKDUCKGO_EMPTY_MESSAGE
+        if error is not None:
+            output = error
+        provenance = f"Search source: {source}"
+        if fallback_reason:
+            provenance += f" | fallback: {fallback_reason}"
+        output = f"{provenance}\n\n{output}"
         bounds = OutputBounds(source=source, fallback_reason=fallback_reason)
-        body = WebSearchResultBody(args.query, num_results, timeout)
-        if failed:
+        body = WebSearchResultBody(args.query, num_results, timeout, source, fallback_reason, tuple(results))
+        if error is not None:
             return ToolFailure(
                 tool_name=self.definition.name,
-                error=output,
+                error=error,
                 output=TextOutput(output, bounds=bounds),
                 body=body,
                 timeout_seconds=timeout,

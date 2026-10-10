@@ -144,6 +144,7 @@ class _ResumeStorageMixin(_MixinBase):
                     "question": prompt.question,
                     "header": prompt.header,
                     "multiple": prompt.multiple,
+                    "allow_freeform": prompt.allow_freeform,
                     "options": [{"label": option.label, "description": option.description} for option in prompt.options],
                 }
                 for prompt in pending_question.prompts
@@ -560,8 +561,9 @@ class _ResumeStorageMixin(_MixinBase):
             if not isinstance(raw_prompt, dict):
                 raise RuntimeError(f"persisted pending question for session {session_id!r} has invalid prompts[{prompt_index}] (must be an object).")
             prompt_payload = cast(dict[str, object], raw_prompt)
-            if not {"question", "header", "multiple", "options"} <= prompt_payload.keys():
-                raise RuntimeError(f"persisted pending question for session {session_id!r} has incomplete prompts[{prompt_index}] payload.")
+            prompt_fields = {"question", "header", "multiple", "options"}
+            if prompt_payload.keys() not in (prompt_fields, prompt_fields | {"allow_freeform"}):
+                raise RuntimeError(f"persisted pending question has invalid prompts[{prompt_index}] fields.")
             raw_options = prompt_payload["options"]
             if not isinstance(raw_options, list):
                 raise RuntimeError(
@@ -604,12 +606,18 @@ class _ResumeStorageMixin(_MixinBase):
                 raise RuntimeError(
                     f"persisted pending question for session {session_id!r} has invalid prompts[{prompt_index}].multiple (must be a boolean)."
                 )
+            raw_allow_freeform = prompt_payload.get("allow_freeform", False)
+            if not isinstance(raw_allow_freeform, bool):
+                raise RuntimeError(
+                    f"persisted pending question for session {session_id!r} has invalid prompts[{prompt_index}].allow_freeform (must be a boolean)."
+                )
             prompts.append(
                 PendingQuestionPrompt(
                     question=prompt_question,
                     header=prompt_header,
                     options=tuple(options_list),
                     multiple=raw_multiple,
+                    allow_freeform=raw_allow_freeform,
                 )
             )
         tool_name_value = data["tool_name"]
@@ -707,6 +715,7 @@ class _ResumeStorageMixin(_MixinBase):
                     "header": prompt.header,
                     "question": prompt.question,
                     "multiple": prompt.multiple,
+                    "allow_freeform": prompt.allow_freeform,
                     "options": [
                         {
                             "label": option.label,

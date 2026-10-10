@@ -321,7 +321,7 @@ Runtime hook surface 与其事件名称的内部对应关系由
 
 ### resume 路径的事件持久化
 
-resume / answer 路径（`src/voidcode/runtime/resume.py`）上发出的会话事件与其他路径一视同仁地写入 `session_events`，顺序为 `runtime.question_requested` → `runtime.question_answered` → 该次回答的 `runtime.tool_completed` → 后续 graph loop 事件。`runtime.question_answered` 的 payload 携带 `request_id` 与其 `responses`（每项含 `header` 与 `answers`），因此重放 transcript 本身就能读出用户的选择；`sessions.resume_checkpoint_json` 的 `tool_results[].data.responses` 仍然是 resume 重建 provider context 所用的载体，但不再是唯一载体。该行还有第二个作用：它使同一个 `request_id` 的陈旧重答不可能发生——`validate_pending_question_matches_recorded_request` 发现日志里已有该请求的 resolution 时直接拒绝。
+resume / answer 路径（`src/voidcode/runtime/resume.py`）上发出的会话事件与其他路径一视同仁地写入 `session_events`，顺序为 `runtime.question_requested` → `runtime.question_answered` → 该次回答的 `runtime.tool_completed` → 后续 graph loop 事件。正常回答的 `runtime.question_answered` payload 为 `{"request_id":"…","responses":[{"header":"…","answers":["…"]}]}`；取消 payload 为 `{"request_id":"…","cancelled":true}`，两者互斥，取消不伪装成某个 response。工具报告分别使用 `question_answered` 与 `question_cancelled` typed control。重放 transcript 因而保留回答或取消真相；`sessions.resume_checkpoint_json` 的 `tool_results[].data.responses` 仍是正常回答重建 provider context 的载体，但不再是唯一载体。该 resolution 行使同一 request ID 的陈旧重答不可能发生；无匹配 pending owner/request ID 的 answer 在写入前拒绝。
 
 仍保持 **live-only**、不写入 `session_events` 的 resume 投影只有一个：`runtime.skills_binding_mismatch`（payload 由 `src/voidcode/runtime/skills.py` 的 `skill_binding_mismatch_payload` 计算）。它是 resume 状态迁移的投影，没有对应的持久化行；它仍是 `KnownEventType` 成员，客户端可以在实时流上看到它，但重放 transcript 里不会出现。当前 TUI/CLI/frontend 都没有渲染该事件。
 
@@ -332,13 +332,13 @@ resume / answer 路径（`src/voidcode/runtime/resume.py`）上发出的会话�
 ### `graph.tool_call_start` / `graph.tool_call_delta` / `graph.tool_call_end`
 - source: `graph`
 - 非写工具保持既有参数增量字段（包括 `arguments_delta`，以及 end 时的 `parsed_arguments`）。
-- `write`、`edit`、`multi_edit`、`apply_patch` 的 live payload 使用 `diff_preview` 作为
+- `write` 与 `edit` 的 live payload 使用 `diff_preview` 作为
   参数观察的 canonical 字段，并省略原始 `arguments_delta` / `parsed_arguments`，避免
   任意文件内容或秘密直接流向客户端。
 - `diff_preview` 是有界、只读 projection：`schema_version: 1`、`phase: "partial"`、
   `live_only: true`、`status: "ready" | "degraded"`、`bounded: true`、
-  `truncated: bool`，以及安全目标路径、统计、hash 和有界 unified diff（apply_patch
-  可使用 `paths` 与 patch 格式 diff）。失败或缺字段时保持事件生命周期并返回稳定
+  `truncated: bool`，以及安全目标路径、统计、hash 和有界 unified diff（edit patch
+  模式可使用 `paths` 与 patch 格式 diff）。失败或缺字段时保持事件生命周期并返回稳定
   `reason`，不得抛出破坏执行主循环的异常。
 - 该 preview 不写入 session truth、checkpoint 或 replay。完整的
   `graph.tool_request_created` 可附带 `phase: "final"` 的 `diff_preview`；最终
@@ -380,6 +380,7 @@ resume / answer 路径（`src/voidcode/runtime/resume.py`）上发出的会话�
 - source: `tool`
 - 当前 payload:
   - 工具定义的结果数据
+- 对 `shell_exec`，结果数据包含 `cwd`，即传给 subprocess 的 resolved workspace path；它是实际工作目录的观察元数据，不额外授予权限。
 
 ### `runtime.tool_timeout`
 - source: `runtime`

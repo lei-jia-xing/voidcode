@@ -3,14 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shlex
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal
 
-from ..security.shell_policy import non_interactive_shell_env
 from .config import RuntimeHooksConfig, RuntimeHookSurface, hook_tool_matches
 from .plan import ResolvedHookPlan
 from .surfaces import hook_surface_descriptor
@@ -75,7 +73,6 @@ class HookPolicyDecision:
     allowed: bool
     outcome: Literal["allowed", "denied", "skipped"]
     reason: str | None = None
-    injected_env_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,7 +212,7 @@ def _run_hook_commands(
     diagnostics: list[str] = []
     for command in commands:
         last_sequence += 1
-        policy_decision = _hook_policy_decision(command, policy)
+        policy_decision = _hook_policy_decision(policy)
         if not policy_decision.allowed:
             events.append(
                 HookExecutionEvent(
@@ -241,7 +238,6 @@ def _run_hook_commands(
                 command=command,
                 workspace=workspace,
                 environment={**adapter.environment, recursion_env_var: "1"},
-                injected_env=non_interactive_shell_env(_hook_command_text(command)),
                 timeout_seconds=timeout_seconds,
             )
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
@@ -370,28 +366,14 @@ def _hook_action_payload_from_stdout(stdout: str) -> _HookActionPayload:
     )
 
 
-def _hook_command_text(command: tuple[str, ...]) -> str:
-    return shlex.join(command)
-
-
-def _hook_policy_decision(
-    command: tuple[str, ...],
-    policy: HookExecutionPolicy,
-) -> HookPolicyDecision:
-    command_text = _hook_command_text(command)
-    env_keys = tuple(non_interactive_shell_env(command_text))
+def _hook_policy_decision(policy: HookExecutionPolicy) -> HookPolicyDecision:
     if policy.read_only:
         return HookPolicyDecision(
             allowed=False,
             outcome="skipped",
             reason="read-only runtime policy skips executable hook commands",
-            injected_env_keys=env_keys,
         )
-    return HookPolicyDecision(
-        allowed=True,
-        outcome="allowed",
-        injected_env_keys=env_keys,
-    )
+    return HookPolicyDecision(allowed=True, outcome="allowed")
 
 
 def _hook_policy_payload(
@@ -406,8 +388,6 @@ def _hook_policy_payload(
     }
     if decision.reason is not None:
         payload["reason"] = decision.reason
-    if decision.injected_env_keys:
-        payload["injected_env_keys"] = list(decision.injected_env_keys)
     return payload
 
 
@@ -416,7 +396,6 @@ def _run_hook_command(
     command: tuple[str, ...],
     workspace: Path,
     environment: Mapping[str, str],
-    injected_env: Mapping[str, str],
     timeout_seconds: float | None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -426,5 +405,5 @@ def _run_hook_command(
         text=True,
         check=True,
         timeout=timeout_seconds,
-        env={**os.environ, **environment, **injected_env},
+        env={**os.environ, **environment},
     )

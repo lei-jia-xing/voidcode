@@ -27,6 +27,8 @@ class _StartArgs(_StrictArgs):
     op: Literal["start"]
     command: NonEmptyCommand
     description: OptionalDescription = None
+    ready_pattern: str | None = Field(default=None, min_length=1, max_length=512)
+    ready_timeout: int = Field(default=10, ge=1, le=30)
 
 
 class _PsArgs(_StrictArgs):
@@ -39,6 +41,9 @@ class _ProcessIdArgs(_StrictArgs):
 
 class _LogsArgs(_ProcessIdArgs):
     op: Literal["logs"]
+    stream: Literal["stdout", "stderr", "both"] = "both"
+    offset: int = Field(default=0, ge=0, le=1_000_000)
+    limit: int = Field(default=500, ge=1, le=500)
 
 
 class _StopArgs(_ProcessIdArgs):

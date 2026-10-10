@@ -32,6 +32,7 @@ SESSIONS_DB_FILENAME = "sessions.sqlite3"
 PROVIDER_CATALOG_FILENAME = "provider-model-catalog.json"
 MCP_TOOL_CATALOG_FILENAME = "mcp-tool-catalog.json"
 
+ARTIFACTS_DIR_NAME = "artifacts"
 DB_PATH_ENV = "VOIDCODE_DB_PATH"
 
 
@@ -103,15 +104,28 @@ def mcp_tool_catalog_cache_path(env: Mapping[str, str] | None = None) -> Path:
     return cache_home(env) / MCP_TOOL_CATALOG_FILENAME
 
 
+def artifacts_root(env: Mapping[str, str] | None = None) -> Path:
+    """Resolve the canonical durable artifacts root directory."""
+    return state_home(env) / ARTIFACTS_DIR_NAME
+
+
+def session_artifacts_dir(session_id: str, env: Mapping[str, str] | None = None) -> Path:
+    """Resolve the durable artifact directory for a specific session."""
+    return artifacts_root(env) / session_id
+
+
 __all__ = [
+    "ARTIFACTS_DIR_NAME",
     "DB_PATH_ENV",
     "MCP_TOOL_CATALOG_FILENAME",
     "PROVIDER_CATALOG_FILENAME",
     "SESSIONS_DB_FILENAME",
     "VOIDCODE_DIR_NAME",
+    "artifacts_root",
     "cache_home",
     "mcp_tool_catalog_cache_path",
     "provider_catalog_cache_path",
+    "session_artifacts_dir",
     "sessions_db_path",
     "state_home",
 ]

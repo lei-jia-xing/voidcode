@@ -17,8 +17,6 @@ _MUTATING_TOOL_PATTERNS = frozenset(
     {
         "write",
         "edit",
-        "multi_edit",
-        "apply_patch",
         "shell_exec",
         "ast_grep_replace",
         "task",
@@ -61,7 +59,7 @@ def test_builtin_delegated_only_agent_manifests_are_not_top_level_selectable() -
 
 
 def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:
-    write_tools = {"write", "edit", "multi_edit", "apply_patch"}
+    write_tools = {"write", "edit"}
 
     for preset in ("advisor", "explore"):
         manifest = get_builtin_agent_manifest(preset)

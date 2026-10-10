@@ -15,7 +15,7 @@ from ...hook.config import RuntimeHookSurface
 from ...hook.executor import LifecycleHookExecutionRequest, run_lifecycle_hooks
 from ...hook.plan import hook_plan_from_session_metadata
 from ...provider.models import ResolvedProviderConfig
-from ...tools.contracts import ProgressYield, TerminalYield
+from ...tools.contracts import ProgressYield, TerminalYield, TerminalYieldFailure, ToolFailure
 from ..acp import append_parent_acp_delegated_lifecycle_event, publish_delegated_acp_event
 from ..active_session import ACTIVE_SESSION_REGISTRY
 from ..composition import CompositionRef, FrozenComposition, TaskCompositionOwner
@@ -1753,7 +1753,7 @@ class RuntimeBackgroundTaskSupervisor:
 
     def background_task_result(self, *, task: BackgroundTaskState) -> BackgroundTaskResult:
         child_result = self.load_background_task_child_result(task=task)
-        approval_blocked = child_result is not None and child_result.status == "waiting"
+        approval_blocked = child_result is not None and child_result.status == "waiting" and task.approval_request_id is not None
         summary_output = self._leader_safe_child_summary(
             child_result=child_result,
         )
@@ -1789,6 +1789,7 @@ class RuntimeBackgroundTaskSupervisor:
             observability=self.task_observability(task),
             hook_reminder=hook_reminder,
             structured_output=task.structured_output,
+            structured_output_artifact=(self._child_yield_artifact(child_result.transcript) if child_result is not None else None),
             schema_validation=task.schema_validation,
             progress=self._child_progress(child_result=child_result),
         )
@@ -1855,7 +1856,24 @@ class RuntimeBackgroundTaskSupervisor:
             if report is None or report.final_tool_name != "yield" or not isinstance(report.result.control, ProgressYield):
                 continue
             progress = report.result.control.as_payload()
-            encoded = json.dumps(progress, ensure_ascii=False, separators=(",", ":"))
+            reference = report.result.output.bounds.reference
+            if reference is not None and reference.artifact is not None and reference.uri.startswith("voidcode://artifact/"):
+                progress["data_reference"] = reference.uri
+                progress["artifact"] = dict(reference.artifact)
+            preview_limit = YIELD_PROGRESS_MAX_SECTION_CHARS // 4
+            raw_data = progress.get("data")
+            if isinstance(raw_data, dict):
+                encoded_data = json.dumps(raw_data, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+                if len(encoded_data) > preview_limit:
+                    progress["data"] = {"truncated": True, "preview": encoded_data[:preview_limit] + "…"}
+            raw_result = progress.get("result")
+            if isinstance(raw_result, str) and len(raw_result) > preview_limit:
+                progress["result"] = raw_result[:preview_limit] + "…"
+            types = progress.get("type")
+            if isinstance(types, list) and len(types) > 10:
+                progress["type"] = types[:10]
+                progress["types_truncated"] = True
+            encoded = json.dumps(progress, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
             if len(encoded) > YIELD_PROGRESS_MAX_SECTION_CHARS or retained_chars + len(encoded) > YIELD_PROGRESS_MAX_RETAINED_CHARS:
                 break
             retained.append(progress)
@@ -1888,9 +1906,39 @@ class RuntimeBackgroundTaskSupervisor:
         """Return the typed handoff identified by the shared child protocol."""
         return child_completion_evidence(events).handoff
 
+    @staticmethod
+    def _strict_yield_schema_failure_data(events: tuple[EventEnvelope, ...] | list[EventEnvelope]) -> dict[str, object] | None:
+        for event in reversed(events):
+            report = reported_call_from_event(event)
+            if report is None or report.final_tool_name != "yield":
+                continue
+            if (
+                isinstance(report.result, ToolFailure)
+                and report.result.error.startswith("delegated child schema validation failed:")
+                and isinstance(report.result.control, TerminalYieldFailure)
+            ):
+                return dict(report.result.control.data)
+            return None
+        return None
+
     @classmethod
     def _child_handoff(cls, child_result: RuntimeSessionResult) -> TerminalYield | None:
         return cls._handoff_from_events(child_result.transcript)
+
+    @staticmethod
+    def _child_yield_artifact(events: tuple[EventEnvelope, ...] | list[EventEnvelope]) -> dict[str, object] | None:
+        for event in reversed(events):
+            report = reported_call_from_event(event)
+            if report is None or report.final_tool_name != "yield":
+                continue
+            control = report.result.control
+            if not isinstance(control, (TerminalYield, TerminalYieldFailure)):
+                return None
+            reference = report.result.output.bounds.reference
+            if reference is None or reference.artifact is None or not reference.uri.startswith("voidcode://artifact/"):
+                return None
+            return dict(reference.artifact)
+        return None
 
     @staticmethod
     def _render_child_handoff(handoff: TerminalYield) -> str:
@@ -2602,12 +2650,9 @@ class RuntimeBackgroundTaskSupervisor:
             # Resumable child (``interrupted`` without a terminal yield
             # handoff): never seal the session row nor terminalize the task.
             return
-        # Schema validation (Phase 1 delegation flexibility): when the task row
-        # carries a parent-declared ``output_schema``, validate the child's
-        # final terminal yield ``data`` against it. The verdict is persisted as
-        # runtime truth BEFORE the terminal update. The child row is sealed by
-        # transcript evidence regardless, while strict failure flips the TASK
-        # terminal status to ``failed`` — two layers, no rollback.
+        # The run loop rejects an invalid strict-schema yield before it can be
+        # accepted as a terminal handoff. Re-validate that failure payload here
+        # so its verdict remains durable on the background-task row.
         terminal_status, task_error = self._terminal_task_decision(
             task=current_task,
             child_terminal_status=child_terminal_status,
@@ -2616,8 +2661,8 @@ class RuntimeBackgroundTaskSupervisor:
         structured_output: dict[str, object] | None = None
         if current_task.output_schema is not None:
             handoff = self._handoff_from_events(session_response.events)
-            if handoff is not None:
-                data = dict(handoff.data)
+            data = dict(handoff.data) if handoff is not None else self._strict_yield_schema_failure_data(session_response.events)
+            if data is not None:
                 schema_validation = validate_structured_output(
                     data=data,
                     schema=current_task.output_schema,

@@ -38,6 +38,60 @@ def test_grep_tool_searches_utf8_file_inside_workspace(tmp_path: Path) -> None:
     ]
 
 
+def test_grep_renders_requested_matches_context_columns_and_limit_state(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.txt"
+    sample.write_text("before\né hit hit\nmiddle\nlast hit\n" + "".join(f"hit {line}\n" for line in range(11)), encoding="utf-8")
+
+    result = GrepTool().invoke(
+        ToolCall(tool_name="grep", arguments={"pattern": "hit", "path": "sample.txt", "context": 1, "limit": 2}),
+        context=ToolContext(workspace=tmp_path),
+    )
+
+    assert isinstance(result.body, GrepResultBody)
+    assert isinstance(result.output, TextOutput)
+    assert result.body.truncated is True
+    assert [match.columns for match in result.body.matches] == [(3, 7), (6,)]
+    assert "sample.txt:2:3,7: é hit hit" in result.output.text
+    assert "sample.txt:4:6: last hit" in result.output.text
+    assert "sample.txt:3:-: middle" in result.output.text
+    assert result.output.text.count("sample.txt:3:-: middle") == 1
+
+
+def test_grep_adjacent_selected_matches_keep_their_columns(tmp_path: Path) -> None:
+    (tmp_path / "adjacent.txt").write_text("hit\nhit\n", encoding="utf-8")
+    result = GrepTool().invoke(
+        ToolCall(tool_name="grep", arguments={"pattern": "hit", "path": "adjacent.txt", "context": 1}),
+        context=ToolContext(workspace=tmp_path),
+    )
+
+    assert isinstance(result.output, TextOutput)
+    assert "adjacent.txt:1:1: hit" in result.output.text
+    assert "adjacent.txt:2:1: hit" in result.output.text
+
+
+def test_grep_exact_limit_and_more_than_limit(tmp_path: Path) -> None:
+    (tmp_path / "sample.txt").write_text("hit\nmiss\nhit\n", encoding="utf-8")
+    tool = GrepTool()
+    exact = tool.invoke(
+        ToolCall(tool_name="grep", arguments={"pattern": "hit", "path": "sample.txt", "limit": 2}), context=ToolContext(workspace=tmp_path)
+    )
+    more = tool.invoke(
+        ToolCall(tool_name="grep", arguments={"pattern": "hit", "path": "sample.txt", "limit": 1}), context=ToolContext(workspace=tmp_path)
+    )
+    assert isinstance(exact.body, GrepResultBody) and exact.body.truncated is False
+    assert isinstance(more.body, GrepResultBody) and more.body.truncated is True
+
+
+def test_grep_renders_more_than_ten_selected_results(tmp_path: Path) -> None:
+    (tmp_path / "many.txt").write_text("".join(f"hit {line}\n" for line in range(12)), encoding="utf-8")
+    result = GrepTool().invoke(
+        ToolCall(tool_name="grep", arguments={"pattern": "hit", "path": "many.txt", "limit": 20}),
+        context=ToolContext(workspace=tmp_path),
+    )
+    assert isinstance(result.output, TextOutput)
+    assert "many.txt:12:1: hit 11" in result.output.text
+
+
 def test_grep_tool_supports_regex_context_and_include_exclude(tmp_path: Path) -> None:
     src = tmp_path / "src"
     src.mkdir()

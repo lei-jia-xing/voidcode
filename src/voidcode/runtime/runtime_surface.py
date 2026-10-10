@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 if TYPE_CHECKING:
     from ..hook.typed import ToolInputHandlerRegistry
     from .composition import ActiveComposition, FrozenComposition, LifecycleScope, PhaseContext, PhaseOutcome
+from ..core.tool_context import ArtifactRead
 from ..core.transcript import ContextSegment, ToolResultView
 from ..core.turns import ReportedCall, TurnProducer, TurnRequest
 from ..mcp import McpToolDescriptor
@@ -106,6 +107,19 @@ class RuntimeSurface(Protocol):
         session: SessionState,
         tool_name: str,
     ) -> str | None: ...
+
+    def read_tool_output_artifact(
+        self,
+        *,
+        caller_session_id: str | None = None,
+        session_id: str,
+        artifact_id: str | None = None,
+        tool_call_id: str | None = None,
+        offset: int = 0,
+        limit: int = 2000,
+        byte_offset: int | None = None,
+        byte_limit: int | None = None,
+    ) -> ArtifactRead: ...
 
     # --- provider context assembly orchestration (service keeps composition) ---
     def prepare_provider_context_window(

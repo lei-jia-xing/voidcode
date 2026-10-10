@@ -25,6 +25,7 @@ from voidcode.runtime.permission import (
 )
 from voidcode.runtime.permission_context import RuntimePermissionContextResolver, operation_class_for_tool
 from voidcode.runtime.permission_engine import PermissionEngine
+from voidcode.tools.apply_workspace_edit import ApplyWorkspaceEditTool
 from voidcode.tools.ast_grep import AstGrepTool
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolEffect
 from voidcode.tools.shell_exec import ShellExecTool
@@ -277,6 +278,26 @@ def test_ast_grep_non_replace_is_read_operation(mode: str) -> None:
         arguments={"mode": mode},
     )
     assert operation == "read"
+
+
+def test_apply_workspace_edit_paths_are_classified_by_runtime_permissions(tmp_path: Path) -> None:
+    external = tmp_path.parent / "external-lsp-edit.txt"
+    definition = ApplyWorkspaceEditTool.definition
+    tool = ApplyWorkspaceEditTool()
+    call = ToolCall(tool_name="apply_workspace_edit", arguments={"edits": [{"path": str(external)}]})
+    resolver = RuntimePermissionContextResolver(workspace=tmp_path)
+
+    scope, canonical_path, operation, candidates = resolver.permission_context_for_tool_call(
+        tool=definition,
+        tool_instance=tool,
+        tool_call=call,
+        patch_path_extractor=lambda _patch: (),
+    )
+
+    assert scope == "external"
+    assert canonical_path == external.resolve().as_posix()
+    assert operation == "write"
+    assert candidates == (external.resolve().as_posix(),)
 
 
 def test_ast_grep_replace_is_write_operation_and_denied_in_plan_mode(tmp_path: Path) -> None:

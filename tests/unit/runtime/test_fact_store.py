@@ -217,12 +217,7 @@ def test_unsupported_generation_cannot_mutate_existing_log(tmp_path: Path, gener
             tasks=owner,
             workspace=tmp_path,
             session_id="facts",
-            options=SessionBundleOptions(
-                redact=False,
-                include_tool_output=True,
-                include_raw_provider_messages=True,
-                include_reasoning_text=True,
-            ),
+            options=SessionBundleOptions(),
         )
         payload = json.loads(serialize_session_bundle(bundle, fmt="json"))
         payload["manifest"]["schema_version"] = SESSION_BUNDLE_SCHEMA_VERSION - 1

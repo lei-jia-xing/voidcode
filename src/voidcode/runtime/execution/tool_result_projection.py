@@ -9,9 +9,11 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 
+from ...core.questions import QuestionCancellation
 from ...core.transcript import output_text
 from ...core.turns import ReportedCall
 from ...security.json_values import json_wire_object
+from ...security.redaction import TOOL_OUTPUT_BYTES as MAX_TOOL_OUTPUT_BYTES
 from ...tools.contracts import (
     ProgressYield,
     QuestionAnswered,
@@ -47,6 +49,199 @@ def _tool_completed_identity_payload(session: SessionState | None) -> dict[str, 
     return identity
 
 
+def _json_bytes(value: object) -> int:
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+
+def _bounded_utf8(text: str, limit: int) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    return encoded[:limit].decode("utf-8", errors="ignore") + "…"
+
+
+_PUBLIC_ARTIFACT_FIELDS = frozenset(
+    {
+        "artifact",
+        "artifacts",
+        "artifact_id",
+        "producer",
+        "session_id",
+        "tool_call_id",
+        "tool_name",
+        "kind",
+        "byte_count",
+        "line_count",
+        "sha256",
+        "content_type",
+        "mime",
+        "created_at",
+        "path",
+        "uri",
+        "status",
+        "source",
+        "error_artifact",
+        "output_artifact",
+        "body_artifact",
+        "reference",
+    }
+)
+
+
+def _public_artifact_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _public_artifact_value(item) for key, item in value.items() if str(key) in _PUBLIC_ARTIFACT_FIELDS}
+    if isinstance(value, list | tuple):
+        return [_public_artifact_value(item) for item in value[:8]]
+    if isinstance(value, str):
+        return _bounded_utf8(value, 256)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return None
+
+
+def _fit_public_tool_payload(
+    payload: dict[str, object],
+    *,
+    data: Mapping[str, object],
+    report: ReportedCall,
+    sanitized_arguments: Mapping[str, object],
+    display_tool_name: str | None,
+) -> dict[str, object]:
+    content = payload.get("content")
+    error = payload.get("error")
+    if _json_bytes({key: value for key, value in payload.items() if key != "reported_call"}) <= MAX_TOOL_OUTPUT_BYTES:
+        return payload
+
+    argument_bytes = _json_bytes(sanitized_arguments)
+    arguments: dict[str, object] = {"omitted": True, "byte_count": argument_bytes}
+    compact_data: dict[str, object] = {
+        "type": data.get("type", "data"),
+        "truncated": True,
+        "partial": True,
+        "data_truncated": True,
+        "byte_count": data.get("byte_count", _json_bytes(data)),
+    }
+    for key in (
+        "artifact",
+        "artifacts",
+        "artifact_id",
+        "reference",
+        "error_artifact",
+        "output_artifact",
+        "body_artifact",
+        "path",
+        "source",
+        "content_type",
+        "mime",
+        "line_count",
+        "offset",
+        "offset_unit",
+        "next_offset",
+        "byte_offset",
+        "byte_limit",
+        "next_byte_offset",
+        "artifact_byte_count",
+        "content_hash",
+        "command",
+        "exit_code",
+        "timeout",
+        "cwd",
+        "stdout_truncated",
+        "stderr_truncated",
+        "output_char_count",
+        "interrupted",
+        "timed_out",
+        "cancelled",
+        "reason",
+    ):
+        if key in data:
+            value = data[key]
+            if key == "command" and isinstance(value, str):
+                value = _bounded_utf8(value, 512)
+            elif key == "cwd" and isinstance(value, str):
+                value = _bounded_utf8(value, 256)
+            compact_data[key] = _public_artifact_value(value) if key in _PUBLIC_ARTIFACT_FIELDS else value
+    compact_data.update(tool_call_id=report.tool_call_id, arguments=arguments)
+
+    display = build_tool_display(
+        report.final_tool_name if display_tool_name is None else display_tool_name,
+        arguments,
+        result_data=compact_data,
+    )
+    compact: dict[str, object] = {
+        **_tool_completed_identity_payload(None),
+        **compact_data,
+        "tool_call_id": report.tool_call_id,
+        "arguments": arguments,
+        "status": payload["status"],
+        "content": _bounded_utf8(content, 4096) if isinstance(content, str) else content,
+        "error": _bounded_utf8(error, 4096) if isinstance(error, str) else error,
+        "tool": report.final_tool_name,
+        "display": display,
+        "tool_status": build_tool_status(
+            report.final_tool_name,
+            report.tool_call_id,
+            phase="completed" if report.result.status == "ok" else "failed",
+            status="completed" if report.result.status == "ok" else "failed",
+            display=display,
+        ),
+        "public_projection_truncated": True,
+    }
+    for key in (
+        "model",
+        "provider",
+        "diagnostics",
+        "cancellation_signalled",
+        "execution_stopped",
+        "side_effect_state",
+        "yield_kind",
+        "type",
+        "result",
+        "progress",
+        "handoff",
+        "questions",
+        "responses",
+    ):
+        value = payload.get(key)
+        if key not in compact and value is not None and _json_bytes(value) <= 2048:
+            compact[key] = value
+    if _json_bytes(compact) > MAX_TOOL_OUTPUT_BYTES:
+        for key in ("questions", "responses", "progress", "handoff", "diagnostics", "type", "result"):
+            compact.pop(key, None)
+            if _json_bytes(compact) <= MAX_TOOL_OUTPUT_BYTES:
+                break
+    if _json_bytes(compact) > MAX_TOOL_OUTPUT_BYTES:
+        compact["content"] = _bounded_utf8(content, 512) if isinstance(content, str) else None
+        compact["error"] = _bounded_utf8(error, 512) if isinstance(error, str) else None
+        display = build_tool_display(report.final_tool_name, arguments)
+        compact["display"] = display
+        compact["tool_status"] = build_tool_status(
+            report.final_tool_name,
+            report.tool_call_id,
+            phase="completed" if report.result.status == "ok" else "failed",
+            status="completed" if report.result.status == "ok" else "failed",
+            display=display,
+        )
+    if _json_bytes(compact) > MAX_TOOL_OUTPUT_BYTES:
+        minimal: dict[str, object] = {
+            **{key: compact[key] for key in ("model", "provider") if key in compact},
+            "tool_call_id": report.tool_call_id,
+            "tool": report.final_tool_name,
+            "status": payload["status"],
+            "arguments": arguments,
+            "content": _bounded_utf8(content, 128) if isinstance(content, str) else None,
+            "error": _bounded_utf8(error, 128) if isinstance(error, str) else None,
+            "public_projection_truncated": True,
+        }
+        for key in ("artifact", "artifacts", "artifact_id", "reference", "error_artifact", "output_artifact", "body_artifact", "source_artifact"):
+            if key in compact:
+                minimal[key] = _public_artifact_value(compact[key])
+        compact = minimal
+    compact["reported_call"] = payload["reported_call"]
+    return compact
+
+
 def _tool_completed_payload(
     *,
     session: SessionState | None,
@@ -72,6 +267,38 @@ def _tool_completed_payload(
     if bounds.fallback_reason is not None:
         data["fallback_reason"] = bounds.fallback_reason
     data.update({"tool_call_id": tool_call_id, "arguments": sanitized_arguments})
+    serialized_size = len(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+    if serialized_size > MAX_TOOL_OUTPUT_BYTES:
+        bounded_data: dict[str, object] = {
+            "type": data.get("type", "data"),
+            "truncated": True,
+            "partial": True,
+            "data_truncated": True,
+            "byte_count": data.get("byte_count", serialized_size),
+        }
+        for k in (
+            "artifact",
+            "artifacts",
+            "artifact_id",
+            "reference",
+            "error_artifact",
+            "output_artifact",
+            "body_artifact",
+            "path",
+            "source",
+            "content_type",
+            "mime",
+            "line_count",
+            "offset",
+            "exit_code",
+            "limit",
+            "next_offset",
+            "tool_call_id",
+            "arguments",
+        ):
+            if k in data:
+                bounded_data[k] = data[k]
+        data = bounded_data
     payload: dict[str, object] = {
         **_tool_completed_identity_payload(session),
         **data,
@@ -106,11 +333,14 @@ def _tool_completed_payload(
                 "header": prompt.header,
                 "options": [{"label": option.label, "description": option.description} for option in prompt.options],
                 "multiple": prompt.multiple,
+                "allow_freeform": prompt.allow_freeform,
             }
             for prompt in control.prompts
         ]
     elif isinstance(control, QuestionAnswered):
         payload["responses"] = [{"header": response.header, "answers": list(response.answers)} for response in control.responses]
+    elif isinstance(control, QuestionCancellation):
+        payload["cancelled"] = True
     completed_display = build_tool_display(
         tool_result.tool_name if display_tool_name is None else display_tool_name,
         sanitized_arguments,
@@ -124,7 +354,13 @@ def _tool_completed_payload(
         status="completed" if tool_result.status == "ok" else "failed",
         display=completed_display,
     )
-    return payload
+    return _fit_public_tool_payload(
+        payload,
+        data=data,
+        report=report,
+        sanitized_arguments=sanitized_arguments,
+        display_tool_name=display_tool_name,
+    )
 
 
 def _serialized_tool_results(tool_results: Sequence[ReportedCall]) -> tuple[dict[str, object], ...]:

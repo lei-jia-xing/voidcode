@@ -87,6 +87,7 @@ def validate_pending_question_matches_recorded_request(
             "header": prompt.header,
             "question": prompt.question,
             "multiple": prompt.multiple,
+            "allow_freeform": prompt.allow_freeform,
             "options": [
                 {
                     "label": option.label,
@@ -97,6 +98,19 @@ def validate_pending_question_matches_recorded_request(
         }
         for prompt in pending.prompts
     ]
+
+    def matches_questions(value: object) -> bool:
+        if not isinstance(value, list):
+            return False
+        normalized: list[dict[str, object]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                return False
+            prompt = dict(item)
+            prompt.setdefault("allow_freeform", False)
+            normalized.append(prompt)
+        return normalized == expected_questions
+
     if request_event is None:
         if checkpoint is None:
             raise ValueError("persisted pending question has no matching question request event")
@@ -104,13 +118,13 @@ def validate_pending_question_matches_recorded_request(
             raise ValueError("persisted question resume checkpoint request id does not match pending question")
         if checkpoint.get("pending_question_tool_name") != pending.tool_name:
             raise ValueError("persisted pending question tool does not match the recorded question request")
-        if checkpoint.get("pending_question_prompts") != expected_questions:
+        if not matches_questions(checkpoint.get("pending_question_prompts")):
             raise ValueError("persisted pending question no longer matches the recorded question request payload")
         return
     payload = request_event.payload
     if payload.get("tool") != pending.tool_name:
         raise ValueError("persisted pending question tool does not match the recorded question request")
-    if payload.get("questions") != expected_questions:
+    if not matches_questions(payload.get("questions")):
         raise ValueError("persisted pending question no longer matches the recorded question request payload")
 
 

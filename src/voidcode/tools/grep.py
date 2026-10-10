@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from collections.abc import Mapping
+from collections import deque
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import ClassVar
 
@@ -11,7 +13,6 @@ from pydantic import BaseModel, field_validator
 
 from ..core.tool_context import ToolContext
 from ..security.json_values import json_wire_object, own_json_object
-from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._gitignore import GitIgnoreMatcher
 from ._pydantic_args import parse_tool_args, validate_non_empty
 from ._repair import raise_tool_diagnostic
@@ -173,52 +174,81 @@ class GrepTool:
         return False
 
     @staticmethod
-    def _collect_targets(
+    def _iter_targets(
         root: Path,
         *,
         project_root: Path,
         include: list[str] | None,
         exclude: list[str] | None,
         gitignore: GitIgnoreMatcher | None = None,
-    ) -> list[Path]:
-        targets: list[Path] = []
+    ) -> Iterator[Path]:
         include_patterns = include or []
         exclude_patterns = exclude or []
         if root.is_file():
-            return [root]
+            yield root
+            return
 
-        for candidate in root.rglob("*"):
-            if not candidate.is_file():
-                continue
-            rel = candidate.relative_to(project_root).as_posix()
-            if any(part in DEFAULT_IGNORE_PATTERNS for part in candidate.relative_to(project_root).parts):
-                continue
-            if gitignore is not None and gitignore.is_ignored(rel, is_directory=False):
-                continue
-            if include_patterns and not any(GrepTool._matches_glob(rel, pat) for pat in include_patterns):
-                continue
-            if any(GrepTool._matches_glob(rel, pat) for pat in exclude_patterns):
-                continue
-            targets.append(candidate)
-        targets.sort(key=lambda path: path.relative_to(project_root).as_posix())
-        return targets
+        for directory, dirnames, filenames in root.walk(top_down=True):
+            directory_relative = directory.relative_to(project_root)
+            dirnames[:] = sorted(
+                name
+                for name in dirnames
+                if name not in DEFAULT_IGNORE_PATTERNS
+                and (gitignore is None or not gitignore.is_ignored((directory_relative / name).as_posix(), is_directory=True))
+            )
+            for name in sorted(filenames):
+                candidate = directory / name
+                if not candidate.is_file():
+                    continue
+                rel = candidate.relative_to(project_root).as_posix()
+                if gitignore is not None and gitignore.is_ignored(rel, is_directory=False):
+                    continue
+                if include_patterns and not any(GrepTool._matches_glob(rel, pat) for pat in include_patterns):
+                    continue
+                if any(GrepTool._matches_glob(rel, pat) for pat in exclude_patterns):
+                    continue
+                yield candidate
 
     @staticmethod
-    def _read_lines(path: Path) -> list[str] | None:
+    def _iter_matches(
+        path: Path,
+        *,
+        relative_path: str,
+        pattern: re.Pattern[str],
+        context: int,
+    ) -> Iterator[GrepResultMatch]:
+        before: deque[tuple[int, str]] = deque(maxlen=context)
+        line_number = 0
+
+        def lines() -> Iterator[tuple[int, str]]:
+            nonlocal line_number
+            with path.open("r", encoding="utf-8", newline="") as stream:
+                for raw_line in stream:
+                    line_number += 1
+                    yield line_number, raw_line.rstrip("\r\n")
+
         try:
-            with path.open("r", encoding="utf-8", newline="") as fh:
-                return [line.rstrip("\r\n") for line in fh]
+            remaining = iter(lines())
+            following = deque(islice(remaining, context + 1))
+            while following:
+                current = following.popleft()
+                columns = tuple(match.start() + 1 for match in pattern.finditer(current[1]))
+                if columns:
+                    yield GrepResultMatch(
+                        relative_path,
+                        current[0],
+                        current[1],
+                        columns,
+                        tuple({"line": number, "text": text} for number, text in before),
+                        tuple({"line": number, "text": text} for number, text in following),
+                    )
+                before.append(current)
+                try:
+                    following.append(next(remaining))
+                except StopIteration:
+                    pass
         except UnicodeDecodeError, OSError:
-            return None
-
-    @staticmethod
-    def _context_lines(lines: list[str], start: int, end: int, *, context: int) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-        context = max(0, context)
-        before: list[dict[str, object]] = [{"line": line_no + 1, "text": lines[line_no]} for line_no in range(max(0, start - context), start)]
-        after: list[dict[str, object]] = [
-            {"line": line_no + 1, "text": lines[line_no]} for line_no in range(end + 1, min(len(lines), end + 1 + context))
-        ]
-        return before, after
+            return
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         workspace = context.require_workspace()
@@ -238,20 +268,17 @@ class GrepTool:
             tool_name=self.definition.name,
         )
 
-        resolution = resolve_workspace_path_policy(
-            workspace=workspace,
-            raw_path=args.path,
-            containment_error="grep path must resolve to a valid path",
-            allow_outside_workspace=True,
-        )
-        candidate = resolution.candidate
-        relative_path = resolution.relative_path
+        workspace_root = workspace.resolve()
+        requested_path = Path(args.path)
+        candidate = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
+        is_external = not candidate.is_relative_to(workspace_root)
+        relative_path = candidate.as_posix() if is_external else candidate.relative_to(workspace_root).as_posix()
 
         if not candidate.exists():
             raise ValueError(f"grep target does not exist: {args.path}")
 
         workspace_root = workspace.resolve()
-        effective_root = candidate if resolution.is_external and candidate.is_dir() else workspace_root
+        effective_root = candidate if is_external and candidate.is_dir() else workspace_root
 
         try:
             pattern = re.compile(
@@ -271,7 +298,7 @@ class GrepTool:
                 details={"pattern": args.pattern, "regex_error": exc.msg},
             )
         gitignore = GitIgnoreMatcher.load(effective_root) if args.respect_gitignore else None
-        targets = self._collect_targets(
+        targets = self._iter_targets(
             candidate,
             project_root=effective_root,
             include=args.include,
@@ -280,51 +307,37 @@ class GrepTool:
         )
 
         matches: list[GrepResultMatch] = []
+        truncated = False
         for target in targets:
-            lines = self._read_lines(target)
-            if lines is None:
-                continue
-            for line_index, line_text in enumerate(lines):
-                columns = [match.start() + 1 for match in pattern.finditer(line_text)]
-                if not columns:
-                    continue
-                before, after = self._context_lines(
-                    lines,
-                    line_index,
-                    line_index,
-                    context=args.context,
-                )
-                matches.append(
-                    GrepResultMatch(
-                        file=(str(target.resolve()) if resolution.is_external else target.relative_to(workspace_root).as_posix()),
-                        line=line_index + 1,
-                        text=line_text,
-                        columns=tuple(columns),
-                        before=tuple(before),
-                        after=tuple(after),
-                    )
-                )
-                if len(matches) >= args.limit:
+            file_display = str(target.resolve()) if is_external else target.relative_to(workspace_root).as_posix()
+            for match in self._iter_matches(target, relative_path=file_display, pattern=pattern, context=args.context):
+                if len(matches) == args.limit:
+                    truncated = True
                     break
-            if len(matches) >= args.limit:
+                matches.append(match)
+            if truncated:
                 break
 
         total_occurrences = sum(len(match.columns) for match in matches)
-        preview_lines: list[str] = []
-        for match in matches[:10]:
-            preview_lines.append(f"{match.file}:{match.line}: {match.text}")
-
-        path_display = str(candidate.resolve()) if resolution.is_external else relative_path
+        path_display = str(candidate.resolve()) if is_external else relative_path
+        preview_lines: dict[tuple[str, int], tuple[str, tuple[int, ...]]] = {}
+        for match in matches:
+            for line in (*match.before, {"line": match.line, "text": match.text}, *match.after):
+                line_number = line["line"]
+                line_text = line["text"]
+                if not isinstance(line_number, int) or not isinstance(line_text, str):
+                    continue
+                columns = match.columns if line_number == match.line else ()
+                key = (match.file, line_number)
+                if key not in preview_lines or columns:
+                    preview_lines[key] = (line_text, columns)
+        rendered_lines = [f"{file}:{line}:{','.join(map(str, columns)) or '-'}: {text}" for (file, line), (text, columns) in preview_lines.items()]
         summary = f"Found {total_occurrences} match(es) for {args.pattern!r} in {path_display}"
-        if preview_lines:
-            summary = summary + "\n" + "\n".join(preview_lines)
-        truncated = len(matches) >= args.limit
+        if rendered_lines:
+            summary += "\n" + "\n".join(rendered_lines)
         if truncated:
-            summary += (
-                "\n[TRUNCATED] Results truncated at "
-                f"{args.limit} matching lines. Refine the path, include/exclude filters, "
-                "or pattern before relying on this as complete."
-            )
+            summary += f"\n[TRUNCATED] Results truncated at {args.limit} matching lines."
+
         diagnostics: list[dict[str, object]] = []
         if total_occurrences == 0:
             diagnostics.append(

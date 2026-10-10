@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +63,40 @@ from .rows import (
     fetch_rows,
 )
 from .shared import _assert_terminal_session_events_allowed
+
+
+def _sqlite_file_signature(path: Path) -> tuple[int, int, int, int, int] | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _copy_stable_sqlite_snapshot(source: Path, destination: Path) -> None:
+    """Copy SQLite durable files without opening the live database or its WAL index."""
+    # The WAL is durable committed state; -shm is only a rebuildable index and is never copied.
+    sources = (
+        source,
+        source.with_name(source.name + "-wal"),
+        source.with_name(source.name + "-journal"),
+    )
+    targets = (
+        destination,
+        destination.with_name(destination.name + "-wal"),
+        destination.with_name(destination.name + "-journal"),
+    )
+    before = tuple(_sqlite_file_signature(path) for path in sources)
+    if before[0] is None:
+        raise FileNotFoundError(source)
+    for src, dst, signature in zip(sources, targets, before, strict=True):
+        if signature is not None:
+            shutil.copyfile(src, dst)
+            dst.chmod(0o600)
+    after = tuple(_sqlite_file_signature(path) for path in sources)
+    if before != after:
+        raise RuntimeError("session database changed while taking a read-only snapshot")
+
 
 if TYPE_CHECKING:
     from .shared import _StorageMixinBase
@@ -1035,29 +1071,46 @@ class _SessionStorageMixin(_MixinBase):
         session_ids: tuple[str, ...],
         task_ids: tuple[str, ...],
     ) -> dict[str, object]:
-        """Read actual current rows, including append-only edges and dedupe truth."""
+        """Read a stable SQLite snapshot without opening or mutating its source files."""
         result: dict[str, object] = {}
-        with self._connect(workspace) as connection:
-            for key, table, id_column, ids in (
-                ("sessions", "sessions", "session_id", session_ids),
-                ("events", "session_events", "session_id", session_ids),
-                ("tasks", "background_tasks", "task_id", task_ids),
-                ("deliveries", "session_event_deliveries", "session_id", session_ids),
-            ):
-                rows: list[dict[str, object]] = []
-                if ids:
-                    placeholders = ",".join("?" for _ in ids)
-                    stored = connection.execute(
-                        f"SELECT * FROM {table} WHERE workspace_id = ? AND {id_column} IN ({placeholders}) ORDER BY {id_column}",
-                        (str(workspace), *ids),
-                    ).fetchall()
-                    for raw_row in stored:
-                        row = dict(raw_row)
-                        for column, value in row.items():
-                            if column.endswith("_json") and value is not None:
-                                row[column] = json.loads(value)
-                        rows.append(row)
-                result[key] = tuple(rows)
+        database_path = self._resolve_database_path()
+        if not database_path.exists():
+            return {"sessions": (), "events": (), "tasks": (), "deliveries": ()}
+        if not database_path.is_file():
+            raise RuntimeError(f"session database is not a regular file: {database_path}")
+        # ponytail: copy the full DB once per snapshot; optimize only if previews become measurably slow.
+        with tempfile.TemporaryDirectory(prefix="voidcode-sqlite-snapshot-") as directory:
+            snapshot_dir = Path(directory)
+            snapshot_dir.chmod(0o700)
+            snapshot_path = snapshot_dir / database_path.name
+            _copy_stable_sqlite_snapshot(database_path.resolve(), snapshot_path)
+            connection = sqlite3.connect(snapshot_path)
+            try:
+                connection.row_factory = sqlite3.Row
+                self._assert_supported_version(connection=connection, database_path=database_path)
+                _ = connection.execute("PRAGMA query_only = ON")
+                for key, table, id_column, ids in (
+                    ("sessions", "sessions", "session_id", session_ids),
+                    ("events", "session_events", "session_id", session_ids),
+                    ("tasks", "background_tasks", "task_id", task_ids),
+                    ("deliveries", "session_event_deliveries", "session_id", session_ids),
+                ):
+                    rows: list[dict[str, object]] = []
+                    if ids:
+                        placeholders = ",".join("?" for _ in ids)
+                        stored = connection.execute(
+                            f"SELECT * FROM {table} WHERE workspace_id = ? AND {id_column} IN ({placeholders}) ORDER BY {id_column}",
+                            (str(workspace), *ids),
+                        ).fetchall()
+                        for raw_row in stored:
+                            row = dict(raw_row)
+                            for column, value in row.items():
+                                if column.endswith("_json") and value is not None:
+                                    row[column] = json.loads(value)
+                            rows.append(row)
+                    result[key] = tuple(rows)
+            finally:
+                connection.close()
         return result
 
     def import_session_bundle_rows(

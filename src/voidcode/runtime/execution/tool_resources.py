@@ -40,6 +40,8 @@ class SessionArtifactReader:
         artifact_id: str,
         offset: int | None = None,
         limit: int | None = None,
+        byte_offset: int | None = None,
+        byte_limit: int | None = None,
     ) -> ArtifactRead:
         if caller_session_id != self.caller_session_id:
             raise RuntimeError("artifact reader is bound to its invoking session")
@@ -48,6 +50,8 @@ class SessionArtifactReader:
             artifact_id=artifact_id,
             offset=0 if offset is None else offset,
             limit=2000 if limit is None else limit,
+            byte_offset=byte_offset,
+            byte_limit=byte_limit,
         )
 
 

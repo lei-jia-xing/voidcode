@@ -28,7 +28,7 @@ from starlette.middleware import Middleware
 from starlette.responses import Response
 from starlette.types import Receive, Scope, Send
 
-from ...core.questions import QuestionResponse
+from ...core.questions import QuestionAnswer, QuestionCancellation, QuestionResponse
 from ..active_session import ActiveRunInterruptResult
 from ..background.models import (
     BackgroundTaskRequestSnapshot,
@@ -381,7 +381,7 @@ class RuntimeTransport(Protocol):
         session_id: str,
         *,
         question_request_id: str,
-        responses: tuple[QuestionResponse, ...],
+        responses: QuestionAnswer,
     ) -> RuntimeResponse: ...
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None: ...
@@ -1526,7 +1526,7 @@ class RuntimeTransportApp(FastAPI):
         session_id: str,
         *,
         question_request_id: str,
-        responses: tuple[QuestionResponse, ...],
+        responses: QuestionAnswer,
     ) -> RuntimeResponse:
         with self._runtime_lease() as runtime:
             return runtime.answer_question(
@@ -1644,12 +1644,10 @@ class RuntimeTransportApp(FastAPI):
         show_thinking: ShowThinkingQuery = False,
     ) -> Response:
         session_id = self._validated_session_id(session_id)
-        responses = tuple(
-            QuestionResponse(
-                header=item.header,
-                answers=item.answers,
-            )
-            for item in (payload.responses if payload.responses is not None else ())
+        responses: QuestionAnswer = (
+            QuestionCancellation()
+            if payload.cancel
+            else tuple(QuestionResponse(header=item.header, answers=item.answers) for item in (payload.responses or ()))
         )
         try:
             response = await asyncio.to_thread(

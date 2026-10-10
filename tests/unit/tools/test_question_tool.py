@@ -77,3 +77,64 @@ def test_validate_responses_returns_answers_in_prompt_order() -> None:
         QuestionResponse(header="Runtime path", answers=("Reuse existing",)),
         QuestionResponse(header="Review mode", answers=("Fast",)),
     )
+
+
+def test_freeform_question_without_options_accepts_user_answers() -> None:
+    prompts = QuestionTool.parse_prompts(
+        {
+            "questions": [
+                {
+                    "question": "What should we call this?",
+                    "header": "Name",
+                    "options": [],
+                    "allow_freeform": True,
+                }
+            ]
+        }
+    )
+
+    assert prompts[0].allow_freeform is True
+    assert QuestionTool.validate_responses(
+        prompts,
+        (QuestionResponse(header="Name", answers=("a user-provided value",)),),
+    ) == (QuestionResponse(header="Name", answers=("a user-provided value",)),)
+
+
+def test_prompt_options_and_headers_are_validated_before_preparing() -> None:
+    with pytest.raises(ValueError, match="option labels must be unique"):
+        QuestionTool.parse_prompts(
+            {
+                "questions": [
+                    {
+                        "question": "Choose one",
+                        "header": "Choice",
+                        "options": [{"label": "A"}, {"label": " A "}],
+                    }
+                ]
+            }
+        )
+
+    with pytest.raises(ValueError, match="question headers must be unique"):
+        QuestionTool.parse_prompts(
+            {
+                "questions": [
+                    {"question": "First", "header": "Choice", "options": [{"label": "A"}]},
+                    {"question": "Second", "header": " Choice ", "options": [{"label": "B"}]},
+                ]
+            }
+        )
+
+
+def test_single_choice_cardinality_and_declared_options_are_enforced() -> None:
+    prompts = QuestionTool.parse_prompts({"questions": [{"question": "Choose one", "header": "Choice", "options": [{"label": "A"}, {"label": "B"}]}]})
+
+    with pytest.raises(ValueError, match="accepts exactly one answer"):
+        QuestionTool.validate_responses(
+            prompts,
+            (QuestionResponse(header="Choice", answers=("A", "B")),),
+        )
+    with pytest.raises(ValueError, match="match one of the declared option labels"):
+        QuestionTool.validate_responses(
+            prompts,
+            (QuestionResponse(header="Choice", answers=("C",)),),
+        )

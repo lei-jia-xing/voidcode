@@ -561,6 +561,22 @@ class _QuestionResponsePayload(_HttpBoundaryModel):
 class _QuestionAnswerRequestPayload(_HttpBoundaryModel):
     request_id: str = Field(default=None, validate_default=True)
     responses: tuple[_QuestionResponsePayload, ...] | None = None
+    cancel: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_answer_shape(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            raise ValueError("request body must be a JSON object")
+        cancel = value.get("cancel", False)
+        if type(cancel) is not bool:
+            raise ValueError("request body 'cancel' must be a boolean")
+        if cancel:
+            if "responses" in value:
+                raise ValueError("cancellation must not include responses")
+        elif not isinstance(value.get("responses"), list) or not value["responses"]:
+            raise ValueError("request body must include a non-empty responses array or set cancel to true")
+        return value
 
     @field_validator("request_id", mode="before")
     @classmethod
@@ -571,9 +587,18 @@ class _QuestionAnswerRequestPayload(_HttpBoundaryModel):
 
     @field_validator("responses", mode="before")
     @classmethod
-    def _validate_responses(cls, value: object) -> list[object]:
+    def _validate_responses(cls, value: object) -> list[object] | None:
+        if value is None:
+            return None
         if not isinstance(value, list) or not value:
             raise ValueError("must be a non-empty array")
+        return value
+
+    @field_validator("cancel", mode="before")
+    @classmethod
+    def _validate_cancel(cls, value: object) -> bool:
+        if type(value) is not bool:
+            raise ValueError("must be a boolean")
         return value
 
 

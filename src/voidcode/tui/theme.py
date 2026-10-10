@@ -374,7 +374,6 @@ SPINNER_FRAMES: Final[Mapping[str, Mapping[str, tuple[str, ...]]]] = MappingProx
 #: site, this is the single table our transcript blocks share).
 TOOL_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
     {
-        "apply_patch": "tool.edit",
         "apply_workspace_edit": "tool.edit",
         "ast_grep": "icon.search",
         "background_process": "tool.job",
@@ -383,7 +382,6 @@ TOOL_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
         "grep": "icon.search",
         "invoke_tool": "tool.eval",
         "lsp": "icon.search",
-        "multi_edit": "tool.edit",
         "question": "tool.ask",
         "read": "icon.file",
         "shell_exec": "tool.bash",

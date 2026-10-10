@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.core.tool_context import ToolContext
+from voidcode.core.tool_context import LspDocumentState, ToolContext
 from voidcode.tools._repair import ToolDiagnosticError
 from voidcode.tools.apply_workspace_edit import ApplyWorkspaceEditTool
 from voidcode.tools.contracts import ToolCall
@@ -151,3 +151,135 @@ def test_rejects_edit_on_line_outside_read_window(tmp_path: Path) -> None:
     assert diagnostic.error_details["reason"] == "unseen_range"
     assert diagnostic.error_details["unseen_line_ranges"] == [{"start": 3, "end": 3}]
     assert path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
+
+
+def test_apply_workspace_edit_handles_non_bmp_utf16_positions(tmp_path: Path) -> None:
+    path = tmp_path / "emoji.txt"
+    # 'hello ' (6 UTF-16 units) + '🚀' (2 UTF-16 units, 7-8) + ' world\n' (9-15)
+    path.write_text("hello 🚀 world\n", encoding="utf-8")
+    edit = {
+        "path": "emoji.txt",
+        "startLine": 1,
+        "startCharacter": 10,
+        "endLine": 1,
+        "endCharacter": 15,
+        "newText": "earth",
+        "expectedHash": _content_hash(path),
+    }
+    result = ApplyWorkspaceEditTool().invoke(
+        ToolCall(tool_name="apply_workspace_edit", arguments={"edits": [edit], "positionEncoding": "utf-16"}),
+        context=ToolContext(workspace=tmp_path),
+    )
+    assert result.status == "ok"
+    assert path.read_text(encoding="utf-8") == "hello 🚀 earth\n"
+
+
+def test_apply_workspace_edit_rejects_mid_surrogate_position(tmp_path: Path) -> None:
+    path = tmp_path / "emoji.txt"
+    path.write_text("hello 🚀 world\n", encoding="utf-8")
+    # Character 8 is the second (low) surrogate of 🚀 in UTF-16
+    edit = {
+        "path": "emoji.txt",
+        "startLine": 1,
+        "startCharacter": 8,
+        "endLine": 1,
+        "endCharacter": 9,
+        "newText": "x",
+        "expectedHash": _content_hash(path),
+    }
+    with pytest.raises(ValueError, match="mid-surrogate"):
+        ApplyWorkspaceEditTool().invoke(
+            ToolCall(tool_name="apply_workspace_edit", arguments={"edits": [edit], "positionEncoding": "utf-16"}),
+            context=ToolContext(workspace=tmp_path),
+        )
+
+
+def test_apply_workspace_edit_rejects_requested_version_fail_closed(tmp_path: Path) -> None:
+    path = tmp_path / "versioned.txt"
+    path.write_text("sample content\n", encoding="utf-8")
+    edit = {
+        "path": "versioned.txt",
+        "startLine": 1,
+        "startCharacter": 1,
+        "endLine": 1,
+        "endCharacter": 7,
+        "newText": "new",
+        "expectedHash": _content_hash(path),
+        "expectedVersion": 42,
+    }
+    with pytest.raises(ValueError, match="fail-closed"):
+        ApplyWorkspaceEditTool().invoke(
+            _call([edit]),
+            context=ToolContext(workspace=tmp_path),
+        )
+
+
+@pytest.mark.parametrize(
+    ("encoding", "start_character", "end_character"),
+    [("utf-8", 6, 7), ("utf-16", 4, 5), ("utf-32", 3, 4)],
+)
+def test_apply_workspace_edit_uses_open_document_encoding_and_preserves_crlf(
+    tmp_path: Path,
+    encoding: str,
+    start_character: int,
+    end_character: int,
+) -> None:
+    path = tmp_path / "emoji.txt"
+    original = "A🚀B\r\n".encode()
+    path.write_bytes(original)
+    state = LspDocumentState(version=7, content_hash=hashlib.sha256(original).hexdigest(), position_encoding=encoding)
+    edit = {
+        "path": "emoji.txt",
+        "startLine": 1,
+        "startCharacter": start_character,
+        "endLine": 1,
+        "endCharacter": end_character,
+        "newText": "X",
+        "expectedHash": state.content_hash,
+        "expectedVersion": 7,
+    }
+
+    result = ApplyWorkspaceEditTool().invoke(
+        _call([edit]),
+        context=ToolContext(
+            workspace=tmp_path,
+            lsp_document_state=lambda *, file_path, workspace: state,
+        ),
+    )
+
+    expected = "A🚀X\r\n".encode()
+    assert path.read_bytes() == expected
+    assert result.body is not None
+    file_result = result.body.as_payload()["files"][0]
+    assert isinstance(file_result, dict)
+    assert file_result["byte_count"] == len(expected)
+    assert file_result["content_hash"] == hashlib.sha256(expected).hexdigest()
+    assert "-A🚀B\r\n" in file_result["diff"]
+    assert "+A🚀X\r\n" in file_result["diff"]
+
+
+def test_apply_workspace_edit_rejects_stale_open_document_version(tmp_path: Path) -> None:
+    path = tmp_path / "versioned.txt"
+    original = b"sample content\n"
+    path.write_bytes(original)
+    edit = {
+        "path": "versioned.txt",
+        "startLine": 1,
+        "startCharacter": 1,
+        "endLine": 1,
+        "endCharacter": 7,
+        "newText": "new",
+        "expectedHash": hashlib.sha256(original).hexdigest(),
+        "expectedVersion": 6,
+    }
+    state = LspDocumentState(version=7, content_hash=hashlib.sha256(original).hexdigest(), position_encoding="utf-16")
+
+    with pytest.raises(ToolDiagnosticError, match="not requested version 6"):
+        ApplyWorkspaceEditTool().invoke(
+            _call([edit]),
+            context=ToolContext(
+                workspace=tmp_path,
+                lsp_document_state=lambda *, file_path, workspace: state,
+            ),
+        )
+    assert path.read_bytes() == original

@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from ..security.path_policy import resolve_workspace_path
 from ..tools._repair import ToolDiagnosticError
 
 # A preview is an observation for the live stream, not a second write path. Keep
@@ -20,7 +19,7 @@ PREVIEW_PATH_MAX_CHARS = 512
 PREVIEW_MAX_PATHS = 32
 PREVIEW_MAX_EDITS = 64
 
-WRITE_PREVIEW_TOOLS = frozenset({"write", "edit", "multi_edit", "apply_patch"})
+WRITE_PREVIEW_TOOLS = frozenset({"write", "edit"})
 
 _SECRET_TEXT_PATTERN = re.compile(
     r"(?i)(?P<key>api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret|token)"
@@ -86,20 +85,19 @@ def _degraded(
 
 
 def _resolve_preview_path(*, workspace: Path, raw_path: object, tool_name: str) -> tuple[Path, str] | dict[str, object]:
-    if not isinstance(raw_path, str) or not raw_path.strip():
+    if not isinstance(raw_path, str) or raw_path == "":
         return _degraded(tool_name=tool_name, reason="missing_path", phase="partial")
     if len(raw_path) > PREVIEW_PATH_MAX_CHARS:
         return _degraded(tool_name=tool_name, reason="path_too_long", path=raw_path, phase="partial")
     try:
-        resolution = resolve_workspace_path(
-            workspace=workspace,
-            raw_path=raw_path,
-            containment_error="preview path must be inside the workspace",
-            allow_outside_workspace=False,
-        )
+        workspace_root = workspace.resolve()
+        requested_path = Path(raw_path)
+        candidate = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
     except OSError, RuntimeError, ValueError:
         return _degraded(tool_name=tool_name, reason="unsafe_path", path=raw_path, phase="partial")
-    return resolution.candidate, resolution.relative_path
+    if not candidate.is_relative_to(workspace_root):
+        return _degraded(tool_name=tool_name, reason="external_path_preview", path=raw_path, phase="partial")
+    return candidate, candidate.relative_to(workspace_root).as_posix()
 
 
 def _read_snapshot(path: Path) -> tuple[str, bool] | str:
@@ -281,46 +279,46 @@ def _preview_single_file(
     )
 
 
-def _preview_multi_edit(*, workspace: Path, arguments: Mapping[str, object], phase: Literal["partial", "final"]) -> dict[str, object]:
-    resolved = _resolve_preview_path(workspace=workspace, raw_path=arguments.get("path"), tool_name="multi_edit")
+def _preview_edit_batch(*, workspace: Path, arguments: Mapping[str, object], phase: Literal["partial", "final"]) -> dict[str, object]:
+    resolved = _resolve_preview_path(workspace=workspace, raw_path=arguments.get("path"), tool_name="edit")
     if isinstance(resolved, dict):
-        return _finish_diff_payload(resolved, tool_name="multi_edit", phase=phase)
+        return _finish_diff_payload(resolved, tool_name="edit", phase=phase)
     candidate, display_path = resolved
     snapshot = _read_snapshot(candidate)
     if isinstance(snapshot, str):
-        return _degraded(tool_name="multi_edit", reason=snapshot, path=display_path, phase=phase)
+        return _degraded(tool_name="edit", reason=snapshot, path=display_path, phase=phase)
     before, exists = snapshot
     if not exists:
-        return _degraded(tool_name="multi_edit", reason="snapshot_missing", path=display_path, phase=phase)
+        return _degraded(tool_name="edit", reason="snapshot_missing", path=display_path, phase=phase)
     raw_edits = arguments.get("edits")
     if not isinstance(raw_edits, list) or not raw_edits:
-        return _degraded(tool_name="multi_edit", reason="missing_edits", path=display_path, phase=phase)
+        return _degraded(tool_name="edit", reason="missing_edits", path=display_path, phase=phase)
     if len(raw_edits) > PREVIEW_MAX_EDITS:
-        return _degraded(tool_name="multi_edit", reason="too_many_edits", path=display_path, phase=phase)
+        return _degraded(tool_name="edit", reason="too_many_edits", path=display_path, phase=phase)
     after = before
     for item in raw_edits:
         if not isinstance(item, Mapping):
-            return _degraded(tool_name="multi_edit", reason="invalid_edit_entry", path=display_path, phase=phase)
+            return _degraded(tool_name="edit", reason="invalid_edit_entry", path=display_path, phase=phase)
         old_string = item.get("oldString")
         new_string = item.get("newString")
         if not isinstance(old_string, str) or not isinstance(new_string, str):
-            return _degraded(tool_name="multi_edit", reason="incomplete_edit_entry", path=display_path, phase=phase)
+            return _degraded(tool_name="edit", reason="incomplete_edit_entry", path=display_path, phase=phase)
         try:
             if len(old_string.encode("utf-8")) > PREVIEW_SNAPSHOT_MAX_BYTES or len(new_string.encode("utf-8")) > PREVIEW_SNAPSHOT_MAX_BYTES:
-                return _degraded(tool_name="multi_edit", reason="proposed_content_too_large", path=display_path, phase=phase)
+                return _degraded(tool_name="edit", reason="proposed_content_too_large", path=display_path, phase=phase)
         except UnicodeError:
-            return _degraded(tool_name="multi_edit", reason="content_unreadable", path=display_path, phase=phase)
+            return _degraded(tool_name="edit", reason="content_unreadable", path=display_path, phase=phase)
         if old_string not in after:
-            return _degraded(tool_name="multi_edit", reason="old_string_not_found", path=display_path, phase=phase)
+            return _degraded(tool_name="edit", reason="old_string_not_found", path=display_path, phase=phase)
         after = after.replace(old_string, new_string) if item.get("replaceAll") is True else after.replace(old_string, new_string, 1)
         try:
             if len(after.encode("utf-8")) > PREVIEW_SNAPSHOT_MAX_BYTES:
-                return _degraded(tool_name="multi_edit", reason="proposed_content_too_large", path=display_path, phase=phase)
+                return _degraded(tool_name="edit", reason="proposed_content_too_large", path=display_path, phase=phase)
         except UnicodeError:
-            return _degraded(tool_name="multi_edit", reason="content_unreadable", path=display_path, phase=phase)
+            return _degraded(tool_name="edit", reason="content_unreadable", path=display_path, phase=phase)
     return _finish_diff_payload(
-        _diff_payload(path=display_path, before=before, after=after, phase=phase, tool_name="multi_edit"),
-        tool_name="multi_edit",
+        _diff_payload(path=display_path, before=before, after=after, phase=phase, tool_name="edit"),
+        tool_name="edit",
         phase=phase,
     )
 
@@ -334,19 +332,18 @@ def _preview_patch(
 ) -> dict[str, object]:
     patch = arguments.get("patch")
     if not isinstance(patch, str) or not patch:
-        return _degraded(tool_name="apply_patch", reason="missing_patch", phase=phase)
+        return _degraded(tool_name="edit", reason="missing_patch", phase=phase)
     try:
         if len(patch.encode("utf-8")) > PREVIEW_SNAPSHOT_MAX_BYTES:
-            return _degraded(tool_name="apply_patch", reason="proposed_content_too_large", phase=phase)
+            return _degraded(tool_name="edit", reason="proposed_content_too_large", phase=phase)
     except UnicodeError:
-        return _degraded(tool_name="apply_patch", reason="content_unreadable", phase=phase)
+        return _degraded(tool_name="edit", reason="content_unreadable", phase=phase)
 
     try:
         from ..tools.apply_patch import (
             _changes_from_patch,
             _looks_like_marker_patch,
             _parse_marker_patch,
-            _validate_unified_patch_paths,
         )
 
         if _looks_like_marker_patch(patch):
@@ -361,15 +358,12 @@ def _preview_patch(
                 else:
                     changes.append({"path": hunk.path, "status": "M"})
         else:
-            _validate_unified_patch_paths(patch, workspace=workspace)
             changes = _changes_from_patch(patch)
     except Exception as exc:
         reason = exc.error_details.get("reason") if isinstance(exc, ToolDiagnosticError) else None
-        if reason == "unsafe_patch_path":
-            return _degraded(tool_name="apply_patch", reason="unsafe_path", phase=phase)
         if reason == "malformed_patch_path":
-            return _degraded(tool_name="apply_patch", reason="malformed_patch", phase=phase)
-        return _degraded(tool_name="apply_patch", reason="patch_targets_unidentified", phase=phase)
+            return _degraded(tool_name="edit", reason="malformed_patch", phase=phase)
+        return _degraded(tool_name="edit", reason="patch_targets_unidentified", phase=phase)
 
     output_paths = [str(item.get("path")) for item in changes if isinstance(item, Mapping) and isinstance(item.get("path"), str)]
     all_paths: list[str] = []
@@ -381,23 +375,23 @@ def _preview_patch(
             if isinstance(raw_path, str) and raw_path not in all_paths:
                 all_paths.append(raw_path)
     if not output_paths:
-        return _degraded(tool_name="apply_patch", reason="patch_targets_unidentified", phase=phase)
+        return _degraded(tool_name="edit", reason="patch_targets_unidentified", phase=phase)
     safe_paths: list[str] = []
     for raw_path in all_paths[:PREVIEW_MAX_PATHS]:
-        resolved = _resolve_preview_path(workspace=workspace, raw_path=raw_path, tool_name="apply_patch")
+        resolved = _resolve_preview_path(workspace=workspace, raw_path=raw_path, tool_name="edit")
         if isinstance(resolved, dict):
-            return _finish_diff_payload(resolved, tool_name="apply_patch", phase=phase)
+            return _finish_diff_payload(resolved, tool_name="edit", phase=phase)
         _candidate, display_path = resolved
         if raw_path in output_paths:
             safe_paths.append(display_path)
     if len(all_paths) > PREVIEW_MAX_PATHS:
-        return _degraded(tool_name="apply_patch", reason="too_many_patch_targets", phase=phase)
+        return _degraded(tool_name="edit", reason="too_many_patch_targets", phase=phase)
     bounded_patch, patch_truncated = _bounded_diff(patch)
     return {
         "schema_version": 1,
         "phase": phase,
         "live_only": phase == "partial",
-        "tool": "apply_patch",
+        "tool": "edit",
         "status": "ready",
         "bounded": True,
         "paths": safe_paths,
@@ -419,7 +413,7 @@ def build_tool_call_preview(
     if tool_name not in WRITE_PREVIEW_TOOLS:
         return None
     try:
-        if tool_name in {"write", "edit"}:
+        if tool_name == "write":
             return _preview_single_file(
                 workspace=workspace,
                 tool_name=tool_name,
@@ -427,9 +421,19 @@ def build_tool_call_preview(
                 phase=phase,
                 incomplete=incomplete,
             )
-        if tool_name == "multi_edit":
-            return _preview_multi_edit(workspace=workspace, arguments=arguments, phase=phase)
-        return _preview_patch(workspace=workspace, arguments=arguments, phase=phase, incomplete=incomplete)
+        if tool_name == "edit":
+            if "patch" in arguments:
+                return _preview_patch(workspace=workspace, arguments=arguments, phase=phase, incomplete=incomplete)
+            if "edits" in arguments:
+                return _preview_edit_batch(workspace=workspace, arguments=arguments, phase=phase)
+            return _preview_single_file(
+                workspace=workspace,
+                tool_name=tool_name,
+                arguments=arguments,
+                phase=phase,
+                incomplete=incomplete,
+            )
+        return None
     except OSError, RuntimeError, UnicodeError, ValueError, TypeError:
         return _degraded(tool_name=tool_name, reason="preview_unavailable", phase=phase)
 

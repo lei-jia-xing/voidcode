@@ -25,6 +25,7 @@ from ...agent import AgentManifestRegistry
 from ...command import load_command_registry
 from ...command.models import CommandDefinition
 from ...core.tool_context import (
+    ArtifactBinary,
     ArtifactInvalid,
     ArtifactMissing,
     ArtifactPage,
@@ -65,6 +66,7 @@ from ..bundle import (
     build_session_bundle,
     read_session_bundle,
 )
+from ..composition import FrozenComposition
 from ..config import (
     RuntimeAgentConfig,
     RuntimeConfig,
@@ -367,6 +369,7 @@ class InspectionCoordinator:
         provider_model: ResolvedProviderModel,
         load_background_task: Callable[[str], object],
         refresh_mcp_tools: Callable[[], None],
+        admit_composition: Callable[[FrozenComposition], None],
         is_active_session: Callable[[str], bool],
         active_session_metadata: Callable[[str], dict[str, object] | None],
     ) -> None:
@@ -378,6 +381,7 @@ class InspectionCoordinator:
         self._tasks = tasks
         self._maintenance = maintenance
         self._workspace = workspace
+        self._admit_composition = admit_composition
         self._config = config
         self._lsp_manager = lsp_manager
         self._mcp_manager = mcp_manager
@@ -793,14 +797,21 @@ class InspectionCoordinator:
         artifact_id: str | None = None,
         tool_call_id: str | None = None,
     ) -> dict[str, object] | None:
-        validate_id(session_id)
-        result = self._sessions.load_session_result(
-            workspace=self._workspace,
-            session_id=session_id,
-        )
-        validate_session_workspace(result.session, session_id=session_id, workspace=self._workspace)
+        try:
+            result = self._load_session_result(session_id=session_id)
+        except UnknownSessionError, ValueError:
+            try:
+                stored = self._load_stored_response(session_id=session_id)
+            except UnknownSessionError, ValueError:
+                return None
+            session = stored.session
+            events = stored.events
+        else:
+            session = result.session
+            events = result.transcript
+        validate_session_workspace(session, session_id=session_id, workspace=self._workspace)
         return resolve_tool_output_artifact_metadata(
-            result.transcript,
+            events,
             artifact_id=artifact_id,
             tool_call_id=tool_call_id,
         )
@@ -827,7 +838,7 @@ class InspectionCoordinator:
                 "session_id": session_id,
             }
         read_result = read_tool_output_artifact(artifact, offset=0, limit=0)
-        if isinstance(read_result, ArtifactPage):
+        if isinstance(read_result, (ArtifactPage, ArtifactBinary)):
             status = "available"
             artifact_missing = False
         elif isinstance(read_result, ArtifactUnavailable):
@@ -844,13 +855,20 @@ class InspectionCoordinator:
     def read_tool_output_artifact(
         self,
         *,
+        caller_session_id: str | None = None,
         session_id: str,
         artifact_id: str | None = None,
         tool_call_id: str | None = None,
         offset: int = 0,
         limit: int = 2000,
+        byte_offset: int | None = None,
+        byte_limit: int | None = None,
     ) -> ArtifactRead:
-        """Read a bounded slice from a spilled tool output artifact."""
+        """Read a bounded artifact from this session or an authorized child."""
+        if caller_session_id is not None and caller_session_id != session_id:
+            authorization = self.read_tool_transcript(caller_session_id=caller_session_id, session_id=session_id, limit=1)
+            if isinstance(authorization, TranscriptInaccessible):
+                return ArtifactMissing()
         artifact = self._resolve_tool_output_artifact_metadata(
             session_id=session_id,
             artifact_id=artifact_id,
@@ -858,7 +876,13 @@ class InspectionCoordinator:
         )
         if artifact is None:
             return ArtifactMissing()
-        return read_tool_output_artifact(artifact, offset=offset, limit=limit)
+        return read_tool_output_artifact(
+            artifact,
+            offset=offset,
+            limit=limit,
+            byte_offset=byte_offset,
+            byte_limit=byte_limit,
+        )
 
     def search_tool_output_artifact(
         self,
@@ -922,6 +946,7 @@ class InspectionCoordinator:
             run_writer=self._run_writer,
             workspace=self._workspace,
             dry_run=dry_run,
+            admit_composition=self._admit_composition,
         )
 
     def _session_bundle_config_summary(self, *, session_id: str) -> dict[str, object]:

@@ -209,6 +209,15 @@ def load_background_task_result(task_id: str) -> BackgroundTaskResult: ...
 - `task(operation="output", full_session=true)` 可以返回 bounded child transcript metadata；`message_limit` 当前被限制在 1 到 100，避免把完整 session 无界塞回 leader context
 - failed child result 只提供显式 user-request retry / continuation guidance，建议使用 `session_id=<child_session_id>` 继续；不能由工具自动无限重试
 - interrupted child result 是确定性终态，表示 runtime 在重启/中断/超时类场景中无法证明 child 已完成；它与 failed 一样可读取错误摘要，但不能被 late child completion 回退或覆盖
+### `task(operation="output")` projection
+
+- 单任务结果保留真实 task lifecycle `status`；`approval_blocked` 与 `question_request_id` 是独立 control 状态，不覆盖底层生命周期词汇。
+- 聚合 `status` 在未完成时为 `running`、等待超时时为 `timed_out`；所有任务终止后，状态一致时返回该状态，不一致时返回 `mixed`。`counts`、每项原始 `status`、错误和结果仍逐项保留，不能把 mixed group 折叠成一个成功状态。
+- 每项 structured output 在 body 中只显示有界 preview；完整 yield JSON 由 canonical generated artifact 保留。task output 先依据 runtime lineage 授权读取 child artifact，再将完整 JSON 复制到 parent-owned artifact；`structured_output_reference` 与 `body.artifacts` 只暴露该 parent copy 的可读 URI 和可信 metadata，foreign session 不可读取。
+- 原 child yield artifact 仍属于 child session；result projection 不暴露其 URI 或文件路径，也不复制 child transcript。完整 transcript 仍使用既有 session recovery 路径。
+- `outputSchema` 的 strict 校验在 child 被视为成功之前执行；不匹配时 child/task 失败并保留 validation error，但已生成的 terminal yield artifact 仍可通过 parent-owned reference 读取，不会把失败伪装成成功。permissive 模式保留 handoff，并记录 schema verdict。
+
+
 
 ## Transcript 恢复契约
 
@@ -279,6 +288,12 @@ leader notification 必须表现为**附加到 parent session 上的 runtime eve
 - `runtime.background_task_awaiting_steer`（keep-alive 任务 turn 完成、进入 idle）
 
 `runtime.background_task_progress` 表示 child 已提交一个 `yield` 非终态 progress section。它是 runtime-owned、bounded、deduplicated 的 parent notification projection，不是任意 streaming 或 peer-to-peer agent bus。child 的 `runtime.tool_completed` 事件仍是执行真相；progress 不改变 task lifecycle 状态，也不替代 terminal result 或 transcript。
+
+### Child `yield` data
+
+- A nonterminal `yield` progress section updates the bounded progress projection but does not complete the task; completion requires a valid terminal handoff, and strict `outputSchema` validation still gates success.
+- `yield.data` must already be JSON-compatible and finite. NaN, infinity, and unsupported values are rejected before an artifact or terminal handoff is created; the runtime does not coerce or default them.
+
 
 这些事件覆盖 issue #139 的 leader-notification 需求，以及 keep-alive 委托的 leader 驱动需求。
 
@@ -476,12 +491,14 @@ background process 相关 guardrail 只覆盖当前 v1 已落地的有限范围�
 
 约束如下：
 
-- `background_process(op="start")` 中的 live process reuse 仍然以精确匹配为准，只有 trimmed command 相同且 workspace 相同才算同一个可复用进程
-- `background_process(op="logs")` 提供的是有界的日志状态检查，读取的是 retained stdout/stderr，不是持续 watch 或订阅流
-- v1 不做 fuzzy duplicate-process suppression，也不做基于启发式的进程身份推断
-- v1 不把日志读取改造成 scheduler、watcher 或跨进程协调层
+- `background_process(op="start")` 中的 live process reuse 仍然以精确匹配为准，只有 trimmed command 相同且 workspace 相同才算同一个可复用进程。
+- `ready_pattern` 在 `ready_timeout` 内匹配 stdout/stderr 才报告 `ready=true`；未匹配会报告 `ready=false`，不会因此杀掉仍运行的进程。
+- `background_process(op="logs")` 按本次文件长度创建固定日志快照；`offset` 是从 `0` 开始的行偏移，`both` 返回逐 stream 的 `next_offsets`。单行超出页字节上限时会明确标记裁剪，并提供完整快照 artifact 引用。
+- `background_process(op="send")` 对 stdin 做一次 nonblocking UTF-8 写入，body 返回请求与实际写入字节数；pipe 暂不可写、关闭或进程已退出时返回 failure，不声称输入已交付，也不自动重试。
+- v1 不做 fuzzy duplicate-process suppression，也不做基于启发式的进程身份推断。
+- v1 不把日志读取改造成 scheduler、watcher 或跨进程协调层。
 
-这意味着，当前背景进程护栏只负责 exact-match reuse 和 bounded log read 两件事，重复读取日志只是有界的状态检查，不是连续监视或自动去重决策。
+这意味着，当前背景进程护栏只负责 exact-match reuse、bounded snapshot log reads 和 truthful one-shot stdin delivery；重复读取日志只是有界的状态检查，不是连续监视或自动去重决策。
 
 ## 去重规则
 
@@ -568,7 +585,7 @@ Leader 读取结果时应遵守以下规则：
 - `task(operation="ps")` 无参数，要求 active runtime tool context；runtime 使用其中的 parent `session_id` 只投影该 parent 的最多 100 条 task roster。返回 task/child/group/lifecycle/timestamp/approval/result flags 与 next-step references，不返回 prompt、transcript 或 child result content。
 - 聚合读取使用当前 runtime tool context 的 `session_id` 作为 parent owner；对于显式 `task_ids`，runtime 先逐个完成 parent ownership authorization，再加载 task state/result；`parallel_group_id` 查询本身按 parent 过滤。runtime 必须拒绝不属于该 parent 的 task 或 group，工具/模型不得通过客户端参数绕过 lineage ownership。
 - `block=true` 使用 runtime-owned Condition/lifecycle wait，不做 tight polling；`timeout` 单位为毫秒且阻塞等待至少 1000ms。超时返回当前各 task 状态并设置 `block_timed_out`，不得把任务误标为失败。
-- 聚合结果是 bounded model-facing projection：每个 task 只返回 `status`、有界 `summary`/`error`、`structured_output` 与关联状态字段；不得复制 child prompt、transcript 或 raw child session 内容。结果同时包含 group completeness、counts、expected task count 与 task ids。
+- 聚合结果是 bounded model-facing projection：每项 task 保留原始 `status`、有界 `summary`/`error`、structured-output preview、question/approval 状态与 parent-owned artifact reference；不得复制 child prompt、transcript 或 raw child session 内容。结果同时包含 group completeness、counts、expected task count 与 task ids；mixed group 不能丢掉逐项错误或把 child URI 当成 parent reference。
 - CLI readable 默认输出先暴露 `TASK ...` correlation record，并在 waiting / running / idle / failed / completed 等状态下打印 concrete next-step commands（例如 `sessions resume <child_session_id>`、`tasks output <task_id>`、`tasks steer <task_id> "<prompt>"`、`tasks cancel <task_id>`）。
 - `block=true` 等待超时时返回 `block_timed_out`，同时保留当前 task state，而不是把任务误标为失败。
 - failed/cancelled/interrupted task 可以通过 runtime 方法 `retry_background_task(task_id)`、CLI `voidcode tasks retry <task_id>` 或 HTTP `POST /api/tasks/<task_id>/retry` 显式重试。retry 必须复用旧 task 持久化的 request prompt、requested child session id、parent session id、metadata、routing 与 `allocate_session_id`，并创建新的 queued task handle；不得改写旧 terminal task。

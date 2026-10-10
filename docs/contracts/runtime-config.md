@@ -378,7 +378,11 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `command` 由 runtime 在 workspace cwd 中执行；它必须是 argv 数组，不是 shell 字符串，runtime 不隐式启动 `sh` / `cmd.exe`。tool arguments 仅以 JSON 写入 stdin，不会通过环境变量暴露完整参数 payload。
 - runtime 环境变量只携带有界执行上下文，例如 `VOIDCODE_WORKSPACE`、`VOIDCODE_TOOL_NAME`、`VOIDCODE_TOOL_CALL_ID`（如有）、`VOIDCODE_SESSION_ID`、`VOIDCODE_PARENT_SESSION_ID`（如有）和 `VOIDCODE_DELEGATION_DEPTH`，tool 作者不应从客户端获得这些上下文字段。
 
-内置 `shell_exec` 的 command string 不是 hook/local-tool argv contract 的例外绕行通道。runtime 会在执行前解析 workspace、timeout 与 command classification；interactive/TUI command 在非交互路径 fail-fast，read-only context 拒绝 package-manager/mutating/destructive command，project package manager 的 non-interactive env injection 只把 key name 进入结果 metadata，不持久化 env value。
+
+- local custom tool 的 canonical JSON arguments 只通过 stdin 传递；runtime 以非阻塞 partial writes 传输并在整个输入阶段检查 timeout/cancellation，完整输入写完后才正常关闭 stdin。
+- stdout/stderr 分别以原始字节捕获，并提供有界预览及独立 canonical artifacts；即使命令成功退出，也会显示 stderr。共享 output cap 触发时，可用 raw artifact URI 和带 `[stderr]` 标签的 stderr 预览置于 stdout 预览之前，避免 prefix cap 裁掉诊断或原始引用。超时/取消时，部分输出 artifacts 会保留在失败结果中。
+- 每个流最多捕获 128 MiB；超限会 drain 子进程管道并返回显式失败，artifact 标记为部分输出。超时/取消会终止子进程组，并以 `stop_confirmed` 报告是否确认停止。
+内置 `shell_exec` 的 command string 由 runtime 执行并受权限、审批、timeout、capture、cancel 与 workspace bounds 管理；工具不改写原始 command，也不会根据包管理器猜测并注入环境变量。read-only context 和 permission rules 仍按 runtime 的实际 operation governance 执行。
 
 ## Runtime Harness Policy 配置字段
 

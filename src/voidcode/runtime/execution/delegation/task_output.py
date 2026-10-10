@@ -3,14 +3,16 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel, field_validator, model_validator
 
-from ....core.tool_context import ToolContext
+from ....core.tool_context import ArtifactBinary, ArtifactRead, ToolContext
 from ....security.json_values import json_wire_object, own_json_object
 from ....tools._pydantic_args import MessageLimit, TimeoutMs, parse_tool_args
 from ....tools.contracts import OutputBounds, OutputReference, TerminalYield, TextOutput, ToolCall, ToolResult, ToolSuccess
+from ....tools.output import create_tool_output_artifact
 from ...background.models import BackgroundTaskState, is_background_task_terminal
 from ...background.substrate import TaskSubstrate
 from ...contracts import (
@@ -59,6 +61,14 @@ class TaskOutputRuntime(Protocol):
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskGroupResult: ...
 
+    def read_tool_output_artifact(
+        self,
+        *,
+        caller_session_id: str,
+        session_id: str,
+        artifact_id: str,
+        limit: int = 2000,
+    ) -> ArtifactRead: ...
     def session_result(self, *, session_id: str) -> RuntimeSessionResult: ...
 
 
@@ -123,6 +133,7 @@ class TaskOutputBody:
     tool_call_count: int
     retrieval_instruction: str
     approval_blocked: bool
+    question_request_id: str | None
     summary_output: str | None
     error: str | None
     result_available: bool
@@ -130,6 +141,7 @@ class TaskOutputBody:
     message: Mapping[str, object]
     handoff_summary: Mapping[str, object]
     structured_output: Mapping[str, object] | None
+    structured_output_reference: str | None
     schema_validation: Mapping[str, object] | None
     progress: tuple[Mapping[str, object], ...]
     block_timed_out: bool
@@ -138,6 +150,7 @@ class TaskOutputBody:
     provider_failure: Mapping[str, object] | None = None
     guidance: str | None = None
     handoff: TerminalYield | None = None
+    artifacts: tuple[Mapping[str, object], ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("delegation", "message", "handoff_summary"):
@@ -147,6 +160,7 @@ class TaskOutputBody:
             if value is not None:
                 object.__setattr__(self, name, own_json_object(value))
         object.__setattr__(self, "progress", tuple(own_json_object(item) for item in self.progress))
+        object.__setattr__(self, "artifacts", tuple(own_json_object(item) for item in self.artifacts))
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -158,6 +172,9 @@ class TaskOutputBody:
             "tool_call_count": self.tool_call_count,
             "retrieval_instruction": self.retrieval_instruction,
             "approval_blocked": self.approval_blocked,
+            "question_request_id": self.question_request_id,
+            "question_blocked": self.question_request_id is not None,
+            "control_status": _task_control_status(self.approval_blocked, self.question_request_id),
             "summary_output": self.summary_output,
             "error": self.error,
             "result_available": self.result_available,
@@ -165,6 +182,8 @@ class TaskOutputBody:
             "message": json_wire_object(self.message),
             "handoff_summary": json_wire_object(self.handoff_summary),
             "structured_output": None if self.structured_output is None else json_wire_object(self.structured_output),
+            "structured_output_reference": self.structured_output_reference,
+            "artifacts": [json_wire_object(item) for item in self.artifacts],
             "schema_validation": None if self.schema_validation is None else json_wire_object(self.schema_validation),
             "progress": [json_wire_object(item) for item in self.progress],
             "block_timed_out": self.block_timed_out,
@@ -177,7 +196,7 @@ class TaskOutputBody:
         if self.handoff is not None:
             payload["handoff"] = {
                 "summary": self.handoff.summary,
-                "data": json_wire_object(self.handoff.data),
+                "data": _bounded_structured_output(dict(self.handoff.data)),
             }
         if self.guidance is not None:
             payload["guidance"] = self.guidance
@@ -191,9 +210,11 @@ class TaskOutputGroupItem:
     summary: str | None
     error: str | None
     structured_output: Mapping[str, object] | None
+    structured_output_reference: str | None
     progress: Mapping[str, object] | None
     result_available: bool
     approval_blocked: bool
+    question_request_id: str | None
     child_session_id: str | None
 
     def as_payload(self) -> dict[str, object]:
@@ -203,9 +224,13 @@ class TaskOutputGroupItem:
             "summary": self.summary,
             "error": self.error,
             "structured_output": None if self.structured_output is None else json_wire_object(self.structured_output),
+            "structured_output_reference": self.structured_output_reference,
             "progress": None if self.progress is None else json_wire_object(self.progress),
             "result_available": self.result_available,
             "approval_blocked": self.approval_blocked,
+            "question_request_id": self.question_request_id,
+            "question_blocked": self.question_request_id is not None,
+            "control_status": _task_control_status(self.approval_blocked, self.question_request_id),
             "child_session_id": self.child_session_id,
         }
 
@@ -224,9 +249,11 @@ class TaskOutputGroupBody:
     results: tuple[TaskOutputGroupItem, ...]
     retrieval_instruction: str
     block_timed_out: bool
+    artifacts: tuple[Mapping[str, object], ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "counts", own_json_object(self.counts))
+        object.__setattr__(self, "artifacts", tuple(own_json_object(item) for item in self.artifacts))
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -239,7 +266,7 @@ class TaskOutputGroupBody:
             "counts": json_wire_object(self.counts),
             "summary": self.summary,
             "error": self.error,
-            "structured_output": [json_wire_object(item.structured_output) for item in self.results if item.structured_output is not None],
+            "artifacts": [json_wire_object(item) for item in self.artifacts],
             "results": [item.as_payload() for item in self.results],
             "retrieval_instruction": self.retrieval_instruction,
             "block_timed_out": self.block_timed_out,
@@ -292,7 +319,12 @@ class TaskOutputTool:
                     results=group.results,
                     timed_out=True,
                 )
-            return _background_group_tool_result(group)
+            return _background_group_tool_result(
+                group,
+                runtime=self._runtime,
+                parent_session_id=caller_session_id,
+                tool_call_id=call.tool_call_id or self.name,
+            )
 
         timeout_seconds = max(args.timeout, 0) / 1000
         self._runtime.authorize_background_task_owner(
@@ -324,7 +356,16 @@ class TaskOutputTool:
         }
         handoff_summary = _background_task_handoff_summary(result=result)
         schema_validation = None if result.schema_validation is None else result.schema_validation.as_payload()
-        progress = tuple(result.progress)
+        progress = _visible_progress(result.progress)
+        parent_artifact = _copy_child_yield_artifact(
+            self._runtime,
+            result,
+            parent_session_id=caller_session_id,
+            tool_call_id=call.tool_call_id or self.name,
+        )
+        artifacts = () if parent_artifact is None else (parent_artifact,)
+        structured_output = _bounded_structured_output(_structured_output_value(result))
+        structured_output_reference = _artifact_uri(parent_artifact)
         session_payload: dict[str, object] | None = None
         content = safe_summary or result.error or f"Background task {result.task_id}: {result.status}"
         empty_child_output = False
@@ -350,7 +391,6 @@ class TaskOutputTool:
                     for event in transcript_events
                 ]
                 output_available = session_result.output is not None
-                full_session_reference = f"session:{session_result.session.session.id}"
                 session_payload = {
                     "session_id": session_result.session.session.id,
                     "child_session_id": session_result.session.session.id,
@@ -364,7 +404,6 @@ class TaskOutputTool:
                     "transcript": transcript,
                     "output_available": output_available,
                     "full_output_preserved": output_available,
-                    "full_session_reference": full_session_reference,
                     "retrieval_hint": (
                         "Use sessions resume "
                         f"{session_result.session.session.id} or "
@@ -383,20 +422,24 @@ class TaskOutputTool:
                     transcript_count=len(transcript),
                     transcript_truncated=len(session_result.transcript) > len(transcript),
                     output_available=output_available,
-                    full_session_reference=full_session_reference,
                     empty_child_output=empty_child_output,
                 )
 
+        if structured_output_reference is not None:
+            content += f'\nFull structured output: read(path="{structured_output_reference}")'
         guidance = _background_output_guidance(
             result=result,
             content=content,
             empty_child_output=empty_child_output,
             block_timed_out=block_timed_out,
         )
-        reference = _background_result_reference(result)
-        bounds = OutputBounds(
-            reference=OutputReference(reference) if reference is not None else None,
+        artifact = _generated_artifact_metadata(result.structured_output_artifact)
+        reference = (
+            OutputReference(uri=structured_output_reference, artifact=artifact)
+            if structured_output_reference is not None and artifact is not None
+            else None
         )
+        bounds = OutputBounds(truncated=reference is not None, reference=reference)
         return ToolSuccess(
             tool_name=self.name,
             output=TextOutput(content, bounds=bounds),
@@ -408,6 +451,7 @@ class TaskOutputTool:
                 duration_seconds=result.duration_seconds,
                 tool_call_count=result.tool_call_count,
                 retrieval_instruction=f'task(operation="output", task_id="{result.task_id}")',
+                question_request_id=result.question_request_id,
                 approval_blocked=result.approval_blocked,
                 summary_output=safe_summary,
                 error=result.error,
@@ -415,9 +459,11 @@ class TaskOutputTool:
                 delegation=delegation,
                 message=message,
                 handoff_summary=handoff_summary,
-                structured_output=result.structured_output,
+                structured_output=structured_output,
+                structured_output_reference=structured_output_reference,
                 schema_validation=schema_validation,
                 progress=progress,
+                artifacts=artifacts,
                 block_timed_out=block_timed_out,
                 empty_child_output=empty_child_output,
                 session=session_payload,
@@ -429,6 +475,15 @@ class TaskOutputTool:
 
 _MAX_GROUP_CONTENT_CHARS = 4000
 _MAX_GROUP_VALUE_CHARS = 4000
+_MAX_OUTPUT_PROGRESS_SECTIONS = 10
+
+
+def _task_control_status(approval_blocked: bool, question_request_id: str | None) -> str | None:
+    if question_request_id is not None:
+        return "awaitingQuestion"
+    if approval_blocked:
+        return "approvalBlocked"
+    return None
 
 
 def _bounded_text(value: str | None, *, limit: int = _MAX_GROUP_VALUE_CHARS) -> str | None:
@@ -437,24 +492,138 @@ def _bounded_text(value: str | None, *, limit: int = _MAX_GROUP_VALUE_CHARS) -> 
     return value[: limit - 1] + "…"
 
 
-def _bounded_structured_output(value: dict[str, object] | None) -> dict[str, object] | None:
+def _bounded_structured_output(value: Mapping[str, object] | None) -> dict[str, object] | None:
     if value is None:
         return None
-    try:
-        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
-    except TypeError, ValueError:
-        return {"unavailable": "structured output could not be serialized"}
+    encoded = json.dumps(
+        json_wire_object(own_json_object(value)),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
     if len(encoded) <= _MAX_GROUP_VALUE_CHARS:
-        return value
+        return dict(value)
     return {"truncated": True, "preview": encoded[: _MAX_GROUP_VALUE_CHARS - 1] + "…"}
 
 
-def _background_group_tool_result(group: BackgroundTaskGroupResult) -> ToolResult:
-    """Render only bounded per-task result metadata; never copy transcripts."""
-    status = "completed" if group.complete else "running"
+def _generated_artifact_metadata(value: object) -> dict[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    artifact_id = value.get("artifact_id")
+    uri = value.get("uri")
+    if (
+        value.get("producer") != "voidcode.tool_output.v1"
+        or not isinstance(artifact_id, str)
+        or not artifact_id.startswith("artifact_")
+        or uri != f"voidcode://artifact/{artifact_id}"
+    ):
+        return None
+    return dict(value)
+
+
+def _copy_child_yield_artifact(
+    runtime: TaskOutputRuntime,
+    result: BackgroundTaskResult,
+    *,
+    parent_session_id: str,
+    tool_call_id: str,
+) -> dict[str, object] | None:
+    source = _generated_artifact_metadata(result.structured_output_artifact)
+    child_session_id = result.child_session_id
+    source_sha256 = None if source is None else source.get("sha256")
+    source_byte_count = None if source is None else source.get("byte_count")
+    if (
+        source is None
+        or child_session_id is None
+        or source.get("session_id") != child_session_id
+        or source.get("tool_name") != "yield"
+        or source.get("kind") != "structured_data"
+        or source.get("mime") != "application/json"
+        or not isinstance(source_sha256, str)
+        or type(source_byte_count) is not int
+        or source_byte_count < 0
+    ):
+        return None
+    artifact_id = source["artifact_id"]
+    assert isinstance(artifact_id, str)
+    read_result = runtime.read_tool_output_artifact(
+        caller_session_id=parent_session_id,
+        session_id=child_session_id,
+        artifact_id=artifact_id,
+        limit=0,
+    )
+    if not isinstance(read_result, ArtifactBinary) or read_result.mime != "application/json":
+        raise ValueError(f"child structured output artifact is unavailable to task owner: {artifact_id}")
+    metadata = _generated_artifact_metadata(read_result.artifact)
+    source_path = None if metadata is None else metadata.get("path")
+    if (
+        metadata is None
+        or metadata.get("artifact_id") != artifact_id
+        or metadata.get("session_id") != child_session_id
+        or metadata.get("tool_name") != "yield"
+        or metadata.get("kind") != "structured_data"
+        or metadata.get("mime") != "application/json"
+        or metadata.get("sha256") != source_sha256
+        or metadata.get("byte_count") != source_byte_count
+        or read_result.sha256 != source_sha256
+        or read_result.byte_count != source_byte_count
+        or not isinstance(source_path, str)
+    ):
+        raise ValueError(f"child structured output artifact metadata is invalid: {artifact_id}")
+    copied = create_tool_output_artifact(
+        session_id=parent_session_id,
+        tool_call_id=f"{tool_call_id}:{result.task_id}:{artifact_id}",
+        tool_name="task_output",
+        source_path=Path(source_path),
+        kind="structured_data",
+        mime=read_result.mime,
+    )
+    if copied.get("sha256") != read_result.sha256 or copied.get("byte_count") != read_result.byte_count:
+        raise ValueError(f"child structured output artifact changed during parent copy: {artifact_id}")
+    return copied
+
+
+def _structured_output_value(result: BackgroundTaskResult) -> Mapping[str, object] | None:
+    if result.structured_output is not None:
+        return result.structured_output
+    return None if result.handoff is None else result.handoff.data
+
+
+def _artifact_uri(artifact: Mapping[str, object] | None) -> str | None:
+    canonical = _generated_artifact_metadata(artifact)
+    uri = None if canonical is None else canonical.get("uri")
+    return uri if isinstance(uri, str) else None
+
+
+def _visible_progress(progress: tuple[dict[str, object], ...]) -> tuple[dict[str, object], ...]:
+    return tuple(
+        {key: value for key, value in section.items() if key not in {"artifact", "data_reference"}}
+        for section in progress[-_MAX_OUTPUT_PROGRESS_SECTIONS:]
+    )
+
+
+def _background_group_tool_result(
+    group: BackgroundTaskGroupResult,
+    *,
+    runtime: TaskOutputRuntime,
+    parent_session_id: str,
+    tool_call_id: str,
+) -> ToolResult:
+    """Render bounded task results and copy readable child yields to the parent."""
+    statuses = {result.status for result in group.results}
+    if group.timed_out:
+        status = "timed_out"
+    elif not group.complete:
+        status = "running"
+    elif len(statuses) == 1:
+        status = next(iter(statuses))
+    else:
+        status = "mixed" if statuses else "completed"
     failures = [result for result in group.results if result.status in {"failed", "cancelled", "interrupted"}]
     error = "; ".join(f"{result.task_id}: {_bounded_text(result.error or result.cancellation_cause or result.status)}" for result in failures) or None
+    error = _bounded_text(error, limit=_MAX_GROUP_CONTENT_CHARS)
     results: list[TaskOutputGroupItem] = []
+    artifacts: list[dict[str, object]] = []
     lines = [
         f"Background task group result: {group.parallel_group_id or 'explicit task ids'}",
         f"- status: {status}",
@@ -463,6 +632,17 @@ def _background_group_tool_result(group: BackgroundTaskGroupResult) -> ToolResul
     if group.timed_out:
         lines.append("- wait: timed out; returned current task states")
     for result in group.results:
+        runtime.authorize_background_task_owner(
+            result.task_id,
+            parent_session_id=parent_session_id,
+        )
+        parent_artifact = _copy_child_yield_artifact(
+            runtime,
+            result,
+            parent_session_id=parent_session_id,
+            tool_call_id=tool_call_id,
+        )
+        structured_output_reference = _artifact_uri(parent_artifact)
         summary = _background_result_safe_summary(result)
         results.append(
             TaskOutputGroupItem(
@@ -470,14 +650,23 @@ def _background_group_tool_result(group: BackgroundTaskGroupResult) -> ToolResul
                 status=result.status,
                 summary=_bounded_text(summary),
                 error=_bounded_text(result.error or result.cancellation_cause),
-                structured_output=_bounded_structured_output(result.structured_output),
-                progress=_bounded_structured_output({"sections": list(result.progress)}),
+                structured_output=_bounded_structured_output(_structured_output_value(result)),
+                structured_output_reference=structured_output_reference,
+                progress=_bounded_structured_output({"sections": list(_visible_progress(result.progress))}),
                 result_available=result.result_available,
                 approval_blocked=result.approval_blocked,
+                question_request_id=result.question_request_id,
                 child_session_id=result.child_session_id,
             )
         )
-        lines.append(f"- {result.task_id}: {result.status}; summary={summary or 'none'}")
+        if parent_artifact is not None:
+            artifacts.append(parent_artifact)
+        line = f"- {result.task_id}: {result.status}; summary={summary or 'none'}"
+        if result.error is not None:
+            line += f"; error={_bounded_text(result.error)}"
+        if structured_output_reference is not None:
+            line += f"; structured output: {structured_output_reference}"
+        lines.append(line)
     content = _bounded_text("\n".join(lines), limit=_MAX_GROUP_CONTENT_CHARS) or ""
     body = TaskOutputGroupBody(
         parallel_group_id=group.parallel_group_id,
@@ -496,6 +685,7 @@ def _background_group_tool_result(group: BackgroundTaskGroupResult) -> ToolResul
             else 'task(operation="output", task_ids=[...])'
         ),
         block_timed_out=group.timed_out,
+        artifacts=tuple(artifacts),
     )
     return ToolSuccess(
         tool_name="task_output",
@@ -555,7 +745,6 @@ def _background_session_digest(
     transcript_count: int,
     transcript_truncated: bool,
     output_available: bool,
-    full_session_reference: str,
     empty_child_output: bool = False,
 ) -> str:
     if empty_child_output:
@@ -563,22 +752,22 @@ def _background_session_digest(
             "The delegated child completed with empty output. Treat this as an empty result, "
             "inspect full_session=true if needed, and continue without hidden retries."
         )
+    child_session_id = session_result.session.session.id
     lines = [
         "Background task result digest:",
         f"- task_id: {result.task_id}",
         f"- status: {result.status}",
-        f"- child_session_id: {session_result.session.session.id}",
+        f"- child_session_id: {child_session_id}",
         f"- duration_seconds: {result.duration_seconds}",
         f"- tool_call_count: {result.tool_call_count}",
         f"- summary: {safe_summary}",
         f"- full_output_preserved: {str(output_available).lower()}",
         f"- transcript_events_listed: {transcript_count}",
         f"- transcript_truncated: {str(transcript_truncated).lower()}",
-        f"- retrieval_pointer: {full_session_reference}",
     ]
     if session_result.error:
         lines.append(f"- error: {session_result.error}")
-    lines.append("Use the child session reference to retrieve full output; raw child output is not injected into active provider context.")
+    lines.append(f"Use sessions resume {child_session_id} to retrieve full output; raw child output is not injected into active provider context.")
     return "\n".join(lines)
 
 
@@ -620,12 +809,6 @@ def _background_session_safe_summary(
     return f"Background task {result.task_id}: {result.status}"
 
 
-def _background_result_reference(result: BackgroundTaskResult) -> str | None:
-    if result.child_session_id is None:
-        return None
-    return f"session:{result.child_session_id}"
-
-
 def _background_task_handoff_summary(*, result: BackgroundTaskResult) -> dict[str, object]:
     blocked_reason = result.error or result.cancellation_cause
     if result.status == "cancelled" and blocked_reason is None:
@@ -633,7 +816,7 @@ def _background_task_handoff_summary(*, result: BackgroundTaskResult) -> dict[st
     return {
         "objective": result.delegated_execution.routing.as_payload() if result.delegated_execution.routing is not None else None,
         "summary": result.summary_output if result.status == "completed" else None,
-        "structured_output": result.structured_output,
+        "structured_output": _bounded_structured_output(_structured_output_value(result)),
         "schema_validation": (None if result.schema_validation is None else result.schema_validation.as_payload()),
         "verification": {
             "duration_seconds": result.duration_seconds,

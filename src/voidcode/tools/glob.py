@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import ClassVar
 
 from ..core.tool_context import ToolContext
-from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._gitignore import GitIgnoreMatcher
 from .contracts import OutputBounds, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolFailure, ToolResult, ToolSuccess
 
@@ -62,12 +61,12 @@ class GlobResultBody:
 class GlobTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="glob",
-        description="Find files matching a glob pattern inside the workspace.",
+        description="Find files matching a glob pattern.",
         input_schema={
             "pattern": {"type": "string", "description": "The glob pattern to match files against"},
             "path": {
                 "type": "string",
-                "description": ("The directory to search in (relative to workspace). Defaults to workspace root."),
+                "description": "Directory to search; relative paths are based at the workspace root.",
             },
             "include_hidden": {
                 "type": "boolean",
@@ -110,7 +109,7 @@ class GlobTool:
         root = project_root or workspace_root
 
         if not search_dir.is_relative_to(root):
-            raise ValueError("glob search path must be inside the allowed root")
+            root = search_dir
 
         matched: list[Path] = []
         truncated = False
@@ -118,23 +117,20 @@ class GlobTool:
 
         try:
             for match in search_dir.glob(pattern):
-                if match.is_file():
-                    relative_parts = match.relative_to(root).parts
-                    if any(ignore in relative_parts for ignore in DEFAULT_IGNORE_PATTERNS):
-                        continue
-                    if not include_hidden and any(part.startswith(".") for part in relative_parts):
-                        continue
-                    if gitignore is not None and gitignore.is_ignored(match.relative_to(root).as_posix(), is_directory=False):
-                        continue
-
-                    matched.append(match)
-
-                    if len(matched) >= limit:
-                        truncated = True
-                        break
+                if not match.is_file():
+                    continue
+                relative_parts = match.relative_to(root).parts
+                if any(ignore in relative_parts for ignore in DEFAULT_IGNORE_PATTERNS):
+                    continue
+                if not include_hidden and any(part.startswith(".") for part in relative_parts):
+                    continue
+                if gitignore is not None and gitignore.is_ignored(match.relative_to(root).as_posix(), is_directory=False):
+                    continue
+                if len(matched) == limit:
+                    truncated = True
+                    break
+                matched.append(match)
         except OSError as exc:
-            # Best-effort search: keep whatever matched so far, but surface the
-            # failure instead of silently returning an empty result.
             error_message = str(exc)
 
         return matched, truncated, error_message
@@ -154,21 +150,20 @@ class GlobTool:
 
         path_value = call.arguments.get("path")
         search_path: Path | None = None
-        resolved = None
+        resolved_candidate: Path | None = None
+        is_external = False
         if isinstance(path_value, str):
-            resolved = resolve_workspace_path_policy(
-                workspace=workspace,
-                raw_path=path_value,
-                containment_error="glob path must resolve to a valid path",
-                allow_outside_workspace=True,
-            )
-            search_path = resolved.candidate
+            workspace_root = workspace.resolve()
+            requested_path = Path(path_value)
+            resolved_candidate = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
+            is_external = not resolved_candidate.is_relative_to(workspace_root)
+            search_path = resolved_candidate
 
             if not search_path.exists():
                 raise ValueError(f"glob path does not exist: {path_value}")
 
         workspace_root = workspace.resolve()
-        effective_root = resolved.candidate if resolved is not None and resolved.is_external and resolved.candidate.is_dir() else workspace_root
+        effective_root = resolved_candidate if is_external and resolved_candidate is not None and resolved_candidate.is_dir() else workspace_root
         gitignore = GitIgnoreMatcher.load(effective_root) if respect_gitignore else None
         matched, truncated, search_error = self._find_files(
             workspace_root,
@@ -192,7 +187,9 @@ class GlobTool:
             relative_matches = [str(m.resolve()) for m in matched]
             path_display = str((search_path or effective_root).resolve())
 
-        output = f"Found {len(relative_matches)} file(s)" + ("; results are truncated." if truncated else ".")
+        output = "\n".join(relative_matches) or "No files found."
+        if truncated:
+            output += f"\n[TRUNCATED] Showing first {limit} files."
 
         body = GlobResultBody(
             pattern=pattern_value,

@@ -19,10 +19,10 @@ from ...cli_support import (
     serialize_session_state,
     serialize_stored_session_summary,
 )
-from ...core.questions import QuestionResponse
+from ...core.questions import QuestionAnswer, QuestionCancellation, QuestionResponse
 from ...runtime.bundle import (
     SessionBundleFormat,
-    SessionBundleOptions,
+    preview_session_bundle_import_file,
     write_session_bundle,
 )
 from ...runtime.contracts import NoPendingQuestionError
@@ -76,7 +76,15 @@ def parse_question_responses(
     *,
     response: tuple[str, ...] = (),
     response_json: str | None = None,
-) -> tuple[QuestionResponse, ...]:
+    cancel: bool = False,
+) -> QuestionAnswer:
+    if cancel:
+        if response or response_json is not None:
+            raise CliError(
+                code=EXIT_USAGE_ERROR,
+                message="--cancel cannot be used with --response or --response-json",
+            )
+        return QuestionCancellation()
     if response_json is not None and response:
         raise CliError(
             code=EXIT_USAGE_ERROR,
@@ -94,7 +102,7 @@ def parse_question_responses(
     if not response:
         raise CliError(
             code=EXIT_USAGE_ERROR,
-            message="at least one --response or --response-json must be provided",
+            message="at least one --response or --response-json must be provided, or use --cancel",
         )
     return (QuestionResponse(header="response", answers=tuple(response)),)
 
@@ -164,7 +172,11 @@ def _handle_sessions_answer_command(args: SessionsArgs) -> int:
     question_request_id = args.question_request_id
     assert question_request_id is not None
     try:
-        responses = parse_question_responses(response=args.response, response_json=args.response_json)
+        responses = parse_question_responses(
+            response=args.response,
+            response_json=args.response_json,
+            cancel=args.cancel,
+        )
     except CliError:
         raise
     except (json.JSONDecodeError, ValueError) as exc:
@@ -199,26 +211,14 @@ def _handle_sessions_answer_command(args: SessionsArgs) -> int:
     return session_result_exit_code(result)
 
 
-def _session_bundle_options_from_args(args: SessionsArgs) -> SessionBundleOptions:
-    if args.support:
-        return SessionBundleOptions.support_artifact()
-    return SessionBundleOptions(
-        redact=args.redact,
-        include_tool_output=args.include_tool_output,
-        include_raw_provider_messages=args.include_raw_provider_messages,
-        include_reasoning_text=args.include_reasoning_text,
-    )
-
-
 def _handle_sessions_export_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
     assert session_id is not None
     output_path = args.output
     fmt = args.format
-    options = _session_bundle_options_from_args(args)
     with open_runtime(workspace) as runtime, runtime_error_boundary():
-        bundle = runtime.export_session_bundle(session_id=session_id, options=options)
+        bundle = runtime.export_session_bundle(session_id=session_id)
 
     if output_path is None and fmt == "json":
         print(json.dumps(bundle.to_payload(), sort_keys=True))
@@ -249,12 +249,16 @@ def _handle_sessions_import_command(args: SessionsArgs) -> int:
     bundle_path = args.bundle_path
     assert bundle_path is not None
     dry_run = args.dry_run
-    with open_runtime(workspace) as runtime, runtime_error_boundary():
+    with runtime_error_boundary():
         try:
-            result = runtime.import_session_bundle_file(
-                bundle_path=bundle_path,
-                dry_run=dry_run,
-            )
+            if dry_run:
+                result = preview_session_bundle_import_file(bundle_path, workspace=workspace)
+            else:
+                with open_runtime(workspace) as runtime:
+                    result = runtime.import_session_bundle_file(
+                        bundle_path=bundle_path,
+                        dry_run=False,
+                    )
         except OSError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=f"cannot read session bundle {bundle_path}: {exc}") from None
     print_json({"workspace": str(workspace), "import": result.to_payload()})
@@ -514,6 +518,11 @@ def resume(
     "--response-json",
     help="JSON array of {header, answers} objects for multi-question answers.",
 )
+@click.option(
+    "--cancel",
+    is_flag=True,
+    help="Cancel the pending question instead of answering it.",
+)
 @json_option("Output the resumed runtime response as JSON.")
 @show_thinking_option("Show persisted reasoning/thinking events during replay; hidden by default.")
 def answer(
@@ -522,6 +531,7 @@ def answer(
     question_request_id: str,
     response: tuple[str, ...],
     response_json: str | None,
+    cancel: bool,
     json_output: bool,
     show_thinking: bool,
 ) -> int:
@@ -532,44 +542,25 @@ def answer(
             question_request_id=question_request_id,
             response=response,
             response_json=response_json,
+            cancel=cancel,
             json=json_output,
             show_thinking=show_thinking,
         )
     )
 
 
-@sessions.command(name="export", help="Export a portable redacted session bundle.")
+@sessions.command(name="export", help="Export a complete session bundle containing sensitive data; store it privately.")
 @click.argument("session_id")
 @workspace_option("Workspace root used to resolve the local session database.")
 @click.option("--output", type=click.Path(path_type=Path), help="Bundle output path.")
 @click.option("--format", "fmt", type=click.Choice(BUNDLE_FORMATS), default="zip")
-@click.option("--redact/--no-redact", default=True)
-@click.option("--include-tool-output", is_flag=True)
-@click.option("--include-raw-provider-messages", is_flag=True)
-@click.option("--include-reasoning-text", is_flag=True)
-@click.option("--support", is_flag=True)
-def sessions_export(
-    session_id: str,
-    workspace: Path,
-    output: Path | None,
-    fmt: str,
-    redact: bool,
-    include_tool_output: bool,
-    include_raw_provider_messages: bool,
-    include_reasoning_text: bool,
-    support: bool,
-) -> int:
+def sessions_export(session_id: str, workspace: Path, output: Path | None, fmt: str) -> int:
     return _handle_sessions_export_command(
         SessionsArgs(
             session_id=session_id,
             workspace=workspace,
             output=output,
             format=fmt,
-            redact=redact,
-            include_tool_output=include_tool_output,
-            include_raw_provider_messages=include_raw_provider_messages,
-            include_reasoning_text=include_reasoning_text,
-            support=support,
         )
     )
 

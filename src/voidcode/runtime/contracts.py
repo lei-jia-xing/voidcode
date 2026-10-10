@@ -1116,6 +1116,7 @@ class BackgroundTaskResult:
     observability: BackgroundTaskObservability | None = None
     hook_reminder: dict[str, object] | None = None
     structured_output: dict[str, object] | None = None
+    structured_output_artifact: Mapping[str, object] | None = None
     schema_validation: SchemaValidation | None = None
     # Bounded child progress projection; never a transcript replacement.
     progress: tuple[dict[str, object], ...] = ()

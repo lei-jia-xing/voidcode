@@ -31,10 +31,10 @@ voidcode/
 | Delegated/background task contract | `docs/contracts/background-task-delegation.md` | runtime-owned subagent routing, result retrieval, retry/cancel notes |
 | Session persistence | `src/voidcode/runtime/storage/` | SQLite-backed local session store |
 | Runtime contracts | `src/voidcode/runtime/contracts.py` | request/response boundary types |
-| Portable session bundles | `src/voidcode/runtime/bundle.py` | schema-versioned import/export artifact with redaction defaults |
+| Session bundles | `src/voidcode/runtime/bundle.py` | Exact schema-versioned session snapshots; bundle files contain sensitive session data and must stay private |
 | Core turn engine | `src/voidcode/core/engine.py` | `TurnEngine` advances producer batches through the host boundary |
 | Runtime host | `src/voidcode/runtime/run_loop.py::RuntimeHost` | runtime-governed context, tools, approvals, persistence, and recovery |
-| Tool behavior | `src/voidcode/tools/` | builtin tools include read/write/edit/glob/grep/web_fetch/web_search/apply_patch/multi_edit/todo/lsp |
+| Tool behavior | `src/voidcode/tools/` | 19 built-in tools; `edit` is the single-replacement, ordered-batch, and patch surface; `read`/`write` and other registered tools are defined here |
 | Unit tests | `tests/unit/` | core engine, provider adapters, tools, and runtime contracts/lifecycle |
 | Integration tests | `tests/integration/` | runtime execution, persistence/recovery, and HTTP transport |
 | Dev workflow | `mise.toml` | canonical task runner |
@@ -91,7 +91,7 @@ voidcode/
 mise install
 uv sync --extra dev
 uv run voidcode --help
-uv run voidcode sessions export <session-id> --workspace . --output session.vcsession.zip --support
+uv run voidcode sessions export <session-id> --workspace . --output session.vcsession.zip  # exact snapshot; keep private
 uv run voidcode sessions import session.vcsession.zip --workspace . --dry-run
 mise run lint
 mise run typecheck

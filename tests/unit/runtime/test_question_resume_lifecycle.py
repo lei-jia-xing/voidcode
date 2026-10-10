@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from voidcode.core.questions import QuestionResponse
+from voidcode.core.questions import QuestionCancellation, QuestionResponse
 from voidcode.core.tool_context import ToolContext
 from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSession
 from voidcode.runtime.config import RuntimeConfig, RuntimeHooksConfig
@@ -35,8 +35,9 @@ class _QuestionThenWriteGraph:
                                 {
                                     "question": "Choose a path",
                                     "header": "Path",
-                                    "options": [{"label": "A", "description": ""}, {"label": "B", "description": ""}],
+                                    "options": [],
                                     "multiple": False,
+                                    "allow_freeform": True,
                                 }
                             ]
                         },
@@ -46,6 +47,13 @@ class _QuestionThenWriteGraph:
         if len(tool_results) == 1:
             return ToolTurn(calls=(ToolCall(tool_name="write", arguments={"path": "answered.txt", "content": "answered"}),))
         return FinalTurn(output="done")
+
+
+class _QuestionThenFinishGraph(_QuestionThenWriteGraph):
+    def produce(self, request: TurnRequest, tool_results: tuple[object, ...], *, session: TurnSession) -> ToolTurn | FinalTurn:
+        if not tool_results:
+            return super().produce(request, tool_results, session=session)
+        return FinalTurn(output="cancelled")
 
 
 @pytest.mark.parametrize("outcome", ["complete", "interrupt", "raise"])
@@ -259,6 +267,127 @@ def test_question_write_resumes_after_close_without_replaying_effect(tmp_path: P
     assert resumed.output == "done"
     assert target.read_text(encoding="utf-8") == "answered"
     assert call_ids == [seed.completed_reports[-1].tool_call_id]
+
+
+def test_freeform_question_answer_resumes_after_cold_runtime_reopen(tmp_path: Path) -> None:
+    database = tmp_path / "cold-question.sqlite3"
+    session_id = "cold-freeform-question"
+    config = RuntimeConfig(execution_engine="deterministic", approval_mode="yolo")
+
+    def repositories(store: SqliteSessionStore) -> RuntimeRepositories:
+        return RuntimeRepositories(store, store, store, store, store, store, store)
+
+    def tools() -> ToolRegistry:
+        return ToolRegistry.from_tools([QuestionTool(), WriteTool()])
+
+    owner = SqliteSessionStore(database_path=database)
+    with VoidCodeRuntime(
+        workspace=tmp_path,
+        repositories=repositories(owner),
+        tool_registry=tools(),
+        turn_producer=_QuestionThenWriteGraph(),
+        config=config,
+    ) as runtime:
+        waiting = runtime.run(RuntimeRequest(prompt="ask", session_id=session_id))
+        assert waiting.session.status == "waiting"
+        request_id = str(next(event.payload["request_id"] for event in waiting.events if event.event_type == "runtime.question_requested"))
+        pending = owner.load_pending_question(workspace=tmp_path, session_id=session_id)
+        assert pending is not None and pending.request_id == request_id
+
+    reopened = SqliteSessionStore(database_path=database)
+    with VoidCodeRuntime(
+        workspace=tmp_path,
+        repositories=repositories(reopened),
+        tool_registry=tools(),
+        turn_producer=_QuestionThenWriteGraph(),
+        config=config,
+    ) as runtime:
+        with pytest.raises(ValueError, match="unknown session"):
+            runtime.answer_question(
+                "foreign-question-session",
+                question_request_id=request_id,
+                responses=(QuestionResponse(header="Path", answers=("wrong owner",)),),
+            )
+        with pytest.raises(ValueError, match="request id does not match"):
+            runtime.answer_question(
+                session_id,
+                question_request_id=f"{request_id}-stale",
+                responses=(QuestionResponse(header="Path", answers=("freeform answer",)),),
+            )
+        response = runtime.answer_question(
+            session_id,
+            question_request_id=request_id,
+            responses=(QuestionResponse(header="Path", answers=("a user-provided value",)),),
+        )
+        replay = runtime.replay_session(session_id=session_id)
+
+    assert response.session.status == "completed"
+    assert response.output == "done"
+    assert (tmp_path / "answered.txt").read_text(encoding="utf-8") == "answered"
+    answers = [event for event in replay.events if event.event_type == "runtime.question_answered"]
+    assert len(answers) == 1
+    assert answers[0].payload["responses"] == [{"header": "Path", "answers": ["a user-provided value"]}]
+
+
+def test_question_cancellation_survives_cold_reopen_and_is_not_replayable(tmp_path: Path) -> None:
+    from voidcode.runtime.contracts import NoPendingQuestionError
+
+    database = tmp_path / "cold-question-cancel.sqlite3"
+    session_id = "cold-question-cancel"
+    config = RuntimeConfig(execution_engine="deterministic", approval_mode="yolo")
+
+    def repositories(store: SqliteSessionStore) -> RuntimeRepositories:
+        return RuntimeRepositories(store, store, store, store, store, store, store)
+
+    def tools() -> ToolRegistry:
+        return ToolRegistry.from_tools([QuestionTool()])
+
+    owner = SqliteSessionStore(database_path=database)
+    with VoidCodeRuntime(
+        workspace=tmp_path,
+        repositories=repositories(owner),
+        tool_registry=tools(),
+        turn_producer=_QuestionThenFinishGraph(),
+        config=config,
+    ) as runtime:
+        waiting = runtime.run(RuntimeRequest(prompt="ask", session_id=session_id))
+        request_id = str(next(event.payload["request_id"] for event in waiting.events if event.event_type == "runtime.question_requested"))
+
+    reopened = SqliteSessionStore(database_path=database)
+    with VoidCodeRuntime(
+        workspace=tmp_path,
+        repositories=repositories(reopened),
+        tool_registry=tools(),
+        turn_producer=_QuestionThenFinishGraph(),
+        config=config,
+    ) as runtime:
+        response = runtime.answer_question(
+            session_id,
+            question_request_id=request_id,
+            responses=QuestionCancellation(),
+        )
+        replay = runtime.replay_session(session_id=session_id)
+        with pytest.raises(NoPendingQuestionError):
+            runtime.answer_question(
+                session_id,
+                question_request_id=request_id,
+                responses=QuestionCancellation(),
+            )
+
+    assert response.session.status == "completed"
+    assert response.output == "cancelled"
+    answered = [event for event in replay.events if event.event_type == "runtime.question_answered"]
+    assert len(answered) == 1
+    assert answered[0].payload == {"request_id": request_id, "cancelled": True}
+    completed = [
+        event.payload["reported_call"]
+        for event in replay.events
+        if event.event_type == "runtime.tool_completed" and isinstance(event.payload.get("reported_call"), dict)
+    ]
+    assert any(
+        isinstance(report, dict) and isinstance(report.get("result"), dict) and report["result"].get("control") == {"kind": "question_cancelled"}
+        for report in completed
+    )
 
 
 @pytest.mark.parametrize("boundary", ("stream_close", "terminal_save_failure"))

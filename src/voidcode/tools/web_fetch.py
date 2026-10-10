@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
+import urllib.parse
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -11,8 +12,18 @@ from bs4 import BeautifulSoup, Tag
 from markdownify import MarkdownConverter
 
 from ..core.tool_context import ToolContext
-from ..security.url_policy import validate_redirect_target, validate_url
-from .contracts import AttachmentOutput, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
+from .contracts import (
+    AttachmentOutput,
+    OutputBounds,
+    OutputReference,
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolEffect,
+    ToolResult,
+    ToolSuccess,
+)
+from .output import RASTER_IMAGE_MIMES, create_tool_output_artifact
 
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024
 DEFAULT_TIMEOUT = 30
@@ -22,19 +33,29 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class WebFetchResultBody:
-    url: str
+    original_url: str
+    final_url: str
     content_type: str
+    mime: str
     format: str
     byte_count: int
     timeout_seconds: int
+    used_encoding: str | None
+    provenance: str
+    source_artifact: dict[str, object]
 
     def as_payload(self) -> dict[str, object]:
         return {
-            "url": self.url,
+            "original_url": self.original_url,
+            "final_url": self.final_url,
             "content_type": self.content_type,
+            "mime": self.mime,
             "format": self.format,
             "byte_count": self.byte_count,
             "timeout_seconds": self.timeout_seconds,
+            "used_encoding": self.used_encoding,
+            "provenance": self.provenance,
+            "source_artifact": dict(self.source_artifact),
         }
 
 
@@ -147,144 +168,166 @@ class WebFetchTool:
     )
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
-        _ = context
-        return self._invoke(call, runtime_timeout_seconds=None)
+        return self._invoke(call, runtime_timeout_seconds=None, session_id=context.session_id)
 
     def invoke_with_runtime_timeout(self, call: ToolCall, *, context: ToolContext, timeout_seconds: int) -> ToolResult:
-        _ = context
-        return self._invoke(call, runtime_timeout_seconds=timeout_seconds)
+        return self._invoke(call, runtime_timeout_seconds=timeout_seconds, session_id=context.session_id)
 
     def _invoke(
         self,
         call: ToolCall,
         *,
         runtime_timeout_seconds: int | None,
+        session_id: str | None,
     ) -> ToolResult:
-        url_value = call.arguments.get("url")
-        if not isinstance(url_value, str):
+        original_url = call.arguments.get("url")
+        if not isinstance(original_url, str):
             raise ValueError("web_fetch requires a string url argument")
-
-        _ = validate_url(url_value)
 
         format_value = call.arguments.get("format", "markdown")
         if not isinstance(format_value, str) or format_value not in ("text", "markdown", "html"):
             raise ValueError("web_fetch format must be 'text', 'markdown', or 'html'")
 
         timeout_value = call.arguments.get("timeout", DEFAULT_TIMEOUT)
-        if isinstance(timeout_value, (int, float)) and timeout_value > 0:
-            timeout = min(int(timeout_value), 120)
-        else:
-            timeout = DEFAULT_TIMEOUT
+        timeout = min(int(timeout_value), 120) if isinstance(timeout_value, (int, float)) and timeout_value > 0 else DEFAULT_TIMEOUT
         if runtime_timeout_seconds is not None:
             timeout = min(timeout, runtime_timeout_seconds)
 
-        content: str = ""
-        data: bytes = b""
-        mime: str = ""
-
         accept_by_format = {
-            "markdown": ("text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1"),
-            "text": ("text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1"),
-            "html": ("text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1"),
+            "markdown": "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1",
+            "text": "text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1",
+            "html": "text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1",
         }
-
-        accept_header = accept_by_format[format_value]
-
-        # Use a more realistic User-Agent to avoid bot detection on some servers
-        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) VoidCode/1.0 Chrome/110.0.5481.100 Safari/537.36"
-
         headers = {
-            "User-Agent": ua,
-            "Accept": accept_header,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) VoidCode/1.0 Chrome/110 Safari/537.36",
+            "Accept": accept_by_format[format_value],
         }
 
-        current_url = url_value
+        current_url = original_url
         max_redirects = 5
+        data = b""
+        content = ""
+        content_type = ""
+        mime = ""
+        final_url = original_url
+        used_encoding: str | None = None
+        is_attachment = False
 
         try:
             with httpx.Client(timeout=timeout, follow_redirects=False) as client:
                 for _ in range(max_redirects + 1):
-                    response = client.request("GET", current_url, headers=headers)
+                    with client.stream("GET", current_url, headers=headers) as response:
+                        if response.is_redirect:
+                            location = response.headers.get("Location")
+                            if not location:
+                                raise ValueError("Failed to fetch URL: redirect response missing location")
+                            current_url = urllib.parse.urljoin(current_url, location)
+                            continue
 
-                    if response.is_redirect:
-                        location = response.headers.get("Location")
-                        if not location:
-                            raise ValueError("Failed to fetch URL: redirect response missing location")
-                        redirected = validate_redirect_target(base_url=current_url, location=location)
-                        current_url = redirected.url
-                        continue
+                        if response.status_code >= 400:
+                            raise ValueError(f"HTTP error {response.status_code}: {response.reason_phrase}")
 
-                    if response.status_code >= 400:
-                        raise ValueError(f"HTTP error {response.status_code}: {response.reason_phrase}")
+                        final_url = str(response.url)
+                        content_type = response.headers.get("Content-Type", "")
+                        mime = content_type.split(";", 1)[0].strip().lower() if content_type else ""
+                        is_attachment = format_value == "markdown" and mime in RASTER_IMAGE_MIMES
+                        is_textual = (
+                            mime.startswith("text/")
+                            or mime in {"application/json", "application/xml", "application/javascript"}
+                            or mime.endswith(("+json", "+xml"))
+                        )
+                        content_length = response.headers.get("Content-Length")
+                        if content_length is not None:
+                            try:
+                                parsed_length = int(content_length)
+                            except ValueError:
+                                parsed_length = None
+                            if parsed_length is not None and parsed_length > MAX_RESPONSE_SIZE:
+                                raise ValueError(f"Response too large (exceeds {MAX_RESPONSE_SIZE // 1024 // 1024}MB limit)")
 
-                    final_url = str(response.url)
-                    _ = validate_url(final_url)
-                    content_type = response.headers.get("Content-Type", "")
-                    content_length = response.headers.get("Content-Length")
+                        total = 0
+                        chunks: list[bytes] = []
+                        for chunk in response.iter_bytes():
+                            total += len(chunk)
+                            if total > MAX_RESPONSE_SIZE:
+                                raise ValueError(f"Response too large (exceeds {MAX_RESPONSE_SIZE // 1024 // 1024}MB limit)")
+                            chunks.append(chunk)
+                        data = b"".join(chunks)
 
-                    if content_length:
-                        try:
-                            parsed_length = int(content_length)
-                        except TypeError, ValueError:
-                            parsed_length = None
-                        if parsed_length is not None and parsed_length > MAX_RESPONSE_SIZE:
-                            limit_mb = MAX_RESPONSE_SIZE // 1024 // 1024
-                            raise ValueError(f"Response too large (exceeds {limit_mb}MB limit)")
-
-                    total = 0
-                    chunks: list[bytes] = []
-                    for chunk in response.iter_bytes():
-                        total += len(chunk)
-                        if total > MAX_RESPONSE_SIZE:
-                            limit_mb = MAX_RESPONSE_SIZE // 1024 // 1024
-                            raise ValueError(f"Response too large (exceeds {limit_mb}MB limit)")
-                        chunks.append(chunk)
-
-                    data = b"".join(chunks)
-                    content = data.decode("utf-8", errors="replace")
-                    mime = content_type.split(";")[0].strip().lower() if content_type else ""
-                    break
+                        if is_textual:
+                            try:
+                                used_encoding = response.encoding or "utf-8"
+                                content = data.decode(used_encoding)
+                            except (LookupError, UnicodeDecodeError) as exc:
+                                raise ValueError(f"Failed to decode response with declared content type {content_type!r}: {exc}") from exc
+                        break
                 else:
                     raise ValueError("Failed to fetch URL: too many redirects")
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
             raise ValueError(f"Failed to fetch URL: {exc}") from exc
 
-        # Normal post-fetch processing (outside of except blocks)
-        if format_value == "html":
+        source_artifact = create_tool_output_artifact(
+            session_id=session_id,
+            tool_call_id=call.tool_call_id,
+            tool_name=self.definition.name,
+            content=data,
+            kind="web_fetch_response",
+            mime=mime or "application/octet-stream",
+            source=final_url,
+        )
+        artifact_uri = source_artifact["uri"]
+        assert isinstance(artifact_uri, str)
+        bounds = OutputBounds(
+            reference=OutputReference(uri=artifact_uri, artifact=source_artifact),
+            source="web_fetch",
+        )
+        body = WebFetchResultBody(
+            original_url=original_url,
+            final_url=final_url,
+            content_type=content_type,
+            mime=mime,
+            format=format_value,
+            byte_count=len(data),
+            timeout_seconds=timeout,
+            used_encoding=used_encoding,
+            provenance="web_fetch",
+            source_artifact=source_artifact,
+        )
+
+        provenance = (
+            f"Source URL: {original_url} | Final URL: {final_url} | "
+            f"MIME: {mime or 'application/octet-stream'} | charset: {used_encoding or 'unspecified'} | raw: {artifact_uri}"
+        )
+        if is_attachment:
+            data_uri = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+            return ToolSuccess(
+                tool_name=self.definition.name,
+                output=AttachmentOutput(
+                    mime=mime,
+                    data_uri=data_uri,
+                    presentation=f"{provenance}\nFetched {mime} attachment.",
+                    bounds=bounds,
+                ),
+                body=body,
+            )
+
+        if not is_textual:
+            output = "Opaque response bytes were preserved without text decoding."
+        elif format_value == "html":
             output = content
         elif format_value == "text":
             output = _extract_text_from_html(content)
-        elif format_value == "markdown":
-            if mime and mime.startswith("image/"):
-                b64 = base64.b64encode(data).decode("ascii")
-                data_uri = f"data:{mime};base64,{b64}"
-                return ToolSuccess(
-                    tool_name=self.definition.name,
-                    output=AttachmentOutput(mime=mime, data_uri=data_uri),
-                    body=WebFetchResultBody(
-                        url=url_value,
-                        content_type=mime,
-                        format=format_value,
-                        byte_count=len(data),
-                        timeout_seconds=timeout,
-                    ),
-                )
-            if "text/html" in mime:
-                output = _html_to_markdown_or_text(content, url=url_value)
-            else:
-                output = content
+        elif mime in {"text/html", "application/xhtml+xml"}:
+            output = _html_to_markdown_or_text(content, url=final_url)
+        else:
+            output = content
 
         return ToolSuccess(
             tool_name=self.definition.name,
             output=TextOutput(
-                output,
-                presentation=f"Fetched {len(output)} characters from {url_value} as {format_value}.",
+                f"{provenance}\n\n{output}",
+                presentation=f"Fetched {len(output)} characters from {final_url} as {format_value}.",
+                bounds=bounds,
             ),
-            body=WebFetchResultBody(
-                url=url_value,
-                content_type=mime,
-                format=format_value,
-                byte_count=len(data),
-                timeout_seconds=timeout,
-            ),
+            body=body,
         )

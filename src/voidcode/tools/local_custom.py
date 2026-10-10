@@ -11,13 +11,14 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from string import Template
-from typing import BinaryIO, final
+from typing import final
 
 from ..core.tool_context import ToolContext
 from ..security.json_values import json_wire_object, own_json_object
 from .contracts import (
     EmptyOutput,
     OutputBounds,
+    OutputReference,
     RuntimeToolTimeoutError,
     TextOutput,
     ToolCall,
@@ -28,12 +29,11 @@ from .contracts import (
     ToolResult,
     ToolSuccess,
 )
+from .process_output import ProcessOutputCapture, artifact_uri, collect_process_pipe
 
 LOCAL_CUSTOM_TOOL_SOURCE = "local_custom_tool"
 LOCAL_CUSTOM_TOOL_DEFAULT_PATH = ".voidcode/tools"
 LOCAL_CUSTOM_TOOL_MANIFEST_SUFFIX = ".json"
-_MAX_LOCAL_CUSTOM_OUTPUT_BYTES = 50 * 1024
-_LOCAL_CUSTOM_OUTPUT_CHUNK_BYTES = 8192
 _VALID_TOOL_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-/")
 
 
@@ -44,7 +44,12 @@ class LocalCustomResultBody:
     manifest: str
     stderr: str | None = None
     stdout_truncated: bool = False
+    stdout_artifact: dict[str, object] | None = None
+    stderr_artifact: dict[str, object] | None = None
+    output_limit_exceeded: bool = False
     stderr_truncated: bool = False
+    stop_confirmed: bool | None = None
+    cancelled: bool = False
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -54,12 +59,22 @@ class LocalCustomResultBody:
         }
         if self.stderr:
             payload["stderr"] = self.stderr
+        if self.stdout_artifact is not None:
+            payload["stdout_artifact"] = self.stdout_artifact
+        if self.stderr_artifact is not None:
+            payload["stderr_artifact"] = self.stderr_artifact
+        if self.output_limit_exceeded:
+            payload["output_limit_exceeded"] = True
         if self.stdout_truncated or self.stderr_truncated:
             payload.update(
                 truncated=True,
                 stdout_truncated=self.stdout_truncated,
                 stderr_truncated=self.stderr_truncated,
             )
+        if self.cancelled:
+            payload["cancelled"] = True
+        if self.stop_confirmed is not None:
+            payload["stop_confirmed"] = self.stop_confirmed
         return payload
 
 
@@ -81,28 +96,16 @@ class LocalCustomToolManifest:
 class _BoundedProcessOutput:
     text: str
     truncated: bool
+    output_limit_exceeded: bool = False
+    artifact: dict[str, object] | None = None
+    stop_confirmed: bool | None = None
 
 
-@dataclass(slots=True)
-class _OutputCollector:
-    chunks: list[bytes]
-    byte_count: int = 0
-    truncated: bool = False
-
-    def append(self, chunk: bytes) -> None:
-        remaining = max(0, _MAX_LOCAL_CUSTOM_OUTPUT_BYTES - self.byte_count)
-        if remaining:
-            retained = chunk[:remaining]
-            self.chunks.append(retained)
-            self.byte_count += len(retained)
-        if len(chunk) > remaining:
-            self.truncated = True
-
-    def result(self) -> _BoundedProcessOutput:
-        return _BoundedProcessOutput(
-            b"".join(self.chunks).decode("utf-8", errors="replace").replace("\r\n", "\n"),
-            self.truncated,
-        )
+def _artifact_reference(artifact: dict[str, object] | None) -> OutputReference | None:
+    artifact_id = artifact.get("artifact_id") if artifact is not None else None
+    if not isinstance(artifact_id, str):
+        return None
+    return OutputReference(f"voidcode://artifact/{artifact_id}", artifact)
 
 
 def discover_local_custom_tool_manifests(
@@ -322,9 +325,12 @@ class LocalCustomTool:
             env=env,
             input_text=json.dumps(json_wire_object(call.arguments), allow_nan=False),
             timeout_seconds=timeout_seconds,
+            tool_call_id=context.invocation_id or call.tool_call_id,
         )
         elapsed_ms = round((time.monotonic() - start) * 1000)
+        cancelled = context.abort_signal is not None and context.abort_signal.cancelled
         output_truncated = stdout.truncated or stderr.truncated
+        output_limit_exceeded = stdout.output_limit_exceeded or stderr.output_limit_exceeded
         body = LocalCustomResultBody(
             exit_code=completed.returncode,
             elapsed_ms=elapsed_ms,
@@ -332,13 +338,45 @@ class LocalCustomTool:
             stderr=stderr.text or None,
             stdout_truncated=stdout.truncated,
             stderr_truncated=stderr.truncated,
+            stdout_artifact=stdout.artifact,
+            stderr_artifact=stderr.artifact,
+            output_limit_exceeded=output_limit_exceeded,
+            cancelled=cancelled,
+            stop_confirmed=stdout.stop_confirmed,
         )
+        artifact_refs = [uri for artifact in (stdout.artifact, stderr.artifact) if (uri := artifact_uri(artifact)) is not None]
         bounds = OutputBounds(
             truncated=output_truncated,
             partial=output_truncated,
+            reference=_artifact_reference(stdout.artifact or stderr.artifact) if output_truncated else None,
             source=LOCAL_CUSTOM_TOOL_SOURCE,
         )
-        output = TextOutput(stdout.text, bounds=bounds) if stdout.text else EmptyOutput(bounds=bounds)
+        if output_truncated and artifact_refs:
+            output_text = "Full process output: " + ", ".join(artifact_refs)
+            if stderr.text:
+                output_text += f"\n\n[stderr]\n{stderr.text}"
+            if stdout.text:
+                output_text += f"\n\n{stdout.text}"
+        else:
+            output_text = stdout.text
+            if stderr.text:
+                output_text = f"{output_text}\n[stderr]\n{stderr.text}" if output_text else stderr.text
+        output = TextOutput(output_text, bounds=bounds) if output_text else EmptyOutput(bounds=bounds)
+        if output_limit_exceeded:
+            return ToolFailure(
+                tool_name=self._manifest.name,
+                error="local custom tool output exceeded the 128 MiB capture limit; partial output is attached.",
+                output=output,
+                body=body,
+            )
+        if cancelled:
+            message = "Local custom tool was cancelled."
+            return ToolFailure(
+                tool_name=self._manifest.name,
+                error=message,
+                output=TextOutput(f"{message}\n\n{output_text}", bounds=bounds),
+                body=body,
+            )
         if completed.returncode != 0:
             message = stderr.text.strip() or stdout.text.strip() or f"command exited with {completed.returncode}"
             return ToolFailure(
@@ -363,6 +401,7 @@ class LocalCustomTool:
         env: dict[str, str],
         input_text: str,
         timeout_seconds: int | None,
+        tool_call_id: str | None,
     ) -> tuple[subprocess.CompletedProcess[bytes], _BoundedProcessOutput, _BoundedProcessOutput]:
         try:
             process = subprocess.Popen(
@@ -377,48 +416,143 @@ class LocalCustomTool:
         except OSError as exc:
             raise ValueError(f"local custom tool '{self._manifest.name}' failed to execute: {exc}") from exc
 
-        stdout_collector = _OutputCollector([])
-        stderr_collector = _OutputCollector([])
+        stdout_capture = ProcessOutputCapture.create("stdout")
+        stderr_capture = ProcessOutputCapture.create("stderr")
         readers = (
-            threading.Thread(target=_collect_output, args=(process.stdout, stdout_collector), daemon=True),
-            threading.Thread(target=_collect_output, args=(process.stderr, stderr_collector), daemon=True),
+            threading.Thread(target=collect_process_pipe, args=(process.stdout, stdout_capture), daemon=True),
+            threading.Thread(target=collect_process_pipe, args=(process.stderr, stderr_capture), daemon=True),
         )
         for reader in readers:
             reader.start()
+        stop_confirmed: bool | None = None
+        started_at = time.monotonic()
+        deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+        abort_signal = context.abort_signal
+        pending_input = memoryview(input_text.encode("utf-8"))
+        input_offset = 0
         try:
             if process.stdin is not None:
-                try:
-                    process.stdin.write(input_text.encode("utf-8"))
-                    process.stdin.close()
-                except OSError:
-                    pass
-            abort_signal = context.abort_signal
-            deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+                os.set_blocking(process.stdin.fileno(), False)
             while process.poll() is None:
                 if abort_signal is not None and abort_signal.cancelled:
-                    _kill_local_custom_process(process)
-                    process.wait()
-                    for reader in readers:
-                        reader.join(timeout=1)
-                    stdout, stderr = stdout_collector.result(), stderr_collector.result()
-                    return subprocess.CompletedProcess(command, process.returncode, b"", b""), stdout, stderr
+                    stop_confirmed = _kill_local_custom_process(process)
+                    break
                 if deadline is not None and time.monotonic() >= deadline:
-                    _kill_local_custom_process(process)
-                    process.wait()
+                    stop_confirmed = _kill_local_custom_process(process)
                     for reader in readers:
                         reader.join(timeout=1)
-                    stdout, stderr = stdout_collector.result(), stderr_collector.result()
-                    raise RuntimeToolTimeoutError(
-                        f"local custom tool '{self._manifest.name}' timed out after {timeout_seconds} seconds",
-                        partial_result={"stdout": stdout.text, "stderr": stderr.text, "truncated": stdout.truncated or stderr.truncated},
+                    stdout, stderr = self._process_outputs(
+                        stdout_capture,
+                        stderr_capture,
+                        context,
+                        tool_call_id,
+                        stop_confirmed=stop_confirmed,
                     )
+                    message = f"local custom tool '{self._manifest.name}' timed out after {timeout_seconds} seconds"
+                    output_limit_exceeded = stdout.output_limit_exceeded or stderr.output_limit_exceeded
+                    output_truncated = stdout.truncated or stderr.truncated
+                    body = LocalCustomResultBody(
+                        exit_code=process.returncode,
+                        elapsed_ms=round((time.monotonic() - started_at) * 1000),
+                        manifest=str(self._manifest.manifest_path),
+                        stderr=stderr.text or None,
+                        stdout_truncated=stdout.truncated,
+                        stderr_truncated=stderr.truncated,
+                        stdout_artifact=stdout.artifact,
+                        stderr_artifact=stderr.artifact,
+                        output_limit_exceeded=output_limit_exceeded,
+                        stop_confirmed=stop_confirmed,
+                    )
+                    artifacts = (stdout.artifact, stderr.artifact)
+                    refs = [uri for item in artifacts if (uri := artifact_uri(item)) is not None]
+                    if output_truncated and refs:
+                        text = "Full process output: " + ", ".join(refs)
+                        if stderr.text:
+                            text += f"\n\n[stderr]\n{stderr.text}"
+                        if stdout.text:
+                            text += f"\n\n{stdout.text}"
+                    else:
+                        text = stdout.text
+                        if stderr.text:
+                            text = f"{text}\n[stderr]\n{stderr.text}" if text else stderr.text
+                    partial = ToolFailure(
+                        tool_name=self._manifest.name,
+                        error=message,
+                        output=TextOutput(
+                            text,
+                            bounds=OutputBounds(
+                                truncated=output_truncated,
+                                partial=True,
+                                reference=_artifact_reference(stdout.artifact or stderr.artifact),
+                                source=LOCAL_CUSTOM_TOOL_SOURCE,
+                            ),
+                        ),
+                        body=body,
+                    )
+                    raise RuntimeToolTimeoutError(
+                        message,
+                        partial_result=partial,
+                        execution_stopped=stop_confirmed,
+                    )
+                if process.stdin is not None and not process.stdin.closed:
+                    if input_offset < len(pending_input):
+                        try:
+                            input_offset += os.write(
+                                process.stdin.fileno(),
+                                pending_input[input_offset:],
+                            )
+                        except BlockingIOError:
+                            pass
+                        except BrokenPipeError:
+                            process.stdin.close()
+                    if input_offset == len(pending_input) and not process.stdin.closed:
+                        process.stdin.close()
                 time.sleep(0.01)
             process.wait()
+        except OSError:
+            stop_confirmed = _kill_local_custom_process(process)
+            raise
         finally:
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
             for reader in readers:
                 reader.join(timeout=1)
-        stdout, stderr = stdout_collector.result(), stderr_collector.result()
+        stdout, stderr = self._process_outputs(
+            stdout_capture,
+            stderr_capture,
+            context,
+            tool_call_id,
+            stop_confirmed=stop_confirmed,
+        )
         return subprocess.CompletedProcess(command, process.returncode, b"", b""), stdout, stderr
+
+    def _process_outputs(
+        self,
+        stdout_capture: ProcessOutputCapture,
+        stderr_capture: ProcessOutputCapture,
+        context: ToolContext,
+        tool_call_id: str | None,
+        *,
+        stop_confirmed: bool | None = None,
+    ) -> tuple[_BoundedProcessOutput, _BoundedProcessOutput]:
+        outputs: list[_BoundedProcessOutput] = []
+        for capture in (stdout_capture, stderr_capture):
+            artifact = capture.artifact(
+                session_id=context.session_id,
+                tool_call_id=tool_call_id,
+                tool_name=self._manifest.name,
+            )
+            outputs.append(
+                _BoundedProcessOutput(
+                    capture.preview(),
+                    capture.preview_truncated or capture.limit_exceeded,
+                    capture.limit_exceeded,
+                    artifact,
+                    stop_confirmed,
+                )
+            )
+            capture.close()
+        return outputs[0], outputs[1]
 
     def _render_command(self, *, workspace: Path) -> tuple[str, ...]:
         return tuple(
@@ -440,30 +574,43 @@ class LocalCustomTool:
         return env
 
 
-def _collect_output(pipe: BinaryIO | None, collector: _OutputCollector) -> None:
-    if pipe is None:
-        return
+def _local_process_group_exists(process_group_id: int) -> bool:
     try:
-        while True:
-            chunk = pipe.read(_LOCAL_CUSTOM_OUTPUT_CHUNK_BYTES)
-            if not chunk:
-                return
-            collector.append(chunk)
-    finally:
-        pipe.close()
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
-def _kill_local_custom_process(process: subprocess.Popen[bytes]) -> None:
+def _kill_local_custom_process(process: subprocess.Popen[bytes]) -> bool:
     if os.name == "nt":
         try:
             process.kill()
         except ProcessLookupError:
             pass
-        return
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            return False
+        return process.poll() is not None
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+            process.wait(timeout=1)
+        except OSError, subprocess.TimeoutExpired:
+            return False
+    deadline = time.monotonic() + 1
+    while _local_process_group_exists(process.pid) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return not _local_process_group_exists(process.pid)
 
 
 __all__ = [

@@ -117,6 +117,11 @@ whole purpose is a payload always print JSON: `provider models`, `provider inspe
 `sessions undo|revert|unrevert`, `storage diagnostics`, `storage prune`, `storage reset`,
 `config show`, `config schema`, and `config init`.
 
+`voidcode sessions import BUNDLE --dry-run` validates the bundle and destination owner IDs without
+initializing a missing session database or modifying the original session/state files, SQLite sidecars,
+or destination workspace. It reads a private temporary copy of the database plus any WAL or rollback
+journal, removes that copy on return, and fails closed if those source files change during the copy.
+
 `run --trace` streams a human-readable transcript (model turns, one block per tool call with its
 output, TODO updates, and reasoning behind `--show-thinking`) for manual QA; `--json` and `--trace`
 are mutually exclusive. Live provider output is client-only: when a provider attempt is retried or

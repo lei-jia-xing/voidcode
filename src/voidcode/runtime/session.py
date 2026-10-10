@@ -186,43 +186,14 @@ def normalize_persisted_session_metadata(metadata: dict[str, object]) -> dict[st
 
 def _policy_observations(events: tuple[EventEnvelope, ...]) -> dict[str, object]:
     tool_policy_denial: dict[str, object] | None = None
-    shell_policy_events: list[dict[str, object]] = []
     for event in events:
-        event_type = event.event_type
-        payload = event.payload
-        raw_tool_policy = payload.get("tool_policy")
-        if payload.get("kind") == "runtime_tool_policy_denied" and isinstance(raw_tool_policy, dict):
+        raw_tool_policy = event.payload.get("tool_policy")
+        if event.payload.get("kind") == "runtime_tool_policy_denied" and isinstance(raw_tool_policy, dict):
             tool_policy_denial = {
                 "event_sequence": event.sequence,
                 **_bounded_redacted_mapping(raw_tool_policy),
             }
-        if payload.get("policy_surface") == "shell_policy":
-            shell_policy_events.append(
-                {
-                    "event_sequence": event.sequence,
-                    "event_type": event_type,
-                    "tool": payload.get("tool"),
-                    "path_scope": payload.get("path_scope"),
-                    "operation_class": payload.get("operation_class"),
-                    "matched_rule": _bounded_redacted(payload.get("matched_rule")),
-                    "policy_surface": "shell_policy",
-                }
-            )
-        if payload.get("tool") == "shell_exec" and "injected_env_keys" in payload:
-            shell_policy_events.append(
-                {
-                    "event_sequence": event.sequence,
-                    "event_type": event_type,
-                    "tool": "shell_exec",
-                    "injected_env_keys": _bounded_redacted(payload.get("injected_env_keys")),
-                }
-            )
-    observations: dict[str, object] = {}
-    if tool_policy_denial is not None:
-        observations["tool_policy_denial"] = tool_policy_denial
-    if shell_policy_events:
-        observations["shell_policy"] = shell_policy_events[-_PERSISTED_LIST_LIMIT:]
-    return observations
+    return {"tool_policy_denial": tool_policy_denial} if tool_policy_denial is not None else {}
 
 
 def session_metadata_for_persistence(

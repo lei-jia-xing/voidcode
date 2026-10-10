@@ -47,6 +47,7 @@ from ..mcp import (
     create_diagnostic,
     redact_mcp_command,
 )
+from ..security.json_values import json_wire_object, own_json_object
 from .config import RuntimeMcpConfig, RuntimeMcpServerConfig
 from .events import (
     RUNTIME_MCP_SERVER_ACQUIRED,
@@ -484,9 +485,17 @@ class ManagedMcpManager:
             ),
         )
         call_result = cast(CallToolResult, result)
+        raw_structured_content = call_result.structured_content
+        if raw_structured_content is None:
+            structured_content = None
+        elif isinstance(raw_structured_content, Mapping):
+            structured_content = json_wire_object(own_json_object(raw_structured_content))
+        else:
+            raise ValueError("MCP structured content must be a JSON object")
         return McpToolCallResult(
             content=[item.model_dump(by_alias=True, exclude_none=True) for item in call_result.content],
-            is_error=bool(call_result.is_error),
+            structured_content=structured_content,
+            is_error=call_result.is_error,
         )
 
     def shutdown(self) -> tuple[McpRuntimeEvent, ...]:

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import ClassVar, final
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from ..core.tool_context import ToolContext
 from ._pydantic_args import parse_tool_args, validate_non_empty_stripped
@@ -25,6 +25,8 @@ from .contracts import ToolCall, ToolDefinition, ToolEffect, ToolResult
 
 
 class InvokeToolArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     arguments: dict[str, object] | None = None
 
@@ -54,12 +56,13 @@ class InvokeTool:
         input_schema={
             "name": {
                 "type": "string",
-                "description": "Tool name to invoke (for example 'web_search', 'apply_patch', or an MCP tool such as 'mcp/context7/query-docs').",
+                "description": "Tool name to invoke (for example 'web_fetch', 'lsp', or an MCP tool such as 'mcp/context7/query-docs').",
             },
             "arguments": {
                 "type": "object",
-                "description": "Arguments object matching the target tool's input schema; omitted when the tool takes no arguments.",
+                "description": "Arguments object matching the target tool's input schema; omitted when the tool takes none.",
             },
+            "additionalProperties": False,
             "required": ["name"],
         },
         effects=frozenset({ToolEffect.READ}),

@@ -23,6 +23,7 @@ from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.tool_registry import ToolRegistry
 from voidcode.tools.contracts import (
     RuntimeToolTimeoutError,
+    StaticTool,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -30,6 +31,7 @@ from voidcode.tools.contracts import (
     ToolResult,
     ToolSuccess,
 )
+from voidcode.tools.grep import GrepTool
 from voidcode.tools.invoke_tool import InvokeTool
 
 
@@ -75,7 +77,7 @@ class _CaptureTool:
 
 def _runtime(
     workspace: Path,
-    tool: _CaptureTool,
+    tool: StaticTool,
     registry: ToolInputHandlerRegistry,
     *,
     approval_mode: ApprovalMode = "yolo",
@@ -326,3 +328,76 @@ def test_invoke_inner_timeout_feedback_uses_final_rewritten_args(tmp_path: Path)
     response = runtime.run(RuntimeRequest(prompt="dispatch timeout"))
     completed = [event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "capture"]
     assert completed and completed[-1].payload["arguments"] == {"path": "timeout-final.txt"}
+
+
+def test_invoke_unknown_target_is_reported_without_failing_run(tmp_path: Path) -> None:
+    response = _runtime(
+        tmp_path,
+        _CaptureTool(),
+        ToolInputHandlerRegistry(()),
+        initial_call=ToolCall(tool_name="invoke_tool", arguments={"name": "missing"}),
+        include_invoke_tool=True,
+    ).run(RuntimeRequest(prompt="dispatch unknown"))
+
+    assert response.session.status == "completed"
+    failed = next(event for event in response.events if event.event_type == "runtime.tool_completed")
+    assert failed.payload["tool"] == "missing"
+    assert failed.payload["status"] == "error"
+    assert failed.payload["diagnostics"]["kind"] == "unknown_tool"
+
+
+def test_deferred_grep_validation_errors_keep_target_identity(tmp_path: Path) -> None:
+    response = _runtime(
+        tmp_path,
+        GrepTool(),
+        ToolInputHandlerRegistry(()),
+        initial_call=ToolCall(
+            tool_name="invoke_tool",
+            arguments={"name": "grep", "arguments": {"pattern": "needle", "path": "missing.txt", "context": "bad"}},
+        ),
+        include_invoke_tool=True,
+    ).run(RuntimeRequest(prompt="invalid grep call"))
+
+    assert response.session.status == "completed"
+    failed = next(event for event in response.events if event.event_type == "runtime.tool_completed")
+    assert failed.payload["tool"] == "grep"
+    assert failed.payload["status"] == "error"
+    assert "Validation error" in failed.payload["error"]
+
+
+class _WriteProbe:
+    definition = ToolDefinition(
+        name="write_probe",
+        description="write a test file",
+        input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+        effects=frozenset({ToolEffect.WRITE}),
+    )
+
+    def __init__(self, target: Path) -> None:
+        self.target = target
+
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
+        _ = context
+        self.target.write_text(str(call.arguments["path"]), encoding="utf-8")
+        return ToolSuccess(tool_name=call.tool_name, output=TextOutput("written"))
+
+
+def test_deferred_write_denied_in_plan_mode_never_writes_file(tmp_path: Path) -> None:
+    target = tmp_path / "must-not-exist.txt"
+    response = _runtime(
+        tmp_path,
+        _WriteProbe(target),
+        ToolInputHandlerRegistry(()),
+        initial_call=ToolCall(
+            tool_name="invoke_tool",
+            arguments={"name": "write_probe", "arguments": {"path": "written"}},
+        ),
+        include_invoke_tool=True,
+    ).run(RuntimeRequest(prompt="do not write", metadata={"mode": "plan"}))
+
+    assert response.session.status == "completed"
+    assert not target.exists()
+    denied = next(event for event in response.events if event.event_type == "runtime.tool_completed")
+    assert denied.payload["tool"] == "write_probe"
+    assert denied.payload["status"] == "error"
+    assert denied.payload["diagnostics"]["kind"] == "runtime_tool_policy_denied"

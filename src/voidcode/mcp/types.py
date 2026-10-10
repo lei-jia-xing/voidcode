@@ -58,9 +58,8 @@ class McpToolDescriptor:
 
 @dataclass(frozen=True, slots=True)
 class McpToolCallResult:
-    """Static MCP tool call result - does not depend on runtime lifecycle."""
-
     content: list[dict[str, Any]]
+    structured_content: dict[str, Any] | None = None
     is_error: bool = False
 
 

@@ -4,6 +4,7 @@ import difflib
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import ClassVar, final
 
 from pydantic import BaseModel
@@ -12,7 +13,6 @@ from ..core.tool_context import ToolContext
 from ..formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ..hook.config import RuntimeHooksConfig
 from ..security.json_values import json_wire_object, own_json_object
-from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._pydantic_args import parse_tool_args
 from ._repair import raise_tool_diagnostic
@@ -27,6 +27,7 @@ class WriteResultBody:
     diff: str
     formatter: Mapping[str, object] | None = None
     diagnostics: tuple[Mapping[str, object], ...] = ()
+    content_hash: str | None = None
 
     def __post_init__(self) -> None:
         if self.formatter is not None:
@@ -39,6 +40,8 @@ class WriteResultBody:
             "byte_count": self.byte_count,
             "diff": self.diff,
         }
+        if self.content_hash is not None:
+            payload["content_hash"] = self.content_hash
         if self.formatter is not None:
             payload["formatter"] = json_wire_object(self.formatter)
         if self.diagnostics:
@@ -93,24 +96,18 @@ class WriteTool:
             tool_name=self.definition.name,
         )
 
-        resolution = resolve_workspace_path(
-            workspace=workspace,
-            raw_path=args.path,
-            containment_error="write only allows paths inside the workspace",
-            allow_outside_workspace=True,
-        )
-        workspace_root = resolution.workspace_root
-        candidate = resolution.candidate
-        display_path = str(candidate.resolve()) if resolution.is_external else resolution.relative_path
+        workspace_root = workspace.resolve()
+        raw_path = Path(args.path)
+        candidate = (raw_path if raw_path.is_absolute() else workspace_root / raw_path).resolve()
+        is_external = not candidate.is_relative_to(workspace_root)
+        display_path = str(candidate) if is_external else candidate.relative_to(workspace_root).as_posix()
 
         enforce_read_before_write(
             context=context,
             tool_name=self.definition.name,
-            workspace=workspace_root,
             raw_path=args.path,
             candidate=candidate,
             display_path=display_path,
-            is_external=resolution.is_external,
         )
 
         if candidate.exists():
@@ -137,11 +134,10 @@ class WriteTool:
             enforce_seen_whole_file(
                 context=context,
                 tool_name=self.definition.name,
-                workspace=workspace_root,
                 raw_path=args.path,
                 candidate=candidate,
                 display_path=display_path,
-                is_external=resolution.is_external,
+                expected_hash=expected_hash,
             )
 
         candidate.parent.mkdir(parents=True, exist_ok=True)
@@ -153,12 +149,11 @@ class WriteTool:
             formatter_result = FormatterExecutor(self._hooks_config, workspace_root).run(candidate)
 
         diagnostics = formatter_diagnostics(formatter_result)
-        content = f"Wrote file successfully: {display_path}"
-        if diagnostics:
-            content += f" Formatter warning: {diagnostics[0]['message']}"
-
+        final_bytes = candidate.read_bytes()
+        final_hash = hashlib.sha256(final_bytes).hexdigest()
+        byte_count = len(final_bytes)
         new_content = candidate.read_text(encoding="utf-8")
-        relative_output_path = candidate.relative_to(workspace_root).as_posix() if not resolution.is_external else candidate.as_posix()
+        relative_output_path = candidate.as_posix() if is_external else candidate.relative_to(workspace_root).as_posix()
         diff = "".join(
             difflib.unified_diff(
                 old_content.splitlines(keepends=True),
@@ -168,11 +163,13 @@ class WriteTool:
             )
         )
 
-        byte_count = candidate.stat().st_size
+        content = f"Wrote file successfully: {display_path}"
+        if diagnostics:
+            content += f" Formatter warning: {diagnostics[0]['message']}"
+
         formatter = None
         if formatter_result is not None and formatter_result.status != "not_configured":
             formatter = formatter_payload(formatter_result)
-            byte_count = len(candidate.read_text(encoding="utf-8").encode("utf-8"))
         lsp_diagnostics = post_edit_lsp_diagnostics(
             context=context,
             workspace=workspace_root,
@@ -187,5 +184,6 @@ class WriteTool:
                 diff=diff,
                 formatter=formatter,
                 diagnostics=tuple([*diagnostics, *lsp_diagnostics]),
+                content_hash=final_hash,
             ),
         )

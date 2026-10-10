@@ -6,4 +6,6 @@ Operations:
 - `mode=replace` writes the workspace and requires `apply=true`; it is mutating, requires runtime approval, and is never replayed after interruption.
 - `pattern` and `path` are required. `rewrite` is required for preview and replace; `lang` is optional.
 - Preview before replace when the rewrite scope is not already obvious.
-- Prefer returned match and replacement counts over prose summaries when planning the next step.
+- `body.matches` contains at most 50 location summaries; `match_count` and `truncated` describe the full result. Full native JSONL (including ranges and replacements) is in the session-owned `body_artifact`/`artifacts`; the visible `read(path="...")` link reads it.
+- Replacing a directory preflights every matched file and line before writing. Every file must be read; any failed path/range guard rejects the entire operation without changes. Native apply targets only the exact preflighted files.
+- `expectedHash` pins one target file. Each affected file is formatted independently; single-file results keep `final_hash` and `diff`, while directory results include per-file source/final hashes, byte counts, diffs, and formatter status in `body.files`.

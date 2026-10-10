@@ -7,7 +7,6 @@ import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
 
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
@@ -16,10 +15,9 @@ from ..core.tool_context import ToolContext
 from ..formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ..hook.config import RuntimeHooksConfig
 from ..security.json_values import json_wire_object, own_json_object
-from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._repair import format_text_repair_hints, raise_tool_diagnostic
-from .contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolSuccess
+from .contracts import TextOutput, ToolSuccess
 from .guards import enforce_read_before_write, enforce_seen_lines, enforce_seen_whole_file
 
 
@@ -91,20 +89,6 @@ def _patch_change_from_payload(payload: Mapping[str, object]) -> PatchChange:
     if not isinstance(path, str) or not isinstance(status, str) or (old_path is not None and not isinstance(old_path, str)):
         raise TypeError("Invalid internal patch change")
     return PatchChange(path=path, status=status, old_path=old_path)
-
-
-def _assert_within_workspace(
-    workspace: Path,
-    rel_path: Path,
-    *,
-    allow_external_absolute: bool = True,
-) -> None:
-    _ = resolve_workspace_path(
-        workspace=workspace,
-        raw_path=rel_path.as_posix(),
-        containment_error="patch operation must affect paths inside the workspace",
-        allow_outside_workspace=allow_external_absolute and rel_path.is_absolute(),
-    )
 
 
 def _strip_heredoc(input_text: str) -> str:
@@ -376,6 +360,7 @@ def _verify_patch_expected_hashes(
     changes: list[dict[str, object]],
     expected_hashes: dict[str, str] | None,
     workspace: Path,
+    tool_name: str = "edit",
 ) -> None:
     """Verify expected hashes for every existing file the patch modifies, before any write."""
     normalized_hashes: dict[str, str] = {}
@@ -403,12 +388,12 @@ def _verify_patch_expected_hashes(
         actual_hash = hashlib.sha256(resolved.read_bytes()).hexdigest()
         if actual_hash != expected_hash:
             raise_tool_diagnostic(
-                message=f"apply_patch rejected because {raw_path} changed since it was read (stale edit).",
+                message=f"{tool_name} rejected because {raw_path} changed since it was read (stale edit).",
                 error_kind="stale_edit",
                 reason="content_hash_mismatch",
                 retry_guidance=(
                     "Read the affected file(s) again, use the SHA-256 content hashes shown in the read output, "
-                    "then retry apply_patch with an updated expectedHashes map."
+                    f"then retry {tool_name} with an updated expectedHashes map."
                 ),
                 details={
                     "path": raw_path,
@@ -420,14 +405,14 @@ def _verify_patch_expected_hashes(
     if missing_paths:
         raise_tool_diagnostic(
             message=(
-                "apply_patch requires an expectedHashes entry for every existing file the patch "
+                f"{tool_name} requires an expectedHashes entry for every existing file the patch "
                 f"modifies; missing: {', '.join(sorted(missing_paths))}."
             ),
             error_kind="tool_input_mismatch",
             reason="missing_expected_hash",
             retry_guidance=(
                 "Use read on each affected path, copy its SHA-256 content hash from the output into "
-                "expectedHashes (relative path -> hash), then retry apply_patch."
+                f"expectedHashes (relative path -> hash), then retry {tool_name}."
             ),
             details={
                 "affected_paths": affected_paths,
@@ -442,6 +427,7 @@ def _apply_marker_patch(
     context: ToolContext,
     workspace: Path,
     expected_hashes: dict[str, str] | None = None,
+    tool_name: str = "edit",
 ) -> ToolSuccess[ApplyPatchResultBody]:
     hunks = _parse_marker_patch(patch_text)
     prepared: list[_PreparedMarkerChange] = []
@@ -452,9 +438,6 @@ def _apply_marker_patch(
     for hunk in hunks:
         if hunk.move_path is not None and hunk.move_path == hunk.path:
             raise ValueError(f"Move destination must differ from source: {hunk.move_path}")
-        _assert_within_workspace(workspace, Path(hunk.path))
-        if hunk.move_path is not None:
-            _assert_within_workspace(workspace, Path(hunk.move_path))
 
         if hunk.action == "add":
             target = workspace / hunk.path
@@ -511,15 +494,15 @@ def _apply_marker_patch(
         if change.status == "A":
             continue
         guard_path = change.old_path or change.path
-        target = workspace / guard_path
+        target = _resolve_patch_path(workspace, guard_path)
+        is_external = not target.is_relative_to(workspace.resolve())
+        display_path = target.as_posix() if is_external else target.relative_to(workspace.resolve()).as_posix()
         enforce_read_before_write(
             context=context,
-            tool_name="apply_patch",
-            workspace=workspace,
+            tool_name=tool_name,
             raw_path=guard_path,
             candidate=target,
-            display_path=guard_path,
-            is_external=False,
+            display_path=display_path,
         )
 
     _verify_patch_expected_hashes(
@@ -533,33 +516,32 @@ def _apply_marker_patch(
         ],
         expected_hashes=expected_hashes,
         workspace=workspace,
+        tool_name=tool_name,
     )
 
     for change in prepared:
         if change.status == "A":
             continue
         guard_path = change.old_path or change.path
-        target = workspace / guard_path
+        target = _resolve_patch_path(workspace, guard_path)
+        is_external = not target.is_relative_to(workspace.resolve())
+        display_path = target.as_posix() if is_external else target.relative_to(workspace.resolve()).as_posix()
         if change.status == "D":
             enforce_seen_whole_file(
                 context=context,
-                tool_name="apply_patch",
-                workspace=workspace,
+                tool_name=tool_name,
                 raw_path=guard_path,
                 candidate=target,
-                display_path=guard_path,
-                is_external=False,
+                display_path=display_path,
             )
             continue
         for start_line, end_line in ranges_by_source.get(guard_path, ()):
             enforce_seen_lines(
                 context=context,
-                tool_name="apply_patch",
-                workspace=workspace,
+                tool_name=tool_name,
                 raw_path=guard_path,
                 candidate=target,
-                display_path=guard_path,
-                is_external=False,
+                display_path=display_path,
                 start_line=start_line,
                 end_line=end_line,
             )
@@ -576,14 +558,24 @@ def _apply_marker_patch(
     changes: list[PatchChange] = []
     summary_lines: list[str] = []
     for change in prepared:
-        changes.append(PatchChange(path=change.path, status=change.status, old_path=change.old_path))
+        target = _resolve_patch_path(workspace, change.path)
+        display_path = target.as_posix() if not target.is_relative_to(workspace.resolve()) else target.relative_to(workspace.resolve()).as_posix()
+        old_target = _resolve_patch_path(workspace, change.old_path) if change.old_path is not None else None
+        display_old_path = (
+            old_target.as_posix()
+            if old_target is not None and not old_target.is_relative_to(workspace.resolve())
+            else old_target.relative_to(workspace.resolve()).as_posix()
+            if old_target is not None
+            else None
+        )
+        changes.append(PatchChange(path=display_path, status=change.status, old_path=display_old_path))
         if change.status == "R":
-            summary_lines.append(f"M {change.old_path} -> {change.path}")
+            summary_lines.append(f"M {display_old_path} -> {display_path}")
         else:
-            summary_lines.append(f"{change.status} {change.path}")
+            summary_lines.append(f"{change.status} {display_path}")
 
     return ToolSuccess(
-        tool_name="apply_patch",
+        tool_name=tool_name,
         output=TextOutput("\n".join(summary_lines)),
         body=ApplyPatchResultBody(changes=tuple(changes), count=len(changes)),
     )
@@ -720,64 +712,6 @@ def _parse_patch_file_path(raw_value: str) -> str | None:
     return value.split("\t", 1)[0].rstrip()
 
 
-def _validate_unified_patch_paths(patch_text: str, *, workspace: Path) -> None:
-    """Validate every path declaration before git sees a unified patch."""
-    declarations: list[str] = []
-    for line in patch_text.splitlines():
-        if line.startswith("diff --git "):
-            parsed = _parse_diff_git_paths(line)
-            if parsed is None:
-                raise_tool_diagnostic(
-                    message="apply_patch rejected a malformed or ambiguously quoted unified-diff path",
-                    error_kind="parse_error",
-                    reason="malformed_patch_path",
-                    retry_guidance="Use standard unquoted paths or valid C-style quoted paths in the unified diff.",
-                    details={"patch_invalid": True},
-                )
-            declarations.extend(parsed)
-            continue
-        for prefix in ("--- ", "+++ ", "rename from ", "rename to ", "copy from ", "copy to "):
-            if not line.startswith(prefix):
-                continue
-            path = _parse_patch_file_path(line[len(prefix) :])
-            if path is None:
-                raise_tool_diagnostic(
-                    message="apply_patch rejected a malformed or ambiguously quoted unified-diff path",
-                    error_kind="parse_error",
-                    reason="malformed_patch_path",
-                    retry_guidance="Use standard unquoted paths or valid C-style quoted paths in the unified diff.",
-                    details={"patch_invalid": True},
-                )
-            if path != "/dev/null":
-                declarations.append(_strip_diff_prefix(path))
-            continue
-
-    for path in declarations:
-        if not path:
-            raise_tool_diagnostic(
-                message="apply_patch rejected an empty unified-diff path",
-                error_kind="parse_error",
-                reason="malformed_patch_path",
-                retry_guidance="Provide a concrete path for every unified-diff file header.",
-                details={"patch_invalid": True},
-            )
-        try:
-            _ = resolve_workspace_path(
-                workspace=workspace,
-                raw_path=path,
-                containment_error="patch paths must be inside the workspace",
-                allow_outside_workspace=False,
-            )
-        except OSError, RuntimeError, ValueError:
-            raise_tool_diagnostic(
-                message=f"apply_patch rejected unsafe path {path!r}; patch paths must be inside the workspace",
-                error_kind="parse_error",
-                reason="unsafe_patch_path",
-                retry_guidance="Rebuild the patch using paths relative to the current workspace.",
-                details={"path": path, "patch_invalid": True},
-            )
-
-
 def _quote_git_path(prefix: str, path: str) -> str:
     escaped = path.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{prefix}/{escaped}"'
@@ -869,7 +803,7 @@ def _run_git_command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[
             text=True,
         )
     except FileNotFoundError as exc:
-        raise ValueError("git is required for apply_patch") from exc
+        raise ValueError("git is required to apply an edit patch") from exc
 
 
 def _format_patch_error(error: str, patch_text: str) -> str:
@@ -896,9 +830,9 @@ def _format_patch_error(error: str, patch_text: str) -> str:
 def _invalid_patch_text_error(patch_text: str, *, detail: str | None = None) -> str:
     stripped = _strip_heredoc(patch_text).strip()
     if not stripped:
-        base = "apply_patch received empty patch text."
+        base = "edit received empty patch text."
     else:
-        base = "apply_patch received malformed patch text: no valid file operations were found."
+        base = "edit received malformed patch text: no valid file operations were found."
     guidance = (
         "\nProvide exactly one structured patch envelope with at least one file operation, "
         "or a valid unified diff that git apply can parse."
@@ -927,13 +861,9 @@ def _formatter_feedback_for_changes(
         path_value = change.get("path")
         if not isinstance(path_value, str):
             continue
-        resolution = resolve_workspace_path(
-            workspace=workspace,
-            raw_path=path_value,
-            containment_error="patch operation must affect paths inside the workspace",
-            allow_outside_workspace=True,
-        )
-        candidate = resolution.candidate
+        workspace_root = workspace.resolve()
+        requested_path = Path(path_value)
+        candidate = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
         if not candidate.is_file():
             continue
         result = executor.run(candidate)
@@ -956,7 +886,7 @@ def _with_formatter_feedback(
 ) -> ToolSuccess[ApplyPatchResultBody]:
     body = result.body
     if not isinstance(body, ApplyPatchResultBody):
-        raise TypeError("ApplyPatchTool returned no typed patch result body")
+        raise TypeError("edit returned no typed patch result body")
     changes = [change.as_payload() for change in body.changes]
     formatter_results, diagnostics = _formatter_feedback_for_changes(
         changes,
@@ -971,7 +901,7 @@ def _with_formatter_feedback(
     if not formatter_results and not diagnostics and not lsp_diagnostics:
         return result
     if not isinstance(result.output, TextOutput):
-        raise TypeError("ApplyPatchTool returned no text output")
+        raise TypeError("edit returned no text output for patch application")
     content = result.output.text
     if diagnostics:
         content += f"\nFormatter warning: {diagnostics[0]['message']}"
@@ -999,17 +929,17 @@ def _guard_changes_before_write(
         guard_path = change.get("old_path") if status == "R" else change.get("path")
         if not isinstance(guard_path, str):
             continue
-        _assert_within_workspace(workspace, Path(guard_path), allow_external_absolute=False)
+        requested_path = Path(guard_path)
+        candidate = (requested_path if requested_path.is_absolute() else workspace / requested_path).resolve()
+        is_external = not candidate.is_relative_to(workspace.resolve())
         if status == "A":
             continue
         enforce_read_before_write(
             context=context,
             tool_name=tool_name,
-            workspace=workspace.resolve(),
             raw_path=guard_path,
-            candidate=(workspace / guard_path).resolve(),
-            display_path=guard_path,
-            is_external=False,
+            candidate=candidate,
+            display_path=candidate.as_posix() if is_external else candidate.relative_to(workspace.resolve()).as_posix(),
         )
 
 
@@ -1047,11 +977,9 @@ def _enforce_patch_seen_ranges(
             enforce_seen_lines(
                 context=context,
                 tool_name=tool_name,
-                workspace=workspace,
                 raw_path=guard_path,
                 candidate=candidate,
                 display_path=guard_path,
-                is_external=False,
                 start_line=hunk.source_start,
                 end_line=hunk.source_start + length - 1,
             )
@@ -1155,7 +1083,7 @@ def _verify_mode_only_change(
     if unchanged_paths or invalid_paths:
         detail_paths = sorted(set(unchanged_paths + invalid_paths))
         raise_tool_diagnostic(
-            message=(f"apply_patch did not make the requested mode-only filesystem change for: {', '.join(detail_paths)}."),
+            message=(f"edit patch did not make the requested mode-only filesystem change for: {', '.join(detail_paths)}."),
             error_kind="no_op",
             reason="mode_only_change_not_verified",
             retry_guidance=("Confirm the current file mode and rebuild the mode-only patch against the current file state."),
@@ -1270,177 +1198,142 @@ def _changes_from_patch(patch_text: str) -> list[dict[str, object]]:
     return _dedupe_changes(changes)
 
 
-_APPLY_PATCH_DESCRIPTION = "Apply structured file patches or unified diff patches inside the current workspace."
+def execute_patch(
+    arguments: Mapping[str, object],
+    *,
+    context: ToolContext,
+    hooks_config: RuntimeHooksConfig | None = None,
+    tool_name: str = "edit",
+) -> ToolSuccess[ApplyPatchResultBody]:
+    workspace = context.require_workspace()
+    patch_text = arguments.get("patch")
+    if not isinstance(patch_text, str):
+        raise ValueError(f"{tool_name} requires a string 'patch' argument")
 
+    raw_expected_hashes = arguments.get("expectedHashes")
+    if raw_expected_hashes is None:
+        expected_hashes: dict[str, str] | None = None
+    elif isinstance(raw_expected_hashes, Mapping) and all(
+        isinstance(key, str) and isinstance(value, str) for key, value in raw_expected_hashes.items()
+    ):
+        expected_hashes = dict(raw_expected_hashes)
+    else:
+        raise ValueError(f"{tool_name} expectedHashes must be an object mapping path strings to SHA-256 hash strings")
 
-class ApplyPatchTool:
-    definition: ClassVar[ToolDefinition] = ToolDefinition(
-        name="apply_patch",
-        description=_APPLY_PATCH_DESCRIPTION,
-        input_schema={
-            "patch": {
-                "type": "string",
-                "minLength": 1,
-                "description": "Patch text using the supported apply_patch format.",
-            },
-            "expectedHashes": {
-                "type": "object",
-                "additionalProperties": {"type": "string"},
-                "description": (
-                    "Map of path -> SHA-256 hash for every EXISTING file the patch modifies or deletes. "
-                    "Hashes come from the SHA-256 content hash shown in the read output. Required whenever "
-                    "the patch touches files that already exist; omit only for patches that solely "
-                    "add new files."
-                ),
-            },
-            "required": ["patch"],
-        },
-        effects=frozenset({ToolEffect.WRITE}),
-    )
+    stripped_patch = _strip_heredoc(patch_text).strip()
+    if not stripped_patch:
+        raise_tool_diagnostic(
+            message=_invalid_patch_text_error(patch_text),
+            error_kind="parse_error",
+            reason="empty_patch",
+            retry_guidance=(
+                "Provide a non-empty patch: a structured *** Begin Patch envelope with at least "
+                "one file operation, or a unified diff that git apply can parse."
+            ),
+            details={"patch_empty": True},
+        )
 
-    def __init__(self, *, hooks_config: RuntimeHooksConfig | None = None) -> None:
-        self._hooks_config = hooks_config
+    if _looks_like_marker_patch(patch_text):
+        result = _apply_marker_patch(patch_text, workspace=workspace, expected_hashes=expected_hashes, context=context, tool_name=tool_name)
+        return _with_formatter_feedback(result, workspace=workspace.resolve(), hooks_config=hooks_config, context=context)
 
-    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolSuccess[ApplyPatchResultBody]:
-        workspace = context.require_workspace()
-        patch_text = call.arguments.get("patch")
-        if not isinstance(patch_text, str):
-            raise ValueError("apply_patch requires a string 'patch' argument")
-
-        raw_expected_hashes = call.arguments.get("expectedHashes")
-        if raw_expected_hashes is None:
-            expected_hashes: dict[str, str] | None = None
-        elif isinstance(raw_expected_hashes, Mapping) and all(
-            isinstance(key, str) and isinstance(value, str) for key, value in raw_expected_hashes.items()
-        ):
-            expected_hashes = dict(raw_expected_hashes)
-        else:
-            raise ValueError("apply_patch expectedHashes must be an object mapping path strings to SHA-256 hash strings")
-
-        stripped_patch = _strip_heredoc(patch_text).strip()
-        if not stripped_patch:
+    normalized_patch = _normalize_patch_text(patch_text)
+    changes = _changes_from_patch(patch_text)
+    if not changes and not _looks_like_mode_only_patch(patch_text):
+        raise_tool_diagnostic(
+            message=_invalid_patch_text_error(patch_text),
+            error_kind="parse_error",
+            reason="invalid_patch_text",
+            retry_guidance=(
+                "Provide a structured *** Begin Patch envelope with at least one file operation, or a valid unified diff that git apply can parse."
+            ),
+            details={"affected_paths": [], "patch_invalid": True},
+        )
+    _guard_changes_before_write(changes, workspace=workspace, tool_name=tool_name, context=context)
+    patch_path = workspace / ".voidcode_edit.patch"
+    patch_path.write_text(normalized_patch, encoding="utf-8", newline="\n")
+    try:
+        check = _run_git_command(["git", "apply", "--check", str(patch_path)], workspace)
+        if check.returncode != 0:
+            error = check.stdout or "Patch check failed"
             raise_tool_diagnostic(
-                message=_invalid_patch_text_error(patch_text),
+                message=_format_patch_error(error, normalized_patch),
                 error_kind="parse_error",
-                reason="empty_patch",
+                reason="patch_apply_failed",
                 retry_guidance=(
-                    "Provide a non-empty patch: a structured *** Begin Patch envelope with at least "
-                    "one file operation, or a unified diff that git apply can parse."
+                    "Re-read the affected file(s) with read and rebuild the patch hunks from "
+                    f"the current content, then retry {tool_name}. Prefer the structured "
+                    "*** Begin Patch envelope to avoid manual hunk counts."
                 ),
-                details={"patch_empty": True},
+                details={
+                    "git_error": error,
+                    "affected_paths": [c.get("path") for c in changes if isinstance(c.get("path"), str)],
+                },
             )
 
-        if _looks_like_marker_patch(patch_text):
-            result = _apply_marker_patch(patch_text, workspace=workspace, expected_hashes=expected_hashes, context=context)
-            return _with_formatter_feedback(result, workspace=workspace.resolve(), hooks_config=self._hooks_config, context=context)
+        # Verify expected hashes for every existing file the patch modifies, before writing.
+        _verify_patch_expected_hashes(
+            changes=changes,
+            expected_hashes=expected_hashes,
+            workspace=workspace,
+            tool_name=tool_name,
+        )
 
-        normalized_patch = _normalize_patch_text(patch_text)
-        _validate_unified_patch_paths(patch_text, workspace=workspace)
-        changes = _changes_from_patch(patch_text)
-        if not changes and not _looks_like_mode_only_patch(patch_text):
+        # Require every source line the hunks touch to have been revealed by read.
+        _enforce_patch_seen_ranges(patch_text=normalized_patch, workspace=workspace, tool_name=tool_name, context=context)
+
+        mode_only = _looks_like_mode_only_patch(patch_text)
+        mode_only_before = _capture_mode_only_state(changes=changes, workspace=workspace) if mode_only else {}
+
+        apply = _run_git_command(["git", "apply", str(patch_path)], workspace)
+        if apply.returncode != 0:
+            error = apply.stdout or "Patch apply failed"
             raise_tool_diagnostic(
-                message=_invalid_patch_text_error(patch_text),
+                message=_format_patch_error(error, normalized_patch),
                 error_kind="parse_error",
-                reason="invalid_patch_text",
+                reason="patch_apply_failed",
                 retry_guidance=(
-                    "Provide a structured *** Begin Patch envelope with at least one file operation, "
-                    "or a valid unified diff that git apply can parse."
+                    "Re-read the affected file(s) with read and rebuild the patch hunks from "
+                    f"the current content, then retry {tool_name}. Prefer the structured "
+                    "*** Begin Patch envelope to avoid manual hunk counts."
                 ),
-                details={"affected_paths": [], "patch_invalid": True},
+                details={
+                    "git_error": error,
+                    "affected_paths": [c.get("path") for c in changes if isinstance(c.get("path"), str)],
+                },
             )
-        _guard_changes_before_write(changes, workspace=workspace, tool_name=self.definition.name, context=context)
-        patch_path = workspace / ".voidcode_apply_patch.patch"
-        patch_path.write_text(normalized_patch, encoding="utf-8", newline="\n")
-        try:
-            check = _run_git_command(["git", "apply", "--check", str(patch_path)], workspace)
-            if check.returncode != 0:
-                error = check.stdout or "Patch check failed"
-                raise_tool_diagnostic(
-                    message=_format_patch_error(error, normalized_patch),
-                    error_kind="parse_error",
-                    reason="patch_apply_failed",
-                    retry_guidance=(
-                        "Re-read the affected file(s) with read and rebuild the patch hunks from "
-                        "the current content, then retry apply_patch. Prefer the structured "
-                        "*** Begin Patch envelope to avoid manual hunk counts."
-                    ),
-                    details={
-                        "git_error": error,
-                        "affected_paths": [c.get("path") for c in changes if isinstance(c.get("path"), str)],
-                    },
-                )
 
-            # Verify expected hashes for every existing file the patch modifies, before writing.
-            _verify_patch_expected_hashes(
+        if mode_only:
+            _verify_mode_only_change(
                 changes=changes,
-                expected_hashes=expected_hashes,
+                expected_modes=_mode_only_expected_modes(patch_text),
+                before=mode_only_before,
                 workspace=workspace,
             )
 
-            # Require every source line the hunks touch to have been revealed by read.
-            _enforce_patch_seen_ranges(patch_text=normalized_patch, workspace=workspace, tool_name=self.definition.name, context=context)
+        summary_lines: list[str] = []
+        for c in changes:
+            if c.get("status") == "R":
+                summary_lines.append(f"M {c['old_path']} -> {c['path']}")
+            else:
+                summary_lines.append(f"{c['status']} {c['path']}")
 
-            mode_only = _looks_like_mode_only_patch(patch_text)
-            mode_only_before = _capture_mode_only_state(changes=changes, workspace=workspace) if mode_only else {}
+        content = "\n".join(summary_lines) if summary_lines else "patch applied"
 
-            apply = _run_git_command(["git", "apply", str(patch_path)], workspace)
-            if apply.returncode != 0:
-                error = apply.stdout or "Patch apply failed"
-                raise_tool_diagnostic(
-                    message=_format_patch_error(error, normalized_patch),
-                    error_kind="parse_error",
-                    reason="patch_apply_failed",
-                    retry_guidance=(
-                        "Re-read the affected file(s) with read and rebuild the patch hunks from "
-                        "the current content, then retry apply_patch. Prefer the structured "
-                        "*** Begin Patch envelope to avoid manual hunk counts."
-                    ),
-                    details={
-                        "git_error": error,
-                        "affected_paths": [c.get("path") for c in changes if isinstance(c.get("path"), str)],
-                    },
-                )
-
-            if mode_only:
-                _verify_mode_only_change(
-                    changes=changes,
-                    expected_modes=_mode_only_expected_modes(patch_text),
-                    before=mode_only_before,
-                    workspace=workspace,
-                )
-
-            summary_lines: list[str] = []
-            for c in changes:
-                if c.get("status") == "R":
-                    summary_lines.append(f"M {c['old_path']} -> {c['path']}")
-                else:
-                    summary_lines.append(f"{c['status']} {c['path']}")
-
-            content = "\n".join(summary_lines) if summary_lines else "patch applied"
-
-            # Validate that all affected paths are inside the workspace
-            for c in changes:
-                path_value = c.get("path")
-                if isinstance(path_value, str):
-                    _assert_within_workspace(workspace, Path(path_value), allow_external_absolute=False)
-                old_path_value = c.get("old_path")
-                if isinstance(old_path_value, str):
-                    _assert_within_workspace(workspace, Path(old_path_value), allow_external_absolute=False)
-
-            result = ToolSuccess(
-                tool_name=self.definition.name,
-                output=TextOutput(content),
-                body=ApplyPatchResultBody(
-                    changes=tuple(_patch_change_from_payload(change) for change in changes),
-                    count=len(changes),
-                ),
-            )
-            return _with_formatter_feedback(result, workspace=workspace.resolve(), hooks_config=self._hooks_config, context=context)
-        finally:
-            try:
-                patch_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+        result = ToolSuccess(
+            tool_name=tool_name,
+            output=TextOutput(content),
+            body=ApplyPatchResultBody(
+                changes=tuple(_patch_change_from_payload(change) for change in changes),
+                count=len(changes),
+            ),
+        )
+        return _with_formatter_feedback(result, workspace=workspace.resolve(), hooks_config=hooks_config, context=context)
+    finally:
+        try:
+            patch_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
-__all__ = ["ApplyPatchTool"]
+__all__ = ["ApplyPatchResultBody", "PatchChange", "execute_patch"]

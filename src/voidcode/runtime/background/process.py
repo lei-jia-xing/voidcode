@@ -72,6 +72,15 @@ class BackgroundProcessState:
     identity_match: bool | None = None
     observed_running: bool | None = None
     reconciled: bool = False
+    ready: bool | None = None
+    ready_pattern: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundProcessWriteResult:
+    requested_bytes: int
+    written_bytes: int
+    error: str | None = None
 
 
 class _DetachedProcess:
@@ -192,7 +201,11 @@ class BackgroundProcessManager:
         workspace: Path,
         owner_session_id: str | None = None,
         enforce_owner: bool = False,
+        ready_pattern: str | None = None,
+        ready_timeout: float = 10.0,
     ) -> BackgroundProcessState:
+        if ready_pattern is not None and not 1 <= ready_timeout <= 30:
+            raise ValueError("ready_timeout must be between 1 and 30 seconds")
         normalized_workspace = workspace.resolve()
         with self._lock:
             existing = self.load_running(
@@ -202,6 +215,7 @@ class BackgroundProcessManager:
                 enforce_owner=enforce_owner,
             )
             if existing is not None:
+                self._wait_for_ready(existing, ready_pattern=ready_pattern, timeout=ready_timeout)
                 return existing
 
             process_id = f"proc-{uuid.uuid4().hex}"
@@ -254,7 +268,35 @@ class BackgroundProcessManager:
             self._processes[state.process_id] = state
             self._start_reader(state, stream_name="stdout")
             self._start_reader(state, stream_name="stderr")
+            self._wait_for_ready(state, ready_pattern=ready_pattern, timeout=ready_timeout)
             return state
+
+    @staticmethod
+    def _wait_for_ready(state: BackgroundProcessState, *, ready_pattern: str | None, timeout: float) -> None:
+        if ready_pattern is None:
+            return
+        state.ready_pattern = ready_pattern
+        deadline = time.monotonic() + timeout
+        while True:
+            content = ""
+            for path in (state.stdout_path, state.stderr_path):
+                if path is None:
+                    continue
+                try:
+                    with path.open("rb") as log:
+                        log.seek(0, os.SEEK_END)
+                        size = log.tell()
+                        log.seek(max(0, size - 64 * 1024))
+                        content += log.read(64 * 1024).decode("utf-8", errors="replace")
+                except OSError:
+                    continue
+            if any(ready_pattern in line for line in content.splitlines()):
+                state.ready = True
+                return
+            if state.process.poll() is not None or time.monotonic() >= deadline:
+                state.ready = False
+                return
+            time.sleep(0.03)
 
     def load_running(
         self,
@@ -264,7 +306,6 @@ class BackgroundProcessManager:
         owner_session_id: str | None = None,
         enforce_owner: bool = False,
     ) -> BackgroundProcessState | None:
-        normalized_command = command.strip()
         normalized_cwd = str(workspace.resolve())
         with self._lock:
             for state in self._processes.values():
@@ -273,7 +314,7 @@ class BackgroundProcessManager:
                     continue
                 if state.process.poll() is not None:
                     continue
-                if state.command.strip() != normalized_command or state.cwd != normalized_cwd:
+                if state.command != command or state.cwd != normalized_cwd:
                     continue
                 if enforce_owner and state.owner_session_id != owner_session_id:
                     continue
@@ -333,14 +374,13 @@ class BackgroundProcessManager:
         owner_session_id: str | None = None,
         enforce_owner: bool = False,
     ) -> tuple[BackgroundProcessState, ...]:
-        normalized_command = command.strip()
         normalized_cwd = str(workspace.resolve())
         with self._lock:
             matches = [
                 state
                 for state in self._processes.values()
                 if state.status == "stale"
-                and state.command.strip() == normalized_command
+                and state.command == command
                 and state.cwd == normalized_cwd
                 and (not enforce_owner or state.owner_session_id == owner_session_id)
             ]
@@ -354,7 +394,7 @@ class BackgroundProcessManager:
         workspace: Path | None = None,
         owner_session_id: str | None = None,
         enforce_owner: bool = False,
-    ) -> None:
+    ) -> BackgroundProcessWriteResult:
         state = self._require(
             process_id,
             workspace=workspace,
@@ -366,13 +406,29 @@ class BackgroundProcessManager:
                 f"background process {process_id} is stale: it was observed after a runtime restart "
                 "and is externally managed/unavailable to this runtime"
             )
+        payload = input_text.encode("utf-8")
+        requested_bytes = len(payload)
         if state.process.poll() is not None:
-            raise ValueError(f"background process {process_id} is no longer running")
+            return BackgroundProcessWriteResult(requested_bytes, 0, "process has exited")
         stdin = state.process.stdin
         if stdin is None:
-            raise ValueError(f"background process {process_id} has no stdin stream")
-        stdin.write(input_text)
-        stdin.flush()
+            return BackgroundProcessWriteResult(requested_bytes, 0, "process stdin is closed")
+        descriptor = stdin.fileno()
+        try:
+            os.set_blocking(descriptor, False)
+            written_bytes = os.write(descriptor, payload) if payload else 0
+        except BlockingIOError as exc:
+            written_bytes = min(requested_bytes, max(0, getattr(exc, "characters_written", 0) or 0))
+            return BackgroundProcessWriteResult(
+                requested_bytes,
+                written_bytes,
+                "process stdin is not accepting the full input",
+            )
+        except OSError as exc:
+            written_bytes = min(requested_bytes, max(0, getattr(exc, "characters_written", 0) or 0))
+            return BackgroundProcessWriteResult(requested_bytes, written_bytes, str(exc))
+        error = None if written_bytes == requested_bytes else "process stdin accepted only part of the input"
+        return BackgroundProcessWriteResult(requested_bytes, written_bytes, error)
 
     def stop(
         self,

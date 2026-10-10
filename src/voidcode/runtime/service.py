@@ -26,7 +26,7 @@ from ..command import (
     resolve_prompt_command,
 )
 from ..command.models import CommandDefinition
-from ..core.questions import QuestionResponse
+from ..core.questions import QuestionAnswer
 from ..core.tool_context import ArtifactRead, EditSchema, TranscriptRead
 from ..core.transcript import ContextSegment, ToolResultView, project_report
 from ..core.turns import ReportedCall, TurnProducer, TurnRequest
@@ -40,8 +40,6 @@ from ..hook.typed import (
     ToolInputHandlerBinding,
     ToolInputHandlerDeclaration,
     ToolInputHandlerRegistry,
-    builtin_tool_input_handler_declarations,
-    materialize_builtin_tool_input_handler,
     tool_input_arguments_sha256,
 )
 from ..mcp import McpCachedToolSurface, McpToolDescriptor, list_builtin_mcp_descriptors
@@ -594,24 +592,6 @@ def _builtin_context_component_factory(value: object, _context: object) -> objec
     return materialize_builtin_context_transform(value.provider_id)
 
 
-def _builtin_typed_input_component_config(value: object) -> ValidatedConfig:
-    if not isinstance(value, Mapping) or not isinstance(value.get("name"), str):
-        raise ValueError("builtin typed-input component config requires a name")
-    declaration = next(
-        (item for item in builtin_tool_input_handler_declarations() if item.name == value["name"]),
-        None,
-    )
-    if declaration is None:
-        raise ValueError(f"unknown builtin typed-input component: {value['name']}")
-    return ValidatedConfig(value=declaration, snapshot={"name": declaration.name, "version": declaration.version})
-
-
-def _builtin_typed_input_component_factory(value: object, _context: object) -> object:
-    if not isinstance(value, ToolInputHandlerDeclaration):
-        raise ValueError("builtin typed-input factory requires its admitted declaration")
-    return materialize_builtin_tool_input_handler(value.name)
-
-
 def _builtin_runtime_package(root: Path, provider_names: Iterable[str]) -> BuiltinDeclaration:
     components = [
         ComponentDeclaration(
@@ -648,15 +628,6 @@ def _builtin_runtime_package(root: Path, provider_names: Iterable[str]) -> Built
             validate_config="voidcode.runtime.service:_builtin_context_component_config",
         )
         for declaration in builtin_runtime_context_transform_declarations()
-    )
-    components.extend(
-        ComponentDeclaration(
-            slot="typed-input",
-            name=declaration.name,
-            factory="voidcode.runtime.service:_builtin_typed_input_component_factory",
-            validate_config="voidcode.runtime.service:_builtin_typed_input_component_config",
-        )
-        for declaration in builtin_tool_input_handler_declarations()
     )
     return BuiltinDeclaration(
         declaration=PackageDeclaration(
@@ -915,9 +886,7 @@ class VoidCodeRuntime(RuntimeSurface):
         ).bind(materialize_builtin_context_transform)
         for declaration in self._installed_context_transforms:
             self._context_transform_registry.register(declaration)
-        self._tool_input_handler_registry = tool_input_handler_registry or ToolInputHandlerRegistry.from_declarations(
-            builtin_tool_input_handler_declarations()
-        ).bind(materialize_builtin_tool_input_handler)
+        self._tool_input_handler_registry = tool_input_handler_registry or ToolInputHandlerRegistry()
         for declaration in self._installed_typed_inputs:
             self._tool_input_handler_registry.register(declaration)
         self._default_context_window_policy = context_window_policy_from_config(initial_context_window)
@@ -956,6 +925,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 resolve_skill=self._skill_registry.resolve,
                 resolve_edit_schema=self._edit_schema_resolver(),
                 lsp_request=self.request_lsp,
+                lsp_document_state=self._lsp_manager.document_state,
                 mcp_request=self.request_mcp_tool,
                 task_command=TaskCommand(runtime=self, substrate=self._background_task_supervisor).invoke,
                 task_batch_command=TaskBatchCommand(runtime=self, substrate=self._background_task_supervisor).invoke,
@@ -1001,6 +971,7 @@ class VoidCodeRuntime(RuntimeSurface):
             provider_model=self._provider_model,
             load_background_task=self.load_background_task,
             refresh_mcp_tools=self._refresh_mcp_tools,
+            admit_composition=self._composition_owner.refresh,
             is_active_session=self._is_active_session_id,
             active_session_metadata=self._active_session_metadata,
         )
@@ -1262,8 +1233,6 @@ class VoidCodeRuntime(RuntimeSurface):
             add_builtin("tool", definition.name, {"name": definition.name})
         for declaration in builtin_runtime_context_transform_declarations():
             add_builtin("context", declaration.provider_id, {"name": declaration.provider_id})
-        for declaration in builtin_tool_input_handler_declarations():
-            add_builtin("typed-input", declaration.name, {"name": declaration.name})
         if config.agent is not None and config.agent.preset is not None:
             agent_name = str(config.agent.preset)
             if agent_name not in {item.name for item in selections if item.slot == "agent"}:
@@ -3076,7 +3045,6 @@ class VoidCodeRuntime(RuntimeSurface):
                 "external_directory_read",
                 "external_directory_write",
                 "permission.rules",
-                "shell_policy",
             }
             or pending.path_scope is not None
             or pending.operation_class is not None
@@ -3149,7 +3117,6 @@ class VoidCodeRuntime(RuntimeSurface):
                 "external_directory_read",
                 "external_directory_write",
                 "permission.rules",
-                "shell_policy",
             }
             or pending.path_scope is not None
             or pending.operation_class is not None
@@ -3567,19 +3534,25 @@ class VoidCodeRuntime(RuntimeSurface):
     def read_tool_output_artifact(
         self,
         *,
+        caller_session_id: str | None = None,
         session_id: str,
         artifact_id: str | None = None,
         tool_call_id: str | None = None,
         offset: int = 0,
         limit: int = 2000,
+        byte_offset: int | None = None,
+        byte_limit: int | None = None,
     ) -> ArtifactRead:
         """Read a bounded slice from a spilled tool output artifact."""
         return self._inspection_coordinator.read_tool_output_artifact(
+            caller_session_id=caller_session_id,
             session_id=session_id,
             artifact_id=artifact_id,
             tool_call_id=tool_call_id,
             offset=offset,
             limit=limit,
+            byte_offset=byte_offset,
+            byte_limit=byte_limit,
         )
 
     def search_tool_output_artifact(
@@ -4363,7 +4336,7 @@ class VoidCodeRuntime(RuntimeSurface):
         session_id: str,
         *,
         question_request_id: str,
-        responses: tuple[QuestionResponse, ...],
+        responses: QuestionAnswer,
     ) -> RuntimeResponse:
         validate_id(session_id)
         self._admit_existing_session_composition(session_id)
@@ -4392,7 +4365,7 @@ class VoidCodeRuntime(RuntimeSurface):
         session_id: str,
         *,
         question_request_id: str,
-        responses: tuple[QuestionResponse, ...],
+        responses: QuestionAnswer,
     ) -> Iterator[RuntimeStreamChunk]:
         validate_id(session_id)
         self._admit_existing_session_composition(session_id)

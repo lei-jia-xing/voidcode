@@ -46,15 +46,11 @@ class SessionsArgs:
     question_request_id: str | None = None
     response: tuple[str, ...] = ()
     response_json: str | None = None
+    cancel: bool = False
     json: bool = False
     include_children: bool = False
     output: Path | None = None
     format: str = "zip"
-    redact: bool = True
-    include_tool_output: bool = False
-    include_raw_provider_messages: bool = False
-    include_reasoning_text: bool = False
-    support: bool = False
     bundle_path: Path | None = None
     sequence: int | None = None
     title: str | None = None

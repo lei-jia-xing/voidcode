@@ -66,19 +66,22 @@ class BackgroundProcessSendTool:
                     controllable=False,
                 ),
             )
-        manager.write(
+        write_result = manager.write(
             args.process_id,
             text,
             workspace=workspace,
             owner_session_id=caller_session_id,
             enforce_owner=True,
         )
-        return ToolSuccess(
-            tool_name=self.name,
-            output=TextOutput(f"Sent input to background process {args.process_id}."),
-            body=BackgroundProcessSendBody(
-                process_id=args.process_id,
-                input=args.input,
-                newline=args.newline,
-            ),
+        message = f"Wrote {write_result.written_bytes} of {write_result.requested_bytes} UTF-8 bytes to background process {args.process_id}."
+        body = BackgroundProcessSendBody(
+            process_id=args.process_id,
+            input=args.input,
+            newline=args.newline,
+            requested_bytes=write_result.requested_bytes,
+            written_bytes=write_result.written_bytes,
+            error=write_result.error,
         )
+        if write_result.error is not None:
+            return ToolFailure(tool_name=self.name, error=write_result.error, output=TextOutput(message), body=body)
+        return ToolSuccess(tool_name=self.name, output=TextOutput(message), body=body)

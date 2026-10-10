@@ -25,6 +25,8 @@ class BackgroundProcessTool:
                         "op": {"const": "start"},
                         "command": {"type": "string"},
                         "description": {"type": "string"},
+                        "ready_pattern": {"type": "string", "minLength": 1, "maxLength": 512},
+                        "ready_timeout": {"type": "integer", "minimum": 1, "maximum": 30, "default": 10},
                     },
                 },
                 {
@@ -40,6 +42,9 @@ class BackgroundProcessTool:
                     "properties": {
                         "op": {"const": "logs"},
                         "process_id": {"type": "string"},
+                        "stream": {"type": "string", "enum": ["stdout", "stderr", "both"], "default": "both"},
+                        "offset": {"type": "integer", "minimum": 0, "maximum": 1000000, "default": 0},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 500},
                     },
                 },
                 {

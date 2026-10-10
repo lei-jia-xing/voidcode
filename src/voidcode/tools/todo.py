@@ -138,9 +138,15 @@ def _apply(args: _TodoArgsModel, phases: list[TodoPhase]) -> None:
     if args.op == "view":
         return
     if args.op == "start":
-        if args.task is None or not args.task.strip():
+        task_name = args.task.strip() if args.task is not None else None
+        if task_name is None:
             raise ValueError("start requires task")
-        target = _target_tasks(phases, task=args.task.strip(), phase=None, required=True)[0]
+        target = _target_tasks(phases, task=task_name, phase=None, required=True)[0]
+        status = target["status"]
+        if status == "blocked":
+            raise ValueError(f'Task "{task_name}" is blocked; unblock it before starting')
+        if status in {"completed", "abandoned"}:
+            raise ValueError(f'Task "{task_name}" is already {status} and cannot be started')
         for phase in phases:
             for task in phase["tasks"]:
                 if task is not target and task["status"] == "in_progress":
@@ -148,8 +154,14 @@ def _apply(args: _TodoArgsModel, phases: list[TodoPhase]) -> None:
         target["status"] = "in_progress"
         target.pop("blocker", None)
     elif args.op in {"done", "drop"}:
+        desired = "completed" if args.op == "done" else "abandoned"
         for target in _target_tasks(phases, task=args.task, phase=args.phase):
-            target["status"] = "completed" if args.op == "done" else "abandoned"
+            status = target["status"]
+            if status == desired:
+                continue
+            if status in {"completed", "abandoned"}:
+                raise ValueError(f'Task "{target["content"]}" is already {status} and cannot become {desired}')
+            target["status"] = desired
             target.pop("blocker", None)
     elif args.op == "block":
         targets = _target_tasks(phases, task=args.task, phase=args.phase, required=True)
@@ -213,15 +225,39 @@ def _apply(args: _TodoArgsModel, phases: list[TodoPhase]) -> None:
     _normalize_in_progress(phases)
 
 
-def _render(phases: list[TodoPhase], op: str) -> str:
-    if not any(phase["tasks"] for phase in phases):
-        return "Todo list is empty." if op == "view" else "Todo list cleared."
+def _render(phases: list[TodoPhase], op: str, *, original: list[TodoPhase]) -> str:
+    if op in {"view", "init"}:
+        if not any(phase["tasks"] for phase in phases):
+            return "Todo list is empty."
+        lines = [f"Todo {op} applied."]
+        for phase in phases:
+            lines.append(f"{phase['name']}:")
+            for task in phase["tasks"]:
+                blocker = f" — {task['blocker']}" if task.get("blocker") else ""
+                lines.append(f"- [{task['status']}] {task['content']}{blocker}")
+        return "\n".join(lines)
+
     lines = [f"Todo {op} applied."]
-    for phase in phases:
-        lines.append(f"{phase['name']}:")
-        for task in phase["tasks"]:
-            blocker = f" — {task['blocker']}" if task.get("blocker") else ""
-            lines.append(f"- [{task['status']}] {task['content']}{blocker}")
+    old_tasks = {(phase["name"], task["content"]): (phase["name"], task) for phase in original for task in phase["tasks"]}
+    new_tasks = {(phase["name"], task["content"]): (phase["name"], task) for phase in phases for task in phase["tasks"]}
+    for key in dict.fromkeys((*old_tasks, *new_tasks)):
+        old = old_tasks.get(key)
+        new = new_tasks.get(key)
+        if old == new:
+            continue
+        if new is None:
+            assert old is not None
+            lines.append(f"- [removed] {old[1]['content']} ({old[0]})")
+        else:
+            lines.append(f"- [{new[1]['status']}] {new[1]['content']} ({new[0]})")
+
+    active = next((task["content"] for phase in phases for task in phase["tasks"] if task["status"] == "in_progress"), None)
+    summary = todo_summary(phases)
+    lines.append(f"Next active: {active or 'none'}")
+    lines.append(
+        f"Summary: {summary['total']} total; {summary['pending']} pending; {summary['in_progress']} in progress; "
+        f"{summary['completed']} completed; {summary['abandoned']} abandoned; {summary['blocked']} blocked."
+    )
     return "\n".join(lines)
 
 
@@ -276,14 +312,15 @@ class TodoTool:
         context.require_session_id()
         args = parse_tool_args(_TodoArgsModel, call.arguments, tool_name=self.definition.name)
         phases: list[TodoPhase] = [deepcopy(phase) for phase in context.todo_phases]
+        original = deepcopy(phases)
         _apply(args, phases)
         return ToolSuccess(
             tool_name=self.definition.name,
-            output=TextOutput(_render(phases, args.op)),
+            output=TextOutput(_render(phases, args.op, original=original)),
             body=TodoResultBody(
                 phases=tuple(phases),
                 summary=todo_summary(phases),
                 op=args.op,
-                mutated=args.op != "view",
+                mutated=phases != original,
             ),
         )

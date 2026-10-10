@@ -1,9 +1,11 @@
 - Search the web for external information and current references
-- Returns ranked result titles, URLs, and snippets
+- Uses Exa when `EXA_API_KEY` is configured (`/search` with `query`, `type=auto`, and `contents.highlights`), then falls back to DuckDuckGo HTML search
+- Returns ranked results with structured rank, title, URL, and full highlights joined as snippet, plus source/fallback metadata visible in the result text
+- No parseable results is an empty success; request failures return an error
 - Use this tool when you need information beyond the local repository or do not yet know the exact URL
 
 Usage notes:
   - The query parameter is required
-  - numResults is optional and defaults to a small result set
+  - `numResults` defaults to 8 and is capped at 20
   - Use web_fetch when the exact URL is already known
   - Treat external search results as research leads, not repository truth

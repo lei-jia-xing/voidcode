@@ -13,7 +13,7 @@ from .permission import OperationClass, PathScope
 #: shell, a spawned agent/process, a local custom command, an MCP call — is
 #: ``execute`` (or, for MCP, ``write``), and an undeclared tool falls to the
 #: safe ``execute`` default.
-_WRITE_TIER_BUILTINS = frozenset({"write", "edit", "multi_edit", "apply_patch", "apply_workspace_edit"})
+_WRITE_TIER_BUILTINS = frozenset({"write", "edit", "apply_workspace_edit"})
 
 
 class RuntimePermissionContextResolver:
@@ -71,9 +71,8 @@ class RuntimePermissionContextResolver:
             canonical = self.canonicalize_candidate_path(raw_path)
             if canonical is not None:
                 normalized.append(canonical.as_posix())
-            text = raw_path.strip().replace("\\", "/")
-            if text:
-                normalized.append(text)
+            if raw_path != "":
+                normalized.append(raw_path)
         workspace_prefix = f"{self._workspace.as_posix().rstrip('/')}/"
         relative: list[str] = []
         for path in normalized:
@@ -93,24 +92,29 @@ class RuntimePermissionContextResolver:
 
         if tool is not None:
             for key in tool.path_argument_keys:
+                array_key, _, member_key = key.partition("[].")
+                if member_key:
+                    items = arguments.get(array_key)
+                    if isinstance(items, (list, tuple)):
+                        for item in items:
+                            value = item.get(member_key) if isinstance(item, Mapping) else None
+                            if isinstance(value, str) and value != "":
+                                candidates.append(value)
+                    continue
                 value = arguments.get(key)
-                if isinstance(value, str) and value.strip():
+                if isinstance(value, str) and value != "":
                     candidates.append(value)
 
-        if tool_call.tool_name == "apply_patch":
+        if tool_call.tool_name == "edit":
             patch_text = arguments.get("patch")
             if isinstance(patch_text, str) and patch_text:
                 candidates.extend(patch_path_extractor(patch_text))
         return tuple(candidates)
 
     def canonicalize_candidate_path(self, raw_path: str) -> Path | None:
-        text = raw_path.strip()
-        if not text:
+        if raw_path == "":
             return None
-        try:
-            candidate = Path(text).expanduser()
-        except RuntimeError:
-            candidate = Path(text)
+        candidate = Path(raw_path)
         if not candidate.is_absolute():
             candidate = self._workspace / candidate
         try:

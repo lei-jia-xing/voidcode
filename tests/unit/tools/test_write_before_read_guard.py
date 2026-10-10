@@ -10,11 +10,9 @@ from voidcode.core.tool_context import ToolContext
 from voidcode.core.turns import ReportedCall
 from voidcode.runtime.execution.report_codec import parse_report_payload, report_payload
 from voidcode.tools._repair import ToolDiagnosticError
-from voidcode.tools.apply_patch import ApplyPatchTool
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.edit import EditTool
 from voidcode.tools.guards import ReadTracking, read_tracking_for_tool_results
-from voidcode.tools.multi_edit import MultiEditTool
 from voidcode.tools.read import MAX_BYTES, MAX_LINE_LENGTH, ReadResultBody, ReadTool
 from voidcode.tools.write import WriteTool
 
@@ -33,6 +31,54 @@ def test_read_paths_for_tool_results_collects_successful_workspace_reads(tmp_pat
     ).read_paths
 
     assert paths == frozenset({target.resolve().as_posix()})
+
+
+def test_external_read_tracking_allows_hash_checked_write_and_rejects_stale_content(tmp_path: Path) -> None:
+    target = tmp_path.parent / f"{tmp_path.name}-external-read.txt"
+    target.write_text("before\n", encoding="utf-8")
+    stale_hash = _content_hash(target)
+    first_read = _read_result(workspace=tmp_path, path=str(target))
+    first_tracking = read_tracking_for_tool_results(tool_results=(first_read,), workspace=tmp_path)
+    resolved = target.resolve().as_posix()
+    assert first_tracking.read_paths == frozenset({resolved})
+
+    target.write_text("changed\n", encoding="utf-8")
+    stale_context = ToolContext(
+        workspace=tmp_path,
+        session_id="external-read",
+        read_paths=first_tracking.read_paths,
+        read_lines=first_tracking.read_lines,
+        read_whole_files=first_tracking.read_whole_files,
+        read_hash=stale_hash,
+    )
+    with pytest.raises(ToolDiagnosticError, match="changed since it was read"):
+        WriteTool().invoke(
+            ToolCall(
+                tool_name="write",
+                arguments={"path": str(target), "content": "replacement\n", "expectedHash": stale_hash},
+            ),
+            context=stale_context,
+        )
+
+    current_hash = _content_hash(target)
+    current_read = _read_result(workspace=tmp_path, path=str(target))
+    current_tracking = read_tracking_for_tool_results(tool_results=(current_read,), workspace=tmp_path)
+    result = WriteTool().invoke(
+        ToolCall(
+            tool_name="write",
+            arguments={"path": str(target), "content": "replacement\n", "expectedHash": current_hash},
+        ),
+        context=ToolContext(
+            workspace=tmp_path,
+            session_id="external-read",
+            read_paths=current_tracking.read_paths,
+            read_lines=current_tracking.read_lines,
+            read_whole_files=current_tracking.read_whole_files,
+            read_hash=current_hash,
+        ),
+    )
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "replacement\n"
 
 
 _UPDATE_PATCH = "\n".join(
@@ -55,15 +101,15 @@ _UPDATE_PATCH = "\n".join(
             "edit",
             EditTool(),
             {"path": "sample.txt", "oldString": "old", "newString": "new"},
-            id="edit",
+            id="edit-single",
         ),
         pytest.param(
-            "multi_edit",
-            MultiEditTool(),
+            "edit",
+            EditTool(),
             {"path": "sample.txt", "edits": [{"oldString": "old", "newString": "new"}]},
-            id="multi-edit",
+            id="edit-batch",
         ),
-        pytest.param("apply_patch", ApplyPatchTool(), {"patch": _UPDATE_PATCH}, id="apply-patch"),
+        pytest.param("edit", EditTool(), {"patch": _UPDATE_PATCH}, id="edit-patch"),
     ),
 )
 def test_mutating_tools_reject_modify_without_prior_read(

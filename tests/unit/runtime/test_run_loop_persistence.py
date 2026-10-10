@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import struct
+import zlib
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
+import pytest
+
 from tests.runtime_composition import save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
+from voidcode.core.tool_context import ArtifactBinary, ToolContext
+from voidcode.core.transcript import ToolResultView
 from voidcode.core.turns import FinalTurn, ResponseReadyFact, StreamFact, ToolTurn, TurnRequest
 from voidcode.provider.protocol import ProviderStreamEvent
 from voidcode.runtime.config import RuntimeConfig
@@ -13,7 +21,8 @@ from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.service import RuntimeRequest, RuntimeStreamChunk, SessionState, ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import ToolCall
+from voidcode.tools.contracts import AttachmentOutput, OutputBounds, OutputReference, ToolCall, ToolDefinition, ToolSuccess
+from voidcode.tools.output import create_tool_output_artifact
 from voidcode.tools.read import ReadTool
 
 
@@ -354,3 +363,139 @@ def test_execute_turn_engine_captures_safe_boundary_checkpoint(tmp_path: Path) -
     assert isinstance(raw_tool_results, list)
     assert [cast(dict[str, object], entry)["tool_name"] for entry in raw_tool_results] == ["read"]
     assert cast(int, checkpoint["last_event_sequence"]) > 0
+
+
+def test_large_attachment_retains_caption_and_full_json_reference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    signature = b"\x89PNG\r\n\x1a\n"
+
+    def _chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    header = _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+    image_data = _chunk(b"IDAT", zlib.compress(b"\x00\x10\x20\x30\xff"))
+    end = _chunk(b"IEND", b"")
+    target_bytes = 48_178
+    text_bytes = target_bytes - len(signature + header + image_data + end) - 12
+    text = b"Comment\x00" + b"R" * (text_bytes - len(b"Comment\x00"))
+    image_bytes = signature + header + _chunk(b"tEXt", text) + image_data + end
+    assert len(image_bytes) == target_bytes
+    expected_sha = hashlib.sha256(image_bytes).hexdigest()
+
+    store = SqliteSessionStore()
+    session_id = "session-attachment"
+    created: dict[str, object] = {}
+
+    class _AttachmentTool:
+        definition = ToolDefinition(
+            name="attachment",
+            description="Return a full image artifact",
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        )
+
+        def invoke(self, call: ToolCall, context: ToolContext) -> ToolSuccess:
+            call_id = call.tool_call_id
+            assert call_id is not None
+            image_artifact = create_tool_output_artifact(
+                session_id=context.require_session_id(),
+                tool_call_id=call_id,
+                tool_name="attachment",
+                content=image_bytes,
+                mime="image/png",
+                kind="mcp_image",
+            )
+            body_json = json.dumps({"image_uri": image_artifact["uri"]}, sort_keys=True)
+            body_artifact = create_tool_output_artifact(
+                session_id=context.require_session_id(),
+                tool_call_id=call_id,
+                tool_name="attachment",
+                content=body_json,
+                mime="application/json",
+                kind="mcp_response",
+            )
+            body_uri = str(body_artifact["uri"])
+            presentation = f"PNG caption; full JSON response: {body_uri}"
+            created.update(
+                image_artifact=image_artifact,
+                body_artifact=body_artifact,
+                body_uri=body_uri,
+                presentation=presentation,
+                call_id=call_id,
+            )
+            reference = OutputReference(
+                uri=body_uri,
+                artifact={"body_artifact": body_artifact, "output_artifact": image_artifact},
+            )
+            return ToolSuccess(
+                tool_name="attachment",
+                output=AttachmentOutput(
+                    mime="image/png",
+                    data_uri=None,
+                    presentation=presentation,
+                    bounds=OutputBounds(reference=reference),
+                ),
+            )
+
+    runtime = _runtime_with_store(
+        tmp_path,
+        store,
+        config=RuntimeConfig(model="openai/gpt-4o"),
+        tool_registry=ToolRegistry.from_tools((_AttachmentTool(),)),
+    )
+    session, request, tool_registry = _turn_request(runtime, session_id=session_id)
+    observed: dict[str, object] = {}
+
+    class _AttachmentThenFinalGraph:
+        def produce(
+            self,
+            request: TurnRequest,
+            tool_results: tuple[ToolResultView, ...],
+            *,
+            session: SessionState,
+        ) -> ToolTurn | FinalTurn:
+            _ = request
+            if not tool_results:
+                return ToolTurn(calls=(ToolCall(tool_name="attachment", arguments={}, tool_call_id="call-image"),))
+            view = tool_results[-1]
+            observed["output"] = view.output
+            image_artifact = cast(dict[str, object], created["image_artifact"])
+            observed["source_read"] = runtime.read_tool_output_artifact(
+                caller_session_id=session.session_id,
+                session_id=session.session_id,
+                artifact_id=cast(str, image_artifact["artifact_id"]),
+                tool_call_id=cast(str, image_artifact["tool_call_id"]),
+            )
+            return FinalTurn(output="done")
+
+    chunks = list(
+        runtime._run_loop_coordinator.execute_turn_engine(
+            producer=_AttachmentThenFinalGraph(),
+            tool_registry=tool_registry,
+            session=session,
+            sequence=0,
+            turn_request=request,
+            tool_results=[],
+        )
+    )
+
+    assert any(chunk.kind == "output" and chunk.output == "done" for chunk in chunks)
+    output = observed["output"]
+    assert isinstance(output, AttachmentOutput)
+    assert output.data_uri is None
+    assert output.presentation == created["presentation"]
+    assert cast(str, created["body_uri"]) in cast(str, output.presentation)
+    reference = output.bounds.reference
+    assert reference is not None
+    assert reference.uri == created["body_uri"]
+    assert reference.artifact is not None
+    assert reference.artifact["body_artifact"] == created["body_artifact"]
+    assert reference.artifact["output_artifact"] == created["image_artifact"]
+    source_read = observed["source_read"]
+    assert isinstance(source_read, ArtifactBinary)
+    assert source_read.data == image_bytes
+    assert source_read.byte_count == target_bytes
+    assert source_read.sha256 == expected_sha
+    assert source_read.data_uri is None

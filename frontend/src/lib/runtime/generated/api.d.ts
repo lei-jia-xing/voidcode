@@ -2101,6 +2101,11 @@ export interface components {
         };
         /** _QuestionAnswerRequestPayload */
         _QuestionAnswerRequestPayload: {
+            /**
+             * Cancel
+             * @default false
+             */
+            cancel: boolean;
             /** Request Id */
             request_id?: string;
             /** Responses */

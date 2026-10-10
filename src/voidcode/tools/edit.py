@@ -19,17 +19,18 @@ from ..formatter import (
 )
 from ..hook.config import RuntimeHooksConfig
 from ..security.json_values import json_wire_object, own_json_object
-from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._repair import (
+    ToolDiagnosticError,
     bounded_block_preview,
     bounded_candidate_diff,
     line_prefix_retry_guidance,
     looks_line_number_prefixed,
     raise_tool_diagnostic,
 )
-from .contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolSuccess
-from .guards import enforce_read_before_write, enforce_seen_lines
+from .apply_patch import execute_patch
+from .contracts import TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
+from .guards import CharProvenanceTracker, enforce_read_before_write, enforce_seen_lines
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +42,9 @@ class EditResultBody:
     diff: str
     formatter: Mapping[str, object] | None = None
     diagnostics: tuple[Mapping[str, object], ...] = ()
+    applied: int | None = None
+    edits: tuple[tuple[int, EditResultBody], ...] | None = None
+    content_hash: str | None = None
 
     def __post_init__(self) -> None:
         if self.formatter is not None:
@@ -55,6 +59,12 @@ class EditResultBody:
             "match_count": self.match_count,
             "diff": self.diff,
         }
+        if self.applied is not None:
+            payload["applied"] = self.applied
+        if self.edits is not None:
+            payload["edits"] = [{"index": idx, "result": res.as_payload()} for idx, res in self.edits]
+        if self.content_hash is not None:
+            payload["content_hash"] = self.content_hash
         if self.formatter is not None:
             payload["formatter"] = json_wire_object(self.formatter)
         if self.diagnostics:
@@ -428,8 +438,14 @@ def _replace(
     *,
     replace_all: bool = False,
     edit_schema: EditSchema = EditSchema.FLEXIBLE,
+    tracker: CharProvenanceTracker | None = None,
+    context: ToolContext | None = None,
+    resolved_path: str | None = None,
+    tool_name: str = "edit",
+    display_path: str = "",
+    raw_path: str = "",
+    is_external: bool = False,
 ) -> tuple[str, int, tuple[tuple[int, int], ...]]:
-    """Return (new content, replacement count, 1-based inclusive line ranges replaced)."""
     # Smart replacement pipeline using 9 replacers in order
     if old_string == new_string:
         raise_tool_diagnostic(
@@ -487,11 +503,32 @@ def _replace(
             seen: set[str] = set()
             match_ranges: list[tuple[int, int]] = []
             for m in matches:
-                if m in seen:
+                if m in seen or not m:
                     continue
                 seen.add(m)
-                if m:
-                    match_ranges.extend(_occurrence_line_ranges(current, m))
+                match_ranges.extend(_occurrence_line_ranges(current, m))
+                if tracker is not None:
+                    start_search = 0
+                    while True:
+                        idx = current.find(m, start_search)
+                        if idx == -1:
+                            break
+                        if context is not None and resolved_path is not None:
+                            tracker.check_seen_lines(
+                                idx,
+                                idx + len(m),
+                                context=context,
+                                resolved_path=resolved_path,
+                                tool_name=tool_name,
+                                display_path=display_path,
+                                raw_path=raw_path,
+                                is_external=is_external,
+                            )
+                        tracker.apply_replacement(idx, idx + len(m), new_string)
+                        total_replacements += 1
+                        current = tracker.content
+                        start_search = idx + len(new_string)
+                else:
                     count = current.count(m)
                     if count:
                         current = current.replace(m, new_string)
@@ -519,10 +556,25 @@ def _replace(
         m = matches[0]
         if m:
             match_ranges = _occurrence_line_ranges(current, m)
-            current = current.replace(m, new_string, 1)
+            idx = current.find(m)
+            if tracker is not None:
+                if context is not None and resolved_path is not None:
+                    tracker.check_seen_lines(
+                        idx,
+                        idx + len(m),
+                        context=context,
+                        resolved_path=resolved_path,
+                        tool_name=tool_name,
+                        display_path=display_path,
+                        raw_path=raw_path,
+                        is_external=is_external,
+                    )
+                tracker.apply_replacement(idx, idx + len(m), new_string)
+                current = tracker.content
+            else:
+                current = current.replace(m, new_string, 1)
             total_replacements += 1
             return current, total_replacements, tuple(match_ranges[:1])
-
     # If we reach here, no replacer found any match
     if edit_schema is EditSchema.STRICT:
         raise_tool_diagnostic(
@@ -637,33 +689,79 @@ class EditTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="edit",
         description=(
-            "Edit a file by replacing text. Supports multiple replacement strategies "
-            "for flexible matching. When constructing oldString from read output, "
-            "omit any leading line-number prefix such as '42: ' and pass only the "
-            "file's actual text."
+            "Edit files by replacing text (single replacement or ordered batch) or applying a patch. "
+            "Supports flexible matching strategies for text replacements. When constructing oldString from read output, "
+            "omit any leading line-number prefix such as '42: ' and pass only the file's actual text."
         ),
         input_schema={
-            "path": {
-                "type": "string",
-                "description": "The path to the file to edit (relative to workspace)",
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative or absolute path to the file to edit.",
+                },
+                "oldString": {
+                    "type": "string",
+                    "description": "The exact text to replace (single replacement mode).",
+                },
+                "newString": {
+                    "type": "string",
+                    "description": "The replacement text (single replacement mode).",
+                },
+                "replaceAll": {
+                    "type": "boolean",
+                    "description": "Replace all occurrences of oldString (default: false).",
+                },
+                "expectedHash": {
+                    "type": "string",
+                    "description": (
+                        "Required SHA-256 hash of the target file content from prior read output. "
+                        "Rejects stale edits when the file changed since that read."
+                    ),
+                },
+                "edits": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "Ordered replacements; each oldString must match the current file state at that step.",
+                    "items": {
+                        "type": "object",
+                        "required": ["oldString", "newString"],
+                        "properties": {
+                            "oldString": {"type": "string", "description": "Exact text to replace."},
+                            "newString": {"type": "string", "description": "Replacement text."},
+                            "replaceAll": {"type": "boolean", "description": "Replace every match; defaults to false."},
+                        },
+                    },
+                },
+                "patch": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Patch text using unified diff or marker patch format (*** Begin Patch / *** End Patch).",
+                },
+                "expectedHashes": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": (
+                        "Map of relative file paths to their SHA-256 content hashes from prior read output. "
+                        "Required for existing files modified or deleted by the patch."
+                    ),
+                },
             },
-            "oldString": {
-                "type": "string",
-                "description": "The text to replace (must match exactly)",
-            },
-            "newString": {"type": "string", "description": "The text to replace it with"},
-            "replaceAll": {
-                "type": "boolean",
-                "description": "Replace all occurrences of oldString (default: false)",
-            },
-            "expectedHash": {
-                "type": "string",
-                "description": (
-                    "Required SHA-256 hash of the current file content, taken from the read output's "
-                    "SHA-256 content hash. Rejects stale edits when the file changed since that read."
-                ),
-            },
-            "required": ["path", "oldString", "newString", "expectedHash"],
+            "oneOf": [
+                {
+                    "required": ["path", "oldString", "newString", "expectedHash"],
+                    "not": {"anyOf": [{"required": ["edits"]}, {"required": ["patch"]}]},
+                },
+                {
+                    "required": ["path", "edits", "expectedHash"],
+                    "not": {"anyOf": [{"required": ["oldString"]}, {"required": ["newString"]}, {"required": ["patch"]}]},
+                },
+                {
+                    "required": ["patch"],
+                    "not": {"anyOf": [{"required": ["path"]}, {"required": ["oldString"]}, {"required": ["newString"]}, {"required": ["edits"]}]},
+                },
+            ],
+            "additionalProperties": False,
         },
         effects=frozenset({ToolEffect.WRITE}),
         path_argument_keys=("path",),
@@ -676,8 +774,236 @@ class EditTool:
     ) -> None:
         self._hooks_config = hooks_config
 
-    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolSuccess[EditResultBody]:
+    def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         workspace = context.require_workspace()
+        has_patch = "patch" in call.arguments
+        has_edits = "edits" in call.arguments
+        has_single = "oldString" in call.arguments or "newString" in call.arguments
+        modes_present = sum([has_patch, has_edits, has_single])
+        if modes_present > 1:
+            raise ValueError(
+                "edit arguments are mutually exclusive: provide either single replacement "
+                "(path, oldString, newString, expectedHash), edits batch (path, edits, expectedHash), "
+                "or patch (patch, expectedHashes)."
+            )
+        if modes_present == 0:
+            raise ValueError(
+                "edit invocation requires either single replacement arguments (path, oldString, newString, expectedHash), "
+                "an edits batch (path, edits, expectedHash), or a patch (patch)."
+            )
+
+        if has_patch:
+            return execute_patch(
+                call.arguments,
+                context=context,
+                hooks_config=self._hooks_config,
+                tool_name=self.definition.name,
+            )
+
+        if has_edits:
+            return self._invoke_edits_batch(call, context=context, workspace=workspace)
+
+        return self._invoke_single(call, context=context, workspace=workspace)
+
+    def _invoke_edits_batch(
+        self,
+        call: ToolCall,
+        *,
+        context: ToolContext,
+        workspace: Path,
+    ) -> ToolSuccess[EditResultBody]:
+        path_value = call.arguments.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            raise ValueError("edit requires a non-empty string 'path' argument")
+
+        raw_edits = call.arguments.get("edits")
+        if not isinstance(raw_edits, (list, tuple)) or len(raw_edits) == 0:
+            raise ValueError("Validation error: edits must contain at least one edit")
+
+        workspace_root = workspace.resolve()
+        requested_path = Path(path_value)
+        candidate = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
+        is_external = not candidate.is_relative_to(workspace_root)
+        if not candidate.exists():
+            raise ValueError(f"edit target does not exist: {path_value}")
+        if not candidate.is_file():
+            raise ValueError(f"edit target is not a file: {path_value}")
+
+        display_path = candidate.as_posix() if is_external else candidate.relative_to(workspace_root).as_posix()
+        resolved_path = candidate.as_posix()
+
+        enforce_read_before_write(
+            context=context,
+            tool_name=self.definition.name,
+            raw_path=path_value,
+            candidate=candidate,
+            display_path=display_path,
+        )
+
+        expected_hash = call.arguments.get("expectedHash")
+        if not isinstance(expected_hash, str):
+            raise_tool_diagnostic(
+                message="edit requires an expectedHash argument: the file must be read before it is edited.",
+                error_kind="tool_input_mismatch",
+                reason="missing_expected_hash",
+                retry_guidance=(
+                    "Use read on the target path, copy its SHA-256 content hash from the output, then retry the edit with that expectedHash."
+                ),
+                details={"path": display_path, "raw_path": path_value},
+            )
+
+        content_before = read_utf8_text(candidate)
+        actual_hash = hashlib.sha256(content_before.encode("utf-8")).hexdigest()
+        if expected_hash != actual_hash:
+            raise_tool_diagnostic(
+                message="Edit rejected because the file changed since it was read (stale edit).",
+                error_kind="stale_edit",
+                reason="content_hash_mismatch",
+                retry_guidance="Read the file again, use the SHA-256 content hash shown in read output, then retry the edit.",
+                details={"expected_hash": expected_hash, "actual_hash": actual_hash, "path": display_path},
+            )
+
+        # Parse and validate edit items
+        parsed_edits: list[tuple[str, str, bool]] = []
+        for idx, item in enumerate(raw_edits, start=1):
+            if not isinstance(item, Mapping):
+                raise ValueError(f"edit item #{idx} must be an object")
+            old_s = item.get("oldString")
+            new_s = item.get("newString")
+            rep_all = item.get("replaceAll", False)
+            if not isinstance(old_s, str) or not isinstance(new_s, str):
+                raise ValueError(f"edit item #{idx} requires string oldString and newString")
+            if not isinstance(rep_all, bool):
+                raise ValueError(f"edit item #{idx} replaceAll must be a boolean")
+            parsed_edits.append((old_s, new_s, rep_all))
+
+        ending = _detect_line_ending(content_before)
+        normalized_content = _normalize_line_endings(content_before)
+
+        # Preflight all edits entirely in memory
+        tracker = CharProvenanceTracker(normalized_content)
+        details: list[tuple[int, EditResultBody]] = []
+        applied = 0
+
+        for idx, (old_str, new_str, rep_all) in enumerate(parsed_edits, start=1):
+            normalized_old = _normalize_line_endings(old_str)
+            normalized_new = _normalize_line_endings(new_str)
+            before_step = tracker.content
+
+            try:
+                next_content, match_count, match_ranges = _replace(
+                    tracker.content,
+                    normalized_old,
+                    normalized_new,
+                    replace_all=rep_all,
+                    edit_schema=context.edit_schema,
+                    tracker=tracker,
+                    context=context,
+                    resolved_path=resolved_path,
+                    tool_name=self.definition.name,
+                    display_path=display_path,
+                    raw_path=path_value,
+                    is_external=is_external,
+                )
+            except ValueError as exc:
+                if isinstance(exc, ToolDiagnosticError) and exc.error_details.get("reason") == "unseen_range":
+                    raise exc
+                message = (
+                    f"edit failed at edit #{idx} of {len(parsed_edits)} for {display_path}.\n"
+                    f"Prepared edits before failure: {idx - 1}; no file changes were written.\n"
+                    "Retry guidance: correct the failing edit and retry the complete batch against the unchanged file.\n"
+                    f"Underlying edit diagnostic:\n{exc}"
+                )
+                cause_details: dict[str, object] = {}
+                if isinstance(exc, ToolDiagnosticError):
+                    cause_details = {
+                        "error_kind": exc.error_kind,
+                        "error_details": exc.error_details,
+                        "retry_guidance": exc.retry_guidance,
+                    }
+                raise ToolDiagnosticError(
+                    message=message,
+                    error_kind="tool_input_mismatch",
+                    retry_guidance=("No batch edits were written. Correct the failing edit and retry the complete batch with the current file hash."),
+                    error_details={
+                        "reason": "edit_failed",
+                        "path": display_path,
+                        "failed_edit_index": idx,
+                        "prepared_edits": idx - 1,
+                        "applied_edits": 0,
+                        "remaining_edits": len(parsed_edits) - idx + 1,
+                        "cause": cause_details,
+                    },
+                ) from exc
+
+            diff_step, add_step, del_step = summarize_diff(
+                path=candidate,
+                before=before_step,
+                after=next_content,
+            )
+            step_body = EditResultBody(
+                path=display_path,
+                additions=add_step,
+                deletions=del_step,
+                match_count=match_count,
+                diff=diff_step,
+            )
+            applied += 1
+            details.append((idx, step_body))
+
+        # All preflight edits passed in memory! Now write once to disk.
+        final_text = _convert_line_endings(tracker.content, ending)
+        candidate.write_bytes(final_text.encode("utf-8"))
+
+        formatter_result: FormatterExecutionResult | None = None
+        if self._hooks_config is not None:
+            formatter_result = FormatterExecutor(self._hooks_config, workspace_root).run(candidate)
+        final_disk_bytes = candidate.read_bytes()
+        final_disk_hash = hashlib.sha256(final_disk_bytes).hexdigest()
+        final_content = read_utf8_text(candidate)
+        diff, additions, deletions = summarize_diff(
+            path=candidate,
+            before=content_before,
+            after=final_content,
+        )
+        diagnostics = formatter_diagnostics(formatter_result)
+
+        content = f"Applied {applied} edits to {display_path}"
+        if diagnostics:
+            content += f" Formatter warning: {diagnostics[0]['message']}"
+
+        formatter = None
+        if formatter_result is not None and formatter_result.status != "not_configured":
+            formatter = formatter_payload(formatter_result)
+        lsp_diagnostics = post_edit_lsp_diagnostics(
+            context=context,
+            workspace=workspace_root,
+            paths=[display_path],
+        )
+        return ToolSuccess(
+            self.definition.name,
+            output=TextOutput(content),
+            body=EditResultBody(
+                path=display_path,
+                additions=additions,
+                deletions=deletions,
+                match_count=applied,
+                diff=diff,
+                formatter=formatter,
+                diagnostics=tuple([*diagnostics, *lsp_diagnostics]),
+                applied=applied,
+                edits=tuple(details),
+                content_hash=final_disk_hash,
+            ),
+        )
+
+    def _invoke_single(
+        self,
+        call: ToolCall,
+        *,
+        context: ToolContext,
+        workspace: Path,
+    ) -> ToolSuccess[EditResultBody]:
         path_value = call.arguments.get("path")
         if not isinstance(path_value, str):
             raise ValueError("edit requires a string path argument")
@@ -694,14 +1020,10 @@ class EditTool:
         if not isinstance(replace_all, bool):
             raise ValueError("edit replaceAll must be a boolean")
 
-        resolution = resolve_workspace_path(
-            workspace=workspace,
-            raw_path=path_value,
-            containment_error="edit only allows paths inside the workspace",
-            allow_outside_workspace=True,
-        )
-        workspace_root = resolution.workspace_root
-        candidate = resolution.candidate
+        workspace_root = workspace.resolve()
+        requested_path = Path(path_value)
+        candidate = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
+        is_external = not candidate.is_relative_to(workspace_root)
 
         if not candidate.exists():
             raise ValueError(f"edit target does not exist: {path_value}")
@@ -709,15 +1031,13 @@ class EditTool:
         if not candidate.is_file():
             raise ValueError(f"edit target is not a file: {path_value}")
 
-        display_path = str(candidate.resolve()) if resolution.is_external else candidate.relative_to(workspace_root).as_posix()
+        display_path = candidate.as_posix() if is_external else candidate.relative_to(workspace_root).as_posix()
         enforce_read_before_write(
             context=context,
             tool_name=self.definition.name,
-            workspace=workspace_root,
             raw_path=path_value,
             candidate=candidate,
             display_path=display_path,
-            is_external=resolution.is_external,
         )
 
         expected_hash = call.arguments.get("expectedHash")
@@ -760,11 +1080,9 @@ class EditTool:
             enforce_seen_lines(
                 context=context,
                 tool_name=self.definition.name,
-                workspace=workspace_root,
                 raw_path=path_value,
                 candidate=candidate,
                 display_path=display_path,
-                is_external=resolution.is_external,
                 start_line=start_line,
                 end_line=end_line,
             )
@@ -775,6 +1093,8 @@ class EditTool:
         formatter_result: FormatterExecutionResult | None = None
         if self._hooks_config is not None:
             formatter_result = FormatterExecutor(self._hooks_config, workspace_root).run(candidate)
+        final_disk_bytes = candidate.read_bytes()
+        final_disk_hash = hashlib.sha256(final_disk_bytes).hexdigest()
         final_content = read_utf8_text(candidate)
         diff, additions, deletions = summarize_diff(
             path=candidate,
@@ -808,5 +1128,6 @@ class EditTool:
                 diff=diff,
                 formatter=formatter,
                 diagnostics=tuple([*diagnostics, *lsp_diagnostics]),
+                content_hash=final_disk_hash,
             ),
         )

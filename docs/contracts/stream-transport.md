@@ -49,7 +49,7 @@ Provider 的 completed turn 必须包含非空终端文本或完整工具调用�
 拒绝，不会将不完整/空结果报告为成功或发出工具执行请求。
 
 这些参数增量是 **live-only** 观察数据，不写入持久化 session truth，也不出现在
-replay 中。对于 `write`、`edit`、`multi_edit`、`apply_patch`，runtime/graph 会
+replay 中。对于 `write` 与 `edit`，runtime/graph 会
 在相应 lifecycle payload 中提供有界的 `diff_preview`；写工具事件不会把
 `arguments_delta` 或 `parsed_arguments` 直接交给客户端。`diff_preview` 仅由
 workspace 当前快照读取生成，不执行工具、不创建目录、不写入临时 patch；它带有

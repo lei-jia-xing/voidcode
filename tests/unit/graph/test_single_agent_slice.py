@@ -382,8 +382,8 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
 
 
 def test_deterministic_read_preserves_actual_body_whitespace(tmp_path: Path) -> None:
-    body = "\n    alpha: beta\n(parenthetical user text)\n\n  gamma"
-    (tmp_path / "sample.txt").write_text(f"{body}\n", encoding="utf-8")
+    body = "\n    alpha: beta\n(parenthetical user text)\n\n  gamma\n"
+    (tmp_path / "sample.txt").write_text(body, encoding="utf-8")
     tool = ReadTool()
     result = tool.invoke(ToolCall("read", {"path": "sample.txt"}), context=ToolContext(workspace=tmp_path))
     context = RuntimeContextWindow(prompt="read sample.txt", tool_results=(result,))

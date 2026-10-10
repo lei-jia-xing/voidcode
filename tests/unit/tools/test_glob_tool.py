@@ -77,6 +77,20 @@ def test_glob_tool_respects_path_argument(tmp_path: Path) -> None:
     assert "root.txt" not in content
 
 
+def test_glob_tool_searches_external_directory_paths(tmp_path: Path) -> None:
+    external = tmp_path.parent / f"{tmp_path.name}-glob-external"
+    external.mkdir()
+    match = external / "outside.py"
+    match.write_text("print('outside')", encoding="utf-8")
+
+    result = GlobTool().invoke(
+        ToolCall(tool_name="glob", arguments={"pattern": "*.py", "path": str(external)}),
+        context=ToolContext(workspace=tmp_path),
+    )
+
+    assert result.body.matches == (match.resolve().as_posix(),)
+
+
 def test_glob_tool_ignores_common_directories(tmp_path: Path) -> None:
     (tmp_path / "code.py").write_text("print('code')", encoding="utf-8")
     node_modules = tmp_path / "node_modules"
@@ -124,3 +138,17 @@ def test_glob_tool_applies_hidden_gitignore_and_limit_filters(tmp_path: Path) ->
     assert isinstance(bounded.body, GlobResultBody)
     assert bounded.body.count == 1
     assert bounded.body.truncated is True
+
+
+def test_glob_returns_paths_in_text_and_does_not_truncate_exact_limit(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("", encoding="utf-8")
+    (tmp_path / "b.py").write_text("", encoding="utf-8")
+
+    result = GlobTool().invoke(
+        ToolCall(tool_name="glob", arguments={"pattern": "*.py", "limit": 2}),
+        context=ToolContext(workspace=tmp_path),
+    )
+
+    assert result.output.text.splitlines() == list(result.body.matches)
+    assert len(result.body.matches) == 2
+    assert result.body.truncated is False

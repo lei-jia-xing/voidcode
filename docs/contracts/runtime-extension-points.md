@@ -20,8 +20,9 @@ extension point 只能通过类型化 input/output contract 转换或校验 runt
 
 1. 运行时拥有 `mode` / `read_only`、权限、工具可见性、shell 安全、hooks、session event 和 delegated-task 约束的控制面。
 2. 结构性策略在工具执行前完成，不依赖 prompt wording 充当唯一防线；prompt guidance 只解释已解析策略，不能创建、放宽或隐藏 enforcement。
-3. 非交互式执行必须 fail fast，不接受会卡住的默认行为；shell command classification、timeout 选择与 package-manager non-interactive env injection 都属于 runtime/security policy，而不是 CLI 文案。
-4. prompt stack 和 observability 必须可重放、可解释，并且保持 redacted；可观测 payload 只暴露有界 fragment metadata / redacted preview，不暴露完整 prompt、skill body、secret-like values 或注入 env values。
+3. Shell execution retains runtime permission and timeout governance, but does not
+   guess package managers, normalize commands, or inject non-interactive variables.
+4. prompt stack and observability must be replayable, explainable, and redacted; observable payloads expose only bounded fragment metadata / redacted previews, not complete prompts, skill bodies, or secret-like values.
 5. registry 只能做受控解析，不能绕开 runtime policy。
 6. 未显式选择 mode 的新请求使用当前 `normal` 默认值；runtime 不解析已移除的旧 mode 或 execution 字段。
 

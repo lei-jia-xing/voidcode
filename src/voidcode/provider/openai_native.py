@@ -596,7 +596,10 @@ class OpenAIChatCompletionsProvider:
             }
             if isinstance(output, AttachmentOutput):
                 payload["mime"] = output.mime
-                payload["data_uri"] = output.data_uri
+                if output.data_uri is not None:
+                    payload["data_uri"] = output.data_uri
+                else:
+                    payload["attachment_unavailable"] = True
             tool_feedback_lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         messages: list[dict[str, object]] = []
         for segment in request.assembled_context.segments:

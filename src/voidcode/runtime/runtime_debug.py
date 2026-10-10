@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..core.tool_context import ArtifactInvalid, ArtifactMissing, ArtifactPage, ArtifactUnavailable
+from ..core.tool_context import ArtifactBinary, ArtifactInvalid, ArtifactMissing, ArtifactPage, ArtifactUnavailable
 from ..core.turns import ReportedCall
 from ..tools.output import read_tool_output_artifact
 from .contracts import (
@@ -132,7 +132,7 @@ def artifact_debug_metadata(payload: dict[str, object]) -> dict[str, object]:
         return {}
     artifact_metadata = dict(artifact)
     read_result = read_tool_output_artifact(artifact_metadata, offset=0, limit=0)
-    if isinstance(read_result, ArtifactPage):
+    if isinstance(read_result, (ArtifactPage, ArtifactBinary)):
         artifact_metadata["status"] = "available"
         artifact_metadata["artifact_missing"] = False
     elif isinstance(read_result, ArtifactInvalid):

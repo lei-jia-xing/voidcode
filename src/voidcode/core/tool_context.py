@@ -58,20 +58,71 @@ class ArtifactPage:
     offset: int
     limit: int
     page: PagePosition
+    byte_offset: int | None = None
+    byte_limit: int | None = None
+    next_byte_offset: int | None = None
+    sha256: str = ""
+    byte_count: int = 0
+    mime: str = "text/plain"
+    source: str | None = None
+    artifact: Mapping[str, object] | None = None
+
+    @property
+    def truncated(self) -> bool:
+        return self.next_byte_offset is not None or isinstance(self.page, NextPage)
 
     def as_payload(self) -> dict[str, object]:
         next_offset = self.page.offset if isinstance(self.page, NextPage) else None
-        return {
-            "artifact_id": self.artifact_id,
-            "status": "available",
-            "offset": self.offset,
-            "limit": self.limit,
-            "line_count": self.line_count,
-            "next_offset": next_offset,
-        }
+        payload = {key: value for key, value in (self.artifact or {}).items() if key != "data_uri"}
+        payload.update(
+            {
+                "artifact_id": self.artifact_id,
+                "status": "available",
+                "offset": self.offset,
+                "limit": self.limit,
+                "offset_unit": "bytes" if self.byte_offset is not None else "lines",
+                "line_count": self.line_count,
+                "next_offset": next_offset,
+                "byte_offset": self.byte_offset,
+                "byte_limit": self.byte_limit,
+                "next_byte_offset": self.next_byte_offset,
+                "byte_count": self.byte_count,
+                "sha256": self.sha256,
+                "content_type": self.mime,
+                "source": self.source,
+                "truncated": self.truncated,
+            }
+        )
+        return payload
 
 
-type ArtifactRead = ArtifactMissing | ArtifactInvalid | ArtifactUnavailable | ArtifactPage
+@dataclass(frozen=True, slots=True)
+class ArtifactBinary:
+    artifact_id: str
+    mime: str
+    byte_count: int
+    sha256: str
+    data: bytes | None = None
+    data_uri: str | None = None
+    source: str | None = None
+    artifact: Mapping[str, object] | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        payload = {key: value for key, value in (self.artifact or {}).items() if key != "data_uri"}
+        payload.update(
+            {
+                "artifact_id": self.artifact_id,
+                "status": "available",
+                "content_type": self.mime,
+                "byte_count": self.byte_count,
+                "sha256": self.sha256,
+                "source": self.source,
+            }
+        )
+        return payload
+
+
+type ArtifactRead = ArtifactMissing | ArtifactInvalid | ArtifactUnavailable | ArtifactPage | ArtifactBinary
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +215,8 @@ class ArtifactReader(Protocol):
         artifact_id: str,
         offset: int | None = None,
         limit: int | None = None,
+        byte_offset: int | None = None,
+        byte_limit: int | None = None,
     ) -> ArtifactRead: ...
 
 
@@ -177,6 +230,17 @@ class TranscriptReader(Protocol):
     ) -> TranscriptRead: ...
 
 
+@dataclass(frozen=True, slots=True)
+class LspDocumentState:
+    version: int
+    content_hash: str
+    position_encoding: str
+
+
+class LspDocumentStateReader(Protocol):
+    def __call__(self, *, file_path: Path, workspace: Path) -> LspDocumentState | None: ...
+
+
 class LspDiagnostics(Protocol):
     def request_diagnostics(self, *, file_path: str, workspace: str) -> dict[str, object]: ...
 
@@ -188,6 +252,11 @@ class LspRequestError(ValueError):
 class LspResponse(Protocol):
     @property
     def response(self) -> dict[str, object]: ...
+    @property
+    def document_state(self) -> LspDocumentState | None: ...
+
+    @property
+    def position_encoding(self) -> str: ...
 
 
 class LspRequester(Protocol):
@@ -204,6 +273,9 @@ class LspRequester(Protocol):
 class McpCallResult(Protocol):
     @property
     def content(self) -> list[dict[str, object]]: ...
+
+    @property
+    def structured_content(self) -> Mapping[str, object] | None: ...
 
     @property
     def is_error(self) -> bool: ...
@@ -243,6 +315,7 @@ class ToolContext:
     emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None
     lsp: LspDiagnostics | None = None
     lsp_request: LspRequester | None = None
+    lsp_document_state: LspDocumentStateReader | None = None
     mcp_request: McpRequester | None = None
     read_rule: RuleReader | None = None
     resolve_skill: Callable[[str], SkillMetadata] | None = None

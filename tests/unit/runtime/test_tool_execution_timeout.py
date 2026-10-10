@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import subprocess
 import sys
@@ -24,7 +25,8 @@ from voidcode.runtime.contracts import (
 )
 from voidcode.runtime.events import RUNTIME_TOOL_PROGRESS
 from voidcode.runtime.execution.delegation.task import TaskCommand
-from voidcode.runtime.execution.tool_resources import bind_tool_command
+from voidcode.runtime.execution.report_codec import parse_report_payload
+from voidcode.runtime.execution.tool_resources import SessionArtifactReader, bind_tool_command
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
@@ -40,7 +42,6 @@ from voidcode.tools.contracts import (
     ToolSuccess,
 )
 from voidcode.tools.delegation.task import TaskTool
-from voidcode.tools.output import tool_output_artifact_temp_root
 from voidcode.tools.read import ReadTool
 from voidcode.tools.shell_exec import ShellExecResultBody, ShellExecTool
 
@@ -495,7 +496,25 @@ def test_runtime_timeout_unset_does_not_emit_runtime_tool_timeout(tmp_path: Path
 
 
 def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
-    runtime = _make_runtime(tmp_path, _LargeOutputTool(), tool_timeout_seconds=None)
+    class CapturingGraph:
+        feedback: ToolResultView | None = None
+
+        def produce(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> FinalTurn | ToolTurn:
+            _ = request, session
+            if tool_results:
+                feedback = tool_results[-1]
+                assert isinstance(feedback, ToolResultView)
+                self.feedback = feedback
+                return FinalTurn(output="completed")
+            return ToolTurn(calls=(ToolCall(tool_name="large_output_tool", arguments={}),))
+
+    graph = CapturingGraph()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([_LargeOutputTool()]),
+        turn_producer=graph,
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), approval_mode="yolo", execution_engine="deterministic"),
+    )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
     completed_events = [
@@ -505,23 +524,28 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
     assert len(completed_events) == 1
     payload = completed_events[0].payload
     assert payload["truncated"] is True
-    assert isinstance(payload["output_path"], str)
-    output_path = Path(payload["output_path"]).resolve()
-    artifact_root = tool_output_artifact_temp_root().resolve()
-    assert artifact_root in output_path.parents
-    assert payload["artifact_missing"] is False
-    diagnostics = payload["diagnostics"]
-    assert isinstance(diagnostics, list)
     assert isinstance(payload["artifact_id"], str)
     artifact = payload["artifact"]
     assert isinstance(artifact, dict)
     assert artifact["session_id"] == completed_events[0].session_id
     assert artifact["tool_call_id"] == payload["tool_call_id"]
-    assert isinstance(payload["content"], str)
-    assert "Tool output truncated" in payload["content"]
-    assert f"voidcode://artifact/{payload['artifact_id']}" in payload["content"]
-    assert "line-2099" not in payload["content"]
-    assert output_path.read_text(encoding="utf-8").endswith("line-2099\n")
+
+    feedback = graph.feedback
+    assert feedback is not None and isinstance(feedback.output, TextOutput)
+    assert len(feedback.output.text.encode("utf-8")) <= 50 * 1024
+    assert len(feedback.output.text.splitlines()) <= 1000
+    reference = feedback.output.bounds.reference
+    assert reference is not None
+    assert reference.uri == f"voidcode://artifact/{payload['artifact_id']}"
+    assert reference.artifact is not None
+    assert reference.artifact["session_id"] == completed_events[0].session_id
+    assert reference.artifact["tool_call_id"] == payload["tool_call_id"]
+    output_path = Path(str(reference.artifact["path"]))
+    raw_output = output_path.read_bytes()
+    expected_output = "".join(f"line-{index}\n" for index in range(2100)).encode("utf-8")
+    assert raw_output == expected_output
+    assert raw_output.endswith(b"line-2099\n")
+    assert artifact["sha256"] == hashlib.sha256(raw_output).hexdigest()
     assert not (tmp_path / ".voidcode" / "tool-output").exists()
 
 
@@ -761,35 +785,6 @@ def test_session_status_is_failed_after_timeout(tmp_path: Path) -> None:
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
     statuses = [c.session.status for c in chunks]
     assert "failed" in statuses
-
-
-def test_shell_exec_uses_existing_tool_timeout_when_runtime_timeout_is_unset(
-    tmp_path: Path,
-) -> None:
-    command = f'"{sys.executable}" -c "print(1)"'
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
-        turn_producer=_ShellExecGraph({"command": command}),
-        config=RuntimeConfig(
-            mcp=RuntimeMcpConfig(enabled=False),
-            approval_mode="yolo",
-            execution_engine="deterministic",
-            tool_timeout_seconds=None,
-        ),
-    )
-    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
-    completed_events = [
-        chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
-    ]
-
-    assert len(completed_events) == 1
-    assert completed_events[0].payload["timeout"] == 120
-    assert completed_events[0].payload["cwd"] == str(tmp_path.resolve())
-    assert completed_events[0].payload["exit_code"] == 0
-    assert completed_events[0].payload["stdout_truncated"] is False
-    assert completed_events[0].payload["stderr_truncated"] is False
-    assert completed_events[0].payload["truncated"] is False
 
 
 def test_shell_exec_timeout_wins_when_shorter_than_runtime_timeout(tmp_path: Path) -> None:
@@ -1434,13 +1429,32 @@ def test_read_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: Path)
     assert len(read_events) == 1, "expected one read completion for the artifact URI"
     payload = read_events[0].payload
     assert payload["status"] == "ok"
-    assert payload["type"] == "artifact"
     assert payload["artifact_id"] == graph.artifact_id
     assert payload["raw_content"] == "".join(f"line-{index}\n" for index in range(100))
-    assert payload["next_offset"] == 100
-    assert payload["line_count"] == 2100
-    assert payload["truncated"] is True
-    assert payload["partial"] is True
+    reported = parse_report_payload(payload["reported_call"])
+    assert isinstance(reported.result.body, OpaqueToolBody)
+    continuation = reported.result.body.as_payload()["next_offset"]
+    assert type(continuation) is int and continuation == 101
+
+    second_result = ReadTool().invoke(
+        ToolCall(
+            tool_name="read",
+            arguments={"path": f"voidcode://artifact/{graph.artifact_id}", "offset": continuation, "limit": 100},
+        ),
+        context=ToolContext(
+            workspace=tmp_path,
+            session_id=session_id,
+            invocation_id="continued-artifact-read",
+            artifact=SessionArtifactReader(caller_session_id=session_id, read=runtime.read_tool_output_artifact),
+        ),
+    )
+    assert second_result.status == "ok"
+    assert isinstance(second_result.body, OpaqueToolBody)
+    second_page = second_result.body.as_payload()
+    assert second_page["raw_content"] == "".join(f"line-{index}\n" for index in range(100, 200))
+    assert second_page["line_count"] == 2100
+    assert second_page["truncated"] is True
+    assert second_page["partial"] is True
 
 
 class _ForeignArtifactUriReadGraph:

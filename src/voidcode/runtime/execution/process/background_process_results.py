@@ -88,6 +88,9 @@ class BackgroundProcessStartBody:
     reused: bool
     stale_process_id: str | None
     guidance: str
+    ready: bool | None = None
+    ready_pattern: str | None = None
+    exit_code: int | None = None
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -99,6 +102,9 @@ class BackgroundProcessStartBody:
             "reused": self.reused,
             "stale_process_id": self.stale_process_id,
             "guidance": self.guidance,
+            "ready": self.ready,
+            "ready_pattern": self.ready_pattern,
+            "exit_code": self.exit_code,
         }
 
 
@@ -107,9 +113,19 @@ class BackgroundProcessSendBody:
     process_id: str
     input: str
     newline: bool
+    requested_bytes: int
+    written_bytes: int
+    error: str | None
 
     def as_payload(self) -> dict[str, object]:
-        return {"process_id": self.process_id, "input": self.input, "newline": self.newline}
+        return {
+            "process_id": self.process_id,
+            "input": self.input,
+            "newline": self.newline,
+            "requested_bytes": self.requested_bytes,
+            "written_bytes": self.written_bytes,
+            "error": self.error,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +157,12 @@ class BackgroundProcessLogsBody:
     truncated: bool
     references: tuple[str, ...]
     guidance: str
+    stream: str
+    offset: int
+    limit: int
+    clipped_streams: tuple[str, ...]
+    next_offsets: Mapping[str, int]
+    next_offset: int | None
 
     def __post_init__(self) -> None:
         for name in ("stdout_artifact", "stderr_artifact"):
@@ -167,4 +189,10 @@ class BackgroundProcessLogsBody:
             "truncated": self.truncated,
             "references": list(self.references),
             "guidance": self.guidance,
+            "stream": self.stream,
+            "offset": self.offset,
+            "limit": self.limit,
+            "clipped_streams": list(self.clipped_streams),
+            "next_offsets": dict(self.next_offsets),
+            "next_offset": self.next_offset,
         }

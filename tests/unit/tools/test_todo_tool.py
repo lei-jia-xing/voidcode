@@ -44,6 +44,49 @@ def test_single_operations_update_one_runtime_snapshot(tmp_path: Path) -> None:
     assert cast(list[dict[str, object]], phases[0]["tasks"])[1] == {"content": "second", "status": "completed"}
 
 
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [
+        ("blocked", "unblock it before starting"),
+        ("completed", "already completed"),
+        ("abandoned", "already abandoned"),
+    ],
+)
+def test_start_rejects_blocked_and_closed_tasks_without_mutation(tmp_path: Path, status: str, error: str) -> None:
+    phases = ({"name": "Tasks", "tasks": [{"content": "task", "status": status}]},)
+    with pytest.raises(ValueError, match=error):
+        _invoke(TodoTool(), {"op": "start", "task": "task"}, phases=phases, workspace=tmp_path)
+    assert phases == ({"name": "Tasks", "tasks": [{"content": "task", "status": status}]},)
+
+
+@pytest.mark.parametrize(("closed_op", "opposite_op", "closed_status"), [("done", "drop", "completed"), ("drop", "done", "abandoned")])
+def test_closed_task_operations_are_idempotent_but_do_not_switch_state(tmp_path: Path, closed_op: str, opposite_op: str, closed_status: str) -> None:
+    phases = ({"name": "Tasks", "tasks": [{"content": "task", "status": closed_status}]},)
+    same, unchanged = _invoke(TodoTool(), {"op": closed_op, "task": "task"}, phases=phases, workspace=tmp_path)
+    assert isinstance(same.body, TodoResultBody)
+    assert same.body.mutated is False
+    assert unchanged == phases
+    with pytest.raises(ValueError, match="cannot become"):
+        _invoke(TodoTool(), {"op": opposite_op, "task": "task"}, phases=phases, workspace=tmp_path)
+
+
+def test_todo_output_compacts_changes_but_body_keeps_full_snapshot(tmp_path: Path) -> None:
+    tool = TodoTool()
+    _, phases = _invoke(
+        tool,
+        {"op": "init", "list": [{"phase": "Build", "items": ["compile", "test"]}, {"phase": "Docs", "items": ["guide"]}]},
+        workspace=tmp_path,
+    )
+    result, updated = _invoke(tool, {"op": "start", "task": "test"}, phases=phases, workspace=tmp_path)
+    assert result.output.text.count("compile") == 1
+    assert "test" in result.output.text
+    assert "guide" not in result.output.text
+    assert "Next active: test" in result.output.text
+    assert "Summary:" in result.output.text
+    assert updated[1]["tasks"] == [{"content": "guide", "status": "pending"}]
+    assert result.body.phases == updated
+
+
 def test_append_and_rm_are_atomic_on_failure(tmp_path: Path) -> None:
     tool = TodoTool()
     _, phases = _invoke(tool, {"op": "init", "items": ["existing"]}, workspace=tmp_path)

@@ -1,6 +1,14 @@
-Use this tool when you know the exact file you want to inspect inside the workspace.
+Use this tool when you know the exact local filesystem path you want to inspect.
 
-It is best for reading UTF-8 text files directly, and it can also return images and PDFs as attachments. For text files, the result is line-numbered and starts from the top of the file by default.
+External paths are governed by runtime approval.
+
+- It is best for reading UTF-8 text files directly; images and PDFs may be represented as typed attachments backed by a session artifact reference rather than inline data.
+
+Read-only data views:
+- SQLite files with a `.db`, `.sqlite`, or `.sqlite3` suffix (or SQLite file signature) show bounded table schemas and a sample from the first table. Use `read(path="data.db", view="sqlite", table="items", query="SELECT name FROM items", offset=1, limit=50)` for one read-only `SELECT`/`WITH` statement. SQLite `offset` is a 1-based row offset; results are limited to 200 rows and 50 KiB, with a 0.5-second query time limit and runtime-cancellation support. Writes, pragmas, attached databases, and extension loading are denied.
+- `.ipynb` files up to 50 MiB default to a derived view of at most 200 cells; `offset`/`limit` are 1-based cell pagination. `cell` selects one zero-based cell. `output_offset`/`output_limit` are 1-based output pagination (at most 20 outputs) and require `cell`. Text is bounded to 50 KiB; valid PNG/JPEG/WebP outputs become canonical image artifacts up to 5 MiB total. Oversized text or unsupported MIME provides a link to the full Notebook JSON artifact. Use `view="raw"` to read the original JSON file as ordinary text.
+- `.pdf` files up to 50 MiB default to extracted text. `page` is a 1-based page selector; `offset`/`limit` page extracted text lines. Native extraction is limited to 5 seconds, 10 MiB extracted text, and runtime cancellation; the selected preview is at most 32 KiB. The full PDF and, when needed, full extracted text remain available through artifact references. Linux Poppler's `pdftotext` utility is required; scanned PDFs report that no OCR is performed. Use `view="raw"` for the original PDF attachment.
+- Derived SQLite, Notebook, and PDF views are opaque read-only observations; only the explicit raw file view has normal source-file read semantics.
 
 Reading a directory returns a bounded tree (depth 2, 12 entries per directory, newest first) with file sizes and relative ages; empty directories are marked `(empty directory)` and any truncated branch says so. Use it to orient in an unfamiliar area before `glob`/`grep`.
 

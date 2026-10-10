@@ -8,21 +8,21 @@ import pytest
 from voidcode.core.tool_context import ToolContext
 from voidcode.tools._repair import ToolDiagnosticError
 from voidcode.tools.contracts import TextOutput, ToolCall
-from voidcode.tools.multi_edit import MultiEditResultBody, MultiEditTool
+from voidcode.tools.edit import EditResultBody, EditTool
 
 
 def _content_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_multi_edit_applies_multiple_edits_in_order(tmp_path: Path) -> None:
+def test_edit_batch_applies_multiple_replacements_in_order(tmp_path: Path) -> None:
     target = tmp_path / "sample.txt"
     target.write_text("alpha\nbeta\nalpha\n", encoding="utf-8")
 
-    tool = MultiEditTool()
+    tool = EditTool()
     result = tool.invoke(
         ToolCall(
-            tool_name="multi_edit",
+            tool_name="edit",
             arguments={
                 "path": "sample.txt",
                 "expectedHash": _content_hash(target),
@@ -40,36 +40,36 @@ def test_multi_edit_applies_multiple_edits_in_order(tmp_path: Path) -> None:
     assert "BETA" in content
     assert result.status == "ok"
     assert isinstance(result.output, TextOutput)
-    assert isinstance(result.body, MultiEditResultBody)
+    assert isinstance(result.body, EditResultBody)
     assert result.body.applied == 2
 
 
-def test_multi_edit_rejects_empty_edits(tmp_path: Path) -> None:
+def test_edit_batch_rejects_empty_edits(tmp_path: Path) -> None:
     target = tmp_path / "sample.txt"
     target.write_text("alpha\n", encoding="utf-8")
-    tool = MultiEditTool()
+    tool = EditTool()
 
     with pytest.raises(ValueError, match="Validation error"):
         tool.invoke(
             ToolCall(
-                tool_name="multi_edit",
+                tool_name="edit",
                 arguments={"path": "sample.txt", "edits": []},
             ),
             context=ToolContext(workspace=tmp_path),
         )
 
 
-def test_multi_edit_reports_failing_edit_index_with_underlying_diagnostic(
+def test_edit_batch_failure_reports_preflight_count_and_underlying_diagnostic(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "sample.txt"
     target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
-    tool = MultiEditTool()
+    tool = EditTool()
 
     with pytest.raises(ValueError, match="failed at edit #2") as exc_info:
         tool.invoke(
             ToolCall(
-                tool_name="multi_edit",
+                tool_name="edit",
                 arguments={
                     "path": "sample.txt",
                     "expectedHash": _content_hash(target),
@@ -83,21 +83,24 @@ def test_multi_edit_reports_failing_edit_index_with_underlying_diagnostic(
         )
 
     message = str(exc_info.value)
-    assert "Applied edits before failure: 1" in message
+    assert "Prepared edits before failure: 1; no file changes were written." in message
+    assert "retry the complete batch" in exc_info.value.retry_guidance
+    assert exc_info.value.error_details["prepared_edits"] == 1
+    assert exc_info.value.error_details["applied_edits"] == 0
     assert "Underlying edit diagnostic" in message
     assert "oldString appears to include read output line prefixes" in message
-    assert target.read_text(encoding="utf-8") == "ALPHA\nbeta\ngamma\n"
+    assert target.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
 
 
-def test_multi_edit_rejects_stale_expected_hash_before_any_edit(tmp_path: Path) -> None:
+def test_edit_batch_rejects_stale_expected_hash_before_writing(tmp_path: Path) -> None:
     target = tmp_path / "sample.txt"
     target.write_text("alpha\nbeta\n", encoding="utf-8")
-    tool = MultiEditTool()
+    tool = EditTool()
 
     with pytest.raises(ToolDiagnosticError, match="stale edit") as exc_info:
         tool.invoke(
             ToolCall(
-                tool_name="multi_edit",
+                tool_name="edit",
                 arguments={
                     "path": "sample.txt",
                     "expectedHash": "0" * 64,
@@ -116,10 +119,10 @@ def test_multi_edit_rejects_stale_expected_hash_before_any_edit(tmp_path: Path) 
     assert target.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
 
-def test_multi_edit_rejects_edit_of_line_outside_read_window(tmp_path: Path) -> None:
+def test_edit_batch_rejects_edits_outside_read_window(tmp_path: Path) -> None:
     target = tmp_path / "sample.txt"
     target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
-    tool = MultiEditTool()
+    tool = EditTool()
     resolved = target.resolve().as_posix()
 
     read_hash = _content_hash(target)
@@ -133,7 +136,7 @@ def test_multi_edit_rejects_edit_of_line_outside_read_window(tmp_path: Path) -> 
     with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
         tool.invoke(
             ToolCall(
-                tool_name="multi_edit",
+                tool_name="edit",
                 arguments={
                     "path": "sample.txt",
                     "expectedHash": _content_hash(target),
@@ -150,5 +153,5 @@ def test_multi_edit_rejects_edit_of_line_outside_read_window(tmp_path: Path) -> 
     assert diagnostic.error_kind == "tool_input_mismatch"
     assert diagnostic.error_details["reason"] == "unseen_range"
     assert diagnostic.error_details["unseen_line_ranges"] == [{"start": 3, "end": 3}]
-    # The earlier (seen) edit applied before the unseen edit was rejected.
-    assert target.read_text(encoding="utf-8") == "ALPHA\nbeta\ngamma\n"
+    # Target file remains completely unchanged on disk because preflight failed in memory.
+    assert target.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"

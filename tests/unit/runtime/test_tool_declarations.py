@@ -103,7 +103,8 @@ def test_observed_mcp_safety_drives_real_admission_and_sdk_call(tmp_path: Path) 
                 assert outcome.decision == ("ask" if mode == "ask" and not descriptor.safety.read_only else "allow")
             result = tool.invoke(call, context=context)
             assert isinstance(result, ToolSuccess) and isinstance(result.output, TextOutput)
-            assert result.output.text == "49"
+            assert result.body is not None
+            assert result.body.as_payload()["structured_content"] == {"result": "49"}
         assert (tmp_path / "square.txt").read_text() == "49"
     finally:
         manager.shutdown()

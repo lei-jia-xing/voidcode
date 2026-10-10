@@ -8,19 +8,16 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, BinaryIO, ClassVar, cast, final
 
 from pydantic import BaseModel
 
 from ..core.tool_context import ToolContext
-from ..security.shell_policy import (
-    DEFAULT_TIMEOUT_SECONDS,
-    non_interactive_shell_env,
-    resolve_shell_execution_policy,
-)
 from ._pydantic_args import NonEmptyCommand, OptionalDescription, parse_tool_args
 from .contracts import (
     OutputBounds,
+    OutputReference,
     RuntimeToolTimeoutError,
     TextOutput,
     ToolCall,
@@ -30,6 +27,10 @@ from .contracts import (
     ToolResult,
     ToolSuccess,
 )
+from .process_output import ProcessOutputCapture, artifact_uri
+
+DEFAULT_TIMEOUT_SECONDS = 120
+MAX_TIMEOUT_SECONDS = 600
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,12 +40,15 @@ class ShellExecResultBody:
     stdout: str
     stderr: str
     timeout: int
-    injected_env_keys: tuple[str, ...]
     truncated: bool = False
-    cwd: str | None = None
     stdout_truncated: bool | None = None
     stderr_truncated: bool | None = None
     output_char_count: int | None = None
+    cwd: str | None = None
+    stdout_artifact: dict[str, object] | None = None
+    stderr_artifact: dict[str, object] | None = None
+    output_limit_exceeded: bool = False
+    stop_confirmed: bool | None = None
     interrupted: bool = False
     timed_out: bool = False
     cancelled: bool = False
@@ -58,16 +62,23 @@ class ShellExecResultBody:
             "stderr": self.stderr,
             "timeout": self.timeout,
             "truncated": self.truncated,
-            "injected_env_keys": list(self.injected_env_keys),
         }
-        if self.cwd is not None:
-            payload["cwd"] = self.cwd
         if self.stdout_truncated is not None:
             payload["stdout_truncated"] = self.stdout_truncated
         if self.stderr_truncated is not None:
             payload["stderr_truncated"] = self.stderr_truncated
         if self.output_char_count is not None:
             payload["output_char_count"] = self.output_char_count
+        if self.cwd is not None:
+            payload["cwd"] = self.cwd
+        if self.stdout_artifact is not None:
+            payload["stdout_artifact"] = self.stdout_artifact
+        if self.stderr_artifact is not None:
+            payload["stderr_artifact"] = self.stderr_artifact
+        if self.output_limit_exceeded:
+            payload["output_limit_exceeded"] = True
+        if self.stop_confirmed is not None:
+            payload["stop_confirmed"] = self.stop_confirmed
         if self.interrupted:
             payload["interrupted"] = True
         if self.timed_out:
@@ -75,6 +86,13 @@ class ShellExecResultBody:
         if self.cancelled:
             payload.update(cancelled=True, reason=self.reason)
         return payload
+
+
+def _artifact_reference(artifact: dict[str, object] | None) -> OutputReference | None:
+    artifact_id = artifact.get("artifact_id") if artifact is not None else None
+    if not isinstance(artifact_id, str):
+        return None
+    return OutputReference(f"voidcode://artifact/{artifact_id}", artifact)
 
 
 class ShellExecArgs(BaseModel):
@@ -165,8 +183,7 @@ def _safe_emit_shell_progress(
 def _read_pipe_incrementally(
     pipe: BinaryIO,
     *,
-    stream_name: str,
-    chunks: list[bytes],
+    capture: ProcessOutputCapture,
     errors: list[BaseException],
     emit_progress: Callable[[Mapping[str, object]], None] | None,
     progress_state: _ShellProgressState,
@@ -176,16 +193,13 @@ def _read_pipe_incrementally(
     try:
         while True:
             reader = getattr(pipe, "read1", None)
-            if callable(reader):
-                chunk = reader(_SHELL_PROGRESS_CHUNK_BYTES)
-            else:
-                chunk = pipe.read(_SHELL_PROGRESS_CHUNK_BYTES)
+            chunk = reader(_SHELL_PROGRESS_CHUNK_BYTES) if callable(reader) else pipe.read(_SHELL_PROGRESS_CHUNK_BYTES)
             if not chunk:
                 break
-            chunks.append(chunk)
+            capture.append(chunk)
             _safe_emit_shell_progress(
                 emit_progress,
-                stream_name=stream_name,
+                stream_name=capture.stream_name,
                 chunk=chunk,
                 progress_state=progress_state,
                 run_id=run_id,
@@ -195,19 +209,34 @@ def _read_pipe_incrementally(
         errors.append(exc)
 
 
-def _wait_after_process_kill(process: subprocess.Popen[Any], *, timeout: float = 1.0) -> None:
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_after_process_kill(process: subprocess.Popen[Any], *, timeout: float = 1.0) -> bool:
     try:
         process.wait(timeout=timeout)
-        return
     except subprocess.TimeoutExpired:
         try:
             process.kill()
         except ProcessLookupError:
-            return
-    try:
-        process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return
+            pass
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False
+    if _is_windows_platform():
+        return process.poll() is not None
+    deadline = time.monotonic() + timeout
+    while _process_group_exists(process.pid) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return not _process_group_exists(process.pid)
 
 
 def _join_reader_thread(thread: threading.Thread, pipe: BinaryIO, *, timeout: float = 1.0) -> None:
@@ -328,25 +357,23 @@ class ShellExecTool:
             tool_name=self.definition.name,
         )
 
-        command_text = args.command.strip()
-        injected_env = non_interactive_shell_env(command_text)
-        injected_env_keys = tuple(injected_env.keys())
+        command_text = args.command
 
         timeout_value = call.arguments.get("timeout", DEFAULT_TIMEOUT_SECONDS)
-        exec_policy = resolve_shell_execution_policy(
-            workspace=workspace,
-            timeout_argument=timeout_value,
-            runtime_timeout_seconds=runtime_timeout_seconds,
+        workspace_root = Path(workspace).resolve()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise ValueError("shell_exec workspace must be an existing directory")
+        timeout_seconds = (
+            min(int(timeout_value), MAX_TIMEOUT_SECONDS) if isinstance(timeout_value, (int, float)) and timeout_value > 0 else DEFAULT_TIMEOUT_SECONDS
         )
-        timeout_seconds = exec_policy.timeout_seconds
-        runtime_timeout_selected = exec_policy.runtime_timeout_selected
+        runtime_timeout_selected = runtime_timeout_seconds is not None and runtime_timeout_seconds < timeout_seconds
+        if runtime_timeout_selected:
+            timeout_seconds = runtime_timeout_seconds
 
         try:
-            command_text = command_text.encode("utf-8", errors="replace").decode("utf-8")
             process = subprocess.Popen(
                 command_text,
-                cwd=exec_policy.workspace_root,
-                env={**os.environ, **injected_env} if injected_env else None,
+                cwd=workspace_root,
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -361,12 +388,13 @@ class ShellExecTool:
         progress_run_id = context.run_id
         progress_invocation_id = context.invocation_id or call.tool_call_id
         deadline = time.monotonic() + timeout_seconds
-        stdout_chunks: list[bytes] = []
-        stderr_chunks: list[bytes] = []
+        stdout_capture = ProcessOutputCapture.create("stdout")
+        stderr_capture = ProcessOutputCapture.create("stderr")
         reader_errors: list[BaseException] = []
         progress_state = _ShellProgressState()
         timed_out = False
         aborted = False
+        stop_confirmed = True
         # Boundary: subprocess.Popen types the PIPEs as IO[bytes] | None; the
         # cast pins the BinaryIO shape the incremental reader expects.
         stdout_pipe = cast(BinaryIO, process.stdout)
@@ -375,8 +403,7 @@ class ShellExecTool:
             target=_read_pipe_incrementally,
             kwargs={
                 "pipe": stdout_pipe,
-                "stream_name": "stdout",
-                "chunks": stdout_chunks,
+                "capture": stdout_capture,
                 "errors": reader_errors,
                 "emit_progress": emit_progress,
                 "progress_state": progress_state,
@@ -390,8 +417,7 @@ class ShellExecTool:
             target=_read_pipe_incrementally,
             kwargs={
                 "pipe": stderr_pipe,
-                "stream_name": "stderr",
-                "chunks": stderr_chunks,
+                "capture": stderr_capture,
                 "errors": reader_errors,
                 "emit_progress": emit_progress,
                 "progress_state": progress_state,
@@ -406,18 +432,18 @@ class ShellExecTool:
         while True:
             if reader_errors:
                 kill_timed_out_process(process)
-                _wait_after_process_kill(process)
+                stop_confirmed = _wait_after_process_kill(process)
                 break
             if abort_signal is not None and abort_signal.cancelled:
                 aborted = True
                 kill_timed_out_process(process)
-                _wait_after_process_kill(process)
+                stop_confirmed = _wait_after_process_kill(process)
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
                 kill_timed_out_process(process)
-                _wait_after_process_kill(process)
+                stop_confirmed = _wait_after_process_kill(process)
                 break
             try:
                 process.wait(timeout=min(0.05, remaining))
@@ -428,19 +454,33 @@ class ShellExecTool:
         _join_reader_thread(stdout_reader, stdout_pipe)
         _join_reader_thread(stderr_reader, stderr_pipe)
 
-        stdout_bytes = b"".join(stdout_chunks)
-        stderr_bytes = b"".join(stderr_chunks)
-        stdout = _decode_process_output(stdout_bytes)
-        stderr = _decode_process_output(stderr_bytes)
+        stdout = stdout_capture.preview()
+        stderr = stderr_capture.preview()
+        stdout_artifact = stdout_capture.artifact(
+            session_id=context.session_id,
+            tool_call_id=progress_invocation_id,
+            tool_name=self.definition.name,
+        )
+        stderr_artifact = stderr_capture.artifact(
+            session_id=context.session_id,
+            tool_call_id=progress_invocation_id,
+            tool_name=self.definition.name,
+        )
+        output_limit_exceeded = stdout_capture.limit_exceeded or stderr_capture.limit_exceeded
+        output_truncated = stdout_capture.preview_truncated or stderr_capture.preview_truncated or output_limit_exceeded
+        output_reference = _artifact_reference(stdout_artifact) or _artifact_reference(stderr_artifact)
+        stdout_capture.close()
+        stderr_capture.close()
 
         if reader_errors:
             first_error = reader_errors[0]
             message = f"shell_exec failed while reading process output: {first_error}"
             raise ValueError(message) from first_error
 
-        output = stdout
-        if stderr:
-            output = f"{output}{stderr}" if output else stderr
+        output = f"{stderr}{stdout}" if output_truncated and stderr else f"{stdout}{stderr}"
+        artifact_refs = [uri for artifact in (stdout_artifact, stderr_artifact) if (uri := artifact_uri(artifact)) is not None]
+        if output_truncated and artifact_refs:
+            output = "Full process output: " + ", ".join(artifact_refs) + "\n\n" + output
 
         if timed_out:
             if runtime_timeout_selected:
@@ -448,24 +488,70 @@ class ShellExecTool:
                 partial_result = ToolFailure(
                     tool_name=self.definition.name,
                     error=content,
-                    output=TextOutput(output, bounds=OutputBounds(partial=True)),
+                    output=TextOutput(
+                        output,
+                        bounds=OutputBounds(
+                            truncated=output_truncated,
+                            partial=True,
+                            reference=output_reference,
+                        ),
+                    ),
                     body=ShellExecResultBody(
                         command=command_text,
+                        cwd=str(workspace_root),
                         exit_code=process.returncode,
                         stdout=stdout,
                         stderr=stderr,
                         timeout=timeout_seconds,
-                        injected_env_keys=tuple(injected_env_keys),
+                        truncated=output_truncated,
+                        stdout_truncated=stdout_capture.preview_truncated or stdout_capture.limit_exceeded,
+                        stderr_truncated=stderr_capture.preview_truncated or stderr_capture.limit_exceeded,
+                        output_char_count=len(output),
                         interrupted=True,
                         timed_out=True,
+                        stdout_artifact=stdout_artifact,
+                        stderr_artifact=stderr_artifact,
+                        output_limit_exceeded=output_limit_exceeded,
+                        stop_confirmed=stop_confirmed,
                     ),
                     timeout_seconds=timeout_seconds,
                 )
                 raise RuntimeToolTimeoutError(
                     content,
                     partial_result=partial_result,
+                    execution_stopped=stop_confirmed,
                 )
-            raise ValueError(f"shell_exec command timed out after {timeout_seconds}s")
+            return ToolFailure(
+                tool_name=self.definition.name,
+                error=f"shell_exec command timed out after {timeout_seconds}s",
+                output=TextOutput(
+                    output,
+                    bounds=OutputBounds(
+                        truncated=output_truncated,
+                        partial=True,
+                        reference=output_reference,
+                    ),
+                ),
+                body=ShellExecResultBody(
+                    command=command_text,
+                    cwd=str(workspace_root),
+                    exit_code=process.returncode,
+                    stdout=stdout,
+                    stderr=stderr,
+                    timeout=timeout_seconds,
+                    truncated=output_truncated,
+                    stdout_truncated=stdout_capture.preview_truncated or stdout_capture.limit_exceeded,
+                    stderr_truncated=stderr_capture.preview_truncated or stderr_capture.limit_exceeded,
+                    output_char_count=len(output),
+                    interrupted=True,
+                    timed_out=True,
+                    stdout_artifact=stdout_artifact,
+                    stderr_artifact=stderr_artifact,
+                    output_limit_exceeded=output_limit_exceeded,
+                    stop_confirmed=stop_confirmed,
+                ),
+                timeout_seconds=timeout_seconds,
+            )
 
         if aborted:
             reason = abort_signal.reason if abort_signal is not None else None
@@ -473,34 +559,72 @@ class ShellExecTool:
             return ToolFailure(
                 tool_name=self.definition.name,
                 error=content,
-                output=TextOutput(content),
+                output=TextOutput(
+                    f"{content}\n\n{output}" if output else content,
+                    bounds=OutputBounds(
+                        truncated=output_truncated,
+                        partial=True,
+                        reference=output_reference,
+                    ),
+                ),
                 body=ShellExecResultBody(
                     command=command_text,
+                    cwd=str(workspace_root),
                     exit_code=process.returncode,
                     stdout=stdout,
                     stderr=stderr,
                     timeout=timeout_seconds,
-                    injected_env_keys=tuple(injected_env_keys),
+                    truncated=output_truncated,
+                    stdout_truncated=stdout_capture.preview_truncated or stdout_capture.limit_exceeded,
+                    stderr_truncated=stderr_capture.preview_truncated or stderr_capture.limit_exceeded,
+                    output_char_count=len(output),
                     interrupted=True,
                     cancelled=True,
                     reason=reason,
+                    stdout_artifact=stdout_artifact,
+                    stderr_artifact=stderr_artifact,
+                    output_limit_exceeded=output_limit_exceeded,
+                    stop_confirmed=stop_confirmed,
                 ),
                 timeout_seconds=timeout_seconds,
             )
 
+        body = ShellExecResultBody(
+            command=command_text,
+            cwd=str(workspace_root),
+            exit_code=process.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            timeout=timeout_seconds,
+            truncated=output_truncated,
+            stdout_truncated=stdout_capture.preview_truncated or stdout_capture.limit_exceeded,
+            stderr_truncated=stderr_capture.preview_truncated or stderr_capture.limit_exceeded,
+            output_char_count=len(output),
+            stdout_artifact=stdout_artifact,
+            stderr_artifact=stderr_artifact,
+            output_limit_exceeded=output_limit_exceeded,
+        )
+        bounds = OutputBounds(
+            truncated=output_truncated,
+            partial=output_truncated,
+            reference=output_reference,
+        )
+        if output_limit_exceeded:
+            return ToolFailure(
+                tool_name=self.definition.name,
+                error="shell_exec output exceeded the 128 MiB capture limit; partial output is attached.",
+                output=TextOutput(output, bounds=bounds),
+                body=body,
+            )
+        if process.returncode != 0:
+            return ToolFailure(
+                tool_name=self.definition.name,
+                error=stderr or f"Command exited with code {process.returncode}.",
+                output=TextOutput(stdout, bounds=bounds),
+                body=body,
+            )
         return ToolSuccess(
             tool_name=self.definition.name,
-            output=TextOutput(output),
-            body=ShellExecResultBody(
-                command=command_text,
-                exit_code=process.returncode,
-                stdout=stdout,
-                stderr=stderr,
-                timeout=timeout_seconds,
-                injected_env_keys=tuple(injected_env_keys),
-                cwd=str(exec_policy.workspace_root),
-                stdout_truncated=False,
-                stderr_truncated=False,
-                output_char_count=len(output),
-            ),
+            output=TextOutput(output, bounds=bounds),
+            body=body,
         )

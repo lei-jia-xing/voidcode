@@ -12,12 +12,13 @@ import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, final
+from typing import ClassVar, Literal, cast, final
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, StrictInt, field_validator
 
 from ..core.tool_context import (
     RULE_URI_PREFIX,
+    ArtifactBinary,
     ArtifactInvalid,
     ArtifactMissing,
     ArtifactPage,
@@ -28,12 +29,12 @@ from ..core.tool_context import (
     TranscriptPage,
 )
 from ..security.json_values import json_wire_object
-from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._pydantic_args import parse_tool_args, validate_non_empty
 from .contracts import (
     AttachmentOutput,
     OpaqueToolBody,
     OutputBounds,
+    OutputReference,
     TextOutput,
     ToolCall,
     ToolDefinition,
@@ -43,7 +44,8 @@ from .contracts import (
     is_read_tier,
 )
 from .guidance import guidance_for_tool
-from .output import _ARTIFACT_ID_PATTERN
+from .output import _ARTIFACT_ID_PATTERN, MAX_ARTIFACT_PAGE_BYTES, MAX_INLINE_ATTACHMENT_BYTES, RASTER_IMAGE_MIMES, create_tool_output_artifact
+from .read_formats import MAX_OUTPUTS, render_notebook, render_pdf_bytes, render_pdf_path, render_sqlite
 
 #: Internal URL scheme for on-demand tool documentation (essential/discoverable
 #: split): read(path="voidcode://tool/<name>") returns the tool's guidance
@@ -121,14 +123,18 @@ def _render_tool_documentation(path: str, *, context: ToolContext) -> _ReadOutco
     )
 
 
-def _render_artifact(path: str, *, context: ToolContext, offset: int, limit: int) -> _ReadOutcome:
-    """Render a bounded slice of a spilled tool-output artifact by URI.
-
-    The artifact is resolved through the runtime's session-validated reader
-    (``ToolContext.artifact``), which applies the session and
-    artifact-path guards; the URI never falls through to workspace path
-    resolution.
-    """
+def _render_artifact(
+    path: str,
+    *,
+    context: ToolContext,
+    offset: int,
+    limit: int,
+    byte_offset: int | None = None,
+    byte_limit: int | None = None,
+    view: Literal["pdf"] | None = None,
+    page: int | None = None,
+) -> _ReadOutcome:
+    """Render an integrity-checked, bounded line or byte page from an artifact."""
 
     artifact_id = path[len(VOIDCODE_ARTIFACT_PREFIX) :].strip()
     if not artifact_id:
@@ -139,44 +145,190 @@ def _render_artifact(path: str, *, context: ToolContext, offset: int, limit: int
     facade = context.artifact
     if facade is None:
         raise ValueError("read cannot resolve voidcode://artifact URLs without a runtime artifact reader")
-    result = facade.read_artifact(
-        caller_session_id=caller_session_id,
-        artifact_id=artifact_id,
-        offset=max(0, offset - 1),
-        limit=limit,
-    )
+    if byte_limit is not None and byte_offset is None:
+        raise ValueError("byte_limit requires byte_offset")
+    if byte_offset is None:
+        result = facade.read_artifact(
+            caller_session_id=caller_session_id,
+            artifact_id=artifact_id,
+            offset=max(0, offset - 1),
+            limit=limit,
+        )
+    else:
+        result = facade.read_artifact(
+            caller_session_id=caller_session_id,
+            artifact_id=artifact_id,
+            offset=max(0, offset - 1),
+            limit=limit,
+            byte_offset=byte_offset,
+            byte_limit=byte_limit,
+        )
     if isinstance(result, ArtifactMissing):
         raise ValueError(f"artifact not found in current session: {artifact_id}")
     if isinstance(result, ArtifactInvalid):
         raise ValueError(f"artifact read failed: {result.reason}")
     if isinstance(result, ArtifactUnavailable):
         raise ValueError(f"artifact read failed: {result.reason}")
+    if isinstance(result, ArtifactBinary):
+        if view == "pdf":
+            if result.mime != "application/pdf" or result.data is None:
+                raise ValueError("PDF artifact view requires a readable PDF artifact")
+            rendered = render_pdf_bytes(
+                result.data,
+                page=page,
+                offset=offset,
+                limit=limit,
+                cancelled=lambda: context.abort_signal is not None and context.abort_signal.cancelled,
+            )
+            full_text = cast(str, rendered.pop("full_text"))
+            source_artifact = result.as_payload()
+            source_reference = path
+            text_reference: str | None = None
+            output_artifact: dict[str, object] | None = None
+            if len(full_text.encode("utf-8")) > MAX_BYTES:
+                output_artifact = create_tool_output_artifact(
+                    session_id=caller_session_id,
+                    tool_call_id=context.invocation_id,
+                    tool_name="read",
+                    content=full_text,
+                    kind="pdf_text",
+                    mime="text/plain; charset=utf-8",
+                    source=path,
+                )
+                text_reference = cast(str, output_artifact["uri"])
+            rendered.update(source_reference=source_reference, source_artifact=source_artifact)
+            bounds_reference = (
+                OutputReference(uri=cast(str, text_reference), artifact=output_artifact)
+                if output_artifact is not None
+                else OutputReference(uri=path, artifact=source_artifact)
+            )
+            bounds = OutputBounds(
+                truncated=bool(rendered["truncated"]),
+                partial=bool(rendered["partial"]),
+                reference=bounds_reference,
+                source=result.source or path,
+            )
+            body = {
+                **rendered,
+                "path": path,
+                "type": "pdf",
+                "source_reference": source_reference,
+                "source_artifact": source_artifact,
+                "text_reference": text_reference,
+                "output_artifact": output_artifact,
+            }
+            if text_reference is not None:
+                summary = f"Extracted PDF text from {path}; source PDF: {source_reference}; full extracted text: {text_reference}."
+            else:
+                summary = f"Extracted PDF text from {path}; source PDF: {source_reference}."
+            if rendered["truncated"]:
+                summary += (
+                    f" Continue with offset={rendered['next_offset']}."
+                    if rendered["next_offset"] is not None
+                    else " The current text page is truncated."
+                )
+            else:
+                summary += " The extracted text is below."
+            return _ReadOutcome(
+                output=_text_output(
+                    summary,
+                    raw_content=cast(str, rendered["raw_content"]),
+                    next_offset=cast(int | None, rendered["next_offset"]),
+                    truncated=bool(rendered["truncated"]),
+                    partial=bool(rendered["partial"]),
+                    bounds=bounds,
+                ),
+                body=OpaqueToolBody(body),
+            )
+        label = "Image" if result.mime in RASTER_IMAGE_MIMES else "PDF" if result.mime == "application/pdf" else "Binary"
+        ref = OutputReference(uri=path, artifact=result.as_payload())
+        bounds = OutputBounds(reference=ref)
+        if result.mime in RASTER_IMAGE_MIMES or result.mime == "application/pdf":
+            return _ReadOutcome(
+                output=AttachmentOutput(result.mime, result.data_uri, presentation=f"{label} artifact read successfully", bounds=bounds),
+                body=OpaqueToolBody(
+                    {
+                        "path": path,
+                        "type": "attachment",
+                        "content_type": result.mime,
+                        "byte_count": result.byte_count,
+                        "content_hash": result.sha256,
+                        "artifact_id": result.artifact_id,
+                        "attachment": {"mime": result.mime, "reference": path},
+                        "bounds": {"reference": path},
+                    }
+                ),
+            )
+        presentation = f"Binary artifact {result.artifact_id} ({result.mime}, {result.byte_count} bytes, sha256:{result.sha256})"
+        return _ReadOutcome(
+            output=TextOutput(presentation, bounds=bounds),
+            body=OpaqueToolBody(
+                {
+                    "path": path,
+                    "type": "binary",
+                    "content_type": result.mime,
+                    "byte_count": result.byte_count,
+                    "content_hash": result.sha256,
+                    "artifact_id": result.artifact_id,
+                    "reference": path,
+                }
+            ),
+        )
     if not isinstance(result, ArtifactPage):
         raise ValueError(f"artifact read returned no content: {artifact_id}")
-    content = result.text
-    next_offset = result.page.offset if isinstance(result.page, NextPage) else None
-    truncated = next_offset is not None
-    rendered_lines = content.splitlines()
-    body = result.as_payload()
-    body.update(
-        {
-            "path": path,
-            "type": "artifact",
-            "offset": offset,
-            "truncated": truncated,
-            "partial": truncated,
-            "byte_count": len(content.encode("utf-8")),
-            "raw_content": content,
-        }
+
+    next_offset = result.page.offset + 1 if isinstance(result.page, NextPage) else None
+    next_byte_offset = result.next_byte_offset
+    truncated = result.truncated
+    raw_content = result.text
+    page_bytes = len(raw_content.encode("utf-8"))
+    bounds = OutputBounds(
+        truncated=truncated,
+        partial=truncated,
+        reference=OutputReference(uri=path, artifact=result.as_payload()),
     )
+    body = {
+        "offset": result.byte_offset if result.byte_offset is not None else result.offset + 1,
+        "offset_unit": "bytes" if result.byte_offset is not None else "lines",
+        "line_offset": result.offset + 1 if result.byte_offset is not None else None,
+        "limit": result.limit,
+        "next_offset": next_offset,
+        "byte_limit": result.byte_limit,
+        "next_byte_offset": next_byte_offset,
+        "truncated": truncated,
+        "partial": truncated,
+        "byte_count": page_bytes,
+        "artifact_byte_count": result.byte_count,
+        "content_hash": result.sha256,
+        "content_type": result.mime,
+        "source": result.source,
+        "raw_content": raw_content,
+        "artifact_id": result.artifact_id,
+        "line_count": result.line_count,
+    }
+    if result.byte_offset is not None:
+        summary = f"Read {page_bytes} artifact byte(s) from byte offset {result.byte_offset}."
+    else:
+        line_total = len(raw_content.splitlines())
+        summary = f"Read {line_total} line(s) from {path}"
+    if truncated:
+        if next_byte_offset is not None:
+            summary += f"; continue with byte_offset={next_byte_offset}."
+        elif next_offset is not None:
+            summary += f"; continue with offset={next_offset}."
+        else:
+            summary += "; output is truncated."
+    else:
+        summary += "."
     return _ReadOutcome(
         output=_text_output(
-            f"Read {len(rendered_lines)} line(s) from {path}"
-            + ("; output is truncated; continue reading with the returned next_offset." if truncated else "."),
-            raw_content=content,
+            summary,
+            raw_content=raw_content,
             next_offset=next_offset,
+            next_byte_offset=next_byte_offset,
             truncated=truncated,
             partial=truncated,
+            bounds=bounds,
         ),
         body=OpaqueToolBody(body),
     )
@@ -224,6 +376,15 @@ class ReadArgs(BaseModel):
     path: str
     offset: int | None = None
     limit: int | None = None
+    byte_offset: StrictInt | None = None
+    byte_limit: StrictInt | None = None
+    view: Literal["raw", "sqlite", "notebook", "pdf"] | None = None
+    table: str | None = None
+    query: str | None = None
+    cell: StrictInt | None = None
+    page: StrictInt | None = None
+    output_offset: StrictInt | None = None
+    output_limit: StrictInt | None = None
 
     _validate_path = field_validator("path", mode="after")(validate_non_empty)
 
@@ -243,6 +404,41 @@ class ReadArgs(BaseModel):
             return None
         if value < 1:
             raise ValueError("limit must be greater than or equal to 1")
+        return value
+
+    @field_validator("byte_offset", mode="after")
+    @classmethod
+    def _validate_byte_offset(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("byte_offset must be a non-negative, zero-based UTF-8 byte offset")
+        return value
+
+    @field_validator("byte_limit", mode="after")
+    @classmethod
+    def _validate_byte_limit(cls, value: int | None) -> int | None:
+        if value is not None and not 4 <= value <= MAX_ARTIFACT_PAGE_BYTES:
+            raise ValueError(f"byte_limit must be between 4 and {MAX_ARTIFACT_PAGE_BYTES}")
+        return value
+
+    @field_validator("cell", mode="after")
+    @classmethod
+    def _validate_cell(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("cell must be a non-negative zero-based index")
+        return value
+
+    @field_validator("page", mode="after")
+    @classmethod
+    def _validate_page(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("page must be a positive one-based page number")
+        return value
+
+    @field_validator("output_offset", "output_limit", mode="after")
+    @classmethod
+    def _validate_output_page(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("output_offset and output_limit must be positive integers")
         return value
 
 
@@ -367,7 +563,11 @@ class ReadResultBody:
             raise ValueError("persisted read body lines exceed the declared file page")
         if next_offset is not None and next_offset != offset + len(lines):
             raise ValueError("persisted read body next offset does not follow its lines")
-        if raw_content != "\n".join(line.text for line in lines):
+        normalized_content = raw_content.replace("\r\n", "\n").replace("\r", "\n")
+        normalized_lines = normalized_content.split("\n") if normalized_content else []
+        if normalized_content.endswith("\n"):
+            normalized_lines.pop()
+        if normalized_lines != [line.text for line in lines]:
             raise ValueError("persisted read body raw content disagrees with its lines")
         if byte_count != len(raw_content.encode("utf-8")):
             raise ValueError("persisted read body byte count disagrees with its content")
@@ -386,16 +586,22 @@ def _text_output(
     raw_content: str | None = None,
     content_hash: str | None = None,
     next_offset: int | None = None,
+    next_byte_offset: int | None = None,
     truncated: bool = False,
     partial: bool = False,
+    bounds: OutputBounds | None = None,
 ) -> TextOutput:
     text = content
     if content_hash is not None:
         text = f"{text}\nSHA-256 content hash: {content_hash}"
     if next_offset is not None:
         text = f"{text}\nNext offset: {next_offset}"
+    if next_byte_offset is not None:
+        text = f"{text}\nNext byte offset: {next_byte_offset} (zero-based UTF-8 byte offset; continue with byte_offset={next_byte_offset})"
     if raw_content:
         text = f"{text}\n\n{raw_content}"
+    if bounds is not None:
+        return TextOutput(text, bounds=bounds)
     return TextOutput(text, bounds=OutputBounds(truncated=truncated, partial=partial))
 
 
@@ -457,35 +663,91 @@ def _is_binary_file(path: Path) -> bool:
     return non_printable / len(sample) > 0.3
 
 
-def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int) -> _ReadOutcome:
+def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int, context: ToolContext | None = None) -> _ReadOutcome:
     mime, _ = mimetypes.guess_type(candidate.name)
-    if mime and (mime.startswith("image/") or mime == "application/pdf"):
+    is_svg = candidate.suffix.lower() == ".svg" or mime == "image/svg+xml"
+    session_id = context.session_id if context else None
+    invocation_id = context.invocation_id if context else None
+
+    if not is_svg and (mime in RASTER_IMAGE_MIMES or mime == "application/pdf"):
         attachment_size = candidate.stat().st_size
         if attachment_size > MAX_ATTACHMENT_BYTES:
             raise ValueError(f"read attachment exceeds the maximum supported size ({MAX_ATTACHMENT_BYTES} bytes): {relative_path}")
         raw = candidate.read_bytes()
-        data_uri = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
-        label = "Image" if mime.startswith("image/") else "PDF"
+        artifact = create_tool_output_artifact(
+            session_id=session_id,
+            tool_call_id=invocation_id,
+            tool_name="read",
+            content=raw,
+            mime=mime,
+            source=relative_path,
+        )
+        artifact_id = cast(str, artifact["artifact_id"])
+        uri = f"{VOIDCODE_ARTIFACT_PREFIX}{artifact_id}"
+        ref = OutputReference(uri=uri, artifact=artifact)
+        bounds = OutputBounds(reference=ref, source=relative_path)
+        label = "Image" if mime in RASTER_IMAGE_MIMES else "PDF"
         message = f"{label} read successfully"
+        if mime == "application/pdf":
+            message = (
+                f"PDF {relative_path} ({mime}, {len(raw)} bytes, sha256:{artifact['sha256']}); "
+                f'read the original PDF with read(path="{uri}", view="raw").'
+            )
+        data_uri = (
+            f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+            if mime in RASTER_IMAGE_MIMES and len(raw) <= MAX_INLINE_ATTACHMENT_BYTES
+            else None
+        )
         return _ReadOutcome(
-            output=AttachmentOutput(mime, data_uri, presentation=message),
+            output=AttachmentOutput(mime, data_uri, presentation=message, bounds=bounds),
             body=OpaqueToolBody(
                 {
                     "path": relative_path,
                     "type": "attachment",
                     "content_type": mime,
                     "byte_count": len(raw),
-                    "content_hash": hashlib.sha256(raw).hexdigest(),
-                    "attachment": {"mime": mime, "data_uri": data_uri},
-                    "truncated": False,
-                    "partial": False,
+                    "content_hash": cast(str, artifact["sha256"]),
+                    "artifact_id": artifact_id,
+                    "attachment": {"mime": mime, "reference": uri},
+                    "bounds": {"reference": uri},
                 }
             ),
         )
 
-    if _is_binary_file(candidate):
-        raise ValueError(f"read only supports text files or image/pdf attachments: {relative_path}")
-
+    if _is_binary_file(candidate) and not is_svg:
+        raw = candidate.read_bytes()
+        effective_mime = mime or "application/octet-stream"
+        artifact = create_tool_output_artifact(
+            session_id=session_id,
+            tool_call_id=invocation_id,
+            tool_name="read",
+            content=raw,
+            mime=effective_mime,
+            source=relative_path,
+        )
+        artifact_id = cast(str, artifact["artifact_id"])
+        uri = f"{VOIDCODE_ARTIFACT_PREFIX}{artifact_id}"
+        ref = OutputReference(uri=uri, artifact=artifact)
+        bounds = OutputBounds(reference=ref, source=relative_path)
+        presentation = (
+            f"Binary file {relative_path} ({effective_mime}, {len(raw)} bytes, "
+            f'sha256:{artifact["sha256"]}). Read full content with read(path="{uri}").'
+        )
+        return _ReadOutcome(
+            output=TextOutput(presentation, bounds=bounds),
+            body=OpaqueToolBody(
+                {
+                    "path": relative_path,
+                    "type": "binary",
+                    "content_type": effective_mime,
+                    "byte_count": len(raw),
+                    "content_hash": cast(str, artifact["sha256"]),
+                    "artifact_id": artifact_id,
+                    "source": relative_path,
+                    "reference": uri,
+                }
+            ),
+        )
     digest = hashlib.sha256()
     with candidate.open("rb") as hash_handle:
         for chunk in iter(lambda: hash_handle.read(1024 * 1024), b""):
@@ -494,6 +756,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
 
     limit = min(limit, DEFAULT_READ_LIMIT)
     rendered_lines: list[ReadLine] = []
+    raw_content_lines: list[str] = []
     total_lines = 0
     bytes_used = 0
     content_truncated = False
@@ -510,14 +773,17 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
                     continue
 
                 line_text = raw_line.rstrip("\r\n")
+                line_ending = raw_line[len(line_text) :]
                 line_text, line_truncated = _truncate_line(line_text)
-                encoded_size = len(line_text.encode("utf-8")) + (1 if rendered_lines else 0)
+                rendered_raw_line = line_text + line_ending if line_truncated else raw_line
+                encoded_size = len(rendered_raw_line.encode("utf-8"))
                 if bytes_used + encoded_size > MAX_BYTES:
                     content_truncated = True
                     has_more = True
                     continue
 
                 rendered_lines.append(ReadLine(line_number, line_text, line_truncated))
+                raw_content_lines.append(rendered_raw_line)
                 bytes_used += encoded_size
                 content_truncated = content_truncated or line_truncated
     except UnicodeDecodeError as exc:
@@ -529,7 +795,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
     next_offset = offset + len(rendered_lines)
     content_truncated = content_truncated or has_more
 
-    raw_content = "\n".join(line.text for line in rendered_lines)
+    raw_content = "".join(raw_content_lines)
     body = ReadResultBody(
         line_count=total_lines,
         offset=offset,
@@ -968,6 +1234,146 @@ def _read_success(outcome: _ReadOutcome) -> ToolSuccess[ReadResultBody | OpaqueT
     return ToolSuccess("read", output=outcome.output, body=outcome.body)
 
 
+def _render_format_view(
+    candidate: Path,
+    *,
+    label: str,
+    context: ToolContext,
+    view: Literal["sqlite", "notebook", "pdf"],
+    offset: int,
+    limit: int,
+    table: str | None,
+    query: str | None,
+    cell: int | None,
+    page: int | None,
+    output_offset: int,
+    output_limit: int,
+) -> _ReadOutcome:
+    if view == "sqlite":
+        payload = render_sqlite(
+            candidate,
+            table=table,
+            query=query,
+            offset=offset,
+            limit=limit,
+            cancelled=lambda: context.abort_signal is not None and context.abort_signal.cancelled,
+        )
+    elif view == "notebook":
+        payload = render_notebook(
+            candidate,
+            offset=offset,
+            limit=limit,
+            cell=cell,
+            output_offset=output_offset,
+            output_limit=output_limit,
+        )
+    else:
+        payload = render_pdf_path(
+            candidate,
+            page=page,
+            offset=offset,
+            limit=limit,
+            cancelled=lambda: context.abort_signal is not None and context.abort_signal.cancelled,
+        )
+    full_text = payload.pop("full_text", None)
+    source_bytes = payload.pop("source_bytes", None)
+    artifacts: list[dict[str, object]] = []
+    text_reference: str | None = None
+    if isinstance(full_text, str) and len(full_text.encode("utf-8")) > MAX_BYTES:
+        artifact = create_tool_output_artifact(
+            session_id=context.session_id,
+            tool_call_id=context.invocation_id,
+            tool_name="read",
+            content=full_text,
+            kind="pdf_text",
+            mime="text/plain; charset=utf-8",
+            source=label,
+        )
+        text_reference = f"{VOIDCODE_ARTIFACT_PREFIX}{artifact['artifact_id']}"
+        payload["text_reference"] = text_reference
+        payload["output_artifact"] = artifact
+    payload["source"] = label
+
+    images_value = payload.pop("images", [])
+    if not isinstance(images_value, list):
+        raise ValueError("invalid notebook image collection")
+    for image in images_value:
+        if not isinstance(image, dict):
+            raise ValueError("invalid notebook image record")
+        image_bytes = image.pop("data", None)
+        if not isinstance(image_bytes, bytes):
+            raise ValueError("notebook image data is unavailable")
+        artifact = create_tool_output_artifact(
+            session_id=context.session_id,
+            tool_call_id=context.invocation_id,
+            tool_name="read",
+            content=image_bytes,
+            kind="notebook_image",
+            mime=str(image["mime"]),
+            source=f"{label}#cell={image['cell']}",
+        )
+        artifact_id = cast(str, artifact["artifact_id"])
+        uri = f"{VOIDCODE_ARTIFACT_PREFIX}{artifact_id}"
+        image["reference"] = uri
+        image["artifact"] = artifact
+        artifacts.append(artifact)
+    source_reference: str | None = None
+    if view == "pdf" or payload.get("truncated_text") is True or payload.get("raw_reference_required") is True:
+        if not isinstance(source_bytes, bytes):
+            raise ValueError(f"{view} source snapshot is unavailable")
+        artifact = create_tool_output_artifact(
+            session_id=context.session_id,
+            tool_call_id=context.invocation_id,
+            tool_name="read",
+            content=source_bytes,
+            kind="pdf_source" if view == "pdf" else "notebook_source",
+            mime="application/pdf" if view == "pdf" else "application/json",
+            source=label,
+        )
+        source_reference = f"{VOIDCODE_ARTIFACT_PREFIX}{artifact['artifact_id']}"
+        payload["source_reference"] = source_reference
+        payload["source_artifact"] = artifact
+    if artifacts:
+        payload["artifacts"] = artifacts
+
+    raw_content = json.dumps(payload, ensure_ascii=False, indent=2)
+    output_reference: str | None = None
+    output_truncated = len(raw_content.encode("utf-8")) > MAX_BYTES
+    if output_truncated:
+        artifact = create_tool_output_artifact(
+            session_id=context.session_id,
+            tool_call_id=context.invocation_id,
+            tool_name="read",
+            content=raw_content,
+            kind=f"{view}_view",
+            mime="application/json",
+            source=label,
+        )
+        output_reference = f"{VOIDCODE_ARTIFACT_PREFIX}{artifact['artifact_id']}"
+        payload["output_reference"] = output_reference
+        payload["output_artifact"] = artifact
+        raw_content = raw_content.encode("utf-8")[: MAX_BYTES // 2].decode("utf-8", "ignore") + "\n…"
+    truncated = bool(payload.get("truncated", False)) or output_truncated
+    if output_truncated:
+        payload["output_truncated"] = True
+    next_offset = payload.get("next_offset")
+    source_hash = payload.get("source_sha256")
+    return _ReadOutcome(
+        output=_text_output(
+            f"Read {view} view of {label}"
+            + ("; output is truncated." if truncated else ".")
+            + (f" Full derived view: read(path={json.dumps(output_reference)})." if output_reference else ""),
+            raw_content=raw_content,
+            content_hash=source_hash if isinstance(source_hash, str) else None,
+            next_offset=next_offset if isinstance(next_offset, int) else None,
+            truncated=truncated,
+            partial=truncated,
+            bounds=OutputBounds(truncated=truncated, partial=truncated, source=label),
+        ),
+        body=OpaqueToolBody(payload),
+    )
+
+
 @final
 class ReadTool:
     """Read a file or supported attachment from the current workspace."""
@@ -989,13 +1395,48 @@ class ReadTool:
             "offset": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "1-based line number to start reading from; defaults to the first line.",
+                "description": (
+                    "1-based starting file line, SQLite row, Notebook cell, or PDF text line; Notebook cell offsets use `offset` rather than `cell`."
+                ),
             },
             "limit": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": DEFAULT_READ_LIMIT,
-                "description": "Maximum lines to return; when truncated, continue with the next offset shown in the read output.",
+                "description": "Maximum file lines, SQLite rows, Notebook cells, or PDF text lines to return.",
+            },
+            "byte_offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Zero-based UTF-8 byte offset for continuing a long artifact line; use the returned next_byte_offset.",
+            },
+            "byte_limit": {
+                "type": "integer",
+                "minimum": 4,
+                "maximum": MAX_ARTIFACT_PAGE_BYTES,
+                "description": "Maximum UTF-8 bytes in an artifact page; requires byte_offset.",
+            },
+            "view": {
+                "type": "string",
+                "enum": ["raw", "sqlite", "notebook", "pdf"],
+                "description": (
+                    "Select a read-only derived view; raw returns the original file bytes/text and preserves ordinary file-read semantics."
+                ),
+            },
+            "table": {"type": "string", "description": "SQLite table to inspect; defaults to the first user table."},
+            "query": {"type": "string", "description": "One read-only SQLite SELECT/WITH query."},
+            "cell": {"type": "integer", "minimum": 0, "description": "Zero-based notebook cell index to inspect alone."},
+            "page": {"type": "integer", "minimum": 1, "description": "One-based PDF page to extract."},
+            "output_offset": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "1-based notebook output index within `cell`; requires the zero-based cell selector.",
+            },
+            "output_limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": MAX_OUTPUTS,
+                "description": "Maximum notebook outputs to return for `cell`; continue with next_output_offset.",
             },
             "required": ["path"],
         },
@@ -1010,9 +1451,32 @@ class ReadTool:
                 "path": call.arguments.get("path"),
                 "offset": call.arguments.get("offset"),
                 "limit": call.arguments.get("limit"),
+                "byte_offset": call.arguments.get("byte_offset"),
+                "byte_limit": call.arguments.get("byte_limit"),
+                "view": call.arguments.get("view"),
+                "table": call.arguments.get("table"),
+                "query": call.arguments.get("query"),
+                "cell": call.arguments.get("cell"),
+                "page": call.arguments.get("page"),
+                "output_offset": call.arguments.get("output_offset"),
+                "output_limit": call.arguments.get("output_limit"),
             },
             tool_name=self.definition.name,
         )
+        if args.path.startswith((RULE_URI_PREFIX, VOIDCODE_TOOL_DOC_PREFIX, VOIDCODE_TRANSCRIPT_PREFIX)) and (
+            args.view is not None
+            or args.table is not None
+            or args.query is not None
+            or args.cell is not None
+            or args.page is not None
+            or args.output_offset is not None
+            or args.output_limit is not None
+        ):
+            raise ValueError("format views and selectors only apply to workspace files and PDF artifact URLs")
+        if (args.byte_offset is not None or args.byte_limit is not None) and not args.path.startswith(VOIDCODE_ARTIFACT_PREFIX):
+            raise ValueError("byte_offset and byte_limit are only valid for voidcode://artifact URLs")
+        if args.byte_limit is not None and args.byte_offset is None:
+            raise ValueError("byte_limit requires byte_offset")
 
         if args.path.startswith(RULE_URI_PREFIX):
             reader = context.read_rule
@@ -1053,12 +1517,41 @@ class ReadTool:
         if args.path.startswith(VOIDCODE_TOOL_DOC_PREFIX):
             return _read_success(_render_tool_documentation(args.path, context=context))
         if args.path.startswith(VOIDCODE_ARTIFACT_PREFIX):
+            if args.view == "pdf":
+                if (
+                    args.byte_offset is not None
+                    or args.byte_limit is not None
+                    or args.table is not None
+                    or args.query is not None
+                    or args.cell is not None
+                    or args.output_offset is not None
+                    or args.output_limit is not None
+                ):
+                    raise ValueError("PDF artifact view does not accept byte, SQLite, or notebook arguments")
+                return _read_success(
+                    _render_artifact(
+                        args.path,
+                        context=context,
+                        offset=args.offset or 1,
+                        limit=args.limit or DEFAULT_READ_LIMIT,
+                        byte_offset=args.byte_offset,
+                        byte_limit=args.byte_limit,
+                        view="pdf",
+                        page=args.page,
+                    )
+                )
+            if args.view not in (None, "raw") or any(
+                value is not None for value in (args.table, args.query, args.cell, args.page, args.output_offset, args.output_limit)
+            ):
+                raise ValueError("only raw or PDF views are supported for artifact URLs")
             return _read_success(
                 _render_artifact(
                     args.path,
                     context=context,
                     offset=args.offset or 1,
                     limit=args.limit or DEFAULT_READ_LIMIT,
+                    byte_offset=args.byte_offset,
+                    byte_limit=args.byte_limit,
                 )
             )
         if args.path.startswith(VOIDCODE_TRANSCRIPT_PREFIX):
@@ -1071,29 +1564,24 @@ class ReadTool:
             )
 
         workspace = context.require_workspace()
-        resolution = resolve_workspace_path_policy(
-            workspace=workspace,
-            raw_path=args.path,
-            allow_outside_workspace=True,
-        )
-        candidate = resolution.candidate
-        relative_path = str(candidate.resolve()) if resolution.is_external else resolution.relative_path
+        workspace_root = workspace.resolve()
+        requested_path = Path(args.path)
+        candidate = (requested_path if requested_path.is_absolute() else workspace_root / requested_path).resolve()
+        is_external = not candidate.is_relative_to(workspace_root)
+        relative_path = candidate.as_posix() if is_external else candidate.relative_to(workspace_root).as_posix()
         offset = args.offset or 1
         limit = args.limit or DEFAULT_READ_LIMIT
 
         archive = _split_archive_path(args.path)
         if archive is not None:
             archive_path, inner, family = archive
-            resolved_archive = resolve_workspace_path_policy(
-                workspace=workspace,
-                raw_path=archive_path,
-                allow_outside_workspace=True,
-            )
-            if not resolved_archive.candidate.is_file():
+            requested_archive = Path(archive_path)
+            resolved_archive = (requested_archive if requested_archive.is_absolute() else workspace_root / requested_archive).resolve()
+            if not resolved_archive.is_file():
                 raise ValueError(f"read target does not exist: {archive_path}")
             return _read_success(
                 _render_archive(
-                    resolved_archive.candidate,
+                    resolved_archive,
                     inner,
                     family=family,
                     label=args.path,
@@ -1114,4 +1602,42 @@ class ReadTool:
             return _read_success(_render_directory(candidate, label=relative_path))
         if not candidate.is_file():
             raise ValueError(f"read only supports regular files: {args.path}")
-        return _read_success(_render_file(candidate, relative_path=relative_path, offset=offset, limit=limit))
+        with candidate.open("rb") as source:
+            magic = source.read(16)
+        detected: Literal["sqlite", "notebook", "pdf"] | None = None
+        if candidate.suffix.lower() == ".ipynb":
+            detected = "notebook"
+        elif candidate.suffix.lower() in {".db", ".sqlite", ".sqlite3"} or magic == b"SQLite format 3\x00":
+            detected = "sqlite"
+        elif candidate.suffix.lower() == ".pdf" or magic.startswith(b"%PDF-"):
+            detected = "pdf"
+        selected_view = args.view if args.view not in (None, "raw") else (detected if args.view is None else None)
+        if args.table is not None or args.query is not None:
+            if selected_view != "sqlite":
+                raise ValueError("table and query are only valid for SQLite views")
+        if args.cell is not None and selected_view != "notebook":
+            raise ValueError("cell is only valid for notebook views")
+        if args.page is not None and selected_view != "pdf":
+            raise ValueError("page is only valid for PDF views")
+        if args.output_offset is not None or args.output_limit is not None:
+            if selected_view != "notebook" or args.cell is None:
+                raise ValueError("output_offset and output_limit require a selected notebook cell")
+        if selected_view is not None:
+            return _read_success(
+                _render_format_view(
+                    candidate,
+                    label=relative_path,
+                    context=context,
+                    view=selected_view,
+                    output_offset=args.output_offset or 1,
+                    output_limit=min(args.output_limit or MAX_OUTPUTS, MAX_OUTPUTS),
+                    offset=offset,
+                    limit=limit,
+                    table=args.table,
+                    query=args.query,
+                    cell=args.cell,
+                    page=args.page,
+                )
+            )
+
+        return _read_success(_render_file(candidate, relative_path=relative_path, offset=offset, limit=limit, context=context))

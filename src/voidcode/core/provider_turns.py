@@ -39,7 +39,7 @@ from .turns import (
 
 _PREVIEW_ARGUMENT_MAX_CHARS = 64 * 1024
 
-_WRITE_PREVIEW_TOOLS = frozenset({"write", "edit", "multi_edit", "apply_patch"})
+_WRITE_PREVIEW_TOOLS = frozenset({"write", "edit"})
 
 logger = logging.getLogger(__name__)
 

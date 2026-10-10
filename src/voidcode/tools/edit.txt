@@ -1,11 +1,12 @@
-Performs exact string replacements in files.
+Performs targeted changes to files via single text replacement, ordered batch replacements, or patch application.
 
 Usage:
-- Read the file first: every edit REQUIRES the expectedHash argument, taken from the read output's SHA-256 content hash. Edits without a hash are rejected, and a stale hash is rejected with a stale_edit diagnostic.
-- The path parameter must be a workspace-relative file path.
-- oldString and newString must be strings. oldString must match the existing file content.
-- Use this tool for targeted changes to existing files; use write or apply_patch when creating files or replacing a complete file.
-- The edit will fail if oldString is not found in the file; the failure includes near-match hints with line numbers and a diff against the current content.
-- The edit will fail if oldString matches multiple locations and replaceAll is not true; the failure lists the candidate line numbers.
-- Use replaceAll for replacing every occurrence in the file, such as a local rename.
-- When a read result is truncated, re-read the file (or continue at the next offset shown in the read output) until you have the exact current text before editing.
+- Three mutually exclusive modes are supported:
+  1. Single replacement: provide `path`, `oldString`, `newString`, and `expectedHash` (optional `replaceAll: true`).
+  2. Ordered replacements batch: provide `path`, `edits` (array of `{oldString, newString, replaceAll}`), and `expectedHash`.
+  3. Patch: provide `patch` (unified diff or structured `*** Begin Patch` / `*** End Patch` envelope) and optional `expectedHashes` (map of path -> SHA-256 hash for existing files modified/deleted).
+- Read target files first: `expectedHash` (or `expectedHashes`) is taken from the read output's SHA-256 content hash. Edits without expected hashes or with stale hashes are rejected before writing.
+- The `path` parameter may be workspace-relative or absolute; runtime approval governs filesystem access.
+- For replacements (`oldString`/`newString` or `edits`), `oldString` must match existing file content. Omit line-number prefixes shown in read output (such as `42: `).
+- Batch edits are validated and preflighted entirely in memory before writing to disk; if any edit in the batch fails, no files are modified.
+- Use `write` when creating new files or intentionally replacing a complete file.

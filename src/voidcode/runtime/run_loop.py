@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from ..core.engine import CallOutcome, CallPaused, CallReported, CallStoppedAfterReport, CallStoppedBeforeReport, EngineState, TurnBatch, TurnEngine
 from ..core.todos import TodoPhase
-from ..core.tool_context import ToolContext
+from ..core.tool_context import ArtifactBinary, ArtifactInvalid, ArtifactMissing, ArtifactUnavailable, ToolContext
 from ..core.transcript import AssembledContext, ContextSegment, ToolResultView, project_report
 from ..core.turns import (
     CallSeed,
@@ -50,6 +50,7 @@ from ..security.redaction import redact_text
 from ..tools._pydantic_args import format_validation_error
 from ..tools._repair import ToolDiagnosticError
 from ..tools.contracts import (
+    AttachmentOutput,
     ConfirmedStop,
     EmptyOutput,
     ProgressYield,
@@ -72,6 +73,7 @@ from ..tools.contracts import (
 from ..tools.guards import read_tracking_for_tool_results
 from ..tools.invoke_tool import InvokeToolArgs
 from ..tools.output import (
+    RASTER_IMAGE_MIMES,
     cap_tool_result_output,
     sanitize_tool_arguments,
 )
@@ -181,6 +183,7 @@ from .reminders import (
     todo_reminder_segment,
     todo_reminder_state_from_metadata,
 )
+from .schema_validation import validate_structured_output
 from .session import SessionState, SessionStatus
 from .session_metadata_helpers import (
     clear_tool_execution_intent,
@@ -400,6 +403,80 @@ def _turn_request_without_provider_attempt(
         ),
         session,
     )
+
+
+def _hydrate_reported_call_media(report: ReportedCall, *, session_id: str, runtime: RuntimeSurface) -> ReportedCall:
+
+    output = report.result.output
+    if not isinstance(output, AttachmentOutput):
+        return report
+    if output.mime not in RASTER_IMAGE_MIMES and output.mime != "application/pdf":
+        unavailable = f"[Attachment MIME {output.mime} is not supported as model media]"
+        return replace(report, result=replace(report.result, output=replace(output, data_uri=None, presentation=unavailable)))
+    if output.data_uri:
+        return report
+    reference = output.bounds.reference
+    reference_artifact = reference.artifact if reference is not None else None
+    artifact = None
+    if reference_artifact is not None:
+        nested_output = reference_artifact.get("output_artifact")
+        nested_artifact = reference_artifact.get("artifact")
+        candidate = nested_output if isinstance(nested_output, Mapping) else nested_artifact
+        artifact = candidate if isinstance(candidate, Mapping) else reference_artifact
+    artifact_id = artifact.get("artifact_id") if artifact is not None else None
+    artifact_session = artifact.get("session_id") if artifact is not None else None
+    source_call_id = artifact.get("tool_call_id") if artifact is not None else None
+    if not isinstance(artifact_id, str) or artifact_session != session_id:
+        unavailable = "attachment artifact is missing or belongs to another session"
+    else:
+        artifact_result = runtime.read_tool_output_artifact(
+            session_id=session_id,
+            artifact_id=artifact_id,
+            tool_call_id=source_call_id if isinstance(source_call_id, str) else None,
+        )
+        if isinstance(artifact_result, ArtifactBinary):
+            if artifact_result.mime != output.mime:
+                unavailable = "attachment artifact MIME does not match the report"
+            else:
+                if artifact_result.data_uri is not None:
+                    presentation = output.presentation
+                    if presentation is not None and "requires runtime hydration" in presentation:
+                        presentation = f"{output.mime} attachment hydrated from {reference.uri if reference is not None else artifact_id}"
+                    return replace(
+                        report,
+                        result=replace(
+                            report.result,
+                            output=replace(
+                                output,
+                                data_uri=artifact_result.data_uri,
+                                presentation=presentation,
+                            ),
+                        ),
+                    )
+                presentation = output.presentation
+                if not presentation:
+                    raw_uri = artifact.get("uri") if artifact is not None else None
+                    if isinstance(raw_uri, str) and raw_uri.startswith("voidcode://artifact/"):
+                        presentation = (
+                            f"{artifact_result.mime} attachment ({artifact_result.byte_count} bytes, SHA-256 {artifact_result.sha256}); {raw_uri}"
+                        )
+                    else:
+                        unavailable = "attachment artifact has no canonical raw URI"
+                if presentation:
+                    return replace(
+                        report,
+                        result=replace(
+                            report.result,
+                            output=replace(output, data_uri=None, presentation=presentation),
+                        ),
+                    )
+        elif isinstance(artifact_result, (ArtifactMissing, ArtifactInvalid, ArtifactUnavailable)):
+            reason = artifact_result.reason if isinstance(artifact_result, (ArtifactInvalid, ArtifactUnavailable)) else "artifact not found"
+            unavailable = f"attachment artifact unavailable: {reason}"
+        else:
+            unavailable = "attachment reference does not resolve to binary media"
+    missing_presentation = f"[{unavailable}: {reference.uri if reference is not None else 'no artifact reference'}]"
+    return replace(report, result=replace(report.result, output=replace(output, data_uri=None, presentation=missing_presentation)))
 
 
 def _provider_attempt_reset_after_tool_result(
@@ -937,7 +1014,39 @@ class RuntimeRunLoopCoordinator:
             try:
                 progress = next(execution)
             except StopIteration as completed:
-                return completed.value, sequence
+                result = completed.value
+                delegation = session.metadata.get("delegation")
+                output_schema = delegation.get("output_schema") if isinstance(delegation, Mapping) else None
+                schema_mode = delegation.get("schema_mode") if isinstance(delegation, Mapping) else None
+                if (
+                    resolved_call.tool_call.tool_name == "yield"
+                    and isinstance(result, ToolSuccess)
+                    and isinstance(result.control, TerminalYield)
+                    and isinstance(output_schema, dict)
+                ):
+                    if schema_mode == "strict":
+                        validation = validate_structured_output(
+                            data=dict(result.control.data),
+                            schema=output_schema,
+                            schema_mode="strict",
+                        )
+                        if not validation.valid:
+                            result = ToolFailure(
+                                tool_name=result.tool_name,
+                                error=(
+                                    "delegated child schema validation failed: "
+                                    f"{validation.error or 'structured output does not satisfy the declared outputSchema'}"
+                                ),
+                                output=result.output,
+                                control=TerminalYieldFailure(result.control.data),
+                            )
+                    elif schema_mode == "permissive":
+                        _ = validate_structured_output(
+                            data=dict(result.control.data),
+                            schema=output_schema,
+                            schema_mode="permissive",
+                        )
+                return result, sequence
             envelope = self._persist_event(
                 session_id=session.session.id,
                 event_type=RUNTIME_TOOL_PROGRESS,
@@ -2837,6 +2946,7 @@ class RuntimeRunLoopCoordinator:
                             "header": prompt.header,
                             "question": prompt.question,
                             "multiple": prompt.multiple,
+                            "allow_freeform": prompt.allow_freeform,
                             "options": [
                                 {
                                     "label": option.label,
@@ -3098,7 +3208,6 @@ class RuntimeRunLoopCoordinator:
             approved=None,
             active_permission_policy=permission_policy or self._permission_policy,
             effective_runtime_config=runtime.effective_runtime_config_from_metadata(session.metadata),
-            continue_after_denial=False,
         )
         if permission_action != "ok":
             if permission_result is not None:
@@ -3536,6 +3645,9 @@ class RuntimeHost:
 
     def prepare(self, state: EngineState) -> Generator[RuntimeStreamChunk, None, TurnRequest | None]:
         self.state = state
+        state.results[:] = [
+            _hydrate_reported_call_media(report, session_id=self.session.session.id, runtime=self.runtime) for report in state.results
+        ]
         self.session = self.coordinator._fresh_composition_session(self.session)
         self.active_turn_request = state.request
         if self.continuation is not None and not self._restored_pending_turn:

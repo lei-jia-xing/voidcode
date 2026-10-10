@@ -4,7 +4,6 @@ from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
 from ..hook.config import RuntimeHooksConfig
-from ..tools.apply_patch import ApplyPatchTool
 from ..tools.apply_workspace_edit import ApplyWorkspaceEditTool
 from ..tools.ast_grep import AstGrepTool
 from ..tools.contracts import Tool, ToolDefinition
@@ -14,7 +13,6 @@ from ..tools.glob import GlobTool
 from ..tools.grep import GrepTool
 from ..tools.invoke_tool import InvokeTool
 from ..tools.lsp import LspTool
-from ..tools.multi_edit import MultiEditTool
 from ..tools.process.background_process import BackgroundProcessTool
 from ..tools.question import QuestionTool
 from ..tools.read import ReadTool
@@ -32,7 +30,7 @@ if TYPE_CHECKING:
 
 # Each row references the real definition owner and defers genuine construction.
 _BUILTIN_TOOLS: tuple[tuple[ToolDefinition, Callable[[RuntimeHooksConfig | None], Tool]], ...] = (
-    (ApplyWorkspaceEditTool.definition, lambda _: ApplyWorkspaceEditTool()),
+    (ApplyWorkspaceEditTool.definition, lambda hooks: ApplyWorkspaceEditTool(hooks_config=hooks)),
     (EditTool.definition, lambda hooks: EditTool(hooks_config=hooks)),
     (GlobTool.definition, lambda _: GlobTool()),
     (GrepTool.definition, lambda _: GrepTool()),
@@ -49,9 +47,7 @@ _BUILTIN_TOOLS: tuple[tuple[ToolDefinition, Callable[[RuntimeHooksConfig | None]
     (TaskBatchTool.definition, lambda _: TaskBatchTool()),
     (QuestionTool.definition, lambda _: QuestionTool()),
     (BackgroundProcessTool.definition, lambda _: BackgroundProcessTool()),
-    (ApplyPatchTool.definition, lambda hooks: ApplyPatchTool(hooks_config=hooks)),
-    (AstGrepTool.definition, lambda _: AstGrepTool()),
-    (MultiEditTool.definition, lambda hooks: MultiEditTool(hooks_config=hooks)),
+    (AstGrepTool.definition, lambda hooks: AstGrepTool(hooks_config=hooks)),
     (TodoTool.definition, lambda _: TodoTool()),
 )
 

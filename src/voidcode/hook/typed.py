@@ -10,7 +10,6 @@ from typing import Literal, Protocol
 import jsonschema
 
 from ..security.json_values import json_wire_object
-from ..security.shell_policy import non_interactive_shell_env
 from ..tools.contracts import ToolCall, ToolDefinition, ToolDiagnostics
 
 ToolInputAction = Literal["unchanged", "rewrite", "block", "diagnostic"]
@@ -84,7 +83,7 @@ type ToolInputDecision = UnchangedDecision | RewriteDecision | BlockDecision | D
 
 
 class ToolInputHandler(Protocol):
-    """Callable contract for pure typed tool-input canonicalization/policy."""
+    """Callable contract for pure typed tool-input handling."""
 
     def __call__(self, event: ToolInputEvent, /) -> ToolInputDecision: ...
 
@@ -286,33 +285,6 @@ class ToolInputHandlerRegistry:
         )
 
 
-def _shell_non_interactive_env_handler(event: ToolInputEvent, /) -> ToolInputDecision:
-    if event.tool_call.tool_name != "shell_exec":
-        return UnchangedDecision()
-    command = event.tool_call.arguments.get("command")
-    if not isinstance(command, str) or not command.strip():
-        return UnchangedDecision()
-    keys = tuple(non_interactive_shell_env(command))
-    if not keys:
-        return UnchangedDecision()
-    return DiagnosticDecision(diagnostic=f"shell non-interactive env injected: {', '.join(keys)}")
-
-
-_BUILTIN_INPUT_HANDLERS = ((ToolInputHandlerDeclaration(name="shell-non-interactive-env", version="1"), _shell_non_interactive_env_handler),)
-
-
-def builtin_tool_input_handler_declarations() -> tuple[ToolInputHandlerDeclaration, ...]:
-    return tuple(declaration for declaration, _handler in _BUILTIN_INPUT_HANDLERS)
-
-
-def materialize_builtin_tool_input_handler(name: str) -> ToolInputHandlerBinding:
-    for declaration, handler in _BUILTIN_INPUT_HANDLERS:
-        if declaration.name == name:
-            # Diagnostic only: actual Popen env merging stays in shell/argv owners.
-            return ToolInputHandlerBinding(declaration=declaration, handler=handler)
-    raise ValueError(f"unknown builtin tool input handler: {name}")
-
-
 def validate_tool_input_schema(tool: ToolDefinition, arguments: Mapping[str, object]) -> None:
     """Apply the advertised schema gate without replacing tool self-validation."""
 
@@ -389,8 +361,6 @@ __all__ = [
     "ToolInputHandlerRegistry",
     "ToolInputHookOutcome",
     "UnchangedDecision",
-    "builtin_tool_input_handler_declarations",
-    "materialize_builtin_tool_input_handler",
     "tool_input_arguments_sha256",
     "tool_input_rewrite_metadata",
     "validate_tool_input_schema",

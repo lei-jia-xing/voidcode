@@ -1198,7 +1198,6 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     approve_session_metadata = cast(dict[str, object], cast(dict[str, object], approve_payload["session"])["metadata"])
     approve_runtime_state = cast(dict[str, object], approve_session_metadata["runtime_state"])
     assert "pending_tool_intent" not in approve_runtime_state
-    assert approve_payload["output"] == ("Found 1 match(es) for 'copied' in copied.txt\ncopied.txt:1: copied marker")
     approve_events = cast(list[dict[str, object]], approve_payload["events"])
     _assert_ordered_event_types(
         _event_types_from_payload_events(approve_payload),

@@ -16,7 +16,6 @@ from ...tools.apply_workspace_edit import ApplyWorkspaceEditResultBody
 from ...tools.edit import EditResultBody
 from ...tools.glob import GlobResultBody
 from ...tools.grep import GrepResultBody
-from ...tools.multi_edit import MultiEditResultBody
 from ...tools.write import WriteResultBody
 
 RULE_FILE_NAME = "AGENTS.md"
@@ -111,7 +110,7 @@ def _touched_paths_from_tool_results(tool_results: tuple[_ToolResultLike, ...]) 
             add(result.authorized_arguments.get("path"))
             continue
         body = result.result.body
-        if isinstance(body, (WriteResultBody, EditResultBody, MultiEditResultBody)):
+        if isinstance(body, (WriteResultBody, EditResultBody)):
             add(body.path)
         elif isinstance(body, ApplyPatchResultBody):
             for change in body.changes:

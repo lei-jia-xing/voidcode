@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from ..core.tool_context import ToolContext
 from ._pydantic_args import parse_tool_args, validate_non_empty_stripped
@@ -24,8 +24,8 @@ class SkillResultBody:
             "skill": {
                 "name": self.name,
                 "description": self.description,
-                "source_path": self.source_path,
-                "directory": self.directory,
+                "sourcePath": self.source_path,
+                "baseDirectory": self.directory,
                 "content": self.content,
             }
         }
@@ -35,6 +35,7 @@ class SkillResultBody:
 
 
 class _SkillArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str
     user_message: str | None = None
 
@@ -68,6 +69,8 @@ class SkillTool:
                 "type": "string",
                 "description": "Optional command arguments or extra context for the skill.",
             },
+            "required": ["name"],
+            "additionalProperties": False,
         },
         effects=frozenset({ToolEffect.READ}),
     )
@@ -78,19 +81,18 @@ class SkillTool:
         if context.resolve_skill is None:
             raise RuntimeError("skill requires an explicit discovered skill reader")
         skill = context.resolve_skill(args.name)
-        content_lines = [
-            f"## Skill: {skill.name}",
-            f"**Description**: {skill.description}",
-            f"**Base directory**: {skill.directory}",
-            f"**Entry path**: {skill.entry_path}",
-            "",
-            skill.content.strip(),
-        ]
+        content = (
+            f"## Skill: {skill.name}\n"
+            f"**Description**: {skill.description}\n"
+            f"sourcePath: {skill.entry_path}\n"
+            f"baseDirectory: {skill.directory}\n\n"
+            f"{skill.content}"
+        )
         if args.user_message:
-            content_lines.extend(("", f"User message: {args.user_message}"))
+            content += f"\n\nUser message: {args.user_message}"
         return ToolSuccess(
             tool_name=self.definition.name,
-            output=TextOutput("\n".join(content_lines).strip()),
+            output=TextOutput(content),
             body=SkillResultBody(
                 name=skill.name,
                 description=skill.description,

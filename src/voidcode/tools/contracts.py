@@ -24,7 +24,7 @@ from ..security.redaction import (
 )
 
 if TYPE_CHECKING:
-    from ..core.questions import PendingQuestionPrompt, QuestionResponse
+    from ..core.questions import PendingQuestionPrompt, QuestionCancellation, QuestionResponse
     from ..core.tool_context import ToolContext
 
 
@@ -286,7 +286,7 @@ class EmptyOutput:
 @dataclass(frozen=True, slots=True)
 class AttachmentOutput:
     mime: str
-    data_uri: str
+    data_uri: str | None
     presentation: str | None = None
     bounds: OutputBounds = OutputBounds()
 
@@ -359,7 +359,7 @@ class TerminalYieldFailure:
         object.__setattr__(self, "data", own_json_object(self.data))
 
 
-type SuccessControl = QuestionPrepared | QuestionAnswered | ProgressYield | TerminalYield
+type SuccessControl = QuestionPrepared | QuestionAnswered | QuestionCancellation | ProgressYield | TerminalYield
 type ToolControl = SuccessControl | TerminalYieldFailure
 
 

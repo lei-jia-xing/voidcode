@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -18,7 +19,7 @@ from urllib.request import url2pathname
 from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
 
-from ..core.tool_context import LspRequestError
+from ..core.tool_context import LspDocumentState, LspRequestError
 from ..lsp import (
     ResolvedLspServerConfig,
     discover_workspace_root,
@@ -113,6 +114,14 @@ class LspRequest:
 @dataclass(frozen=True, slots=True)
 class LspRequestResult:
     response: dict[str, object]
+    document_state: LspDocumentState | None = None
+    position_encoding: str = "utf-16"
+
+
+@dataclass(frozen=True, slots=True)
+class _OpenedLspDocument:
+    version: int
+    content_hash: str
 
 
 class LspManager(Protocol):
@@ -122,6 +131,8 @@ class LspManager(Protocol):
     def current_state(self) -> LspManagerState: ...
 
     def request(self, request: LspRequest) -> LspRequestResult: ...
+
+    def document_state(self, *, file_path: Path, workspace: Path) -> LspDocumentState | None: ...
 
     def shutdown(self) -> tuple[LspRuntimeEvent, ...]: ...
 
@@ -147,6 +158,10 @@ class DisabledLspManager:
         _ = request
         raise ValueError("LSP runtime support is disabled")
 
+    def document_state(self, *, file_path: Path, workspace: Path) -> LspDocumentState | None:
+        _ = file_path, workspace
+        return None
+
     def shutdown(self) -> tuple[LspRuntimeEvent, ...]:
         return ()
 
@@ -162,6 +177,9 @@ class _RunningLspServer:
     initialized: bool = False
     next_request_id: int = 1
     request_lock: threading.Lock = field(default_factory=threading.Lock)
+    position_encoding: str = "utf-16"
+    document_sync_enabled: bool = False
+    documents: dict[str, _OpenedLspDocument] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -286,13 +304,118 @@ class ManagedLspManager:
             server_config=server_config,
             workspace_root=workspace_root,
         )
-        response = self._send_request(
-            running_server,
-            method=request.method,
-            params=request.params,
-            server_name=server_name,
+        document_path = self._text_document_path(request.params)
+        with running_server.request_lock:
+            document_state = self._synchronize_document_locked(running_server, document_path) if document_path is not None else None
+            response = self._send_request_locked(
+                running_server,
+                method=request.method,
+                params=request.params,
+                server_name=server_name,
+            )
+        return LspRequestResult(
+            response=response,
+            document_state=document_state,
+            position_encoding=running_server.position_encoding,
         )
-        return LspRequestResult(response=response)
+
+    def document_state(self, *, file_path: Path, workspace: Path) -> LspDocumentState | None:
+        path = file_path.resolve()
+        uri = path.as_uri()
+        expected_workspace = workspace.resolve()
+        matches: list[LspDocumentState] = []
+        for running_server in tuple(self._running_servers.values()):
+            with running_server.request_lock:
+                if running_server.process.poll() is not None or not running_server.config.matches_path(path):
+                    continue
+                resolved_root = discover_workspace_root(
+                    file_path=path,
+                    workspace_root=expected_workspace,
+                    root_markers=running_server.config.root_markers,
+                )
+                if running_server.workspace_root != resolved_root:
+                    continue
+                document = running_server.documents.get(uri)
+                if document is None:
+                    continue
+                try:
+                    actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+                except OSError:
+                    continue
+                if actual_hash != document.content_hash:
+                    continue
+                matches.append(
+                    LspDocumentState(
+                        version=document.version,
+                        content_hash=document.content_hash,
+                        position_encoding=running_server.position_encoding,
+                    )
+                )
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _text_document_path(params: dict[str, object]) -> Path | None:
+        document = params.get("textDocument")
+        if not isinstance(document, dict) or not isinstance(document.get("uri"), str):
+            return None
+        return ManagedLspManager._path_from_file_uri(document["uri"])
+
+    def _synchronize_document_locked(
+        self,
+        running_server: _RunningLspServer,
+        file_path: Path,
+    ) -> LspDocumentState | None:
+        if not running_server.document_sync_enabled:
+            return None
+        path = file_path.resolve()
+        if not path.is_relative_to(running_server.workspace_root) or not running_server.config.matches_path(path):
+            raise ValueError(f"LSP document is outside the configured server workspace: {path}")
+        try:
+            content_bytes = path.read_bytes()
+            content = content_bytes.decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ValueError(f"LSP document is unavailable as UTF-8 text: {path}") from exc
+
+        content_hash = hashlib.sha256(content_bytes).hexdigest()
+        uri = path.as_uri()
+        opened = running_server.documents.get(uri)
+        if opened is not None and opened.content_hash == content_hash:
+            return LspDocumentState(
+                version=opened.version,
+                content_hash=opened.content_hash,
+                position_encoding=running_server.position_encoding,
+            )
+
+        version = opened.version + 1 if opened is not None else 1
+        if opened is None:
+            language_id = running_server.config.languages[0] if running_server.config.languages else path.suffix.removeprefix(".") or "plaintext"
+            self._send_notification(
+                running_server.process,
+                method="textDocument/didOpen",
+                params={
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": language_id,
+                        "version": version,
+                        "text": content,
+                    }
+                },
+            )
+        else:
+            self._send_notification(
+                running_server.process,
+                method="textDocument/didChange",
+                params={
+                    "textDocument": {"uri": uri, "version": version},
+                    "contentChanges": [{"text": content}],
+                },
+            )
+        running_server.documents[uri] = _OpenedLspDocument(version, content_hash)
+        return LspDocumentState(
+            version=version,
+            content_hash=content_hash,
+            position_encoding=running_server.position_encoding,
+        )
 
     def shutdown(self) -> tuple[LspRuntimeEvent, ...]:
         for server_name in tuple(self._running_servers):
@@ -423,7 +546,12 @@ class ManagedLspManager:
             workspace_root=workspace_root,
         )
         self._running_servers[server_name] = running_server
-        self._initialize_server(running_server, server_name=server_name)
+        try:
+            self._initialize_server(running_server, server_name=server_name)
+        except Exception:
+            self._running_servers.pop(server_name, None)
+            self._wait_for_process_exit(process)
+            raise
         return running_server
 
     def _initialize_server(
@@ -443,7 +571,9 @@ class ManagedLspManager:
                     name=running_server.workspace_root.name or str(running_server.workspace_root),
                 )
             ],
-            capabilities=lsp_types.ClientCapabilities(),
+            capabilities=lsp_types.ClientCapabilities(
+                general=lsp_types.GeneralClientCapabilities(position_encodings=["utf-16", "utf-8", "utf-32"]),
+            ),
             initialization_options=(dict(running_server.config.init_options) if running_server.config.init_options else None),
         )
         try:
@@ -482,8 +612,28 @@ class ManagedLspManager:
                 )
             )
             raise ValueError(message)
+        init_result = response.get("result")
+        server_capabilities = init_result.get("capabilities") if isinstance(init_result, dict) else None
+        if not isinstance(server_capabilities, dict):
+            server_capabilities = {}
+        position_encoding = server_capabilities.get("positionEncoding")
+        if position_encoding is None:
+            position_encoding = "utf-16"
+        if not isinstance(position_encoding, str) or position_encoding not in ("utf-8", "utf-16", "utf-32"):
+            raise ValueError(f"LSP server {server_name} selected unsupported position encoding: {position_encoding}")
+        running_server.position_encoding = position_encoding
+
+        text_sync = server_capabilities.get("textDocumentSync")
+        if isinstance(text_sync, dict):
+            change = text_sync.get("change")
+            running_server.document_sync_enabled = (
+                text_sync.get("openClose") is True and isinstance(change, int) and not isinstance(change, bool) and change in (1, 2)
+            )
+        else:
+            running_server.document_sync_enabled = isinstance(text_sync, int) and not isinstance(text_sync, bool) and text_sync in (1, 2)
 
         self._send_notification(running_server.process, method="initialized", params={})
+
         if running_server.config.settings:
             self._send_notification(
                 running_server.process,
@@ -689,17 +839,32 @@ class ManagedLspManager:
         params: dict[str, object],
         server_name: str,
     ) -> dict[str, object]:
-        process = running_server.process
         with running_server.request_lock:
-            request_id = running_server.next_request_id
-            running_server.next_request_id += 1
-            self._write_message(
-                process=process,
-                message={"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+            return self._send_request_locked(
+                running_server,
+                method=method,
+                params=params,
+                server_name=server_name,
             )
+
+    def _send_request_locked(
+        self,
+        running_server: _RunningLspServer,
+        *,
+        method: str,
+        params: dict[str, object],
+        server_name: str,
+    ) -> dict[str, object]:
+        process = running_server.process
+        request_id = running_server.next_request_id
+        running_server.next_request_id += 1
+        self._write_message(
+            process=process,
+            message={"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+        )
+        response = self._read_message(process=process)
+        while response is not None and response.get("id") != request_id:
             response = self._read_message(process=process)
-            while response is not None and response.get("id") != request_id:
-                response = self._read_message(process=process)
         if response is None:
             raise ValueError(f"No response from LSP server {server_name} for {method}")
         return response

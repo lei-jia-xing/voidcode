@@ -2,24 +2,17 @@
 
 ## 状态
 
-这是 VoidCode 首期 typed tool-input hook 的实现契约。runtime 默认从
-`builtin_tool_input_handler_declarations()` 构建纯声明目录，目前仅含
-`shell-non-interactive-env`（version `1`，`_shell_non_interactive_env_handler`）：
-它只对 `shell_exec` 命令的 non-interactive env 注入发出 bounded diagnostic，不改写
-参数。声明目录在 runtime composition 时绑定真实 handler；显式注入也遵循相同的
-declaration → materialize seam。输入处理事件 metadata 使用 version `2`。
+这是 VoidCode typed tool-input hook 的实现契约。runtime 没有内置 typed-input handlers；handler 必须通过显式 runtime 注入或已安装 package component admitted。输入处理事件 metadata 使用 version `2`。
 
-当前没有安全、通用且经过工具语义验证的 production canonicalizer，因此默认 registry
-不伪造 path/arguments rewrite，也不通过 `.voidcode.json` 或 `ResolvedHookPlan`
-声明 handler。现有 argv hooks 保持不变。
+现有 argv hooks 保持不变。
 
 实现锚点：
 
 - `src/voidcode/hook/typed.py`：`ToolInputEvent`、`ToolInputDecision`、
   `ToolInputHandlerDeclaration`、`ToolInputHandlerBinding`、`ToolInputHandlerRegistry`
-- `src/voidcode/runtime/service.py`：builtin declaration catalog、binding materializer 与显式 runtime 注入
+- `src/voidcode/runtime/service.py`：installed typed-input component admission/materialization、registry setup 与显式 runtime 注入
 - `src/voidcode/runtime/run_loop.py`：native tool 与 `invoke_tool` inner target 接入
-- `tests/unit/runtime/test_typed_tool_hooks.py`
+- `tests/unit/runtime/test_typed_tool_hooks.py`、`tests/integration/test_installed_package_all_slots.py`
 
 ## 目的与边界
 
@@ -208,8 +201,8 @@ typed candidate
   -> execution and persistence
 ```
 
-Typed handler 不能放宽 agent tool allowlist、read-only policy、shell policy、external
-path policy、approval mode 或 delegation budget。Background lifecycle hooks 的
+Typed handler 本身不能授权工具，也不能放宽 agent tool allowlist、read-only 限制、runtime tool
+permission / external-directory access 决策、approval mode 或 delegation budget。Background lifecycle hooks 的
 post-truth observer 语义也不因 typed input hook 改变。
 
 本契约只定义 ToolInputHandler 的 invocation semantics；context transform、provider

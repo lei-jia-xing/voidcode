@@ -12,6 +12,7 @@ from ..core.tool_context import (
     ArtifactRead,
     EditSchema,
     LspDiagnostics,
+    LspDocumentStateReader,
     LspRequester,
     McpRequester,
     RuleReader,
@@ -235,6 +236,7 @@ class RuntimeToolExecutor:
     resolve_skill: Callable[[str], SkillMetadata] | None = None
     resolve_edit_schema: Callable[[str | None], EditSchema] | None = None
     lsp_request: LspRequester | None = None
+    lsp_document_state: LspDocumentStateReader | None = None
     mcp_request: McpRequester | None = None
     task_command: ToolCommandHandler | None = None
     task_batch_command: ToolCommandHandler | None = None
@@ -272,7 +274,7 @@ class RuntimeToolExecutor:
         cancel_signal: _InvocationCancelSignal | None = None,
     ) -> ToolResult:
         tool_name = invocation.tool_call.tool_name
-        diagnostics_enabled = self.lsp_diagnostics_on_write and tool_name in {"write", "edit", "multi_edit", "apply_patch", "apply_workspace_edit"}
+        diagnostics_enabled = self.lsp_diagnostics_on_write and tool_name in {"write", "edit", "apply_workspace_edit"}
         context = replace(
             invocation.context,
             workspace=self.workspace,
@@ -280,7 +282,7 @@ class RuntimeToolExecutor:
             abort_signal=cancel_signal if cancel_signal is not None else invocation.context.abort_signal,
             edit_schema=(
                 self.resolve_edit_schema(invocation.context.model)
-                if self.resolve_edit_schema is not None and tool_name in {"edit", "multi_edit"}
+                if self.resolve_edit_schema is not None and tool_name == "edit"
                 else invocation.context.edit_schema
             ),
             lsp=self.lsp if diagnostics_enabled else None,
@@ -291,6 +293,7 @@ class RuntimeToolExecutor:
             read_rule=None,
             resolve_skill=None,
             lsp_request=None,
+            lsp_document_state=None,
             mcp_request=None,
             task_runtime=None,
             task_batch_runtime=None,
@@ -317,6 +320,8 @@ class RuntimeToolExecutor:
             context = replace(context, task_batch_runtime=bind_tool_command(self.task_batch_command, call=invocation.tool_call, context=context))
         elif tool_name == "background_process" and self.process_command is not None:
             context = replace(context, process_runtime=bind_tool_command(self.process_command, call=invocation.tool_call, context=context))
+        elif tool_name == "apply_workspace_edit" and self.lsp_document_state is not None:
+            context = replace(context, lsp_document_state=self.lsp_document_state)
         if tool_timeout is not None and isinstance(tool, RuntimeTimeoutAwareTool):
             return tool.invoke_with_runtime_timeout(invocation.tool_call, context=context, timeout_seconds=tool_timeout)
         return tool.invoke(invocation.tool_call, context=context)

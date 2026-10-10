@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..core.questions import QuestionResponse
+from ..core.questions import QuestionAnswer, QuestionCancellation
 from ..core.transcript import project_report
 from ..core.turns import CallSeed, ReportedCall, TurnRequest, report_call
 from ..provider.protocol import ProviderAbortSignal
@@ -223,7 +223,7 @@ class RuntimeResumeCoordinator:
         *,
         session_id: str,
         question_request_id: str,
-        responses: tuple[QuestionResponse, ...],
+        responses: QuestionAnswer,
         run_id: str | None = None,
         abort_signal: ProviderAbortSignal | None = None,
         finalize_background_task: bool = False,
@@ -264,7 +264,7 @@ class RuntimeResumeCoordinator:
         *,
         session_id: str,
         question_request_id: str,
-        responses: tuple[QuestionResponse, ...],
+        responses: QuestionAnswer,
         run_id: str | None = None,
         abort_signal: ProviderAbortSignal | None = None,
     ) -> tuple[tuple[EventEnvelope, ...], RuntimeResponse]:
@@ -302,7 +302,7 @@ class RuntimeResumeCoordinator:
         *,
         stored: Any,
         pending: PendingQuestion,
-        responses: tuple[QuestionResponse, ...],
+        responses: QuestionAnswer,
         checkpoint: dict[str, object] | None,
         run_id: str | None = None,
         abort_signal: ProviderAbortSignal | None = None,
@@ -463,6 +463,11 @@ class RuntimeResumeCoordinator:
         # append happens here, after every pre-loop refusal, so a resume that
         # cannot be honored (missing capability snapshot, bad checkpoint, ...)
         # fails before it consumes the pending answer.
+        answer_payload: dict[str, object] = {"request_id": pending.request_id}
+        if isinstance(responses, QuestionCancellation):
+            answer_payload["cancelled"] = True
+        else:
+            answer_payload["responses"] = [{"header": response.header, "answers": list(response.answers)} for response in responses]
         persisted_answer_events = self._events.append_session_events(
             workspace=self._workspace,
             session_id=session.session.id,
@@ -470,10 +475,7 @@ class RuntimeResumeCoordinator:
                 (
                     RUNTIME_QUESTION_ANSWERED,
                     "runtime",
-                    {
-                        "request_id": pending.request_id,
-                        "responses": [{"header": response.header, "answers": list(response.answers)} for response in responses],
-                    },
+                    answer_payload,
                     None,
                 ),
             ),
@@ -1703,8 +1705,8 @@ class RuntimeResumeCoordinator:
         *,
         session_id: str,
         question_request_id: str,
-        responses: tuple[QuestionResponse, ...],
-    ) -> tuple[Any, PendingQuestion, dict[str, object] | None, tuple[QuestionResponse, ...]]:
+        responses: QuestionAnswer,
+    ) -> tuple[Any, PendingQuestion, dict[str, object] | None, QuestionAnswer]:
         stored_response = self._sessions.load_session(
             workspace=self._workspace,
             session_id=session_id,
@@ -1724,7 +1726,10 @@ class RuntimeResumeCoordinator:
             pending=pending,
             checkpoint=checkpoint,
         )
-        normalized_responses = QuestionTool.validate_responses(pending.prompts, responses)
+        if isinstance(responses, QuestionCancellation):
+            normalized_responses: QuestionAnswer = responses
+        else:
+            normalized_responses = QuestionTool.validate_responses(pending.prompts, responses)
         return stored_response, pending, checkpoint, normalized_responses
 
     @staticmethod

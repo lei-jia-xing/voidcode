@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import cast
 
-from ...core.questions import PendingQuestionOption, PendingQuestionPrompt, QuestionResponse
+from ...core.questions import PendingQuestionOption, PendingQuestionPrompt, QuestionCancellation, QuestionResponse
 from ...core.turns import ReportedCall
 from ...security.json_values import json_wire_object, own_json_object
 from ...tools.contracts import (
@@ -27,6 +27,7 @@ from ...tools.contracts import (
     ToolSuccess,
     UnconfirmedStop,
 )
+from ...tools.output import _ARTIFACT_ID_PATTERN
 from ...tools.read import ReadResultBody
 
 
@@ -49,7 +50,10 @@ def _output_payload(output: ToolOutput) -> dict[str, object]:
     if isinstance(output, TextOutput):
         payload.update({"kind": "text", "text": output.text, "presentation": output.presentation})
     elif isinstance(output, AttachmentOutput):
-        payload.update({"kind": "attachment", "mime": output.mime, "data_uri": output.data_uri, "presentation": output.presentation})
+        stored_data_uri = output.data_uri
+        if bounds.reference and bounds.reference.artifact and stored_data_uri is not None and len(stored_data_uri) > 50 * 1024:
+            stored_data_uri = None
+        payload.update({"kind": "attachment", "mime": output.mime, "data_uri": stored_data_uri, "presentation": output.presentation})
     elif isinstance(output, EmptyOutput):
         payload.update({"kind": "empty", "presentation": output.presentation})
     else:
@@ -68,13 +72,19 @@ def _control_payload(control: ToolControl | None) -> dict[str, object] | None:
                     "question": prompt.question,
                     "header": prompt.header,
                     "multiple": prompt.multiple,
+                    "allow_freeform": prompt.allow_freeform,
                     "options": [{"label": option.label, "description": option.description} for option in prompt.options],
                 }
                 for prompt in control.prompts
             ],
         }
     if isinstance(control, QuestionAnswered):
-        return {"kind": "question_answered", "responses": [{"header": item.header, "answers": list(item.answers)} for item in control.responses]}
+        return {
+            "kind": "question_answered",
+            "responses": [{"header": item.header, "answers": list(item.answers)} for item in control.responses],
+        }
+    if isinstance(control, QuestionCancellation):
+        return {"kind": "question_cancelled"}
     if isinstance(control, ProgressYield):
         return {"kind": "progress", "types": list(control.types), "result": control.result, "data": json_wire_object(control.data)}
     if isinstance(control, TerminalYield):
@@ -174,7 +184,17 @@ def _parse_output(value: object) -> TextOutput | EmptyOutput | AttachmentOutput:
         return TextOutput(_string(raw.get("text"), "output text"), presentation, bounds)
     if kind == "empty":
         return EmptyOutput(presentation, bounds)
-    return AttachmentOutput(_string(raw.get("mime"), "attachment MIME"), _string(raw.get("data_uri"), "attachment data URI"), presentation, bounds)
+    mime = _string(raw.get("mime"), "attachment MIME")
+    data_uri = _optional_string(raw.get("data_uri"), "attachment data URI")
+    if data_uri == "":
+        data_uri = None
+    if data_uri is None:
+        artifact = reference.artifact if reference is not None else None
+        artifact_id = artifact.get("artifact_id") if artifact is not None else None
+        if not isinstance(artifact_id, str) or _ARTIFACT_ID_PATTERN.fullmatch(artifact_id) is None:
+            raise ValueError("persisted attachment without inline data requires an artifact reference")
+        presentation = presentation or f"[{mime} artifact {artifact_id} requires runtime hydration]"
+    return AttachmentOutput(mime, data_uri, presentation, bounds)
 
 
 def _parse_control(value: object) -> ToolControl | None:
@@ -189,24 +209,35 @@ def _parse_control(value: object) -> ToolControl | None:
             raise ValueError("persisted prepared-question prompts must be an array")
         prompts = []
         for item in prompts_raw:
-            prompt = _fields(item, "question prompt", {"question", "header", "options", "multiple"})
-            options_raw = prompt.get("options")
+            prompt_raw = _mapping(item, "question prompt")
+            prompt_fields = {"question", "header", "options", "multiple"}
+            if prompt_raw.keys() not in (prompt_fields, prompt_fields | {"allow_freeform"}):
+                raise ValueError("persisted report question prompt has an invalid field set")
+            options_raw = prompt_raw.get("options")
             if not isinstance(options_raw, list):
                 raise ValueError("persisted question options must be an array")
             options = []
-            for item in options_raw:
-                option = _fields(item, "question option", {"label", "description"})
+            for option_value in options_raw:
+                option = _fields(option_value, "question option", {"label", "description"})
                 options.append(
                     PendingQuestionOption(
-                        _string(option.get("label"), "question option label"), _string(option.get("description"), "question option description")
+                        _string(option.get("label"), "question option label"),
+                        _string(option.get("description"), "question option description"),
                     )
                 )
-            multiple = prompt.get("multiple")
+            multiple = prompt_raw.get("multiple")
             if not isinstance(multiple, bool):
                 raise ValueError("persisted question multiple flag must be a boolean")
+            allow_freeform = prompt_raw.get("allow_freeform", False)
+            if not isinstance(allow_freeform, bool):
+                raise ValueError("persisted question allow_freeform flag must be a boolean")
             prompts.append(
                 PendingQuestionPrompt(
-                    _string(prompt.get("question"), "question text"), _string(prompt.get("header"), "question header"), tuple(options), multiple
+                    _string(prompt_raw.get("question"), "question text"),
+                    _string(prompt_raw.get("header"), "question header"),
+                    tuple(options),
+                    multiple,
+                    allow_freeform,
                 )
             )
         return QuestionPrepared(tuple(prompts))
@@ -217,12 +248,20 @@ def _parse_control(value: object) -> ToolControl | None:
             raise ValueError("persisted question responses must be an array")
         responses = []
         for item in responses_raw:
-            response = _fields(item, "question response", {"header", "answers"})
-            answers = response.get("answers")
+            response_raw = _fields(item, "question response", {"header", "answers"})
+            answers = response_raw.get("answers")
             if not isinstance(answers, list) or not all(isinstance(answer, str) for answer in answers):
                 raise ValueError("persisted question answers must be strings")
-            responses.append(QuestionResponse(_string(response.get("header"), "question response header"), tuple(answers)))
+            responses.append(
+                QuestionResponse(
+                    _string(response_raw.get("header"), "question response header"),
+                    tuple(answers),
+                )
+            )
         return QuestionAnswered(tuple(responses))
+    if kind == "question_cancelled":
+        _ = _fields(value, "control", {"kind"})
+        return QuestionCancellation()
     if kind == "progress":
         raw = _fields(value, "control", {"kind", "types", "result", "data"})
         types = raw.get("types")

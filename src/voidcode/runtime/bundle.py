@@ -6,24 +6,36 @@ one closed schema, and every row is checked before the single storage transactio
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
+import os
 import platform
+import re
 import time
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Final, Literal, cast
 
 from .. import __version__ as VOIDCODE_VERSION
+from ..tools.output import (
+    _ARTIFACT_ID_PATTERN,
+    _artifact_path_from_metadata,
+    _is_text_artifact_mime,
+    _safe_artifact_segment,
+    _suffix_for_mime,
+    iter_event_artifact_references,
+)
 from .agent_capability import validate_agent_capability_snapshot
 from .composition import CompositionRef, FrozenComposition, SessionCompositionOwner, TaskCompositionOwner
 from .contracts import validate_id
 from .events import EventEnvelope, EventSource
 from .execution.resume_checkpoint import tool_results_from_checkpoint, validated_resume_checkpoint_envelope
 from .fact_codec import decode_fact
+from .paths import session_artifacts_dir
 from .permission import PendingApproval
 from .storage import BackgroundTaskRepository, SessionEventRepository, SessionRecoveryRepository, SessionRepository, SessionRunWriter
 from .storage.shared import _pending_operation_class, _pending_path_scope, _pending_permission_decision
@@ -43,16 +55,10 @@ class SessionBundleError(ValueError):
 class SessionBundleOptions:
     """Exact snapshots cannot be redacted or have transcript rows removed."""
 
-    redact: bool = True
-    include_tool_output: bool = False
-    include_raw_provider_messages: bool = False
-    include_reasoning_text: bool = False
-    support_mode: bool = False
-    tool_output_preview_chars: int = 16_000
-
-    @classmethod
-    def support_artifact(cls) -> SessionBundleOptions:
-        return cls(redact=True, support_mode=True)
+    redact: bool = False
+    include_tool_output: bool = True
+    include_raw_provider_messages: bool = True
+    include_reasoning_text: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,12 +107,45 @@ class SessionBundleManifest:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionBundleArtifactPayload:
+    artifact_id: str
+    session_id: str
+    tool_call_id: str | None
+    tool_name: str
+    kind: str
+    mime: str
+    byte_count: int
+    line_count: int | None
+    sha256: str
+    created_at: int | None
+    data_base64: str | None
+    status: Literal["available", "missing"] = "available"
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "artifact_id": self.artifact_id,
+            "session_id": self.session_id,
+            "tool_call_id": self.tool_call_id,
+            "tool_name": self.tool_name,
+            "kind": self.kind,
+            "mime": self.mime,
+            "byte_count": self.byte_count,
+            "line_count": self.line_count,
+            "sha256": self.sha256,
+            "created_at": self.created_at,
+            "data_base64": self.data_base64,
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SessionBundle:
     manifest: SessionBundleManifest
     sessions: tuple[SessionBundleSessionPayload, ...]
     background_tasks: tuple[SessionBundleBackgroundTaskPayload, ...]
     diagnostics: SessionBundleDiagnostics
     deliveries: tuple[dict[str, object], ...]
+    artifacts: tuple[SessionBundleArtifactPayload, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -117,7 +156,7 @@ class SessionBundle:
             "background_tasks": [task.row for task in self.background_tasks],
             "deliveries": list(self.deliveries),
             "diagnostics": asdict(self.diagnostics),
-            "artifacts": [],
+            "artifacts": [artifact.as_payload() for artifact in self.artifacts],
         }
 
 
@@ -186,6 +225,12 @@ def _object(value: object, where: str) -> dict[str, object]:
     if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
         raise SessionBundleError(f"{where} must be an object")
     return cast(dict[str, object], value)
+
+
+def _str(value: object, where: str) -> str:
+    if type(value) is not str:
+        raise SessionBundleError(f"{where} must be a string")
+    return value
 
 
 def _exact(value: dict[str, object], expected: frozenset[str], where: str) -> None:
@@ -304,7 +349,12 @@ def _validate_pending(row: dict[str, object], event_sequences: set[int]) -> None
         _object(pending["arguments"], "pending question arguments")
         prompts = _rows(pending["prompts"], "pending prompts")
         for prompt in prompts:
-            _exact(prompt, frozenset({"question", "header", "multiple", "options"}), "question prompt")
+            prompt_fields = {"question", "header", "multiple", "options"}
+            if set(prompt) not in (prompt_fields, prompt_fields | {"allow_freeform"}):
+                raise SessionBundleError("invalid question prompt fields")
+            allow_freeform = prompt.get("allow_freeform", False)
+            if not isinstance(allow_freeform, bool):
+                raise SessionBundleError("invalid pending prompt freeform flag")
             if not isinstance(prompt["question"], str) or not isinstance(prompt["header"], str) or type(prompt["multiple"]) is not bool:
                 raise SessionBundleError("invalid pending prompt")
             for option in _rows(prompt["options"], "question options"):
@@ -466,25 +516,119 @@ def parse_session_bundle(payload: object) -> SessionBundle:
         for name in ("created_at", "session_count", "event_count", "background_task_count", "artifact_count"):
             if type(manifest[name]) is not int or cast(int, manifest[name]) < 0:
                 raise SessionBundleError("invalid manifest count/timestamp")
-        for name in ("voidcode_version", "workspace_hash"):
-            if not isinstance(manifest[name], str):
-                raise SessionBundleError("invalid manifest string")
-        _object(manifest["platform"], "manifest platform")
-        if (
-            manifest["redaction"] != {"exact": True}
-            or manifest["support_mode"] is not False
-            or root["artifacts"] != []
-            or manifest["artifact_count"] != 0
-        ):
+        if type(manifest["voidcode_version"]) is not str or not manifest["voidcode_version"]:
+            raise SessionBundleError("invalid manifest version")
+        workspace_hash = manifest["workspace_hash"]
+        if type(workspace_hash) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", workspace_hash) is None:
+            raise SessionBundleError("invalid manifest workspace hash")
+        platform_info = _object(manifest["platform"], "manifest platform")
+        _exact(platform_info, frozenset({"system", "machine"}), "manifest platform")
+        if any(type(platform_info[name]) is not str or not cast(str, platform_info[name]) for name in ("system", "machine")):
+            raise SessionBundleError("invalid manifest platform")
+        redaction = _object(manifest["redaction"], "manifest redaction")
+        _exact(redaction, frozenset({"exact"}), "manifest redaction")
+        if redaction["exact"] is not True or manifest["support_mode"] is not False:
             raise SessionBundleError("unsupported non-exact/artifact bundle scope")
         sessions = _rows(root["sessions"], "sessions")
+        session_id_set = {validate_id(_str(session["session_id"], "session_id")) for session in sessions}
+        artifacts = _rows(root["artifacts"], "artifacts")
+        parsed_artifacts: list[SessionBundleArtifactPayload] = []
+        seen_artifact_ids: set[str] = set()
+        valid_statuses = frozenset({"available", "missing"})
+        for art in artifacts:
+            _exact(
+                art,
+                frozenset(
+                    {
+                        "artifact_id",
+                        "session_id",
+                        "tool_call_id",
+                        "tool_name",
+                        "kind",
+                        "mime",
+                        "byte_count",
+                        "line_count",
+                        "sha256",
+                        "created_at",
+                        "data_base64",
+                        "status",
+                    }
+                ),
+                "artifact entry",
+            )
+            art_id = art.get("artifact_id")
+            if type(art_id) is not str or _ARTIFACT_ID_PATTERN.fullmatch(art_id) is None or art_id in seen_artifact_ids:
+                raise SessionBundleError(f"invalid or duplicate artifact_id in bundle: {art_id}")
+            seen_artifact_ids.add(art_id)
+            art_session_id = art.get("session_id")
+            if type(art_session_id) is not str:
+                raise SessionBundleError("artifact entry missing session_id")
+            validate_id(art_session_id)
+            if art_session_id not in session_id_set:
+                raise SessionBundleError(f"artifact session_id '{art_session_id}' not found in bundle sessions")
+            tool_call_id = art.get("tool_call_id")
+            if tool_call_id is not None and (type(tool_call_id) is not str or not tool_call_id):
+                raise SessionBundleError("invalid artifact tool_call_id")
+            for name in ("tool_name", "kind", "mime"):
+                if type(art[name]) is not str or not cast(str, art[name]):
+                    raise SessionBundleError(f"invalid artifact {name}")
+            status = art.get("status")
+            if type(status) is not str or status not in valid_statuses:
+                raise SessionBundleError(f"invalid artifact status: {status}")
+            byte_count = art.get("byte_count")
+            if type(byte_count) is not int or byte_count < 0:
+                raise SessionBundleError("invalid artifact byte_count")
+            line_count = art.get("line_count")
+            if line_count is not None and (type(line_count) is not int or line_count < 0):
+                raise SessionBundleError("invalid artifact line_count")
+            created_at = art.get("created_at")
+            if created_at is not None and (type(created_at) is not int or created_at < 0):
+                raise SessionBundleError("invalid artifact created_at")
+            sha256_val = art.get("sha256")
+            if type(sha256_val) is not str or re.fullmatch(r"[0-9a-f]{64}", sha256_val) is None:
+                raise SessionBundleError("invalid artifact sha256 checksum")
+            data_b64 = art.get("data_base64")
+            if status == "available":
+                if type(data_b64) is not str:
+                    raise SessionBundleError("available artifact missing data_base64 string")
+                try:
+                    decoded = base64.b64decode(data_b64, validate=True)
+                except Exception as exc:
+                    raise SessionBundleError(f"corrupted base64 for artifact {art_id}") from exc
+                if len(decoded) != byte_count:
+                    raise SessionBundleError(f"artifact byte count mismatch for {art_id}")
+                if hashlib.sha256(decoded).hexdigest() != sha256_val:
+                    raise SessionBundleError(f"artifact checksum mismatch for {art_id}")
+            elif data_b64 is not None:
+                raise SessionBundleError(f"missing artifact must not contain data_base64: {art_id}")
+            parsed_artifacts.append(
+                SessionBundleArtifactPayload(
+                    artifact_id=art_id,
+                    session_id=art_session_id,
+                    tool_call_id=cast(str | None, tool_call_id),
+                    tool_name=cast(str, art["tool_name"]),
+                    kind=cast(str, art["kind"]),
+                    mime=cast(str, art["mime"]),
+                    byte_count=byte_count,
+                    line_count=line_count,
+                    sha256=sha256_val,
+                    created_at=created_at,
+                    data_base64=data_b64,
+                    status=cast(Literal["available", "missing"], status),
+                )
+            )
         events = _rows(root["events"], "events")
         tasks = _rows(root["background_tasks"], "background_tasks")
         deliveries = _rows(root["deliveries"], "deliveries")
         source = _validate_rows(sessions, events, tasks, deliveries)
         if manifest["workspace_hash"] != _workspace_hash(Path(source)):
             raise SessionBundleError("source workspace hash mismatch")
-        if (manifest["session_count"], manifest["event_count"], manifest["background_task_count"]) != (len(sessions), len(events), len(tasks)):
+        if (manifest["session_count"], manifest["event_count"], manifest["background_task_count"], manifest["artifact_count"]) != (
+            len(sessions),
+            len(events),
+            len(tasks),
+            len(parsed_artifacts),
+        ):
             raise SessionBundleError("manifest counts differ from complete rows")
         diagnostics = _object(root["diagnostics"], "diagnostics")
         _exact(diagnostics, frozenset({"storage", "config_summary", "provider_summary"}), "diagnostics")
@@ -499,6 +643,7 @@ def parse_session_bundle(payload: object) -> SessionBundle:
             background_tasks=tuple(SessionBundleBackgroundTaskPayload(row) for row in tasks),
             diagnostics=SessionBundleDiagnostics(**cast(dict[str, Any], diagnostics)),
             deliveries=deliveries,
+            artifacts=tuple(parsed_artifacts),
         )
     except (ValueError, TypeError, KeyError) as error:
         if isinstance(error, SessionBundleError):
@@ -519,12 +664,10 @@ def build_session_bundle(
     clock: Callable[[], int] | None = None,
 ) -> SessionBundle:
     options = options or SessionBundleOptions()
-    if (
-        options.redact
-        or options.support_mode
-        or not all((options.include_tool_output, options.include_raw_provider_messages, options.include_reasoning_text))
+    if options.redact is not False or any(
+        value is not True for value in (options.include_tool_output, options.include_raw_provider_messages, options.include_reasoning_text)
     ):
-        raise SessionBundleError("CURRENT bundle2 requires an exact unredacted snapshot; support summaries are not importable")
+        raise SessionBundleError("CURRENT bundle2 requires exact unredacted export options")
     validate_id(session_id)
     session_ids = {session_id}
     task_ids: set[str] = set()
@@ -559,6 +702,67 @@ def build_session_bundle(
             break
     events = _rows(rows["events"], "export events")
     deliveries = _rows(rows["deliveries"], "export deliveries")
+    collected_artifacts: list[dict[str, object]] = []
+    seen_artifact_ids: set[str] = set()
+
+    artifact_sources: list[tuple[str, Mapping[str, object]]] = []
+    for event in events:
+        payload = event.get("payload_json") or event.get("payload")
+        if isinstance(payload, Mapping):
+            artifact_sources.append((cast(str, event.get("session_id", session_id)), payload))
+    for session_row in session_rows:
+        checkpoint = session_row.get("resume_checkpoint_json")
+        if isinstance(checkpoint, Mapping):
+            raw_results = checkpoint.get("tool_results")
+            if isinstance(raw_results, list):
+                owner_session_id = cast(str, session_row["session_id"])
+                artifact_sources.extend((owner_session_id, report) for report in raw_results if isinstance(report, Mapping))
+    for event_session_id, payload in artifact_sources:
+        for art_meta in iter_event_artifact_references(payload):
+            if art_meta.get("producer") != "voidcode.tool_output.v1":
+                continue
+            target_art_id = art_meta.get("artifact_id")
+            if type(target_art_id) is not str or _ARTIFACT_ID_PATTERN.fullmatch(target_art_id) is None:
+                raise SessionBundleError("invalid artifact reference in event")
+            if target_art_id in seen_artifact_ids:
+                continue
+            seen_artifact_ids.add(target_art_id)
+            if art_meta.get("session_id") != event_session_id:
+                raise SessionBundleError(f"artifact session owner mismatch: {target_art_id}")
+            raw_path = art_meta.get("path")
+            art_file = _artifact_path_from_metadata(art_meta)
+            if isinstance(raw_path, str) and raw_path and art_file is None:
+                raise SessionBundleError(f"artifact path escapes its session owner: {target_art_id}")
+            raw_bytes: bytes | None = None
+            if art_file is not None and art_file.is_file():
+                raw_bytes = art_file.read_bytes()
+            expected_count = art_meta.get("byte_count")
+            expected_sha = art_meta.get("sha256")
+            if type(expected_count) is not int or expected_count < 0:
+                raise SessionBundleError(f"invalid artifact byte count: {target_art_id}")
+            if type(expected_sha) is not str or re.fullmatch(r"[0-9a-f]{64}", expected_sha) is None:
+                raise SessionBundleError(f"invalid artifact checksum: {target_art_id}")
+            if raw_bytes is None:
+                raise SessionBundleError(f"referenced artifact bytes are missing: {target_art_id}")
+            if len(raw_bytes) != expected_count or hashlib.sha256(raw_bytes).hexdigest() != expected_sha:
+                raise SessionBundleError(f"artifact integrity check failed: {target_art_id}")
+            status = "available"
+            collected_artifacts.append(
+                {
+                    "artifact_id": target_art_id,
+                    "session_id": event_session_id,
+                    "tool_call_id": art_meta.get("tool_call_id"),
+                    "tool_name": art_meta.get("tool_name"),
+                    "kind": art_meta.get("kind"),
+                    "mime": art_meta.get("mime"),
+                    "byte_count": expected_count,
+                    "line_count": art_meta.get("line_count"),
+                    "sha256": expected_sha,
+                    "created_at": art_meta.get("created_at"),
+                    "data_base64": base64.b64encode(raw_bytes).decode("ascii") if raw_bytes is not None else None,
+                    "status": status,
+                }
+            )
     manifest = SessionBundleManifest(
         2,
         VOIDCODE_VERSION,
@@ -570,6 +774,7 @@ def build_session_bundle(
         len(session_rows),
         len(events),
         len(task_rows),
+        len(collected_artifacts),
     )
     return parse_session_bundle(
         {
@@ -580,7 +785,7 @@ def build_session_bundle(
             "background_tasks": list(task_rows),
             "deliveries": list(deliveries),
             "diagnostics": asdict(SessionBundleDiagnostics(storage_diagnostics, config_summary, provider_summary)),
-            "artifacts": [],
+            "artifacts": collected_artifacts,
         }
     )
 
@@ -622,7 +827,7 @@ def apply_session_bundle(
     _ = (events, recovery, run_writer)
     # Reparse even in-process objects: nested row dictionaries remain mutable.
     checked = parse_session_bundle(bundle.to_payload())
-    if admit_composition is None:
+    if admit_composition is None and not dry_run:
         raise SessionBundleError("bundle import requires destination composition admission before writes")
     admitted: set[tuple[str, str]] = set()
     for metadata in [session.metadata for session in checked.sessions] + [
@@ -633,28 +838,48 @@ def apply_session_bundle(
         frozen = FrozenComposition.from_payload(metadata["execution_composition"])
         identity = frozen.binding.binding_id, frozen.plan.plan_id
         if identity not in admitted:
-            admit_composition(frozen)
+            if not dry_run:
+                assert admit_composition is not None
+                admit_composition(frozen)
             admitted.add(identity)
     rows = json.loads(json.dumps(checked.to_payload()))
     source = cast(str, rows["sessions"][0]["workspace_id"])
     session_ids: dict[str, str] = {}
     task_ids: dict[str, str] = {}
+    original_owner_ids = {
+        "session": tuple(cast(str, row["session_id"]) for row in rows["sessions"]),
+        "task": tuple(cast(str, row["task_id"]) for row in rows["background_tasks"]),
+    }
+    occupied_rows = session_repository.export_session_bundle_rows(
+        workspace=workspace,
+        session_ids=original_owner_ids["session"],
+        task_ids=original_owner_ids["task"],
+    )
+    occupied_ids = {
+        "session": {cast(str, row["session_id"]) for row in cast(tuple[dict[str, object], ...], occupied_rows["sessions"])},
+        "task": {cast(str, row["task_id"]) for row in cast(tuple[dict[str, object], ...], occupied_rows["tasks"])},
+    }
+    occupied_cache = {(kind, identity): identity in occupied_ids[kind] for kind, identities in original_owner_ids.items() for identity in identities}
     for kind, collection, rebound, resolver in (
         ("session", rows["sessions"], session_ids, session_id_resolver),
         ("task", rows["background_tasks"], task_ids, task_id_resolver),
     ):
         reserved: set[str] = set()
-        for row in collection:
-            original = cast(str, row[f"{kind}_id"])
-            candidate = original
 
-            def occupied(identity: str, check_kind: str = kind) -> bool:
+        def occupied(identity: str, check_kind: str = kind) -> bool:
+            key = check_kind, identity
+            if key not in occupied_cache:
                 existing = session_repository.export_session_bundle_rows(
                     workspace=workspace,
                     session_ids=(identity,) if check_kind == "session" else (),
                     task_ids=(identity,) if check_kind == "task" else (),
                 )
-                return bool(existing["sessions" if check_kind == "session" else "tasks"])
+                occupied_cache[key] = bool(existing["sessions" if check_kind == "session" else "tasks"])
+            return occupied_cache[key]
+
+        for row in collection:
+            original = cast(str, row[f"{kind}_id"])
+            candidate = original
 
             if occupied(candidate) or candidate in reserved:
                 if resolver is not None:
@@ -713,11 +938,129 @@ def apply_session_bundle(
             "source_composition_ref": source_ref,
             "runnable": False,
         }
-    for row in rows["events"] + rows["deliveries"]:
-        row["workspace_id"] = str(workspace)
-        row["session_id"] = session_ids[row["session_id"]]
+    artifact_by_id = {artifact.artifact_id: artifact for artifact in checked.artifacts}
+    destination_paths: dict[str, Path] = {}
+    dest_artifacts: list[tuple[Path, bytes]] = []
+
+    for art in checked.artifacts:
+        if art.session_id not in session_ids:
+            raise SessionBundleError(f"foreign artifact session {art.session_id} cannot be rebound")
+        target_session_id = session_ids[art.session_id]
+        raw_root = session_artifacts_dir(target_session_id).parent
+        raw_dir = session_artifacts_dir(target_session_id)
+        try:
+            if raw_root.is_symlink() or raw_dir.is_symlink():
+                raise SessionBundleError(f"artifact directory symlink escape detected: {raw_dir}")
+            durable_root = raw_root.resolve()
+            dest_dir = raw_dir.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise SessionBundleError(f"cannot resolve artifact destination: {raw_dir}") from exc
+        if durable_root.parent != raw_root.parent.resolve() or dest_dir.parent != durable_root or dest_dir.name != target_session_id:
+            raise SessionBundleError(f"artifact directory escapes its destination owner: {dest_dir}")
+        call_segment = _safe_artifact_segment(art.tool_call_id, fallback="unknown-tool-call")
+        tool_segment = _safe_artifact_segment(art.tool_name, fallback="unknown-tool")
+        suffix = ".txt" if _is_text_artifact_mime(art.mime) else _suffix_for_mime(art.mime)
+        dest_path = dest_dir / f"{call_segment}-{tool_segment}-{art.artifact_id}{suffix}"
+        if dest_path.is_symlink():
+            raise SessionBundleError(f"artifact destination is a symlink: {dest_path}")
+        destination_paths[art.artifact_id] = dest_path
+        if art.data_base64 is None:
+            if dest_path.exists():
+                raise SessionBundleError(f"missing artifact collides with an existing file: {dest_path}")
+            continue
+        raw_bytes = base64.b64decode(art.data_base64, validate=True)
+        if dest_path.exists():
+            if not dest_path.is_file():
+                raise SessionBundleError(f"artifact destination is not a regular file: {dest_path}")
+            existing_bytes = dest_path.read_bytes()
+            if len(existing_bytes) != art.byte_count or hashlib.sha256(existing_bytes).hexdigest() != art.sha256:
+                raise SessionBundleError(f"cannot overwrite existing user file with conflicting artifact: {dest_path}")
+        else:
+            dest_artifacts.append((dest_path, raw_bytes))
+
+    def rebind_artifact_references(payload: object) -> None:
+        if not isinstance(payload, Mapping):
+            return
+        for reference in iter_event_artifact_references(payload):
+            artifact_id = reference.get("artifact_id")
+            artifact = artifact_by_id.get(artifact_id) if isinstance(artifact_id, str) else None
+            if artifact is None:
+                if reference.get("producer") == "voidcode.tool_output.v1":
+                    raise SessionBundleError(f"runtime artifact reference is missing from bundle: {artifact_id}")
+                continue
+            if reference.get("session_id") not in (None, artifact.session_id):
+                raise SessionBundleError(f"artifact reference owner mismatch: {artifact_id}")
+            if isinstance(reference, dict):
+                reference["session_id"] = session_ids[artifact.session_id]
+                reference["path"] = str(destination_paths[artifact.artifact_id])
+
+    for event in rows["events"]:
+        event["session_id"] = session_ids[event["session_id"]]
+        event["workspace_id"] = str(workspace)
+        rebind_artifact_references(event.get("payload_json") or event.get("payload"))
+    for row in rows["sessions"]:
+        checkpoint = row["resume_checkpoint_json"]
+        if isinstance(checkpoint, dict):
+            tool_results = checkpoint.get("tool_results")
+            if isinstance(tool_results, list):
+                for report in tool_results:
+                    rebind_artifact_references(report)
+    for delivery in rows["deliveries"]:
+        delivery["session_id"] = session_ids[delivery["session_id"]]
+        delivery["workspace_id"] = str(workspace)
     _validate_rows(tuple(rows["sessions"]), tuple(rows["events"]), tuple(rows["background_tasks"]), tuple(rows["deliveries"]))
-    if not dry_run:
+
+    if dry_run:
+        return SessionBundleImportResult(
+            SESSION_BUNDLE_SCHEMA_NAME,
+            2,
+            checked.manifest.voidcode_version,
+            checked.manifest.created_at,
+            False,
+            {"exact": True},
+            checked.manifest.workspace_hash,
+            len(checked.sessions),
+            checked.manifest.event_count,
+            len(checked.background_tasks),
+            tuple(session_ids.values()),
+            0,
+            True,
+        )
+
+    # Stage artifact writes atomically before DB commit
+    staged_files: list[Path] = []
+    staged_dirs: list[Path] = []
+    try:
+        for dest_path, raw_bytes in dest_artifacts:
+            parent_dir = dest_path.parent
+            if not parent_dir.exists():
+                parent_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+                staged_dirs.append(parent_dir)
+            if platform.system() != "Windows":
+                try:
+                    parent_dir.chmod(0o700)
+                except OSError as exc:
+                    raise SessionBundleError(f"failed to secure artifact directory: {exc}") from exc
+            fd = os.open(dest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            staged_files.append(dest_path)
+            with os.fdopen(fd, "wb") as f:
+                f.write(raw_bytes)
+    except Exception as exc:
+        for f in reversed(staged_files):
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for d in reversed(staged_dirs):
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+        if isinstance(exc, SessionBundleError):
+            raise
+        raise SessionBundleError(f"failed to write imported artifacts: {exc}") from exc
+
+    try:
         session_repository.import_session_bundle_rows(
             workspace=workspace,
             sessions=tuple(rows["sessions"]),
@@ -725,6 +1068,18 @@ def apply_session_bundle(
             tasks=tuple(rows["background_tasks"]),
             deliveries=tuple(rows["deliveries"]),
         )
+    except Exception:
+        for f in reversed(staged_files):
+            try:
+                f.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for d in reversed(staged_dirs):
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+        raise
     return SessionBundleImportResult(
         SESSION_BUNDLE_SCHEMA_NAME,
         2,
@@ -755,8 +1110,20 @@ def serialize_session_bundle(bundle: SessionBundle, *, fmt: SessionBundleFormat 
 
 
 def write_session_bundle(bundle: SessionBundle, *, path: Path, fmt: SessionBundleFormat | None = None) -> Path:
+    raw = serialize_session_bundle(bundle, fmt=fmt or ("json" if path.suffix.lower() == ".json" else "zip"))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(serialize_session_bundle(bundle, fmt=fmt or ("json" if path.suffix.lower() == ".json" else "zip")))
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        if os.name != "nt":
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(raw)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -765,6 +1132,22 @@ def read_session_bundle(path: Path) -> SessionBundle:
         return read_session_bundle_bytes(path.read_bytes())
     except OSError as error:
         raise SessionBundleError(str(error)) from error
+
+
+def preview_session_bundle_import_file(bundle_path: Path, *, workspace: Path) -> SessionBundleImportResult:
+    """Validate an import without runtime startup or filesystem writes."""
+    from .storage import SqliteSessionStore
+
+    store = SqliteSessionStore()
+    return apply_session_bundle(
+        read_session_bundle(bundle_path),
+        session_repository=store,
+        events=store,
+        recovery=store,
+        run_writer=store,
+        workspace=workspace,
+        dry_run=True,
+    )
 
 
 def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -780,8 +1163,8 @@ def read_session_bundle_bytes(raw: bytes) -> SessionBundle:
     try:
         if raw.startswith(b"PK"):
             with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-                if archive.namelist() != [SESSION_BUNDLE_FILE_NAME]:
-                    raise SessionBundleError("bundle archive must contain exactly bundle.json")
+                if SESSION_BUNDLE_FILE_NAME not in archive.namelist():
+                    raise SessionBundleError("bundle archive must contain bundle.json")
                 raw = archive.read(SESSION_BUNDLE_FILE_NAME)
         return parse_session_bundle(json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object))
     except (UnicodeDecodeError, json.JSONDecodeError, zipfile.BadZipFile) as error:
