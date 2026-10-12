@@ -98,13 +98,11 @@ def prompt_activation_decision(
     runtime_policy = _mapping_value(session_metadata.get("runtime_policy"))
     prompt_activation = _mapping_value(runtime_policy.get("prompt_activation"))
     enabled = prompt_activation.get("enabled", True) is not False
-    mode = _metadata_string(session_metadata, "mode") or _metadata_string(runtime_policy, "mode") or "normal"
     intent = _mapping_value(runtime_policy.get("intent"))
     intent_slot = _metadata_string(intent, "label") or "unspecified"
     activation_id = _activation_id(prompt_profile_name)
     activation_key = _activation_key(
         activation_id=activation_id,
-        mode=mode,
         intent_slot=intent_slot,
     )
     existing_records = _activation_records(prompt_activation.get("activated"))
@@ -114,9 +112,8 @@ def prompt_activation_decision(
         **prompt_activation,
         "enabled": enabled,
         "activation_id": activation_id,
-        "mode": mode,
         "intent_slot": intent_slot,
-        "granularity": "session+activation_id+mode+intent_slot",
+        "granularity": "session+activation_id+intent_slot",
         "raw_prompt_stored": False,
         "activated": existing_records,
     }
@@ -128,18 +125,14 @@ def prompt_activation_decision(
 
     guidance = prompt_activation_guidance_block(
         activation_id=activation_id,
-        mode=mode,
         intent_slot=intent_slot,
         profile_refs=profile_refs,
     )
-    preview_source = (
-        f"Activation {activation_id} for mode {mode} and intent slot {intent_slot}. Guidance-only; runtime policy remains enforcement truth."
-    )
+    preview_source = f"Activation {activation_id} for intent slot {intent_slot}. Guidance-only; runtime policy remains enforcement truth."
     preview, preview_truncated = _redacted_preview(preview_source)
     record: dict[str, object] = {
         "key": activation_key,
         "activation_id": activation_id,
-        "mode": mode,
         "intent_slot": intent_slot,
         "source": "runtime_policy",
         "guidance_only": True,
@@ -159,7 +152,6 @@ def prompt_activation_decision(
             metadata={
                 "layer": "prompt_activation",
                 "activation_id": activation_id,
-                "mode": mode,
                 "intent_slot": intent_slot,
                 "guidance_only": True,
             },
@@ -173,8 +165,8 @@ def _activation_id(prompt_profile_name: str | None) -> str:
     return f"agent_prompt:{profile}" if profile else "agent_prompt:default"
 
 
-def _activation_key(*, activation_id: str, mode: str, intent_slot: str) -> str:
-    return f"{activation_id}|mode:{mode}|intent:{intent_slot}"
+def _activation_key(*, activation_id: str, intent_slot: str) -> str:
+    return f"{activation_id}|intent:{intent_slot}"
 
 
 def _mapping_value(value: object) -> dict[str, object]:

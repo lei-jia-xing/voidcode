@@ -35,19 +35,18 @@ Frontmatter is plain YAML metadata, so a ` #` inside an unquoted scalar starts a
 
 Templates currently support `$ARGUMENTS` and `$1` through `$9`. Argument splitting uses `shlex` so quoted arguments are preserved.
 
-Command frontmatter may declare a runtime `mode` (`normal` or `plan`). Unknown modes are rejected.
+Command frontmatter does not support a runtime `mode`; declaring that field is rejected.
 
 ## Builtin prompt commands
 
-VoidCode ships two builtin prompt commands. They package common workflow intent into prompts; they do not directly call tools or bypass runtime approval/session governance.
+VoidCode ships one builtin prompt command. It packages common workflow intent into a prompt; it does not directly call tools or bypass runtime approval/session governance.
 
-| Command            | Arguments                                        | Execution mode | Default behavior | Verification guidance |
-| ------------------ | ------------------------------------------------ | -------------- | ---------------- | --------------------- |
-| `/init [focus]`    | Optional focus notes for the project knowledge base | Default runtime prompt | May write `AGENTS.md` | Generate or refresh structured project knowledge, then read back the final file |
-| `/plan [goal]`     | Implementation goal, acceptance criteria request, or issue shape | `plan` mode | Read-only; may update runtime todo state | Produce a concrete goal with acceptance criteria, risks, and a verification strategy |
+| Command         | Arguments                                           | Default behavior                                  | Verification guidance |
+| --------------- | --------------------------------------------------- | ------------------------------------------------- | --------------------- |
+| `/init [focus]` | Optional focus notes for the project knowledge base | May write `AGENTS.md`                             | Generate or refresh structured project knowledge, then read back the final file |
 
 `/init` is intentionally a prompt command, not a separate CLI bootstrap flag: the active agent inspects the actual repository and writes a structured `AGENTS.md` with stable project knowledge. It should preserve useful existing guidance, avoid secrets and transient task state, and verify by reading the final file.
 
-Commands render templates into runtime prompts through `CommandRegistry` → `resolve_prompt_command()` → `render_command_template()`. The rendered prompt replaces the slash command line before provider turn execution through the runtime host. Builtins are defined in `loader.py` as `_BUILTIN_COMMANDS` and can be overridden by project-local `commands/**/*.md` files.
+Commands render templates into runtime prompts through `CommandRegistry` → `resolve_prompt_command()` → `render_command_template()`. The rendered prompt replaces the slash command line before provider turn execution through the runtime host. The builtin is defined in `loader.py`; project-local `commands/**/*.md` files add user commands.
 
-A command-declared `mode` is written into the request metadata `mode` field, where the runtime aggregation point (`resolve_mode`) turns it into the effective read-only stance and context transform refs.
+The builtin `/plan` command and command-declared runtime modes are not supported. An unmatched `/plan` is rejected by the CLI as an unknown command; a user command may define `/plan`.

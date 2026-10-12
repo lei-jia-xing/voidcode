@@ -4,7 +4,6 @@ import pytest
 
 from voidcode.runtime.context.transforms import (
     HookPresetGuidanceTransformProvider,
-    ModeGuidanceTransformProvider,
     RuntimeContextTransformDeclaration,
     RuntimeContextTransformFailurePolicy,
     RuntimeContextTransformInjection,
@@ -25,10 +24,10 @@ class _Context:
     failure_policy: RuntimeContextTransformFailurePolicy = "block"
 
     def build_result(self, request: RuntimeContextTransformRequest) -> RuntimeContextTransformResult:
-        if request.mode_guidance_context == "fail":
+        if request.hook_preset_context == "fail":
             raise ValueError("actual consumer failure")
         return RuntimeContextTransformResult(
-            injections=(RuntimeContextTransformInjection("system", f"v{self.provider_version}: {request.mode_guidance_context}"),),
+            injections=(RuntimeContextTransformInjection("system", f"v{self.provider_version}: {request.hook_preset_context}"),),
             traces=(
                 RuntimeContextTransformTrace(
                     provider_id=self.provider_id,
@@ -48,7 +47,7 @@ class _NextContext(_Context):
 
 
 def _request(text: str = "consumer input") -> RuntimeContextTransformRequest:
-    return RuntimeContextTransformRequest(workspace=None, tool_results=(), hook_preset_context="", mode_guidance_context=text)
+    return RuntimeContextTransformRequest(workspace=None, tool_results=(), hook_preset_context=text)
 
 
 def _bound(owner: type[_Context]) -> RuntimeContextTransformRegistry:
@@ -81,26 +80,27 @@ def test_actual_provider_version_changes_context_and_applied_identity() -> None:
     assert same_identity == first_identity
 
 
-def test_context_ties_follow_id_not_registration_and_failure_retains_declared_policy() -> None:
-    registry = RuntimeContextTransformRegistry(providers=(ModeGuidanceTransformProvider(), _Context()))
+def test_context_providers_follow_priority_and_failure_retains_policy() -> None:
+    registry = RuntimeContextTransformRegistry(providers=(HookPresetGuidanceTransformProvider(), _Context()))
     result = registry.build_result(_request())
-    assert [injection.content for injection in result.injections] == ["v2: consumer input", "consumer input"]
+    assert [injection.content for injection in result.injections] == ["consumer input", "v2: consumer input"]
     failure = registry.build_result(_request("fail"))
-    assert failure.traces[0].status == "error"
-    assert failure.traces[0].provider_version == "2" and failure.traces[0].failure_policy == "block"
+    consumer_trace = next(trace for trace in failure.traces if trace.provider_id == "consumer-context")
+    assert consumer_trace.status == "error"
+    assert consumer_trace.provider_version == "2" and consumer_trace.failure_policy == "block"
     assert failure.failure_policy == "warn"
     assert failure.injections[0].content == "fail"
 
 
 def test_unbound_unknown_selection_and_wrong_actual_provider_are_refused() -> None:
-    declaration = RuntimeContextTransformDeclaration.from_provider(ModeGuidanceTransformProvider)
+    declaration = RuntimeContextTransformDeclaration.from_provider(HookPresetGuidanceTransformProvider)
     registry = RuntimeContextTransformRegistry.from_declarations((declaration,))
     with pytest.raises(RuntimeError):
         registry.build_result(_request())
     with pytest.raises(ValueError):
         registry.filtered(("not-admitted",))
     with pytest.raises(ValueError):
-        registry.bind(lambda _name: HookPresetGuidanceTransformProvider())
+        registry.bind(lambda _name: _Context())
 
 
 @pytest.mark.parametrize("change", [{"version": 1}, {"version": True}, {"extra": "unknown"}])

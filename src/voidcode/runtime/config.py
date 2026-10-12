@@ -8,9 +8,9 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from ..agent import (
     AgentManifest,
@@ -72,7 +72,22 @@ from .config_models import (
     RuntimeTuiThemeMode,
     SkillsPayload,
     ToolsPayload,
+    TuiBrandPayload,
+    TuiCommand,
+    TuiComposerCursorShape,
+    TuiComposerGutter,
+    TuiComposerPadding,
+    TuiComposerPayload,
+    TuiComposerStyle,
+    TuiCustomThemePayload,
+    TuiForegroundToken,
     TuiPayload,
+    TuiStatuslineLayout,
+    TuiStatuslinePayload,
+    TuiStatuslineSegment,
+    TuiStatuslineSeparator,
+    TuiSymbolsPreset,
+    TuiThemePayload,
     UserConfigPayload,
     format_environment_validation_error,
     parse_approval_mode,
@@ -284,19 +299,58 @@ def _default_runtime_mcp_config() -> RuntimeMcpConfig:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeTuiConfig:
-    keymap: Mapping[str, str] | None = None
-    preferences: RuntimeTuiPreferences | None = None
+    keymap: Mapping[str, TuiCommand] | None = None
+    theme: TuiThemePayload | None = None
+    statusline: TuiStatuslinePayload | None = None
+    composer: TuiComposerPayload | None = None
+    brand: TuiBrandPayload | None = None
+    source: str | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
-class RuntimeTuiThemePreferences:
-    name: str | None = None
-    mode: RuntimeTuiThemeMode | None = None
+class RuntimeTuiStatuslineOption:
+    color: TuiForegroundToken | None = None
+    icon: bool | None = None
+    max_width: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class RuntimeTuiPreferences:
-    theme: RuntimeTuiThemePreferences | None = None
+class RuntimeTuiStatuslineConfig:
+    layout: TuiStatuslineLayout = "codex"
+    transparent: bool = True
+    left: tuple[TuiStatuslineSegment, ...] | None = None
+    right: tuple[TuiStatuslineSegment, ...] | None = None
+    separator: TuiStatuslineSeparator | None = None
+    options: Mapping[TuiStatuslineSegment, RuntimeTuiStatuslineOption] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeTuiThemeConfig:
+    mode: RuntimeTuiThemeMode = "auto"
+    dark: str = "voidcode-dark"
+    light: str = "voidcode-light"
+    custom: Mapping[str, TuiCustomThemePayload] = field(default_factory=dict)
+    symbols_preset: TuiSymbolsPreset = "unicode"
+    symbols_overrides: Mapping[str, str] = field(default_factory=dict)
+    field_sources: Mapping[str, str] = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeTuiComposerConfig:
+    style: TuiComposerStyle = "band"
+    cursor_shape: TuiComposerCursorShape = "terminal"
+    cursor_blink: bool | None = None
+    gutter: TuiComposerGutter = "prompt"
+    padding: TuiComposerPadding = "normal"
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeTuiResolvedConfig:
+    keymap: Mapping[str, TuiCommand] | None = None
+    theme: RuntimeTuiThemeConfig = field(default_factory=RuntimeTuiThemeConfig)
+    statusline: RuntimeTuiStatuslineConfig = field(default_factory=RuntimeTuiStatuslineConfig)
+    composer: RuntimeTuiComposerConfig = field(default_factory=RuntimeTuiComposerConfig)
+    brand_enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,7 +403,7 @@ class RuntimeConfig:
     background_task: RuntimeBackgroundTaskConfig = field(default_factory=RuntimeBackgroundTaskConfig)
     reminders: RuntimeRemindersConfig = field(default_factory=RuntimeRemindersConfig)
     mcp: RuntimeMcpConfig | None = field(default_factory=_default_runtime_mcp_config)
-    tui: RuntimeTuiConfig | None = None
+    tui: RuntimeTuiResolvedConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
     providers: RuntimeProvidersConfig | None = None
     agent: RuntimeAgentConfig | None = None
@@ -583,7 +637,7 @@ def _load_repo_local_config(
         background_task=_background_task_config_from_payload(config_payload.background_task),
         reminders=_reminders_config_from_payload(config_payload.reminders),
         mcp=_mcp_config_from_payload(config_payload.mcp),
-        tui=_tui_config_from_payload(config_payload.tui),
+        tui=_tui_config_from_payload(config_payload.tui, source=str(config_path)),
         provider_fallback=provider_fallback,
         providers=providers,
         agent=_agent_config_from_payload(
@@ -629,7 +683,7 @@ def _load_user_config(env: Mapping[str, str]) -> RuntimeConfigOverrides:
     return RuntimeConfigOverrides(
         approval_mode=config_payload.approval_mode,
         model=config_payload.model,
-        tui=_tui_config_from_payload(config_payload.tui),
+        tui=_tui_config_from_payload(config_payload.tui, source=str(config_path)),
         providers=providers,
         components=_component_selections_from_payload(config_payload.components, provenance=str(config_path)),
         hooks=_hooks_config_from_payload(config_payload.hooks),
@@ -969,30 +1023,16 @@ def _mcp_config_from_payload(payload: McpPayload | None) -> RuntimeMcpConfig | N
     return parsed
 
 
-def _tui_config_from_payload(payload: TuiPayload | None) -> RuntimeTuiConfig | None:
+def _tui_config_from_payload(payload: TuiPayload | None, *, source: str) -> RuntimeTuiConfig | None:
     if payload is None:
         return None
     return RuntimeTuiConfig(
         keymap=(dict(payload.keymap) if payload.keymap is not None else None),
-        preferences=(
-            None
-            if payload.preferences is None
-            else RuntimeTuiPreferences(
-                theme=(
-                    None
-                    if payload.preferences.theme is None
-                    else RuntimeTuiThemePreferences(name=payload.preferences.theme.name, mode=payload.preferences.theme.mode)
-                ),
-            )
-        ),
-    )
-
-
-def _parse_tui_config(raw_tui: object) -> RuntimeTuiConfig | None:
-    if raw_tui is None:
-        return None
-    return _tui_config_from_payload(
-        validate_config_section(TuiPayload, raw_tui, field_path="tui"),
+        theme=payload.theme,
+        statusline=payload.statusline,
+        composer=payload.composer,
+        brand=payload.brand,
+        source=source,
     )
 
 
@@ -1627,55 +1667,163 @@ def _serialize_runtime_agent_tools_config(
     return payload
 
 
-def _resolve_tui_config(global_tui: RuntimeTuiConfig | None, workspace_tui: RuntimeTuiConfig | None) -> RuntimeTuiConfig:
-    keymap = (
-        workspace_tui.keymap
-        if workspace_tui is not None and workspace_tui.keymap is not None
-        else (global_tui.keymap if global_tui is not None else None)
+def _merge_tui_values(base: Mapping[str, object], override: Mapping[str, object]) -> dict[str, object]:
+    merged = dict(base)
+    for key, value in override.items():
+        previous = merged.get(key)
+        if isinstance(previous, dict) and isinstance(value, dict):
+            merged[key] = _merge_tui_values(previous, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _merge_tui_payload[T: BaseModel](base: T | None, override: T | None, model_type: type[T]) -> T:
+    base_values = base.model_dump(exclude_unset=True) if base is not None else {}
+    override_values = override.model_dump(exclude_unset=True) if override is not None else {}
+    return model_type.model_validate(_merge_tui_values(base_values, override_values))
+
+
+def _tui_theme_field_sources(config: RuntimeTuiConfig | None) -> dict[str, str]:
+    if config is None or config.theme is None:
+        return {}
+    source = config.source
+    if source is None:
+        return {}
+    sources: dict[str, str] = {}
+
+    def collect(value: object, path: str) -> None:
+        if isinstance(value, BaseModel):
+            for name in value.model_fields_set:
+                collect(getattr(value, name), f"{path}.{name}")
+        elif isinstance(value, Mapping):
+            for name, item in value.items():
+                item_path = f"{path}[{name!r}]"
+                sources[item_path] = source
+                collect(item, item_path)
+        else:
+            sources[path] = source
+
+    collect(config.theme, "tui.theme")
+    return sources
+
+
+def _resolve_tui_config(global_tui: RuntimeTuiConfig | None, workspace_tui: RuntimeTuiConfig | None) -> RuntimeTuiResolvedConfig:
+    keymap = workspace_tui.keymap if workspace_tui is not None and workspace_tui.keymap is not None else (global_tui.keymap if global_tui else None)
+    theme = _merge_tui_payload(
+        global_tui.theme if global_tui else None,
+        workspace_tui.theme if workspace_tui else None,
+        TuiThemePayload,
     )
-    theme = _merged_tui_theme(
-        global_tui.preferences if global_tui is not None else None,
-        workspace_tui.preferences if workspace_tui is not None else None,
+    field_sources = _tui_theme_field_sources(global_tui)
+    field_sources.update(_tui_theme_field_sources(workspace_tui))
+    statusline = _merge_tui_payload(
+        global_tui.statusline if global_tui else None,
+        workspace_tui.statusline if workspace_tui else None,
+        TuiStatuslinePayload,
     )
-    return RuntimeTuiConfig(
+    composer = _merge_tui_payload(
+        global_tui.composer if global_tui else None,
+        workspace_tui.composer if workspace_tui else None,
+        TuiComposerPayload,
+    )
+    brand = _merge_tui_payload(
+        global_tui.brand if global_tui else None,
+        workspace_tui.brand if workspace_tui else None,
+        TuiBrandPayload,
+    )
+    return RuntimeTuiResolvedConfig(
         keymap=keymap,
-        preferences=RuntimeTuiPreferences(theme=theme),
+        theme=RuntimeTuiThemeConfig(
+            mode=theme.mode,
+            dark=theme.dark,
+            light=theme.light,
+            custom=dict(theme.custom),
+            symbols_preset=theme.symbols.preset,
+            symbols_overrides=dict(theme.symbols.overrides),
+            field_sources=field_sources,
+        ),
+        statusline=RuntimeTuiStatuslineConfig(
+            layout=statusline.layout,
+            transparent=statusline.transparent,
+            left=statusline.left,
+            right=statusline.right,
+            separator=statusline.separator,
+            options={
+                segment: RuntimeTuiStatuslineOption(color=option.color, icon=option.icon, max_width=option.max_width)
+                for segment, option in statusline.options.items()
+            },
+        ),
+        composer=RuntimeTuiComposerConfig(
+            style=composer.style,
+            cursor_shape=composer.cursor.shape,
+            cursor_blink=composer.cursor.blink,
+            gutter=composer.gutter,
+            padding=composer.padding,
+        ),
+        brand_enabled=brand.enabled,
     )
 
 
-def _merged_tui_theme(
-    global_preferences: RuntimeTuiPreferences | None,
-    workspace_preferences: RuntimeTuiPreferences | None,
-) -> RuntimeTuiThemePreferences:
-    """Merge the theme preference; ``mode`` always lands on a concrete value.
-
-    The runtime only carries the client's theme preference: ``name`` is a free
-    string with no palette validation, and the runtime owns no palette registry.
-    The TUI resolves ``name`` against its own registry and falls back to the
-    mode default for unknown or absent names. Only ``mode`` (``auto``/``light``/
-    ``dark``) is resolved here, defaulting to ``auto``.
-    """
-    global_theme = global_preferences.theme if global_preferences is not None else None
-    workspace_theme = workspace_preferences.theme if workspace_preferences is not None else None
-    return RuntimeTuiThemePreferences(
-        name=(workspace_theme.name if workspace_theme is not None else None) or (global_theme.name if global_theme is not None else None),
-        mode=(workspace_theme.mode if workspace_theme is not None else None) or (global_theme.mode if global_theme is not None else None) or "auto",
-    )
+def _tui_appearance_payload(config: RuntimeTuiResolvedConfig) -> dict[str, object]:
+    return {
+        "theme": {
+            "mode": config.theme.mode,
+            "dark": config.theme.dark,
+            "light": config.theme.light,
+            "custom": {name: palette.model_dump(exclude_unset=True) for name, palette in config.theme.custom.items()},
+            "symbols": {"preset": config.theme.symbols_preset, "overrides": dict(config.theme.symbols_overrides)},
+        },
+        "statusline": _tui_statusline_payload(config.statusline),
+        "composer": _tui_composer_payload(config.composer),
+        "brand": {"enabled": config.brand_enabled},
+    }
 
 
-def merge_runtime_tui_preferences(
-    base_preferences: RuntimeTuiPreferences | None,
-    override_preferences: RuntimeTuiPreferences | None,
-) -> RuntimeTuiPreferences:
-    return RuntimeTuiPreferences(theme=_merged_tui_theme(base_preferences, override_preferences))
+def _tui_statusline_payload(config: RuntimeTuiStatuslineConfig) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "layout": config.layout,
+        "transparent": config.transparent,
+        "options": {
+            segment: {
+                name: value for name, value in (("color", option.color), ("icon", option.icon), ("max_width", option.max_width)) if value is not None
+            }
+            for segment, option in config.options.items()
+        },
+    }
+    if config.left is not None:
+        payload["left"] = list(config.left)
+    if config.right is not None:
+        payload["right"] = list(config.right)
+    if config.separator is not None:
+        payload["separator"] = config.separator
+    return payload
 
 
-def save_workspace_tui_preferences(workspace: Path, preferences: RuntimeTuiPreferences) -> None:
-    _save_tui_preferences(runtime_config_path(workspace.resolve()), preferences)
+def _tui_composer_payload(config: RuntimeTuiComposerConfig) -> dict[str, object]:
+    cursor: dict[str, object] = {"shape": config.cursor_shape}
+    if config.cursor_blink is not None:
+        cursor["blink"] = config.cursor_blink
+    return {"style": config.style, "cursor": cursor, "gutter": config.gutter, "padding": config.padding}
 
 
-def save_global_tui_preferences(preferences: RuntimeTuiPreferences) -> None:
-    _save_tui_preferences(user_runtime_config_path(), preferences)
+def save_tui_appearance_config(scope: Literal["user", "workspace"], workspace: Path, config: RuntimeTuiResolvedConfig) -> Path:
+    config_path = user_runtime_config_path() if scope == "user" else runtime_config_path(workspace.resolve())
+    payload = _read_json_object(config_path)
+    if config_path.exists():
+        if scope == "user":
+            validate_config_model(UserConfigPayload, payload, context={"config_file": str(config_path)})
+        else:
+            validate_config_model(RuntimeConfigPayload, payload, context={"config_file": str(config_path)})
+    raw_tui = payload.get("tui")
+    if raw_tui is not None and not isinstance(raw_tui, dict):
+        raise ValueError(f"runtime config field 'tui' must be an object: {config_path}")
+    tui_payload = dict(raw_tui) if isinstance(raw_tui, dict) else {}
+    tui_payload.update(_tui_appearance_payload(config))
+    payload["tui"] = tui_payload
+    from .config_schema import write_runtime_config_payload, write_user_runtime_config_payload
+
+    return write_user_runtime_config_payload(payload) if scope == "user" else write_runtime_config_payload(workspace, payload)
 
 
 def save_global_web_settings(settings: RuntimeWebSettings) -> None:
@@ -1696,17 +1844,6 @@ def save_global_web_settings(settings: RuntimeWebSettings) -> None:
                 provider=provider,
                 api_key=settings.provider_api_key,
             )
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-
-
-def _save_tui_preferences(config_path: Path, preferences: RuntimeTuiPreferences) -> None:
-    payload = _read_json_object(config_path)
-    raw_tui = payload.get("tui")
-    tui_payload: dict[str, object] = dict(raw_tui) if isinstance(raw_tui, dict) else {}
-    updated_tui_payload = dict(tui_payload)
-    updated_tui_payload["preferences"] = serialize_runtime_tui_preferences(preferences)
-    payload["tui"] = updated_tui_payload
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -1802,19 +1939,6 @@ def _read_json_object(config_path: Path) -> dict[str, object]:
     if not isinstance(raw_payload, dict):
         raise ValueError(f"runtime config file must contain a JSON object: {config_path}")
     return raw_payload
-
-
-def serialize_runtime_tui_preferences(preferences: RuntimeTuiPreferences) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    if preferences.theme is not None:
-        theme_payload: dict[str, object] = {}
-        if preferences.theme.name is not None:
-            theme_payload["name"] = preferences.theme.name
-        if preferences.theme.mode is not None:
-            theme_payload["mode"] = preferences.theme.mode
-        if theme_payload:
-            payload["theme"] = theme_payload
-    return payload
 
 
 def _parse_providers_config(

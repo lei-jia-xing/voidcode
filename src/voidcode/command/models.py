@@ -16,7 +16,6 @@ class CommandDefinition:
     template: str
     source: CommandSource = "builtin"
     agent: str | None = None
-    mode: str | None = None
     model: str | None = None
     subtask: bool = False
     enabled: bool = True
@@ -32,8 +31,6 @@ class CommandDefinition:
             raise ValueError("command description must be a non-empty string")
         if not self.template.strip():
             raise ValueError("command template must be a non-empty string")
-        if self.mode is not None and self.mode not in {"normal", "plan"}:
-            raise ValueError("command mode must be 'normal' or 'plan' when provided")
 
 
 @dataclass(frozen=True, slots=True)

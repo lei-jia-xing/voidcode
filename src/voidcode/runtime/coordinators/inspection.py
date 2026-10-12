@@ -160,7 +160,6 @@ from ..session import (
     StoredSessionForestEntry,
     StoredSessionLineageEntry,
     StoredSessionSummary,
-    normalize_persisted_session_metadata,
     session_metadata_for_replay,
     validate_session_workspace,
 )
@@ -755,7 +754,7 @@ class InspectionCoordinator:
         if any(event.event_type in _POLICY_PROJECTED_EVENT_TYPES for event in events):
             events = self._events_with_runtime_policy_projection(
                 events,
-                metadata=session_metadata_for_replay(normalize_persisted_session_metadata(stored.metadata)),
+                metadata=session_metadata_for_replay(stored.metadata),
             )
         return SessionEventBatch(status=stored.status, events=events)
 

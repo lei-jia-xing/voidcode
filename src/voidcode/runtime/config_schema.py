@@ -15,7 +15,11 @@ the input contract.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
+import stat
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
@@ -25,7 +29,7 @@ from pydantic_core import core_schema
 
 from ..agent import list_builtin_agent_manifests
 from ..provider.naming import canonical_model_reference
-from .config import RUNTIME_CONFIG_FILE_NAME, runtime_config_path
+from .config import RUNTIME_CONFIG_FILE_NAME, runtime_config_path, user_runtime_config_path
 from .config_models import (
     AGENT_PRESET_ID_PATTERN,
     APPROVAL_MODE_ENV_VAR,
@@ -369,6 +373,7 @@ __all__ = [
     "generate_starter_runtime_config",
     "runtime_config_json_schema",
     "write_runtime_config_payload",
+    "write_user_runtime_config_payload",
 ]
 
 
@@ -412,11 +417,129 @@ def write_runtime_config_payload(
     *,
     create_parents: bool = True,
 ) -> Path:
-    config_path = runtime_config_path(workspace.resolve())
+    config_path = runtime_config_path(workspace.resolve()).resolve()
+    return _write_atomic_config_payload(config_path, payload, create_parents=create_parents)
+
+
+def write_user_runtime_config_payload(payload: Mapping[str, object]) -> Path:
+    """Atomically replace user config; POSIX preserves mode, Windows preserves its DACL."""
+    return _write_atomic_config_payload(user_runtime_config_path().resolve(), payload)
+
+
+def _copy_windows_dacl(source: Path, destination: Path) -> None:
+    """Copy an existing config DACL to staging before writing its contents."""
+    import ctypes
+    from ctypes import wintypes
+
+    ctypes_namespace = ctypes.__dict__
+    win_dll = ctypes_namespace["WinDLL"]
+    win_error = ctypes_namespace["WinError"]
+    get_last_error = ctypes_namespace["get_last_error"]
+    advapi32 = win_dll("advapi32", use_last_error=True)
+    get_security = advapi32.GetNamedSecurityInfoW
+    get_security.argtypes = [
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    get_security.restype = wintypes.DWORD
+    set_security = advapi32.SetNamedSecurityInfoW
+    set_security.argtypes = [
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    set_security.restype = wintypes.DWORD
+    get_control = advapi32.GetSecurityDescriptorControl
+    get_control.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.WORD), ctypes.POINTER(wintypes.DWORD)]
+    get_control.restype = wintypes.BOOL
+    local_free = win_dll("kernel32", use_last_error=True).LocalFree
+    local_free.argtypes = [ctypes.c_void_p]
+    local_free.restype = ctypes.c_void_p
+
+    owner, group, dacl, sacl, descriptor = (ctypes.c_void_p() for _ in range(5))
+    error = get_security(
+        str(source),
+        1,  # SE_FILE_OBJECT
+        0x00000004,  # DACL_SECURITY_INFORMATION
+        ctypes.byref(owner),
+        ctypes.byref(group),
+        ctypes.byref(dacl),
+        ctypes.byref(sacl),
+        ctypes.byref(descriptor),
+    )
+    if error:
+        raise win_error(error)
+    if not descriptor.value:
+        raise OSError("Windows file security query returned no descriptor")
+    try:
+        control = wintypes.WORD()
+        revision = wintypes.DWORD()
+        if not get_control(descriptor, ctypes.byref(control), ctypes.byref(revision)):
+            raise win_error(get_last_error())
+        security_information = 0x00000004 | (0x80000000 if control.value & 0x1000 else 0x20000000)
+        error = set_security(
+            str(destination),
+            1,
+            security_information,
+            None,
+            None,
+            dacl,
+            None,
+        )
+        if error:
+            raise win_error(error)
+    finally:
+        local_free(descriptor)
+
+
+def _write_atomic_config_payload(
+    config_path: Path,
+    payload: Mapping[str, object],
+    *,
+    create_parents: bool = True,
+) -> Path:
+    """Atomically update the namespace; crash durability depends on OS/filesystem."""
     if create_parents:
         config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        format_starter_runtime_config_json(payload),
-        encoding="utf-8",
-    )
+    existing = config_path.exists()
+    mode = stat.S_IMODE(config_path.stat().st_mode) if os.name == "posix" and existing else 0o600
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{config_path.name}.", dir=config_path.parent)
+    temporary_path = Path(temporary_name)
+    descriptor_open = True
+    try:
+        if os.name == "nt" and existing:
+            _copy_windows_dacl(config_path, temporary_path)
+        stream = os.fdopen(descriptor, "w", encoding="utf-8")
+        descriptor_open = False
+        with stream:
+            if os.name == "posix":
+                os.fchmod(stream.fileno(), mode)
+            stream.write(format_starter_runtime_config_json(payload))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, config_path)
+        if os.name == "posix":
+            directory_fd = os.open(config_path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                try:
+                    os.fsync(directory_fd)
+                except OSError as error:
+                    if error.errno not in {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}:
+                        raise
+            finally:
+                os.close(directory_fd)
+    finally:
+        if descriptor_open:
+            os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
     return config_path

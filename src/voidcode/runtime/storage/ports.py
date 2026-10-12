@@ -50,6 +50,7 @@ class SessionEventRepository(SessionEventAppender, Protocol):
         session_id: str,
         events: tuple[tuple[str, EventSource, dict[str, object], str | None], ...],
         interrupted_checkpoint: dict[str, object] | None = None,
+        approval_checkpoint_plan_state: dict[str, object] | None = None,
     ) -> tuple[EventEnvelope, ...]: ...
 
     def session_path(self, *, workspace: Path, session_id: str, sequence: int | None = None) -> tuple[EventEnvelope, ...]: ...
@@ -176,6 +177,15 @@ class SessionRecoveryRepository(Protocol):
         parent_session_id: str | None = None,
     ) -> None: ...
     def load_resume_checkpoint(self, *, workspace: Path, session_id: str) -> dict[str, object] | None: ...
+    def advance_resume_checkpoint_run_id(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        checkpoint: dict[str, object],
+        expected_session_metadata: dict[str, object],
+        run_id: str,
+    ) -> None: ...
 
     def load_execution_composition(self, *, ref: CompositionRef) -> FrozenComposition: ...
 

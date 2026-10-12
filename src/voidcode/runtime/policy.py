@@ -19,7 +19,7 @@ from ..security.redaction import (
     REDACTED_PLACEHOLDER as _REDACTED,
 )
 from .background.routing import CALLABLE_SUBAGENT_PRESETS
-from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
+from .permission import runtime_read_only_from_metadata
 
 POLICY_SCHEMA_VERSION = 1
 POLICY_VERSION = "v1"
@@ -90,7 +90,6 @@ class RuntimePolicySnapshotPayload(TypedDict):
     precedence_trace: list[Mapping[str, object]]
     diagnostics: Mapping[str, object]
     created_at: int
-    mode: str
     read_only: bool
 
 
@@ -182,7 +181,6 @@ class RuntimePolicySnapshot:
     precedence_trace: Sequence[Mapping[str, object]]
     diagnostics: Mapping[str, object] = field(default_factory=dict)
     created_at: int | None = None
-    mode: str = "normal"
     read_only: bool = False
     schema_version: int = POLICY_SCHEMA_VERSION
     policy_version: str = POLICY_VERSION
@@ -200,7 +198,6 @@ class RuntimePolicySnapshot:
             "prompt_activation": dict(self.prompt_activation),
             "precedence_trace": [dict(entry) for entry in self.precedence_trace],
             "diagnostics": dict(self.diagnostics),
-            "mode": self.mode,
             "read_only": self.read_only,
         }
         if self.created_at is not None:
@@ -403,7 +400,6 @@ def materialize_runtime_policy_snapshot(**inputs: Any) -> RuntimePolicySnapshot:
     request_metadata = _mapping(inputs.get("request_metadata"))
     agent_preset = _string(inputs.get("agent_preset")) or _agent_preset_from_config(runtime_config) or "leader"
     agent_manifest_id = _string(inputs.get("agent_manifest_id")) or agent_preset
-    mode = runtime_mode_from_metadata(request_metadata)
     read_only = runtime_read_only_from_metadata(request_metadata)
     tool_allowed = _tool_allowed(runtime_config, policy_config)
     delegation_allowed = _delegation_allowed(
@@ -442,7 +438,6 @@ def materialize_runtime_policy_snapshot(**inputs: Any) -> RuntimePolicySnapshot:
         precedence_trace=trace,
         diagnostics=_diagnostics(inputs.get("diagnostics_input")),
         created_at=int(time.time() * 1000),
-        mode=mode,
         read_only=read_only,
     )
     if parent_snapshot is None:
@@ -470,7 +465,6 @@ def _snapshot_from_payload(payload: Mapping[str, object]) -> RuntimePolicySnapsh
         precedence_trace=validated["precedence_trace"],
         diagnostics=validated["diagnostics"],
         created_at=validated["created_at"],
-        mode=validated["mode"],
         read_only=validated["read_only"],
         schema_version=POLICY_SCHEMA_VERSION,
         policy_version=POLICY_VERSION,
@@ -495,7 +489,6 @@ def _validated_snapshot_payload(payload: Mapping[str, object]) -> RuntimePolicyS
         "precedence_trace",
         "diagnostics",
         "created_at",
-        "mode",
         "read_only",
     }
     missing_fields = sorted(required_fields - payload.keys())
@@ -504,13 +497,10 @@ def _validated_snapshot_payload(payload: Mapping[str, object]) -> RuntimePolicyS
     for field_name in (
         "agent_preset",
         "agent_manifest_id",
-        "mode",
     ):
         value = payload[field_name]
         if not isinstance(value, str) or not value:
             raise RuntimePolicySnapshotVersionError(f"runtime_policy snapshot {field_name} must be a non-empty string")
-    if payload["mode"] not in {"normal", "plan"}:
-        raise RuntimePolicySnapshotVersionError("runtime_policy snapshot mode is invalid")
     for field_name in (
         "intent",
         "tool_policy",
@@ -619,7 +609,6 @@ def _child_snapshot_from_parent(
         precedence_trace=trace,
         diagnostics=snapshot.diagnostics,
         created_at=snapshot.created_at,
-        mode=snapshot.mode,
         read_only=snapshot.read_only,
     )
 

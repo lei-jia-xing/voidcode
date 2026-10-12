@@ -19,7 +19,6 @@ _REQUIRED_SNAPSHOT_FIELDS = {
     "precedence_trace",
     "diagnostics",
     "created_at",
-    "mode",
     "read_only",
 }
 
@@ -244,6 +243,17 @@ def test_runtime_policy_rejects_current_version_with_incomplete_shape() -> None:
 
     with pytest.raises(error_type, match="missing required fields"):
         module.runtime_policy_snapshot_from_session_metadata({"runtime_policy": {"schema_version": 1, "policy_version": "v1"}})
+
+
+def test_runtime_policy_ignores_legacy_mode_extra_and_preserves_read_only() -> None:
+    module = _runtime_policy_module()
+    legacy_snapshot = dict(_materialize_sample_snapshot(request_metadata={"read_only": True}))
+    legacy_snapshot["mode"] = "plan"
+
+    projected = module.runtime_policy_snapshot_from_session_metadata({"runtime_policy": legacy_snapshot})
+
+    assert projected["read_only"] is True
+    assert "mode" not in projected
 
 
 def test_runtime_policy_child_snapshot_is_subset_of_parent_snapshot() -> None:

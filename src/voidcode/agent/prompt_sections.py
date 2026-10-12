@@ -43,14 +43,13 @@ Return repository or research discovery in this format:
 def prompt_activation_guidance_block(
     *,
     activation_id: str,
-    mode: str,
     intent_slot: str,
     profile_refs: list[str],
 ) -> str:
     refs = _clean_lines(profile_refs)
     refs_line = ", ".join(refs) if refs else "runtime default"
     return (
-        f"Activation {activation_id.strip()} mode={mode.strip()} intent={intent_slot.strip()}. "
+        f"Activation {activation_id.strip()} intent={intent_slot.strip()}. "
         f"Policy refs: {refs_line}. "
         "Guidance-only; does not grant tools, delegation, or capabilities. "
         "Runtime policy and tool checks remain authoritative."

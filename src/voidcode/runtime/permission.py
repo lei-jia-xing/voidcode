@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -19,7 +20,16 @@ type OperationClass = Literal["read", "write", "execute"]
 type ApprovalMode = Literal["ask", "write", "yolo"]
 APPROVAL_MODES: tuple[ApprovalMode, ...] = ("ask", "write", "yolo")
 DEFAULT_APPROVAL_MODE: ApprovalMode = "yolo"
-PLAN_MODE_DENIAL_REASON = "read-only mode is active; mutating tools are denied"
+READ_ONLY_DENIAL_REASON = "read-only access is active; mutating tools are denied"
+
+
+def runtime_read_only_from_metadata(metadata: Mapping[str, object] | None) -> bool:
+    if metadata is None:
+        return False
+    read_only = metadata.get("read_only", False)
+    if not isinstance(read_only, bool):
+        raise ValueError("runtime read_only must be a boolean")
+    return read_only
 
 
 def approval_decision(*, mode: ApprovalMode, operation_class: OperationClass | None) -> PermissionDecision:
@@ -110,13 +120,12 @@ def is_read_only_blocked(
     tool: ToolDefinition,
     operation_class: OperationClass | None = None,
 ) -> bool:
-    """Return True when the read-only runtime stance must deny a tool call.
+    """Return True when explicit read-only runtime state denies a tool call.
 
-    ``read_only`` is the single shared gate derived from ``resolve_mode``
-    (plan mode implies it, as does explicit ``read_only`` metadata): every
-    non-read-only tool is denied regardless of approval policy or path scope,
-    and any explicit write/execute operation class is denied even if the tool
-    itself is advertised as read-only (defense in depth).
+    ``read_only`` is the single shared gate: every non-read-only tool is denied
+    regardless of approval policy or path scope, and any explicit write/execute
+    operation class is denied even if the tool itself is advertised as read-only
+    (defense in depth).
     """
     if not read_only:
         return False
@@ -146,17 +155,17 @@ def resolve_permission(
 ) -> PermissionOutcome:
     """Resolve one tool call into a decision and its pending-approval payload.
 
-    Precedence, highest first: read-only/plan denial, then an explicit
+    Precedence, highest first: read-only denial, then an explicit
     ``rule_decision``, then the path-scope read shortcut, then an
     external-directory decision, and finally the active mode's tier matrix
     (:func:`approval_decision`).
     """
     decision: PermissionDecision
     effective_surface = policy_surface
-    plan_blocked = is_read_only_blocked(read_only=read_only, tool=tool, operation_class=operation_class)
-    if plan_blocked:
+    read_only_blocked = is_read_only_blocked(read_only=read_only, tool=tool, operation_class=operation_class)
+    if read_only_blocked:
         decision = "deny"
-        effective_surface = "mode.plan"
+        effective_surface = "read_only"
     elif rule_decision is not None:
         decision = rule_decision
     elif path_scope == "workspace" and (operation_class == "read" or (operation_class is None and is_read_tier(tool.effects))):
@@ -177,7 +186,7 @@ def resolve_permission(
         canonical_path=canonical_path,
         matched_rule=matched_rule,
         policy_surface=effective_surface,
-        **({"reason": PLAN_MODE_DENIAL_REASON} if plan_blocked else {}),
+        **({"reason": READ_ONLY_DENIAL_REASON} if read_only_blocked else {}),
     )
     return PermissionOutcome(decision=decision, pending_approval=pending_approval)
 

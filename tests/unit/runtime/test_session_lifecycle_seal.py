@@ -33,6 +33,7 @@ from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
+    BackgroundTaskStatus,
     is_background_task_terminal,
 )
 from voidcode.runtime.config import RuntimeBackgroundTaskConfig, RuntimeConfig
@@ -42,6 +43,7 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_PROGRESS,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     EventEnvelope,
+    EventSource,
 )
 from voidcode.runtime.execution.report_codec import parse_report_payload, report_payload
 from voidcode.runtime.permission import PendingApproval, PermissionPolicy
@@ -54,7 +56,18 @@ from voidcode.runtime.service import (
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SessionSealedError, SqliteSessionStore
 from voidcode.runtime.tool_registry import ToolRegistry
-from voidcode.tools.contracts import TerminalYield, TextOutput, ToolCall, ToolDefinition, ToolEffect, ToolResult, ToolSuccess
+from voidcode.tools.contracts import (
+    ConfirmedStop,
+    TerminalYield,
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolEffect,
+    ToolFailure,
+    ToolResult,
+    ToolSuccess,
+    UnconfirmedStop,
+)
 from voidcode.tools.read import ReadTool
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
@@ -141,7 +154,7 @@ def _seed_child_session_and_task(
         last_event_sequence=0,
         create_if_missing=True,
     )
-    events = (
+    events: tuple[tuple[str, EventSource, dict[str, object], None], ...] = (
         ("runtime.request_received", "runtime", {"prompt": "child probe"}, None),
         (
             "runtime.tool_completed",
@@ -335,6 +348,9 @@ class _BlockingThenResultTool:
 
 
 class _ToolThenNothingGraph:
+    def __init__(self) -> None:
+        self.seen_tool_results: list[tuple[object, ...]] = []
+
     def produce(
         self,
         request: TurnRequest,
@@ -343,6 +359,7 @@ class _ToolThenNothingGraph:
         session: TurnSession,
     ) -> ToolTurn | FinalTurn:
         _ = request, session
+        self.seen_tool_results.append(tool_results)
         if not tool_results:
             return ToolTurn(calls=(ToolCall(tool_name="write", arguments={}),))
         return FinalTurn(output="done")
@@ -350,15 +367,15 @@ class _ToolThenNothingGraph:
 
 def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Path) -> None:
     tool = _BlockingThenResultTool()
+    graph = _ToolThenNothingGraph()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        turn_producer=_ToolThenNothingGraph(),
+        turn_producer=graph,
         tool_registry=ToolRegistry.from_tools([tool]),
         config=RuntimeConfig(approval_mode="yolo", execution_engine="deterministic"),
         permission_policy=PermissionPolicy(mode="yolo"),
     )
     sessions = runtime._repositories.sessions
-    events = runtime._repositories.events
     chunks: list[RuntimeStreamChunk] = []
     errors: list[BaseException] = []
 
@@ -381,61 +398,36 @@ def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Pa
     assert consumer.is_alive() is False
     assert errors == []
     assert tool.invoke_count == 1
-
-    # The real tool result arrived AFTER the interrupt and is a late event: it
-    # must be dropped, not persisted.
+    # A run abort must not publish the successful result returned after cancellation.
     persisted = sessions.load_session(workspace=tmp_path, session_id="race-1")
     completed_events = [event for event in persisted.events if event.event_type == "runtime.tool_completed"]
-    assert completed_events == []
+    assert len(completed_events) == 1
+    completed = completed_events[0]
+    assert completed.payload["status"] == "error"
+    report = parse_report_payload(completed.payload["reported_call"])
+    assert isinstance(report.result, ToolFailure)
+    assert isinstance(report.result.execution, (ConfirmedStop, UnconfirmedStop))
+    assert report.result.execution.cancellation_signalled is True
+    execution_stopped = isinstance(report.result.execution, ConfirmedStop)
+    assert completed.payload["cancellation_signalled"] is True
+    assert completed.payload["execution_stopped"] is execution_stopped
+    assert completed.payload["side_effect_state"] == ("settled" if execution_stopped else "unknown")
+    assert all("real late result" not in repr(event.payload) for event in persisted.events)
+    assert all("real late result" not in repr(results) for results in graph.seen_tool_results)
+    assert not any(event.event_type == "graph.response_ready" for event in persisted.events)
+    assert all("real late result" not in repr(chunk) for chunk in chunks)
+
     # The terminal failure chunk records the interruption as session truth.
     failed_events = [event for event in persisted.events if event.event_type == "runtime.failed"]
     assert failed_events
     assert failed_events[-1].payload["kind"] == "interrupted"
     assert failed_events[-1].payload["cancelled"] is True
     assert failed_events[-1].payload["reason"] == "cancel while tool in flight"
+    event_types = [event.event_type for event in persisted.events]
+    assert event_types.index("runtime.tool_completed") < event_types.index("runtime.failed")
     # A user-cancelled run terminates ``interrupted`` (not ``failed``): the
     # terminal-status derivation keys off the cancelled flag.
     assert persisted.session.status == "interrupted"
-
-    # An ``interrupted`` row is the mid-run/un-sealed state by design: the
-    # storage layer seals only {completed, failed} (``SESSION_STORAGE_SEAL_
-    # STATUSES``) so a fresh run / resume can re-open it. Sealing of an
-    # ``interrupted`` row with no active run is the runtime-level guard
-    # (``VoidCodeRuntime._sealed_session_status``), which gates the
-    # interaction queue — the storage append paths stay open for lifecycle
-    # re-entry.
-    assert events.append_session_events(
-        workspace=tmp_path,
-        session_id="race-1",
-        events=(
-            (
-                "runtime.tool_completed",
-                "tool",
-                {
-                    "tool": "write",
-                    "status": "ok",
-                    "content": "late",
-                    "reported_call": report_payload(ReportedCall("write-call", "write", {}, ToolSuccess("write", output=TextOutput("late")))),
-                },
-                None,
-            ),
-        ),
-    )
-    assert (
-        events.append_session_event(
-            workspace=tmp_path,
-            session_id="race-1",
-            event_type="graph.response_ready",
-            source="graph",
-            payload={"summary": "late"},
-        )
-        is not None
-    )
-    # The runtime-level guard rejects late interaction-queue messages on the
-    # sealed interrupted row (no active run), matching the pre-fix failed-row
-    # behavior.
-    with pytest.raises(SessionSealedError):
-        runtime.queue_follow_up("race-1", "late follow-up")
 
 
 def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> None:
@@ -501,14 +493,18 @@ def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> No
 
 
 class _ApprovalThenDoneGraph:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
     def produce(
         self,
         request: TurnRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: TurnSession,
     ) -> ToolTurn | FinalTurn:
         _ = session
+        self.prompts.append(request.prompt)
         if not tool_results and "pre-seal steer" not in request.prompt:
             return ToolTurn(
                 calls=(
@@ -555,6 +551,34 @@ def test_steer_landing_after_approval_resolution_is_rejected(tmp_path: Path) -> 
     stored = runtime._load_stored_response(session_id="steer-1")
     assert stored.session.status == "completed"
     assert "pending_messages" not in stored.session.metadata
+
+
+def test_steering_queued_before_approval_resume_is_durable_and_delivered(tmp_path: Path) -> None:
+    graph = _ApprovalThenDoneGraph()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        turn_producer=graph,
+        config=RuntimeConfig(approval_mode="ask", execution_engine="deterministic"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    waiting = runtime.run(RuntimeRequest(prompt="approval steer", session_id="steer-queued"))
+    approval_request_id = _waiting_approval_request_id(waiting)
+
+    assert len(runtime.queue_steering("steer-queued", content="pre-seal steer")) == 1
+    queued = runtime._load_stored_response(session_id="steer-queued")
+    pending = queued.session.metadata.get("pending_messages")
+    assert isinstance(pending, list) and pending and isinstance(pending[0], dict)
+    assert pending[0].get("content") == "pre-seal steer"
+
+    resolved = runtime.resume(
+        "steer-queued",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    assert resolved.session.status == "completed"
+    assert len(graph.prompts) > 1
+    assert "pre-seal steer" in graph.prompts[-1]
+    assert "pending_messages" not in runtime._load_stored_response(session_id="steer-queued").session.metadata
 
 
 def test_steer_queued_while_run_active_is_accepted(tmp_path: Path) -> None:
@@ -1007,7 +1031,7 @@ def test_cancel_waiting_background_child_clears_pending_state_before_task_termin
         *,
         workspace: Path,
         task_id: str,
-        status: str,
+        status: BackgroundTaskStatus,
         error: str | None = None,
     ) -> BackgroundTaskState:
         ordering.append("mark_background_task_terminal")

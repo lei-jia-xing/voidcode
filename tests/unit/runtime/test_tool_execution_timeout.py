@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import subprocess
 import sys
 import threading
@@ -16,7 +15,7 @@ from tests.runtime_composition import save_checkpoint
 from tests.runtime_storage import repositories_for_test_store
 from voidcode.core.tool_context import ArtifactPage, ArtifactUnavailable, ToolContext
 from voidcode.core.transcript import ToolResultView
-from voidcode.core.turns import FinalTurn, ToolTurn
+from voidcode.core.turns import FinalTurn, ToolTurn, TurnRequest, TurnSession
 from voidcode.runtime.active_session import ActiveSessionRegistry
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import (
@@ -55,9 +54,10 @@ class _AbortSignal:
     def cancelled(self) -> bool:
         return self._cancelled
 
-    def cancel(self, reason: str | None = None) -> None:
-        self._cancelled = True
-        self.reason = reason
+    def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
+        self._cancelled = value
+        if value:
+            self.reason = reason
 
 
 class _InstantTool:
@@ -211,15 +211,15 @@ class _SingleToolCallWithArgumentsGraph:
     def __init__(self, tool_name: str, arguments: dict[str, object]) -> None:
         self._tool_name = tool_name
         self._arguments = arguments
-        self.seen_tool_results: tuple[ToolResult, ...] = ()
+        self.seen_tool_results: tuple[ToolResultView, ...] = ()
 
     def produce(
         self,
-        request: Any,
-        tool_results: tuple[ToolResult, ...],
+        request: TurnRequest,
+        tool_results: tuple[ToolResultView, ...],
         *,
-        session: Any,
-    ) -> Any:
+        session: TurnSession,
+    ) -> ToolTurn | FinalTurn:
         _ = request, session
         self.seen_tool_results = tool_results
         if not tool_results:
@@ -605,6 +605,7 @@ def test_runtime_resolves_tool_output_artifacts_and_reports_missing_debug_state(
     assert snapshot.last_tool.artifact["artifact_id"] == artifact_id
     assert snapshot.last_tool.artifact["status"] == "missing"
     assert snapshot.last_tool.artifact["artifact_missing"] is True
+    assert snapshot.provider_context is not None
     assert all(f"voidcode://artifact/{artifact_id}" not in (segment.content or "") for segment in snapshot.provider_context.segments)
 
 
@@ -901,16 +902,6 @@ def _replay_tool_events(runtime: VoidCodeRuntime, session_id: str, event_type: s
     return [event for event in runtime.resume(session_id).events if event.event_type == event_type]
 
 
-def _wait_for_log_record(caplog: pytest.LogCaptureFixture, needle: str, *, timeout: float = 10.0) -> None:
-    """Wait for an asynchronous observer thread to record its diagnostic line."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if needle in caplog.text:
-            return
-        time.sleep(0.01)
-    raise AssertionError(f"no log record containing {needle!r} within {timeout}s; saw: {caplog.text!r}")
-
-
 def _timeout_runtime(tmp_path: Path, tool: Any) -> VoidCodeRuntime:
     return VoidCodeRuntime(
         workspace=tmp_path,
@@ -925,17 +916,81 @@ def _timeout_runtime(tmp_path: Path, tool: Any) -> VoidCodeRuntime:
     )
 
 
+def test_runtime_abort_completes_inflight_native_tool_before_interrupted_terminal(tmp_path: Path) -> None:
+    session_id = "native-tool-abort-completes"
+    tool = _CancellationWriterTool(tmp_path, behaviour="stop")
+    runtime = _make_runtime(tmp_path, tool, tool_timeout_seconds=30)
+    chunks: list[Any] = []
+    run_thread = threading.Thread(
+        target=lambda: chunks.extend(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id))),
+        daemon=True,
+    )
+    run_thread.start()
+    assert tool.started.wait(timeout=2)
+
+    _ = runtime.cancel_session(session_id, reason="test user cancel")
+    run_thread.join(timeout=5)
+
+    assert not run_thread.is_alive()
+    assert tool.cancellation_observed.is_set()
+    event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
+    completed = _single_tool_event(chunks, "runtime.tool_completed")
+    failed = _single_tool_event(chunks, "runtime.failed")
+    assert event_types.index("runtime.tool_started") < event_types.index("runtime.tool_completed") < event_types.index("runtime.failed")
+    assert completed.payload["error"] == "cancelled by the runtime before the second write"
+    assert completed.payload["cancellation_signalled"] is True
+    assert completed.payload["execution_stopped"] is True
+    assert completed.payload["side_effect_state"] == "settled"
+    assert failed.payload["kind"] == "interrupted"
+    assert runtime.resume(session_id).session.status == "interrupted"
+
+
+def test_runtime_abort_discards_unconfirmed_late_native_tool_result(tmp_path: Path) -> None:
+    session_id = "native-tool-abort-late-result"
+    tool = _CancellationWriterTool(tmp_path, behaviour="ignore")
+    runtime = _make_runtime(tmp_path, tool, tool_timeout_seconds=30)
+    chunks: list[Any] = []
+    run_thread = threading.Thread(
+        target=lambda: chunks.extend(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id))),
+        daemon=True,
+    )
+    run_thread.start()
+    assert tool.started.wait(timeout=2)
+
+    started = time.monotonic()
+    _ = runtime.cancel_session(session_id, reason="test user cancel")
+    run_thread.join(timeout=5)
+    elapsed = time.monotonic() - started
+
+    assert not run_thread.is_alive()
+    assert elapsed < 3.0
+    assert tool.cancellation_observed.is_set()
+    assert tool.finished.is_set() is False
+    completed = _single_tool_event(chunks, "runtime.tool_completed")
+    failed = _single_tool_event(chunks, "runtime.failed")
+    assert completed.payload["error"] == "run interrupted"
+    assert completed.payload["execution_stopped"] is False
+    assert completed.payload["side_effect_state"] == "unknown"
+    assert failed.payload["kind"] == "interrupted"
+    assert failed.payload["cancelled"] is True
+
+    tool.release.set()
+    assert tool.finished.wait(timeout=2)
+    replayed = _replay_tool_events(runtime, session_id, "runtime.tool_completed")
+    assert len(replayed) == 1
+    assert replayed[0].payload["error"] == "run interrupted"
+    assert replayed[0].payload["side_effect_state"] == "unknown"
+
+
 def test_runtime_timeout_signals_cancellation_and_stops_a_cooperative_tool(
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A cooperative tool sees the runtime cancellation and stops on its own."""
     session_id = "timeout-cancellation-observed"
     tool = _CancellationWriterTool(tmp_path, behaviour="stop")
     runtime = _timeout_runtime(tmp_path, tool)
 
-    with caplog.at_level(logging.WARNING, logger="voidcode.runtime.tool_execution"):
-        chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
 
     # The runtime cancelled the in-flight invocation on the same signal the
     # interrupt path cancels, and the tool observed it.
@@ -972,10 +1027,6 @@ def test_runtime_timeout_signals_cancellation_and_stops_a_cooperative_tool(
     assert failed_payload["side_effect_state"] == "settled"
     assert failed_payload["error"] == f"tool '{tool.definition.name}' exceeded runtime timeout of 1s"
 
-    # The arrival of the late cancellation result is recorded for diagnosis.
-    _wait_for_log_record(caplog, "abandoned its timed-out execution")
-    assert "status=error" in caplog.text
-
     assert runtime.resume(session_id).session.status == "failed"
     replayed = _replay_tool_events(runtime, session_id, "runtime.tool_completed")
     assert len(replayed) == 1
@@ -985,7 +1036,6 @@ def test_runtime_timeout_signals_cancellation_and_stops_a_cooperative_tool(
 
 def test_runtime_timeout_reports_unknown_side_effects_when_the_tool_ignores_cancellation(
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A tool that ignores cancellation leaves the runtime with an unknown state."""
     session_id = "timeout-cancellation-ignored"
@@ -993,8 +1043,7 @@ def test_runtime_timeout_reports_unknown_side_effects_when_the_tool_ignores_canc
     runtime = _timeout_runtime(tmp_path, tool)
 
     started = time.monotonic()
-    with caplog.at_level(logging.WARNING, logger="voidcode.runtime.tool_execution"):
-        chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
     elapsed = time.monotonic() - started
 
     # The runtime did not wait for the uncooperative tool: it cancelled the
@@ -1032,10 +1081,6 @@ def test_runtime_timeout_reports_unknown_side_effects_when_the_tool_ignores_canc
     assert tool.second_write_performed is True
     assert (tmp_path / _SECOND_WRITE).exists() is True
 
-    # The late completion is recorded for diagnosis, never committed as the
-    # tool result.
-    _wait_for_log_record(caplog, "abandoned its timed-out execution")
-    assert "status=ok" in caplog.text
     replayed = _replay_tool_events(runtime, session_id, "runtime.tool_completed")
     assert len(replayed) == 1
     assert replayed[0].payload["status"] == "error"
@@ -1045,15 +1090,13 @@ def test_runtime_timeout_reports_unknown_side_effects_when_the_tool_ignores_canc
 
 def test_late_tool_completion_at_the_boundary_is_not_committed_as_the_tool_result(
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A completion racing the abandoned wait is recorded, not committed."""
     session_id = "timeout-boundary-completion"
     tool = _CancellationWriterTool(tmp_path, behaviour="complete")
     runtime = _timeout_runtime(tmp_path, tool)
 
-    with caplog.at_level(logging.WARNING, logger="voidcode.runtime.tool_execution"):
-        chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
 
     # The tool finished as soon as cancellation was signalled: it exited within
     # the bounded reap window, so the runtime could confirm the execution
@@ -1068,9 +1111,6 @@ def test_late_tool_completion_at_the_boundary_is_not_committed_as_the_tool_resul
     assert completed_payload["diagnostics"]["kind"] == "tool_timeout"
     assert completed_payload["content"] is None
     assert "finished at the boundary" not in str(completed_payload)
-
-    _wait_for_log_record(caplog, "abandoned its timed-out execution")
-    assert "status=ok" in caplog.text
 
     # Storage keeps the timeout outcome: the late ok result never overwrites it.
     assert runtime.resume(session_id).session.status == "failed"
@@ -1238,12 +1278,14 @@ def test_timeout_exit_emits_terminal_tool_status_with_error(
 
     assert payload["status"] == "error", "terminal tool status must be error"
     assert payload["tool"] == "shell_exec"
-    assert payload["diagnostics"]["kind"] == "tool_timeout"
-    assert payload["diagnostics"]["summary"] == "tool 'shell_exec' exceeded runtime timeout of 1s"
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, dict)
+    assert diagnostics["kind"] == "tool_timeout"
+    assert diagnostics["summary"] == "tool 'shell_exec' exceeded runtime timeout of 1s"
     # The details are additive since the timeout records its execution facts:
     # shell_exec kills its own process on the runtime timeout, so cancellation
     # was not signalled by the runtime and the execution is confirmed stopped.
-    assert payload["diagnostics"]["details"] == {
+    assert diagnostics["details"] == {
         "tool_name": "shell_exec",
         "timed_out": True,
         "timeout_seconds": 1,
@@ -1251,7 +1293,7 @@ def test_timeout_exit_emits_terminal_tool_status_with_error(
         "execution_stopped": True,
         "side_effect_state": "settled",
     }
-    assert payload["diagnostics"]["guidance"] == "Reduce the command scope, increase the timeout, or retry."
+    assert diagnostics["guidance"] == "Reduce the command scope, increase the timeout, or retry."
 
     assert "tool_call_id" in payload
     assert isinstance(payload["tool_call_id"], str)
@@ -1364,8 +1406,10 @@ def test_timeout_replay_preserves_terminal_tool_status_with_matching_call_id(
     completed_payload = completed_events[0].payload
     assert completed_payload["status"] == "error"
     assert completed_payload["tool"] == "shell_exec"
-    assert completed_payload["diagnostics"]["kind"] == "tool_timeout"
-    assert completed_payload["diagnostics"]["summary"] == "tool 'shell_exec' exceeded runtime timeout of 1s"
+    diagnostics = completed_payload["diagnostics"]
+    assert isinstance(diagnostics, dict)
+    assert diagnostics["kind"] == "tool_timeout"
+    assert diagnostics["summary"] == "tool 'shell_exec' exceeded runtime timeout of 1s"
 
     started_call_id = started_events[0].payload["tool_call_id"]
     assert isinstance(started_call_id, str)

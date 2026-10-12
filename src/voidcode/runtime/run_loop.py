@@ -103,6 +103,7 @@ from .event_envelopes import (
 )
 from .events import (
     REASONING_PERSISTED_LIMIT_CHARS,
+    RUNTIME_APPROVAL_RESOLVED,
     RUNTIME_CONTEXT_COMPACTED,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_PROVIDER_CONTEXT_POLICY,
@@ -167,8 +168,7 @@ from .hook_runtime import (
     run_lifecycle_hooks_for_session,
     run_tool_hooks_for_session,
 )
-from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
-from .permission import PendingApproval, PermissionPolicy
+from .permission import PendingApproval, PermissionPolicy, runtime_read_only_from_metadata
 from .question import PendingQuestion
 from .reminders import (
     TODO_MID_RUN_KIND,
@@ -716,11 +716,13 @@ class RuntimeRunLoopCoordinator:
         *,
         session_id: str,
         events: tuple[tuple[str, EventSource, dict[str, object], str | None], ...],
+        approval_checkpoint_plan_state: dict[str, object] | None = None,
     ) -> tuple[EventEnvelope, ...]:
         return self._events.append_session_events(
             workspace=self._workspace,
             session_id=session_id,
             events=events,
+            approval_checkpoint_plan_state=approval_checkpoint_plan_state,
         )
 
     def _persist_event(
@@ -731,10 +733,12 @@ class RuntimeRunLoopCoordinator:
         source: EventSource,
         payload: dict[str, object],
         dedupe_key: str | None = None,
+        approval_checkpoint_plan_state: dict[str, object] | None = None,
     ) -> EventEnvelope:
         return self._persist_events(
             session_id=session_id,
             events=((event_type, source, payload, dedupe_key),),
+            approval_checkpoint_plan_state=approval_checkpoint_plan_state,
         )[0]
 
     def _fresh_composition_session(self, session: SessionState) -> SessionState:
@@ -822,11 +826,13 @@ class RuntimeRunLoopCoordinator:
         event = chunk.event
         if event is None:
             return chunk, 0
+        plan_state = chunk.session.metadata.get("plan_state") if event.event_type == RUNTIME_APPROVAL_RESOLVED else None
         envelope = self._persist_event(
             session_id=event.session_id,
             event_type=event.event_type,
             source=event.source,
             payload=event.payload,
+            approval_checkpoint_plan_state=plan_state if isinstance(plan_state, dict) else None,
         )
         return RuntimeStreamChunk(kind="event", session=chunk.session, event=envelope), envelope.sequence
 
@@ -838,17 +844,10 @@ class RuntimeRunLoopCoordinator:
     ) -> Generator[RuntimeStreamChunk, None, int]:
         sequence = fallback_sequence
         for chunk in chunks:
-            if chunk.event is None:
-                yield chunk
-                continue
-            envelope = self._persist_event(
-                session_id=chunk.event.session_id,
-                event_type=chunk.event.event_type,
-                source=chunk.event.source,
-                payload=chunk.event.payload,
-            )
-            sequence = envelope.sequence
-            yield RuntimeStreamChunk(kind="event", session=chunk.session, event=envelope)
+            persisted_chunk, persisted_sequence = self._persist_chunk(chunk)
+            if chunk.event is not None:
+                sequence = persisted_sequence
+            yield persisted_chunk
         return sequence
 
     def _number_yield_progress(self, *, session: SessionState, tool_result: ToolResult) -> ToolResult:
@@ -1015,6 +1014,17 @@ class RuntimeRunLoopCoordinator:
                 progress = next(execution)
             except StopIteration as completed:
                 result = completed.value
+                if _is_abort_signal_requested(invocation.context.abort_signal):
+                    stopped = ConfirmedStop(cancellation_signalled=True)
+                    if isinstance(result, ToolSuccess):
+                        result = ToolFailure(
+                            tool_name=resolved_call.tool_call.tool_name,
+                            error="run interrupted",
+                            output=TextOutput("run interrupted"),
+                            execution=stopped,
+                        )
+                    elif isinstance(result, ToolFailure) and result.execution is None:
+                        result = replace(result, execution=stopped)
                 delegation = session.metadata.get("delegation")
                 output_schema = delegation.get("output_schema") if isinstance(delegation, Mapping) else None
                 schema_mode = delegation.get("schema_mode") if isinstance(delegation, Mapping) else None
@@ -1773,7 +1783,6 @@ class RuntimeRunLoopCoordinator:
             delegated_child=delegated_child,
             runtime_waits_for_user=waits_for_user,
             pending_background_task=pending_background_task,
-            plan_mode=runtime_mode_from_metadata(session.metadata) == "plan",
             todo_tool_available=any(definition.name == TODO_REMINDER_KIND for definition in available_tools),
         )
 
@@ -2462,7 +2471,6 @@ class RuntimeRunLoopCoordinator:
                 sequence=sequence,
                 session_status=session.status,
                 is_resume=is_resume,
-                mode=str(session.metadata.get("mode", "normal")),
                 read_only=runtime_read_only_from_metadata(session.metadata),
             )
         )
@@ -2584,7 +2592,7 @@ class RuntimeRunLoopCoordinator:
                 "session_id": session.session.id,
                 "tool_name": original_tool_call.tool_name,
                 "hook_status": "blocked" if input_hook_outcome.action == "block" else "ok",
-                "policy": {"mode": policy.mode, "read_only": policy.read_only},
+                "policy": {"read_only": policy.read_only},
             }
             trace_payload.update(input_hook_outcome.metadata_payload())
             if input_hook_outcome.action == "rewrite":
@@ -2871,8 +2879,7 @@ class RuntimeRunLoopCoordinator:
         sequence: int,
         tool_call_id: str,
         tool_result: ToolResult,
-        active_turn_request: TurnRequest,
-    ) -> Generator[RuntimeStreamChunk, None, tuple[ToolResult, SessionState, int, bool]]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[ToolResult, SessionState, int]]:
         session = self._fresh_composition_session(session)
         tool_result = cap_tool_result_output(
             tool_result,
@@ -2886,22 +2893,10 @@ class RuntimeRunLoopCoordinator:
         )
         yield from drained_chunks
 
-        # Terminal-seal guard for tool-result delivery: if the run was
-        # interrupted while the tool was in flight, this result arrived
-        # after the run was sealed and is a late event — drop it instead of
-        # persisting ``runtime.tool_completed``. The failure chunk below
-        # records the interruption as the terminal truth. (The
-        # ``_started_tool_abort_chunks`` path still synthesizes a terminal
-        # ``runtime.tool_completed`` for tools that never ran — that is the
-        # loop's own bookkeeping, not a late delivery.)
-        if _is_abort_requested(active_turn_request):
-            yield from self._emit_interrupted_failure(
-                session=session,
-                sequence=sequence,
-                active_turn_request=active_turn_request,
-            )
-            return tool_result, session, sequence, True
-        return tool_result, session, sequence, False
+        # The executor has already applied its bounded cancellation reap. It
+        # returns a terminal result or an explicit unknown-stop result; persist
+        # that result before sealing the run as interrupted.
+        return tool_result, session, sequence
 
     def _handle_question_outcome(
         self,
@@ -3179,7 +3174,7 @@ class RuntimeRunLoopCoordinator:
                 "session_id": session.session.id,
                 "tool_name": inner_name,
                 "hook_status": "blocked" if input_hook_outcome.action == "block" else "ok",
-                "policy": {"mode": policy.mode, "read_only": policy.read_only},
+                "policy": {"read_only": policy.read_only},
             }
             trace_payload.update(input_hook_outcome.metadata_payload())
             if input_hook_outcome.action == "rewrite":
@@ -3328,19 +3323,6 @@ class RuntimeRunLoopCoordinator:
         tool_result = self._number_yield_progress(session=session, tool_result=tool_result)
         drained_chunks, session, _ = self._drain_runtime_events(session=session, start_sequence=sequence + 1)
         yield from drained_chunks
-        if _is_abort_signal_requested(abort_signal):
-            failed_chunk, _ = self._persist_chunk(
-                chunk_builders.failed_chunk(
-                    session=session,
-                    sequence=sequence + 1,
-                    error="run interrupted",
-                    payload=chunk_builders.user_interrupted_payload(
-                        run_id=run_id_from_session_metadata(session.metadata), reason=_abort_signal_reason(abort_signal)
-                    ),
-                    status="interrupted",
-                )
-            )
-            yield failed_chunk
         report = report_call(
             replace(inner_call, tool_call_id=outer_call_id),
             tool_result,
@@ -4048,15 +4030,12 @@ class RuntimeHost:
                 last_event_sequence=self.sequence,
             )
         self.continuation = None
-        tool_result, self.session, self.sequence, terminated = yield from self.coordinator._finalize_tool_result(
+        tool_result, self.session, self.sequence = yield from self.coordinator._finalize_tool_result(
             session=self.session,
             sequence=self.sequence,
             tool_call_id=call_id,
             tool_result=tool_result,
-            active_turn_request=state.request,
         )
-        if terminated:
-            return CallStoppedBeforeReport()
         if answered is None and (
             yield from self.coordinator._handle_question_outcome(
                 session=self.session,

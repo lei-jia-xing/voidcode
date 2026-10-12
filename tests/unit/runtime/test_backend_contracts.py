@@ -146,7 +146,6 @@ def test_runtime_policy_observability_payload_is_bounded_and_redacted() -> None:
         {
             "schema_version": 1,
             "policy_version": "v1",
-            "mode": "normal",
             "read_only": False,
             "agent_preset": "leader",
             "agent_manifest_id": "leader",

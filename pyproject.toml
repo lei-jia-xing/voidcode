@@ -31,8 +31,9 @@ dependencies = [
   "lsprotocol",
   "pydantic",
   "pydantic-settings",
-  "typing-extensions",
   "tiktoken",
+  "typing-extensions",
+  "regex>=2024.11.6",
   "rich>=15.0.0",
   "httpx",
   "httpx2>=2.12.0",
@@ -74,6 +75,9 @@ Repository = "https://github.com/lei-jia-xing/voidcode"
 Documentation = "https://github.com/lei-jia-xing/voidcode#readme"
 Issues = "https://github.com/lei-jia-xing/voidcode/issues"
 
+[tool.hatch.build]
+artifacts = ["src/voidcode/_web_dist/**"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/voidcode"]
 
@@ -86,6 +90,7 @@ include = [
   "schema",
   "README.md",
   "LICENSE",
+  "NOTICE",
   "CONTRIBUTING.md",
   "SECURITY.md",
   "CODE_OF_CONDUCT.md",

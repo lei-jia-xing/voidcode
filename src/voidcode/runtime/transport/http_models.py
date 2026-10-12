@@ -468,7 +468,6 @@ class RuntimePolicyBody(ResponseModel):
 
     schema_version: int | None = None
     policy_version: str | None = None
-    mode: str | None = None
     read_only: bool | None = None
     agent_preset: str | None = None
     agent_manifest_id: str | None = None

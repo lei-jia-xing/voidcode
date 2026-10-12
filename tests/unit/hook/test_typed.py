@@ -45,7 +45,6 @@ def _event() -> ToolInputEvent:
         tool=ShellExecTool.definition,
         sequence=1,
         session_status="active",
-        mode="normal",
         read_only=False,
     )
 

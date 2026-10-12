@@ -362,7 +362,7 @@ def _decide(**overrides: Any) -> Any:
         "suppression": ReminderSuppression(),
     }
     # The suppression flags stay addressable by name in this file's cases.
-    suppression_keys = {"runtime_waits_for_user", "pending_background_task", "delegated_child", "plan_mode", "todo_tool_available"}
+    suppression_keys = {"runtime_waits_for_user", "pending_background_task", "delegated_child", "todo_tool_available"}
     suppression_overrides = {key: overrides.pop(key) for key in list(overrides) if key in suppression_keys}
     arguments.update(overrides)
     if suppression_overrides:

@@ -1,29 +1,29 @@
 """Pure composer: an input editor state machine plus its row renderer.
 
-Ports the subset of omp's editor the VoidCode TUI needs
-(``.omo/plans/tui-input-spec.md`` §3-§9): editing bindings, multi-line growth
-and word wrapping, the ``band`` composer shape, session history, and the
-Esc / Ctrl+C interrupt semantics. Tab is deliberately unbound: the editor has
-no completion source, so it inserts nothing; slash input is submitted verbatim
-and resolved by the runtime, not by this module.
+Ports the omp composer contracts in ``docs/plans/tui-productization.md``:
+editing, history, Unicode wrapping, cursor placement, and all eight named
+frames. A closed frame table keeps layout geometry independent from editor
+state, statusline profile, theme, prompt gutter, and cursor. The app supplies
+the one real statusline row; this module renders it in the selected dock.
 
 The class is deliberately I/O free: it never touches a terminal, ``rich``
 renderables, or the runtime. ``handle_key`` consumes a decoded :class:`Key`
-and returns a :class:`ComposerOutcome`; ``render`` returns the composer's own
-rows (the visible input rows), each already wrapped to at most ``width`` cells.
-Status-row placement and the runtime cancel/exit paths belong to the app.
+and returns a :class:`ComposerOutcome`; ``render`` returns the composed
+status/frame/input rows and the native insertion cursor position.
 """
 
 from __future__ import annotations
 
 import time
 import unicodedata
+from bisect import bisect_right
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Final, Literal
 
 from .keys import Key
-from .term import clamp_row, visible_width, wrap_row
+from .term import clamp_row, escape_terminal_controls, grapheme_spans, visible_width
 from .theme import Theme
 
 __all__ = ["Composer", "ComposerAction", "ComposerOutcome"]
@@ -32,15 +32,7 @@ __all__ = ["Composer", "ComposerAction", "ComposerOutcome"]
 _DOUBLE_INTERRUPT_SECONDS = 0.5
 #: omp session history depth (``editor.ts:915-919``).
 _HISTORY_DEPTH = 100
-#: Paste tab expansion -- omp expands to three spaces (``editor.ts:2930``).
-_PASTE_TAB = "   "
-#: The ``band`` shape's prompt gutter. omp hard-codes this literal
-#: (``composer/band.ts:17`` ``defaultPromptGutter: "╰─ "``) -- it is NOT read
-#: from the symbol preset, so it stays ``╰─ `` under ``glyph_preset="ascii"``.
-_PROMPT_GUTTER = "╰─ "
-#: Cells the empty-draft placeholder must keep clear of the caret
-#: (omp ``PLACEHOLDER_MIN_GAP``, ``editor.ts:412``); below it the placeholder hides.
-_PLACEHOLDER_MIN_GAP = 2
+#: The native terminal cursor is the sole insertion-point indicator.
 
 _NEWLINE_KEYS = frozenset({"shift+enter", "ctrl+j", "ctrl+enter", "alt+enter"})
 _WORD_LEFT_KEYS = frozenset({"alt+left", "alt+b", "ctrl+left"})
@@ -49,6 +41,28 @@ _DELETE_WORD_BACK_KEYS = frozenset({"ctrl+w", "alt+backspace", "ctrl+backspace"}
 _DELETE_WORD_FORWARD_KEYS = frozenset({"alt+delete", "alt+d"})
 #: Keys whose ``text`` is not plain inserted text.
 _NON_TEXT_KEYS = frozenset({"unknown", "paste"})
+
+
+@dataclass(frozen=True, slots=True)
+class _ComposerFrame:
+    top_rule: bool = False
+    bottom_rule: bool = False
+    sides: bool = False
+    sidebar: bool = False
+    rail: bool = False
+    status_dock: Literal["top", "bottom", "band"] = "top"
+
+
+_FRAMES: Final = {
+    "box": _ComposerFrame(top_rule=True, bottom_rule=True, sides=True),
+    "band": _ComposerFrame(status_dock="band"),
+    "claude": _ComposerFrame(top_rule=True, bottom_rule=True),
+    "pi": _ComposerFrame(bottom_rule=True, status_dock="bottom"),
+    "borderless": _ComposerFrame(),
+    "rule": _ComposerFrame(top_rule=True),
+    "field": _ComposerFrame(sidebar=True),
+    "rail": _ComposerFrame(rail=True, status_dock="bottom"),
+}
 
 # Word-navigation kinds (omp ``getWordNavKind``, ``utils.ts:543``).
 _WS = "whitespace"
@@ -138,22 +152,91 @@ def _word_right(text: str, cursor: int) -> int:
     return i + 1
 
 
-def _index_at_cell(row: str, cell: int) -> int:
-    """Index of the code point occupying column ``cell`` in a plain row."""
+def _previous_boundary(text: str, index: int) -> int:
+    return max((start for start, end in grapheme_spans(text) if end <= index), default=0)
+
+
+def _next_boundary(text: str, index: int) -> int:
+    return next((end for start, end in grapheme_spans(text) if start >= index or start < index < end), len(text))
+
+
+def _snap_left(text: str, index: int) -> int:
+    return max((start for start, end in grapheme_spans(text) if start <= index), default=0)
+
+
+def _snap_right(text: str, index: int) -> int:
+    return min((end for start, end in grapheme_spans(text) if end >= index), default=len(text))
+
+
+def _display_tokens(text: str) -> list[tuple[int, int, str, int]]:
+    """Map raw graphemes to the same safe cell widths used by the editor."""
+    tokens: list[tuple[int, int, str, int]] = []
+    column = 0
+    for start, end in grapheme_spans(text):
+        grapheme = text[start:end]
+        if grapheme == "\t":
+            display = " " * (4 - column % 4)
+        else:
+            display = escape_terminal_controls(grapheme)
+        width = visible_width(display)
+        tokens.append((start, end, display, width))
+        column += width
+    return tokens
+
+
+def _display_width(text: str) -> int:
+    return sum(width for _start, _end, _display, width in _display_tokens(text))
+
+
+def _offset_at_cell(text: str, start: int, end: int, cell: int) -> int:
     used = 0
-    for index, ch in enumerate(row):
-        width = visible_width(ch)
+    for local_start, _local_end, _display, width in _display_tokens(text[start:end]):
         if used + width > cell:
-            return index
+            return start + local_start
         used += width
-    return len(row)
+    return end
 
 
-def _sanitize_paste(text: str) -> str:
-    """Normalise pasted text (omp ``#sanitizePastedText``, ``editor.ts:2910``)."""
-    clean = text.replace("\r\n", "\n").replace("\r", "\n")
-    clean = unicodedata.normalize("NFC", clean).replace("\t", _PASTE_TAB)
-    return "".join(ch for ch in clean if ch == "\n" or 0x20 <= ord(ch) != 0x7F)
+def _wrap_display_line(text: str, width: int) -> tuple[list[str], list[int]]:
+    """Hard-wrap editor cells and retain each row's logical display-column origin."""
+    rows: list[str] = []
+    starts: list[int] = []
+    parts: list[str] = []
+    row_width = 0
+    row_start = 0
+    column = 0
+    for _start, _end, display, token_width in _display_tokens(text):
+        pieces = (
+            [(display[part_start:part_end], visible_width(display[part_start:part_end])) for part_start, part_end in grapheme_spans(display)]
+            if token_width > width
+            else [(display, token_width)]
+        )
+        for piece, piece_width in pieces:
+            if row_width and row_width + piece_width > width:
+                rows.append("".join(parts))
+                starts.append(row_start)
+                parts.clear()
+                row_width = 0
+                row_start = column
+            parts.append(piece)
+            row_width += piece_width
+            column += piece_width
+            if row_width >= width:
+                rows.append("".join(parts))
+                starts.append(row_start)
+                parts.clear()
+                row_width = 0
+                row_start = column
+    if parts:
+        rows.append("".join(parts))
+        starts.append(row_start)
+    elif not rows:
+        rows.append("")
+        starts.append(0)
+    elif row_start == column:
+        rows.append("")
+        starts.append(column)
+    return rows, starts
 
 
 class Composer:
@@ -166,12 +249,18 @@ class Composer:
         width: int,
         placeholder: str = "",
         max_height: int = 10,
+        style: str = "band",
+        gutter: str = "prompt",
+        padding: str = "normal",
         clock: Callable[[], float] | None = None,
     ) -> None:
         self._theme = theme
         self._width = max(1, width)
         self._placeholder = placeholder
         self._max_height = max(1, max_height)
+        self._style = style
+        self._gutter = gutter
+        self._padding = padding
         self._clock = time.monotonic if clock is None else clock
         self._text = ""
         self._cursor = 0
@@ -180,10 +269,8 @@ class Composer:
         self._history_index: int | None = None
         self._draft = ""
         self._last_interrupt = float("-inf")
-        # ``_cursor_glyph`` reads this for the disabled composer's liveness
-        # frame. Nothing advances it: the spinner is the app's, not the editor's.
-        self._spinner_frame = 0
         self._scroll = 0
+        self._cursor_position: tuple[int, int] | None = None
 
     # -- accessors ---------------------------------------------------------
 
@@ -193,12 +280,43 @@ class Composer:
         return self._text
 
     @property
+    def cursor_position(self) -> tuple[int, int] | None:
+        """Native cursor location in the most recently rendered composer frame."""
+        return self._cursor_position
+
+    def set_appearance(self, *, theme: Theme, style: str, gutter: str, padding: str) -> None:
+        self._theme = theme
+        self._style = style
+        self._gutter = gutter
+        self._padding = padding
+        self._cursor_position = None
+
+    @property
     def history(self) -> tuple[str, ...]:
         """The bounded submitted-prompt history, oldest first."""
         return tuple(self._history)
 
+    def set_max_height(self, height: int) -> None:
+        self._max_height = max(1, height)
+
     def set_width(self, width: int) -> None:
         self._width = max(1, width)
+
+    def status_width(self) -> int:
+        """Width reserved for the single app-owned statusline row."""
+        frame = _FRAMES[self._style]
+        inset = 2 if frame.sides or frame.status_dock == "band" else 1 if frame.sidebar else 0
+        return max(1, self._width - inset)
+
+    def input_height(self, terminal_height: int, *, status_visible: bool = True) -> int:
+        """Input capacity after fixed frame, padding, and status-dock rows."""
+        frame = _FRAMES[self._style]
+        fixed = int(frame.top_rule) + int(frame.bottom_rule)
+        if self._padding == "normal":
+            fixed += 2
+        if status_visible:
+            fixed += 1
+        return max(1, min(10, terminal_height - fixed))
 
     def clear(self) -> None:
         """Drop the draft and any history browsing state."""
@@ -222,6 +340,7 @@ class Composer:
     # -- editing primitives ------------------------------------------------
 
     def _insert(self, text: str) -> None:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
         if not text:
             return
         self._text = self._text[: self._cursor] + text + self._text[self._cursor :]
@@ -241,31 +360,30 @@ class Composer:
         start, _ = self._bounds()
         if start == 0:
             return
-        column = self._cursor - start
+        column = _display_width(self._text[start : self._cursor])
         previous_end = start - 1
         previous_start = self._text.rfind("\n", 0, previous_end) + 1
-        self._cursor = min(previous_start + column, previous_end)
+        self._cursor = _offset_at_cell(self._text, previous_start, previous_end, column)
 
     def _cursor_down(self) -> None:
         start, end = self._bounds()
         if end == len(self._text):
             return
-        column = self._cursor - start
+        column = _display_width(self._text[start : self._cursor])
         next_start = end + 1
         next_end = self._text.find("\n", next_start)
         if next_end == -1:
             next_end = len(self._text)
-        self._cursor = min(next_start + column, next_end)
+        self._cursor = _offset_at_cell(self._text, next_start, next_end, column)
 
     # -- history -----------------------------------------------------------
 
     def _push_history(self, text: str) -> None:
-        entry = text.strip()
-        if not entry:
+        if not text.strip():
             return
-        if self._history and self._history[-1] == entry:
+        if self._history and self._history[-1] == text:
             return
-        self._history.append(entry)
+        self._history.append(text)
         if len(self._history) > _HISTORY_DEPTH:
             del self._history[0]
 
@@ -311,16 +429,14 @@ class Composer:
         if name == "enter":
             return self._submit()
         if name == "paste":
-            self._insert(_sanitize_paste(key.text))
+            self._insert(key.text)
             return ComposerOutcome()
 
         if name == "left":
-            if self._cursor > 0:
-                self._cursor -= 1
+            self._cursor = _previous_boundary(self._text, self._cursor)
             return ComposerOutcome()
         if name == "right":
-            if self._cursor < len(self._text):
-                self._cursor += 1
+            self._cursor = _next_boundary(self._text, self._cursor)
             return ComposerOutcome()
         if name == "up":
             if self._history_index is not None or self._bounds()[0] == 0:
@@ -343,32 +459,34 @@ class Composer:
             self._cursor = end
             return ComposerOutcome()
         if name in _WORD_LEFT_KEYS:
-            self._cursor = _word_left(self._text, self._cursor)
+            self._cursor = _snap_left(self._text, _word_left(self._text, self._cursor))
             return ComposerOutcome()
         if name in _WORD_RIGHT_KEYS:
-            self._cursor = _word_right(self._text, self._cursor)
+            self._cursor = _snap_right(self._text, _word_right(self._text, self._cursor))
             return ComposerOutcome()
 
         if name == "backspace":
             if self._cursor > 0:
-                self._text = self._text[: self._cursor - 1] + self._text[self._cursor :]
-                self._cursor -= 1
+                target = _previous_boundary(self._text, self._cursor)
+                self._text = self._text[:target] + self._text[self._cursor :]
+                self._cursor = target
                 self._edited()
             return ComposerOutcome()
         if name in ("delete", "ctrl+d"):
             if self._cursor < len(self._text):
-                self._text = self._text[: self._cursor] + self._text[self._cursor + 1 :]
+                target = _next_boundary(self._text, self._cursor)
+                self._text = self._text[: self._cursor] + self._text[target:]
                 self._edited()
             return ComposerOutcome()
         if name in _DELETE_WORD_BACK_KEYS:
-            target = _word_left(self._text, self._cursor)
+            target = _snap_left(self._text, _word_left(self._text, self._cursor))
             if target != self._cursor:
                 self._text = self._text[:target] + self._text[self._cursor :]
                 self._cursor = target
                 self._edited()
             return ComposerOutcome()
         if name in _DELETE_WORD_FORWARD_KEYS:
-            target = _word_right(self._text, self._cursor)
+            target = _snap_right(self._text, _word_right(self._text, self._cursor))
             if target != self._cursor:
                 self._text = self._text[: self._cursor] + self._text[target:]
                 self._edited()
@@ -409,79 +527,112 @@ class Composer:
     # -- rendering ---------------------------------------------------------
 
     def _prompt_gutter(self) -> str:
-        """The ``band`` shape's ``╰─ `` cue (a literal, not a preset glyph)."""
-        return _PROMPT_GUTTER
-
-    def _cursor_glyph(self) -> str:
-        """The end-of-line caret: omp ``symbols.inputCursor``, never ``nav.cursor``.
-
-        A disabled composer shows the liveness spinner instead (the turn owns the
-        keyboard, and the caret means nothing while it does).
-        """
-        if not self._enabled:
-            frames = self._theme.spinner_frames("status")
-            if frames:
-                return self._theme.fg("accent", frames[self._spinner_frame % len(frames)])
-        symbol = self._theme.input_cursor()
-        return self._theme.fg("accent", symbol) if symbol else ""
-
-    def _decorate_cursor(self, row: str, cell: int, row_width: int, layout_width: int) -> str:
-        """Place the caret inside one content row (omp ``editor.ts:1434-1483``).
-
-        Mid-row the caret is the grapheme under it in reverse video; at
-        end-of-line it is the thin ``inputCursor`` glyph. A row with no spare
-        cell borrows its last grapheme -- underlined, so insertion after the last
-        character stays distinct from insertion before it (``editor.ts:1167-1212``).
-        """
-        if cell < row_width:
-            index = _index_at_cell(row, cell)
-            return row[:index] + "\x1b[7m" + row[index] + "\x1b[0m" + row[index + 1 :]
-        glyph = self._cursor_glyph()
-        if row_width + visible_width(glyph) <= layout_width:
-            return row + glyph
-        if not row:
-            return clamp_row(glyph, layout_width)
-        # Row is full: borrow the cells of its last grapheme, underlined (not
-        # reverse video) so insertion after the last character stays visually
-        # distinct from insertion before it -- omp's
-        # ``#renderEndOfLineCursorAtWidthLimit`` (``editor.ts:1167-1212``).
-        index = _index_at_cell(row, row_width - 1)
-        return row[:index] + "\x1b[4m" + row[index:] + "\x1b[0m"
+        return f"{self._theme.symbol('nav.cursor')} " if self._gutter == "prompt" else ""
 
     def _empty_content(self, layout_width: int) -> str:
-        """The empty-draft row: caret at the insertion point, placeholder beside it.
-
-        omp keeps the caret first and paints the placeholder flush right,
-        separated by at least ``PLACEHOLDER_MIN_GAP`` cells, and drops the
-        placeholder when the gap cannot be honoured (``editor.ts:1312-1319``).
-        """
-        glyph = self._cursor_glyph()
-        if not self._placeholder:
-            return clamp_row(glyph, layout_width)
-        caret_width = visible_width(glyph)
-        gap = layout_width - caret_width - visible_width(self._placeholder)
-        if gap < _PLACEHOLDER_MIN_GAP:
-            return clamp_row(glyph, layout_width)
-        return glyph + " " * gap + self._theme.fg("dim", self._placeholder)
+        return clamp_row(self._theme.fg("dim", self._placeholder), layout_width) if self._placeholder else ""
 
     def _input_row(self, gutter: str, content: str, layout_width: int, width: int) -> str:
+        frame = _FRAMES[self._style]
+        vertical = self._theme.symbol("boxRound.vertical") or "|"
         pad = " " * max(0, layout_width - visible_width(content))
-        gutter_cell = self._theme.fg("border", gutter) if gutter else ""
-        return clamp_row(gutter_cell + content + pad, width)
+        parts = []
+        if frame.sides or frame.sidebar:
+            parts.append(self._theme.fg("border", vertical))
+        elif frame.rail:
+            parts.append(self._theme.fg("accent", vertical))
+        if gutter:
+            parts.append(self._theme.fg("border", gutter))
+        if frame.sidebar:
+            parts.append(self._theme.fg("border", vertical))
+        parts.append(content + pad)
+        if frame.sides:
+            parts.append(self._theme.fg("border", vertical))
+        return clamp_row("".join(parts), width)
 
-    def _input_rows(self) -> list[str]:
-        width = self._width
+    def _horizontal_rule(self, *, corners: bool = False) -> str:
+        horizontal = self._theme.symbol("boxRound.horizontal") or "-"
+        if corners and self._width >= 2:
+            line = self._theme.symbol("boxRound.topLeft") + horizontal * (self._width - 2) + self._theme.symbol("boxRound.topRight")
+        else:
+            line = horizontal * self._width
+        return clamp_row(self._theme.fg("border", line), self._width)
+
+    def _status_row(self, status: str) -> str | None:
+        if not status:
+            return None
+        frame = _FRAMES[self._style]
+        width = self.status_width()
+        vertical = self._theme.symbol("boxRound.vertical") or "|"
+        row = clamp_row(status, width)
+        if frame.status_dock == "band":
+            row += " " * max(0, width - visible_width(row))
+            row = vertical + row + vertical
+            return clamp_row(row, self._width)
+        if frame.sides:
+            row = self._theme.fg("border", vertical) + row + self._theme.fg("border", vertical)
+        elif frame.sidebar:
+            row = self._theme.fg("border", vertical) + row
+        return clamp_row(row, self._width)
+
+    def _style_rows(self, rows: list[str], status: str) -> list[str]:
+        frame = _FRAMES[self._style]
+        status_row = self._status_row(status)
+        padded = self._padding == "normal"
+        vertical = self._theme.symbol("boxRound.vertical") or "|"
+        padding_row = self._theme.fg("border", vertical + " " * max(0, self._width - 2) + vertical) if frame.sides else ""
+        output: list[str] = []
+        if frame.top_rule:
+            output.append(self._horizontal_rule(corners=frame.sides))
+        if padded:
+            output.append(padding_row)
+        if status_row is not None and frame.status_dock != "bottom":
+            output.append(status_row)
+        input_start = len(output)
+        output.extend(rows)
+        if status_row is not None and frame.status_dock == "bottom":
+            output.append(status_row)
+        if padded:
+            output.append(padding_row)
+        if frame.bottom_rule:
+            output.append(
+                clamp_row(
+                    self._theme.fg(
+                        "border",
+                        self._theme.symbol("boxRound.bottomLeft")
+                        + (self._theme.symbol("boxRound.horizontal") or "-") * max(0, self._width - 2)
+                        + self._theme.symbol("boxRound.bottomRight"),
+                    ),
+                    self._width,
+                )
+                if frame.sides
+                else self._horizontal_rule()
+            )
+        if frame.status_dock == "band" and status_row is None:
+            output.append(self._horizontal_rule())
+        if self._cursor_position is not None:
+            row, column = self._cursor_position
+            inset = int(frame.sides or frame.sidebar or frame.rail) + int(frame.sidebar)
+            self._cursor_position = row + input_start, min(self._width - 1, column + inset)
+        return [clamp_row(row, self._width) for row in output]
+
+    def _input_rows(self, status: str) -> list[str]:
+        frame = _FRAMES[self._style]
+        inset = int(frame.sides) * 2 + int(frame.sidebar) * 2 + int(frame.rail)
+        width = max(1, self._width - inset)
         gutter = self._prompt_gutter()
-        gutter_width = min(visible_width(gutter), width)
+        gutter_width = min(visible_width(gutter), max(0, width - 2))
         if gutter_width <= 0:
             first_gutter = continuation = ""
         else:
             first_gutter = clamp_row(gutter, gutter_width)
             continuation = " " * gutter_width
-        layout_width = max(1, width - gutter_width)
+        layout_width = max(2, width - gutter_width)
 
         if self._text == "":
-            return [self._input_row(first_gutter, self._empty_content(layout_width), layout_width, width)]
+            self._cursor_position = (0, gutter_width) if self._enabled else None
+            row = self._input_row(first_gutter, self._empty_content(layout_width), layout_width, self._width)
+            return self._style_rows([row], status)
 
         lines = self._text.split("\n")
         offsets: list[int] = []
@@ -492,27 +643,14 @@ class Composer:
 
         line_index = self._text.count("\n", 0, self._cursor)
         local = self._cursor - offsets[line_index]
-        cell = visible_width(lines[line_index][:local])
+        cell = _display_width(lines[line_index][:local])
 
-        wrapped = [wrap_row(line, layout_width) or [""] for line in lines]
-        widths = [[visible_width(row) for row in segment] for segment in wrapped]
-
-        cursor_row = 0
-        cursor_cell = 0
-        used = 0
-        for index, row_width in enumerate(widths[line_index]):
-            if cell <= used + row_width:
-                cursor_row = index
-                cursor_cell = cell - used
-                break
-            used += row_width
-        else:
-            cursor_row = len(widths[line_index]) - 1
-            cursor_cell = widths[line_index][-1]
-
-        flat = [(line, row) for line, segment in enumerate(wrapped) for row in range(len(segment))]
-        cursor_flat = sum(len(segment) for segment in widths[:line_index]) + cursor_row
-
+        wrapped = [_wrap_display_line(line, layout_width) for line in lines]
+        _current_rows, current_starts = wrapped[line_index]
+        cursor_row = bisect_right(current_starts, cell) - 1
+        cursor_cell = cell - current_starts[cursor_row]
+        flat = [(line, row) for line, (segment, _starts) in enumerate(wrapped) for row in range(len(segment))]
+        cursor_flat = sum(len(segment) for segment, _starts in wrapped[:line_index]) + cursor_row
         visible_height = max(1, self._max_height)
         total = len(flat)
         if total <= visible_height:
@@ -526,13 +664,15 @@ class Composer:
 
         rows: list[str] = []
         for visible_index, (li, ri) in enumerate(flat[self._scroll : self._scroll + visible_height]):
-            text = wrapped[li][ri]
-            if (li, ri) == (line_index, cursor_row):
-                text = self._decorate_cursor(text, cursor_cell, widths[li][ri], layout_width)
+            text = wrapped[li][0][ri]
             gutter_text = first_gutter if visible_index == 0 else continuation
-            rows.append(self._input_row(gutter_text, text, layout_width, width))
-        return rows
+            rows.append(self._input_row(gutter_text, text, layout_width, self._width))
+        visible_cursor = cursor_flat - self._scroll
+        self._cursor_position = (
+            (visible_cursor, min(width - 1, gutter_width + cursor_cell)) if self._enabled and 0 <= visible_cursor < len(rows) else None
+        )
+        return self._style_rows(rows, status)
 
-    def render(self) -> Sequence[str]:
-        """Composer rows: the visible input rows, wrapped to <= width."""
-        return self._input_rows()
+    def render(self, status: str = "") -> Sequence[str]:
+        """Compose one actual status dock, frame, visible input rows, and cursor."""
+        return self._input_rows(status)

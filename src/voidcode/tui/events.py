@@ -223,6 +223,23 @@ def _tool_detail_lines(display: Mapping[str, object] | None) -> list[str]:
     return lines
 
 
+def _artifact_id(payload: Mapping[str, object]) -> str | None:
+    for key in ("artifact_id", "artifact", "artifacts", "output_artifact", "body_artifact", "error_artifact", "source_artifact"):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            value = value.get("artifact_id")
+        if isinstance(value, str) and value:
+            return value
+    artifacts = payload.get("artifacts")
+    if isinstance(artifacts, Sequence) and not isinstance(artifacts, str):
+        for artifact in artifacts:
+            if isinstance(artifact, Mapping):
+                value = artifact.get("artifact_id")
+                if isinstance(value, str) and value:
+                    return value
+    return None
+
+
 def _progress_lines(streams: Mapping[str, Sequence[str]]) -> list[str]:
     """``_tool_progress_renderable``: ``└ <stream>`` followed by the buffered output."""
     lines: list[str] = []
@@ -533,7 +550,7 @@ class SessionView:
     def _tool_block(self, tool_call_id: str, tool_name: str) -> ToolBlock:
         block = self._tool_blocks.get(tool_call_id)
         if block is None:
-            block = ToolBlock(tool=tool_name, settled=False)
+            block = ToolBlock(tool=tool_name, tool_call_id=tool_call_id, settled=False)
             self._tool_blocks[tool_call_id] = block
             self._transcript.add(block)
         return block
@@ -618,12 +635,22 @@ class SessionView:
             self._transcript.add(ToolBlock(tool=tool_name, title=title, summary=summary, body=body, language=language, state=state))
             return True
         block = self._tool_block(tool_call_id, tool_name)
+        artifact_id = _artifact_id(payload)
         block.title = title
         block.summary = summary
         block.body = body
         block.language = language
         block.state = state
         block.streaming = False
+        block.tool_call_id = tool_call_id
+        block.session_id = self._session_id
+        block.artifact_id = artifact_id
+        block.detail_available = bool(
+            artifact_id
+            or payload.get("truncated") is True
+            or payload.get("public_projection_truncated") is True
+            or payload.get("data_truncated") is True
+        )
         block.settled = True
         return True
 

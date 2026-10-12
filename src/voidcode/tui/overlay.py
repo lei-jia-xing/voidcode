@@ -23,19 +23,20 @@ from enum import StrEnum
 from typing import Protocol
 
 from .keys import Key
-from .term import clamp_row, visible_width, wrap_row
+from .term import clamp_row, escape_terminal_controls, visible_width, wrap_row
 from .theme import Theme, resolve_theme
 from .transcript import short_session_id
 
 __all__ = [
     "ApprovalOverlay",
+    "HelpOverlay",
     "Overlay",
     "OverlayOutcome",
     "OverlayOutcomeKind",
     "PromptHistoryOverlay",
     "QuestionOverlay",
-    "SessionPickerOverlay",
-    "TreeSelectorOverlay",
+    "AppearanceOverlay",
+    "ToolArtifactOverlay",
 ]
 
 
@@ -79,8 +80,16 @@ class Overlay(Protocol):
         """The overlay's own rows, each at most ``width`` cells wide."""
         ...
 
+    def viewport(self, width: int, height: int, /) -> list[str]:
+        """The rows visible at the current terminal geometry."""
+        ...
+
     def handle_key(self, key: Key, /) -> OverlayOutcome:
         """Consume one decoded key."""
+        ...
+
+    def cursor_position(self, width: int, /) -> tuple[int, int] | None:
+        """Optional native editable cursor in overlay-local coordinates."""
         ...
 
     def wants_fullscreen(self, width: int, height: int, /) -> bool:
@@ -114,6 +123,25 @@ class _Base:
     def __init__(self, theme: Theme | None) -> None:
         self._theme = theme if theme is not None else _default_theme()
 
+    def cursor_position(self, width: int) -> tuple[int, int] | None:
+        del width
+        return None
+
+    def render(self, width: int) -> Sequence[str]:
+        raise NotImplementedError
+
+    def viewport(self, width: int, height: int) -> list[str]:
+        """Keep panel heading and controls visible within the terminal height."""
+        rows = list(self.render(width))
+        if len(rows) <= height or height < 4:
+            return rows
+        body = rows[1:-1]
+        slots = height - 2
+        if slots < 2:
+            return [rows[0], *body[:slots], rows[-1]][:height]
+        middle = body[1:-1]
+        return [rows[0], body[0], *middle[: slots - 2], body[-1], rows[-1]]
+
     # -- styling -----------------------------------------------------------
 
     def _fg(self, token: str, text: str) -> str:
@@ -145,6 +173,64 @@ class _Base:
             rows.append(border.fg("border", "│") + pad + content + filler + pad + border.fg("border", "│"))
         rows.append(_bottom_border(width, border))
         return [clamp_row(row, width) for row in rows]
+
+
+class HelpOverlay(_Base):
+    """Read-only help for actual key bindings and runtime-owned actions."""
+
+    __slots__ = ("_bindings", "_scroll", "_settings")
+
+    def __init__(self, theme: Theme | None, bindings: Mapping[str, str], settings: Sequence[str] = ()) -> None:
+        super().__init__(theme)
+        self._bindings = bindings
+        self._settings = tuple(settings)
+        self._scroll = 0
+
+    def render(self, width: int) -> Sequence[str]:
+        body = [self._fg("text", f"{key.upper()}  {action}") for action, key in sorted(self._bindings.items(), key=lambda item: item[1])]
+        body.extend(self._fg("dim", setting) for setting in self._settings)
+        body.extend(
+            (
+                self._fg("text", "Esc  Cancel the active turn or close this view"),
+                self._fg("text", "Enter  Submit; while running, queue steering"),
+                self._fg("text", "Approval target, reason, and actions remain visible"),
+                _hint("Press Esc to close", self._theme),
+            )
+        )
+        return self._panel("VoidCode Help", body, width)
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        if key.name == "escape":
+            return _CANCELLED
+        if key.name in {"up", "down", "pageUp", "pageDown"}:
+            delta = -1 if key.name in {"up", "pageUp"} else 1
+            self._scroll = max(0, self._scroll + delta * (10 if key.name.startswith("page") else 1))
+        return _PENDING
+
+    def viewport(self, width: int, height: int) -> list[str]:
+        capacity = max(0, height - 2)
+        if capacity == 0:
+            return []
+        primary = list(self._settings[:2])
+        browsable = [
+            *(f"{key.upper()}  {action}" for action, key in sorted(self._bindings.items(), key=lambda item: item[1])),
+            *self._settings[2:],
+            "Esc  Cancel the active turn or close this view",
+            "Enter  Submit; while running, queue steering",
+            "Approval target, reason, and actions remain visible",
+        ]
+        footer = _hint("↑↓ · Esc close" if _body_width(width) <= 16 else "↑/↓ scroll · Esc close", self._theme)
+        scroll_slots = max(0, capacity - len(primary) - 1)
+        self._scroll = min(self._scroll, max(0, len(browsable) - scroll_slots))
+        body = [
+            *(_hint(setting, self._theme) for setting in primary),
+            *(self._fg("text", line) for line in browsable[self._scroll : self._scroll + scroll_slots]),
+            footer,
+        ]
+        return self._panel("VoidCode Help", body[:capacity], width)
+
+    def wants_fullscreen(self, width: int, height: int) -> bool:
+        return len(self.render(width)) > height
 
 
 def _top_border(title: str, width: int, theme: Theme) -> str:
@@ -205,7 +291,7 @@ class ApprovalOverlay(_Base):
     DONE payload: ``"allow" | "deny"`` (a string).
     """
 
-    __slots__ = ("_arguments", "_reason", "_target", "_tool")
+    __slots__ = ("_detail_scroll", "_arguments", "_reason", "_target", "_tool")
 
     def __init__(
         self,
@@ -221,6 +307,7 @@ class ApprovalOverlay(_Base):
         self._target = target
         self._reason = reason
         self._arguments = arguments
+        self._detail_scroll = 0
 
     def render(self, width: int) -> list[str]:
         avail = _body_width(width)
@@ -249,6 +336,10 @@ class ApprovalOverlay(_Base):
         return self._panel(f"Approve {tool}", body, width)
 
     def handle_key(self, key: Key) -> OverlayOutcome:
+        if key.name in {"up", "down", "pageUp", "pageDown"}:
+            delta = -1 if key.name in {"up", "pageUp"} else 1
+            self._detail_scroll = max(0, self._detail_scroll + delta * (10 if key.name.startswith("page") else 1))
+            return _PENDING
         if key.name == "y":
             return _done("allow")
         if key.name in ("n", "escape"):
@@ -257,6 +348,30 @@ class ApprovalOverlay(_Base):
 
     def wants_fullscreen(self, width: int, height: int) -> bool:
         return len(self.render(width)) > height
+
+    def viewport(self, width: int, height: int) -> list[str]:
+        avail = _body_width(width)
+        capacity = max(0, height - 2)
+        if avail <= 0 or capacity == 0:
+            return []
+        theme = self._theme
+        details: list[str] = []
+        if self._target:
+            details.extend(self._wrap(f"Target: {escape_terminal_controls(self._target)}", avail))
+        if self._reason:
+            details.extend(self._wrap(f"Why: {escape_terminal_controls(self._reason)}", avail))
+        if self._arguments.strip():
+            rail = theme.fg("border", theme.symbol("boxRound.vertical"))
+            for line in self._arguments.splitlines() or [""]:
+                details.extend(self._wrap(f"  {rail} {theme.fg('dim', escape_terminal_controls(line))}", avail))
+        footer = _hint("y Allow · n Deny", theme)
+        count = max(0, capacity - 1)
+        self._detail_scroll = min(self._detail_scroll, max(0, len(details) - count))
+        body = [*details[self._detail_scroll : self._detail_scroll + count], footer]
+        title = f"Approve {self._tool or 'tool call'}"
+        if visible_width(title) > width - 3:
+            title = "Approval ↑↓"
+        return self._panel(title, body, width)
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +446,7 @@ class QuestionOverlay(_Base):
     answers)`` per question, in question order.
     """
 
-    __slots__ = ("_answers", "_highlight", "_page_index", "_questions")
+    __slots__ = ("_answers", "_highlight", "_page_index", "_questions", "_review_scroll")
 
     def __init__(
         self,
@@ -343,7 +458,7 @@ class QuestionOverlay(_Base):
         self._questions = _parse_questions(list(questions))
         self._answers = [_Answer() for _ in self._questions]
         self._page_index = 0
-        self._highlight = 0
+        self._reset_view()
 
     # -- state -------------------------------------------------------------
 
@@ -357,6 +472,7 @@ class QuestionOverlay(_Base):
 
     def _reset_view(self) -> None:
         self._highlight = 0
+        self._review_scroll = 0
 
     # -- key handling ------------------------------------------------------
 
@@ -387,7 +503,10 @@ class QuestionOverlay(_Base):
     def _handle_review_key(self, key: Key) -> OverlayOutcome:
         if key.name == "enter":
             return self._submit()
-        if key.name == "left":
+        if key.name in {"up", "down", "pageUp", "pageDown"}:
+            delta = -1 if key.name in {"up", "pageUp"} else 1
+            self._review_scroll = max(0, self._review_scroll + delta * (10 if key.name.startswith("page") else 1))
+        elif key.name == "left":
             self._page_index = max(0, self._page_index - 1)
             self._reset_view()
         return _PENDING
@@ -462,6 +581,60 @@ class QuestionOverlay(_Base):
         body.append("")
         body.append(_hint(self._help_text(page), theme))
         return self._panel("Ask", body, width)
+
+    def viewport(self, width: int, height: int) -> list[str]:
+        avail = _body_width(width)
+        capacity = max(0, height - 2)
+        if avail <= 0 or capacity == 0:
+            return []
+        if not self._questions:
+            return self._panel("Ask", [_hint("No questions to answer.", self._theme)][:capacity], width)
+        theme = self._theme
+        if self._on_review:
+            lines = self._review_lines(avail)
+            if avail <= 16:
+                footer = [_hint("↑↓ scroll", theme), _hint("Enter submit", theme), _hint("Esc cancel", theme)]
+                available = max(0, capacity - len(footer))
+                self._review_scroll = min(self._review_scroll, max(0, len(lines) - available))
+                body = [*lines[self._review_scroll : self._review_scroll + available], *footer]
+            else:
+                heading = _hint("Review answers", theme)
+                footer = _hint("Enter submit · ↑/↓ scroll · ← back · Esc cancel", theme)
+                available = max(0, capacity - 2)
+                self._review_scroll = min(self._review_scroll, max(0, len(lines) - available))
+                body = [heading, *lines[self._review_scroll : self._review_scroll + available], footer]
+            return self._panel("Ask", body[:capacity], width)
+        page = self._questions[self._page_index]
+        question = clamp_row(self._bold("text", escape_terminal_controls(page.question)), avail)
+        option_rows: list[str] = []
+        for index, option in enumerate(page.options):
+            selected = option.label in self._answers[self._page_index].selected
+            cursor = theme.symbol("nav.cursor") if index == self._highlight else " "
+            if page.multiple:
+                marker = theme.symbol("checkbox.checked" if selected else "checkbox.unchecked")
+            else:
+                marker = theme.symbol("radio.selected" if selected else "radio.unselected")
+            label = option.label
+            if option.description:
+                label += f" — {option.description}"
+            row = f"{cursor} {marker} {escape_terminal_controls(label)}"
+            option_rows.append(theme.fg("accent" if index == self._highlight else "text", clamp_row(row, avail)))
+        if avail <= 16:
+            footer = (
+                (_hint("↑↓ Space toggle", theme), _hint("→next Esc cancel", theme))
+                if page.multiple
+                else (_hint("↑↓ Enter select", theme), _hint("Esc cancel", theme))
+            )
+            option_slots = max(0, capacity - 1 - len(footer))
+            start = max(0, min(self._highlight, len(option_rows) - option_slots))
+            body = [question, *option_rows[start : start + option_slots], *footer]
+        else:
+            heading = _hint(f"Q{self._page_index + 1}/{len(self._questions)} {page.header} · {'multiple' if page.multiple else 'single'}", theme)
+            footer = _hint(self._help_text(page), theme)
+            option_slots = max(0, capacity - 3)
+            start = max(0, min(self._highlight, len(option_rows) - option_slots))
+            body = [heading, question, *option_rows[start : start + option_slots], footer]
+        return self._panel("Ask", body[:capacity], width)
 
     def _tabs_row(self) -> str:
         theme = self._theme
@@ -540,9 +713,8 @@ class SessionPickerOverlay(_Base):
 
     DONE payload: the session id (``str``).
 
-    ``wants_fullscreen`` is always ``True``: omp's session selector and the
-    ``--resume`` picker are fullscreen overlays (``session-selector.ts``;
-    plan ``.omo/plans/tui-omp-research.md`` phase 4).
+    ``wants_fullscreen`` is always ``True``: the session selector uses its own
+    fullscreen viewport rather than clipping the selectable session list.
 
     ``depths`` maps a session id to its fork-forest depth; a row indents two
     spaces per level (the CLI's ``sessions tree`` convention) and a missing id
@@ -550,7 +722,7 @@ class SessionPickerOverlay(_Base):
     the bare id/title.
     """
 
-    __slots__ = ("_depths", "_filter", "_highlight", "_sessions")
+    __slots__ = ("_action", "_depths", "_filter", "_highlight", "_sessions", "_title")
 
     def __init__(
         self,
@@ -558,14 +730,19 @@ class SessionPickerOverlay(_Base):
         sessions: Sequence[tuple[str, str]],
         depths: Mapping[str, int] | None = None,
         theme: Theme | None = None,
+        title: str = "Select Session",
+        action: str = "resume",
     ) -> None:
         super().__init__(theme)
         self._sessions = tuple(sessions)
-        # Fork depth per session id (``VoidCodeRuntime.session_forest``), display
-        # only: a session absent from the map renders at depth 0.
         self._depths = dict(depths) if depths is not None else {}
         self._filter = ""
         self._highlight = 0
+        self._title = title
+        self._action = action
+
+    def cursor_position(self, width: int) -> tuple[int, int] | None:
+        return (1, min(max(0, width - 1), 4 + visible_width(escape_terminal_controls(self._filter))))
 
     def _matches(self) -> list[tuple[str, str]]:
         tokens = self._filter.lower().split()
@@ -610,7 +787,7 @@ class SessionPickerOverlay(_Base):
         matches = self._matches()
         self._highlight = min(self._highlight, max(0, len(matches) - 1))
         cursor = theme.symbol("nav.cursor")
-        body: list[str] = [theme.fg("accent", "> ") + theme.fg("text", self._filter) + theme.fg("dim", "▌")]
+        body: list[str] = [theme.fg("accent", "> ") + theme.fg("text", escape_terminal_controls(self._filter))]
         body.append("")
         if not self._sessions:
             body.append(theme.fg("warning", "No sessions found."))
@@ -626,11 +803,32 @@ class SessionPickerOverlay(_Base):
                 styled += theme.fg("dim", f"  ({short})")
                 body.extend(self._wrap(styled, avail))
         body.append("")
-        body.append(_hint("↑/↓ move · Enter resume · type to filter · Esc cancel", theme))
-        return self._panel("Select Session", body, width)
+        action = self._action
+        body.append(_hint(f"↑/↓ move · Enter {action} · type to filter · Esc cancel", theme))
+        return self._panel(self._title, body, width)
 
     def wants_fullscreen(self, _width: int, _height: int) -> bool:
         return True
+
+    def viewport(self, width: int, height: int) -> list[str]:
+        if _body_width(width) > 16 and len(self.render(width)) <= height:
+            return super().viewport(width, height)
+        capacity = max(0, height - 2)
+        if capacity == 0:
+            return []
+        matches = self._matches()
+        self._highlight = min(self._highlight, max(0, len(matches) - 1))
+        body = [self._theme.fg("accent", "> " + escape_terminal_controls(self._filter))]
+        if matches:
+            session_id, title = matches[self._highlight]
+            pointer = self._theme.symbol("nav.cursor")
+            body.append(self._bold("accent", f"{pointer} {title}  ({short_session_id(session_id)})"))
+        elif self._sessions:
+            body.append(self._theme.fg("dim", "No matching sessions."))
+        else:
+            body.append(self._theme.fg("warning", "No sessions found."))
+        body.extend((_hint(f"↑↓ Enter {self._action}", self._theme), _hint("Esc cancel·type", self._theme)))
+        return self._panel(self._title, body[:capacity], width)
 
 
 #: Short, selector-width labels for the raw runtime event types (the full names
@@ -702,6 +900,9 @@ class TreeSelectorOverlay(_Base):
         self._filter = ""
         self._highlight = 0
 
+    def cursor_position(self, width: int) -> tuple[int, int] | None:
+        return (1, min(max(0, width - 1), 4 + visible_width(escape_terminal_controls(self._filter))))
+
     def _matches(self) -> list[SessionEntryLike]:
         tokens = self._filter.lower().split()
         if not tokens:
@@ -745,7 +946,7 @@ class TreeSelectorOverlay(_Base):
         matches = self._matches()
         self._highlight = min(self._highlight, max(0, len(matches) - 1))
         cursor = theme.symbol("nav.cursor")
-        body: list[str] = [theme.fg("accent", "> ") + theme.fg("text", self._filter) + theme.fg("dim", "▌")]
+        body: list[str] = [theme.fg("accent", "> ") + theme.fg("text", escape_terminal_controls(self._filter))]
         body.append("")
         if not self._entries:
             body.append(theme.fg("warning", "No entries in this session."))
@@ -766,6 +967,28 @@ class TreeSelectorOverlay(_Base):
     def wants_fullscreen(self, _width: int, _height: int) -> bool:
         return True
 
+    def viewport(self, width: int, height: int) -> list[str]:
+        if _body_width(width) > 16 and len(self.render(width)) <= height:
+            return super().viewport(width, height)
+        capacity = max(0, height - 2)
+        if capacity == 0:
+            return []
+        matches = self._matches()
+        self._highlight = min(self._highlight, max(0, len(matches) - 1))
+        body = [self._theme.fg("accent", "> " + escape_terminal_controls(self._filter))]
+        if matches:
+            entry = matches[self._highlight]
+            pointer = self._theme.symbol("nav.cursor") if entry.sequence == self._leaf else " "
+            text = f"{entry.sequence} {_entry_label(entry.event_type)} {entry.preview}".rstrip()
+            label = f"{pointer}  {text}" if entry.on_current_path else f"{pointer}  {text}  * abandoned"
+            body.append(self._theme.fg("text" if entry.on_current_path else "dim", clamp_row(label, _body_width(width))))
+        elif self._entries:
+            body.append(self._theme.fg("dim", "No matching entries."))
+        else:
+            body.append(self._theme.fg("warning", "No entries in this session."))
+        body.extend((_hint("↑↓ Enter select", self._theme), _hint("Esc cancel·type", self._theme)))
+        return self._panel("Session Entries", body[:capacity], width)
+
 
 class PromptHistoryOverlay(_Base):
     """Prompt-history search (``app.history.search``).
@@ -784,6 +1007,9 @@ class PromptHistoryOverlay(_Base):
         self._entries = tuple(reversed(entries))
         self._filter = ""
         self._highlight = 0
+
+    def cursor_position(self, width: int) -> tuple[int, int] | None:
+        return (1, min(max(0, width - 1), 4 + visible_width(escape_terminal_controls(self._filter))))
 
     def _matches(self) -> list[str]:
         tokens = self._filter.lower().split()
@@ -823,7 +1049,7 @@ class PromptHistoryOverlay(_Base):
         matches = self._matches()
         self._highlight = min(self._highlight, max(0, len(matches) - 1))
         cursor = theme.symbol("nav.cursor")
-        body: list[str] = [theme.fg("accent", "> ") + theme.fg("text", self._filter) + theme.fg("dim", "▌")]
+        body: list[str] = [theme.fg("accent", "> ") + theme.fg("text", escape_terminal_controls(self._filter))]
         body.append("")
         if not self._entries:
             body.append(theme.fg("warning", "No prompt history."))
@@ -841,3 +1067,205 @@ class PromptHistoryOverlay(_Base):
 
     def wants_fullscreen(self, _width: int, _height: int) -> bool:
         return len(self.render(_width)) > _height
+
+    def viewport(self, width: int, height: int) -> list[str]:
+        if _body_width(width) > 16 and len(self.render(width)) <= height:
+            return super().viewport(width, height)
+        capacity = max(0, height - 2)
+        if capacity == 0:
+            return []
+        matches = self._matches()
+        self._highlight = min(self._highlight, max(0, len(matches) - 1))
+        body = [self._theme.fg("accent", "> " + escape_terminal_controls(self._filter))]
+        if matches:
+            body.append(self._bold("accent", clamp_row(f"{self._theme.symbol('nav.cursor')} {matches[self._highlight]}", _body_width(width))))
+        elif self._entries:
+            body.append(self._theme.fg("dim", "No matching prompts."))
+        else:
+            body.append(self._theme.fg("warning", "No prompt history."))
+        body.extend((_hint("↑↓ Enter insert", self._theme), _hint("Esc cancel·type", self._theme)))
+        return self._panel("Search Prompt History", body[:capacity], width)
+
+
+class AppearanceOverlay(_Base):
+    """Temporary appearance preview with an explicit, scoped save action."""
+
+    __slots__ = ("_fields", "_notice", "_selected", "_save_scope", "_scope", "values")
+
+    def __init__(
+        self,
+        *,
+        theme: Theme,
+        choices: Mapping[str, Sequence[str]],
+        values: Mapping[str, str],
+    ) -> None:
+        super().__init__(theme)
+        self._fields = {name: tuple(options) for name, options in choices.items()}
+        self._selected = 0
+        self._save_scope = False
+        self._scope = "user"
+        self.values = dict(values)
+        self._notice = ""
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        if key.name == "escape":
+            return _CANCELLED
+        if self._save_scope:
+            if key.name in {"left", "right"}:
+                self._scope = "workspace" if self._scope == "user" else "user"
+                return _PENDING
+            if key.name == "enter":
+                return _done(("save", self._scope, dict(self.values)))
+            if key.name == "s":
+                self._save_scope = False
+                return _PENDING
+            return _PENDING
+        if key.name == "up":
+            self._selected = max(0, self._selected - 1)
+        elif key.name == "down":
+            self._selected = min(len(self._fields) - 1, self._selected + 1)
+        elif key.name in {"left", "right"}:
+            name = tuple(self._fields)[self._selected]
+            options = self._fields[name]
+            if options:
+                index = options.index(self.values[name])
+                delta = -1 if key.name == "left" else 1
+                self.values[name] = options[(index + delta) % len(options)]
+        elif key.name == "s":
+            self._save_scope = True
+        elif key.name == "enter":
+            return _done(("apply", dict(self.values)))
+        return _PENDING
+
+    def set_theme(self, theme: Theme) -> None:
+        self._theme = theme
+
+    def set_notice(self, notice: str) -> None:
+        self._notice = notice
+
+    def render(self, width: int) -> Sequence[str]:
+        body: list[str] = []
+        if self._save_scope:
+            body.append(self._theme.fg("text", "Save appearance to:"))
+            for scope in ("user", "workspace"):
+                marker = self._theme.symbol("nav.cursor") if scope == self._scope else " "
+                body.append(self._theme.fg("accent" if scope == self._scope else "text", f"{marker} {scope}"))
+            body.append(_hint("←/→ choose · Enter save · Esc discard preview", self._theme))
+            return self._panel("Save Appearance", body, width)
+        for index, name in enumerate(self._fields):
+            marker = self._theme.symbol("nav.cursor") if index == self._selected else " "
+            line = f"{marker} {name}: {self.values[name]}"
+            body.append(self._theme.fg("accent" if index == self._selected else "text", line))
+        if self._notice:
+            body.append(_hint(self._notice, self._theme))
+        body.extend(("", _hint("↑/↓ select · ←/→ preview · Enter apply · S save · Esc rollback", self._theme)))
+        return self._panel("Appearance", body, width)
+
+    def wants_fullscreen(self, width: int, height: int) -> bool:
+        return len(self.render(width)) > height
+
+    def viewport(self, width: int, height: int) -> list[str]:
+        capacity = max(0, height - 2)
+        avail = _body_width(width)
+        if capacity == 0:
+            return []
+        if self._save_scope:
+            if avail <= 16:
+                marker = self._theme.symbol("nav.cursor")
+                body = (
+                    self._theme.fg("accent", f"{marker} {self._scope}"),
+                    _hint("←→ choose", self._theme),
+                    _hint("Enter save", self._theme),
+                    _hint("Esc discard", self._theme),
+                )
+                return self._panel("Save Appearance", body[:capacity], width)
+            return super().viewport(width, height)
+        fields = tuple(self._fields)
+        if not fields:
+            return self._panel("Appearance", [], width)
+        notice_rows = [_hint(self._notice, self._theme)] if self._notice else []
+        if avail <= 16 or len(self.render(width)) > height:
+            footer = (
+                _hint("↑↓ select ←→", self._theme),
+                _hint("Enter apply", self._theme),
+                _hint("S save Esc back", self._theme),
+            )
+        else:
+            footer = (_hint("↑/↓ select · ←/→ preview · Enter apply · S save · Esc rollback", self._theme),)
+        field_slots = max(0, capacity - len(footer) - len(notice_rows))
+        start = max(0, min(self._selected, len(fields) - field_slots))
+        body = []
+        for index in range(start, min(len(fields), start + field_slots)):
+            name = fields[index]
+            marker = self._theme.symbol("nav.cursor") if index == self._selected else " "
+            body.append(self._theme.fg("accent" if index == self._selected else "text", f"{marker} {name}: {self.values[name]}"))
+        body.extend(notice_rows)
+        body.extend(footer)
+        return self._panel("Appearance", body[:capacity], width)
+
+
+class ToolArtifactOverlay(_Base):
+    """Bounded, read-only page of a runtime-authorized tool artifact."""
+
+    __slots__ = ("_content", "_has_next", "_has_previous", "_page", "_title")
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        content: str,
+        page: int,
+        has_previous: bool,
+        has_next: bool,
+        theme: Theme | None = None,
+    ) -> None:
+        super().__init__(theme)
+        self._title = title
+        self._content = content
+        self._page = page
+        self._has_previous = has_previous
+        self._has_next = has_next
+
+    def handle_key(self, key: Key) -> OverlayOutcome:
+        if key.name == "escape":
+            return _CANCELLED
+        if key.name == "pageDown" and self._has_next:
+            return _done("next")
+        if key.name == "pageUp" and self._has_previous:
+            return _done("previous")
+        return _PENDING
+
+    def render(self, width: int) -> Sequence[str]:
+        avail = _body_width(width)
+        body: list[str] = []
+        for line in self._content.splitlines() or [""]:
+            body.extend(self._wrap(line, avail))
+        navigation = []
+        if self._has_previous:
+            navigation.append("PageUp previous")
+        if self._has_next:
+            navigation.append("PageDown next")
+        navigation.append("Esc close")
+        body.extend(("", _hint(f"Page {self._page} · " + " · ".join(navigation), self._theme)))
+        return self._panel(self._title, body, width)
+
+    def wants_fullscreen(self, _width: int, _height: int) -> bool:
+        return True
+
+    def viewport(self, width: int, height: int) -> list[str]:
+        if _body_width(width) > 16:
+            return super().viewport(width, height)
+        capacity = max(0, height - 2)
+        if capacity == 0:
+            return []
+        footer = []
+        if self._has_previous:
+            footer.append(_hint("PageUp previous", self._theme))
+        if self._has_next:
+            footer.append(_hint("PageDown next", self._theme))
+        footer.append(_hint("Esc close", self._theme))
+        content: list[str] = []
+        for line in self._content.splitlines() or [""]:
+            content.extend(self._wrap(line, _body_width(width)))
+        body = [*content[: max(0, capacity - len(footer))], *footer]
+        return self._panel(self._title, body[:capacity], width)

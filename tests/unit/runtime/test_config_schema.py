@@ -658,7 +658,7 @@ def test_runtime_config_schema_accepts_null_wherever_the_loader_treats_null_as_u
             RuntimeTuiConfig,
             {},
             set(),
-            set(),
+            {"source"},
         ),
         # RuntimeHooksConfig.format_on_write is a derived alias populated from
         # formatter.format_on_write/enabled, so it is not a hooks-level config key.

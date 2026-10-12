@@ -27,7 +27,6 @@ class ToolInputEvent:
     tool: ToolDefinition
     sequence: int
     session_status: str
-    mode: str
     read_only: bool
     is_resume: bool = False
 

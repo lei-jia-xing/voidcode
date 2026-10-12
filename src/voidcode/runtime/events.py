@@ -337,7 +337,6 @@ def runtime_policy_observability_payload(
     return {
         "schema_version": snapshot.get("schema_version"),
         "policy_version": snapshot.get("policy_version"),
-        "mode": snapshot.get("mode"),
         "read_only": snapshot.get("read_only"),
         "agent_preset": snapshot.get("agent_preset"),
         "agent_manifest_id": snapshot.get("agent_manifest_id"),

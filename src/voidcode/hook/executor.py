@@ -64,7 +64,6 @@ class HookExecutionOutcome:
 
 @dataclass(frozen=True, slots=True)
 class HookExecutionPolicy:
-    mode: str = "normal"
     read_only: bool = False
 
 
@@ -383,7 +382,6 @@ def _hook_policy_payload(
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "outcome": decision.outcome,
-        "mode": policy.mode,
         "read_only": policy.read_only,
     }
     if decision.reason is not None:

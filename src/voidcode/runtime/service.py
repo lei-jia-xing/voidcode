@@ -264,7 +264,6 @@ from .hook_runtime import (
 from .lsp import LspManager, LspManagerState, LspRequestResult, build_lsp_manager
 from .mcp import McpManager, build_mcp_manager
 from .mcp_tool_cache import McpToolCatalogCache
-from .mode import MODE_DEFINITIONS, resolve_mode, runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .paths import mcp_tool_catalog_cache_path, provider_catalog_cache_path
 from .permission import (
     ApprovalMode,
@@ -272,6 +271,7 @@ from .permission import (
     PermissionPolicy,
     PermissionResolution,
     resolve_permission,
+    runtime_read_only_from_metadata,
 )
 from .permission_context import RuntimePermissionContextResolver
 from .permission_engine import PermissionEngine
@@ -2270,7 +2270,7 @@ class VoidCodeRuntime(RuntimeSurface):
         effective_config = self.runtime_config_for_request(request)
         if self._turn_producer_override is None:
             self._validate_provider_execution_ready(effective_config)
-        existing_owner_session = self._load_existing_session_if_present(session_id=request.session_id) if request.session_id is not None else None
+        existing_session = self._load_existing_session_if_present(session_id=resolved_session_id)
         raw_composition_ref = request.metadata.get("composition_ref")
         raw_task_id = request.metadata.get("background_task_id")
         background_dispatch = request.metadata.get("background_run") is True or raw_task_id is not None
@@ -2286,9 +2286,9 @@ class VoidCodeRuntime(RuntimeSurface):
                 raise ValueError("background task request composition reference does not match its owner")
         elif raw_composition_ref is not None:
             raise ValueError("only a background task may supply a request composition reference")
-        if existing_owner_session is not None:
-            frozen_composition = self._admit_existing_session_composition(existing_owner_session.session.session.id)
-            composition_ref = composition_ref_from_session_metadata(existing_owner_session.session.metadata)
+        if existing_session is not None:
+            frozen_composition = self._admit_existing_session_composition(existing_session.session.session.id)
+            composition_ref = composition_ref_from_session_metadata(existing_session.session.metadata)
             if task_composition_ref is not None and task_composition_ref != composition_ref:
                 raise ValueError("background task and session composition references disagree")
         elif task_composition_ref is not None:
@@ -2302,21 +2302,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 owner=SessionCompositionOwner(kind="session", session_id=resolved_session_id),
             )
         request_metadata = self._fresh_request_metadata(request.metadata)
-        # A structured command payload's declared mode (frontmatter or replay)
-        # takes precedence over top-level request metadata mode.
-        raw_command = request_metadata.get("command")
-        if isinstance(raw_command, dict):
-            command_mode = raw_command.get("mode")
-            if isinstance(command_mode, str):
-                request_metadata["mode"] = command_mode
-        existing_session = (
-            self._load_existing_session_if_present(
-                session_id=request.session_id,
-            )
-            if request.session_id is not None
-            else None
-        )
-        if existing_session is not None and request.session_id is not None:
+        if existing_session is not None:
             queued_steering = self._repositories.sessions.drain_session_messages(
                 workspace=self._workspace,
                 session_id=resolved_session_id,
@@ -4526,10 +4512,9 @@ class VoidCodeRuntime(RuntimeSurface):
         parent_metadata: dict[str, object],
     ) -> dict[str, object]:
         inherited = dict(child_metadata)
-        # Mode inheritance degenerates to read-only merging: the read-only
-        # stance (mode-derived or explicit) is the shared gate both layers
-        # consume, and the more restrictive parent stance propagates to the
-        # child through the single read_only key.
+        # A read-only parent stance is the shared gate both layers consume,
+        # and the more restrictive parent stance propagates to the child
+        # through the single read_only key.
         parent_read_only = runtime_read_only_from_metadata(parent_metadata)
         child_read_only = runtime_read_only_from_metadata(child_metadata)
         if parent_read_only or child_read_only or "read_only" in child_metadata:
@@ -4568,11 +4553,6 @@ class VoidCodeRuntime(RuntimeSurface):
         command_agent = resolution.definition.agent
         if command_agent is not None and "agent" not in normalized:
             normalized["agent"] = {"preset": command_agent}
-        command_mode = resolution.definition.mode
-        if command_mode is not None:
-            command_metadata["mode"] = command_mode
-            # Command-declared mode takes precedence over request metadata.
-            normalized["mode"] = command_mode
         normalized["command"] = command_metadata
         validated = validate_runtime_request_metadata(
             normalized,
@@ -4762,18 +4742,6 @@ class VoidCodeRuntime(RuntimeSurface):
         continuity_summary_override: str | None = None,
         continuity_summary_kind: ContinuitySummaryKind | None = None,
     ) -> RuntimeAssembledContext:
-        # Mode guidance flows through the context transform registry: resolve
-        # the effective mode once, render its guidance text, and let the
-        # registry's filtered() decide which providers run (plan declares
-        # transform_refs=("mode_guidance",)).
-        raw_read_only = session_metadata.get("read_only")
-        mode_resolution = resolve_mode(
-            runtime_mode_from_metadata(session_metadata),
-            explicit_read_only=(isinstance(raw_read_only, bool) and raw_read_only is True),
-        )
-        mode_guidance_context = ""
-        if mode_resolution.mode != "normal":
-            mode_guidance_context = MODE_DEFINITIONS[mode_resolution.mode].description
         effective_config = self.effective_runtime_config_from_metadata(session_metadata)
         if tool_registry is None:
             tool_registry = self.tool_registry_for_effective_config(
@@ -4824,13 +4792,11 @@ class VoidCodeRuntime(RuntimeSurface):
             workspace=self._workspace,
             tool_results=tool_results,
             hook_preset_context=hook_preset_context,
-            mode_guidance_context=mode_guidance_context,
             failure_policy=effective_config.context_window.context_transform_failure_policy
             if effective_config.context_window is not None
             else "warn",
             registry=self._context_transform_registry_for_agent(
                 effective_config.agent,
-                mode_transform_refs=mode_resolution.transform_refs,
                 composition_ref=comp_ref,
             ),
         )
@@ -5279,17 +5245,15 @@ class VoidCodeRuntime(RuntimeSurface):
         self,
         agent: RuntimeAgentConfig | None,
         *,
-        mode_transform_refs: tuple[str, ...] = (),
         composition_ref: CompositionRef | None = None,
     ) -> RuntimeContextTransformRegistry:
         refs = agent.context_transform_refs if agent is not None else ()
-        combined = tuple(dict.fromkeys((*refs, *mode_transform_refs)))
         registry = (
             self._activated_context_transform_registries.get(composition_ref, self._context_transform_registry)
             if composition_ref is not None
             else self._context_transform_registry
         )
-        return registry.filtered(combined)
+        return registry.filtered(refs)
 
     def tool_input_handler_registry_for_session(self, session: SessionState) -> ToolInputHandlerRegistry:
         try:

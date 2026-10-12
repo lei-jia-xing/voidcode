@@ -18,13 +18,13 @@ extension point 只能通过类型化 input/output contract 转换或校验 runt
 
 在 VoidCode 里，harness-like runtime 指的是：
 
-1. 运行时拥有 `mode` / `read_only`、权限、工具可见性、shell 安全、hooks、session event 和 delegated-task 约束的控制面。
+1. 运行时拥有显式 `read_only`、权限、工具可见性、shell 安全、hooks、session event 和 delegated-task 约束的控制面。
 2. 结构性策略在工具执行前完成，不依赖 prompt wording 充当唯一防线；prompt guidance 只解释已解析策略，不能创建、放宽或隐藏 enforcement。
 3. Shell execution retains runtime permission and timeout governance, but does not
    guess package managers, normalize commands, or inject non-interactive variables.
 4. prompt stack and observability must be replayable, explainable, and redacted; observable payloads expose only bounded fragment metadata / redacted previews, not complete prompts, skill bodies, or secret-like values.
 5. registry 只能做受控解析，不能绕开 runtime policy。
-6. 未显式选择 mode 的新请求使用当前 `normal` 默认值；runtime 不解析已移除的旧 mode 或 execution 字段。
+6. 新请求不接受已移除的 runtime mode 或 execution 字段；只读执行姿态必须通过显式 `read_only` 表达。
 
 这不意味着复制 OpenHands、Continue、Aider 或 Open Interpreter，也不意味着引入任意多智能体拓扑、插件市场、云端执行、IDE 插件执行路径，或者把 AGPL 实现代码搬进来。
 
@@ -33,7 +33,7 @@ extension point 只能通过类型化 input/output contract 转换或校验 runt
 固定优先级，从高到低如下：
 
 1. Hardcoded safety denylist and workspace/session invariants.
-2. Runtime request mode and `read_only` policy.
+2. Explicit request `read_only` policy.
 3. Parent session/delegated-task inherited constraints.
 4. Workspace/project runtime config.
 5. Agent manifest/tool allowlist.

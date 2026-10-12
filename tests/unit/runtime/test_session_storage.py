@@ -22,7 +22,7 @@ from voidcode.runtime.background.models import (
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse, UnknownSessionError
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.paths import sessions_db_path, state_home
-from voidcode.runtime.permission import PLAN_MODE_DENIAL_REASON, PendingApproval
+from voidcode.runtime.permission import READ_ONLY_DENIAL_REASON, PendingApproval
 from voidcode.runtime.question import PendingQuestion
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SCHEMA_VERSION, SessionSealedError, SqliteSessionStore
@@ -173,8 +173,7 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
 def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     metadata: dict[str, object] = {
-        "mode": "plan",
-        "read_only": False,
+        "read_only": True,
         "delegation": {"mode": "background", "subagent_type": "explore", "depth": 1},
         "prompt_stack": {
             "version": 1,
@@ -206,10 +205,9 @@ def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path)
                     "tool": "write",
                     "tool_policy": {
                         "tool": "write",
-                        "mode": "plan",
                         "read_only": True,
                         "decision": "deny",
-                        "reason": PLAN_MODE_DENIAL_REASON,
+                        "reason": READ_ONLY_DENIAL_REASON,
                     },
                 },
             ),
@@ -223,7 +221,6 @@ def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path)
     checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="policy-session")
     encoded = json.dumps(loaded.session.metadata, sort_keys=True)
 
-    assert loaded.session.metadata["mode"] == "plan"
     assert loaded.session.metadata["read_only"] is True
     assert "runtime_policy" not in loaded.session.metadata
     policy_observations = cast(dict[str, object], loaded.session.metadata["policy_observations"])
@@ -1807,6 +1804,42 @@ def _seed_running_session(store: SqliteSessionStore, workspace: Path, session_id
     )
 
 
+def test_resume_admission_advances_run_identity_on_row_and_checkpoint_atomically(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    _seed_running_session(store, tmp_path, "resume-run-id")
+    before = store.load_session(workspace=tmp_path, session_id="resume-run-id")
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="resume-run-id")
+    assert checkpoint is not None
+
+    store.advance_resume_checkpoint_run_id(
+        workspace=tmp_path,
+        session_id="resume-run-id",
+        checkpoint=checkpoint,
+        expected_session_metadata=before.session.metadata,
+        run_id="resumed-run",
+    )
+
+    after = store.load_session(workspace=tmp_path, session_id="resume-run-id")
+    updated_checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="resume-run-id")
+    assert updated_checkpoint is not None
+    after_runtime_state = after.session.metadata.get("runtime_state")
+    checkpoint_metadata = updated_checkpoint.get("session_metadata")
+    assert isinstance(after_runtime_state, dict)
+    assert isinstance(checkpoint_metadata, dict)
+    checkpoint_runtime_state = checkpoint_metadata.get("runtime_state")
+    assert isinstance(checkpoint_runtime_state, dict)
+    assert after_runtime_state.get("run_id") == "resumed-run"
+    assert checkpoint_runtime_state.get("run_id") == "resumed-run"
+    with pytest.raises(ValueError, match="session metadata changed"):
+        store.advance_resume_checkpoint_run_id(
+            workspace=tmp_path,
+            session_id="resume-run-id",
+            checkpoint=updated_checkpoint,
+            expected_session_metadata=before.session.metadata,
+            run_id="another-run",
+        )
+
+
 def test_session_storage_tree_links_sequential_appends(tmp_path: Path) -> None:
     """A first event is a root and sets the leaf; the next one follows it."""
     store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
@@ -2051,7 +2084,7 @@ def test_session_storage_save_interrupted_checkpoint_creates_row_and_roundtrips(
         workspace=tmp_path,
         session_id="interrupt-session",
         prompt="interrupt me",
-        session_metadata={"mode": "plan", "read_only": True},
+        session_metadata={"read_only": True},
         tool_results=tool_results,
         last_event_sequence=4,
         output="partial output",
@@ -2066,9 +2099,10 @@ def test_session_storage_save_interrupted_checkpoint_creates_row_and_roundtrips(
     assert checkpoint["kind"] == "interrupted"
     assert checkpoint["session_status"] == "interrupted"
     assert checkpoint["prompt"] == "interrupt me"
-    assert checkpoint["session_metadata"]["mode"] == "plan"
-    assert checkpoint["session_metadata"]["read_only"] is True
-    assert "composition_ref" in checkpoint["session_metadata"]
+    session_metadata = checkpoint["session_metadata"]
+    assert isinstance(session_metadata, dict)
+    assert session_metadata["read_only"] is True
+    assert "composition_ref" in session_metadata
     assert checkpoint["tool_results"] == list(tool_results)
     assert checkpoint["last_event_sequence"] == 4
     assert checkpoint["output"] == "partial output"

@@ -34,7 +34,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Literal, TypeIs, overload
+from typing import Annotated, Literal, TypeIs, get_args, overload
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -75,8 +75,18 @@ VALID_APPROVAL_MODES: tuple[ApprovalMode, ...] = APPROVAL_MODES
 #: The decision tri-state used by ``permission.rules`` and external-directory
 #: maps; distinct from the mode, and never accepted for ``approval_mode``.
 VALID_PERMISSION_DECISIONS: tuple[PermissionDecision, ...] = ("allow", "deny", "ask")
-VALID_TUI_COMMANDS = ("app.session.new", "app.session.resume", "app.tools.expand", "app.display.reset", "app.history.search")
-type TuiCommand = Literal["app.session.new", "app.session.resume", "app.tools.expand", "app.display.reset", "app.history.search"]
+type TuiCommand = Literal[
+    "app.help",
+    "app.session.new",
+    "app.session.resume",
+    "app.session.tree",
+    "app.tools.expand",
+    "app.tools.detail",
+    "app.display.reset",
+    "app.history.search",
+    "app.tui.appearance",
+]
+VALID_TUI_COMMANDS: tuple[str, ...] = get_args(TuiCommand.__value__)
 
 type ExecutionEngineName = Literal["deterministic", "provider"]
 VALID_EXECUTION_ENGINES: tuple[ExecutionEngineName, ...] = ("deterministic", "provider")
@@ -115,6 +125,70 @@ type CommandList = tuple[Annotated[tuple[str, ...], Field(min_length=1)], ...]
 type NonEmptyItem = Annotated[str, Field(json_schema_extra={"minLength": 1})]
 
 VALID_TUI_THEME_MODES: tuple[RuntimeTuiThemeMode, ...] = ("auto", "light", "dark")
+type TuiStatuslineSegment = Literal[
+    "status",
+    "model",
+    "mode",
+    "path",
+    "context_pct",
+    "cost",
+    "session_name",
+    "lsp",
+    "token_in",
+    "token_out",
+    "cache_read",
+    "cache_write",
+    "cache_hit",
+]
+VALID_TUI_STATUSLINE_SEGMENTS: tuple[str, ...] = get_args(TuiStatuslineSegment.__value__)
+type TuiForegroundToken = Literal[
+    "accent",
+    "border",
+    "borderAccent",
+    "success",
+    "error",
+    "warning",
+    "muted",
+    "dim",
+    "text",
+    "thinkingText",
+    "userMessageText",
+    "toolTitle",
+    "mdHeading",
+    "mdLink",
+    "mdLinkUrl",
+    "mdCode",
+    "mdCodeBlock",
+    "mdQuote",
+    "mdHr",
+    "mdListBullet",
+    "toolDiffAdded",
+    "toolDiffRemoved",
+    "toolDiffContext",
+    "syntaxComment",
+    "syntaxKeyword",
+    "syntaxFunction",
+    "syntaxVariable",
+    "syntaxString",
+    "syntaxNumber",
+    "syntaxOperator",
+    "syntaxPunctuation",
+    "thinkingHigh",
+    "statusLineSep",
+    "statusLineModel",
+    "statusLinePath",
+    "statusLineContext",
+    "statusLineCost",
+]
+type TuiStatuslineLayout = Literal["codex", "claude", "minimal", "compact", "full", "ascii", "custom"]
+type TuiStatuslineSeparator = Literal["none", "dot", "pipe", "rule"]
+type TuiSymbolsPreset = Literal["unicode", "ascii", "nerd"]
+type TuiComposerStyle = Literal["box", "band", "claude", "pi", "borderless", "rule", "field", "rail"]
+type TuiComposerCursorShape = Literal["bar", "block", "underline", "terminal"]
+type TuiComposerGutter = Literal["prompt", "none"]
+type TuiComposerPadding = Literal["compact", "normal"]
+VALID_TUI_COMPOSER_STYLES: tuple[TuiComposerStyle, ...] = get_args(TuiComposerStyle.__value__)
+VALID_TUI_COMPOSER_CURSOR_SHAPES: tuple[TuiComposerCursorShape, ...] = get_args(TuiComposerCursorShape.__value__)
 
 #: Agent/agent-map keys are lower-case ids; the same pattern covers manifest ids.
 AGENT_PRESET_ID_PATTERN = r"^[a-z][a-z0-9_-]*$"
@@ -168,12 +242,7 @@ def _validation_context_field_path(info: ValidationInfo, *, default: str) -> str
 
 
 def _config_field_source(info: ValidationInfo, field_name: str) -> str:
-    """``runtime config field '<name>'`` plus the config file, when known.
-
-    The workspace config path is part of the message contract for the top-level
-    scalars (``... in /path/.voidcode.json``); callers that load the workspace
-    file pass it through the validation context.
-    """
+    """``runtime config field '<name>'`` plus its source file, when known."""
     base = f"runtime config field '{field_name}'"
     context = info.context
     if isinstance(context, dict):
@@ -181,6 +250,10 @@ def _config_field_source(info: ValidationInfo, field_name: str) -> str:
         if isinstance(config_file, str):
             return f"{base} in {config_file}"
     return base
+
+
+def _contains_terminal_controls(value: str) -> bool:
+    return any(ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F for char in value)
 
 
 def _parse_optional_bool(raw_value: object, *, field_path: str) -> bool | None:
@@ -392,37 +465,68 @@ def _parse_context_transform_failure_mode(value: object) -> RuntimeContextTransf
     return value
 
 
-def _parse_runtime_tui_theme_mode(value: object) -> RuntimeTuiThemeMode | None:
-    if value is None:
-        return None
-    if not isinstance(value, str) or value not in VALID_TUI_THEME_MODES:
-        allowed = ", ".join(VALID_TUI_THEME_MODES)
-        raise ValueError(f"runtime config field 'tui.preferences.theme.mode' must be one of: {allowed}")
-    return value
-
-
 def format_environment_validation_error(
     exc: ValidationError,
     *,
     field_path: str | None = None,
+    context: dict[str, object] | None = None,
 ) -> str:
     messages: list[str] = []
+    config_file = context.get("config_file") if context is not None else None
+    if not isinstance(config_file, str) or not config_file:
+        config_file = None
+    contextual = context is not None or field_path is not None
     for error in exc.errors():
-        if error.get("type") == "extra_forbidden":
-            loc = error.get("loc")
-            loc_parts = tuple(str(part) for part in loc)
-            base_path = field_path or ""
-            full_path = ".".join(part for part in (base_path, *loc_parts) if part)
-            if full_path:
-                messages.append(f"runtime config field '{full_path}' is not supported")
-                continue
-        context = error.get("ctx")
-        if isinstance(context, dict):
-            original_error = context.get("error")
+        loc_parts = []
+        for part in error.get("loc", ()):
+            value = str(part)
+            loc_parts.append(repr(value) if _contains_terminal_controls(value) else value)
+        full_path = ".".join(part for part in (field_path, *loc_parts) if part)
+        is_tui_path = full_path == "tui" or full_path.startswith("tui.")
+        source_file = config_file if is_tui_path else None
+        if error.get("type") == "extra_forbidden" and full_path:
+            location = format_runtime_config_field_error(full_path)
+            if source_file is not None:
+                location += f" in {source_file!r}"
+            message = f"{location} is not supported"
+            value = error.get("input")
+            if is_tui_path and (isinstance(value, (str, int, float, bool)) or value is None) and repr(value) not in message:
+                message = f"{location} got {value!r}: is not supported"
+            messages.append(message)
+            continue
+        error_context = error.get("ctx")
+        if isinstance(error_context, dict):
+            original_error = error_context.get("error")
             if isinstance(original_error, ValueError):
-                messages.append(str(original_error))
+                message = str(original_error)
+                value = error.get("input")
+                include_input = is_tui_path and (isinstance(value, (str, int, float, bool)) or value is None)
+                if contextual and full_path:
+                    location = format_runtime_config_field_error(full_path)
+                    if source_file is not None:
+                        location += f" in {source_file!r}"
+                    if include_input and repr(value) not in message:
+                        message = f"{location} got {value!r}: {message}"
+                    elif full_path not in message:
+                        message = f"{location}: {message}"
+                if source_file is not None and source_file not in message:
+                    message += f" in {source_file!r}"
+                messages.append(message)
                 continue
-        messages.append(error["msg"])
+        message = error["msg"]
+        if contextual and full_path:
+            location = format_runtime_config_field_error(full_path)
+            if source_file is not None:
+                location += f" in {source_file!r}"
+            value = error.get("input")
+            include_input = is_tui_path and (isinstance(value, (str, int, float, bool)) or value is None)
+            if include_input and "input" in error:
+                message = f"{location} got {value!r}: {message}"
+            else:
+                message = f"{location}: {message}"
+        elif source_file is not None and source_file not in message:
+            message += f" in {source_file!r}"
+        messages.append(message)
     return "; ".join(messages)
 
 
@@ -441,7 +545,7 @@ def validate_config_model[T: BaseModel](
             raw_base_field_path = context.get("field_path")
             if isinstance(raw_base_field_path, str):
                 base_field_path = raw_base_field_path
-        message = format_environment_validation_error(exc, field_path=base_field_path)
+        message = format_environment_validation_error(exc, field_path=base_field_path, context=context)
         raise ValueError(message) from exc
 
 
@@ -1423,41 +1527,125 @@ class McpPayload(_PayloadModel):
 # ---------------------------------------------------------------------------
 
 
-class TuiThemePreferencesPayload(_PayloadModel):
-    name: str | None = None
-    mode: RuntimeTuiThemeMode | None = None
+class TuiCustomThemePayload(_PayloadModel):
+    mode: Literal["dark", "light"]
+    vars: dict[
+        Annotated[str, Field(min_length=1)],
+        Annotated[str, Field(min_length=1)] | Annotated[int, Field(ge=0, le=255, strict=True)],
+    ] = Field(default_factory=dict)
+    colors: dict[
+        Annotated[str, Field(min_length=1)],
+        Annotated[str, Field(min_length=1)] | Annotated[int, Field(ge=0, le=255, strict=True)],
+    ] = Field(default_factory=dict)
 
-    @field_validator("name", mode="before")
+
+class TuiSymbolsPayload(_PayloadModel):
+    preset: TuiSymbolsPreset = "unicode"
+    overrides: dict[str, str] = Field(default_factory=dict)
+
+
+class TuiThemePayload(_PayloadModel):
+    mode: RuntimeTuiThemeMode = "auto"
+    dark: Annotated[str, Field(min_length=1)] = "voidcode-dark"
+    light: Annotated[str, Field(min_length=1)] = "voidcode-light"
+    custom: dict[Annotated[str, Field(min_length=1)], TuiCustomThemePayload] = Field(default_factory=dict)
+    symbols: TuiSymbolsPayload = Field(default_factory=TuiSymbolsPayload)
+
+
+class TuiStatuslineOptionPayload(_PayloadModel):
+    color: TuiForegroundToken | None = None
+    icon: bool | None = None
+    max_width: int | None = Field(default=None, gt=0)
+
+    @field_validator("max_width", mode="before")
     @classmethod
-    def _validate_name(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise ValueError("runtime config field 'tui.preferences.theme.name' must be a string when provided")
+    def _validate_max_width(cls, value: object) -> object:
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            raise ValueError("runtime config field 'tui.statusline.options.*.max_width' must be an integer")
         return value
 
-    @field_validator("mode", mode="before")
+    @field_validator("icon", mode="before")
     @classmethod
-    def _validate_mode(cls, value: object) -> RuntimeTuiThemeMode | None:
-        return _parse_runtime_tui_theme_mode(value)
-
-
-class TuiPreferencesPayload(_PayloadModel):
-    theme: TuiThemePreferencesPayload | None = None
-
-    @field_validator("theme", mode="before")
-    @classmethod
-    def _validate_theme(cls, value: object) -> object:
+    def _validate_icon(cls, value: object) -> bool | None:
         if value is None:
             return None
-        if not isinstance(value, dict):
-            raise ValueError("runtime config field 'tui.preferences.theme' must be an object when provided")
+        if not isinstance(value, bool):
+            raise ValueError("runtime config field 'tui.statusline.options.*.icon' must be a boolean")
+        return value
+
+
+class TuiStatuslinePayload(_PayloadModel):
+    layout: TuiStatuslineLayout = "codex"
+    transparent: bool = True
+    left: tuple[TuiStatuslineSegment, ...] | None = None
+    right: tuple[TuiStatuslineSegment, ...] | None = None
+    separator: TuiStatuslineSeparator | None = None
+    options: dict[TuiStatuslineSegment, TuiStatuslineOptionPayload] = Field(default_factory=dict)
+
+    @field_validator("transparent", mode="before")
+    @classmethod
+    def _validate_transparent(cls, value: object) -> object:
+        if not isinstance(value, bool):
+            raise ValueError("runtime config field 'tui.statusline.transparent' must be a boolean")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_custom_layout(self) -> TuiStatuslinePayload:
+        if self.layout == "custom" and self.left is None and self.right is None:
+            raise ValueError("runtime config field 'tui.statusline' requires left or right segments when layout is custom")
+        return self
+
+
+class TuiComposerCursorPayload(_PayloadModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "if": {"required": ["blink"], "properties": {"blink": {"type": "boolean"}}},
+            "then": {"required": ["shape"], "properties": {"shape": {"not": {"const": "terminal"}}}},
+        },
+    )
+
+    shape: TuiComposerCursorShape = "terminal"
+    blink: bool | None = None
+
+    @field_validator("blink", mode="before")
+    @classmethod
+    def _validate_blink_type(cls, value: object) -> object:
+        if value is not None and not isinstance(value, bool):
+            raise ValueError("runtime config field 'tui.composer.cursor.blink' must be a boolean")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_blink(self) -> TuiComposerCursorPayload:
+        if self.blink is not None and self.shape == "terminal":
+            raise ValueError("runtime config field 'tui.composer.cursor.blink' requires an explicit cursor shape")
+        return self
+
+
+class TuiComposerPayload(_PayloadModel):
+    style: TuiComposerStyle = "band"
+    cursor: TuiComposerCursorPayload = Field(default_factory=TuiComposerCursorPayload)
+    gutter: TuiComposerGutter = "prompt"
+    padding: TuiComposerPadding = "normal"
+
+
+class TuiBrandPayload(_PayloadModel):
+    enabled: bool = True
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _validate_enabled(cls, value: object) -> object:
+        if not isinstance(value, bool):
+            raise ValueError("runtime config field 'tui.brand.enabled' must be a boolean")
         return value
 
 
 class TuiPayload(_PayloadModel):
     keymap: dict[str, TuiCommand] | None = None
-    preferences: TuiPreferencesPayload | None = None
+    theme: TuiThemePayload | None = None
+    statusline: TuiStatuslinePayload | None = None
+    composer: TuiComposerPayload | None = None
+    brand: TuiBrandPayload | None = None
 
     @field_validator("keymap", mode="before")
     @classmethod
@@ -1466,27 +1654,18 @@ class TuiPayload(_PayloadModel):
             return None
         if not isinstance(value, dict):
             raise ValueError("runtime config field 'tui.keymap' must be an object when provided")
-
         parsed_keymap: dict[str, str] = {}
+        allowed = ", ".join(VALID_TUI_COMMANDS)
         for key, item in value.items():
+            field_path = f"tui.keymap[{key!r}]"
             if not isinstance(key, str):
-                raise ValueError("runtime config field 'tui.keymap' keys must be strings")
+                raise ValueError(f"runtime config field 'tui.keymap' key {key!r} must be a string")
             if not isinstance(item, str):
-                raise ValueError("runtime config field 'tui.keymap' values must be strings")
+                raise ValueError(f"runtime config field '{field_path}' action {item!r} must be a string")
             if item not in VALID_TUI_COMMANDS:
-                allowed = ", ".join(VALID_TUI_COMMANDS)
-                raise ValueError(f"runtime config field 'tui.keymap' values must be one of: {allowed}")
+                raise ValueError(f"runtime config field '{field_path}' action {item!r} must be one of: {allowed}")
             parsed_keymap[key] = item
         return parsed_keymap
-
-    @field_validator("preferences", mode="before")
-    @classmethod
-    def _validate_preferences(cls, value: object) -> object:
-        if value is None:
-            return None
-        if not isinstance(value, dict):
-            raise ValueError("runtime config field 'tui.preferences' must be an object when provided")
-        return value
 
 
 # ---------------------------------------------------------------------------
@@ -2040,8 +2219,10 @@ SCHEMA_DEFINITION_NAMES: Mapping[str, str] = {
     "RuntimeHookFailureMode": "hookFailureMode",
     "McpTransport": "mcpTransport",
     "RuntimeTuiThemeMode": "tuiThemeMode",
-    "CommandList": "commandList",
+    "TuiForegroundToken": "tuiForegroundToken",
+    "TuiStatuslineSegment": "tuiStatuslineSegment",
     "TuiCommand": "tuiCommand",
+    "CommandList": "commandList",
     "HookEventScope": "hookEventScope",
     "NonEmptyItem": "nonEmptyItem",
     "ReasoningEffort": "reasoningEffort",
@@ -2068,8 +2249,21 @@ SCHEMA_DEFINITION_NAMES: Mapping[str, str] = {
     "McpPayload": "mcpConfig",
     "McpServerPayload": "mcpServerConfig",
     "TuiPayload": "tuiConfig",
-    "TuiPreferencesPayload": "tuiPreferencesConfig",
-    "TuiThemePreferencesPayload": "tuiThemePreferencesConfig",
+    "TuiCustomThemePayload": "tuiCustomThemeConfig",
+    "TuiSymbolsPayload": "tuiSymbolsConfig",
+    "TuiThemePayload": "tuiThemeConfig",
+    "TuiStatuslineOptionPayload": "tuiStatuslineOptionConfig",
+    "TuiStatuslinePayload": "tuiStatuslineConfig",
+    "TuiComposerCursorPayload": "tuiComposerCursorConfig",
+    "TuiComposerPayload": "tuiComposerConfig",
+    "TuiBrandPayload": "tuiBrandConfig",
+    "TuiStatuslineLayout": "tuiStatuslineLayout",
+    "TuiStatuslineSeparator": "tuiStatuslineSeparator",
+    "TuiSymbolsPreset": "tuiSymbolsPreset",
+    "TuiComposerStyle": "tuiComposerStyle",
+    "TuiComposerCursorShape": "tuiComposerCursorShape",
+    "TuiComposerGutter": "tuiComposerGutter",
+    "TuiComposerPadding": "tuiComposerPadding",
     "BackgroundTaskPayload": "backgroundTaskConfig",
     "RemindersPayload": "remindersConfig",
     "TodoRemindersPayload": "todoRemindersConfig",

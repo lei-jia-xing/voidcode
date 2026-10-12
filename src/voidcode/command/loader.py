@@ -30,26 +30,6 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
         ),
         source="builtin",
     ),
-    CommandDefinition(
-        name="plan",
-        description="Create an implementation plan before writing code.",
-        template=(
-            "Produce an implementation plan before writing code.\n"
-            "\n"
-            "Steps:\n"
-            "1. Converge the request into a concrete goal with acceptance criteria, risks, and a verification strategy.\n"
-            "2. Inspect the relevant code before committing to a shape.\n"
-            "\n"
-            "Constraints:\n"
-            "- Read-only: do not write code or modify files unless explicitly instructed after the plan is accepted.\n"
-            "- Plan directly, or delegate to the product agent (subagent_type=product) via the task tool and read its plan back.\n"
-            "- todo is runtime state, not workspace mutation.\n"
-            "\n"
-            "Target: $ARGUMENTS"
-        ),
-        source="builtin",
-        mode="plan",
-    ),
 )
 
 
@@ -109,6 +89,8 @@ def _load_markdown_command(path: Path, *, root: Path, source: CommandSource) -> 
         source=str(path),
     )
     metadata = load_frontmatter_mapping(raw_frontmatter, source=str(path))
+    if "mode" in metadata:
+        raise ValueError(f"command {path} uses unsupported frontmatter field: mode")
     if raw_frontmatter is not None and not template.strip():
         raise ValueError(f"command {path} declares frontmatter but has no template body")
     relative_name = path.relative_to(root).with_suffix("").as_posix()
@@ -124,7 +106,6 @@ def _load_markdown_command(path: Path, *, root: Path, source: CommandSource) -> 
         template=template,
         source=source,
         agent=_require_optional_string(metadata.get("agent")),
-        mode=_require_optional_string(metadata.get("mode")),
         model=_require_optional_string(metadata.get("model")),
         subtask=_metadata_bool(metadata.get("subtask"), default=False),
         enabled=_metadata_bool(metadata.get("enabled"), default=True),

@@ -147,7 +147,7 @@ Typed rewrite 不覆盖这个事件，以便 replay/debug 能区分“模型原�
   "session_id": "session-1",
   "tool_name": "read",
   "hook_status": "ok",
-  "policy": {"mode": "normal", "read_only": false},
+  "policy": {"read_only": false},
   "action": "rewrite",
   "handler_names": ["canonicalize"],
   "diagnostics": [],

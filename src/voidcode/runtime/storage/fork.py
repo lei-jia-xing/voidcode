@@ -35,7 +35,6 @@ from ..session import (
     StoredSessionForestEntry,
     StoredSessionLineageEntry,
     StoredSessionSummary,
-    normalize_persisted_session_metadata,
 )
 from .rows import (
     SessionEventPrefixRow,
@@ -448,7 +447,7 @@ def _fork_metadata(
     execution_composition_payload: dict[str, object],
 ) -> dict[str, object]:
     """Preserve the canonical plan reference, not the source's executable scopes."""
-    source_metadata = normalize_persisted_session_metadata(cast(dict[str, object], json.loads(raw_metadata_json)))
+    source_metadata = cast(dict[str, object], json.loads(raw_metadata_json))
     forked = {key: value for key, value in source_metadata.items() if key not in _NON_TRANSFERABLE_METADATA_KEYS}
     forked["workspace"] = workspace
     forked["composition_ref"] = forked_ref_payload

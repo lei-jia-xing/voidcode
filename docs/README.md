@@ -14,4 +14,5 @@ VoidCode 的行为以源码和测试为准。仓库只保留以下需要稳定�
 
 ## 实施计划
 
-- [`plans/agent-core-refactor.md`](./plans/agent-core-refactor.md) — 根据上述审计制定的 P0–P6 重构计划，含完整审计映射、十项硬验收、阶段入口/出口与行为验证；P0 治理基线与 P1 中立 lower contracts、P2 显式工具上下文和 P3 共用 core turn engine 均已完成；P4–P6 仍待实施。
+- [`plans/agent-core-refactor.md`](./plans/agent-core-refactor.md) — P0–P6 重构计划与验收证据；实现路径已完成，具体验证范围与截图恢复限制见计划当前状态。
+- [`plans/tui-productization.md`](./plans/tui-productization.md) — TUI P0–P5 产品化与 clean-cutover 计划，涵盖主题/配置、原生光标、布局/状态栏、操作、审批/detail viewer 与验收边界；当前实现与已运行证据见计划末尾，Windows/macOS 及完整发布门禁仍未验收。

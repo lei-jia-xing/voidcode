@@ -1,9 +1,9 @@
 """Theme tokens, palettes, and glyph tables.
 
 Design data ported from oh-my-pi (https://github.com/can1357/oh-my-pi, MIT).
-``path:line`` references below are relative to that checkout
-(``/tmp/omp-src``), recorded so the provenance of every ported value stays
-visible:
+The pinned source is oh-my-pi commit
+``b07a1c146d0d12cfc855a2c65d52f892ef319040``; all source paths below are
+relative to that repository revision.
 
 * Token vocabulary (``ThemeColor``/``ThemeBg``): ``packages/tui/src/theme/schema.ts``.
 * ``voidcode-dark`` colour values: ``packages/tui/src/theme/defaults/titanium.json``
@@ -28,12 +28,14 @@ This module is pure: no terminal I/O, no global mutable state.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
+from importlib.resources import files
 from re import compile as _compile
 from types import MappingProxyType
-from typing import Final, Literal
+from typing import Final, Literal, get_args
 
 from pygments.token import (
     Comment,
@@ -52,6 +54,14 @@ from rich.style import Style
 from rich.syntax import SyntaxTheme
 from rich.theme import Theme as RichTheme
 
+from ..runtime.config import RuntimeTuiThemeConfig
+from ..runtime.config_models import (
+    TuiCustomThemePayload,
+    TuiForegroundToken,
+    _contains_terminal_controls,
+    format_runtime_config_field_error,
+)
+
 __all__ = [
     "BG_TOKENS",
     "DEFAULT_THEME_NAMES",
@@ -59,62 +69,23 @@ __all__ = [
     "SPINNER_FRAMES",
     "THEME_NAMES",
     "SYMBOL_PRESETS",
-    "Glyphs",
-    "Theme",
+    "palette_names",
     "resolve_theme",
+    "validate_theme_configuration",
 ]
 
 #: Every palette the registry knows. Frozen: another worker whitelists these.
-THEME_NAMES: Final[frozenset[str]] = frozenset({"voidcode-dark", "voidcode-light"})
-
-#: Mode -> palette name. Mirrors omp's ``getAutoThemeMapping`` defaults
-#: (``settings.ts`` ``theme.dark = "titanium"``, ``theme.light = "light"``).
+#: Exact upstream identities are loaded from the shipped pinned catalog.
+_RESOURCE_ROOT = files(__package__).joinpath("themes")
+_CATALOG = json.loads(_RESOURCE_ROOT.joinpath("index.json").read_text(encoding="utf-8"))
+_UPSTREAM_THEMES: Final[Mapping[str, Mapping[str, str]]] = _CATALOG["themes"]
+_VOIDCODE_THEMES: Final[Mapping[str, str]] = MappingProxyType({"voidcode-dark": "dark", "voidcode-light": "light", "voidcode-high-contrast": "dark"})
+THEME_NAMES: Final[frozenset[str]] = frozenset((*_UPSTREAM_THEMES, *_VOIDCODE_THEMES))
 DEFAULT_THEME_NAMES: Final[Mapping[str, str]] = MappingProxyType({"auto": "voidcode-dark", "dark": "voidcode-dark", "light": "voidcode-light"})
+_THEME_MODES: Final[Mapping[str, str]] = MappingProxyType({**{name: item["mode"] for name, item in _UPSTREAM_THEMES.items()}, **_VOIDCODE_THEMES})
 
-_THEME_MODES: Final[Mapping[str, str]] = MappingProxyType({"voidcode-dark": "dark", "voidcode-light": "light"})
-
-#: The ``ThemeColor`` members (``theme/schema.ts:9-70``) this TUI renders.
-FG_TOKENS: Final[frozenset[str]] = frozenset(
-    {
-        "accent",
-        "border",
-        "borderAccent",
-        "success",
-        "error",
-        "warning",
-        "muted",
-        "dim",
-        "text",
-        "thinkingText",
-        "userMessageText",
-        "toolTitle",
-        "mdHeading",
-        "mdLink",
-        "mdLinkUrl",
-        "mdCode",
-        "mdCodeBlock",
-        "mdQuote",
-        "mdHr",
-        "mdListBullet",
-        "toolDiffAdded",
-        "toolDiffRemoved",
-        "toolDiffContext",
-        "syntaxComment",
-        "syntaxKeyword",
-        "syntaxFunction",
-        "syntaxVariable",
-        "syntaxString",
-        "syntaxNumber",
-        "syntaxOperator",
-        "syntaxPunctuation",
-        "thinkingHigh",
-        "statusLineSep",
-        "statusLineModel",
-        "statusLinePath",
-        "statusLineContext",
-        "statusLineCost",
-    }
-)
+#: The renderer foreground vocabulary is shared with the config boundary.
+FG_TOKENS: Final[frozenset[str]] = frozenset(get_args(TuiForegroundToken.__value__))
 
 #: The ``ThemeBg`` members (``theme/schema.ts:72-79``) this TUI renders.
 BG_TOKENS: Final[frozenset[str]] = frozenset(
@@ -127,114 +98,180 @@ BG_TOKENS: Final[frozenset[str]] = frozenset(
     }
 )
 
-# Provenance: defaults/titanium.json, vars resolved. A missing token inherits
-# from dark.json.
-#
-# Audited token-by-token against the ported source: every value matches
-# titanium.json/dark.json (dark) and light.json (light), and none is invented.
-# Carried only the tokens :data:`FG_TOKENS` / :data:`BG_TOKENS` name -- the
-# vocabulary this TUI actually resolves; a token omp declares but no renderer
-# reads is in neither the token set nor the palettes. Not carried: dark.json's
-# undeclared ``link``, the ``thinking*`` colour levels other than the two this
-# TUI renders (``thinkingText``, ``thinkingHigh``), and the ``export`` group
-# ``pageBg``/``cardBg``/``infoBg`` (omp's page/card chrome).
-_TITANIUM: Final[Mapping[str, str | int]] = MappingProxyType(
+
+def _voidcode_palette(
+    *,
+    accent: str,
+    text: str,
+    muted: str,
+    dim: str,
+    border: str,
+    success: str,
+    error: str,
+    warning: str,
+    code: str,
+    string: str,
+    user_surface: str,
+    pending_surface: str,
+    success_surface: str,
+    error_surface: str,
+    status_surface: str,
+) -> Mapping[str, str | int]:
+    fg = {token: text for token in FG_TOKENS}
+    fg.update(
+        {
+            "accent": accent,
+            "border": border,
+            "borderAccent": accent,
+            "success": success,
+            "error": error,
+            "warning": warning,
+            "muted": muted,
+            "dim": dim,
+            "text": "",
+            "thinkingText": muted,
+            "userMessageText": text,
+            "toolTitle": text,
+            "mdHeading": accent,
+            "mdLink": accent,
+            "mdLinkUrl": muted,
+            "mdCode": code,
+            "mdCodeBlock": muted,
+            "mdQuote": muted,
+            "mdHr": border,
+            "mdListBullet": accent,
+            "toolDiffAdded": success,
+            "toolDiffRemoved": error,
+            "toolDiffContext": muted,
+            "syntaxComment": dim,
+            "syntaxKeyword": accent,
+            "syntaxFunction": success,
+            "syntaxVariable": text,
+            "syntaxString": string,
+            "syntaxNumber": warning,
+            "syntaxOperator": accent,
+            "syntaxPunctuation": muted,
+            "thinkingHigh": accent,
+            "statusLineSep": border,
+            "statusLineModel": accent,
+            "statusLinePath": text,
+            "statusLineContext": muted,
+            "statusLineCost": warning,
+        }
+    )
+    bg = {
+        "userMessageBg": user_surface,
+        "toolPendingBg": pending_surface,
+        "toolSuccessBg": success_surface,
+        "toolErrorBg": error_surface,
+        "statusLineBg": status_surface,
+    }
+    return MappingProxyType(fg | bg)
+
+
+_VOIDCODE_DARK = _voidcode_palette(
+    accent="#58c7f3",
+    text="#e8edf2",
+    muted="#aab7c4",
+    dim="#748391",
+    border="#344250",
+    success="#70d6a1",
+    error="#ff6b78",
+    warning="#f2bc68",
+    code="#9be0c1",
+    string="#e5c07b",
+    user_surface="#18232d",
+    pending_surface="#202a34",
+    success_surface="#17271f",
+    error_surface="#321e24",
+    status_surface="#111920",
+)
+_VOIDCODE_LIGHT = _voidcode_palette(
+    accent="#176f93",
+    text="#172b3a",
+    muted="#526779",
+    dim="#738696",
+    border="#bdcbd6",
+    success="#267448",
+    error="#a42f3d",
+    warning="#805500",
+    code="#176746",
+    string="#8b4c15",
+    user_surface="#e6f2f8",
+    pending_surface="#eef3f7",
+    success_surface="#e8f6ec",
+    error_surface="#fbebed",
+    status_surface="#eaf1f6",
+)
+_VOIDCODE_HIGH_CONTRAST = _voidcode_palette(
+    accent="#00ffff",
+    text="#ffffff",
+    muted="#dddddd",
+    dim="#bbbbbb",
+    border="#ffffff",
+    success="#00ff00",
+    error="#ff5555",
+    warning="#ffff00",
+    code="#00ffaf",
+    string="#ffd75f",
+    user_surface="#000000",
+    pending_surface="#111111",
+    success_surface="#001a00",
+    error_surface="#240000",
+    status_surface="#000000",
+)
+_ORIGINAL_PALETTES: Final[Mapping[str, Mapping[str, str | int]]] = MappingProxyType(
     {
-        "accent": "#00b4ff",
-        "border": "#2a3038",
-        "borderAccent": "#00b4ff",
-        "success": "#00ff88",
-        "error": "#ff4757",
-        "warning": "#ffb347",
-        "muted": "#9ca3b0",
-        "dim": "#6b7280",
-        "text": "",
-        "thinkingText": "#9ca3b0",
-        "userMessageBg": "#0f1216",
-        "userMessageText": "",
-        "toolPendingBg": "#0f1216",
-        "toolSuccessBg": "#0f1216",
-        "toolErrorBg": "#1a0f10",
-        "toolTitle": "",
-        "mdHeading": "#00b4ff",
-        "mdLink": "#00b4ff",
-        "mdLinkUrl": "#0082b3",
-        "mdCode": "#00ff88",
-        "mdCodeBlock": "#9ca3b0",
-        "mdQuote": "#9ca3b0",
-        "mdHr": "#2a3038",
-        "mdListBullet": "#00b4ff",
-        "toolDiffAdded": "#00ff88",
-        "toolDiffRemoved": "#ff4757",
-        "toolDiffContext": "#9ca3b0",
-        "syntaxComment": "#6b7280",
-        "syntaxKeyword": "#00b4ff",
-        "syntaxFunction": "#00ff88",
-        "syntaxVariable": "#e8ecf4",
-        "syntaxString": "#d4c090",
-        "syntaxNumber": "#ffb347",
-        "syntaxOperator": "#00b4ff",
-        "syntaxPunctuation": "#9ca3b0",
-        "thinkingHigh": "#00b4ff",
-        "statusLineBg": "#0f1216",
-        "statusLineSep": "#2a3038",
-        "statusLineModel": "#00b4ff",
-        "statusLinePath": "#e8ecf4",
-        "statusLineContext": "#9ca3b0",
-        "statusLineCost": "#d4c090",
+        "voidcode-dark": _VOIDCODE_DARK,
+        "voidcode-light": _VOIDCODE_LIGHT,
+        "voidcode-high-contrast": _VOIDCODE_HIGH_CONTRAST,
     }
 )
 
-# Provenance: theme/light.json, vars resolved. Integer values are 256-palette
-# indices exactly as omp writes them (theme/color.ts:31-35 emits ``38;5;<n>``).
-_LIGHT: Final[Mapping[str, str | int]] = MappingProxyType(
-    {
-        "accent": "#5a8080",
-        "border": "#547da7",
-        "borderAccent": "#5a8080",
-        "success": "#588458",
-        "error": "#aa5555",
-        "warning": "#9a7326",
-        "muted": "#6c6c6c",
-        "dim": "#767676",
-        "text": "",
-        "thinkingText": "#6c6c6c",
-        "userMessageBg": "#e8e8e8",
-        "userMessageText": "",
-        "toolPendingBg": "#e8e8f0",
-        "toolSuccessBg": "#e8f0e8",
-        "toolErrorBg": "#f0e8e8",
-        "toolTitle": "",
-        "mdHeading": "#9a7326",
-        "mdLink": "#547da7",
-        "mdLinkUrl": "#767676",
-        "mdCode": "#5a8080",
-        "mdCodeBlock": "#588458",
-        "mdQuote": "#6c6c6c",
-        "mdHr": "#6c6c6c",
-        "mdListBullet": "#588458",
-        "toolDiffAdded": "#588458",
-        "toolDiffRemoved": "#aa5555",
-        "toolDiffContext": "#6c6c6c",
-        "syntaxComment": "#008000",
-        "syntaxKeyword": "#0000ff",
-        "syntaxFunction": "#795e26",
-        "syntaxVariable": "#001080",
-        "syntaxString": "#a31515",
-        "syntaxNumber": "#098658",
-        "syntaxOperator": "#000000",
-        "syntaxPunctuation": "#000000",
-        "thinkingHigh": "#875f87",
-        "statusLineBg": "#e0e0e0",
-        "statusLineSep": "#808080",
-        "statusLineModel": "#875f87",
-        "statusLinePath": "#005f87",
-        "statusLineContext": "#5f5f87",
-        "statusLineCost": 133,
-    }
-)
 
-_PALETTES: Final[Mapping[str, Mapping[str, str | int]]] = MappingProxyType({"voidcode-dark": _TITANIUM, "voidcode-light": _LIGHT})
+def _resolve_palette_value(
+    value: str | int,
+    variables: Mapping[str, str | int],
+    token: str,
+    active: frozenset[str] = frozenset(),
+) -> str | int:
+    if isinstance(value, bool):
+        raise ValueError(f"theme color {token!r} has an invalid value")
+    if isinstance(value, int):
+        if not 0 <= value <= 255:
+            raise ValueError(f"theme color {token!r} ANSI index must be between 0 and 255")
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"theme color {token!r} has an invalid value")
+    if value in ("", "terminal-default"):
+        if value == "terminal-default" and token not in BG_TOKENS:
+            raise ValueError(f"theme color {token!r} cannot use terminal-default")
+        return ""
+    if value.startswith("#"):
+        if len(value) != 7 or any(char not in "0123456789abcdefABCDEF" for char in value[1:]):
+            raise ValueError(f"theme color {token!r} must be #RRGGBB")
+        return value.lower()
+    if value not in variables:
+        raise ValueError(f"theme color {token!r} references unknown variable {value!r}")
+    if value in active:
+        raise ValueError(f"theme color {token!r} has a reference cycle at variable {value!r}")
+    return _resolve_palette_value(variables[value], variables, token, active | {value})
+
+
+@lru_cache(maxsize=100)
+def _load_upstream_palette(name: str) -> Mapping[str, str | int]:
+    entry = _UPSTREAM_THEMES[name]
+    source = _RESOURCE_ROOT.joinpath(*entry["source"].split("/"))
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    variables = raw.get("vars")
+    colors = raw.get("colors")
+    if not isinstance(variables, dict) or not isinstance(colors, dict):
+        raise ValueError(f"invalid bundled palette source: {source}")
+    tokens = FG_TOKENS | BG_TOKENS
+    missing = sorted(tokens - colors.keys())
+    if missing:
+        raise ValueError(f"bundled palette '{name}' is missing renderer color tokens: {', '.join(missing)}")
+    return MappingProxyType({token: _resolve_palette_value(colors[token], variables, f"{name}.{token}") for token in tokens})
 
 
 def _split(values: Mapping[str, str | int]) -> tuple[Mapping[str, str | int], Mapping[str, str | int]]:
@@ -253,28 +290,24 @@ def _split(values: Mapping[str, str | int]) -> tuple[Mapping[str, str | int], Ma
 # ---------------------------------------------------------------------------
 
 #: ``UNICODE_SYMBOLS`` (``theme/symbols.ts:369-1101``), restricted to the keys
-#: this TUI resolves. Keys keep omp's dotted ``SymbolKey`` spelling, except
-#: ``inputCursor`` -- omp's ``symbols.inputCursor`` is its own flat theme field,
-#: not a dotted ``SymbolKey`` (``theme/tui-adapters.ts:156-161``), and it is the
-#: composer's end-of-line caret. ``nav.cursor`` stays for list/select rows.
+#: this TUI resolves. Keys keep omp's dotted ``SymbolKey`` spelling;
+#: ``nav.cursor`` stays for list/select rows.
 _UNICODE_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "status.success": "✔",
         "status.error": "✘",
         "status.disabled": "⦸",
         "nav.cursor": "❯",
-        "inputCursor": "▏",
         "tree.horizontal": "─",
+        "diff.gutterVertical": "│",
+        "diff.indentArrow": "↳",
+        "diff.indentDot": "·",
         "boxRound.topLeft": "╭",
         "boxRound.topRight": "╮",
         "boxRound.bottomLeft": "╰",
         "boxRound.bottomRight": "╯",
         "boxRound.horizontal": "─",
         "boxRound.vertical": "│",
-        "sep.powerlineLeft": "▶",
-        "sep.powerlineRight": "◀",
-        "sep.powerlineThinLeft": ">",
-        "sep.powerlineThinRight": "<",
         "sep.dot": " · ",
         "icon.model": "⬢",
         "icon.folder": "📁",
@@ -294,6 +327,8 @@ _UNICODE_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
         "radio.unselected": "○",
         "format.bracketLeft": "⟦",
         "format.bracketRight": "⟧",
+        "text.truncation": "…",
+        "text.streamEllipsis": "⋯",
         "tool.write": "✎",
         "tool.edit": "✎",
         "tool.bash": "❯",
@@ -303,6 +338,16 @@ _UNICODE_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
         "tool.task": "⇶",
         "tool.todo": "☑",
         "tool.memory": "🧠",
+        "statusline.status": "●",
+        "statusline.mode": "◈",
+        "statusline.cost": "$",
+        "statusline.session": "◷",
+        "statusline.tokenIn": "↑",
+        "statusline.tokenOut": "↓",
+        "statusline.cacheRead": "↙",
+        "statusline.cacheWrite": "↗",
+        "statusline.cacheHit": "%",
+        "sep.rule": "─",
         "tool.ask": "?",
     }
 )
@@ -314,7 +359,9 @@ _ASCII_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
         "status.error": "[!!]",
         "status.disabled": "[ ]",
         "nav.cursor": ">",
-        "inputCursor": "|",
+        "diff.gutterVertical": "|",
+        "diff.indentArrow": "->",
+        "diff.indentDot": ".",
         "tree.horizontal": "-",
         "boxRound.topLeft": "+",
         "boxRound.topRight": "+",
@@ -322,10 +369,6 @@ _ASCII_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
         "boxRound.bottomRight": "+",
         "boxRound.horizontal": "-",
         "boxRound.vertical": "|",
-        "sep.powerlineLeft": ">",
-        "sep.powerlineRight": "<",
-        "sep.powerlineThinLeft": ">",
-        "sep.powerlineThinRight": "<",
         "sep.dot": " - ",
         "icon.model": "[M]",
         "icon.folder": "[D]",
@@ -344,6 +387,8 @@ _ASCII_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
         "radio.selected": "(o)",
         "radio.unselected": "( )",
         "format.bracketLeft": "[",
+        "text.truncation": "...",
+        "text.streamEllipsis": "...",
         "format.bracketRight": "]",
         "tool.write": "+f",
         "tool.edit": "~",
@@ -354,11 +399,34 @@ _ASCII_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
         "tool.task": ">>>",
         "tool.todo": "[x]",
         "tool.memory": "mem",
+        "statusline.status": "*",
+        "statusline.mode": "M",
+        "statusline.cost": "$",
+        "statusline.session": "S",
+        "statusline.tokenIn": "in",
+        "statusline.tokenOut": "out",
+        "statusline.cacheRead": "cr",
+        "statusline.cacheWrite": "cw",
+        "statusline.cacheHit": "%",
+        "sep.rule": "-",
         "tool.ask": "?",
     }
 )
 
-SYMBOL_PRESETS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType({"unicode": _UNICODE_SYMBOLS, "ascii": _ASCII_SYMBOLS})
+_NERD_SYMBOLS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        **_UNICODE_SYMBOLS,
+        "status.success": "\uf00c",
+        "status.error": "\uf00d",
+        "icon.folder": "\uf07b",
+        "icon.file": "\uf15b",
+        "icon.search": "\uf002",
+        "icon.model": "\uf121",
+    }
+)
+SYMBOL_PRESETS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType(
+    {"unicode": _UNICODE_SYMBOLS, "ascii": _ASCII_SYMBOLS, "nerd": _NERD_SYMBOLS}
+)
 
 #: ``SPINNER_FRAMES`` (``theme/symbols.ts:1385-1401``), ported verbatim;
 #: only the ``status`` animation is ever advanced.
@@ -520,7 +588,7 @@ class Theme:
     returns a rich :class:`~rich.style.Style` for renderables that need one.
     """
 
-    __slots__ = ("_backgrounds", "_colors", "_glyphs", "color_system", "mode", "name")
+    __slots__ = ("_backgrounds", "_colors", "_glyphs", "_symbol_overrides", "color_system", "mode", "name")
 
     def __init__(
         self,
@@ -531,6 +599,7 @@ class Theme:
         *,
         color_system: ColorSystem | None = ColorSystem.TRUECOLOR,
         glyph_preset: str = "unicode",
+        symbol_overrides: Mapping[str, str] = MappingProxyType({}),
     ) -> None:
         self.name = name
         self.mode = mode
@@ -538,6 +607,7 @@ class Theme:
         self._backgrounds = backgrounds
         self.color_system = color_system
         self._glyphs = _cached_glyphs(glyph_preset)
+        self._symbol_overrides = symbol_overrides
 
     # -- colours -----------------------------------------------------------
 
@@ -643,17 +713,14 @@ class Theme:
         """Glyph preset resolved for this theme (unicode or ascii)."""
         return self._glyphs
 
-    def symbol(self, key: str) -> str:
-        """Resolve a ``SymbolKey`` from the active glyph preset."""
-        return self._glyphs.symbol(key)
-
-    def input_cursor(self) -> str:
-        """The composer's end-of-line caret: ``▏``, or ``|`` on the ascii preset.
-
-        omp ``symbols.inputCursor`` (``theme/tui-adapters.ts:156-161``); the
-        editor's caret getter is ``editor.ts:1155-1165``.
-        """
-        return self._glyphs.symbol("inputCursor")
+    def symbol(self, key: str, *, preset: str | None = None) -> str:
+        """Resolve a semantic glyph, using explicit presets over user overrides."""
+        if preset is not None:
+            return SYMBOL_PRESETS[preset].get(key, "")
+        override = self._symbol_overrides.get(key)
+        if override is not None:
+            return override
+        return SYMBOL_PRESETS[self._glyphs.preset].get(key, "")
 
     def styled_symbol(self, key: str, token: str) -> str:
         """Resolve a glyph and colour it (omp ``styledSymbol``)."""
@@ -815,22 +882,167 @@ class _TokenSyntaxTheme(SyntaxTheme):
 # ---------------------------------------------------------------------------
 
 
-def _build(name: str, glyph_preset: str, color_system: ColorSystem | None) -> Theme:
-    fg, bg = _split(_PALETTES[name])
-    return Theme(
-        name=name,
-        mode=_THEME_MODES[name],
-        colors=fg,
-        backgrounds=bg,
-        color_system=color_system,
-        glyph_preset=glyph_preset,
-    )
+def _theme_field_error(
+    field_path: str,
+    value: object,
+    message: str,
+    field_sources: Mapping[str, str],
+) -> ValueError:
+    location = format_runtime_config_field_error(field_path)
+    source = field_sources.get(field_path)
+    if source is not None:
+        location += f" in {source!r}"
+    return ValueError(f"{location} got {value!r}: {message}")
 
 
-@lru_cache(maxsize=32)
-def _resolve_cached(name: str, _mode: str, glyph_preset: str, color_system: str | None) -> Theme:
-    system = None if color_system is None else ColorSystem[color_system]
-    return _build(name, glyph_preset, system)
+def _custom_palette(
+    name: str,
+    definition: TuiCustomThemePayload,
+    field_sources: Mapping[str, str] | None = None,
+) -> tuple[str, Mapping[str, str | int]]:
+    sources = field_sources or {}
+    name_path = f"tui.theme.custom[{name!r}]"
+    if not name or _contains_terminal_controls(name):
+        raise _theme_field_error(name_path, name, "name must be non-empty and contain no terminal control characters", sources)
+    mode = definition.mode
+    variables = definition.vars
+    colors = definition.colors
+    mode_path = f"{name_path}.mode"
+    if mode not in ("dark", "light"):
+        raise _theme_field_error(mode_path, mode, "mode must be dark or light", sources)
+    base = "voidcode-dark" if mode == "dark" else "voidcode-light"
+    for variable, value in variables.items():
+        variable_path = f"{name_path}.vars[{variable!r}]"
+        if not isinstance(variable, str):
+            raise _theme_field_error(f"{name_path}.vars", variable, "variable keys must be strings", sources)
+        if not variable:
+            raise _theme_field_error(variable_path, variable, "variable names must be non-empty", sources)
+        if _contains_terminal_controls(variable):
+            raise _theme_field_error(variable_path, variable, "variable names must contain no terminal control characters", sources)
+        if isinstance(value, bool) or not isinstance(value, str | int):
+            raise _theme_field_error(variable_path, value, "value must be a color string or ANSI index", sources)
+        if isinstance(value, str) and not value:
+            raise _theme_field_error(variable_path, value, "value must be non-empty", sources)
+        if isinstance(value, str) and _contains_terminal_controls(value):
+            raise _theme_field_error(variable_path, value, "value contains terminal control characters", sources)
+        if isinstance(value, int) and not 0 <= value <= 255:
+            raise _theme_field_error(variable_path, value, "ANSI index must be between 0 and 255", sources)
+        if value == "terminal-default":
+            raise _theme_field_error(variable_path, value, "value cannot use terminal-default", sources)
+        try:
+            _resolve_palette_value(value, variables, variable_path)
+        except ValueError as error:
+            raise _theme_field_error(variable_path, value, str(error), sources) from error
+    palette = dict(_ORIGINAL_PALETTES[base])
+    for token, value in colors.items():
+        color_path = f"{name_path}.colors[{token!r}]"
+        if not isinstance(token, str):
+            raise _theme_field_error(f"{name_path}.colors", token, "color keys must be strings", sources)
+        if _contains_terminal_controls(token):
+            raise _theme_field_error(color_path, token, "color keys must contain no terminal control characters", sources)
+        if token not in FG_TOKENS | BG_TOKENS:
+            raise _theme_field_error(color_path, token, "unknown theme token", sources)
+        if isinstance(value, bool) or not isinstance(value, str | int):
+            raise _theme_field_error(color_path, value, "value must be a color string or ANSI index", sources)
+        if isinstance(value, str) and not value:
+            raise _theme_field_error(color_path, value, "value must be non-empty", sources)
+        if isinstance(value, str) and _contains_terminal_controls(value):
+            raise _theme_field_error(color_path, value, "value contains terminal control characters", sources)
+        try:
+            palette[token] = _resolve_palette_value(value, variables, token)
+        except ValueError as error:
+            raise _theme_field_error(color_path, value, str(error), sources) from error
+    return mode, MappingProxyType(palette)
+
+
+def _palette_for_name(
+    name: str,
+    custom: Mapping[str, TuiCustomThemePayload],
+) -> tuple[str, Mapping[str, str | int]]:
+    if not name or _contains_terminal_controls(name):
+        raise ValueError(f"theme.name {name!r} must be non-empty and contain no terminal control characters")
+    if name in _ORIGINAL_PALETTES:
+        return _THEME_MODES[name], _ORIGINAL_PALETTES[name]
+    if name in _UPSTREAM_THEMES:
+        return _THEME_MODES[name], _load_upstream_palette(name)
+    if name in custom:
+        return _custom_palette(name, custom[name])
+    raise ValueError(f"unknown theme palette {name!r}")
+
+
+def _validate_symbol_configuration(
+    preset: str,
+    overrides: Mapping[str, str],
+    field_sources: Mapping[str, str],
+) -> None:
+    preset_path = "tui.theme.symbols.preset"
+    if preset not in SYMBOL_PRESETS:
+        raise _theme_field_error(preset_path, preset, f"must be one of: {', '.join(SYMBOL_PRESETS)}", field_sources)
+    known = set().union(*(symbols.keys() for symbols in SYMBOL_PRESETS.values()))
+    for key, glyph in overrides.items():
+        override_path = f"tui.theme.symbols.overrides[{key!r}]"
+        if not isinstance(key, str):
+            raise _theme_field_error("tui.theme.symbols.overrides", key, "keys must be strings", field_sources)
+        if _contains_terminal_controls(key):
+            raise _theme_field_error(override_path, key, "key contains terminal control characters", field_sources)
+        if key not in known:
+            raise _theme_field_error(override_path, key, "unknown symbol", field_sources)
+        if not isinstance(glyph, str):
+            raise _theme_field_error(override_path, glyph, "value must be a string", field_sources)
+        if _contains_terminal_controls(glyph):
+            raise _theme_field_error(override_path, glyph, "value contains terminal control characters", field_sources)
+
+
+def validate_theme_configuration(config: RuntimeTuiThemeConfig) -> None:
+    """Validate both palette slots and every custom entry before terminal mode."""
+    sources = config.field_sources
+    if config.mode not in DEFAULT_THEME_NAMES:
+        raise _theme_field_error("tui.theme.mode", config.mode, "mode must be auto, light, or dark", sources)
+    for slot, name in (("dark", config.dark), ("light", config.light)):
+        slot_path = f"tui.theme.{slot}"
+        if not name or _contains_terminal_controls(name):
+            raise _theme_field_error(slot_path, name, "palette name must be non-empty and contain no terminal control characters", sources)
+    if config.dark in _UPSTREAM_THEMES or config.dark in _VOIDCODE_THEMES:
+        dark_mode = _THEME_MODES[config.dark]
+    elif config.dark in config.custom:
+        dark_mode, _palette = _custom_palette(config.dark, config.custom[config.dark], sources)
+    else:
+        raise _theme_field_error("tui.theme.dark", config.dark, "references unknown palette", sources)
+    if dark_mode != "dark":
+        raise _theme_field_error("tui.theme.dark", config.dark, "palette must declare dark mode", sources)
+    if config.light in _UPSTREAM_THEMES or config.light in _VOIDCODE_THEMES:
+        light_mode = _THEME_MODES[config.light]
+    elif config.light in config.custom:
+        light_mode, _palette = _custom_palette(config.light, config.custom[config.light], sources)
+    else:
+        raise _theme_field_error("tui.theme.light", config.light, "references unknown palette", sources)
+    if light_mode != "light":
+        raise _theme_field_error("tui.theme.light", config.light, "palette must declare light mode", sources)
+    for name, definition in config.custom.items():
+        name_path = f"tui.theme.custom[{name!r}]"
+        if not name or _contains_terminal_controls(name):
+            raise _theme_field_error(name_path, name, "name must be non-empty and contain no terminal control characters", sources)
+        if name in THEME_NAMES:
+            raise _theme_field_error(name_path, name, "name conflicts with a bundled palette", sources)
+        _custom_palette(name, definition, sources)
+    _validate_symbol_configuration(config.symbols_preset, config.symbols_overrides, sources)
+
+
+def palette_names(
+    mode: Literal["dark", "light"],
+    custom: Mapping[str, TuiCustomThemePayload] | None = None,
+) -> tuple[str, ...]:
+    """Return bundled and configured custom palette names for one actual mode."""
+    if mode not in ("dark", "light"):
+        raise ValueError("palette mode must be dark or light")
+    names = [name for name, palette_mode in _THEME_MODES.items() if palette_mode == mode]
+    if custom:
+        for name, palette in custom.items():
+            if not name or _contains_terminal_controls(name):
+                raise ValueError(f"tui.theme.custom[{name!r}] name must be non-empty and contain no terminal control characters")
+            if name not in _THEME_MODES and palette.mode == mode:
+                names.append(name)
+    return tuple(sorted(names))
 
 
 def resolve_theme(
@@ -839,19 +1051,35 @@ def resolve_theme(
     *,
     color_system: ColorSystem | None = ColorSystem.TRUECOLOR,
     glyph_preset: str = "unicode",
+    custom: Mapping[str, TuiCustomThemePayload] | None = None,
+    symbol_overrides: Mapping[str, str] | None = None,
 ) -> Theme:
-    """Resolve an unresolved palette name + mode into a :class:`Theme`.
+    """Resolve one exact palette name and its validated semantic glyph set."""
+    if mode not in DEFAULT_THEME_NAMES:
+        raise ValueError(f"theme mode must be one of: {', '.join(DEFAULT_THEME_NAMES)}")
+    custom_palettes = custom or {}
+    resolved = name if name is not None else DEFAULT_THEME_NAMES["dark" if mode == "auto" else mode]
+    palette_mode, palette = _palette_for_name(resolved, custom_palettes)
+    if mode in ("dark", "light") and palette_mode != mode:
+        raise ValueError(f"theme palette '{resolved}' must declare {mode} mode")
+    overrides = symbol_overrides or {}
+    _validate_symbol_configuration(glyph_preset, overrides, {})
+    fg, bg = _split(palette)
+    return Theme(
+        name=resolved,
+        mode=palette_mode,
+        colors=fg,
+        backgrounds=bg,
+        color_system=color_system,
+        glyph_preset=glyph_preset,
+        symbol_overrides=MappingProxyType(dict(overrides)),
+    )
 
-    ``name`` may be ``None`` or a typo: the mode's default palette is used
-    instead. An unknown ``mode`` degrades to ``auto``. ``glyph_preset`` selects
-    omp's unicode or ascii symbol table (pass ``"ascii"`` when the terminal
-    cannot render the unicode glyphs).
-    """
-    fallback_mode = mode if mode in DEFAULT_THEME_NAMES else "auto"
-    default_name = DEFAULT_THEME_NAMES[fallback_mode]
-    if name in THEME_NAMES and (fallback_mode == "auto" or _THEME_MODES[name] == fallback_mode):
-        resolved = name
-    else:
-        resolved = default_name
-    system = None if color_system is None else color_system.name
-    return _resolve_cached(resolved, fallback_mode, glyph_preset, system)
+
+def background_mode(rgb: tuple[int, int, int] | None) -> Literal["dark", "light"] | None:
+    """Classify a reported terminal background by linear relative luminance."""
+    if rgb is None:
+        return None
+    linear = tuple((channel / 255) / 12.92 if channel / 255 <= 0.04045 else ((channel / 255 + 0.055) / 1.055) ** 2.4 for channel in rgb)
+    luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+    return "dark" if luminance < 0.179 else "light"

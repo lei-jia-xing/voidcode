@@ -19,7 +19,8 @@
 
 1. 只有一个取消槽位对工具可见：`context.abort_signal`。用户中断取消 **run 级信号**；runtime 超时只取消 **该次 invocation**，不得把 run 变成 `interrupted`。两者在同一个槽位上以 `abort_signal.cancelled` / `abort_signal.reason` 呈现。
 2. 工具必须轮询该槽位并在观察到后停止；不轮询的工具不可被中断，runtime 只能如实报告 `side_effect_state="unknown"`，不得伪装成普通失败。
-3. 超时路径先置位取消信号，**再**停止等待，然后做有界回收（见 (b)）。
+3. 超时路径先置位取消信号，**再**停止等待；用户中断路径等待执行体观察 run 信号。两条路径均按 (b) 有界回收，用户中断不得把信号原因转换成普通工具失败。
+4. 取消不能把普通迟到成功升级为工具成功。若工具在有界回收窗口内返回 `ToolFailure`，runtime 记录其错误与 failure body，并补齐或保留 `ConfirmedStop` / `UnconfirmedStop`，再以 `runtime.failed` 终结 run；明确取消终态 payload 为 `kind="interrupted"`、`cancelled=true`、`reason`，会话状态为 `interrupted`。若取消已被 runtime 观察到但只排队了普通成功结果（包括 `ToolSuccess`），结果内容/typed body/control 不作为调用结果提交；runtime 改为记录带实际停止观察的 `ToolFailure("run interrupted")`，然后持久化上述中断终态。若执行仍未停止，观察为 `UnconfirmedStop`、副作用状态为 `unknown`；回收窗口后到达的结果只记日志，绝不提交。
 
 执行点：
 
@@ -30,8 +31,10 @@
 | 用户中断取消 run 信号 | `src/voidcode/runtime/active_session.py::ActiveSessionRegistry.interrupt` |
 | core request / engine 观察 abort | `src/voidcode/core/turns.py::TurnRequest.abort_signal` → `src/voidcode/core/engine.py::EngineState.cancelled` |
 | invocation 取消视图 | `src/voidcode/runtime/tool_execution.py::_InvocationCancelSignal`；`_invoke_tool` 通过显式 `ToolContext` 传入，未使用 tool-identity ContextVar |
-| 超时置位（停止等待之前） | `src/voidcode/runtime/tool_execution.py::_invoke_with_progress` |
-| 工具侧读取该槽位 | `src/voidcode/core/tool_context.py::ToolContext.abort_signal` |
+| 工具侧读取取消槽位 | `src/voidcode/core/tool_context.py::ToolContext.abort_signal` |
+| invocation timeout 置位（停止等待之前） | `src/voidcode/runtime/tool_execution.py::_invoke_with_progress` |
+| 超时/中断有界回收与迟到结果处理 | `src/voidcode/runtime/tool_execution.py::RuntimeToolExecutor._invoke_with_progress` |
+| 用户中断终结 | `src/voidcode/runtime/run_loop.py::RuntimeHost.execute` / `RuntimeRunLoopCoordinator._execute_invoked_tool`（先写 `runtime.tool_completed`，再写中断终态） |
 | 超时不得把 run 变成 interrupted | 仅 active-session interrupt 写 run signal；工具超时只写 invocation signal |
 
 runtime command 的绑定捕获真实 caller/session/run/invocation、approved call 和
@@ -43,8 +46,8 @@ dispatch 前拒绝已取消的调用，调用者换一个 context 或清掉 abor
 
 规范：
 
-1. 一次 invocation 的结果只有在 runtime 确认其执行已结束之后才允许提交：超时路径先置取消、再有界回收（`_TOOL_TIMEOUT_REAP_SECONDS`），据回收结果给出 `cancellation_signalled` / `execution_stopped` / `side_effect_state`（`settled` 当且仅当 `execution_stopped`）；未确认停止时 `error` 必须说明执行可能仍在运行。
-2. 在已记录的调用结果之后到达的完成结果**永不**作为该调用的结果提交，只记入 runtime 日志用于诊断。
+1. 一次 invocation 的结果只有在 runtime 确认其执行已结束之后才允许提交：超时与用户中断路径都必须有界回收（`_TOOL_TIMEOUT_REAP_SECONDS`），超时先置 invocation 取消信号。超时结果使用 `cancellation_signalled` / `execution_stopped` / `side_effect_state` 记录回收事实（`settled` 当且仅当 `execution_stopped`）；用户中断的工具结果保留 typed stop observation。未确认停止时副作用状态为 `unknown`，且之后到达的结果永不作为该调用结果提交。
+2. 若 runtime 在 run abort 后才从排队项中取到普通成功结果，该结果永不作为本次工具调用提交：以泛化的 `ToolFailure("run interrupted")` 替代，保留真实的停止事实，丢弃迟到成功结果的 output/body/control，不进入事件、provider context 或 assistant output。若工具在取消时返回 `ToolFailure`，runtime 保留错误与 failure body，并补齐实际停止观察 (`ConfirmedStop` / `UnconfirmedStop`)；已声明 typed stop 的结果原样保留。回收窗口结束后才返回的 worker 结果只记诊断日志。
 3. 所有 runtime 真相写入都必须经过唯一的 storage 写网关；已封印的 session 拒绝任何 late event。
 4. 同一 session 上并发 run 共享事件流：终态封印属于**最后一个**活跃 run，先结束的 run 不得封印。
 5. 工具结果提交后立即清除该调用的 pending intent；未清除的 pending intent 只是**未结算意图**，不等于结果。
@@ -65,6 +68,7 @@ dispatch 前拒绝已取消的调用，调用者换一个 context 或清掉 abor
 | 有界回收 + 事实判定 | `src/voidcode/runtime/tool_execution.py::RuntimeToolExecutor._invoke_with_progress`、`src/voidcode/runtime/tool_execution.py::_TOOL_TIMEOUT_REAP_SECONDS`（timeout signal 先置位，回收后判定 execution/side-effect 事实，late result 不提交） |
 | 提交超时结果（含诚实措辞） | `src/voidcode/runtime/run_loop.py::RuntimeRunLoopCoordinator._execute_tool_and_recover`、`src/voidcode/runtime/run_loop.py::_tool_timeout_execution_facts` |
 | 提交正常工具结果 + 清除 intent | `src/voidcode/runtime/run_loop.py::RuntimeRunLoopCoordinator._emit_tool_completed_events` → `src/voidcode/runtime/session_metadata_helpers.py::clear_tool_execution_intent` |
+| 工具完成后再终结用户中断 | `src/voidcode/runtime/run_loop.py::RuntimeRunLoopCoordinator._execute_invoked_tool` → `chunk_builders.user_interrupted_payload` |
 | 唯一 storage 写网关 | `src/voidcode/runtime/storage/sqlite.py::SqliteSessionStore._write_connect` → `src/voidcode/runtime/execution_ownership.py::ExecutionOwnershipRegistry.assert_writes_allowed`（位于 `BEGIN IMMEDIATE` 之前） |
 | 封印：storage 层 | `src/voidcode/runtime/storage/shared.py::_assert_terminal_session_events_allowed`，由 `storage/sessions.py::append_session_event` / `append_session_events` 两个增量入口调用 |
 | 封印：runtime 层（含无活跃 run 的 `interrupted`） | `src/voidcode/runtime/service.py::VoidCodeRuntime._sealed_session_status` → `src/voidcode/runtime/coordinators/finalize.py::FinalizeCoordinator.sealed_session_status` |

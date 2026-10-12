@@ -34,3 +34,9 @@ Case 3's `ctok` vocabulary is redistributed under its own MIT licence; the
 copyright notice above is the attribution that licence requires.
 
 MIT covers this project's own code; see `LICENSE`.
+
+The 100 theme palette JSON files in `src/voidcode/tui/themes/` are bundled
+byte-for-byte from `can1357/oh-my-pi`, commit
+`b07a1c146d0d12cfc855a2c65d52f892ef319040`, directory
+`packages/tui/src/theme/defaults`. Copyright notices and the full MIT licence
+are in `src/voidcode/tui/themes/LICENSE.oh-my-pi`.

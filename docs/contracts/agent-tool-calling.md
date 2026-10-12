@@ -166,18 +166,20 @@ Model-facing `ToolResultView` 是隔离投影，包含调用 ID、最终工具�
 Runtime 拥有工具执行生命周期：工具不得自行判定"这次调用算不算结束"，也不得假设只有成功返回的结果才会被记录。
 
 - **取消如何传入正在运行的工具**：runtime 交给工具的 `context.abort_signal` 就是该次调用的取消视图。用户中断取消 run 级信号；runtime 超时只取消该次调用（不得把 run 变成 `interrupted`）。两者都通过同一个槽位 `context.abort_signal.cancelled` 对工具可见；工具必须轮询它，并在观察到之后尽快停止，不得继续写入。
+若工具在中断回收窗口内返回带 `ConfirmedStop` / `UnconfirmedStop` 的取消 `ToolFailure`，runtime 先记录 `runtime.tool_completed`，再以状态 `interrupted` 结束 run；终态 `runtime.failed` payload 包含 `kind="interrupted"`、`cancelled=true` 与取消 `reason`。在取消后才就绪的普通成功结果不会把其 output/body/control 提交给 provider；runtime 记录通用 `ToolFailure("run interrupted")` 与实际停止观察。若工具自身在观察取消后返回 `ToolFailure`，runtime 保留其错误/failure body，并补齐实际停止观察；无法确认停止时使用 `UnconfirmedStop` 且副作用状态为 `unknown`。显式取消不能降级为普通工具失败。
+- **无法确认停止**：若回收窗口结束时工具执行仍未停止，运行时以 `UnconfirmedStop` 保留未知的执行 / 副作用状态；无论其迟到结果之后如何完成，均不得提交为该调用的结果。未知副作用不能伪装成 `settled`，也不表示已发生的副作用会回滚。
 - **runtime 何时可以认为执行已经结束**：只有在有界回收窗口内确认执行线程已经退出（`execution_stopped=true`）时。超时路径先设置取消信号，再停止等待，然后回收；`runtime.tool_timeout`、该次调用的 `runtime.tool_completed`（`diagnostics.kind="tool_timeout"`）与终结 run 的 `runtime.failed` 都带同一组事实：`cancellation_signalled`、`execution_stopped`、`side_effect_state`（`settled` 当且仅当 `execution_stopped`）。
 - **runtime 对副作用的承诺**：`settled` 只对这一条执行成立（runtime 已确认该执行线程退出，不再有来自它的新副作用；工具自行派生、已脱离该执行的写入者不在承诺范围内）；无法确认停止时必须报告 `side_effect_state="unknown"`，并在 `error` 文本中说明该执行可能仍在运行、副作用状态未知；不允许退化成普通的失败。`settled` 从不表示已发生的副作用被回滚或未发生，runtime 不承诺线程取消能回滚任何已完成的副作用。
-- **结果所有权**：runtime 记录超时结果之后到达的完成结果不会被提交为工具结果，只会记入 runtime 日志用于诊断。
+- **结果所有权**：runtime 记录结果之后到达的完成结果不会被提交为工具结果，只会记入 runtime 日志用于诊断。
 - 工具自行超时（`RuntimeTimeoutAwareTool.invoke_with_runtime_timeout`）时由工具保证停止，此时 `cancellation_signalled=false`，runtime 仍会在有界窗口内回收其执行线程并报告 `execution_stopped`。
 - 不轮询取消信号的工具无法被中断，只能等它自己结束；runtime 会如实报告 `side_effect_state="unknown"`。
 
 ## Permission 与 approval 规则
 
 `ToolDefinition.effects` 描述行为；审批 authority 仍只属于 runtime。共享
-`is_read_tier(effects)` 保留静态 plan/tool-scope 分类；它不是执行许可。例如
+`is_read_tier(effects)` 保留静态 tool-scope 分类；它不是执行许可。例如
 local manifest 的 `read_only=true` 翻译成 `read/execute/spawn`，可以通过静态
-read-tier 筛选，但每次 argv 调用仍是 `execute`，在 effective read-only 模式下被拒绝。
+read-tier 筛选，但每次 argv 调用仍是 `execute`，在显式 `read_only` 策略下被拒绝。
 
 | 实际 operation class | `ask` | `write` | `yolo`（默认） |
 | --- | --- | --- | --- |
@@ -185,7 +187,7 @@ read-tier 筛选，但每次 argv 调用仍是 `execute`，在 effective read-on
 | `write` | 等待审批 | 自动允许 | 自动允许 |
 | `execute` | 等待审批 | 等待审批 | 自动允许 |
 
-此表不覆盖更高优先级的 agent/tool allowlist、plan/read-only ceiling、
+此表不覆盖更高优先级的 agent/tool allowlist、显式 `read_only` ceiling、
 外部目录规则或显式 permission rules。`allow/deny/ask` 是单次 decision，
 不是 approval-mode 词表；拒绝以 `ToolFailure(status="error")` 与
 `permission_denied` 诊断返回给模型。详见 [审批契约](approval-flow.md)。
@@ -574,7 +576,7 @@ runtime 在成功的 mutation 后更新 session metadata 中的 runtime todo sta
 #### `task`
 
 - 分组：delegated execution
-- 权限分类按 `operation` 区分：`output` / `ps` 为 `read`（只读）；`cancel` 为 `execute`；`steer` 为 `write`。后两者会修改 runtime-owned task state，必须经过对应的 execute/write governance；plan/read-only runtime mode 拒绝 `cancel` 与 `steer`，不能把整个 facade 视为只读。
+- 权限分类按 `operation` 区分：`output` / `ps` 为 `read`（只读）；`cancel` 为 `execute`；`steer` 为 `write`。后两者会修改 runtime-owned task state，必须经过对应的 execute/write governance；显式 `read_only` 策略拒绝 `cancel` 与 `steer`，不能把整个 facade 视为只读。
 - 用途：通过统一 facade 管理 runtime-owned 后台任务；`operation` 必须是 `output`、`ps`、`cancel` 或 `steer`。
 - `operation="output"` 要求 selector 严格三选一：`task_id`（单任务）、`task_ids`（显式聚合，1–100 个且不得重复）或 `parallel_group_id`（runtime-owned 聚合组）。聚合读取使用当前 runtime tool context 的 parent session owner。
 - `operation="output"` 的 `block=false` 立即返回当前快照；`block=true` 通过 runtime lifecycle wait 等待一次。`timeout` 仅用于阻塞等待，单位为毫秒且至少 1000ms；超时返回当前状态并标记 `block_timed_out`，不得把任务误标为失败。
@@ -860,7 +862,7 @@ metadata/events，不能作为授权依据。
 4. Runtime 将 `edit` 的实际操作归为 `write`：
    - `approval-mode=ask`：发出 `runtime.approval_requested` 并暂停；
    - `approval-mode=write|yolo`：规则与其他 hard boundary 允许时执行；
-   - plan/read-only 或显式 deny rule：拒绝执行。
+- 显式 `read_only` 或显式 deny rule：拒绝执行。
 
 5. 当 approval / permission 与 pre-tool hook 都已通过后，runtime 先发出 `runtime.tool_started`，表示真实工具执行开始。
 

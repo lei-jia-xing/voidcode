@@ -382,7 +382,7 @@ class _WriteProbe:
         return ToolSuccess(tool_name=call.tool_name, output=TextOutput("written"))
 
 
-def test_deferred_write_denied_in_plan_mode_never_writes_file(tmp_path: Path) -> None:
+def test_deferred_write_denied_in_read_only_runtime_never_writes_file(tmp_path: Path) -> None:
     target = tmp_path / "must-not-exist.txt"
     response = _runtime(
         tmp_path,
@@ -393,7 +393,7 @@ def test_deferred_write_denied_in_plan_mode_never_writes_file(tmp_path: Path) ->
             arguments={"name": "write_probe", "arguments": {"path": "written"}},
         ),
         include_invoke_tool=True,
-    ).run(RuntimeRequest(prompt="do not write", metadata={"mode": "plan"}))
+    ).run(RuntimeRequest(prompt="do not write", metadata={"read_only": True}))
 
     assert response.session.status == "completed"
     assert not target.exists()

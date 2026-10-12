@@ -1,10 +1,10 @@
 """Pure, stateful byte -> key decoder for terminal input.
 
 Mirrors omp's canonical key normalisation (``crates/pi-natives/src/keys.rs``
-and ``packages/tui/src/keys.ts``) as captured in
-``.omo/plans/tui-input-spec.md``. No terminal I/O, no ``rich``, no imports
-from other ``voidcode.tui`` modules -- this module stays dependency-free so it
-can be exercised headlessly.
+and ``packages/tui/src/keys.ts``). ``Terminal`` owns device I/O, native-event
+translation, capability queries, and physical caret; this module decodes the
+byte stream only. Unknown control reports remain ``unknown`` keys rather than
+user key chords.
 """
 
 from __future__ import annotations
@@ -549,6 +549,8 @@ def _format_kitty(parsed: _Kitty) -> Key | None:
         return Key(name, text)
 
     name = _format_key_name(effective_codepoint)
+    if name is None and 0x20 <= effective_codepoint <= 0x10FFFF and not 0xD800 <= effective_codepoint <= 0xDFFF:
+        name = chr(effective_codepoint)
     if name is None:
         return None
     return Key(_format_with_mods(effective, name), text)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
@@ -10,10 +10,9 @@ from voidcode.runtime.contracts import (
     RuntimeRequestError,
     validate_runtime_request_metadata,
 )
-from voidcode.runtime.mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
 from voidcode.runtime.permission import (
     DEFAULT_APPROVAL_MODE,
-    PLAN_MODE_DENIAL_REASON,
+    READ_ONLY_DENIAL_REASON,
     ExternalDirectoryPermissionConfig,
     ExternalDirectoryPolicy,
     OperationClass,
@@ -22,6 +21,7 @@ from voidcode.runtime.permission import (
     approval_decision,
     is_read_only_blocked,
     resolve_permission,
+    runtime_read_only_from_metadata,
 )
 from voidcode.runtime.permission_context import RuntimePermissionContextResolver, operation_class_for_tool
 from voidcode.runtime.permission_engine import PermissionEngine
@@ -94,8 +94,8 @@ def test_resolve_permission_read_only_denies_write_tool() -> None:
     assert outcome.decision == "deny"
     assert outcome.pending_approval is not None
     assert outcome.pending_approval.policy_mode == "deny"
-    assert outcome.pending_approval.policy_surface == "mode.plan"
-    assert outcome.pending_approval.reason == PLAN_MODE_DENIAL_REASON
+    assert outcome.pending_approval.policy_surface == "read_only"
+    assert outcome.pending_approval.reason == READ_ONLY_DENIAL_REASON
 
 
 def test_resolve_permission_read_only_denies_shell_execute_operation() -> None:
@@ -119,7 +119,7 @@ def test_resolve_permission_read_only_denies_shell_execute_operation() -> None:
     assert operation == "execute"
     assert outcome.decision == "deny"
     assert outcome.pending_approval is not None
-    assert outcome.pending_approval.policy_surface == "mode.plan"
+    assert outcome.pending_approval.policy_surface == "read_only"
     assert outcome.pending_approval.operation_class == "execute"
 
 
@@ -135,7 +135,7 @@ def test_resolve_permission_read_only_allows_read_only_tool() -> None:
     assert outcome.pending_approval is None
 
 
-def test_resolve_permission_normal_mode_does_not_short_circuit() -> None:
+def test_resolve_permission_without_read_only_does_not_short_circuit() -> None:
     outcome = resolve_permission(
         _write_tool(),
         _call(),
@@ -145,9 +145,8 @@ def test_resolve_permission_normal_mode_does_not_short_circuit() -> None:
 
     assert outcome.decision == "ask"
     assert outcome.pending_approval is not None
-    # Reason in normal mode should remain the default approval reason rather than
-    # the read-only denial sentinel.
-    assert outcome.pending_approval.reason != PLAN_MODE_DENIAL_REASON
+    # Without read-only policy the default approval reason remains in force.
+    assert outcome.pending_approval.reason != READ_ONLY_DENIAL_REASON
 
 
 def test_resolve_permission_read_only_overrides_explicit_allow_rule() -> None:
@@ -162,42 +161,17 @@ def test_resolve_permission_read_only_overrides_explicit_allow_rule() -> None:
 
     assert outcome.decision == "deny"
     assert outcome.pending_approval is not None
-    assert outcome.pending_approval.policy_surface == "mode.plan"
+    assert outcome.pending_approval.policy_surface == "read_only"
 
 
-def test_request_metadata_defaults_to_normal_action_capable_runtime_mode() -> None:
-    normalized = validate_runtime_request_metadata({})
-
-    assert runtime_mode_from_metadata(normalized) == "normal"
-    assert runtime_read_only_from_metadata(normalized) is False
+def test_request_metadata_rejects_removed_runtime_mode_field() -> None:
+    with pytest.raises(RuntimeRequestError, match="unsupported request metadata field.*mode"):
+        validate_runtime_request_metadata({"mode": "plan"})
 
 
-@pytest.mark.parametrize("mode", ["normal", "plan"])
-def test_request_metadata_accepts_runtime_mode(mode: str) -> None:
-    normalized = validate_runtime_request_metadata({"mode": mode})
-
-    assert normalized.get("mode") == mode
-
-
-@pytest.mark.parametrize(
-    ("helper", "metadata", "match"),
-    (
-        pytest.param(validate_runtime_request_metadata, {"mode": "magic"}, "mode", id="validate-unknown-mode"),
-        pytest.param(
-            validate_runtime_request_metadata,
-            {"read_only": "true"},
-            "read_only",
-            id="validate-non-boolean-read-only",
-        ),
-    ),
-)
-def test_request_metadata_rejects_invalid_mode_and_read_only(
-    helper: Any,
-    metadata: dict[str, object],
-    match: str,
-) -> None:
-    with pytest.raises(RuntimeRequestError, match=match):
-        _ = helper(metadata)
+def test_request_metadata_rejects_invalid_read_only_flag() -> None:
+    with pytest.raises(RuntimeRequestError, match="read_only"):
+        validate_runtime_request_metadata({"read_only": "true"})
 
 
 def test_internal_request_metadata_preserves_discriminated_composition_owner(tmp_path: Path) -> None:
@@ -224,20 +198,6 @@ def test_request_metadata_accepts_explicit_read_only_flag(read_only: bool) -> No
 
     assert normalized.get("read_only") is read_only
     assert runtime_read_only_from_metadata(normalized) is read_only
-
-
-def test_plan_runtime_mode_implies_effective_read_only() -> None:
-    normalized = validate_runtime_request_metadata({"mode": "plan", "read_only": False})
-
-    assert runtime_mode_from_metadata(normalized) == "plan"
-    assert runtime_read_only_from_metadata(normalized) is True
-
-
-def test_normal_runtime_mode_allows_explicit_read_only() -> None:
-    normalized = validate_runtime_request_metadata({"mode": "normal", "read_only": True})
-
-    assert runtime_mode_from_metadata(normalized) == "normal"
-    assert runtime_read_only_from_metadata(normalized) is True
 
 
 def test_default_policy_auto_approves_every_tier() -> None:
@@ -300,7 +260,7 @@ def test_apply_workspace_edit_paths_are_classified_by_runtime_permissions(tmp_pa
     assert candidates == (external.resolve().as_posix(),)
 
 
-def test_ast_grep_replace_is_write_operation_and_denied_in_plan_mode(tmp_path: Path) -> None:
+def test_ast_grep_replace_is_write_operation_and_denied_read_only(tmp_path: Path) -> None:
     definition = ToolDefinition(name="ast_grep", description="AST rewrite", effects=frozenset({ToolEffect.WRITE}))
     call = ToolCall(
         tool_name="ast_grep",
@@ -323,7 +283,7 @@ def test_ast_grep_replace_is_write_operation_and_denied_in_plan_mode(tmp_path: P
     )
     assert outcome.decision == "deny"
     assert outcome.pending_approval is not None
-    assert outcome.pending_approval.policy_surface == "mode.plan"
+    assert outcome.pending_approval.policy_surface == "read_only"
 
 
 class _StubTool:

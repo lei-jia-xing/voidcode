@@ -1471,8 +1471,6 @@ export interface components {
             hook_policy: components["schemas"]["RuntimePolicyHookPolicyBody"];
             intent: components["schemas"]["RuntimePolicyIntentBody"];
             materialization: components["schemas"]["RuntimePolicyMaterializationBody"];
-            /** Mode */
-            mode?: string | null;
             /** Policy Version */
             policy_version?: string | null;
             /** Precedence Trace */

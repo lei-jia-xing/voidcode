@@ -122,7 +122,7 @@ def test_missing_effects_require_approval_but_explicit_read_does_not() -> None:
 
 
 def test_read_only_denial_still_wins_over_yolo_resolution() -> None:
-    """Plan/read-only denial is above the mode matrix; ``yolo`` cannot re-enable it."""
+    """Read-only denial is above the approval-mode matrix; ``yolo`` cannot re-enable it."""
     definition, call = _TIER_TOOLS["write"]
     outcome = resolve_permission(
         definition,
@@ -134,7 +134,7 @@ def test_read_only_denial_still_wins_over_yolo_resolution() -> None:
 
     assert outcome.decision == "deny"
     assert outcome.pending_approval is not None
-    assert outcome.pending_approval.policy_surface == "mode.plan"
+    assert outcome.pending_approval.policy_surface == "read_only"
 
 
 def _write_step() -> ToolTurn:

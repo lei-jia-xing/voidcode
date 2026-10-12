@@ -270,9 +270,12 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `agent.fallback_models`：agent-scoped shorthand；必须同时配置 `agent.model`，runtime 会把 `agent.model` 作为内部 `provider_fallback.preferred_model`，并把该数组作为 fallback chain；这是 agent 配置中唯一的 fallback 配置入口
 - `agents.<preset>`：按 preset 配置 delegated child / primary agent defaults；builtin key 与已发现本地 manifest key 可省略 `preset`，alias key 必须显式声明 `preset`。
 - `agents.<preset>.fallback_models`：与 `agent.fallback_models` 相同的 shorthand；delegation path 会把选中 preset 的 fallback chain 持久化到 child session metadata。
-- `tui.keymap`：对象，值只允许 TUI 暴露的 namespaced action：`app.session.new`、`app.session.resume`、`app.tools.expand`、`app.display.reset`（强制整帧重绘 live 区域）、`app.history.search`（从 composer 的 prompt history 里挑一条回填 draft）。未知 action 在启动前直接报错。
-- `tui.preferences.theme.name`：字符串，可选。runtime 只携带/合并该偏好，不做任何调色板名校验、也不提供内置调色板列表；TUI 用自己的调色板注册表解析，未知或缺失的名字回落到 `theme.mode` 对应的默认调色板。
-- `tui.preferences.theme.mode`：`auto`、`light`、`dark` 之一；缺省为 `auto`
+- `tui.keymap`：对象，值只允许 `app.help`、`app.session.new`、`app.session.resume`、`app.session.tree`、`app.tools.expand`、`app.tools.detail`、`app.display.reset`、`app.history.search`、`app.tui.appearance`；未知 action 在启动前直接报错。
+- `tui.theme`：`mode` 为 `auto`、`light`、`dark`（默认 `auto`）；`dark` / `light` 是非空调色板名，默认分别为 `voidcode-dark` / `voidcode-light`。`custom.<name>` 使用非空精确名称并声明 `mode`、`vars` 与 `colors`；值为非空颜色字符串或 0–255 ANSI 整数，颜色字符串可引用 `vars`，`terminal-default` 仅可用于背景色。
+- `tui.theme.symbols`：`preset` 为 `unicode`、`ascii`、`nerd`；`overrides` 将已知符号键映射到字符串；显式指定 glyph preset 时优先使用该 preset，未指定时才应用 override。
+- `tui.statusline`：`layout` 为 `codex`、`claude`、`minimal`、`compact`、`full`、`ascii` 或 `custom`；`custom` 需要 `left` 或 `right` 段数组。`transparent` 为布尔值，`separator` 为 `none`、`dot`、`pipe`、`rule`；`options.<segment>` 可设置 `color`、`icon`、正整数 `max_width`。`color` 只接受 TUI 的已知前景 ThemeColor token；未知值、背景 token 和终端控制字符会在读取配置时按字段路径及配置来源报错。
+- `tui.composer`：`style`、`cursor.shape`、`gutter` 和 `padding` 使用封闭枚举；`cursor.blink` 为布尔值，且仅在显式 cursor shape 时可设。
+- `tui.brand.enabled`：布尔值；默认 `true`。
 - `reminders.enabled`：布尔值；默认 `true`。关闭后 runtime 不再通过 per-call reminder 通道注入任何提醒（也不写 reminder 计数器）
 - `reminders.todo.max_per_cycle`：正整数；默认 `3`。一个 cycle（一次 run，即 `runtime_state.run_id`）内最多注入多少条 todo 完成提醒
 
@@ -319,7 +322,8 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `permission.rules` 不能扩大 hard boundary：agent/tool allowlist 仍先收窄可见与可调用工具；外部目录规则仍先保护 workspace 外路径，且 pattern rule 只能把 external decision 收紧（例如 `allow -> ask/deny` 或 `ask -> deny`），不能把 external `deny` 降级为 `allow`。
 - workspace 内只读工具仍默认允许；如果需要让某个只读工具进入审批或拒绝路径，可用 `permission.rules` 显式 `ask` 或 `deny`。
 
-- 这些规则不替代稳定 runtime `mode` / `read_only` 策略。`analyze`、`plan` 与显式 `read_only=true` 会先形成 effective read-only context：mutating tools 会被 registry policy 隐藏/拒绝；`shell_exec` 仍可见，但每条命令还要经过 centralized shell classifier，package-manager、mutating 与 destructive command 在 read-only context 中会被拒绝。CLI / frontend 只传递请求意图，不应复制这层 enforcement。
+- 显式 `read_only=true` 会先形成 effective read-only context：mutating tools 会被 registry policy 隐藏/拒绝；`shell_exec` 仍可见，但每条命令还要经过 centralized shell classifier，package-manager、mutating 与 destructive command 在 read-only context 中会被拒绝。CLI / frontend 只传递请求意图，不应复制这层 enforcement。
+- 请求 metadata 的 `read_only` 是逐请求的 runtime execution constraint，不是持久化的 RuntimeMode/session ceiling；一个请求的值不会自动固定到后续独立请求。parent/delegated-task 的更严格约束仍按现有继承规则传播。
 
 常见策略示例：
 
@@ -485,36 +489,26 @@ frontmatter 是标准 YAML：未加引号的标量中 ` #` 会开始注释（`de
 
 则 runtime 会拒绝执行，而不是把 child role 悄悄映射到普通顶层 deterministic/provider 路径。这保持了 `agent/` declaration layer 与 `runtime/` execution truth 的边界；这些 preset 只能通过 runtime-owned delegation path 进入真实 child execution。
 
-## TUI 偏好优先级与持久化语义
+## TUI 配置优先级与持久化语义
 
-TUI 偏好与其他多数领域不同，拥有一条单独的双层优先级链：
+`tui` 由 user 与 workspace 两层配置组成：
 
-1. workspace override（仓库本地 `.voidcode.json`）
-2. global default（`~/.config/voidcode/config.json`）
+1. workspace `.voidcode.json`
+2. user config: POSIX `${XDG_CONFIG_HOME:-~/.config}/voidcode/config.json`; Windows `%APPDATA%\voidcode\config.json`, falling back to `%LOCALAPPDATA%\voidcode\config.json`, then `~\AppData\Roaming\voidcode\config.json`
 3. built-in defaults
 
-其中第一阶段已实现的 built-in defaults 为：
+theme、statusline、composer 与 brand 按字段递归覆盖；workspace 只需声明要覆盖的字段。数组等非对象值作为整体替换。`tui.keymap` 是例外：workspace 声明时替换整张 user keymap。
 
-- `tui.preferences.theme.mode` -> `auto`
+内置外观默认值为：
 
-runtime 不提供 `theme.name` 的内置默认值，也不持有调色板注册表；名字缺省时由 TUI 按 mode 默认调色板解析。
+- `tui.theme.mode` -> `auto`；`dark` / `light` 调色板 -> `voidcode-dark` / `voidcode-light`
+- `tui.statusline.layout` -> `codex`；`transparent` -> `true`
+- `tui.composer.style` -> `band`；cursor -> `terminal`；gutter -> `prompt`；padding -> `normal`
+- `tui.brand.enabled` -> `true`
 
-### 重要语义
+主题名和自定义调色板由 TUI 注册表解析；无效名称、模式、颜色引用或符号配置会在进入终端模式前报错。旧 `tui.preferences` 配置已移除，必须迁移到 `tui.theme`。
 
-- workspace override 仍然是“局部覆盖”，不是完整快照。
-- 但当前 TUI 产品默认不会把普通偏好修改写回 workspace。
-- 普通 theme / theme mode 修改默认写回 global default。
-- workspace 中未覆盖的字段继续继承 global default；workspace override 只用于显式的项目级覆盖语义。
-
-### 当前已实现的全局配置路径
-
-用户级全局 TUI 默认配置路径为：
-
-`~/.config/voidcode/config.json`
-
-workspace 本地覆盖路径保持为：
-
-`<workspace>/.voidcode.json`
+外观保存只更新所选 scope 的 `theme`、`statusline`、`composer` 与 `brand`，保留同一 `tui` 对象中的 `keymap` 以及其他 runtime 配置字段。写入使用同目录 UTF-8 staging file，并以原子命名替换发布；POSIX 保留已有 mode 并尝试同步目录项，Windows 在写入 staging 内容前复制已有文件 DACL（新文件继承父目录 DACL）。原子命名替换不等于跨平台断电耐久性：目录项 crash durability 由操作系统与文件系统决定。
 
 ## 关于 LSP 和 ACP 基础设施状态的说明
 
@@ -543,7 +537,7 @@ workspace 本地覆盖路径保持为：
 对于 harness/runtime 这条配置链，`approval_mode`、`model`、`execution_engine` 和 `reasoning_effort` 的固定优先级与运行时 policy 一致，按下列顺序解释：
 
 1. Hardcoded safety denylist and workspace/session invariants.
-2. Runtime request mode and `read_only` policy.
+2. Explicit request `read_only` policy.
 3. Parent session/delegated-task inherited constraints.
 4. Workspace/project runtime config.
 5. Agent manifest/tool allowlist.

@@ -29,7 +29,6 @@ class RunArgs:
     json: bool = False
     trace: bool = False
     provider_stream: bool | None = None
-    runtime_mode: str | None = None
     read_only: bool = False
 
 

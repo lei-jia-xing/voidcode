@@ -60,7 +60,7 @@
 
 `resolve_permission` 的单点求值顺序，从高到低：
 
-1. **plan / read-only 硬拒绝**：任何非只读工具、或任何 write/execute tier 的调用，无条件 `deny`（`policy_surface="mode.plan"`）。`yolo` 也不能覆盖。
+1. **显式 read-only 硬拒绝**：当 `read_only=true` 时，任何非只读工具、或任何 write/execute tier 的调用，无条件 `deny`（`policy_surface="read_only"`）。approval mode（包括 `yolo`）也不能覆盖。
 2. **显式 pattern rule**（`permission.rules` / `rule_decision`）：首匹配生效。
 3. **workspace 内 read tier 快捷路径**：直接 `allow`，不建 pending approval。
 4. **external-directory 决策**（`external_directory_read` / `external_directory_write`）：workspace 外路径按其裁决。

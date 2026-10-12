@@ -163,8 +163,6 @@ def _handle_run_command(args: RunArgs) -> int:
             metadata["agent"] = {"preset": args.agent}
         if args.skills:
             metadata["skills"] = list(args.skills)
-        if args.runtime_mode is not None:
-            metadata["mode"] = args.runtime_mode
         if args.read_only:
             metadata["read_only"] = True
         if cli_reasoning_effort is not None:
@@ -260,15 +258,9 @@ def _handle_run_command(args: RunArgs) -> int:
     help="Select a top-level or local custom agent preset for this run.",
 )
 @click.option(
-    "--mode",
-    "runtime_mode",
-    type=click.Choice(["normal", "plan"]),
-    help="Select runtime mode metadata; plan is a runtime-enforced read-only mode.",
-)
-@click.option(
     "--read-only",
     is_flag=True,
-    help="Request runtime-enforced read-only tool policy without selecting a named mode.",
+    help="Request runtime-enforced read-only tool policy.",
 )
 @click.option("--model", help="Override the provider/model for this run.")
 @click.option("--skills", multiple=True, help="Optional skill names applied for this run.")
@@ -303,7 +295,6 @@ def run(
     json_output: bool,
     trace: bool,
     provider_stream: bool | None,
-    runtime_mode: str | None,
     read_only: bool,
 ) -> int:
     return _handle_run_command(
@@ -322,7 +313,6 @@ def run(
             json=json_output,
             trace=trace,
             provider_stream=provider_stream,
-            runtime_mode=runtime_mode,
             read_only=read_only,
         )
     )

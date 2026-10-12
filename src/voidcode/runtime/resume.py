@@ -331,6 +331,12 @@ class RuntimeResumeCoordinator:
         tool_results: list[ReportedCall] = list(checkpoint_state.tool_results)
         session = session_with_run_id(session, run_id=run_id)
         validate_session_workspace(session, session_id=stored.session.session.id, workspace=self._workspace)
+        self._advance_resumed_run_id(
+            checkpoint=checkpoint,
+            expected_session_metadata=stored.session.metadata,
+            session_id=stored.session.session.id,
+            run_id=run_id,
+        )
         batch, batch_sequence = self._restored_batch(session=session, tool_results=tool_results)
         question_call_id = self._recorded_pending_tool_call_id(stored_events=stored.events, pending=pending, batch=batch)
         if len(batch.completed_reports) >= len(batch.calls) or batch.calls[len(batch.completed_reports)].tool_call_id != question_call_id:
@@ -702,6 +708,12 @@ class RuntimeResumeCoordinator:
 
         session = session_with_run_id(session, run_id=run_id)
         validate_session_workspace(session, session_id=stored.session.session.id, workspace=self._workspace)
+        self._advance_resumed_run_id(
+            checkpoint=checkpoint,
+            expected_session_metadata=stored.session.metadata,
+            session_id=stored.session.session.id,
+            run_id=run_id,
+        )
         session = session_with_current_acp_metadata(session, self._acp_adapter.current_state())
         effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
         mcp_startup_chunks, session, _, mcp_failed_chunk, mcp_descriptors = runtime.materialize_mcp_tools_for_run(
@@ -1093,6 +1105,26 @@ class RuntimeResumeCoordinator:
             session_id=session_id,
         )
 
+    def _advance_resumed_run_id(
+        self,
+        *,
+        checkpoint: dict[str, object] | None,
+        expected_session_metadata: dict[str, object],
+        session_id: str,
+        run_id: str | None,
+    ) -> None:
+        if run_id is None:
+            return
+        if checkpoint is None:
+            raise ValueError("resume requires its validated checkpoint before advancing run identity")
+        self._recovery.advance_resume_checkpoint_run_id(
+            workspace=self._workspace,
+            session_id=session_id,
+            checkpoint=checkpoint,
+            expected_session_metadata=expected_session_metadata,
+            run_id=run_id,
+        )
+
     def _stored_response_on_path(self, *, session_id: str) -> RuntimeResponse:
         """The session's response with its events narrowed to the root→leaf path.
 
@@ -1322,6 +1354,12 @@ class RuntimeResumeCoordinator:
             run_id=run_id,
         )
         validate_session_workspace(session, session_id=session_id, workspace=self._workspace)
+        self._advance_resumed_run_id(
+            checkpoint=checkpoint,
+            expected_session_metadata=stored_row.session.metadata,
+            session_id=session_id,
+            run_id=run_id,
+        )
         session = session_with_current_acp_metadata(session, self._acp_adapter.current_state())
         effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
         try:

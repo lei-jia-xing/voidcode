@@ -107,6 +107,27 @@ def test_runtime_reads_before_writing_and_replays_the_persisted_read_pair(tmp_pa
         assert source.read_text(encoding="utf-8") == "after\n"
 
 
+def test_local_cli_session_continues_with_its_canonical_composition(tmp_path: Path) -> None:
+    (tmp_path / "sample.txt").write_text("sample\n", encoding="utf-8")
+    written = tmp_path / "written.txt"
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic", approval_mode="yolo"),
+        permission_policy=PermissionPolicy(mode="yolo"),
+    )
+
+    with runtime:
+        first = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+        second = runtime.run(RuntimeRequest(prompt="write written.txt accepted"))
+
+    assert first.session.session.id == second.session.session.id == "local-cli-session"
+    assert first.session.status == second.session.status == "completed"
+    assert written.read_text(encoding="utf-8") == "accepted"
+    assert any(event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read" for event in first.events)
+    assert any(event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "write" for event in second.events)
+    assert any(event.event_type == "runtime.approval_resolved" and event.payload.get("decision") == "allow" for event in second.events)
+
+
 class _OpenAILoopbackServer(ThreadingHTTPServer):
     def __init__(self, replies: list[dict[str, object]]) -> None:
         super().__init__(("127.0.0.1", 0), _OpenAILoopbackHandler)

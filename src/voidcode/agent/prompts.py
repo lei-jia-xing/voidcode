@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 from functools import cache
-from pathlib import Path
+from importlib.resources import files
+from importlib.resources.abc import Traversable
 
 from .models import AgentPromptMaterialization
 from .prompt_sections import user_append_heading_block
 
-_AGENT_DIR = Path(__file__).resolve().parent
 _PROMPT_FILE_NAME = "base.txt"
 BUILTIN_PROMPT_PROFILES = ("leader", "worker", "advisor", "explore", "researcher", "product")
 _BUILTIN_PROMPT_PROFILES = frozenset(BUILTIN_PROMPT_PROFILES)
 
 
-def _prompt_path(prompt_profile: str) -> Path:
-    return _AGENT_DIR / prompt_profile / _PROMPT_FILE_NAME
+def _prompt_resource(prompt_profile: str) -> Traversable:
+    return files(__package__).joinpath(prompt_profile, _PROMPT_FILE_NAME)
 
 
 def is_builtin_prompt_profile(prompt_profile: str) -> bool:
@@ -25,15 +25,15 @@ def has_builtin_prompt_profile(prompt_profile: str) -> bool:
     normalized_prompt_profile = prompt_profile.strip()
     if not is_builtin_prompt_profile(normalized_prompt_profile):
         return False
-    return _prompt_path(normalized_prompt_profile).is_file()
+    return _prompt_resource(normalized_prompt_profile).is_file()
 
 
 @cache
 def _render_known_builtin_prompt_profile(prompt_profile: str) -> str | None:
-    path = _prompt_path(prompt_profile)
-    if not path.is_file():
+    resource = _prompt_resource(prompt_profile)
+    if not resource.is_file():
         return None
-    return path.read_text(encoding="utf-8").strip()
+    return resource.read_text(encoding="utf-8").strip()
 
 
 def render_builtin_prompt_profile(prompt_profile: str) -> str | None:

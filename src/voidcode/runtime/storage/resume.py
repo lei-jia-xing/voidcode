@@ -16,6 +16,7 @@ from ..events import EventEnvelope
 from ..permission import PendingApproval
 from ..question import PendingQuestion
 from ..session import session_metadata_for_persistence
+from ..session_metadata_helpers import parse_runtime_state_metadata
 from .rows import (
     SessionApprovalRecoveryRow,
     SessionEventRow,
@@ -658,6 +659,63 @@ class _ResumeStorageMixin(_MixinBase):
         if payload is None:
             return None
         return self._decode_resume_checkpoint_payload(payload)
+
+    def advance_resume_checkpoint_run_id(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        checkpoint: dict[str, object],
+        expected_session_metadata: dict[str, object],
+        run_id: str,
+    ) -> None:
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise ValueError("resume checkpoint update requires a nonempty run id")
+        with self._write_connect(workspace) as connection:
+            row = connection.execute(
+                "SELECT metadata_json, resume_checkpoint_json FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            ).fetchone()
+            if row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            raw_metadata, raw_checkpoint = row
+            if not isinstance(raw_metadata, str) or not isinstance(raw_checkpoint, str):
+                raise ValueError("resume checkpoint changed during resume admission")
+            stored_metadata = json.loads(raw_metadata)
+            if not isinstance(stored_metadata, dict) or stored_metadata != expected_session_metadata:
+                raise ValueError("session metadata changed during resume admission")
+            current = self._decode_resume_checkpoint_payload(raw_checkpoint)
+            if current != checkpoint:
+                raise ValueError("resume checkpoint changed during resume admission")
+            metadata = current.get("session_metadata")
+            if not isinstance(metadata, dict):
+                raise ValueError("validated resume checkpoint requires session metadata")
+            raw_runtime_state = metadata.get("runtime_state", {})
+            if not isinstance(raw_runtime_state, dict):
+                raise ValueError("validated resume checkpoint runtime state must be an object")
+            checkpoint_runtime_state = parse_runtime_state_metadata(raw_runtime_state)
+            raw_stored_runtime_state = stored_metadata.get("runtime_state", {})
+            if not isinstance(raw_stored_runtime_state, dict):
+                raise ValueError("stored session runtime state must be an object")
+            stored_runtime_state = parse_runtime_state_metadata(raw_stored_runtime_state)
+            updated_checkpoint = {
+                **current,
+                "session_metadata": {
+                    **metadata,
+                    "runtime_state": {**checkpoint_runtime_state, "run_id": run_id},
+                },
+            }
+            stored_metadata["runtime_state"] = {**stored_runtime_state, "run_id": run_id}
+            _ = connection.execute(
+                "UPDATE sessions SET metadata_json = ?, resume_checkpoint_json = ? WHERE workspace_id = ? AND session_id = ?",
+                (
+                    json.dumps(stored_metadata, sort_keys=True),
+                    json.dumps(updated_checkpoint, sort_keys=True),
+                    str(workspace),
+                    session_id,
+                ),
+            )
+            connection.commit()
 
     def _read_pending_approval_json(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> str | None:
         row = fetch_row(

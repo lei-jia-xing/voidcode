@@ -179,7 +179,7 @@ Runtime hook surface 与其事件名称的内部对应关系由
 - 当前 payload:
   - `prompt: str`
   - `runtime_policy: object`（可选；当会话已 materialize Runtime Harness Policy v1 时出现）
-- `runtime_policy` 是 persisted `RuntimePolicySnapshot` 的有界、redacted projection。它包含 `schema_version`、`policy_version`、`mode`、`read_only`、agent ids、`materialization`、neutral `intent`、`tool_policy`、`delegation_policy`、`hook_policy`、`prompt_activation`、`precedence_trace` 与 `diagnostics`。
+- `runtime_policy` 是 persisted `RuntimePolicySnapshot` 的有界、redacted projection。它包含 `schema_version`、`policy_version`、`read_only`、agent ids、`materialization`、neutral `intent`、`tool_policy`、`delegation_policy`、`hook_policy`、`prompt_activation`、`precedence_trace` 与 `diagnostics`。
 - `runtime_policy.materialization.kind == "runtime_policy_materialized"` 表示 runtime control plane 已完成 policy materialization；这不是可由客户端写回或覆盖的第二控制面。
 - `tool_policy.denied` / `delegation_policy.denied` 必须携带稳定 denial reason；product child delegation 的稳定 reason 是 `delegation_denied_product_top_level_only`。
 - `hook_policy` 只描述 named event-scoped hook decisions。Hooks are non-authoritative: they can observe/report/cancel/guidance within runtime policy, but cannot grant tool/delegation authority.

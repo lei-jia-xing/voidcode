@@ -89,12 +89,11 @@ class ReminderSuppression:
     delegated_child: bool = False
     runtime_waits_for_user: bool = False
     pending_background_task: bool = False
-    plan_mode: bool = False
     todo_tool_available: bool = True
 
     @property
     def blocked(self) -> bool:
-        return self.delegated_child or self.runtime_waits_for_user or self.pending_background_task or self.plan_mode or not self.todo_tool_available
+        return self.delegated_child or self.runtime_waits_for_user or self.pending_background_task or not self.todo_tool_available
 
 
 @dataclass(frozen=True, slots=True)

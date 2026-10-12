@@ -4,8 +4,7 @@ from fnmatch import fnmatchcase
 
 from ..tools.contracts import is_read_tier
 from .config import RuntimeAgentConfig
-from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
-from .permission import PLAN_MODE_DENIAL_REASON
+from .permission import READ_ONLY_DENIAL_REASON, runtime_read_only_from_metadata
 from .tool_provider import scoped_tool_registry_for_agent
 from .tool_registry import ToolPolicyDecision, ToolRegistry
 
@@ -36,10 +35,6 @@ class RuntimeToolScopeResolver:
         registry: ToolRegistry,
         metadata: dict[str, object] | None,
     ) -> ToolPolicyDecision:
-        # Single shared derivation: mode -> read_only (including explicit
-        # read_only metadata) comes from mode.py's resolve_mode; this
-        # resolver no longer keeps a private copy.
-        mode = runtime_mode_from_metadata(metadata)
         read_only = runtime_read_only_from_metadata(metadata)
 
         definition = registry.definition(tool_name)
@@ -47,15 +42,13 @@ class RuntimeToolScopeResolver:
             return ToolPolicyDecision(
                 tool_name=tool_name,
                 allowed=False,
-                mode=mode,
                 read_only=read_only,
                 decision="deny",
-                reason=PLAN_MODE_DENIAL_REASON,
+                reason=READ_ONLY_DENIAL_REASON,
             )
         return ToolPolicyDecision(
             tool_name=tool_name,
             allowed=True,
-            mode=mode,
             read_only=read_only,
             decision="allow",
         )

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Literal
 from ..security.json_values import json_wire_object, own_json_object
 from .composition import FrozenComposition, PhaseRecord
 from .events import EventEnvelope
-from .mode import backfill_runtime_policy_mode, runtime_mode_from_metadata, runtime_read_only_from_metadata
+from .permission import runtime_read_only_from_metadata
 from .policy import runtime_policy_snapshot_from_session_metadata
 
 if TYPE_CHECKING:
@@ -179,11 +179,6 @@ def session_metadata_for_replay(metadata: dict[str, object]) -> dict[str, object
     return projected
 
 
-def normalize_persisted_session_metadata(metadata: dict[str, object]) -> dict[str, object]:
-    """Validate persisted top-level runtime mode metadata."""
-    return backfill_runtime_policy_mode(metadata)
-
-
 def _policy_observations(events: tuple[EventEnvelope, ...]) -> dict[str, object]:
     tool_policy_denial: dict[str, object] | None = None
     for event in events:
@@ -243,25 +238,14 @@ def session_metadata_for_persistence(
         # This signed nonsecret owner is already projected by composition's
         # source validators; generic redaction/size bounds would corrupt its hash.
         persisted["execution_composition"] = FrozenComposition.from_payload(raw_composition).to_payload()
-    mode = runtime_mode_from_metadata(persisted)
     read_only = runtime_read_only_from_metadata(persisted)
     observations = _policy_observations(events)
     raw_persisted_runtime_policy = persisted.get("runtime_policy")
     if isinstance(raw_persisted_runtime_policy, dict):
         persisted["runtime_policy"] = runtime_policy_snapshot_from_session_metadata(persisted)
-    has_policy_truth = (
-        "mode" in metadata
-        or "read_only" in metadata
-        or "delegation" in metadata
-        or "prompt_stack" in metadata
-        or bool(observations)
-        or mode != "normal"
-        or read_only
-    )
+    has_policy_truth = "read_only" in metadata or "delegation" in metadata or "prompt_stack" in metadata or bool(observations) or read_only
     if not has_policy_truth:
         return persisted
-
-    persisted["mode"] = mode
     persisted["read_only"] = read_only
 
     if "runtime_policy" in persisted:

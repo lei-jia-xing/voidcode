@@ -13,9 +13,8 @@ Contracts implemented here:
   that ledger itself (it marks the last block handed out), so no caller -- not
   ``ctrl+o``, not a resize -- can re-emit a committed prefix or misalign a later
   batch. A toggle that lands behind the commit boundary cannot be redrawn, and
-  ``Transcript.set_expanded`` reports that so the app can say so. The live region
-  keeps its own ledger for the overflow it flushed (a live tail taller than the
-  terminal), so the settle batch that follows cannot write those rows twice.
+  ``Transcript.set_expanded`` reports that so the app can say so. ``LiveRegion``
+  only trims unsettled transcript rows for the viewport; it never commits them.
 * **Paint the tail.** Only the live tail -- unsettled blocks, the status line and
   the composer (or the active overlay) -- enters ``Terminal.paint_frame``.
 * **Frame cadence.** At most one frame every ``MIN_RENDER_INTERVAL_MS`` (33 ms),
@@ -47,8 +46,31 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
-from ..core.questions import QuestionResponse
-from ..runtime.config import RuntimeConfig, load_runtime_config
+from pydantic import ValidationError
+
+from ..core.questions import QuestionCancellation, QuestionResponse
+from ..core.tool_context import (
+    ArtifactBinary,
+    ArtifactInvalid,
+    ArtifactMissing,
+    ArtifactPage,
+    ArtifactUnavailable,
+    NextPage,
+    TranscriptPage,
+)
+from ..runtime.config import (
+    RuntimeConfig,
+    RuntimeTuiResolvedConfig,
+    RuntimeTuiThemeConfig,
+    load_runtime_config,
+    save_tui_appearance_config,
+)
+from ..runtime.config_models import (
+    VALID_TUI_COMMANDS,
+    VALID_TUI_COMPOSER_CURSOR_SHAPES,
+    VALID_TUI_COMPOSER_STYLES,
+    VALID_TUI_THEME_MODES,
+)
 from ..runtime.contracts import RuntimeRequest, RuntimeStreamChunk
 from ..runtime.events import EventEnvelope
 from ..runtime.permission import ApprovalMode
@@ -64,18 +86,22 @@ from .events import (
 )
 from .keys import Key, KeyDecoder
 from .overlay import (
+    AppearanceOverlay,
     ApprovalOverlay,
+    HelpOverlay,
     Overlay,
+    OverlayOutcome,
     OverlayOutcomeKind,
     PromptHistoryOverlay,
     QuestionOverlay,
     SessionPickerOverlay,
+    ToolArtifactOverlay,
     TreeSelectorOverlay,
 )
-from .region import LiveRegion
-from .statusline import StatusLine, StatusSegmentData
-from .term import Terminal
-from .theme import Theme, resolve_theme
+from .region import LiveRegion, TuiFrame
+from .statusline import StatusLine, StatusSegmentData, statusline_profile_segments, statusline_profiles
+from .term import Terminal, TerminalCapabilityError, escape_terminal_controls
+from .theme import FG_TOKENS, Theme, background_mode, palette_names, resolve_theme, validate_theme_configuration
 from .transcript import (
     AssistantBlock,
     KeyHints,
@@ -132,22 +158,8 @@ _BACKGROUND_TERMINAL_EVENTS: Final[frozenset[str]] = frozenset(
 
 #: Actions ``config.tui.keymap`` may bind. Anything else fails loudly: the old
 #: Textual ``self.bind()`` silently accepted unknown action names.
-_ACTIONS: Final[frozenset[str]] = frozenset(
-    {
-        "app.session.new",
-        "app.session.resume",
-        "app.session.tree",
-        "app.tools.expand",
-        "app.display.reset",
-        "app.history.search",
-    }
-)
+_ACTIONS: Final[frozenset[str]] = frozenset(VALID_TUI_COMMANDS)
 
-#: The only default binding (omp ``app.tools.expand = ctrl+o``). ``app.session.*``
-#: and the two added actions stay unbound unless the user configures them, exactly
-#: as in the old app. A checkout moves the session's leaf and drops the turns
-#: after it from the model's context, so it deliberately ships no chord:
-#: ``app.session.tree = ctrl+t`` is the suggested one to configure.
 _DEFAULT_KEYMAP: Final[Mapping[str, str]] = MappingProxyType({"app.tools.expand": "ctrl+o"})
 
 #: Canonical modifier order, mirroring ``keys._format_with_mods``.
@@ -202,6 +214,7 @@ def parse_key_binding(spec: str) -> Key:
     """
     if not isinstance(spec, str):
         raise KeyBindingError(f"key binding must be a string, got {type(spec).__name__}")
+
     parts = [part.strip().lower() for part in spec.strip().split("+")]
     if not parts or any(part == "" for part in parts):
         raise KeyBindingError(f"invalid key binding: {spec!r}")
@@ -218,6 +231,10 @@ def parse_key_binding(spec: str) -> Key:
         raise KeyBindingError(f"unknown key {base!r} in key binding {spec!r}")
     ordered = [modifier for modifier in _KEY_MODIFIERS if modifier in seen]
     return Key("+".join([*ordered, name]))
+
+
+class TuiConfigurationError(ValueError):
+    """A user configuration failure found before entering terminal mode."""
 
 
 def parse_keymap(keymap: Mapping[str, str] | None) -> dict[str, Key]:
@@ -285,13 +302,26 @@ class TuiApp:
         keymap: Mapping[str, str] | None = None,
     ) -> None:
         self._workspace = workspace
-        self._config: RuntimeConfig = load_runtime_config(workspace, approval_mode=approval_mode)
-        self._runtime = runtime if runtime is not None else VoidCodeRuntime(workspace=workspace, config=self._config)
+        try:
+            self._config: RuntimeConfig = load_runtime_config(workspace, approval_mode=approval_mode)
+            self._validate_tui_appearance(self._config.tui)
+        except (ValidationError, ValueError) as error:
+            raise TuiConfigurationError(f"invalid runtime configuration: {error}") from error
+        self._tui_config = self._config.tui or RuntimeTuiResolvedConfig()
         # Fail loudly here, before the terminal is touched.
         self._bindings = parse_keymap(keymap if keymap is not None else self._configured_keymap())
         self._hints = KeyHints(expand=self._bindings["app.tools.expand"].name)
+        self._runtime = runtime if runtime is not None else VoidCodeRuntime(workspace=workspace, config=self._config)
 
+        self._resolved_theme_mode = "dark"
+        self._auto_theme_fallback = False
+        self._auto_theme_source = "not queried"
+        self._auto_resolved_mode: str | None = None
+        self._appearance_original: RuntimeTuiResolvedConfig | None = None
+        self._appearance_saved = True
+        self._appearance_original_saved: bool | None = None
         self._term: Terminal | None = None
+        self._layout_size: tuple[int, int] | None = None
         self._theme: Theme | None = None
         self._view: SessionView | None = None
         self._status: StatusLine | None = None
@@ -309,11 +339,20 @@ class TuiApp:
 
         self._overlay: Overlay | None = None
         self._overlay_request_id = ""
+        self._tool_picker_active = False
+        self._artifact_detail: tuple[str, str, str | None, str] | None = None
+        self._artifact_offsets: list[int] = []
+        self._artifact_next_offset: int | None = None
 
         self._model = self._config.model or ""
         self._approval_mode = self._config.approval_mode or ""
         self._lsp_label = ""
-        self._cost_usd = 0.0
+        self._cost_usd: float | None = None
+        self._input_tokens: int | None = None
+        self._output_tokens: int | None = None
+        self._cache_read_tokens: int | None = None
+        self._cache_write_tokens: int | None = None
+        self._cache_hit_rate: float | None = None
         self._context_tokens = 0
         #: Provider context window (0 = unknown) and the session's reasoning
         #: effort, both refreshed outside the frame path.
@@ -335,33 +374,60 @@ class TuiApp:
     # -- construction ------------------------------------------------------
 
     def _configured_keymap(self) -> Mapping[str, str] | None:
-        tui_config = self._config.tui
-        return tui_config.keymap if tui_config is not None else None
+        return self._tui_config.keymap
 
-    def _resolve_theme(self, terminal: Terminal) -> Theme:
-        preferences = self._config.tui.preferences if self._config.tui is not None else None
-        theme_preference = preferences.theme if preferences is not None else None
-        # The runtime carries the palette name verbatim (no registry, no default);
-        # ``resolve_theme`` owns validation and the mode fallback.
+    def _validate_tui_appearance(self, config: RuntimeTuiResolvedConfig | None) -> None:
+        if config is None:
+            return
+        validate_theme_configuration(config.theme)
+        for segment, option in config.statusline.options.items():
+            if option.color is not None and option.color not in FG_TOKENS:
+                raise ValueError(f"tui.statusline.options.{segment}.color must name a foreground theme token")
+
+    def _resolve_theme(self, terminal: Terminal, settings: RuntimeTuiThemeConfig | None = None) -> Theme:
+        settings = settings or self._tui_config.theme
+        mode = settings.mode
+        if mode == "auto":
+            if self._auto_resolved_mode is None:
+                background = terminal.query_default_background_rgb()
+                detected = background_mode(background)
+                self._auto_theme_fallback = detected is None
+                self._auto_theme_source = terminal.background_source
+                self._auto_resolved_mode = detected or "dark"
+            mode = self._auto_resolved_mode
+        self._resolved_theme_mode = mode
+        name = settings.dark if mode == "dark" else settings.light
+        glyph_preset = settings.symbols_preset
+        if not terminal.unicode_ok and glyph_preset != "ascii":
+            glyph_preset = "ascii"
         return resolve_theme(
-            theme_preference.name if theme_preference is not None else None,
-            theme_preference.mode if theme_preference is not None and theme_preference.mode else "auto",
+            name,
+            mode,
             color_system=terminal.color_system,
-            glyph_preset="unicode" if terminal.unicode_ok else "ascii",
+            glyph_preset=glyph_preset,
+            custom=settings.custom,
+            symbol_overrides=settings.symbols_overrides,
         )
 
     def _setup(self, terminal: Terminal) -> None:
         theme = self._resolve_theme(terminal)
-        width = terminal.width
+        width, height = terminal.width, terminal.height
+        self._layout_size = (width, height)
         self._theme = theme
         self._view = SessionView(theme=theme, hints=self._hints, width=width)
-        self._status = StatusLine(theme, width)
+        tui_config = self._tui_config
+        status_config = tui_config.statusline
         self._composer = Composer(
             theme=theme,
             width=width,
-            placeholder="Ask voidcode...",
+            style=tui_config.composer.style,
+            gutter=tui_config.composer.gutter,
+            padding=tui_config.composer.padding,
         )
-        self._region = LiveRegion(terminal.commit_rows, max_rows=terminal.height, paint=terminal.paint_frame)
+        self._composer.set_max_height(self._composer.input_height(height))
+        self._status = StatusLine(theme, self._composer.status_width(), status_config)
+        terminal.set_cursor_shape(tui_config.composer.cursor_shape, tui_config.composer.cursor_blink)
+        self._region = LiveRegion(terminal.commit_rows, max_rows=height, paint=terminal.paint_frame)
         self._lsp_label = self._query_lsp_label()
         self._refresh_context_window()
 
@@ -389,20 +455,28 @@ class TuiApp:
             logger.error("Failed to query LSP state: %s", error)
             return "lsp err"
         if state.mode != "managed":
-            return "lsp off"
+            return ""
         active = [name for name, server in state.servers.items() if server.status == "running"]
-        return f"lsp {len(active)}" if active else "lsp idle"
+        return f"lsp {len(active)}" if active else ""
 
     # -- entry point -------------------------------------------------------
 
     def run(self) -> int:
-        terminal = Terminal.open()
-        self._term = terminal
+        self._runtime.__enter__()
+        terminal: Terminal | None = None
         try:
+            terminal = Terminal.open()
+            self._term = terminal
             self._setup(terminal)
             self._loop(terminal)
         finally:
-            self._shutdown(terminal)
+            if terminal is None:
+                try:
+                    self._runtime.__exit__(None, None, None)
+                except Exception as error:
+                    logger.error("Failed to shut down runtime: %s", error)
+            else:
+                self._shutdown(terminal)
         return 0
 
     # -- loop --------------------------------------------------------------
@@ -463,7 +537,7 @@ class TuiApp:
     def _maybe_render(self) -> None:
         assert self._term is not None
         now = time.monotonic()
-        if self._term.resize_pending():
+        if self._term.resize_pending() or (self._term.width, self._term.height) != self._layout_size:
             self._apply_resize()
         self._tick_spinner(now)
         if not self._dirty or now < self._next_frame:
@@ -496,61 +570,94 @@ class TuiApp:
 
     def _apply_resize(self) -> None:
         assert self._term is not None and self._view is not None
-        width = self._term.width
+        width, height = self._term.width, self._term.height
+        self._layout_size = (width, height)
         self._view.set_width(width)
-        if self._status is not None:
-            self._status.set_width(width)
         if self._composer is not None:
             self._composer.set_width(width)
+            self._composer.set_max_height(self._composer.input_height(height))
+        if self._status is not None:
+            self._status.set_width(self._composer.status_width() if self._composer is not None else width)
         if self._region is not None:
+            self._region.set_max_rows(height)
             self._region.clear()
         self._dirty = True
+
+    def _below_minimum_size(self) -> bool:
+        return self._term is not None and (self._term.width < 20 or self._term.height < 6)
+
+    def _safe_hold_rows(self) -> TuiFrame:
+        text = "Resize to >=20x6"
+        row = self._theme.fg("warning", text) if self._theme is not None else text
+        return TuiFrame(chrome_rows=(row,))
 
     # -- frames ------------------------------------------------------------
 
     def _render(self) -> None:
         assert self._term is not None and self._region is not None and self._view is not None
+        if self._term.is_tty and self._below_minimum_size():
+            self._term.paint_frame(self._safe_hold_rows())
+            return
         if self._term.alt_screen:
-            # Alt-screen borrow: paint the overlay only, never the scrollback.
-            self._term.paint_frame(self._overlay_rows())
+            self._term.paint_frame(self._overlay_frame())
             return
         settled = self._view.transcript().take_settled()
         if not self._term.is_tty:
-            # Off-tty the terminal is a log, not a screen: only durable rows are
-            # written (no live region, no status line, no composer, no escapes).
             if settled:
                 self._region.commit(settled)
             return
         if settled:
             self._region.commit(settled)
-            # The terminal erased the live region with the commit; drop the stale
-            # ledger too so the next frame is painted in full.
             self._region.clear()
-        self._region.set_live(self._live_frame())
+        frame = self._live_frame()
+        self._region.set_live(frame)
 
-    def _live_frame(self) -> Sequence[str]:
+    def _live_frame(self) -> TuiFrame:
         assert self._view is not None and self._status is not None and self._composer is not None and self._theme is not None
-        rows = list(self._view.transcript().live_rows())
-        if rows:
-            rows.append("")
+        assert self._term is not None
+        transcript = list(self._view.transcript().live_rows())
+        if transcript:
+            transcript.append("")
+        chrome: list[str] = []
+        cursor: tuple[int, int] | None = None
         status = self._status.render(self._status_data(self._view.view_state()))
-        if status:
-            rows.append(status)
-        if self._expand_notice:
-            rows.append(f"{self._theme.fg('dim', self._expand_notice)}")
-        rows.extend(self._overlay_rows() if self._overlay is not None else self._composer.render())
-        return rows
+        if self._overlay is None:
+            composer_rows = list(self._composer.render(status=status))
+            extra_rows = max(0, self._term.height - len(composer_rows))
+            brand = self._session_id is None and not self._view.transcript().blocks and self._tui_config.brand_enabled
+            notice = self._expand_notice
+            if notice and extra_rows:
+                chrome.append(self._theme.fg("dim", notice))
+                extra_rows -= 1
+            if brand and extra_rows:
+                mark = "[*V]" if not self._term.unicode_ok or self._theme.glyphs.preset == "ascii" else "◇V"
+                chrome.insert(0, f"  {self._theme.fg('accent', mark)}  {self._theme.fg('accent', 'VOIDCODE')}")
+            transcript_height = max(0, self._term.height - len(chrome) - len(composer_rows))
+            transcript = transcript[-transcript_height:] if transcript_height else []
+            if self._composer.cursor_position is not None:
+                row, column = self._composer.cursor_position
+                cursor = (len(transcript) + len(chrome) + row, column)
+            chrome.extend(composer_rows)
+        else:
+            if status:
+                chrome.append(status)
+            if self._expand_notice:
+                chrome.append(self._theme.fg("dim", self._expand_notice))
+            frame = self._overlay_frame()
+            if frame.cursor is not None:
+                row, column = frame.cursor
+                cursor = (len(transcript) + len(chrome) + row, column)
+            chrome.extend(frame.chrome_rows)
+        frame = TuiFrame(tuple(transcript), tuple(chrome), cursor)
+        return frame
 
-    def _overlay_rows(self) -> list[str]:
+    def _overlay_frame(self) -> TuiFrame:
         assert self._term is not None
         if self._overlay is None:
-            return []
-        rows = list(self._overlay.render(self._term.width))
-        if self._term.alt_screen and len(rows) > self._term.height:
-            # ponytail: alt-screen overlays are top-cropped (no viewport); the
-            # session picker's type-to-filter is the long-list path.
-            rows = rows[: self._term.height]
-        return rows
+            return TuiFrame()
+        rows = self._overlay.viewport(self._term.width, self._term.height)
+        cursor = self._overlay.cursor_position(self._term.width)
+        return TuiFrame(chrome_rows=tuple(rows), cursor=cursor)
 
     def _status_data(self, state: ViewState) -> StatusSegmentData:
         window = self._context_window
@@ -566,6 +673,11 @@ class TuiApp:
             context_percent=self._context_tokens / window * 100 if window else None,
             context_window=window,
             context_tokens=self._context_tokens,
+            input_tokens=self._input_tokens,
+            output_tokens=self._output_tokens,
+            cache_read_tokens=self._cache_read_tokens,
+            cache_write_tokens=self._cache_write_tokens,
+            cache_hit_rate=self._cache_hit_rate,
         )
 
     # -- events ------------------------------------------------------------
@@ -587,7 +699,8 @@ class TuiApp:
 
     def _consume_chunk(self, chunk: RuntimeStreamChunk, *, replay: bool = False) -> None:
         assert self._view is not None
-        self._session_id = chunk.session.session.id
+        session_id = chunk.session.session.id
+        self._session_id = session_id
         if self._cancel_requested:
             # ``escape`` arrived before the runtime allocated the session id.
             self._cancel_requested = False
@@ -640,6 +753,7 @@ class TuiApp:
         self._streaming = False
         self._cancel_requested = False
         self._view.finish_stream(final_status)
+        self._take_pending_overlay()
         self._refresh_context_window()
         self._dirty = True
 
@@ -675,6 +789,19 @@ class TuiApp:
         cost = cumulative.get("cost_usd") if isinstance(cumulative, Mapping) else None
         if isinstance(cost, (int, float)) and not isinstance(cost, bool):
             self._cost_usd = float(cost)
+        latest = usage.get("latest") if isinstance(usage, Mapping) else None
+        if isinstance(latest, Mapping):
+            token_fields = (
+                ("input_tokens", "_input_tokens"),
+                ("output_tokens", "_output_tokens"),
+                ("cache_read_tokens", "_cache_read_tokens"),
+                ("cache_write_tokens", "_cache_write_tokens"),
+            )
+            for key, attribute in token_fields:
+                value = latest.get(key)
+                setattr(self, attribute, value if isinstance(value, int) and not isinstance(value, bool) else None)
+            hit_rate = latest.get("cache_hit_rate")
+            self._cache_hit_rate = float(hit_rate) if isinstance(hit_rate, (int, float)) and not isinstance(hit_rate, bool) else None
 
     def _track_background_task(self, event: EventEnvelope) -> None:
         payload = event.payload or {}
@@ -742,9 +869,18 @@ class TuiApp:
     # -- keys --------------------------------------------------------------
 
     def _handle_key(self, key: Key) -> None:
-        # The expand notice describes the previous key; it is cleared here so it
-        # behaves like omp's transient ``showStatus`` rather than a permanent row.
         self._expand_notice = ""
+        if self._below_minimum_size():
+            if key.name == "ctrl+c":
+                self._quit = True
+            elif key.name == "escape":
+                if self._overlay is not None:
+                    self._handle_overlay_key(key)
+                elif self._composer is not None:
+                    outcome = self._composer.handle_key(key)
+                    if outcome.action is ComposerAction.CANCEL_TURN:
+                        self._cancel_turn()
+            return
         if self._overlay is not None:
             self._handle_overlay_key(key)
             return
@@ -760,29 +896,53 @@ class TuiApp:
             self._cancel_turn()
         elif outcome.action is ComposerAction.INTERRUPT:
             self._quit = True
-        # Any key may have moved the cursor or changed the draft/completion; the
-        # frame diff makes an unchanged repaint free.
         self._dirty = True
 
     def _run_action(self, action: str) -> None:
-        if action == "app.tools.expand":
-            self._toggle_expand()
-        elif action == "app.session.new":
-            self._command_session_new()
-        elif action == "app.session.resume":
-            self._command_session_resume()
-        elif action == "app.session.tree":
-            self._command_session_tree()
-        elif action == "app.display.reset":
-            self._command_display_reset()
-        else:
-            self._command_history_search()
+        handlers: Mapping[str, Callable[[], None]] = {
+            "app.help": self._command_help,
+            "app.tui.appearance": self._command_appearance,
+            "app.tools.detail": self._command_tool_details,
+            "app.tools.expand": self._toggle_expand,
+            "app.session.new": self._command_session_new,
+            "app.session.resume": self._command_session_resume,
+            "app.session.tree": self._command_session_tree,
+            "app.display.reset": self._command_display_reset,
+            "app.history.search": self._command_history_search,
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            raise ValueError(f"unhandled TUI action: {action}")
+        handler()
 
     def _handle_overlay_key(self, key: Key) -> None:
         overlay = self._overlay
         assert overlay is not None
-        outcome = overlay.handle_key(key)
+        if isinstance(overlay, QuestionOverlay) and key.name == "ctrl+c":
+            outcome = OverlayOutcome(OverlayOutcomeKind.CANCELLED)
+        else:
+            outcome = overlay.handle_key(key)
+        if isinstance(overlay, AppearanceOverlay):
+            if outcome.kind is OverlayOutcomeKind.PENDING:
+                self._preview_appearance(overlay.values)
+            else:
+                self._finish_appearance(outcome)
+            self._dirty = True
+            return
         if outcome.kind is OverlayOutcomeKind.PENDING:
+            self._dirty = True
+            return
+        if isinstance(overlay, ToolArtifactOverlay):
+            if outcome.kind is OverlayOutcomeKind.DONE and outcome.payload in {"next", "previous"}:
+                if outcome.payload == "next" and self._artifact_next_offset is not None:
+                    self._artifact_offsets.append(self._artifact_next_offset)
+                elif outcome.payload == "previous" and len(self._artifact_offsets) > 1:
+                    self._artifact_offsets.pop()
+                self._open_tool_artifact_page(self._artifact_offsets[-1])
+            else:
+                self._close_overlay()
+                self._artifact_detail = None
+                self._artifact_offsets.clear()
             self._dirty = True
             return
         if isinstance(overlay, ApprovalOverlay):
@@ -793,16 +953,22 @@ class TuiApp:
             self._close_overlay()
             self._resolve_approval(request_id, decision)
         elif isinstance(overlay, QuestionOverlay):
-            payload = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
             request_id = self._overlay_request_id
             self._close_overlay()
-            if isinstance(payload, tuple):
-                self._answer_question(request_id, payload)
+            if outcome.kind is OverlayOutcomeKind.CANCELLED:
+                self._cancel_question(request_id)
+            elif outcome.kind is OverlayOutcomeKind.DONE and isinstance(outcome.payload, tuple):
+                self._answer_question(request_id, outcome.payload)
         elif isinstance(overlay, SessionPickerOverlay):
-            session_id = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            call_id = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
+            tool_picker = self._tool_picker_active
+            self._tool_picker_active = False
             self._close_overlay()
-            if isinstance(session_id, str) and session_id:
-                self._open_resumed_session(session_id)
+            if isinstance(call_id, str) and call_id:
+                if tool_picker:
+                    self._select_tool_artifact(call_id)
+                else:
+                    self._open_resumed_session(call_id)
         elif isinstance(overlay, TreeSelectorOverlay):
             sequence = outcome.payload if outcome.kind is OverlayOutcomeKind.DONE else None
             self._close_overlay()
@@ -817,8 +983,8 @@ class TuiApp:
     # -- flows -------------------------------------------------------------
 
     def _submit(self, text: str) -> None:
-        prompt = text.strip()
-        if not prompt:
+        prompt = text
+        if not prompt.strip():
             return
         if self._streaming or self._overlay is not None:
             self._steer(prompt)
@@ -880,19 +1046,309 @@ class TuiApp:
                 responses=responses,
             )
         )
+
+    def _cancel_question(self, request_id: str) -> None:
+        assert self._view is not None
+        self._view.resolve_overlay(request_id)
+        if self._session_id is None:
+            self._notice("✖ Question cannot be cancelled without a session")
+            return
+        session_id = self._session_id
+        self._start_stream(
+            lambda: self._runtime.answer_question_stream(
+                session_id=session_id,
+                question_request_id=request_id,
+                responses=QuestionCancellation(),
+            )
+        )
+        self._dirty = True
+
+    def _command_help(self) -> None:
+        config = self._tui_config
+        mode = config.theme.mode
+        resolved = self._resolved_theme_mode
+        settings = [f"Approval: {self._approval_mode}", f"Theme: {resolved}"]
+        if mode == "auto":
+            settings.append(f"Theme source: {self._auto_theme_source}" + ("; dark fallback" if self._auto_theme_fallback else ""))
+        settings.extend(
+            (
+                f"Theme slots: dark={config.theme.dark} · light={config.theme.light}",
+                f"Statusline: {config.statusline.layout}",
+                f"Composer: {config.composer.style} · gutter={config.composer.gutter} · padding={config.composer.padding}",
+                f"Cursor: {config.composer.cursor_shape} (blink={config.composer.cursor_blink})",
+                "Appearance: " + ("saved" if self._appearance_saved else "temporary session preview; not saved"),
+            )
+        )
+        self._overlay = HelpOverlay(
+            theme=self._theme,
+            bindings={action: binding.name for action, binding in self._bindings.items()},
+            settings=settings,
+        )
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._enter_alt_screen()
+        self._dirty = True
+
+    def _command_appearance(self) -> None:
+        config = self._tui_config
+        theme = config.theme
+        statusline = config.statusline
+        composer = config.composer
+        values = {
+            "theme.mode": theme.mode,
+            "theme.dark": theme.dark,
+            "theme.light": theme.light,
+            "statusline.layout": statusline.layout,
+            "composer.style": composer.style,
+            "composer.cursor": composer.cursor_shape,
+        }
+        choices = {
+            "theme.mode": VALID_TUI_THEME_MODES,
+            "theme.dark": palette_names("dark", theme.custom),
+            "theme.light": palette_names("light", theme.custom),
+            "statusline.layout": statusline_profiles(),
+            "composer.style": VALID_TUI_COMPOSER_STYLES,
+            "composer.cursor": VALID_TUI_COMPOSER_CURSOR_SHAPES,
+        }
+        self._appearance_original = config
+        self._appearance_original_saved = self._appearance_saved
+        assert self._theme is not None
+        self._overlay = AppearanceOverlay(theme=self._theme, choices=choices, values=values)
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._enter_alt_screen()
+        self._dirty = True
+
+    def _appearance_config(self, values: Mapping[str, str]) -> RuntimeTuiResolvedConfig:
+        current = self._tui_config
+        theme = replace(
+            current.theme,
+            mode=values["theme.mode"],
+            dark=values["theme.dark"],
+            light=values["theme.light"],
+        )
+        layout = values["statusline.layout"]
+        if layout == "custom":
+            if current.statusline.layout == "custom":
+                left, right = current.statusline.left, current.statusline.right
+            else:
+                left, right = statusline_profile_segments(current.statusline.layout)
+            statusline = replace(current.statusline, layout=layout, left=left, right=right)
+        else:
+            statusline = replace(current.statusline, layout=layout, left=None, right=None)
+        composer = replace(
+            current.composer,
+            style=values["composer.style"],
+            cursor_shape=values["composer.cursor"],
+            cursor_blink=None if values["composer.cursor"] == "terminal" else current.composer.cursor_blink,
+        )
+        return replace(current, theme=theme, statusline=statusline, composer=composer)
+
+    def _preview_appearance(self, values: Mapping[str, str]) -> bool:
+        previous = self._tui_config
+        config = self._appearance_config(values)
+        try:
+            self._apply_appearance_config(config)
+        except TerminalCapabilityError as error:
+            if isinstance(self._overlay, AppearanceOverlay):
+                self._overlay.values.update(
+                    {
+                        "theme.mode": previous.theme.mode,
+                        "theme.dark": previous.theme.dark,
+                        "theme.light": previous.theme.light,
+                        "statusline.layout": previous.statusline.layout,
+                        "composer.style": previous.composer.style,
+                        "composer.cursor": previous.composer.cursor_shape,
+                    }
+                )
+                self._overlay.set_notice(f"Preview rolled back: {error}")
+            self._dirty = True
+            return False
+        if config != previous:
+            self._appearance_saved = False
+        if isinstance(self._overlay, AppearanceOverlay):
+            self._overlay.set_notice("")
+        return True
+
+    def _apply_appearance_config(self, config: RuntimeTuiResolvedConfig) -> None:
+        assert self._term is not None
+        self._validate_tui_appearance(config)
+        self._term.set_cursor_shape(config.composer.cursor_shape, config.composer.cursor_blink)
+        theme = self._resolve_theme(self._term, config.theme)
+        self._tui_config = config
+        self._theme = theme
+        if self._view is not None:
+            self._view.transcript().theme = theme
+        if self._composer is not None:
+            self._composer.set_appearance(
+                theme=theme,
+                style=config.composer.style,
+                gutter=config.composer.gutter,
+                padding=config.composer.padding,
+            )
+            self._composer.set_max_height(self._composer.input_height(self._term.height))
+            status_width = self._composer.status_width()
+        else:
+            status_width = self._term.width
+        self._status = StatusLine(theme, status_width, config.statusline)
+        if isinstance(self._overlay, AppearanceOverlay):
+            self._overlay.set_theme(theme)
+        self._dirty = True
+
+    def _finish_appearance(self, outcome: OverlayOutcome) -> None:
+        payload = outcome.payload
+        if outcome.kind is OverlayOutcomeKind.DONE and isinstance(payload, tuple):
+            action = payload[0] if payload else None
+            if action == "apply" and len(payload) == 2 and isinstance(payload[1], Mapping):
+                if not self._preview_appearance(payload[1]):
+                    return
+                self._appearance_original = None
+                self._appearance_original_saved = None
+                self._close_overlay()
+                return
+            if action == "save" and len(payload) == 3 and payload[1] in {"user", "workspace"} and isinstance(payload[2], Mapping):
+                if not self._preview_appearance(payload[2]):
+                    return
+                try:
+                    latest = load_runtime_config(self._workspace)
+                    self._validate_tui_appearance(latest.tui)
+                    path = save_tui_appearance_config(payload[1], self._workspace, self._tui_config)
+                except (OSError, ValueError) as error:
+                    self._notice(f"Appearance not saved: {error}")
+                    return
+                self._notice(f"Appearance saved to {path}")
+                self._appearance_saved = True
+                self._appearance_original = None
+                self._appearance_original_saved = None
+                self._close_overlay()
+                return
+        if self._appearance_original is not None:
+            self._apply_appearance_config(self._appearance_original)
+        if self._appearance_original_saved is not None:
+            self._appearance_saved = self._appearance_original_saved
+        self._appearance_original = None
+        self._appearance_original_saved = None
+        self._close_overlay()
+
+    def _command_tool_details(self) -> None:
+        if self._view is None or self._session_id is None:
+            self._notice("Tool output details require an active session.")
+            return
+        entries = [
+            (block.tool_call_id, escape_terminal_controls(f"{block.title or block.tool}: {block.summary or 'output detail'}"))
+            for block in self._view.transcript().blocks
+            if isinstance(block, ToolBlock) and block.detail_available and block.tool_call_id
+        ]
+        if not entries:
+            self._notice("No tool output details are available in this transcript.")
+            return
+        self._tool_picker_active = True
+        self._overlay = SessionPickerOverlay(
+            sessions=entries,
+            theme=self._theme,
+            title="Select Tool Output",
+            action="view",
+        )
+        self._overlay_request_id = ""
+        if self._composer is not None:
+            self._composer.set_enabled(False)
+        self._enter_alt_screen()
+        self._dirty = True
+
+    def _select_tool_artifact(self, tool_call_id: str) -> None:
+        assert self._view is not None
+        block = next(
+            (item for item in self._view.transcript().blocks if isinstance(item, ToolBlock) and item.tool_call_id == tool_call_id),
+            None,
+        )
+        if block is None or not block.detail_available:
+            self._notice("Tool output detail is no longer available.")
+            return
+        session_id = block.session_id or self._session_id
+        if not session_id:
+            self._notice("Tool output has no session owner.")
+            return
+        self._artifact_detail = (session_id, tool_call_id, block.artifact_id, block.title or block.tool)
+        self._artifact_offsets = [0]
+        self._artifact_next_offset = None
+        self._open_tool_artifact_page(0)
+        self._enter_alt_screen()
+
+    def _open_tool_artifact_page(self, offset: int) -> None:
+        detail = self._artifact_detail
+        caller = self._session_id
+        if detail is None or caller is None:
+            self._notice("Tool output detail requires an active session.")
+            return
+        session_id, tool_call_id, artifact_id, title = detail
+        content = ""
+        has_next = False
+        self._artifact_next_offset = None
+        limit = max(1, (self._term.height - 5) if self._term is not None else 35)
+        try:
+            access = self._runtime.read_tool_transcript(
+                caller_session_id=caller,
+                session_id=session_id,
+                limit=1,
+            )
+            if not isinstance(access, TranscriptPage) or access.session_id != session_id:
+                content = "Tool transcript is not accessible."
+            else:
+                result = self._runtime.read_tool_output_artifact(
+                    caller_session_id=caller,
+                    session_id=session_id,
+                    artifact_id=artifact_id,
+                    tool_call_id=tool_call_id,
+                    offset=offset,
+                    limit=limit,
+                )
+                if isinstance(result, ArtifactPage):
+                    content = escape_terminal_controls(result.text, preserve_newlines=True)
+                    if isinstance(result.page, NextPage):
+                        has_next = True
+                        self._artifact_next_offset = result.page.offset
+                elif isinstance(result, ArtifactBinary):
+                    content = (
+                        f"Binary artifact · {escape_terminal_controls(result.mime)} · {result.byte_count} bytes "
+                        f"· SHA-256 {escape_terminal_controls(result.sha256)}"
+                    )
+                elif isinstance(result, ArtifactInvalid | ArtifactUnavailable):
+                    content = escape_terminal_controls(result.reason)
+                elif isinstance(result, ArtifactMissing):
+                    content = "Artifact is not available."
+                else:
+                    content = "Artifact read returned no displayable content."
+        except Exception as error:
+            logger.exception("Failed to read tool output artifact")
+            content = escape_terminal_controls(format_runtime_error(error))
+        self._overlay = ToolArtifactOverlay(
+            title=escape_terminal_controls(title),
+            content=content,
+            page=len(self._artifact_offsets),
+            has_previous=len(self._artifact_offsets) > 1,
+            has_next=has_next,
+            theme=self._theme,
+        )
+        self._overlay_request_id = ""
         self._dirty = True
 
     def _command_session_new(self) -> None:
         assert self._view is not None and self._region is not None
+        self._region.clear()
         self._view.reset_for_new_session()
-        # The transcript is replaced, so the frame sequence is new: forget the
-        # flushed prefix (a resize must not -- see ``LiveRegion.reset_overflow``).
-        self._region.reset_overflow()
         self._view.transcript().add(SessionMarkerBlock(label="New Session"))
         self._session_id = None
+        self._approval_mode = self._config.approval_mode
         self._model = self._config.model or ""
         self._session_effort = ""
-        self._cost_usd = 0.0
+        self._cost_usd = None
+        self._input_tokens = None
+        self._output_tokens = None
+        self._cache_read_tokens = None
+        self._cache_write_tokens = None
+        self._cache_hit_rate = None
         self._context_tokens = 0
         self._tracked_tasks.clear()
         self._next_poll_at = 0.0
@@ -905,6 +1361,7 @@ class TuiApp:
             logger.error("Failed to list sessions: %s", error)
             self._notice(f"✖ Failed to list sessions: {format_runtime_error(error)}")
             return
+
         # Main-session surface, like ``sessions list``/HTTP: delegated
         # background-task children are reachable only from the child-session
         # view, so they never appear as resume targets here.
@@ -1017,12 +1474,15 @@ class TuiApp:
 
     def _open_resumed_session(self, session_id: str) -> None:
         assert self._view is not None and self._region is not None
+        self._region.clear()
         self._view.reset_for_new_session()
-        # A resumed session replaces the tape: its frame sequence is new, so the
-        # flushed prefix no longer describes it.
-        self._region.reset_overflow()
         self._session_id = session_id
-        self._session_effort = ""
+        try:
+            effective = self._runtime.effective_runtime_config(session_id=session_id)
+            self._approval_mode = effective.approval_mode
+        except (TypeError, ValueError) as error:
+            logger.error("Failed to resolve session approval mode: %s", error)
+            self._approval_mode = "unavailable"
         self._tracked_tasks.clear()
         self._next_poll_at = 0.0
         short_id = short_session_id(session_id)
@@ -1055,15 +1515,11 @@ class TuiApp:
     def _toggle_expand(self) -> None:
         """``app.tools.expand``: expand or collapse every block.
 
-        Only the live tail changes, exactly as in omp 18.3.4 (``setToolsExpanded``
-        -> ``requestRender(true)``): a block already in native scrollback keeps the
-        rows it was committed with, because scrollback cannot be rewritten and
-        re-printing it would duplicate the transcript. The notice only claims
-        "committed rows cannot be redrawn" when the toggle actually landed there
-        (``set_expanded``) and there is no live tail left to show it -- an
-        ordinary toggle with unsettled blocks still repaints them. The notice
-        rides the live region (repainted, never committed), so the gesture adds
-        zero rows to scrollback.
+        Settled transcript rows already in native scrollback cannot be redrawn:
+        rewriting them would duplicate history. ``Transcript.set_expanded``
+        reports whether a toggle reached only committed blocks, and the app
+        shows that limitation only when no live tail remains. The notice rides
+        the live region, so the gesture adds no scrollback rows.
         """
         assert self._view is not None
         transcript = self._view.transcript()
@@ -1086,7 +1542,7 @@ class TuiApp:
 
     def _take_pending_overlay(self) -> None:
         assert self._view is not None
-        if self._overlay is not None:
+        if self._overlay is not None or self._streaming:
             return
         pending = self._view.take_pending_overlay()
         if pending is None:
@@ -1172,7 +1628,14 @@ def run_tui(
             runtime=runtime,
             keymap=keymap,
         )
+    except TuiConfigurationError as error:
+        print(f"voidcode tui: {error}", file=sys.stderr)
+        return 2
     except KeyBindingError as error:
         print(f"voidcode tui: {error}", file=sys.stderr)
         return 2
-    return app.run()
+    try:
+        return app.run()
+    except TerminalCapabilityError as error:
+        print(f"voidcode tui: {error}", file=sys.stderr)
+        return 2

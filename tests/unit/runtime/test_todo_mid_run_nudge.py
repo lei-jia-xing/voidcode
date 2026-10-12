@@ -2,7 +2,7 @@
 
 Upstream ``takeMidRunNudge`` semantics: while a turn is still running, at least 12
 mutation-tool results since the last todo touch earn one temporary provider-context
-nudge, at most 2 per cycle, suppressed for plan mode / no todo tool / parked loops.
+nudge, at most 2 per cycle, suppressed when no todo tool is available or the loop is parked.
 The nudge is never persisted in the transcript.
 """
 
@@ -179,23 +179,6 @@ def test_no_active_todo_tool_means_no_nudge() -> None:
     )
 
     assert decision.injects is False
-
-
-def test_plan_mode_means_no_nudge(tmp_path: Path) -> None:
-    """Plan mode suppresses the nudge (upstream ``planModeEnabled``)."""
-
-    graph = _NudgeGraph([ToolTurn((_TODO_INIT_CALL,)), FinalTurn("planned")])
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        tool_registry=ToolRegistry.from_tools([TodoTool(), GlobTool()]),
-        turn_producer=graph,
-        config=_provider_engine_config(reminders=RuntimeRemindersConfig()),
-        permission_policy=PermissionPolicy(mode="yolo"),
-    )
-
-    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=SESSION_ID, metadata={"mode": "plan"})))
-
-    assert _nudges(chunks) == []
 
 
 # --- channel semantics --------------------------------------------------------

@@ -6,7 +6,6 @@ from typing import Any, Final, Literal, Protocol, TypedDict, TypeIs, cast, runti
 
 from ..provider.reasoning_effort import normalize_reasoning_effort
 from ..tools.contracts import TerminalYield
-from . import mode as runtime_mode
 from .background.execution import (
     SubagentExecutionContract,
 )
@@ -124,7 +123,6 @@ class RuntimeCommandMetadata(TypedDict, total=False):
     arguments: list[str]
     raw_arguments: str
     original_prompt: str
-    mode: runtime_mode.RuntimeMode
 
 
 class RuntimeRequestMetadata(TypedDict, total=False):
@@ -133,7 +131,6 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     command: RuntimeCommandMetadata
     context_transform_refs: list[str]
     delegation: RuntimeSubagentRoutingMetadata
-    mode: runtime_mode.RuntimeMode
     read_only: bool
     provider_stream: bool
     reasoning_effort: str
@@ -288,13 +285,6 @@ def _validate_parallel_group_size(value: object) -> int:
     return group_size
 
 
-def _parse_runtime_mode(value: object) -> runtime_mode.RuntimeMode:
-    try:
-        return runtime_mode.parse_runtime_mode(value)
-    except ValueError as exc:
-        raise RuntimeRequestError("request metadata 'mode' must be 'normal' or 'plan'") from exc
-
-
 def _parse_string_list(raw: list[object], *, field: str) -> list[str]:
     """Parse a JSON list of non-empty strings, labelling errors by ``field``."""
     parsed: list[str] = []
@@ -354,8 +344,6 @@ def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadat
         "raw_arguments": raw_arguments,
         "original_prompt": original_prompt,
     }
-    if "mode" in payload:
-        normalized["mode"] = _parse_runtime_mode(payload["mode"])
     return normalized
 
 
@@ -535,9 +523,6 @@ def validate_runtime_request_metadata(
 
     if "delegation" in metadata:
         normalized["delegation"] = validate_runtime_subagent_routing_metadata(metadata["delegation"])
-
-    if "mode" in metadata:
-        normalized["mode"] = _parse_runtime_mode(metadata["mode"])
 
     if "read_only" in metadata:
         read_only = metadata["read_only"]

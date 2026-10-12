@@ -23,11 +23,15 @@ from ..core.tool_context import (
 from ..provider.protocol import ProviderAbortSignal
 from ..skills.models import SkillMetadata
 from ..tools.contracts import (
+    ConfirmedStop,
     RuntimeTimeoutAwareTool,
     RuntimeToolTimeoutError,
+    TextOutput,
     Tool,
+    ToolFailure,
     ToolInvocation,
     ToolResult,
+    UnconfirmedStop,
 )
 from .execution.tool_resources import (
     SessionArtifactReader,
@@ -183,10 +187,9 @@ def _log_late_completion(
     invocation_id: str | None,
     item: _ToolResultItem | _ToolExceptionItem,
 ) -> None:
-    """Record a terminal item produced after the runtime stopped waiting."""
     outcome = f"status={item.result.status}" if isinstance(item, _ToolResultItem) else f"exception={type(item.exception).__name__}"
     logger.warning(
-        "tool %s produced a terminal result after the runtime abandoned its timed-out execution; the late result was discarded (%s) tool_call_id=%s",
+        "tool %s produced a terminal result after the runtime stopped waiting for its execution; the late result was discarded (%s) tool_call_id=%s",
         tool_name,
         outcome,
         invocation_id,
@@ -414,6 +417,7 @@ class RuntimeToolExecutor:
         runtime_timeout = tool_timeout if tool_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool) else None
         deadline = time.monotonic() + runtime_timeout if runtime_timeout is not None else 0.0
         pending_runtime_timeout: int | None = None
+        pending_run_abort = False
         while terminal_item is None:
             try:
                 poll_timeout = _PROGRESS_POLL_SECONDS
@@ -427,8 +431,7 @@ class RuntimeToolExecutor:
                 item = progress_queue.get(timeout=poll_timeout)
             except queue.Empty:
                 if invocation.context.abort_signal is not None and invocation.context.abort_signal.cancelled:
-                    reason = invocation.context.abort_signal.reason
-                    terminal_item = _ToolExceptionItem(RuntimeError(reason if isinstance(reason, str) else "run interrupted"))
+                    pending_run_abort = True
                     break
                 if runtime_timeout is not None and time.monotonic() >= deadline:
                     cancel_signal.set_cancelled(True, reason=_timeout_cancellation_reason(runtime_timeout))
@@ -440,14 +443,17 @@ class RuntimeToolExecutor:
                 continue
             terminal_item = item
 
-        while True:
-            try:
-                item = progress_queue.get_nowait()
-            except queue.Empty:
-                break
-            if isinstance(item, ToolExecutionProgress):
-                yield item
+        if terminal_item is not None and invocation.context.abort_signal is not None and invocation.context.abort_signal.cancelled:
+            pending_run_abort = True
 
+        if not pending_run_abort:
+            while True:
+                try:
+                    item = progress_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(item, ToolExecutionProgress):
+                    yield item
         origin_timeout: RuntimeToolTimeoutError | None = None
         if isinstance(terminal_item, _ToolExceptionItem) and isinstance(terminal_item.exception, RuntimeToolTimeoutError):
             origin_timeout = terminal_item.exception
@@ -483,6 +489,48 @@ class RuntimeToolExecutor:
                 )
             elif origin_timeout is not None:
                 origin_timeout.execution_stopped = execution_stopped
+        elif pending_run_abort:
+            worker.join(timeout=_TOOL_TIMEOUT_REAP_SECONDS)
+            if terminal_item is None:
+                terminal_item = _drain_terminal_item(progress_queue)
+            execution_stopped = not worker.is_alive()
+            if not execution_stopped:
+                threading.Thread(
+                    target=_observe_abandoned_execution,
+                    kwargs={
+                        "worker": worker,
+                        "progress_queue": progress_queue,
+                        "tool_name": tool_call.tool_name,
+                        "invocation_id": invocation_id,
+                    },
+                    name=f"runtime-tool-{tool_call.tool_name}-abandoned",
+                    daemon=True,
+                ).start()
+            typed_stop_failure = (
+                isinstance(terminal_item, _ToolResultItem)
+                and isinstance(terminal_item.result, ToolFailure)
+                and isinstance(terminal_item.result.execution, (ConfirmedStop, UnconfirmedStop))
+            )
+            timeout_exception = isinstance(terminal_item, _ToolExceptionItem) and isinstance(terminal_item.exception, RuntimeToolTimeoutError)
+            stop = ConfirmedStop(True) if execution_stopped else UnconfirmedStop(True)
+            if isinstance(terminal_item, _ToolResultItem) and isinstance(terminal_item.result, ToolFailure) and not typed_stop_failure:
+                terminal_item = _ToolResultItem(
+                    replace(terminal_item.result, execution=stop),
+                    terminal_item.loss_metadata,
+                )
+            elif not typed_stop_failure and not timeout_exception:
+                # A drained success is not a cancellation outcome. Discard its
+                # late content and keep it out of persistence/provider context.
+                loss_metadata = terminal_item.loss_metadata if isinstance(terminal_item, (_ToolResultItem, _ToolExceptionItem)) else None
+                terminal_item = _ToolResultItem(
+                    ToolFailure(
+                        tool_name=tool_call.tool_name,
+                        error="run interrupted",
+                        output=TextOutput("run interrupted"),
+                        execution=stop,
+                    ),
+                    loss_metadata,
+                )
         else:
             worker.join(timeout=1)
         if terminal_item is None:

@@ -1959,17 +1959,163 @@
       },
       "type": "object"
     },
+    "tuiBrandConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "tuiComposerCursorConfig": {
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "blink": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "blink"
+        ]
+      },
+      "properties": {
+        "shape": {
+          "enum": [
+            "bar",
+            "block",
+            "underline",
+            "terminal"
+          ],
+          "type": "string"
+        },
+        "blink": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "shape": {
+            "not": {
+              "const": "terminal"
+            }
+          }
+        },
+        "required": [
+          "shape"
+        ]
+      },
+      "type": "object"
+    },
+    "tuiComposerConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "style": {
+          "enum": [
+            "box",
+            "band",
+            "claude",
+            "pi",
+            "borderless",
+            "rule",
+            "field",
+            "rail"
+          ],
+          "type": "string"
+        },
+        "cursor": {
+          "$ref": "#/$defs/tuiComposerCursorConfig"
+        },
+        "gutter": {
+          "enum": [
+            "prompt",
+            "none"
+          ],
+          "type": "string"
+        },
+        "padding": {
+          "enum": [
+            "compact",
+            "normal"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "tuiCustomThemeConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "dark",
+            "light"
+          ],
+          "type": "string"
+        },
+        "vars": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            ]
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "type": "object"
+        },
+        "colors": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            ]
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "type": "object"
+    },
     "tuiConfig": {
       "additionalProperties": false,
       "properties": {
         "keymap": {
           "additionalProperties": {
             "enum": [
+              "app.help",
               "app.session.new",
               "app.session.resume",
+              "app.session.tree",
               "app.tools.expand",
+              "app.tools.detail",
               "app.display.reset",
-              "app.history.search"
+              "app.history.search",
+              "app.tui.appearance"
             ],
             "type": "string"
           },
@@ -1978,26 +2124,40 @@
             "null"
           ]
         },
-        "preferences": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/tuiPreferencesConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "tuiPreferencesConfig": {
-      "additionalProperties": false,
-      "properties": {
         "theme": {
           "anyOf": [
             {
-              "$ref": "#/$defs/tuiThemePreferencesConfig"
+              "$ref": "#/$defs/tuiThemeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "statusline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/tuiStatuslineConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "composer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/tuiComposerConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "brand": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/tuiBrandConfig"
             },
             {
               "type": "null"
@@ -2007,22 +2167,50 @@
       },
       "type": "object"
     },
-    "tuiThemePreferencesConfig": {
+    "tuiStatuslineOptionConfig": {
       "additionalProperties": false,
       "properties": {
-        "name": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "mode": {
+        "color": {
           "anyOf": [
             {
               "enum": [
-                "auto",
-                "light",
-                "dark"
+                "accent",
+                "border",
+                "borderAccent",
+                "success",
+                "error",
+                "warning",
+                "muted",
+                "dim",
+                "text",
+                "thinkingText",
+                "userMessageText",
+                "toolTitle",
+                "mdHeading",
+                "mdLink",
+                "mdLinkUrl",
+                "mdCode",
+                "mdCodeBlock",
+                "mdQuote",
+                "mdHr",
+                "mdListBullet",
+                "toolDiffAdded",
+                "toolDiffRemoved",
+                "toolDiffContext",
+                "syntaxComment",
+                "syntaxKeyword",
+                "syntaxFunction",
+                "syntaxVariable",
+                "syntaxString",
+                "syntaxNumber",
+                "syntaxOperator",
+                "syntaxPunctuation",
+                "thinkingHigh",
+                "statusLineSep",
+                "statusLineModel",
+                "statusLinePath",
+                "statusLineContext",
+                "statusLineCost"
               ],
               "type": "string"
             },
@@ -2030,6 +2218,182 @@
               "type": "null"
             }
           ]
+        },
+        "icon": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "max_width": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "tuiStatuslineConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "layout": {
+          "enum": [
+            "codex",
+            "claude",
+            "minimal",
+            "compact",
+            "full",
+            "ascii",
+            "custom"
+          ],
+          "type": "string"
+        },
+        "transparent": {
+          "type": "boolean"
+        },
+        "left": {
+          "items": {
+            "enum": [
+              "status",
+              "model",
+              "mode",
+              "path",
+              "context_pct",
+              "cost",
+              "session_name",
+              "lsp",
+              "token_in",
+              "token_out",
+              "cache_read",
+              "cache_write",
+              "cache_hit"
+            ],
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "right": {
+          "items": {
+            "enum": [
+              "status",
+              "model",
+              "mode",
+              "path",
+              "context_pct",
+              "cost",
+              "session_name",
+              "lsp",
+              "token_in",
+              "token_out",
+              "cache_read",
+              "cache_write",
+              "cache_hit"
+            ],
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "separator": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "dot",
+                "pipe",
+                "rule"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options": {
+          "additionalProperties": {
+            "$ref": "#/$defs/tuiStatuslineOptionConfig"
+          },
+          "propertyNames": {
+            "enum": [
+              "status",
+              "model",
+              "mode",
+              "path",
+              "context_pct",
+              "cost",
+              "session_name",
+              "lsp",
+              "token_in",
+              "token_out",
+              "cache_read",
+              "cache_write",
+              "cache_hit"
+            ],
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "tuiSymbolsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "enum": [
+            "unicode",
+            "ascii",
+            "nerd"
+          ],
+          "type": "string"
+        },
+        "overrides": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "tuiThemeConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "auto",
+            "light",
+            "dark"
+          ],
+          "type": "string"
+        },
+        "dark": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "light": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "custom": {
+          "additionalProperties": {
+            "$ref": "#/$defs/tuiCustomThemeConfig"
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "type": "object"
+        },
+        "symbols": {
+          "$ref": "#/$defs/tuiSymbolsConfig"
         }
       },
       "type": "object"

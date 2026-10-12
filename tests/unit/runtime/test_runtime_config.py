@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 
@@ -42,19 +43,19 @@ from voidcode.runtime.config import (
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
     RuntimeToolsLocalConfig,
-    RuntimeTuiConfig,
-    RuntimeTuiPreferences,
-    RuntimeTuiThemePreferences,
+    RuntimeTuiComposerConfig,
+    RuntimeTuiResolvedConfig,
+    RuntimeTuiStatuslineConfig,
+    RuntimeTuiStatuslineOption,
+    RuntimeTuiThemeConfig,
     RuntimeWebSettings,
     load_global_web_settings,
     load_runtime_config,
-    merge_runtime_tui_preferences,
     parse_runtime_agent_payload,
     parse_runtime_context_window_payload,
     runtime_config_path,
-    save_global_tui_preferences,
     save_global_web_settings,
-    save_workspace_tui_preferences,
+    save_tui_appearance_config,
     serialize_runtime_agent_config,
     serialize_runtime_background_task_config,
     serialize_runtime_context_window_config,
@@ -62,8 +63,7 @@ from voidcode.runtime.config import (
 )
 from voidcode.runtime.permission import PatternPermissionRule
 from voidcode.runtime.service import RuntimeRequest, VoidCodeRuntime
-
-_parse_tui_config = runtime_config.__dict__["_parse_tui_config"]
+from voidcode.tui.theme import validate_theme_configuration
 
 
 def _prompt_materialization_payload(profile: str) -> dict[str, object]:
@@ -2239,36 +2239,44 @@ def test_load_global_web_settings_uses_windows_appdata_from_explicit_env(tmp_pat
     assert settings == RuntimeWebSettings(provider="deepseek", provider_api_key_present=True)
 
 
-def test_parse_tui_config_returns_defaults_when_fields_missing() -> None:
-    assert _parse_tui_config({}) == RuntimeTuiConfig(keymap=None)
-
-
-def test_parse_tui_config_preserves_preferences_shape() -> None:
-    assert _parse_tui_config(
-        {
-            "preferences": {
-                "theme": {"name": "voidcode-dark", "mode": "dark"},
-            },
-        }
-    ) == RuntimeTuiConfig(
-        keymap=None,
-        preferences=RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name="voidcode-dark", mode="dark"),
-        ),
-    )
-
-
-def test_load_runtime_config_resolves_tui_preferences_from_workspace_over_global(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    global_config_dir = tmp_path / "global-config"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
-    user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
-    user_runtime_config_path().write_text(
+def test_runtime_config_merges_tui_fields_and_replaces_workspace_keymap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    user_path = user_runtime_config_path()
+    user_path.parent.mkdir(parents=True)
+    user_path.write_text(
         json.dumps(
             {
                 "tui": {
-                    "preferences": {
-                        "theme": {"name": "voidcode-dark", "mode": "dark"},
-                    }
+                    "keymap": {"ctrl+n": "app.session.new", "ctrl+t": "app.session.tree"},
+                    "theme": {
+                        "mode": "dark",
+                        "dark": "voidcode-dark",
+                        "light": "voidcode-light",
+                        "custom": {
+                            "user-dark": {
+                                "mode": "dark",
+                                "vars": {"accent_ansi": 17},
+                                "colors": {"accent": "accent_ansi"},
+                            }
+                        },
+                        "symbols": {"preset": "nerd", "overrides": {"sep.dot": "::"}},
+                    },
+                    "statusline": {
+                        "layout": "full",
+                        "left": ["status", "model"],
+                        "right": ["cost"],
+                        "options": {"model": {"icon": True}},
+                    },
+                    "composer": {
+                        "style": "box",
+                        "cursor": {"shape": "bar", "blink": True},
+                        "gutter": "none",
+                        "padding": "compact",
+                    },
+                    "brand": {"enabled": False},
                 }
             }
         ),
@@ -2278,9 +2286,11 @@ def test_load_runtime_config_resolves_tui_preferences_from_workspace_over_global
         tmp_path,
         {
             "tui": {
-                "preferences": {
-                    "theme": {"name": "voidcode-light"},
-                }
+                "keymap": {"ctrl+x": "app.tools.expand"},
+                "theme": {"light": "voidcode-light", "symbols": {"overrides": {"sep.dot": "++"}}},
+                "statusline": {"transparent": False, "options": {"model": {"max_width": 12}}},
+                "composer": {"style": "field"},
+                "brand": {"enabled": True},
             }
         },
     )
@@ -2288,183 +2298,224 @@ def test_load_runtime_config_resolves_tui_preferences_from_workspace_over_global
     config = load_runtime_config(tmp_path, env={})
 
     assert config.tui is not None
-    assert config.tui.preferences == RuntimeTuiPreferences(
-        theme=RuntimeTuiThemePreferences(name="voidcode-light", mode="dark"),
+    assert config.tui.keymap == {"ctrl+x": "app.tools.expand"}
+    assert config.tui.theme.mode == "dark"
+    assert config.tui.theme.dark == "voidcode-dark"
+    assert config.tui.theme.light == "voidcode-light"
+    assert config.tui.theme.symbols_preset == "nerd"
+    assert config.tui.theme.symbols_overrides == {"sep.dot": "++"}
+    assert config.tui.theme.custom["user-dark"].vars["accent_ansi"] == 17
+    assert config.tui.statusline.layout == "full"
+    assert config.tui.statusline.left == ("status", "model")
+    assert config.tui.statusline.right == ("cost",)
+    assert config.tui.statusline.transparent is False
+    assert config.tui.statusline.options["model"] == RuntimeTuiStatuslineOption(icon=True, max_width=12)
+    assert config.tui.composer == RuntimeTuiComposerConfig(
+        style="field",
+        cursor_shape="bar",
+        cursor_blink=True,
+        gutter="none",
+        padding="compact",
     )
+    assert config.tui.brand_enabled is True
 
 
-def test_load_runtime_config_resolves_tui_preferences_from_global_when_workspace_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    global_config_dir = tmp_path / "global-config"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
-    user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
-    user_runtime_config_path().write_text(
+@pytest.mark.parametrize("scope", ("user", "workspace"))
+def test_runtime_config_tui_mode_error_reports_active_config_source(
+    tmp_path: Path,
+    scope: Literal["user", "workspace"],
+) -> None:
+    global_config = tmp_path / "global-config"
+    workspace_path = runtime_config_path(tmp_path)
+    user_path = global_config / "voidcode" / "config.json"
+    config_path = user_path if scope == "user" else workspace_path
+    other_path = workspace_path if scope == "user" else user_path
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps({"tui": {"theme": {"mode": "neon"}}}), encoding="utf-8")
+
+    with pytest.raises(ValueError) as error:
+        load_runtime_config(tmp_path, env={"XDG_CONFIG_HOME": str(global_config)})
+
+    message = str(error.value)
+    assert "runtime config field 'tui.theme.mode'" in message
+    assert "'neon'" in message
+    assert str(config_path) in message
+    assert str(other_path) not in message
+
+
+@pytest.mark.parametrize(
+    ("tui", "field_path", "value"),
+    (
+        ({"composer": {"style": "split"}}, "tui.composer.style", "'split'"),
+        ({"statusline": {"layout": "wide"}}, "tui.statusline.layout", "'wide'"),
+    ),
+)
+def test_runtime_config_tui_scalar_errors_include_field_value_and_source(
+    tmp_path: Path,
+    tui: dict[str, object],
+    field_path: str,
+    value: str,
+) -> None:
+    path = runtime_config_path(tmp_path)
+    _write_runtime_config(tmp_path, {"tui": tui})
+
+    with pytest.raises(ValueError) as error:
+        load_runtime_config(tmp_path, env={})
+
+    message = str(error.value)
+    assert f"runtime config field '{field_path}'" in message
+    assert value in message
+    assert str(path) in message
+
+
+@pytest.mark.parametrize(
+    "color",
+    ("not-a-token", "statusLineBg", "\x1b[31m"),
+    ids=("unknown-token", "background-token", "terminal-control"),
+)
+def test_runtime_config_rejects_invalid_statusline_foreground_option_with_source(
+    tmp_path: Path,
+    color: str,
+) -> None:
+    path = runtime_config_path(tmp_path)
+    _write_runtime_config(tmp_path, {"tui": {"statusline": {"options": {"model": {"color": color}}}}})
+
+    with pytest.raises(ValueError) as error:
+        load_runtime_config(tmp_path, env={})
+
+    message = str(error.value)
+    assert "runtime config field 'tui.statusline.options.model.color'" in message
+    assert f"got {color!r}" in message
+    assert repr(str(path)) in message
+    assert not any(ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F for char in message)
+
+
+def test_runtime_config_keymap_error_escapes_key_and_action_without_dumping_map(tmp_path: Path) -> None:
+    path = runtime_config_path(tmp_path)
+    _write_runtime_config(tmp_path, {"tui": {"keymap": {"ctrl\nx": "app.not-real"}}})
+
+    with pytest.raises(ValueError) as error:
+        load_runtime_config(tmp_path, env={})
+
+    message = str(error.value)
+    assert r"['ctrl\nx']" in message
+    assert "'app.not-real'" in message
+    assert "app.tools.expand" in message
+    assert str(path) in message
+    assert "\n" not in message
+
+
+def test_runtime_config_theme_semantic_error_uses_merged_field_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global_config = tmp_path / "用户\nconfig"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config))
+    user_path = user_runtime_config_path()
+    workspace = tmp_path / "work 雪\nspace"
+    workspace_path = runtime_config_path(workspace)
+    workspace.mkdir()
+    user_path.parent.mkdir(parents=True)
+    user_path.write_text(
+        json.dumps({"tui": {"theme": {"custom": {"brand-dark": {"mode": "dark", "colors": {"accent": "#abcdef"}}}}}}),
+        encoding="utf-8",
+    )
+    _write_runtime_config(workspace, {"tui": {"theme": {"dark": "brand-dark", "light": "voidcode-dark"}}})
+
+    config = load_runtime_config(workspace, env={"XDG_CONFIG_HOME": str(global_config)})
+    assert config.tui is not None
+    assert config.tui.theme.field_sources["tui.theme.custom['brand-dark'].mode"] == str(user_path)
+    assert config.tui.theme.field_sources["tui.theme.light"] == str(workspace_path)
+
+    with pytest.raises(ValueError) as error:
+        validate_theme_configuration(config.tui.theme)
+
+    message = str(error.value)
+    assert "runtime config field 'tui.theme.light'" in message
+    assert "got 'voidcode-dark'" in message
+    assert repr(str(workspace_path)) in message
+    assert repr(str(user_path)) not in message
+
+
+@pytest.mark.parametrize(
+    "tui",
+    (
+        {"statusline": {"transparent": "yes"}},
+        {"statusline": {"options": {"model": {"max_width": "12"}}}},
+        {"statusline": {"options": {"model": {"max_width": True}}}},
+        {"composer": {"cursor": {"shape": "bar", "blink": "yes"}}},
+        {"brand": {"enabled": 1}},
+    ),
+)
+def test_runtime_config_rejects_coercive_tui_values(tmp_path: Path, tui: dict[str, object]) -> None:
+    _write_runtime_config(tmp_path, {"tui": tui})
+
+    with pytest.raises(ValueError):
+        load_runtime_config(tmp_path, env={})
+
+
+@pytest.mark.parametrize("scope", ("user", "workspace"))
+def test_save_tui_appearance_preserves_config_fields_and_posix_file_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scope: Literal["user", "workspace"],
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
+    path = user_runtime_config_path() if scope == "user" else runtime_config_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(
             {
+                "model": "opencode-zen/gpt-5.4",
+                "approval_mode": "ask",
+                "providers": {"openai": {"api_key": "preserve-me"}},
                 "tui": {
-                    "preferences": {
-                        "theme": {"name": "voidcode-dark", "mode": "dark"},
-                    }
-                }
+                    "keymap": {"ctrl+n": "app.session.new"},
+                    "theme": {"mode": "dark", "dark": "voidcode-dark", "light": "voidcode-light"},
+                },
             }
         ),
         encoding="utf-8",
     )
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.tui is not None
-    assert config.tui.preferences == RuntimeTuiPreferences(
-        theme=RuntimeTuiThemePreferences(name="voidcode-dark", mode="dark"),
+    path.chmod(0o640)
+    appearance = RuntimeTuiResolvedConfig(
+        theme=RuntimeTuiThemeConfig(mode="dark", dark="voidcode-dark", light="voidcode-light"),
+        statusline=RuntimeTuiStatuslineConfig(layout="minimal", transparent=False),
+        composer=RuntimeTuiComposerConfig(style="field"),
+        brand_enabled=False,
     )
 
+    written_path = save_tui_appearance_config(scope, tmp_path, appearance)
 
-def test_load_runtime_config_defaults_tui_theme_mode_without_a_palette_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.tui is not None
-    assert config.tui.preferences == RuntimeTuiPreferences(
-        theme=RuntimeTuiThemePreferences(name=None, mode="auto"),
-    )
-
-
-def test_load_runtime_config_preserves_invalid_theme_name_and_defers_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
-    _write_runtime_config(
-        tmp_path,
-        {
-            "tui": {
-                "preferences": {
-                    "theme": {"name": "unknown-theme", "mode": "dark"},
-                }
-            }
-        },
-    )
-
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.tui is not None
-    assert config.tui.preferences is not None
-    assert config.tui.preferences.theme == RuntimeTuiThemePreferences(name="unknown-theme", mode="dark")
-
-
-def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
-    _write_runtime_config(
-        tmp_path,
-        {
-            "model": "opencode-zen/gpt-5.4",
-            "approval_mode": "ask",
-            "tui": {"keymap": {"n": "app.session.new"}},
-        },
-    )
-
-    save_workspace_tui_preferences(
-        tmp_path,
-        RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name="voidcode-dark", mode="dark"),
-        ),
-    )
-
-    payload = json.loads(runtime_config_path(tmp_path).read_text(encoding="utf-8"))
+    assert written_path == path
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == 0o640
+    payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["model"] == "opencode-zen/gpt-5.4"
     assert payload["approval_mode"] == "ask"
-    assert payload["tui"]["preferences"] == {
-        "theme": {"name": "voidcode-dark", "mode": "dark"},
-    }
+    assert payload["providers"] == {"openai": {"api_key": "preserve-me"}}
+    assert payload["tui"]["keymap"] == {"ctrl+n": "app.session.new"}
+    assert payload["tui"]["theme"]["mode"] == "dark"
+    assert "field_sources" not in payload["tui"]["theme"]
+    assert payload["tui"]["statusline"]["layout"] == "minimal"
+    assert payload["tui"]["statusline"]["transparent"] is False
+    assert payload["tui"]["composer"]["style"] == "field"
+    assert payload["tui"]["brand"] == {"enabled": False}
 
 
-def test_save_workspace_tui_preferences_preserves_tui_keymap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_save_tui_appearance_rejects_invalid_existing_config_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
-    _write_runtime_config(
-        tmp_path,
-        {
-            "tui": {
-                "keymap": {"n": "app.session.new"},
-            }
-        },
-    )
+    path = runtime_config_path(tmp_path)
+    path.write_text(json.dumps({"tui": {"unknown": True}}), encoding="utf-8")
+    before = path.read_bytes()
 
-    save_workspace_tui_preferences(
-        tmp_path,
-        RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name="voidcode-dark", mode="dark"),
-        ),
-    )
+    with pytest.raises(ValueError):
+        save_tui_appearance_config("workspace", tmp_path, RuntimeTuiResolvedConfig())
 
-    payload = json.loads(runtime_config_path(tmp_path).read_text(encoding="utf-8"))
-    assert payload["tui"]["keymap"] == {"n": "app.session.new"}
-    assert payload["tui"]["preferences"] == {
-        "theme": {"name": "voidcode-dark", "mode": "dark"},
-    }
-
-
-def test_save_workspace_tui_preferences_writes_only_local_override_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
-    _write_runtime_config(
-        tmp_path,
-        {
-            "tui": {
-                "preferences": {
-                    "theme": {"mode": "light"},
-                }
-            }
-        },
-    )
-
-    save_workspace_tui_preferences(
-        tmp_path,
-        RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name="voidcode-dark"),
-        ),
-    )
-
-    payload = json.loads(runtime_config_path(tmp_path).read_text(encoding="utf-8"))
-    assert payload["tui"]["preferences"] == {"theme": {"name": "voidcode-dark"}}
-
-
-def test_save_global_tui_preferences_writes_user_config_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    global_config_dir = tmp_path / "global-config"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
-
-    save_global_tui_preferences(
-        RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name="voidcode-dark", mode="dark"),
-        )
-    )
-
-    payload = json.loads(user_runtime_config_path().read_text(encoding="utf-8"))
-    assert payload == {
-        "tui": {
-            "preferences": {
-                "theme": {"name": "voidcode-dark", "mode": "dark"},
-            }
-        }
-    }
-
-
-def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    global_config_dir = tmp_path / "global-config"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
-    user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
-    user_runtime_config_path().write_text(
-        json.dumps({"model": "opencode-zen/gpt-5.4", "tui": {"keymap": {"n": "app.session.new"}}}),
-        encoding="utf-8",
-    )
-
-    save_global_tui_preferences(
-        RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(name="voidcode-light", mode="light"),
-        )
-    )
-
-    payload = json.loads(user_runtime_config_path().read_text(encoding="utf-8"))
-    assert payload["model"] == "opencode-zen/gpt-5.4"
-    assert payload["tui"]["keymap"] == {"n": "app.session.new"}
-    assert payload["tui"]["preferences"] == {
-        "theme": {"name": "voidcode-light", "mode": "light"},
-    }
+    assert path.read_bytes() == before
 
 
 @pytest.mark.parametrize("provider", ["deepseek", "xai", "kimi-code", "minimax-cn"])
@@ -2544,93 +2595,6 @@ def test_load_global_web_settings_detects_provider_env_keys(tmp_path: Path, prov
     settings = load_global_web_settings(env={"XDG_CONFIG_HOME": str(tmp_path / "global-config"), **env})
 
     assert settings == RuntimeWebSettings(provider=provider, provider_api_key_present=True)
-
-
-def test_merge_runtime_tui_preferences_carries_unknown_theme_name_and_defaults_mode() -> None:
-    """The runtime carries the theme name verbatim; the TUI resolves palettes.
-
-    ``name`` is never validated or rewritten here, and ``mode`` defaults to
-    ``auto`` when neither side sets it.
-    """
-    merged = merge_runtime_tui_preferences(
-        RuntimeTuiPreferences(theme=RuntimeTuiThemePreferences(name="unknown-theme", mode="light")),
-        RuntimeTuiPreferences(theme=RuntimeTuiThemePreferences(name="some-other-theme")),
-    )
-
-    assert merged.theme == RuntimeTuiThemePreferences(name="some-other-theme", mode="light")
-
-    defaulted = merge_runtime_tui_preferences(None, None)
-    assert defaulted.theme == RuntimeTuiThemePreferences(name=None, mode="auto")
-
-
-def test_parse_tui_config_preserves_valid_keymap() -> None:
-    assert _parse_tui_config(
-        {
-            "keymap": {
-                "n": "app.session.new",
-                "r": "app.session.resume",
-                "t": "app.tools.expand",
-            },
-        }
-    ) == RuntimeTuiConfig(
-        keymap={
-            "n": "app.session.new",
-            "r": "app.session.resume",
-            "t": "app.tools.expand",
-        },
-    )
-
-
-@pytest.mark.parametrize(
-    ("raw_value", "match"),
-    [
-        pytest.param([], "runtime config field 'tui'", id="shape"),
-        pytest.param(
-            {"keymap": []},
-            "runtime config field 'tui.keymap'",
-            id="keymap-shape",
-        ),
-        pytest.param(
-            {"keymap": {"n": False}},
-            "runtime config field 'tui.keymap' values must be strings",
-            id="keymap-value-type",
-        ),
-        pytest.param(
-            {"keymap": {1: "app.session.new"}},
-            "runtime config field 'tui.keymap' keys must be strings",
-            id="keymap-key-type",
-        ),
-        pytest.param(
-            {"keymap": {"n": "quit"}},
-            "runtime config field 'tui.keymap' values must be one of: app\\.session\\.new, app\\.session\\.resume, "
-            "app\\.tools\\.expand, app\\.display\\.reset, app\\.history\\.search",
-            id="keymap-value-enum",
-        ),
-        pytest.param(
-            {"preferences": []},
-            "runtime config field 'tui.preferences'",
-            id="preferences-shape",
-        ),
-        pytest.param(
-            {"preferences": {"theme": []}},
-            "runtime config field 'tui.preferences.theme'",
-            id="preferences-theme-shape",
-        ),
-        pytest.param(
-            {"preferences": {"theme": {"mode": "sepia"}}},
-            "runtime config field 'tui.preferences.theme.mode'",
-            id="preferences-theme-mode-invalid",
-        ),
-        pytest.param(
-            {"preferences": {"theme": {"name": 5}}},
-            "runtime config field 'tui.preferences.theme.name'",
-            id="preferences-theme-name-type",
-        ),
-    ],
-)
-def test_parse_tui_config_rejects_invalid_shapes_and_values(raw_value: object, match: str) -> None:
-    with pytest.raises(ValueError, match=match):
-        _ = _parse_tui_config(raw_value)
 
 
 def test_runtime_config_uses_repo_local_filename_inside_workspace(tmp_path: Path) -> None:

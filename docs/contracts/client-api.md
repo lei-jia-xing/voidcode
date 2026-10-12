@@ -398,7 +398,7 @@ pydantic 模型描述，并通过 `response_model=` 接到路由上，因此
 |---|---|---|
 | `EventBody` / `SessionDebugEventBody` | `payload` | 每个事件类型拥有自己的 payload 形状（见 `runtime-events.md`），客户端按 `event_type` 路由 |
 | `SessionStateBody` / `BackgroundTaskRequestSnapshotBody` / `BackgroundTaskResultBody.hook_reminder` | `metadata` / `payload` / `hook_reminder` | 持久化的 runtime/session 元数据 blob，由 runtime 自己投影与约束 |
-| `RuntimePolicyBody` | `diagnostics`、`precedence_trace` 条目、以及 `schema_version`/`policy_version`/`mode`/`read_only`/`agent_preset`/`agent_manifest_id`/`intent.label`/`intent.confidence` | runtime policy 快照的 bounded 投影；标量的类型来自其唯一写入者（`runtime/policy.py`），传输层不再做二次校验 |
+| `RuntimePolicyBody` | `diagnostics`、`precedence_trace` 条目、以及 `schema_version`/`policy_version`/`read_only`/`agent_preset`/`agent_manifest_id`/`intent.label`/`intent.confidence` | runtime policy 快照的 bounded 投影；标量的类型来自其唯一写入者（`runtime/policy.py`），传输层不再做二次校验 |
 | `ProviderContextBody.context_window` | `context_window` | `runtime/context` 拥有的窗口预算投影 |
 | `ProviderReadinessBody.reasoning_controls` | `reasoning_controls` | provider 特有的 reasoning 控制项 |
 | `CapabilityStatusBody.details` | `details` | 每个 capability manager 自己的明细 |

@@ -19,7 +19,7 @@ from ..hook.plan import ResolvedHookPlan, hook_plan_from_session_metadata
 from .context.window import BeforeCompactInput
 from .contracts import RuntimeStreamChunk
 from .events import EventEnvelope
-from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
+from .permission import runtime_read_only_from_metadata
 from .session import SessionState
 
 HOOK_RECURSION_ENV_VAR = "VOIDCODE_RUNNING_TOOL_HOOK"
@@ -119,9 +119,7 @@ def _before_compact_cancel_reason(outcome: RuntimeHookOutcome) -> str:
 
 
 def hook_execution_policy_from_metadata(metadata: dict[str, object] | None) -> HookExecutionPolicy:
-    mode = runtime_mode_from_metadata(metadata)
-    read_only = runtime_read_only_from_metadata(metadata)
-    return HookExecutionPolicy(mode=mode, read_only=read_only)
+    return HookExecutionPolicy(read_only=runtime_read_only_from_metadata(metadata))
 
 
 def _hook_outcome_from_execution(session: SessionState, outcome: HookExecutionOutcome) -> RuntimeHookOutcome:

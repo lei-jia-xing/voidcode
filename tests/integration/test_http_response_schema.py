@@ -138,7 +138,6 @@ def _runtime_policy_snapshot() -> dict[str, object]:
     return {
         "schema_version": 1,
         "policy_version": "2026.04",
-        "mode": "plan",
         "read_only": True,
         "agent_preset": "leader",
         "agent_manifest_id": "leader",

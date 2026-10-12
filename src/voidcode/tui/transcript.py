@@ -1,7 +1,7 @@
 """Transcript tape: typed blocks rendered to fixed-width ANSI rows.
 
-Visual grammar ported from oh-my-pi (MIT; ``/tmp/omp-src``), ``path:line``
-relative to that checkout:
+Visual grammar ported from oh-my-pi (MIT). Source paths below refer to pinned
+commit ``b07a1c146d0d12cfc855a2c65d52f892ef319040``:
 
 * Exactly one blank row between non-empty blocks, block blank edges trimmed:
   ``packages/tui/src/chrome/transcript-container.ts:117-138, 618-624``.
@@ -47,7 +47,7 @@ from pygments.util import ClassNotFound
 from rich.markdown import Markdown
 from rich.syntax import Syntax
 
-from .term import clamp_row, format_number, render_lines, visible_width, wrap_row
+from .term import clamp_row, escape_terminal_controls, format_number, render_lines, visible_width, wrap_row
 from .theme import Theme
 
 __all__ = [
@@ -178,10 +178,10 @@ class KeyHints:
         return theme.fg("dim", f"{left}{self.key_label()}: Expand{right}")
 
     def more_lines_hint(self, theme: Theme, count: int) -> str:
-        """``… N more lines (ctrl+o to expand)`` (``execution-shared.ts:86-88``)."""
+        """The themed truncation cue plus the actual expand binding."""
         if count <= 0:
             return ""
-        return theme.fg("dim", f"… {count} more lines ({self.expand} to expand)")
+        return theme.fg("dim", f"{theme.symbol('text.truncation')} {count} more lines ({self.expand} to expand)")
 
 
 def replace_tabs(text: str) -> str:
@@ -189,35 +189,38 @@ def replace_tabs(text: str) -> str:
     return text.replace("\t", " " * TAB_WIDTH)
 
 
-def format_code_frame_line(marker: str, line_number: str | int, content: str, line_number_width: int) -> str:
-    """One diff row: ``+NNN│content`` (``render-utils.ts:429-438``).
+def _safe_text(text: str, *, multiline: bool = False) -> str:
+    return escape_terminal_controls(text, preserve_newlines=multiline, preserve_tabs=multiline)
 
-    The gutter field is ``line_number_width + 1`` cells wide, so added rows read
-    ``+123│``, removed ``-123│`` and context rows `` 123│``. A constant width
-    (minimum 3) keeps streamed rows byte-identical to the settled render
-    (``chrome/diff.ts:118-127``): a width derived from the current maximum line
-    number would widen at the 100-line crossing and re-pad every rendered row.
-    """
+
+def format_code_frame_line(
+    marker: str,
+    line_number: str | int,
+    content: str,
+    line_number_width: int,
+    *,
+    gutter: str,
+) -> str:
     marker_text = marker.strip()
     number_text = str(line_number).strip()
     if marker_text and number_text:
-        gutter = f"{marker_text}{number_text}"
+        prefix = f"{marker_text}{number_text}"
     else:
-        gutter = number_text or marker_text
-    return f"{gutter.rjust(line_number_width + 1)}│{content}"
+        prefix = number_text or marker_text
+    return f"{prefix.rjust(line_number_width + 1)}{gutter}{_safe_text(content)}"
 
 
-def _visualize_indent(text: str) -> str:
-    """Show leading whitespace with dim glyphs (``chrome/diff.ts:14-30``)."""
+def _visualize_indent(text: str, *, arrow: str, dot: str) -> str:
+    """Show leading whitespace with themed markers."""
     stripped = text.lstrip(" \t")
     indent = text[: len(text) - len(stripped)]
     if not indent:
-        return replace_tabs(text)
+        return replace_tabs(_safe_text(text))
     left_padding = TAB_WIDTH // 2
     right_padding = max(0, TAB_WIDTH - left_padding - 1)
-    tab_marker = f"{_INDENT}{' ' * left_padding}→{' ' * right_padding}{_INDENT_OFF}"
-    visible = "".join(tab_marker if char == "\t" else f"{_INDENT}·{_INDENT_OFF}" for char in indent)
-    return f"{visible}{replace_tabs(stripped)}"
+    tab_marker = f"{_INDENT}{' ' * left_padding}{arrow}{' ' * right_padding}{_INDENT_OFF}"
+    visible = "".join(tab_marker if char == "\t" else f"{_INDENT}{dot}{_INDENT_OFF}" for char in indent)
+    return f"{visible}{replace_tabs(_safe_text(stripped))}"
 
 
 def _pad_to(text: str, width: int) -> str:
@@ -241,23 +244,18 @@ class _Renderer:
         self.hints = hints
 
     def markdown(self, text: str, width: int) -> list[str]:
-        """Render markdown to rows at ``width`` using the theme's style table."""
-        # rich annotates ``Markdown.code_theme`` as ``str`` but forwards it to
-        # ``Syntax(theme=...)``, which takes a ``SyntaxTheme``; the token-based
-        # theme keeps fenced code on the same palette as tool bodies.
-        document = Markdown(text, code_theme=cast("str", self.theme.syntax_theme()))
+        """Render untrusted markdown only after escaping terminal controls."""
+        document = Markdown(_safe_text(text, multiline=True), code_theme=cast("str", self.theme.syntax_theme()))
         rows = render_lines(
             document,
             width,
             theme=self.theme.rich_theme(),
             color_system=self.theme.color_system,
         )
-        # rich pads rendered rows out to the console width; the transcript rows
-        # are fitted by the frame, so the padding is dropped here.
         return [row.rstrip() for row in rows]
 
     def code(self, text: str, width: int, language: str | None) -> list[str]:
-        """Syntax-highlight ``text`` at ``width`` with the themed syntax table."""
+        """Syntax-highlight untrusted code after escaping terminal controls."""
         lexer = "text"
         if language:
             try:
@@ -267,7 +265,7 @@ class _Renderer:
             else:
                 lexer = language
         rows = render_lines(
-            Syntax(text, lexer, theme=self.theme.syntax_theme()),
+            Syntax(_safe_text(text, multiline=True), lexer, theme=self.theme.syntax_theme()),
             width,
             theme=self.theme.rich_theme(),
             color_system=self.theme.color_system,
@@ -275,11 +273,16 @@ class _Renderer:
         return [row.rstrip() for row in rows]
 
     def body_line(self, line: str, width: int) -> list[str]:
-        """Wrap one body/preview line to ``width`` cells."""
-        return wrap_row(line, width, theme=self.theme.rich_theme(), color_system=self.theme.color_system)
+        """Wrap a line after making untrusted terminal controls visible."""
+        return wrap_row(
+            _safe_text(line, multiline=True),
+            width,
+            theme=self.theme.rich_theme(),
+            color_system=self.theme.color_system,
+        )
 
     def dim(self, text: str) -> str:
-        """Dim-coloured text (``theme.fg("dim", ...)``)."""
+        """Style already-sanitized rows returned by :meth:`body_line`."""
         return self.theme.fg("dim", text)
 
 
@@ -344,7 +347,7 @@ class AssistantBlock(Block):
         glyph = theme.glyphs.spinner("status", self.pulse_frame or 0)
         row = f"{theme.fg('thinkingText', glyph)}{theme.fg('muted', ' Thinking')}"
         if self.pulse_tokens:
-            row += theme.fg("dim", f" · {format_number(self.pulse_tokens)}")
+            row += theme.fg("dim", f" {theme.symbol('sep.dot')} {format_number(self.pulse_tokens)}")
         if self.pulse_rate is not None and self.pulse_rate >= 0.05:
             row += theme.fg("dim", f" {self.pulse_rate:.1f} tok/s")
         return row
@@ -368,7 +371,7 @@ class ThinkingBlock(Block):
         if not self.expanded:
             lines = len(self.text.splitlines()) or 1
             glyph = theme.symbol(f"thinking.{self.level}") or theme.symbol("thinking.medium")
-            summary = theme.fg("dim", f"{glyph} Thinking · {lines} {'line' if lines == 1 else 'lines'}")
+            summary = theme.fg("dim", f"{glyph} Thinking {theme.symbol('sep.dot')} {lines} {'line' if lines == 1 else 'lines'}")
             hint = renderer.hints.expand_hint(theme, expanded=False)
             trailer = f" {hint}" if hint else ""
             return [f" {summary}{trailer}"]
@@ -390,6 +393,10 @@ class ToolBlock(Block):
     spinner_frame: int = 0
     #: ``False`` renders an unframed header + preview (omp's plain tool card).
     frame: bool = True
+    tool_call_id: str | None = None
+    session_id: str | None = None
+    artifact_id: str | None = None
+    detail_available: bool = False
 
     def render(self, renderer: _Renderer) -> list[str]:
         theme = renderer.theme
@@ -420,7 +427,8 @@ class ToolBlock(Block):
         """
         theme = renderer.theme
         glyph = theme.glyphs.spinner("status", self.spinner_frame)
-        return f" {theme.fg('muted', glyph)}{theme.fg('dim', ' … (streaming)')}"
+        ellipsis = theme.symbol("text.streamEllipsis")
+        return f" {theme.fg('muted', glyph)}{theme.fg('dim', ' ' + ellipsis + ' (streaming)')}"
 
     def _header(self, renderer: _Renderer) -> str:
         theme = renderer.theme
@@ -433,10 +441,10 @@ class ToolBlock(Block):
             else:
                 icon = theme.fg("accent", theme.tool_icon(self.tool))
             parts.append(icon)
-        parts.append(theme.fg("toolTitle", clamp_row(self.title, TRUNCATE_LENGTHS["TITLE"])))
+        parts.append(theme.fg("toolTitle", clamp_row(_safe_text(self.title), TRUNCATE_LENGTHS["TITLE"])))
         line = " ".join(parts)
         if self.summary:
-            summary = clamp_row(self.summary, TRUNCATE_LENGTHS["CONTENT"])
+            summary = clamp_row(_safe_text(self.summary), TRUNCATE_LENGTHS["CONTENT"])
             line += f"{theme.symbol('sep.dot')}{theme.fg('muted', summary)}"
         return line
 
@@ -591,16 +599,22 @@ def render_diff(renderer: _Renderer, diff: str, *, expanded: bool, width: int | 
     previous = ""
     for row in rows:
         if row.kind == "raw":
-            out.append(clamp_row(theme.fg("toolDiffContext", replace_tabs(row.content)), width))
+            out.append(clamp_row(theme.fg("toolDiffContext", replace_tabs(_safe_text(row.content))), width))
             previous = ""
             continue
         if row.number:
             display = "" if row.number == previous else row.number
             previous = row.number
-            line = format_code_frame_line(row.marker, display, _visualize_indent(row.content), line_number_width)
+            line = format_code_frame_line(
+                row.marker,
+                display,
+                _visualize_indent(row.content, arrow=theme.symbol("diff.indentArrow"), dot=theme.symbol("diff.indentDot")),
+                line_number_width,
+                gutter=theme.symbol("diff.gutterVertical"),
+            )
         else:
             previous = ""
-            line = f"{row.marker}{replace_tabs(row.content)}"
+            line = f"{row.marker}{replace_tabs(_safe_text(row.content))}"
         token = "toolDiffAdded" if row.marker == "+" else "toolDiffRemoved" if row.marker == "-" else "toolDiffContext"
         out.append(clamp_row(theme.fg(token, line), width))
     if hint:
@@ -655,15 +669,17 @@ class SessionMarkerBlock(Block):
         theme = renderer.theme
         width = max(1, renderer.width)
         rule = theme.symbol("tree.horizontal")
-        plain = f"{self.label} {self.hint}".rstrip()
+        label = _safe_text(self.label)
+        hint = _safe_text(self.hint)
+        plain = f"{label} {hint}".rstrip()
         remaining = width - visible_width(plain) - 2
         if remaining < 4:
-            return [theme.fg("muted", self.label)]
+            return [theme.fg("muted", label)]
         left = remaining // 2
         right = remaining - left
-        middle = f" {theme.fg('muted', self.label)} "
-        if self.hint:
-            middle += f"{theme.fg('dim', self.hint)} "
+        middle = f" {theme.fg('muted', label)} "
+        if hint:
+            middle += f"{theme.fg('dim', hint)} "
         return [f"{theme.fg('dim', rule * left)}{middle}{theme.fg('dim', rule * right)}"]
 
 

@@ -1,14 +1,22 @@
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 
 from voidcode.core.tool_context import ToolContext
 from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.tool_execution import RuntimeToolExecutor
-from voidcode.tools.contracts import TextOutput, ToolCall, ToolDefinition, ToolInvocation, ToolResult, ToolSuccess
+from voidcode.tools.contracts import (
+    TextOutput,
+    ToolCall,
+    ToolDefinition,
+    ToolFailure,
+    ToolInvocation,
+    ToolResult,
+    ToolSuccess,
+    UnconfirmedStop,
+)
 
 
 class _AbortSignal:
@@ -20,22 +28,28 @@ class _AbortSignal:
     def cancelled(self) -> bool:
         return self._cancelled
 
-    def cancel(self, reason: str) -> None:
-        self._cancelled = True
-        self.reason = reason
+    def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
+        self._cancelled = value
+        if value:
+            self.reason = reason
 
 
 class _ProgressHangingTool:
     definition = ToolDefinition(name="shell_exec", description="Progress-capable hang.")
 
     def __init__(self) -> None:
-        self.started = False
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.finished = threading.Event()
 
     def invoke(self, call: ToolCall, *, context: ToolContext) -> ToolResult:
         _ = call, context
-        self.started = True
-        time.sleep(9999)
-        return ToolSuccess(tool_name=self.definition.name, output=TextOutput("unreachable"))
+        self.started.set()
+        try:
+            assert self.release.wait(timeout=5.0), "tool was not released"
+            return ToolSuccess(tool_name=self.definition.name, output=TextOutput("released"))
+        finally:
+            self.finished.set()
 
 
 def test_progress_capable_running_tool_interrupts_on_abort_signal(tmp_path: Path) -> None:
@@ -75,14 +89,22 @@ def test_progress_capable_running_tool_interrupts_on_abort_signal(tmp_path: Path
 
     consumer = threading.Thread(target=_consume_stream)
     consumer.start()
+    try:
+        assert tool.started.wait(timeout=5.0)
+        abort_signal.set_cancelled(True, reason="stop tool")
+        consumer.join(timeout=2.0)
 
-    while not tool.started:
-        time.sleep(0.01)
-    abort_signal.cancel("stop tool")
-    consumer.join(timeout=2.0)
-
-    assert consumer.is_alive() is False
-    assert errors == []
-    assert tool_outcome
-    assert isinstance(tool_outcome[0], RuntimeError)
-    assert "stop tool" in str(tool_outcome[0])
+        assert consumer.is_alive() is False
+        assert errors == []
+        assert tool_outcome
+        assert tool.finished.is_set() is False
+        failure = tool_outcome[0]
+        assert isinstance(failure, ToolFailure)
+        assert isinstance(failure.execution, UnconfirmedStop)
+        assert failure.execution.cancellation_signalled is True
+        assert failure.execution.execution_stopped is False
+    finally:
+        tool.release.set()
+        consumer.join(timeout=2.0)
+        if tool.started.is_set():
+            assert tool.finished.wait(timeout=2.0)

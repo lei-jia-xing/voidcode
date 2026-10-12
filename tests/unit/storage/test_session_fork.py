@@ -187,7 +187,7 @@ def test_fork_carries_session_config_but_drops_run_position_state(tmp_path: Path
         raw = connection.execute("SELECT metadata_json FROM sessions WHERE session_id = 'source-cfg'").fetchone()[0]
         metadata = json.loads(raw)
         metadata["runtime_config"] = {"model": "deepseek/deepseek-chat"}
-        metadata["runtime_policy"] = {"mode": "normal"}
+        metadata["runtime_policy"] = {"read_only": True}
         metadata["runtime_state"] = {"run_id": "stale-run"}
         connection.execute(
             "UPDATE sessions SET metadata_json = ? WHERE session_id = 'source-cfg'",
@@ -199,7 +199,7 @@ def test_fork_carries_session_config_but_drops_run_position_state(tmp_path: Path
     forked_metadata = store.load_session(workspace=tmp_path, session_id=forked.session.id).session.metadata
 
     assert forked_metadata["runtime_config"] == {"model": "deepseek/deepseek-chat"}
-    assert forked_metadata["runtime_policy"] == {"mode": "normal"}
+    assert forked_metadata["runtime_policy"] == {"read_only": True}
     assert "runtime_state" not in forked_metadata
 
 

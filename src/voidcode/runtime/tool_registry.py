@@ -83,7 +83,6 @@ class ToolCatalogEntry:
 class ToolPolicyDecision:
     tool_name: str
     allowed: bool
-    mode: str
     read_only: bool
     decision: str
     reason: str | None = None
@@ -91,7 +90,6 @@ class ToolPolicyDecision:
     def metadata(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "tool": self.tool_name,
-            "mode": self.mode,
             "read_only": self.read_only,
             "decision": self.decision,
         }

@@ -15,6 +15,13 @@
 - 先前 live DeepSeek run-stream 与 sessions-list 请求返回 `internal server error`；现存输出没有 backend traceback，未重试在线请求。原 `.sisyphus/evidence/task-11-layout-buttons.png` 曾被该 E2E 覆写：原 SHA-256 `8641f5c635a0a6fc980f48ad219033ca3be17691f4d694251577a27778e4ffdc` 无法从备份、OMP 缓存/历史或 Git unreachable PNG blobs 恢复；当前文件 SHA-256 为 `2f28ad4497cf0fb134a14d56242339c22c005870d7c7d39a657ed016c24d668d`。未重建或冒充原图。
 - **Filesystem snapshot check**: `findmnt -T .` identifies `/home` on Btrfs subvolume `@home`. `btrfs subvolume list /home` returned `Operation not permitted`; the visible `/home` directory had no `.snapshots` entry, and `/home/hunter/.snapper.log` only records snapperd failing to acquire its DBus name. No exact screenshot bytes were exposed by the accessible snapshot paths.
 
+## Current Mode and TUI cutover evidence
+
+- User-facing RuntimeMode (`--mode`, `/plan`, ModeGuidance/mode prompt transform, and runtime-policy mode snapshot fields) was removed. `read_only` remains an explicit per-request execution constraint, not a persistent session mode; the prior request does not pin a later request that omits it, while parent/runtime constraints remain authoritative. See the current scoped evidence index at `local://tui-native-evidence-index.md`; the 361 scoped checks are owner-reported, and unavailable `artifact://3948` is not represented as captured output.
+- Default F1/F2/F3 are unbound; only configured keymaps activate those actions. Current-source Linux 80×24 PTY evidence, including actual captured surfaces, private DB session count, return status, and exact termios restoration, is recorded at `local://tui-default-key-cutover-proof.md`.
+- Resize ownership is app-side: compare current terminal geometry with the last applied layout size so a consumed paint-layer resize cannot leave the view at old dimensions. The unproven DSR/origin clipping solver was removed. Final focused checks compare raw-draft cell to the physical PTY caret after Left/Right at 20×6, 40×12, and 80×24; `uv run pytest -q tests/unit/tui` passed on final source (62 passed, 2 skipped, 116.31s). Main-alt artifact paging/return verifies scrollback prefix preservation in `tests/unit/tui/test_native_resize.py`; exact scope and evidence are recorded, not extrapolated to a complete cross-platform matrix.
+- Final repository gates passed: `mise run check` and normal all-files pre-commit; wheel/sdist and extracted-consumer evidence is recorded in [the TUI productization plan](tui-productization.md) and [testing policy](../testing.md). Native acceptance is Linux/tmux only; native macOS/Windows, a fresh Kitty GUI run, and pixel validation remain unverified.
+
 ## 当前数据格式策略（后续用户要求，覆盖旧迁移条款）
 
 最新用户要求“不要考虑向后兼容”覆盖下文旧的 database/bundle migration、旧版只读 decoder 或转换要求。当前格式为 `agent_capability_snapshot` v4、SQLite `user_version` 2 与 session bundle schema 2；snapshot/bundle 缺失或不支持的版本严格拒绝，SQLite 只允许无应用 schema 的空数据库从 version 0 初始化，并在 bootstrap/configuration 前拒绝旧版或含应用 schema 的 unversioned 数据库。不得添加旧格式 decoder、转换器、migration 或 compatibility path；拒绝时保留原有数据库、bundle 和旧数据不变，不自动删除/覆盖，需从新空数据库路径开始。
@@ -83,7 +90,7 @@ runtime host：policy / approval / redaction / persistence / recovery /
 
 | 场景 | 可重复后端用例 / 观察 |
 | --- | --- |
-| allow / deny | `test_permission_plan_mode.py`、`test_approval_mode_tiers.py`；runtime 层的 workspace ask、shell deny、external-write deny 用例。 |
+| allow / deny | `test_permission_plan_mode.py`（现更名为 `test_permission_read_only.py`）、`test_approval_mode_tiers.py`；runtime 层的 workspace ask、shell deny、external-write deny 用例。 |
 | rewrite 验证与最终参数授权 | `test_typed_tool_hooks.py::test_typed_rewrite_preserves_raw_graph_args_uses_final_execution_args_and_canonical_started_id` 与 `::test_invoke_tool_outer_is_not_rewritten_and_inner_runs_once` 验证最终参数执行且 permission 在 started 前；无单独永久用例覆盖“无效 rewrite + 最终外部路径 policy”同一场景，本轮用 throwaway runtime probe 确认无效 schema rewrite 在执行前 block，重写到 external path 则按最终 canonical path deny，side effect 不发生。 |
 | approval resume 单次执行 | `test_approval_resume_uses_final_started_id_once_and_does_not_repeat_typed_handler`、`test_runtime_persists_pending_approval_until_single_resume_resolution`。 |
 | cancel 后晚到事件 | `test_cancel_lands_while_tool_result_in_flight_drops_late_result`、`test_cancel_mid_provider_stream_drops_remaining_deltas`、`test_late_tool_completion_at_the_boundary_is_not_committed_as_the_tool_result`。 |

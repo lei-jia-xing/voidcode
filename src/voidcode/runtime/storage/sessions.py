@@ -21,6 +21,7 @@ from ..contracts import (
     UnknownSessionError,
 )
 from ..events import (
+    RUNTIME_APPROVAL_RESOLVED,
     RUNTIME_TODO_UPDATED,
     EventEnvelope,
     EventSource,
@@ -34,11 +35,10 @@ from ..session import (
     SessionState,
     SessionStatus,
     StoredSessionSummary,
-    normalize_persisted_session_metadata,
     session_entry_preview,
     session_metadata_for_persistence,
 )
-from ..session_metadata_helpers import parse_runtime_state_metadata
+from ..session_metadata_helpers import parse_plan_state_metadata, parse_runtime_state_metadata
 from ..todos import runtime_todo_phases_from_payload, todo_state_payload
 from .fork import _dangling_interaction
 from .rows import (
@@ -731,6 +731,7 @@ class _SessionStorageMixin(_MixinBase):
         session_id: str,
         events: tuple[tuple[str, EventSource, dict[str, object], str | None], ...],
         interrupted_checkpoint: dict[str, object] | None = None,
+        approval_checkpoint_plan_state: dict[str, object] | None = None,
     ) -> tuple[EventEnvelope, ...]:
         """Append a batch of session events in one transaction — append-only.
 
@@ -739,7 +740,8 @@ class _SessionStorageMixin(_MixinBase):
         ``last_event_sequence`` bump) but holds a single ``BEGIN IMMEDIATE``
         transaction so the whole batch is atomic. Terminal sessions reject
         non-lifecycle events via ``SessionSealedError``; an optional interrupted
-        checkpoint is upserted in the same transaction.
+        checkpoint is upserted in the same transaction. Approval checkpoint
+        state is advanced only with one matching resolution event.
         """
         with self._write_connect(workspace) as connection:
             status_row = fetch_row(
@@ -825,6 +827,51 @@ class _SessionStorageMixin(_MixinBase):
                 # either column.
                 parent_sequence = sequence
                 assigned.append(event)
+            if approval_checkpoint_plan_state is not None and assigned:
+                if interrupted_checkpoint is not None:
+                    raise ValueError("approval checkpoint update cannot compete with an interrupted checkpoint")
+                if len(assigned) != 1:
+                    raise ValueError("approval checkpoint update requires one persisted runtime approval resolution")
+                resolution = assigned[0]
+                if resolution.event_type != RUNTIME_APPROVAL_RESOLVED or resolution.source != "runtime":
+                    raise ValueError("approval checkpoint update requires one persisted runtime approval resolution")
+                if resolution.payload.get("decision") not in ("allow", "deny"):
+                    raise ValueError("approval checkpoint update requires an allow or deny resolution")
+                request_id = resolution.payload.get("request_id")
+                if not isinstance(request_id, str) or not request_id:
+                    raise ValueError("approval checkpoint update requires the persisted approval request id")
+                updated_plan_state = parse_plan_state_metadata(approval_checkpoint_plan_state)
+                if updated_plan_state.get("status") != "in_progress":
+                    raise ValueError("approval checkpoint update requires in-progress plan state")
+                checkpoint_row = connection.execute(
+                    "SELECT resume_checkpoint_json FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                    (str(workspace), session_id),
+                ).fetchone()
+                if checkpoint_row is None:
+                    raise UnknownSessionError(f"unknown session: {session_id}")
+                raw_checkpoint = checkpoint_row[0]
+                if isinstance(raw_checkpoint, str):
+                    checkpoint = json.loads(raw_checkpoint)
+                    if not isinstance(checkpoint, dict):
+                        raise ValueError("persisted resume checkpoint must decode to an object")
+                    if checkpoint.get("kind") == "approval_wait":
+                        if checkpoint.get("pending_approval_request_id") != request_id:
+                            raise ValueError("approval checkpoint update request does not match the pending approval")
+                        checkpoint_metadata = checkpoint.get("session_metadata")
+                        if not isinstance(checkpoint_metadata, dict):
+                            raise ValueError("approval checkpoint update requires session metadata")
+                        old_plan_state = checkpoint_metadata.get("plan_state")
+                        if (
+                            not isinstance(old_plan_state, dict)
+                            or old_plan_state.get("status") != "waiting_approval"
+                            or old_plan_state.get("approval_request_id") != request_id
+                        ):
+                            raise ValueError("approval checkpoint plan state does not match the pending approval")
+                        checkpoint["session_metadata"] = {**checkpoint_metadata, "plan_state": updated_plan_state}
+                        _ = connection.execute(
+                            "UPDATE sessions SET resume_checkpoint_json = ? WHERE workspace_id = ? AND session_id = ?",
+                            (json.dumps(checkpoint, sort_keys=True), str(workspace), session_id),
+                        )
             if interrupted_checkpoint is not None and assigned:
                 checkpoint_metadata = interrupted_checkpoint.get("session_metadata")
                 if not isinstance(checkpoint_metadata, dict):
@@ -1276,7 +1323,7 @@ class _SessionStorageMixin(_MixinBase):
         )
         events = tuple(self._event_envelope_from_row(session_id=session_id, row=decode_row(row, SessionEventRow)) for row in event_rows)
         return (
-            normalize_persisted_session_metadata(json.loads(decode_row(session_row, SessionMetadataRow)["metadata_json"])),
+            cast(dict[str, object], json.loads(decode_row(session_row, SessionMetadataRow)["metadata_json"])),
             events,
         )
 
@@ -1834,7 +1881,7 @@ class _SessionStorageMixin(_MixinBase):
         row = fetch_row(connection, "SELECT metadata_json FROM sessions WHERE workspace_id = ? AND session_id = ?", (str(workspace), session_id))
         if row is None:
             raise UnknownSessionError(f"unknown session: {session_id}")
-        return normalize_persisted_session_metadata(json.loads(decode_row(row, SessionMetadataRow)["metadata_json"]))
+        return cast(dict[str, object], json.loads(decode_row(row, SessionMetadataRow)["metadata_json"]))
 
     def _write_session_metadata_row(
         self,
@@ -1888,7 +1935,7 @@ class _SessionStorageMixin(_MixinBase):
                 """,
                 (str(workspace), session_id),
             )
-        metadata = normalize_persisted_session_metadata(cast(dict[str, object], json.loads(session_data["metadata_json"])))
+        metadata = cast(dict[str, object], json.loads(session_data["metadata_json"]))
         session = SessionState(
             session=SessionRef(
                 id=session_data["session_id"],

@@ -49,7 +49,7 @@ def test_context_transform_diagnostics_keep_declared_and_request_policies_distin
                     "failure_policy": "warn",
                     "applied": [
                         {
-                            "provider_id": "mode_guidance",
+                            "provider_id": "hook_preset_guidance",
                             "provider_version": "8",
                             "scope": "provider_context",
                             "failure_policy": "block",

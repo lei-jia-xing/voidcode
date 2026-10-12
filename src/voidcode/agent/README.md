@@ -70,6 +70,8 @@
 
 此外，builtin prompt 文本 ownership 现在明确归属 `src/voidcode/agent/`：agent 层负责 builtin prompt 内容、profile materialization 与 manifest 校验，provider 层只负责 message assembly 和模型调用，不再持有 role-specific persona 源码副本。
 
+builtin prompt 文件通过 `importlib.resources` 读取，因此直接从 wheel ZIP 导入 VoidCode 时，manifest 校验与 prompt materialization 仍可正常工作。
+
 ## 与 runtime 的边界
 
 `voidcode.agent` 可以描述“这个角色默认希望带哪些工具/skills/hooks/MCP profile”。其中 builtin preset 的 prompt profile、工具边界、skills、model、execution engine 与 provider fallback 都会被 runtime 按当前执行边界消费；但这些声明仍不能决定系统最终如何执行、治理、审批、恢复和持久化它。
